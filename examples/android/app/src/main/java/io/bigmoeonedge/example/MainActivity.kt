@@ -33,8 +33,7 @@ import java.util.Locale
 /**
  * Minimal chat + live telemetry, in Compose. Pick a pushed .gguf, type a prompt, run:
  * the panel shows tok/s and the per-token compute-vs-flash-I/O split and cache hit rate
- * while the answer streams in. This is the use case that validates streaming a
- * larger-than-RAM MoE on the phone.
+ * while the answer streams in. All tunables live on the Settings screen.
  */
 class MainActivity : ComponentActivity() {
 
@@ -52,7 +51,7 @@ class MainActivity : ComponentActivity() {
         requestAllFilesAccess()
         setContent {
             MaterialTheme(colorScheme = if (isSystemDark()) darkColorScheme() else lightColorScheme()) {
-                Surface(color = MaterialTheme.colorScheme.background) { AppScreen() }
+                Surface(color = MaterialTheme.colorScheme.background) { Root() }
             }
         }
     }
@@ -78,22 +77,36 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppScreen() {
+private fun Root() {
+    val context = LocalContext.current
+    var showSettings by remember { mutableStateOf(false) }
+    var settings by remember { mutableStateOf(AppSettings.load(context)) }
+
+    if (showSettings) {
+        SettingsScreen(
+            current = settings,
+            onChange = { settings = it; it.save(context) },
+            onBack = { showSettings = false },
+        )
+    } else {
+        MainScreen(settings = settings, onOpenSettings = { showSettings = true })
+    }
+}
+
+@Composable
+private fun MainScreen(settings: AppSettings, onOpenSettings: () -> Unit) {
     val context = LocalContext.current
     val ui by RunBus.state.collectAsStateWithLifecycle()
 
     var models by remember { mutableStateOf(ModelManager.listModels(context)) }
     var modelIdx by remember { mutableStateOf(0) }
-    var cacheIdx by remember { mutableStateOf(Params.CACHE_CHOICES.indexOf(4000).coerceAtLeast(0)) }
     var prompt by rememberSaveable { mutableStateOf("Explain what a mixture-of-experts model is, in two sentences.") }
 
     fun refreshModels() {
         models = ModelManager.listModels(context)
         if (modelIdx >= models.size) modelIdx = 0
     }
-
     LaunchedEffect(Unit) { refreshModels() }
 
     Column(
@@ -103,9 +116,11 @@ private fun AppScreen() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("BigMoeOnEdge", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("BigMoeOnEdge", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            TextButton(onClick = onOpenSettings) { Text("Settings") }
+        }
 
-        // model picker
         if (models.isEmpty()) {
             ElevatedCard {
                 Text(
@@ -125,13 +140,6 @@ private fun AppScreen() {
             )
         }
 
-        LabeledDropdown(
-            label = "Expert cache",
-            options = Params.CACHE_CHOICES.map { if (it == 0) "off" else "$it MiB" },
-            selected = cacheIdx,
-            onSelect = { cacheIdx = it },
-        )
-
         OutlinedTextField(
             value = prompt,
             onValueChange = { prompt = it },
@@ -145,8 +153,7 @@ private fun AppScreen() {
                 onClick = {
                     if (models.isNotEmpty()) {
                         startRun(context, models[modelIdx.coerceIn(0, models.size - 1)],
-                            prompt.ifBlank { "The capital of Japan is" },
-                            Params(cacheMb = Params.CACHE_CHOICES[cacheIdx]))
+                            prompt.ifBlank { "The capital of Japan is" }, settings)
                     }
                 },
                 enabled = !ui.running && models.isNotEmpty(),
@@ -164,12 +171,18 @@ private fun AppScreen() {
             ) { Text("Stop") }
         }
 
+        // A quick reminder of the active streaming config (full controls in Settings).
+        Text(
+            "cache ${if (settings.cacheMb == 0) "off" else "${settings.cacheMb} MiB"} · " +
+                "${settings.ioThreads} lanes · ${settings.threads} threads · " +
+                "thinking ${if (settings.thinking) "on" else "off"}",
+            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
         TelemetryCard(ui)
 
         if (ui.answer.isNotEmpty()) {
-            SelectionContainer {
-                Text(ui.answer, fontSize = 15.sp)
-            }
+            SelectionContainer { Text(ui.answer, fontSize = 15.sp) }
         }
     }
 }
@@ -213,29 +226,8 @@ private fun MeterRow(label: String, value: Double, total: Double, color: android
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LabeledDropdown(label: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
-        OutlinedTextField(
-            value = options.getOrElse(selected) { "" },
-            onValueChange = {},
-            readOnly = true,
-            label = { Text(label) },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier.menuAnchor().fillMaxWidth(),
-        )
-        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            options.forEachIndexed { i, opt ->
-                DropdownMenuItem(text = { Text(opt) }, onClick = { onSelect(i); expanded = false })
-            }
-        }
-    }
-}
-
-private fun startRun(context: android.content.Context, model: File, prompt: String, params: Params) {
-    val argv = ArrayList(params.toArgv(ModelManager.cliPath(context), model.absolutePath, prompt))
+private fun startRun(context: android.content.Context, model: File, prompt: String, settings: AppSettings) {
+    val argv = ArrayList(settings.toArgv(ModelManager.cliPath(context), model.absolutePath, prompt))
     val intent = Intent(context, RunService::class.java)
         .putExtra(RunService.EXTRA_MODEL, model.absolutePath)
         .putExtra(RunService.EXTRA_PROMPT, prompt)
