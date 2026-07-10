@@ -13,6 +13,10 @@ namespace bmoe {
 static const MoeRecipe k_recipes[] = {
     {"qwen3moe", "ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"},
     {"qwen2moe", "ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"},
+    // llada-moe is a diffusion MoE; the expert layout is standard, so expert streaming
+    // applies mechanically. Note that its diffusion inference does not have the n=1
+    // routing sparsity autoregressive decode relies on — see docs/limitations.md.
+    {"llada-moe", "ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"},
 };
 
 static const int k_n_recipes = (int) (sizeof(k_recipes) / sizeof(k_recipes[0]));
