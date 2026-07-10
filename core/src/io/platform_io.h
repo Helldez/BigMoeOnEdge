@@ -21,7 +21,7 @@
 namespace bmoe::pio {
 
 #if defined(_WIN32)
-using fd_t = void *;                      // HANDLE
+using fd_t = void *; // HANDLE
 #else
 using fd_t = int;
 #endif
@@ -31,21 +31,21 @@ bool fd_ok(fd_t fd);
 
 // Open path for positioned reads. When direct is true, request cache-bypassing I/O;
 // the caller should be prepared to reopen with direct=false for a sub-alignment tail.
-fd_t              open_read(const char * path, bool direct);
-void              close_fd(fd_t fd);
+fd_t open_read(const char * path, bool direct);
+void close_fd(fd_t fd);
 // Positioned blocking read. Returns bytes read, 0 at EOF, -1 on error.
-long long         pread_at(fd_t fd, void * buf, size_t count, uint64_t off);
-uint64_t          file_size(fd_t fd);
+long long pread_at(fd_t fd, void * buf, size_t count, uint64_t off);
+uint64_t file_size(fd_t fd);
 
 // Aligned heap allocation for O_DIRECT bounce buffers and shared slots.
-void * aligned_alloc(size_t align, size_t sz);
-void   aligned_free(void * p);
+void * alloc_aligned(size_t align, size_t sz);
+void aligned_free(void * p);
 
 // Reserved (address-only) region; physical pages appear on commit, vanish on evict.
 size_t vm_page();
 void * vm_reserve(size_t sz);
-bool   vm_commit(void * p, size_t sz);
-void   vm_evict(void * p, size_t sz);
-void   vm_release(void * p, size_t sz);
+bool vm_commit(void * p, size_t sz);
+void vm_evict(void * p, size_t sz);
+void vm_release(void * p, size_t sz);
 
 } // namespace bmoe::pio

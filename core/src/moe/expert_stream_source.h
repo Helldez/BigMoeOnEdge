@@ -32,14 +32,14 @@ namespace bmoe {
 
 // One expert weight tensor to rebind, with where its data lives in the gguf.
 struct ExpertTensorRef {
-    ggml_tensor * tensor   = nullptr; // persistent weight tensor whose ->data we rebind
-    uint64_t      file_off = 0;       // absolute file offset of the tensor's data
-    uint64_t      nb2      = 0;       // bytes per expert (== tensor->nb[2])
+    ggml_tensor * tensor = nullptr; // persistent weight tensor whose ->data we rebind
+    uint64_t file_off = 0;          // absolute file offset of the tensor's data
+    uint64_t nb2 = 0;               // bytes per expert (== tensor->nb[2])
 };
 
 // The three projections {gate, up, down} of one MoE layer.
 struct LayerExperts {
-    bool           bound = false;
+    bool bound = false;
     ExpertTensorRef proj[3];
 };
 
@@ -54,72 +54,76 @@ public:
     // Build buffers, rebind the bound layers' expert tensors onto them, and start the
     // I/O pool. `layers` is indexed by layer id (unbound entries are skipped).
     // Returns false on any allocation/open failure or an inconsistent tensor.
-    bool init(const std::string & gguf_path, int n_expert,
-              std::vector<LayerExperts> layers, const MoeStreamConfig & cfg);
+    bool
+    init(const std::string & gguf_path, int n_expert, std::vector<LayerExperts> layers, const MoeStreamConfig & cfg);
 
     // IExpertSource
-    bool  load_layer(int il, const int32_t * ids, int n_ids) override;
+    bool load_layer(int il, const int32_t * ids, int n_ids) override;
     Stats stats() const override;
 
     void shutdown();
 
 private:
-    struct IoJob { void * dst = nullptr; uint64_t off = 0; uint64_t nbytes = 0; };
+    struct IoJob {
+        void * dst = nullptr;
+        uint64_t off = 0;
+        uint64_t nbytes = 0;
+    };
 
     bool read_slice(int lane, void * dst, uint64_t off, uint64_t nbytes);
     void io_drain(int lane, uint64_t my_gen);
     void io_worker(int lane);
 
     // LRU helpers (active only when cache_max_ > 0)
-    void   lru_unlink(int32_t id);
-    void   lru_push_front(int32_t id);
+    void lru_unlink(int32_t id);
+    void lru_push_front(int32_t id);
     size_t entry_bytes(int il) const;
-    void   evict_tail();
+    void evict_tail();
 
-    bool     active_   = false;
-    bool     o_direct_ = false;
-    bool     load_all_ = false;
-    int      n_layer_  = 0;
-    int      n_expert_ = 0;
-    uint64_t fsize_    = 0;
-    size_t   align_    = 4096;
+    bool active_ = false;
+    bool o_direct_ = false;
+    bool load_all_ = false;
+    int n_layer_ = 0;
+    int n_expert_ = 0;
+    uint64_t fsize_ = 0;
+    size_t align_ = 4096;
 
     std::vector<LayerExperts> layers_;
 
     // shared-slot mode (cache off): one full-size slot per projection, reused by layers
-    void * slot_[3]    = {nullptr, nullptr, nullptr};
+    void * slot_[3] = {nullptr, nullptr, nullptr};
     size_t slot_sz_[3] = {0, 0, 0};
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
-    size_t                cache_max_ = 0;
-    size_t                page_      = 4096;
-    std::vector<void *>   lbuf_[3];
-    std::vector<size_t>   lbuf_sz_[3];
-    std::vector<uint8_t>  cvalid_;
-    std::vector<int32_t>  cprev_, cnext_;
+    size_t cache_max_ = 0;
+    size_t page_ = 4096;
+    std::vector<void *> lbuf_[3];
+    std::vector<size_t> lbuf_sz_[3];
+    std::vector<uint8_t> cvalid_;
+    std::vector<int32_t> cprev_, cnext_;
     std::vector<uint32_t> cstamp_;
-    int32_t               chead_ = -1, ctail_ = -1;
-    uint32_t              cgen_  = 0;
-    size_t                cresident_ = 0;
-    long long             chits_ = 0, clookups_ = 0;
+    int32_t chead_ = -1, ctail_ = -1;
+    uint32_t cgen_ = 0;
+    size_t cresident_ = 0;
+    long long chits_ = 0, clookups_ = 0;
 
-    std::vector<uint8_t> seen_;  // per-load dedup scratch [n_expert]
+    std::vector<uint8_t> seen_; // per-load dedup scratch [n_expert]
 
     // I/O lane pool
-    int                       io_threads_ = 1;
-    std::vector<pio::fd_t>     fds_;
-    std::vector<pio::fd_t>     fds_buf_;
-    std::vector<void *>        bounces_;
-    std::vector<size_t>        bounce_sz_;
-    std::vector<std::thread>   io_pool_;
-    std::vector<IoJob>         jobs_;
-    std::mutex                 io_mtx_;
-    std::condition_variable    io_cv_, io_cv_done_;
-    uint64_t                   batch_gen_   = 0;
-    size_t                     batch_njobs_ = 0;
-    size_t                     next_idx_    = 0, done_cnt_ = 0;
-    bool                       io_stop_     = false;
-    std::atomic<bool>          io_err_{false};
+    int io_threads_ = 1;
+    std::vector<pio::fd_t> fds_;
+    std::vector<pio::fd_t> fds_buf_;
+    std::vector<void *> bounces_;
+    std::vector<size_t> bounce_sz_;
+    std::vector<std::thread> io_pool_;
+    std::vector<IoJob> jobs_;
+    std::mutex io_mtx_;
+    std::condition_variable io_cv_, io_cv_done_;
+    uint64_t batch_gen_ = 0;
+    size_t batch_njobs_ = 0;
+    size_t next_idx_ = 0, done_cnt_ = 0;
+    bool io_stop_ = false;
+    std::atomic<bool> io_err_{false};
 
     std::atomic<long long> read_bytes_{0};
     std::atomic<long long> read_ns_{0};
