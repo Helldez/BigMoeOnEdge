@@ -166,8 +166,16 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
     int n_gen = 0;
     double gen_seconds = 0.0;
 
+    // Baseline snapshot taken AFTER prefill: the summary reports the generation phase
+    // only, from real per-token deltas, never a total divided by n_gen. Prefill routes
+    // the union of the prompt's experts (near the whole bank), so folding it into a
+    // per-token average would badly inflate the flash-I/O figure.
     long long prev_bytes = cfg.moe.enabled ? (long long) source.stats().read_bytes : 0;
     double prev_io_s = cfg.moe.enabled ? source.stats().read_seconds : 0.0;
+
+    // Generation-only accumulators, summed from the measured per-token values.
+    uint64_t gen_read_bytes = 0;
+    double gen_io_seconds = 0.0;
 
     for (int t = 0; t < cfg.n_predict; ++t) {
         llama_token tok = argmax(logits, n_vocab);
@@ -204,6 +212,8 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
             m.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
             prev_bytes = (long long) st.read_bytes;
             prev_io_s = st.read_seconds;
+            gen_read_bytes += m.read_bytes;
+            gen_io_seconds += m.io_ms / 1000.0;
         } else {
             m.compute_ms = m.wall_ms;
             m.cache_hit_pct = -1.0;
@@ -220,9 +230,11 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
     s.tokens_per_second = gen_seconds > 0 ? n_gen / gen_seconds : 0.0;
     if (cfg.moe.enabled) {
         IExpertSource::Stats st = source.stats();
-        s.moe_read_mib = st.read_bytes / (1024.0 * 1024.0);
-        s.moe_io_seconds = st.read_seconds;
-        s.moe_io_s_per_token = n_gen ? st.read_seconds / n_gen : 0.0;
+        // Generation-phase figures, summed from the measured per-token deltas (prefill
+        // excluded) — real measurements, not a contaminated total divided by n_gen.
+        s.moe_read_mib = gen_read_bytes / (1024.0 * 1024.0);
+        s.moe_io_seconds = gen_io_seconds;
+        s.moe_io_s_per_token = n_gen ? gen_io_seconds / n_gen : 0.0;
         s.moe_compute_s_per_token = s.s_per_token - s.moe_io_s_per_token;
         if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
         s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
