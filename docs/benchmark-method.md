@@ -42,6 +42,22 @@ Vary one axis at a time:
 - **Real small MoE** (release checklist): run Qwen1.5-MoE-A2.7B-Q4_K_M streamed vs
   resident on the dev host and confirm identical output. It is too large for CI.
 
+### Desktop over-RAM run (measured)
+
+Streaming also delivers on desktop when the model exceeds the machine's RAM.
+Qwen3-30B-A3B-Q4_K_M (17.3 GiB, 128 experts, 48 layers) on a Windows PC with 14.8 GiB RAM
+— 1.17× RAM, so it cannot be held resident — cache 4000 MiB, 4 I/O lanes, 4 threads:
+
+```
+generation: 16 tokens, 0.388 s/token (2.58 tok/s)
+moe-stream: read 13774 MiB (861 MiB/token), 1.28 GiB/s O_DIRECT
+moe-cache: 44.8% hit, resident 3997 MiB
+```
+
+Output is coherent; running the same model resident is impossible on this machine (OOM).
+On a desktop where the model *does* fit in RAM, run it resident — streaming only pays off
+above the RAM ceiling.
+
 The host streamer works on Linux/macOS/Windows, but throughput targets apply to
 Android/Linux on UFS storage; Windows `VirtualAlloc` commit-per-slice is heavier (see
 [limitations.md](limitations.md)).

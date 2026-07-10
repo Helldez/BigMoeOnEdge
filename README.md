@@ -37,6 +37,12 @@ Decode is flash-I/O-bound (~79% I/O at the best setting). The cache rule is **0 
 ≥ ~2 GB** — a budget smaller than one token's routed working set thrashes and is slower
 than no cache at all. Full method: [docs/benchmark-method.md](docs/benchmark-method.md).
 
+The same works on desktop for a model larger than the machine's RAM. Qwen3-30B-A3B-Q4_K_M
+(17.3 GiB) on a Windows PC with 14.8 GiB RAM (1.17× RAM, so it cannot be held resident),
+cache 4000 MiB, 4 I/O lanes, 4 threads → **2.58 tok/s**, 861 MiB/token, 44.8% cache hit,
+1.28 GiB/s O_DIRECT, coherent output. Streaming is what makes an over-RAM MoE runnable at
+all here; if a model fits in RAM, run it resident instead (faster).
+
 ## Quickstart (host)
 
 ```bash
