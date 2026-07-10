@@ -1,0 +1,11 @@
+# Normalize line endings to LF in the repository for all text files.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF on checkout.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets git should not touch.
+*.gguf binary
+*.png binary
+*.jar binary
