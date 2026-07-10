@@ -1,11 +1,28 @@
 #include "platform_io.h"
 
+// System headers MUST be included at global scope, never inside the namespace below:
+// <cstdlib> etc. do `using ::abs;` and would otherwise be pulled into bmoe::pio, where
+// ::abs is not visible (GCC hard-errors; MSVC happened to tolerate it).
+#if defined(_WIN32)
+#include <windows.h>
+#include <malloc.h>
+#include <cstring>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstdlib>
+#include <sys/mman.h>
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
+#endif
+
 namespace bmoe::pio {
 
 #if defined(_WIN32)
-
-#include <windows.h>
-#include <malloc.h>
 
 const fd_t fd_invalid = (void *) INVALID_HANDLE_VALUE;
 bool fd_ok(fd_t fd) {
@@ -69,18 +86,6 @@ void vm_release(void * p, size_t /*sz*/) {
 
 #else
 
-#include <fcntl.h>
-#include <unistd.h>
-#include <cstdlib>
-#include <sys/mman.h>
-
-#ifndef O_DIRECT
-#define O_DIRECT 0
-#endif
-#ifndef O_CLOEXEC
-#define O_CLOEXEC 0
-#endif
-
 const fd_t fd_invalid = -1;
 bool fd_ok(fd_t fd) {
     return fd >= 0;
@@ -121,8 +126,8 @@ void * vm_reserve(size_t sz) {
     return p == MAP_FAILED ? nullptr : p;
 }
 bool vm_commit(void * /*p*/, size_t /*sz*/) {
-    return true;
-} // POSIX commits on first touch
+    return true; // POSIX commits on first touch
+}
 void vm_evict(void * p, size_t sz) {
     if (sz) madvise(p, sz, MADV_DONTNEED);
 }
