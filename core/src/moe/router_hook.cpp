@@ -7,8 +7,7 @@
 
 namespace bmoe {
 
-RouterHook::RouterHook(const MoeRecipe & recipe, int n_layer)
-    : recipe_(recipe), n_layer_(n_layer) {
+RouterHook::RouterHook(const MoeRecipe & recipe, int n_layer) : recipe_(recipe), n_layer_(n_layer) {
     captured_.assign(n_layer_ > 0 ? n_layer_ : 0, LayerExperts{});
 }
 
@@ -18,8 +17,8 @@ static int match_expert(const char * name, const MoeRecipe & r, int & il_out) {
     int il = -1;
     int consumed = 0;
     if (std::sscanf(name, "blk.%d.%n", &il, &consumed) != 1 || il < 0) return -1;
-    const char * rest = name + consumed;   // "<suffix>.weight"
-    const char * suffixes[3] = { r.gate_exps_suffix, r.up_exps_suffix, r.down_exps_suffix };
+    const char * rest = name + consumed; // "<suffix>.weight"
+    const char * suffixes[3] = {r.gate_exps_suffix, r.up_exps_suffix, r.down_exps_suffix};
     for (int p = 0; p < 3; ++p) {
         const size_t sl = std::strlen(suffixes[p]);
         if (std::strncmp(rest, suffixes[p], sl) == 0 && std::strcmp(rest + sl, ".weight") == 0) {
@@ -32,9 +31,12 @@ static int match_expert(const char * name, const MoeRecipe & r, int & il_out) {
 
 void RouterHook::begin_capture() {
     capturing_ = true;
-    for (auto & L : captured_) L = LayerExperts{};
+    for (auto & L : captured_)
+        L = LayerExperts{};
 }
-void RouterHook::end_capture() { capturing_ = false; }
+void RouterHook::end_capture() {
+    capturing_ = false;
+}
 
 bool RouterHook::c_eval(ggml_tensor * t, bool ask, void * user_data) {
     return static_cast<RouterHook *>(user_data)->on_eval(t, ask);
@@ -50,14 +52,14 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 int il = -1;
                 const int p = match_expert(src->name, recipe_, il);
                 if (p < 0 || il < 0 || il >= n_layer_) continue;
-                if (src->ne[2] <= 0) continue;   // expert dim is dim-2
+                if (src->ne[2] <= 0) continue; // expert dim is dim-2
                 LayerExperts & L = captured_[il];
-                L.bound            = true;
-                L.proj[p].tensor   = src;
-                L.proj[p].nb2      = (uint64_t) src->nb[2];
+                L.bound = true;
+                L.proj[p].tensor = src;
+                L.proj[p].nb2 = (uint64_t) src->nb[2];
             }
         }
-        return false;   // capture never isolates a node
+        return false; // capture never isolates a node
     }
 
     // ── stream: only the routing nodes get the single-node barrier ──
@@ -73,7 +75,8 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         const int nu = (int) t->ne[0], nt = (int) t->ne[1];
         for (int j = 0; j < nt; ++j)
             for (int k = 0; k < nu; ++k)
-                gathered_.push_back(*(const int32_t *) ((const char *) t->data + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]));
+                gathered_.push_back(
+                    *(const int32_t *) ((const char *) t->data + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]));
         source_->load_layer(il, gathered_.data(), (int) gathered_.size());
     }
     return true;

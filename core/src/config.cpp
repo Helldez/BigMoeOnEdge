@@ -28,20 +28,17 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.moe.enabled) {
         const MoeStreamConfig & m = cfg.moe;
         if (m.io_threads < 1 || m.io_threads > MoeStreamConfig::io_threads_max) {
-            return fail("moe.io_threads must be in [1, " +
-                        std::to_string(MoeStreamConfig::io_threads_max) + "]");
+            return fail("moe.io_threads must be in [1, " + std::to_string(MoeStreamConfig::io_threads_max) + "]");
         }
         if (m.cache_mb < 0) {
             return fail("moe.cache_mb must be >= 0");
         }
         if (m.cache_mb > 0 && m.cache_mb < MoeStreamConfig::cache_min_mb && !m.force_cache) {
-            return fail("moe.cache_mb=" + std::to_string(m.cache_mb) +
-                        " is in the pathological band (< " +
+            return fail("moe.cache_mb=" + std::to_string(m.cache_mb) + " is in the pathological band (< " +
                         std::to_string(MoeStreamConfig::cache_min_mb) +
                         " MiB): a cache smaller than one token's routed working set thrashes and is "
                         "slower than no cache. Use 0 to disable the cache, a value >= " +
-                        std::to_string(MoeStreamConfig::cache_min_mb) +
-                        ", or set force_cache to override.");
+                        std::to_string(MoeStreamConfig::cache_min_mb) + ", or set force_cache to override.");
         }
     }
 

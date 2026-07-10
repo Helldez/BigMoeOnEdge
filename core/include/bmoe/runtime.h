@@ -17,10 +17,10 @@
 namespace bmoe {
 
 struct RunResult {
-    bool        ok = false;
+    bool ok = false;
     std::string error;
     std::string generated_text;
-    RunSummary  summary;
+    RunSummary summary;
     explicit operator bool() const { return ok; }
 };
 

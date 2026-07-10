@@ -12,30 +12,30 @@
 namespace bmoe {
 
 struct TokenMetrics {
-    int    step  = 0;   // 1-based index of this token
-    int    steps = 0;   // n_predict target
-    double wall_ms = 0.0;         // total wall time for this token
-    double io_ms   = 0.0;         // flash read time this token (subset of wall)
-    double compute_ms = 0.0;      // wall - io
-    uint64_t read_bytes = 0;      // expert bytes pulled from flash this token
-    double cache_hit_pct = 0.0;   // cumulative cache hit rate (-1 if no cache)
-    std::string piece;            // text of just this token (delta, for inline streaming)
-    std::string text;             // full generated text so far (for UI streaming)
+    int step = 0;               // 1-based index of this token
+    int steps = 0;              // n_predict target
+    double wall_ms = 0.0;       // total wall time for this token
+    double io_ms = 0.0;         // flash read time this token (subset of wall)
+    double compute_ms = 0.0;    // wall - io
+    uint64_t read_bytes = 0;    // expert bytes pulled from flash this token
+    double cache_hit_pct = 0.0; // cumulative cache hit rate (-1 if no cache)
+    std::string piece;          // text of just this token (delta, for inline streaming)
+    std::string text;           // full generated text so far (for UI streaming)
 };
 
 struct RunSummary {
-    int    n_generated = 0;
+    int n_generated = 0;
     double gen_seconds = 0.0;
     double s_per_token = 0.0;
     double tokens_per_second = 0.0;
 
     // MoE streaming totals (zero when streaming is off)
-    double   moe_read_mib   = 0.0;
-    double   moe_io_seconds = 0.0;
-    double   moe_compute_s_per_token = 0.0;
-    double   moe_io_s_per_token = 0.0;
-    double   cache_hit_pct  = -1.0;   // -1 when no cache
-    double   cache_resident_mib = 0.0;
+    double moe_read_mib = 0.0;
+    double moe_io_seconds = 0.0;
+    double moe_compute_s_per_token = 0.0;
+    double moe_io_s_per_token = 0.0;
+    double cache_hit_pct = -1.0; // -1 when no cache
+    double cache_resident_mib = 0.0;
 };
 
 // Optional per-token sink (e.g. CSV for benchmarks). The engine calls on_token for each

@@ -14,10 +14,10 @@ namespace bmoe {
 // The three expert weight tensors of a MoE layer, named `blk.<il>.<suffix>.weight` in
 // the gguf. Each is a 3-D tensor whose dim-2 indexes the expert (ne[2] == n_expert).
 struct MoeRecipe {
-    const char * arch;              // gguf general.architecture, e.g. "qwen3moe"
-    const char * gate_exps_suffix;  // e.g. "ffn_gate_exps"
-    const char * up_exps_suffix;    // e.g. "ffn_up_exps"
-    const char * down_exps_suffix;  // e.g. "ffn_down_exps"
+    const char * arch;             // gguf general.architecture, e.g. "qwen3moe"
+    const char * gate_exps_suffix; // e.g. "ffn_gate_exps"
+    const char * up_exps_suffix;   // e.g. "ffn_up_exps"
+    const char * down_exps_suffix; // e.g. "ffn_down_exps"
 };
 
 // Look up a recipe by gguf architecture string. Returns nullptr if the architecture is
@@ -25,7 +25,7 @@ struct MoeRecipe {
 const MoeRecipe * find_moe_recipe(const char * arch);
 
 // Number of registered recipes and indexed access, for `--list-archs` and tests.
-int                n_moe_recipes();
-const MoeRecipe *  moe_recipe_at(int i);
+int n_moe_recipes();
+const MoeRecipe * moe_recipe_at(int i);
 
 } // namespace bmoe

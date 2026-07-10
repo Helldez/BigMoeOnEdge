@@ -32,26 +32,26 @@ public:
     // Install as ctx_params.cb_eval / cb_eval_user_data before context creation.
     static bool c_eval(ggml_tensor * t, bool ask, void * user_data);
 
-    void begin_capture();  // switch to capture; clears prior records
-    void end_capture();    // stop recording (called after the warm-up decode)
+    void begin_capture(); // switch to capture; clears prior records
+    void end_capture();   // stop recording (called after the warm-up decode)
 
     // After capture, the tensors found per (layer, projection). Entry.bound is false for
     // layers that produced no expert tensors (dense layers). file_off/nb2 are filled in
     // by the runtime from the gguf; here only .tensor is set.
     const std::vector<LayerExperts> & captured() const { return captured_; }
-    std::vector<LayerExperts> &       captured()       { return captured_; }
+    std::vector<LayerExperts> & captured() { return captured_; }
 
-    void set_source(IExpertSource * src) { source_ = src; }  // enter stream mode
+    void set_source(IExpertSource * src) { source_ = src; } // enter stream mode
 
 private:
     bool on_eval(ggml_tensor * t, bool ask);
 
     const MoeRecipe & recipe_;
-    int               n_layer_ = 0;
-    bool              capturing_ = false;
-    IExpertSource *   source_ = nullptr;  // non-null → stream mode
+    int n_layer_ = 0;
+    bool capturing_ = false;
+    IExpertSource * source_ = nullptr; // non-null → stream mode
     std::vector<LayerExperts> captured_;
-    std::vector<int32_t>      gathered_;  // reused scratch for stream-mode id gather
+    std::vector<int32_t> gathered_; // reused scratch for stream-mode id gather
 };
 
 } // namespace bmoe

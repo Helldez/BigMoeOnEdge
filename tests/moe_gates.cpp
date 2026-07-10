@@ -21,16 +21,19 @@ using namespace bmoe;
 static RunConfig base(const std::string & model) {
     RunConfig c;
     c.model_path = model;
-    c.prompt     = "Hello world, this is a streaming test.";
-    c.n_predict  = 24;
-    c.n_threads  = 2;
-    c.n_ctx      = 256;
+    c.prompt = "Hello world, this is a streaming test.";
+    c.n_predict = 24;
+    c.n_threads = 2;
+    c.n_ctx = 256;
     return c;
 }
 
 static bool gen(const RunConfig & c, std::string & out, std::string & err) {
     RunResult r = run(c);
-    if (!r) { err = r.error; return false; }
+    if (!r) {
+        err = r.error;
+        return false;
+    }
     out = r.generated_text;
     return true;
 }
@@ -45,7 +48,10 @@ static int check(const char * name, const std::string & a, const std::string & b
 }
 
 int main(int argc, char ** argv) {
-    if (argc < 2) { std::fprintf(stderr, "usage: %s <tiny-moe.gguf>\n", argv[0]); return 2; }
+    if (argc < 2) {
+        std::fprintf(stderr, "usage: %s <tiny-moe.gguf>\n", argv[0]);
+        return 2;
+    }
     const std::string model = argv[1];
 
     // resident reference
@@ -72,10 +78,22 @@ int main(int argc, char ** argv) {
     streamall.moe.load_all = true;
 
     std::string s_res, s_s0, s_sc, s_all, err;
-    if (!gen(resident,  s_res, err)) { std::fprintf(stderr, "resident run failed: %s\n", err.c_str()); return 2; }
-    if (!gen(stream0,   s_s0,  err)) { std::fprintf(stderr, "stream0 run failed: %s\n", err.c_str());  return 2; }
-    if (!gen(streamc,   s_sc,  err)) { std::fprintf(stderr, "streamc run failed: %s\n", err.c_str());  return 2; }
-    if (!gen(streamall, s_all, err)) { std::fprintf(stderr, "load-all run failed: %s\n", err.c_str()); return 2; }
+    if (!gen(resident, s_res, err)) {
+        std::fprintf(stderr, "resident run failed: %s\n", err.c_str());
+        return 2;
+    }
+    if (!gen(stream0, s_s0, err)) {
+        std::fprintf(stderr, "stream0 run failed: %s\n", err.c_str());
+        return 2;
+    }
+    if (!gen(streamc, s_sc, err)) {
+        std::fprintf(stderr, "streamc run failed: %s\n", err.c_str());
+        return 2;
+    }
+    if (!gen(streamall, s_all, err)) {
+        std::fprintf(stderr, "load-all run failed: %s\n", err.c_str());
+        return 2;
+    }
 
     int fails = 0;
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);

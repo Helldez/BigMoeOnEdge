@@ -11,8 +11,8 @@ namespace bmoe {
 // `ffn_gate_up_exps`) need a distinct recipe shape and are intentionally not claimed
 // by these rows.
 static const MoeRecipe k_recipes[] = {
-    { "qwen3moe", "ffn_gate_exps", "ffn_up_exps", "ffn_down_exps" },
-    { "qwen2moe", "ffn_gate_exps", "ffn_up_exps", "ffn_down_exps" },
+    {"qwen3moe", "ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"},
+    {"qwen2moe", "ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"},
 };
 
 static const int k_n_recipes = (int) (sizeof(k_recipes) / sizeof(k_recipes[0]));
@@ -29,7 +29,11 @@ const MoeRecipe * find_moe_recipe(const char * arch) {
     return nullptr;
 }
 
-int               n_moe_recipes()      { return k_n_recipes; }
-const MoeRecipe * moe_recipe_at(int i) { return (i >= 0 && i < k_n_recipes) ? &k_recipes[i] : nullptr; }
+int n_moe_recipes() {
+    return k_n_recipes;
+}
+const MoeRecipe * moe_recipe_at(int i) {
+    return (i >= 0 && i < k_n_recipes) ? &k_recipes[i] : nullptr;
+}
 
 } // namespace bmoe

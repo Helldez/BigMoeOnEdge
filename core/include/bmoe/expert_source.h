@@ -27,11 +27,11 @@ public:
 
     // Cumulative streaming statistics, for telemetry and the end-of-run summary.
     struct Stats {
-        uint64_t  read_bytes    = 0;   // bytes pulled from flash (aligned windows)
-        double    read_seconds  = 0.0; // wall time spent in the read phase
-        long long cache_hits    = 0;   // expert lookups served from the cache
-        long long cache_lookups = 0;   // total expert lookups (hits + misses)
-        uint64_t  cache_resident_bytes = 0; // currently resident cached slice bytes
+        uint64_t read_bytes = 0;           // bytes pulled from flash (aligned windows)
+        double read_seconds = 0.0;         // wall time spent in the read phase
+        long long cache_hits = 0;          // expert lookups served from the cache
+        long long cache_lookups = 0;       // total expert lookups (hits + misses)
+        uint64_t cache_resident_bytes = 0; // currently resident cached slice bytes
     };
     virtual Stats stats() const = 0;
 };
