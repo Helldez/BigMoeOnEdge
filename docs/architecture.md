@@ -1,0 +1,71 @@
+# Architecture
+
+BigMoeOnEdge is a small ports-and-adapters engine that sits **on top of** llama.cpp's
+public API. Its guiding constraint: never modify llama.cpp, so upstream updates cost a
+submodule pointer bump and nothing else.
+
+## Layers
+
+```
+cli/            bmoe-cli — parses flags, the only place env vars are read
+core/
+  include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
+    config.h        RunConfig + validate()
+    expert_source.h IExpertSource — the residency strategy port
+    recipe.h        MoeRecipe + registry
+    metrics.h       TokenMetrics / RunSummary + IMetricsSink
+    runtime.h       run() entry point
+  src/
+    io/         platform_io — O_DIRECT reads + reserve/commit/evict VM, cross-platform
+    moe/        gguf_offsets, arch_registry, expert_stream_source, router_hook
+    engine/     runtime — composition + the greedy generation loop
+    metrics/    csv_metrics_sink
+third_party/
+  llama.cpp     stock upstream submodule (public API consumer only)
+tests/          byte-identity gates
+examples/android an APK that drives bmoe-cli via ProcessBuilder
+```
+
+Dependencies point inward: adapters depend on the port headers, the CLI composes them.
+The pure-policy code (`config.cpp`, `arch_registry.cpp`) compiles with no native
+dependency, so a subset of the project builds and is testable before llama.cpp is
+fetched.
+
+## Why there is no fork
+
+Streaming experts needs three things from the inference engine. All three are already
+public in llama.cpp:
+
+1. **A hook at routing time.** `llama_context_params.cb_eval` is called for every graph
+   node. We ask for only the routing nodes (`ffn_moe_topk-<il>`); ggml computes and
+   synchronizes each alone, then calls us back with the selected expert ids materialized.
+2. **The expert tensor pointers.** During a one-token warm-up we scan each graph node's
+   sources for tensors named `blk.<il>.ffn_{gate,up,down}_exps.weight` and record the
+   live `ggml_tensor*`. We then rebind their `->data`.
+3. **The file layout.** `gguf_get_tensor_offset` (public) gives each tensor's byte offset
+   so we can `pread` individual expert slices.
+
+Loading with `use_mmap=true, use_extra_bufts=false` keeps the weights in their native
+gguf layout (a repacked buffer would break the rebind). That is a public model
+parameter.
+
+Because none of this touches llama.cpp internals, `third_party/llama.cpp` is the
+unmodified upstream repository. Contrast with approaches that patch the model files: those
+must be rebased on every release. Here, `git submodule update --remote` and a rebuild is
+the whole upgrade.
+
+See [seam.md](seam.md) for the exact callback contract and the ggml behaviour it relies
+on.
+
+## The generation loop
+
+`run()` (core/src/engine/runtime.cpp):
+
+1. Load model (mmap on, repack off, experts on CPU).
+2. If streaming: resolve the architecture recipe, install the router hook, do the capture
+   warm-up, bind the expert source, clear the warm-up KV.
+3. Prefill the prompt, then greedily decode `n_predict` tokens, reporting per-token
+   metrics.
+
+Greedy sampling makes the output a deterministic function of the graph — the property the
+[byte-identity gates](../tests/moe_gates.cpp) assert.
