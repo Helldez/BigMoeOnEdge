@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: clang-format (our sources only)
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang-format
+          find core cli tests -type f \( -name '*.cpp' -o -name '*.h' \) \
+            -print0 | xargs -0 clang-format --dry-run --Werror
+
+  host-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake ninja-build
+          python3 -m pip install --upgrade pip
+          python3 -m pip install gguf numpy
+      - name: Configure & build
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+      - name: Byte-identity gates
+        run: cd build && ctest --output-on-failure
+
+  host-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure & build (compile-check the Win32 I/O paths)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF
+          cmake --build build --config Release -j
+
+  android-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Set up NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26d
+      - name: Cross-compile bmoe-cli (arm64)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          cmake -S . -B build-android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF \
+            -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+i8mm+fp16" \
+            -DLLAMA_CURL=OFF
+          cmake --build build-android -j
