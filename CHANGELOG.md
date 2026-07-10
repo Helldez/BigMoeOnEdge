@@ -7,6 +7,9 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- MoE expert-selective streaming for `qwen3moe`, `qwen2moe`, and `llada-moe`. The last was
+  validated byte-identical (streaming == resident) on a real 64-expert 4 GiB model on the
+  desktop host, confirming losslessness beyond the synthetic gate.
 - MoE expert-selective streaming for `qwen3moe` (Qwen3-30B-A3B and siblings): stream only
   the routed experts per token from flash, with an optional LRU cache and a parallel read
   pool. Lossless (byte-identical to a full in-memory run).
