@@ -52,7 +52,7 @@ New-Item -ItemType Directory -Force -Path $jni | Out-Null
 $cli = Join-Path $buildPath "cli\bmoe-cli"
 Copy-Item $cli (Join-Path $jni "libbmoe-cli.so") -Force
 Get-ChildItem -Path $buildPath -Recurse -Filter "*.so" |
-    Where-Object { $_.Name -like "libggml*" -or $_.Name -eq "libllama.so" } |
+    Where-Object { $_.Name -like "libggml*" -or $_.Name -like "libllama*" } |
     ForEach-Object { Copy-Item $_.FullName (Join-Path $jni $_.Name) -Force }
 
 # bmoe-cli links the c++_shared STL, so its runtime must ride along in the APK —
