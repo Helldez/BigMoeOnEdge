@@ -172,8 +172,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
             const LayerExperts & L = layers_[il];
             if (!L.bound) continue;
             for (int p = 0; p < MoeRecipe::max_exps; ++p)
-                if (L.proj[p].tensor)
-                    texp_[(const void *) L.proj[p].tensor] = ((uint32_t) il << 8) | (uint32_t) p;
+                if (L.proj[p].tensor) texp_[(const void *) L.proj[p].tensor] = ((uint32_t) il << 8) | (uint32_t) p;
         }
     }
 
@@ -473,14 +472,14 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             if (slice == 0) continue; // absent slot in a fused layout
             for (int e : staged_) {
                 const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
-                jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice,
-                                 L.proj[p].file_off + (uint64_t) e * slice, slice, flag});
+                jobs_.push_back(
+                    {(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice, slice, flag});
             }
         }
     } else {
         // Cache on: per-expert LRU bookkeeping (hit → mark all projections ready now; miss →
         // commit the pages and remember it). Then emit the misses' jobs projection-major.
-        seen_.assign(seen_.size(), 0);            // reuse as a per-staged miss marker keyed by expert
+        seen_.assign(seen_.size(), 0); // reuse as a per-staged miss marker keyed by expert
         for (int e : staged_) {
             const int32_t id = il * n_expert_ + e;
             clookups_++;
@@ -575,8 +574,7 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
     const auto t0 = clock_t_::now();
     // Short spin first: a slice usually lands within microseconds, cheaper than a syscall.
     for (int s = 0; s < 2048; ++s) {
-        if (ready_[idx].gen.load(std::memory_order_acquire) == want ||
-            fatal_.load(std::memory_order_acquire)) {
+        if (ready_[idx].gen.load(std::memory_order_acquire) == want || fatal_.load(std::memory_order_acquire)) {
             stall_ns_.fetch_add(
                 (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
             return;
@@ -586,12 +584,10 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
     {
         std::unique_lock<std::mutex> lk(ready_mtx_);
         ready_cv_.wait(lk, [&] {
-            return ready_[idx].gen.load(std::memory_order_acquire) == want ||
-                   fatal_.load(std::memory_order_acquire);
+            return ready_[idx].gen.load(std::memory_order_acquire) == want || fatal_.load(std::memory_order_acquire);
         });
     }
-    stall_ns_.fetch_add(
-        (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
+    stall_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
 }
 
 void ExpertStreamSource::enable_overlap_hook() {

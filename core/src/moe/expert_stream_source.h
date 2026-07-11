@@ -162,15 +162,15 @@ private:
     // A ReadyFlag is ready iff its gen == async_gen_; the load thread bumps async_gen_ per
     // layer, marks cache hits ready immediately, and workers mark misses ready after the read.
     // The compute threads look a captured expert tensor up in texp_, then spin/wait on its flag.
-    std::vector<ReadyFlag> ready_;                  // size max_exps * n_expert_; idx = p*n_expert_+e
+    std::vector<ReadyFlag> ready_; // size max_exps * n_expert_; idx = p*n_expert_+e
     std::atomic<uint32_t> async_gen_{0};
-    std::atomic<int> cur_il_{-1};                   // layer whose experts the hook may wait on
+    std::atomic<int> cur_il_{-1}; // layer whose experts the hook may wait on
     std::atomic<bool> fatal_{false};
     std::mutex ready_mtx_;
     std::condition_variable ready_cv_;
-    std::atomic<long long> stall_ns_{0};            // summed across all stalling compute threads
+    std::atomic<long long> stall_ns_{0};              // summed across all stalling compute threads
     std::unordered_map<const void *, uint32_t> texp_; // expert tensor* -> (il<<8)|p, built in init
-    std::vector<int> staged_;                       // per-load sorted unique expert scratch
+    std::vector<int> staged_;                         // per-load sorted unique expert scratch
     bool hook_registered_ = false;
 };
 

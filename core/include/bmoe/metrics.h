@@ -42,7 +42,7 @@ struct RunSummary {
     double moe_compute_s_per_token = 0.0;
     double moe_io_s_per_token = 0.0;
     double moe_stall_s_per_token = 0.0; // overlap only: per-token wall the kernel waited on flash
-    double cache_hit_pct = -1.0; // -1 when no cache
+    double cache_hit_pct = -1.0;        // -1 when no cache
     double cache_resident_mib = 0.0;
 };
 

@@ -337,8 +337,7 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
         s.moe_stall_s_per_token = n_gen ? gen_stall_seconds / n_gen : 0.0;
         // Overlap: compute is wall minus the flash wait (I/O runs alongside it, so subtracting
         // io would double-count). Serial: I/O is a slice of wall, so compute is wall minus io.
-        s.moe_compute_s_per_token =
-            s.s_per_token - (cfg.moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token);
+        s.moe_compute_s_per_token = s.s_per_token - (cfg.moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token);
         if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
         s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
         s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);
