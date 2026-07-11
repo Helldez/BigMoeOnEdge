@@ -26,6 +26,11 @@ class RunService : Service() {
     private var proc: Process? = null
     private var wake: PowerManager.WakeLock? = null
 
+    // Set when the user presses Stop: the CLI is then killed on purpose, so its non-zero
+    // exit code (SIGTERM) must not be surfaced as an error.
+    @Volatile
+    private var stopping = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -82,13 +87,13 @@ class RunService : Service() {
             }
 
             val code = p.waitFor()
-            if (code != 0) {
+            if (code != 0 && !stopping) {
                 RunBus.update {
                     if (it.error == null) it.copy(error = "bmoe-cli exited $code\n${errTail.takeLast(1200)}") else it
                 }
             }
         } catch (t: Throwable) {
-            RunBus.update { it.copy(error = t.message ?: t.toString()) }
+            if (!stopping) RunBus.update { it.copy(error = t.message ?: t.toString()) }
         } finally {
             RunBus.setRunning(false)
             releaseWake()
@@ -104,6 +109,7 @@ class RunService : Service() {
     }
 
     private fun stopEverything() {
+        stopping = true
         proc?.destroy()
         RunBus.setRunning(false)
         releaseWake()
