@@ -55,5 +55,10 @@ Get-ChildItem -Path $buildPath -Recurse -Filter "*.so" |
     Where-Object { $_.Name -like "libggml*" -or $_.Name -eq "libllama.so" } |
     ForEach-Object { Copy-Item $_.FullName (Join-Path $jni $_.Name) -Force }
 
+# bmoe-cli links the c++_shared STL, so its runtime must ride along in the APK —
+# it lives in the NDK sysroot, not the build tree.
+$stl = Join-Path $ndk "toolchains\llvm\prebuilt\windows-x86_64\sysroot\usr\lib\aarch64-linux-android\libc++_shared.so"
+Copy-Item $stl (Join-Path $jni "libc++_shared.so") -Force
+
 Write-Host "Staged binaries into $jni"
 Get-ChildItem $jni | Select-Object Name, Length
