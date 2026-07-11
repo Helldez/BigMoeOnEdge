@@ -22,9 +22,6 @@ Semantic Versioning.
   plus an **I/O–compute overlap** toggle; the streaming controls disable when mmap is on.
 
 ### Fixed
-- Reasoning is now stripped from the shown answer: the chat parser arena is loaded from the
-  applied template, so `common_chat_parse` finds the reasoning delimiters instead of leaking
-  a model's (empty or not) thinking markers into the content.
 - Android: **Stop** no longer terminates the whole app — the stderr drain thread is guarded,
   so the stream close from `Process.destroy()` no longer throws on its own thread; a separate
   wakelock under-lock race on Stop is also fixed.
