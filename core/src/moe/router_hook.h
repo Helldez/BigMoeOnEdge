@@ -48,7 +48,7 @@ private:
 
     // Stored by value, not by reference: the caller often constructs us from a temporary
     // (a `cond ? *ptr : MoeRecipe{}` ternary yields a prvalue even when ptr is non-null),
-    // which would leave a reference member dangling. The struct is just three string
+    // which would leave a reference member dangling. The struct is just a handful of string
     // literal pointers, so copying is cheap and keeps the suffixes valid for our lifetime.
     MoeRecipe recipe_;
     int n_layer_ = 0;

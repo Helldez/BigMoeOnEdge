@@ -1,8 +1,8 @@
 // Flash-backed expert streaming with an optional LRU cache.
 //
 // Ported from the original research streamer. One layer computes at a time, so with the
-// cache off the three expert projections share three heap slots (full n_expert size)
-// that every layer's tensors are rebound onto: only the routed slices are ever filled,
+// cache off the expert tensors share up to three heap slots (full n_expert size) that
+// every layer's tensors are rebound onto: only the routed slices are ever filled,
 // re-read fresh each token. With the cache on, each (layer, projection) gets its own
 // reserved-but-uncommitted address range; a routed expert already resident is a hit (no
 // read), a miss is read once and kept, and the coldest entries are evicted (pages
@@ -16,6 +16,7 @@
 
 #include "bmoe/expert_source.h"
 #include "bmoe/config.h"
+#include "bmoe/recipe.h"
 #include "../io/platform_io.h"
 
 #include <atomic>
@@ -37,10 +38,12 @@ struct ExpertTensorRef {
     uint64_t nb2 = 0;               // bytes per expert (== tensor->nb[2])
 };
 
-// The three projections {gate, up, down} of one MoE layer.
+// The expert weight tensors of one MoE layer, one per recipe suffix slot. The split
+// layout fills all three ({gate, up, down}); a fused-gate_up layout fills two and leaves
+// the tail slot empty (tensor == nullptr). Unbound layers (dense, or non-MoE) stay false.
 struct LayerExperts {
     bool bound = false;
-    ExpertTensorRef proj[3];
+    ExpertTensorRef proj[MoeRecipe::max_exps];
 };
 
 class ExpertStreamSource final : public IExpertSource {
@@ -91,14 +94,14 @@ private:
     std::vector<LayerExperts> layers_;
 
     // shared-slot mode (cache off): one full-size slot per projection, reused by layers
-    void * slot_[3] = {nullptr, nullptr, nullptr};
-    size_t slot_sz_[3] = {0, 0, 0};
+    void * slot_[MoeRecipe::max_exps] = {nullptr, nullptr, nullptr};
+    size_t slot_sz_[MoeRecipe::max_exps] = {0, 0, 0};
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
     size_t cache_max_ = 0;
     size_t page_ = 4096;
-    std::vector<void *> lbuf_[3];
-    std::vector<size_t> lbuf_sz_[3];
+    std::vector<void *> lbuf_[MoeRecipe::max_exps];
+    std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];
     std::vector<uint8_t> cvalid_;
     std::vector<int32_t> cprev_, cnext_;
     std::vector<uint32_t> cstamp_;

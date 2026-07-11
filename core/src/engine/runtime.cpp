@@ -134,13 +134,24 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
         for (LayerExperts & L : layers) {
             if (!L.bound) continue;
             ++n_bound;
-            for (int p = 0; p < 3; ++p) {
+            // Require exactly the projections the recipe names (a fused layout names fewer
+            // than max_exps); a slot the recipe declares but that capture never bound means
+            // the gguf's layout does not match the recipe — refuse rather than guess.
+            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                if (!recipe->exps_suffix[p]) continue; // slot unused by this architecture
                 ggml_tensor * t = L.proj[p].tensor;
-                if (!t) return fail("captured layer is missing a projection tensor");
+                if (!t)
+                    return fail(std::string("captured MoE layer is missing expert tensor '") + recipe->exps_suffix[p] +
+                                "'");
                 auto it = offs.off_by_name.find(t->name);
                 if (it == offs.off_by_name.end()) return fail(std::string("no gguf offset for tensor ") + t->name);
                 L.proj[p].file_off = it->second;
-                if (n_expert == 0) n_expert = (int) t->ne[2];
+                const int ne2 = (int) t->ne[2];
+                if (n_expert == 0)
+                    n_expert = ne2;
+                else if (ne2 != n_expert)
+                    return fail(std::string("inconsistent expert count: tensor ") + t->name + " has " +
+                                std::to_string(ne2) + ", expected " + std::to_string(n_expert));
             }
         }
         if (n_bound == 0) return fail("no MoE expert tensors captured — is this a MoE model?");

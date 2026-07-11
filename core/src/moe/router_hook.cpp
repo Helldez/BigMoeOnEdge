@@ -11,17 +11,21 @@ RouterHook::RouterHook(const MoeRecipe & recipe, int n_layer) : recipe_(recipe),
     captured_.assign(n_layer_ > 0 ? n_layer_ : 0, LayerExperts{});
 }
 
-// Match a tensor name of the form "blk.<il>.<suffix>.weight" against the recipe's three
-// expert projections. Returns the projection index (0=gate,1=up,2=down) and layer, or -1.
+// Match a tensor name of the form "blk.<il>.<suffix>.weight" against the recipe's expert
+// tensor suffixes. Returns the slot index (its position in recipe.exps_suffix) and layer,
+// or -1. The exact ".weight" tail comparison is load-bearing: a companion tensor like
+// "ffn_down_exps.scale" prefix-matches its suffix but fails the tail strcmp, so per-expert
+// scales — and every other non-".weight" tensor — are left mmap-resident, not streamed.
 static int match_expert(const char * name, const MoeRecipe & r, int & il_out) {
     int il = -1;
     int consumed = 0;
     if (std::sscanf(name, "blk.%d.%n", &il, &consumed) != 1 || il < 0) return -1;
     const char * rest = name + consumed; // "<suffix>.weight"
-    const char * suffixes[3] = {r.gate_exps_suffix, r.up_exps_suffix, r.down_exps_suffix};
-    for (int p = 0; p < 3; ++p) {
-        const size_t sl = std::strlen(suffixes[p]);
-        if (std::strncmp(rest, suffixes[p], sl) == 0 && std::strcmp(rest + sl, ".weight") == 0) {
+    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        const char * suffix = r.exps_suffix[p];
+        if (!suffix) continue; // unused slot (fewer than max_exps expert tensors)
+        const size_t sl = std::strlen(suffix);
+        if (std::strncmp(rest, suffix, sl) == 0 && std::strcmp(rest + sl, ".weight") == 0) {
             il_out = il;
             return p;
         }
