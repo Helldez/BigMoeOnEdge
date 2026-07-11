@@ -31,4 +31,20 @@ if(BMOE_HAVE_LLAMA)
     target_compile_definitions(bmoe_core PUBLIC BMOE_HAVE_LLAMA=1)
     find_package(Threads REQUIRED)
     target_link_libraries(bmoe_core PUBLIC Threads::Threads)
+
+    # Intra-layer I/O–compute overlap needs the fork's expert-ready hook in ggml-cpu.h. Detect
+    # it by inspecting the submodule header rather than the git remote, so any tree carrying the
+    # hook (a rebase, a different fork) enables the feature. PUBLIC so cli/ and tests/ see it.
+    set(_ggml_cpu_h "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include/ggml-cpu.h")
+    if(EXISTS "${_ggml_cpu_h}")
+        file(READ "${_ggml_cpu_h}" _ggml_cpu_src)
+        if(_ggml_cpu_src MATCHES "ggml_cpu_set_expert_ready_hook")
+            target_compile_definitions(bmoe_core PUBLIC BMOE_HAVE_EXPERT_READY_HOOK=1)
+            message(STATUS "bmoe: expert-ready hook present (I/O–compute overlap available)")
+        else()
+            message(STATUS "bmoe: expert-ready hook absent (overlap unavailable)")
+        endif()
+    else()
+        message(STATUS "bmoe: expert-ready hook absent (overlap unavailable)")
+    endif()
 endif()

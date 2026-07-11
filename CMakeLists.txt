@@ -1,10 +1,15 @@
 # BigMoeOnEdge — top-level build.
 #
 # The engine (`bmoe_core`) depends only on its own public headers under include/bmoe
-# and on llama.cpp's PUBLIC C API (llama.h / ggml.h). It never touches llama.cpp
-# internals: MoE expert streaming is driven entirely through the public eval-callback
-# and public gguf accessors. That is what lets the llama.cpp submodule track upstream
-# with nothing more than a pointer bump — there is no fork and no in-tree patch.
+# and on llama.cpp's PUBLIC C API (llama.h / ggml.h). The serial streaming path never
+# touches llama.cpp internals: MoE expert streaming is driven entirely through the public
+# eval-callback and public gguf accessors, so it tracks upstream with nothing more than a
+# submodule pointer bump — no in-tree patch. The one exception is the optional `--overlap`
+# feature, which needs a per-expert wait point the public API does not expose: the submodule
+# pins a fork branch (`bmoe/expert-ready-hook` on Helldez/llama.cpp) adding one ~25-line
+# readiness hook, detected here as BMOE_HAVE_EXPERT_READY_HOOK. It is zero-cost when absent,
+# the serial path still builds against stock upstream, and it sunsets the moment upstream
+# ships an equivalent callback. See docs/seam.md § 3.
 #
 # llama.cpp is an optional dependency at configure time: when the submodule is absent
 # only the pure-policy code (config validation) compiles, so the scaffold and a subset
