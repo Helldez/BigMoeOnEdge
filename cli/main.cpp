@@ -65,7 +65,7 @@ static void print_usage(const char * argv0) {
                 "  -n, --n-predict N       tokens to generate (default 32)\n"
                 "  -t, --threads N         compute threads (default 4)\n"
                 "  -c, --ctx-size N        context size (default 2048)\n"
-                "      --chatml            wrap the prompt in a Qwen ChatML turn\n"
+                "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
                 "      --progress          emit machine telemetry (one JSON line per token)\n"
                 "      --csv PATH          also write per-token metrics as CSV\n"
                 "\n"

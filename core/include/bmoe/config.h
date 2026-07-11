@@ -42,7 +42,7 @@ struct RunConfig {
     int n_predict = 32;
     int n_threads = 4;
     int n_ctx = 2048;
-    bool chatml = false;   // wrap the prompt in a Qwen-family ChatML turn
+    bool chatml = false;   // wrap the prompt in the model family's chat turn (arch-aware)
     bool progress = false; // emit machine telemetry (one JSON line per token)
 
     MoeStreamConfig moe;
