@@ -1,9 +1,18 @@
 # Benchmark method
 
+This is *how* to measure. The measured results — the full config matrix for Qwen and
+Gemma, with mean/min/max/median/p95 tok/s — live in [benchmarks.md](benchmarks.md).
+
 ## On-device (the headline number)
 
 Hardware for the reference numbers: OnePlus 15R, Snapdragon-class SoC, 11.3 GB RAM,
 UFS 4.x storage. Model: Qwen3-30B-A3B-Q4_K_M (18.5 GB), ~1.7× device RAM.
+
+Reproducible drivers (used for [benchmarks.md](benchmarks.md)): `scripts/bench-run.sh`
+(one device-side run, prompt baked in so no quoting has to survive adb), `scripts/
+bench-matrix.ps1` (the full 12-run matrix over adb), `scripts/bench-analyze.py`
+(mean/min/max + median/p5/p95 from the CSVs). Use a fixed prompt and a fixed `-n`
+(≥256 tokens, so the expert cache reaches steady state) across every config.
 
 ```bash
 # push the model
@@ -33,7 +42,30 @@ Vary one axis at a time:
 - **Thermal.** Sustained decode throttles. Warm up, then measure a steady window; discard
   the first few tokens. Ignore `cpu-hw-trip-*` sensors — those are static 95 °C trip
   points, not live temperatures.
-- Expect **0.55–0.73 s/token** across the good part of the sweep.
+- **Report the distribution, not just the mean.** `min`/`max` tok/s are single-token
+  extremes (a lone eviction stall crushes `min`); pair them with median and p5/p95 so an
+  unstable config (wide spread) is distinguishable from a slow-but-steady one.
+- Expect **0.27–0.6 s/token** across the good part of the sweep (4000 MiB cache, 4 lanes,
+  256-token steady state); shorter runs read slower because the cache is still warming.
+
+### Device pressure (throughput is only half the story)
+
+tok/s does not capture what a config does to the *rest* of the phone. `mmap`-only faults
+the whole model through the page cache and evicts other apps, so the device goes sluggish;
+streaming with a bounded cache + O_DIRECT bypasses the page cache and keeps the system
+responsive. Record a pressure indicator next to tok/s. Accessible over adb **without root**:
+
+- **Temperature** — `dumpsys battery` (`temperature` in deci-°C, `PhoneTemp`) and
+  `/sys/class/thermal/thermal_zone*/temp` with matching `.../type` (CPU `cpu-*`, GPU
+  `gpuss-*`, skin zones are readable by the shell user).
+- **Free-RAM floor** — `/proc/meminfo` `MemAvailable`, sampled before / mid-run / after;
+  its collapse under mmap *is* the pressure signal.
+- **Throttling state** — `dumpsys thermalservice`.
+
+Kernel **PSI** (`/proc/pressure/{memory,io,cpu}`) is the cleanest stall metric but returns
+*Permission denied* without root on this device. Protocol: cool to a common baseline
+between configs so sustained-decode throttling doesn't confound the comparison, then
+produce a *tok/s vs. thermal rise and free-RAM floor* table alongside the throughput one.
 
 ## Host (correctness + a sanity number)
 

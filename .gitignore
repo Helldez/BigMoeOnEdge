@@ -11,7 +11,9 @@ cmake-build-*/
 # Local test scratch (downloaded models/APKs, container build scripts/logs)
 /.models/
 /.apk/
+/.bench/
 *.safetensors
+/*.log
 
 # Android
 examples/android/.gradle/
