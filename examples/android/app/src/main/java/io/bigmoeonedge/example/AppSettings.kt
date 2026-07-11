@@ -15,15 +15,22 @@ data class AppSettings(
     val thinking: Boolean = false,// Qwen3 reasoning; off appends the /no_think soft switch
     val loadAll: Boolean = false,// debug: read ALL experts each token (A/B baseline)
 ) {
-    /** Build the bmoe-cli argument list. Thinking is toggled with Qwen3's /no_think switch. */
-    fun toArgv(cliPath: String, modelPath: String, prompt: String): List<String> {
-        val effectivePrompt = if (thinking) prompt else "$prompt /no_think"
+    /**
+     * Build the bmoe-cli argument list. `arch` is the gguf `general.architecture` (may be null);
+     * it selects arch-specific prompt handling: the engine applies the model family's chat turn
+     * via --chatml, and Qwen3's /no_think soft switch is only appended for Qwen3 models (it is
+     * meaningless — and pollutes the prompt — for other families such as Gemma).
+     */
+    fun toArgv(cliPath: String, modelPath: String, prompt: String, arch: String?): List<String> {
+        val isQwen3 = arch?.contains("qwen3") == true
+        val effectivePrompt = if (isQwen3 && !thinking) "$prompt /no_think" else prompt
         val a = mutableListOf(
             cliPath,
             "-m", modelPath,
             "-p", effectivePrompt,
             "-n", nPredict.toString(),
             "-t", threads.toString(),
+            "--chatml", // apply the model family's chat turn (gemma / chatml)
             "--moe-stream",
             "--cache-mb", cacheMb.toString(),
             "--io-threads", ioThreads.toString(),

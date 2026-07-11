@@ -385,7 +385,10 @@ private fun MeterRow(label: String, value: Double, total: Double, color: android
 }
 
 private fun startRun(context: android.content.Context, model: File, prompt: String, settings: AppSettings) {
-    val argv = ArrayList(settings.toArgv(ModelManager.cliPath(context), model.absolutePath, prompt))
+    // Read the arch (cheap header read) so the CLI applies the right chat template and skips
+    // Qwen-only prompt switches for other families.
+    val arch = GgufHeader.arch(model)
+    val argv = ArrayList(settings.toArgv(ModelManager.cliPath(context), model.absolutePath, prompt, arch))
     val intent = Intent(context, RunService::class.java)
         .putExtra(RunService.EXTRA_MODEL, model.absolutePath)
         .putExtra(RunService.EXTRA_PROMPT, prompt)
