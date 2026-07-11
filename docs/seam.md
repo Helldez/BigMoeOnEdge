@@ -34,6 +34,22 @@ gather them (stride-aware) and trigger the slice reads.
 `gguf_get_tensor_offset` (all public) give each tensor's absolute byte offset in the file,
 without loading any tensor data. We match these to the captured tensors by name.
 
+## The chat glue: llama.cpp `common` (not the streaming seam)
+
+Separate from the two streaming hooks above, `runtime.cpp` links llama.cpp's `common`
+library for one thing: rendering the model's own chat template and parsing reasoning output.
+`common_chat_templates_init` / `common_chat_templates_apply` run the real Jinja template the
+gguf ships (so Gemma's channel format, Qwen ChatML, etc. all format correctly, driven by the
+model rather than hardcoded), and `common_chat_parse` (reasoning_format AUTO) extracts a
+reasoning model's thinking so only the final answer is shown.
+
+Unlike the public-C-API streaming seam, `common` is **not a stable API** — it can change
+between upstream versions. So a submodule bump may require updating this chat glue in
+`runtime.cpp`; the build and gates catch a break at compile time rather than at runtime. This
+trade-off is deliberate and is also noted at the link site in the root `CMakeLists.txt`. The
+gates themselves run with the template off (raw prompt), so they stay deterministic and are
+unaffected by this dependency.
+
 ## The one ggml behaviour we depend on
 
 That a node marked "needed" is computed and synchronized **before** the non-ask callback,
