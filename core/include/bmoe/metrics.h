@@ -15,8 +15,9 @@ struct TokenMetrics {
     int step = 0;               // 1-based index of this token
     int steps = 0;              // n_predict target
     double wall_ms = 0.0;       // total wall time for this token
-    double io_ms = 0.0;         // flash read time this token (subset of wall)
-    double compute_ms = 0.0;    // wall - io
+    double io_ms = 0.0;         // flash read time this token (serial: subset of wall; overlap: lane-busy sum)
+    double compute_ms = 0.0;    // serial: wall - io; overlap: wall - stall
+    double stall_ms = 0.0;      // overlap only: wall time the FFN kernel blocked on flash (0 when serial)
     uint64_t read_bytes = 0;    // expert bytes pulled from flash this token
     double cache_hit_pct = 0.0; // cumulative cache hit rate (-1 if no cache)
     std::string piece;          // text of just this token (delta, for inline streaming)
@@ -40,6 +41,7 @@ struct RunSummary {
     double moe_io_seconds = 0.0;
     double moe_compute_s_per_token = 0.0;
     double moe_io_s_per_token = 0.0;
+    double moe_stall_s_per_token = 0.0; // overlap only: per-token wall the kernel waited on flash
     double cache_hit_pct = -1.0; // -1 when no cache
     double cache_resident_mib = 0.0;
 };

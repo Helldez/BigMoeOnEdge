@@ -31,6 +31,12 @@ struct MoeStreamConfig {
     bool load_all = false;    // debug/A-B: load ALL experts each token (full-sweep baseline)
     bool force_cache = false; // allow a cache_mb in the pathological band (tests/experiments)
 
+    // Overlap async expert reads with FFN compute instead of blocking on them: load_layer()
+    // publishes the reads and returns immediately, and the CPU mul_mat_id kernel blocks per
+    // expert (via the fork's expert-ready hook) only if that expert's slice is not yet in.
+    // Requires the Helldez/llama.cpp fork submodule (the hook); run() fails fast otherwise.
+    bool overlap = false;
+
     static constexpr int cache_min_mb = 1500; // smallest non-pathological cache (see above)
     static constexpr int io_threads_max = 8;
 };
