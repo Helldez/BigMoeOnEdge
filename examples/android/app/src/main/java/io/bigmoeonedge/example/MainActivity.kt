@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -28,6 +29,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -58,8 +61,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // gguf models are read in place from shared storage, which needs all-files access.
+    // Only the dev flavor reads models in place from shared storage; the Play flavor takes them
+    // through the in-app downloader / file picker and needs no broad storage permission.
     private fun requestAllFilesAccess() {
+        if (!BuildConfig.SHARED_STORAGE) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
             runCatching {
                 startActivity(
@@ -151,6 +156,10 @@ private fun MainScreen(settings: AppSettings, onOpenSettings: () -> Unit) {
             )
         }
 
+        // Bring a model onto the device without adb: download by URL or pick a local file.
+        // Both land in the app models dir; on completion we re-scan so it appears above.
+        AddModelSection(onModelReady = { refreshKey++ })
+
         OutlinedTextField(
             value = prompt,
             onValueChange = { prompt = it },
@@ -204,6 +213,134 @@ private fun MainScreen(settings: AppSettings, onOpenSettings: () -> Unit) {
 
         if (ui.answer.isNotEmpty()) {
             SelectionContainer { Text(ui.answer, fontSize = 15.sp) }
+        }
+    }
+}
+
+/**
+ * "Add a model" card: download a gguf by URL (DownloadManager) or import one the user already
+ * has via the system file picker (SAF). Both write to the app models dir with no permission;
+ * [onModelReady] triggers a re-scan so the new model shows up in the picker above.
+ */
+@Composable
+private fun AddModelSection(onModelReady: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var url by rememberSaveable { mutableStateOf("") }
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    var downloadId by rememberSaveable { mutableStateOf(-1L) }
+    var progress by remember { mutableStateOf<ModelDownloader.Progress?>(null) }
+    var importStatus by remember { mutableStateOf<String?>(null) }
+    var importFrac by remember { mutableStateOf(-1f) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        error = null
+        importStatus = "Importing…"
+        importFrac = -1f
+        scope.launch {
+            SafImport.importGguf(context, uri) { copied, total ->
+                importFrac = if (total > 0) (copied.toFloat() / total).coerceIn(0f, 1f) else -1f
+            }.onSuccess {
+                importStatus = null; importFrac = -1f; onModelReady()
+            }.onFailure {
+                importStatus = null; importFrac = -1f; error = it.message ?: "import failed"
+            }
+        }
+    }
+
+    // Poll an active download to completion, then finalize (.part → .gguf) and re-scan.
+    LaunchedEffect(downloadId) {
+        if (downloadId < 0) return@LaunchedEffect
+        while (true) {
+            val p = ModelDownloader.query(context, downloadId) ?: break
+            progress = p
+            if (p.state == ModelDownloader.State.SUCCESS) {
+                ModelDownloader.finalizeDownload(context, p.name)
+                downloadId = -1L; progress = null; onModelReady()
+                break
+            }
+            if (p.state == ModelDownloader.State.FAILED) {
+                error = p.reason ?: "download failed"
+                downloadId = -1L; progress = null
+                break
+            }
+            delay(700)
+        }
+    }
+
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Add a model", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide" else "Add") }
+            }
+            if (expanded) {
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("gguf URL (e.g. a Hugging Face resolve link)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        onClick = {
+                            error = null
+                            ModelDownloader.enqueue(context, url)
+                                .onSuccess { downloadId = it }
+                                .onFailure { error = it.message ?: "invalid URL" }
+                        },
+                        enabled = url.isNotBlank() && downloadId < 0,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Download") }
+                    OutlinedButton(
+                        onClick = { picker.launch(arrayOf("*/*")) },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Pick file") }
+                }
+            }
+
+            progress?.let { p ->
+                val pct = if (p.totalBytes > 0) {
+                    (p.downloadedBytes.toFloat() / p.totalBytes).coerceIn(0f, 1f)
+                } else {
+                    null
+                }
+                Text(
+                    if (pct != null) {
+                        String.format(
+                            Locale.US, "Downloading %s — %d%% (%d/%d MiB)",
+                            p.name, (pct * 100).toInt(), p.downloadedBytes shr 20, p.totalBytes shr 20,
+                        )
+                    } else {
+                        "Downloading ${p.name}…"
+                    },
+                    fontSize = 12.sp,
+                )
+                if (pct != null) {
+                    LinearProgressIndicator(progress = { pct }, modifier = Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                TextButton(onClick = {
+                    ModelDownloader.cancel(context, p.id, p.name)
+                    downloadId = -1L; progress = null
+                }) { Text("Cancel") }
+            }
+
+            importStatus?.let { st ->
+                Text(st, fontSize = 12.sp)
+                if (importFrac >= 0f) {
+                    LinearProgressIndicator(progress = { importFrac }, modifier = Modifier.fillMaxWidth())
+                } else {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+            }
+
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
         }
     }
 }

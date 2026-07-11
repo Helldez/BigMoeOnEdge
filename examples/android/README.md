@@ -20,21 +20,39 @@ research harness and keeps the app a thin driver over the CLI.
    `libllama`/`libggml` shared libraries.
 
 2. Build and install the APK. Open this folder in Android Studio, or use the committed
-   Gradle wrapper directly:
+   Gradle wrapper directly. The app has two distribution flavors (see below); build the one
+   you want:
 
    ```bash
-   ./gradlew assembleDebug
-   adb install app/build/outputs/apk/debug/app-debug.apk
+   ./gradlew assembleDevDebug
+   adb install app/build/outputs/apk/dev/debug/app-dev-debug.apk
    ```
 
-## Push a model
+## Flavors
 
-```bash
-adb push Qwen3-30B-A3B-Q4_K_M.gguf \
-  /sdcard/Android/data/io.bigmoeonedge.example/files/
-```
+Two build flavors differ only in how a model reaches the device:
 
-The model picker lists every `.gguf` in that directory.
+- **dev** — sideloaded (this is what CI attaches to releases). Keeps all-files access, so it
+  can also read a model adb-pushed to shared storage. Application id `…​.example.dev`.
+- **play** — Play-Store-compliant. No broad storage permission: models come only through the
+  in-app downloader or the file picker. `./gradlew assemblePlayDebug`.
+
+## Getting a model onto the device
+
+Any of these — the picker lists every MoE `.gguf` it finds (dense models are filtered out by
+a gguf-header check):
+
+1. **In-app URL download** (both flavors). Tap **Add → Download** and paste a direct gguf URL
+   (e.g. a Hugging Face `…/resolve/main/model.gguf` link). It downloads in the background to
+   the app's files dir — no permission needed — and appears in the picker when done.
+2. **In-app file picker** (both flavors). Tap **Add → Pick file** and choose a `.gguf` already
+   on the device; it is imported into the app's files dir.
+3. **adb push** (dev flavor only — needs all-files access, which the dev build requests):
+
+   ```bash
+   adb push Qwen3-30B-A3B-Q4_K_M.gguf /sdcard/Download/
+   # or the app's own dir, or /data/local/tmp/shardllm for a model too big to duplicate
+   ```
 
 ## Expected numbers
 
