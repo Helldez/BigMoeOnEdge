@@ -35,24 +35,30 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
 
     // Largest full-tensor byte size per projection, over all bound layers → shared-slot
-    // and bounce sizing.
-    size_t max_full[3] = {0, 0, 0};
+    // and bounce sizing. Absent projection slots (a fused layout uses fewer than max_exps
+    // expert tensors) keep nb2 == 0, so their max_full stays 0 and they are skipped below.
+    size_t max_full[MoeRecipe::max_exps] = {0, 0, 0};
     for (const LayerExperts & L : layers_) {
         if (!L.bound) continue;
-        for (int p = 0; p < 3; ++p) {
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
             max_full[p] = std::max(max_full[p], full);
         }
     }
-    if (max_full[0] == 0) {
+    size_t max_full_any = 0;
+    for (int p = 0; p < MoeRecipe::max_exps; ++p)
+        max_full_any = std::max(max_full_any, max_full[p]);
+    if (max_full_any == 0) {
         std::fprintf(stderr, "bmoe: no MoE layers were bound\n");
         return false;
     }
 
     if (cache_max_ == 0) {
-        // Three shared slots reused across layers (one layer computes at a time). Rebind
-        // every bound layer's expert tensors onto them; only routed slices are ever valid.
-        for (int p = 0; p < 3; ++p) {
+        // One shared slot per present projection, reused across layers (one layer computes
+        // at a time). Rebind every bound layer's expert tensors onto them; only routed
+        // slices are ever valid. Absent slots (max_full[p] == 0) get no buffer.
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            if (max_full[p] == 0) continue;
             slot_[p] = pio::alloc_aligned(align_, max_full[p]);
             if (!slot_[p]) {
                 std::fprintf(stderr, "bmoe: slot alloc %zu failed\n", max_full[p]);
@@ -62,8 +68,8 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         }
         for (LayerExperts & L : layers_) {
             if (!L.bound) continue;
-            for (int p = 0; p < 3; ++p)
-                L.proj[p].tensor->data = slot_[p];
+            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                if (L.proj[p].tensor) L.proj[p].tensor->data = slot_[p];
         }
     } else {
         // LRU cache: one reserved (address-only) buffer per (layer, projection). Physical
@@ -71,14 +77,15 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         // each expert at its canonical offset e*nb2 inside tensor->data, so the buffers
         // live at fixed per-layer addresses; lazy commit keeps that affordable.
         page_ = pio::vm_page();
-        for (int p = 0; p < 3; ++p) {
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             lbuf_[p].assign(n_layer_, nullptr);
             lbuf_sz_[p].assign(n_layer_, 0);
         }
         for (int il = 0; il < n_layer_; ++il) {
             LayerExperts & L = layers_[il];
             if (!L.bound) continue;
-            for (int p = 0; p < 3; ++p) {
+            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                if (!L.proj[p].tensor) continue; // absent slot in a fused layout
                 const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
                 lbuf_[p][il] = pio::vm_reserve(full);
                 if (!lbuf_[p][il]) {
@@ -102,7 +109,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     }
 
     // Read pool: a private fd + bounce per lane so concurrent preads never contend.
-    const size_t max_slice = std::max({max_full[0], max_full[1], max_full[2]}) / (size_t) n_expert_;
+    const size_t max_slice = max_full_any / (size_t) n_expert_;
     const size_t bounce_cap = max_slice + 2 * align_;
 
     pio::fd_t primary = pio::open_read(gguf_path.c_str(), o_direct_);
@@ -136,7 +143,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     }
 
     seen_.assign(n_expert_, 0);
-    jobs_.reserve((size_t) n_expert_ * 3);
+    jobs_.reserve((size_t) n_expert_ * MoeRecipe::max_exps);
     batch_gen_ = 0;
     next_idx_ = 0;
     done_cnt_ = 0;
@@ -251,13 +258,17 @@ void ExpertStreamSource::lru_push_front(int32_t id) {
 }
 size_t ExpertStreamSource::entry_bytes(int il) const {
     const LayerExperts & L = layers_[il];
-    return (size_t) L.proj[0].nb2 + L.proj[1].nb2 + L.proj[2].nb2;
+    size_t bytes = 0;
+    for (int p = 0; p < MoeRecipe::max_exps; ++p)
+        bytes += (size_t) L.proj[p].nb2; // absent slots contribute 0
+    return bytes;
 }
 void ExpertStreamSource::evict_tail() {
     const int32_t id = ctail_;
     const int il = id / n_expert_, e = id % n_expert_;
-    for (int p = 0; p < 3; ++p) {
+    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
         const uint64_t slice = layers_[il].proj[p].nb2;
+        if (slice == 0) continue; // absent slot in a fused layout
         char * s = (char *) lbuf_[p][il] + (uint64_t) e * slice;
         uintptr_t a0 = ((uintptr_t) s + page_ - 1) & ~(uintptr_t) (page_ - 1);
         uintptr_t a1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
@@ -277,8 +288,9 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
 
     auto stage = [&](int e) -> bool {
         if (cache_max_ == 0) {
-            for (int p = 0; p < 3; ++p) {
+            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
                 const uint64_t slice = L.proj[p].nb2;
+                if (slice == 0) continue; // absent slot in a fused layout
                 jobs_.push_back(
                     {(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice, slice});
             }
@@ -293,8 +305,9 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             lru_push_front(id);
             return true;
         }
-        for (int p = 0; p < 3; ++p) {
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             const uint64_t slice = L.proj[p].nb2;
+            if (slice == 0) continue; // absent slot in a fused layout
             char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
             uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
             uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
@@ -381,12 +394,12 @@ void ExpertStreamSource::shutdown() {
         if (t.joinable()) t.join();
     io_pool_.clear();
 
-    for (int p = 0; p < 3; ++p)
+    for (int p = 0; p < MoeRecipe::max_exps; ++p)
         if (slot_[p]) {
             pio::aligned_free(slot_[p]);
             slot_[p] = nullptr;
         }
-    for (int p = 0; p < 3; ++p) {
+    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
         for (int il = 0; il < (int) lbuf_[p].size(); ++il)
             if (lbuf_[p][il]) pio::vm_release(lbuf_[p][il], lbuf_sz_[p][il]);
         lbuf_[p].clear();
