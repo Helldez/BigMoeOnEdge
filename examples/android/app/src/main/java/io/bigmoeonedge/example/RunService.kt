@@ -23,7 +23,9 @@ import kotlin.concurrent.thread
 class RunService : Service() {
 
     private val telemetry = TelemetryParser()
+    @Volatile
     private var proc: Process? = null
+    @Volatile
     private var wake: PowerManager.WakeLock? = null
 
     // Set when the user presses Stop: the CLI is then killed on purpose, so its non-zero
@@ -46,8 +48,11 @@ class RunService : Service() {
         RunBus.setRunning(true)
         RunBus.setLoading(true) // held until the first token arrives (model load + prompt eval)
 
+        // Reference counting off so a release on an already-released lock is a harmless no-op:
+        // Stop races the reader thread's finally block, and both call releaseWake().
         wake = (getSystemService(Context.POWER_SERVICE) as PowerManager)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "bmoe:gen").apply { acquire(30 * 60 * 1000L) }
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "bmoe:gen")
+            .apply { setReferenceCounted(false); acquire(30 * 60 * 1000L) }
 
         thread(name = "bmoe-cli") { runCli(argv, model, prompt) }
         return START_NOT_STICKY
@@ -117,6 +122,7 @@ class RunService : Service() {
         stopSelf()
     }
 
+    @Synchronized
     private fun releaseWake() {
         wake?.let { if (it.isHeld) it.release() }
         wake = null
