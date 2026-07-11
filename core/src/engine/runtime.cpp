@@ -34,7 +34,16 @@ llama_token argmax(const float * logits, int n_vocab) {
     return best;
 }
 
-std::string apply_chatml(const std::string & user) {
+// Wrap a single user turn in the architecture's chat format. This is a minimal runtime
+// with no Jinja engine, so instead of rendering the gguf's tokenizer.chat_template
+// (Gemma 4's is a 16 KB Jinja program with tool-call macros that llama.cpp's non-Jinja
+// llama_chat_apply_template cannot parse), we emit the small, stable turn format for the
+// model family. Add a branch here when supporting another instruct family.
+std::string apply_chat_template(const char * arch, const std::string & user) {
+    if (std::strncmp(arch, "gemma", 5) == 0) {
+        return "<start_of_turn>user\n" + user + "<end_of_turn>\n<start_of_turn>model\n";
+    }
+    // Qwen family and default: ChatML.
     return "<|im_start|>user\n" + user + "<|im_end|>\n<|im_start|>assistant\n";
 }
 
@@ -71,18 +80,19 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
     const int n_vocab = llama_vocab_n_tokens(vocab);
     const int n_layer = llama_model_n_layer(model);
 
+    char arch[128] = {0};
+    llama_model_meta_val_str(model, "general.architecture", arch, sizeof(arch));
+
     const MoeRecipe * recipe = nullptr;
     if (cfg.moe.enabled) {
-        char arch[128] = {0};
-        llama_model_meta_val_str(model, "general.architecture", arch, sizeof(arch));
         recipe = find_moe_recipe(arch);
         if (!recipe)
             return fail(std::string("no MoE recipe for architecture '") + arch +
                         "' — add one in core/src/moe/arch_registry.cpp (see docs/adding-a-model.md)");
     }
 
-    // Tokenize the (optionally ChatML-wrapped) prompt.
-    const std::string prompt = cfg.chatml ? apply_chatml(cfg.prompt) : cfg.prompt;
+    // Tokenize the (optionally chat-templated) prompt, using the model family's turn format.
+    const std::string prompt = cfg.chatml ? apply_chat_template(arch, cfg.prompt) : cfg.prompt;
     std::vector<llama_token> tokens(prompt.size() + 8);
     int n_prompt = llama_tokenize(vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
                                   /*add_special*/ true, /*parse_special*/ true);
