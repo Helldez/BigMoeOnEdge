@@ -40,26 +40,36 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Section("Streaming") {
+                // mmap is the no-streaming baseline. When on, every streaming knob below is
+                // inert (the CLI omits --moe-stream and all sub-flags), so they are disabled.
+                SwitchRow(
+                    "mmap baseline (no streaming)",
+                    "Load the whole model via llama.cpp mmap — the baseline to compare against",
+                    current.mmap,
+                ) { onChange(current.copy(mmap = it)) }
+
+                val stream = !current.mmap
                 IntSetting(
                     "Expert cache (MiB)", AppSettings.CACHE_CHOICES, current.cacheMb,
                     format = { if (it == 0) "off" else "$it MiB" },
+                    enabled = stream,
                 ) { onChange(current.copy(cacheMb = it)) }
                 Text(
                     "0 or ≥ 2000 MiB. A smaller cache thrashes (evict + re-read) and is " +
                         "slower than off, so 1000 is intentionally not offered.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                IntSetting("Parallel I/O lanes", AppSettings.IO_CHOICES, current.ioThreads) {
+                IntSetting("Parallel I/O lanes", AppSettings.IO_CHOICES, current.ioThreads, enabled = stream) {
                     onChange(current.copy(ioThreads = it))
                 }
                 SwitchRow(
                     "Direct I/O (O_DIRECT)", "Bypass the page cache when reading experts",
-                    current.oDirect,
+                    current.oDirect, enabled = stream,
                 ) { onChange(current.copy(oDirect = it)) }
                 SwitchRow(
                     "I/O–compute overlap",
                     "Prefetch experts while the layer computes (experimental)",
-                    current.overlap,
+                    current.overlap, enabled = stream,
                 ) { onChange(current.copy(overlap = it)) }
             }
 
@@ -74,7 +84,7 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
 
             Section("Prompt") {
                 SwitchRow(
-                    "Thinking", "Qwen3 reasoning; off appends the /no_think switch",
+                    "Thinking", "Model reasoning; off passes --no-think (works for Qwen and Gemma)",
                     current.thinking,
                 ) { onChange(current.copy(thinking = it)) }
             }
@@ -82,7 +92,7 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
             Section("Debug") {
                 SwitchRow(
                     "Load all experts", "Read every expert each token (A/B baseline; slow)",
-                    current.loadAll,
+                    current.loadAll, enabled = !current.mmap,
                 ) { onChange(current.copy(loadAll = it)) }
             }
         }

@@ -7,13 +7,14 @@ import android.content.Context
  * flags; the Settings screen edits them and [toArgv] builds the command line.
  */
 data class AppSettings(
+    val mmap: Boolean = false,   // baseline: no streaming — llama.cpp mmap loads the whole model
     val cacheMb: Int = 4000,     // LRU expert cache budget; 0 or >= 2000 (see CACHE_CHOICES)
     val ioThreads: Int = 4,      // parallel expert-read lanes
     val threads: Int = 4,        // compute threads (-t); 4 is the measured optimum
     val nPredict: Int = 48,
     val oDirect: Boolean = true, // bypass the page cache
     val overlap: Boolean = false,// prefetch experts while the layer computes (experimental)
-    val thinking: Boolean = false,// Qwen3 reasoning; off appends the /no_think soft switch
+    val thinking: Boolean = false,// reasoning; off passes --no-think (enable_thinking=false)
     val loadAll: Boolean = false,// debug: read ALL experts each token (A/B baseline)
 ) {
     /**
@@ -22,6 +23,11 @@ data class AppSettings(
      * its `enable_thinking` kwarg. This is model-agnostic (works for Qwen3 and Gemma alike),
      * unlike the old Qwen-only /no_think prompt suffix. `arch` is kept for future arch-specific
      * handling but is no longer needed for the thinking switch.
+     *
+     * When [mmap] is set, expert streaming is turned off entirely: the CLI omits --moe-stream and
+     * every streaming knob (cache / lanes / O_DIRECT / overlap / load-all), so llama.cpp loads the
+     * whole model via mmap through the page cache. This is the baseline the streaming modes are
+     * compared against; the prompt/template and compute flags still apply.
      */
     fun toArgv(cliPath: String, modelPath: String, prompt: String, arch: String?): List<String> {
         val a = mutableListOf(
@@ -31,20 +37,23 @@ data class AppSettings(
             "-n", nPredict.toString(),
             "-t", threads.toString(),
             "--chatml", // apply the model family's chat turn (gemma / chatml)
-            "--moe-stream",
-            "--cache-mb", cacheMb.toString(),
-            "--io-threads", ioThreads.toString(),
             "--progress",
         )
         if (!thinking) a += "--no-think"
-        if (!oDirect) a += "--no-odirect"
-        if (overlap) a += "--overlap"
-        if (loadAll) a += "--load-all"
+        if (!mmap) {
+            a += "--moe-stream"
+            a += listOf("--cache-mb", cacheMb.toString())
+            a += listOf("--io-threads", ioThreads.toString())
+            if (!oDirect) a += "--no-odirect"
+            if (overlap) a += "--overlap"
+            if (loadAll) a += "--load-all"
+        }
         return a
     }
 
     fun save(ctx: Context) {
         ctx.prefs().edit()
+            .putBoolean("mmap", mmap)
             .putInt("cacheMb", cacheMb).putInt("ioThreads", ioThreads).putInt("threads", threads)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
             .putBoolean("overlap", overlap)
@@ -64,6 +73,7 @@ data class AppSettings(
             val p = ctx.prefs()
             val d = AppSettings()
             return AppSettings(
+                mmap = p.getBoolean("mmap", d.mmap),
                 cacheMb = p.getInt("cacheMb", d.cacheMb),
                 ioThreads = p.getInt("ioThreads", d.ioThreads),
                 threads = p.getInt("threads", d.threads),

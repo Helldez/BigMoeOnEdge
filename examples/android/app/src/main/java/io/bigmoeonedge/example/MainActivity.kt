@@ -211,11 +211,16 @@ private fun MainScreen(
             ) { Text("Stop") }
         }
 
-        // A quick reminder of the active streaming config (full controls in Settings).
+        // A quick reminder of the active config (full controls in Settings).
         Text(
-            "cache ${if (settings.cacheMb == 0) "off" else "${settings.cacheMb} MiB"} · " +
-                "${settings.ioThreads} lanes · ${settings.threads} threads · " +
-                "thinking ${if (settings.thinking) "on" else "off"}",
+            if (settings.mmap) {
+                "mmap baseline (no streaming) · ${settings.threads} threads · " +
+                    "thinking ${if (settings.thinking) "on" else "off"}"
+            } else {
+                "cache ${if (settings.cacheMb == 0) "off" else "${settings.cacheMb} MiB"} · " +
+                    "${settings.ioThreads} lanes${if (settings.overlap) " · overlap" else ""} · " +
+                    "${settings.threads} threads · thinking ${if (settings.thinking) "on" else "off"}"
+            },
             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
