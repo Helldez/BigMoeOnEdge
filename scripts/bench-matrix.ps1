@@ -1,7 +1,8 @@
 # On-device benchmark matrix driver. Invokes the instrumented device-side bench-run.sh.
 param(
   [string]$OutDir = "C:\Users\raffa\Documents\BigMoeOnEdge\.bench",
-  [int]$NPred = 256
+  [int]$NPred = 256,
+  [int]$CooldownSec = 45   # let the SoC cool to a similar baseline before each run
 )
 $ErrorActionPreference = "Continue"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -12,6 +13,7 @@ $GEMMA = "/sdcard/Download/google_gemma-4-26B-A4B-it-Q4_K_M.gguf"
 
 function Run-Cfg($tag, $model, $flags) {
   Write-Host "==================== $tag ===================="
+  Start-Sleep -Seconds $CooldownSec   # thermal cooldown so runs start from a similar baseline
   $t0 = Get-Date
   $log = & adb shell "sh $DEV/bench-run.sh $NPred $model $DEV/$tag.csv $DEV/$tag.metrics $flags" 2>&1
   $dt = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
