@@ -6,6 +6,15 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- Intra-layer I/O–compute overlap (`--overlap`): expert reads for a layer run on the I/O
+  pool while the same layer's routed experts are computed, hiding flash latency behind FFN
+  compute. Opt-in and byte-identical to the serial path (gates G4a/b/c). Requires one
+  ~25-line per-expert readiness hook in the CPU `mul_mat_id` kernel, carried as a 1-commit
+  fork branch (`bmoe/expert-ready-hook`) on `Helldez/llama.cpp` with an explicit sunset;
+  the serial streaming path still builds and runs against stock upstream. See
+  `docs/seam.md` § 3.
+
 ## [0.1.0] - 2026-07-11
 
 ### Added

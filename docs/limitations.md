@@ -12,7 +12,9 @@ BigMoeOnEdge is an engineering package, not a new technique. The ideas it combin
   the edge.
 
 The contribution here is a clean, modular, llama.cpp-native implementation of
-expert-selective streaming that stays lossless and requires no fork.
+expert-selective streaming that stays lossless and runs on the public API — no fork for the
+serial path, and only a single ~25-line hook (with an explicit sunset) for the optional
+`--overlap` feature. See [seam.md § 3](seam.md).
 
 ## Limitations
 

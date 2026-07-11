@@ -34,5 +34,8 @@ foreach ($name in @("qwen","gemma")) {
   Run-Cfg "${name}_c2000_l4" $m "--moe-stream --cache-mb 2000 --io-threads 4"
   Run-Cfg "${name}_c4000_l2" $m "--moe-stream --cache-mb 4000 --io-threads 2"
   Run-Cfg "${name}_c4000_l4" $m "--moe-stream --cache-mb 4000 --io-threads 4"
+  # intra-layer I/O–compute overlap: mirror the two lead configs with --overlap
+  Run-Cfg "${name}_c4000_l4_ov" $m "--moe-stream --cache-mb 4000 --io-threads 4 --overlap"
+  Run-Cfg "${name}_stream_ov"   $m "--moe-stream --cache-mb 0 --io-threads 4 --overlap"
 }
 Write-Host "ALL DONE"

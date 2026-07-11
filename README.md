@@ -12,10 +12,14 @@ slices from flash on demand, so an 18.5 GB model runs on an 11 GB phone, lossles
   cache, up to **3.75 tok/s** with a 4 GiB expert cache and 4 read lanes, byte-identical to
   a full in-memory run. See the table below, or [docs/benchmarks.md](docs/benchmarks.md) for
   the full matrix (Qwen + Gemma, mean/min/max/p95).
-- **No fork of llama.cpp.** Expert streaming is driven entirely through llama.cpp's
-  public eval-callback and public gguf accessors. The `third_party/llama.cpp` submodule
-  is stock upstream; updating it is a pointer bump, not a rebase. See
-  [docs/architecture.md](docs/architecture.md).
+- **Public-API streaming seam.** Expert streaming is driven entirely through llama.cpp's
+  public eval-callback and public gguf accessors and works against stock upstream. The one
+  exception is the optional intra-layer overlap feature (`--overlap`), which needs a ~25-line
+  per-expert readiness hook carried as a single-commit fork branch — an explicit tide-me-over
+  that is dropped the moment upstream ships an equivalent callback. Everything else, and the
+  serial streamer in full, is a submodule pointer bump away from upstream. See
+  [docs/architecture.md](docs/architecture.md) and
+  [docs/seam.md § 3](docs/seam.md).
 - **Modular.** A ports-and-adapters engine: the streaming strategy, the metrics sink and
   the target are interfaces. Adding a MoE architecture is one registry row
   ([docs/adding-a-model.md](docs/adding-a-model.md)).

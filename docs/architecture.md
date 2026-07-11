@@ -1,8 +1,11 @@
 # Architecture
 
 BigMoeOnEdge is a small ports-and-adapters engine that sits **on top of** llama.cpp's
-public API. Its guiding constraint: never modify llama.cpp, so upstream updates cost a
-submodule pointer bump and nothing else.
+public API. Its guiding constraint: drive streaming through the public API so upstream
+updates cost a submodule pointer bump and nothing else. The serial streamer holds to this
+against stock upstream; the one exception is the optional `--overlap` feature, which carries
+a single ~25-line hook on a fork branch with an explicit sunset (see below and
+[seam.md § 3](seam.md)).
 
 ## Layers
 
@@ -21,7 +24,7 @@ core/
     engine/     runtime — composition + the greedy generation loop
     metrics/    csv_metrics_sink
 third_party/
-  llama.cpp     stock upstream submodule (public API consumer only)
+  llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates
 examples/android an APK that drives bmoe-cli via ProcessBuilder
 ```
@@ -31,10 +34,10 @@ The pure-policy code (`config.cpp`, `arch_registry.cpp`) compiles with no native
 dependency, so a subset of the project builds and is testable before llama.cpp is
 fetched.
 
-## Why there is no fork
+## Why the streaming seam needs no fork
 
-Streaming experts needs three things from the inference engine. All three are already
-public in llama.cpp:
+Streaming experts serially needs three things from the inference engine. All three are
+already public in llama.cpp:
 
 1. **A hook at routing time.** `llama_context_params.cb_eval` is called for every graph
    node. We ask for only the routing nodes (`ffn_moe_topk-<il>`); ggml computes and
@@ -49,10 +52,18 @@ Loading with `use_mmap=true, use_extra_bufts=false` keeps the weights in their n
 gguf layout (a repacked buffer would break the rebind). That is a public model
 parameter.
 
-Because none of this touches llama.cpp internals, `third_party/llama.cpp` is the
-unmodified upstream repository. Contrast with approaches that patch the model files: those
-must be rebased on every release. Here, `git submodule update --remote` and a rebuild is
-the whole upgrade.
+Because none of this touches llama.cpp internals, the serial streaming path runs against
+the unmodified upstream repository. Contrast with approaches that patch the model files:
+those must be rebased on every release. Here, `git submodule update --remote` and a rebuild
+is the whole upgrade.
+
+The one place we do carry an extension is the optional `--overlap` feature. Overlapping a
+token's expert reads with its expert matmuls needs a per-expert wait point *inside* the CPU
+MoE kernel, which no public API exposes, so the submodule pins a fork branch adding one
+~25-line readiness hook on top of the upstream commit. It is zero-cost when unregistered,
+the serial path still builds against stock upstream, and it is dropped the moment upstream
+ships an equivalent callback. Details and the sunset condition are in
+[seam.md § 3](seam.md).
 
 See [seam.md](seam.md) for the exact callback contract and the ggml behaviour it relies
 on.
