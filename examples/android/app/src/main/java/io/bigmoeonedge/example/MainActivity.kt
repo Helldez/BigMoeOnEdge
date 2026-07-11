@@ -90,27 +90,13 @@ private fun Root() {
     var showSettings by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(AppSettings.load(context)) }
 
-    if (showSettings) {
-        SettingsScreen(
-            current = settings,
-            onChange = { settings = it; it.save(context) },
-            onBack = { showSettings = false },
-        )
-    } else {
-        MainScreen(settings = settings, onOpenSettings = { showSettings = true })
-    }
-}
-
-@Composable
-private fun MainScreen(settings: AppSettings, onOpenSettings: () -> Unit) {
-    val context = LocalContext.current
-    val ui by RunBus.state.collectAsStateWithLifecycle()
-
+    // Model-scan state lives here, above the settings/main switch, so opening Settings and
+    // coming back does NOT dispose it and trigger a fresh scan. The scan runs once (and again
+    // only when refreshKey changes: an explicit Refresh, or after a download/import completes).
     var models by remember { mutableStateOf<List<File>>(emptyList()) }
     var scanning by remember { mutableStateOf(true) }
     var refreshKey by remember { mutableStateOf(0) }
     var modelIdx by remember { mutableStateOf(0) }
-    var prompt by rememberSaveable { mutableStateOf("Explain what a mixture-of-experts model is, in two sentences.") }
 
     // Probing gguf headers to keep only MoE models does blocking reads — off the main thread.
     LaunchedEffect(refreshKey) {
@@ -119,6 +105,40 @@ private fun MainScreen(settings: AppSettings, onOpenSettings: () -> Unit) {
         if (modelIdx >= models.size) modelIdx = 0
         scanning = false
     }
+
+    if (showSettings) {
+        SettingsScreen(
+            current = settings,
+            onChange = { settings = it; it.save(context) },
+            onBack = { showSettings = false },
+        )
+    } else {
+        MainScreen(
+            settings = settings,
+            models = models,
+            scanning = scanning,
+            modelIdx = modelIdx.coerceIn(0, maxOf(0, models.size - 1)),
+            onSelectModel = { modelIdx = it },
+            onRefresh = { refreshKey++ },
+            onOpenSettings = { showSettings = true },
+        )
+    }
+}
+
+@Composable
+private fun MainScreen(
+    settings: AppSettings,
+    models: List<File>,
+    scanning: Boolean,
+    modelIdx: Int,
+    onSelectModel: (Int) -> Unit,
+    onRefresh: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    val context = LocalContext.current
+    val ui by RunBus.state.collectAsStateWithLifecycle()
+
+    var prompt by rememberSaveable { mutableStateOf("Explain what a mixture-of-experts model is, in two sentences.") }
 
     Column(
         Modifier
@@ -146,19 +166,19 @@ private fun MainScreen(settings: AppSettings, onOpenSettings: () -> Unit) {
                         fontFamily = FontFamily.Monospace,
                     )
                 }
-                TextButton(onClick = { refreshKey++ }) { Text("Refresh") }
+                TextButton(onClick = onRefresh) { Text("Refresh") }
             }
             else -> LabeledDropdown(
                 label = "Model",
                 options = models.map { it.name },
-                selected = modelIdx.coerceIn(0, models.size - 1),
-                onSelect = { modelIdx = it },
+                selected = modelIdx,
+                onSelect = onSelectModel,
             )
         }
 
         // Bring a model onto the device without adb: download by URL or pick a local file.
         // Both land in the app models dir; on completion we re-scan so it appears above.
-        AddModelSection(onModelReady = { refreshKey++ })
+        AddModelSection(onModelReady = onRefresh)
 
         OutlinedTextField(
             value = prompt,
