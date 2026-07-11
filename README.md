@@ -8,8 +8,10 @@ Qwen3-30B-A3B that is 8 of 128 per layer — about 6% of the expert weights. Big
 keeps the small, dense parts of the model resident and reads just those routed expert
 slices from flash on demand, so an 18.5 GB model runs on an 11 GB phone, losslessly.
 
-- **Measured:** Qwen3-30B-A3B-Q4_K_M on a OnePlus 15R (11.3 GB RAM) → **~1.8 tok/s**
-  (0.55–0.6 s/token), byte-identical to a full in-memory run. See the table below.
+- **Measured:** Qwen3-30B-A3B-Q4_K_M on a OnePlus 15R (11.3 GB RAM) → **1.8 tok/s** with no
+  cache, up to **3.75 tok/s** with a 4 GiB expert cache and 4 read lanes, byte-identical to
+  a full in-memory run. See the table below, or [docs/benchmarks.md](docs/benchmarks.md) for
+  the full matrix (Qwen + Gemma, mean/min/max/p95).
 - **No fork of llama.cpp.** Expert streaming is driven entirely through llama.cpp's
   public eval-callback and public gguf accessors. The `third_party/llama.cpp` submodule
   is stock upstream; updating it is a pointer bump, not a rebase. See
@@ -25,17 +27,23 @@ slices from flash on demand, so an 18.5 GB model runs on an 11 GB phone, lossles
 ## Benchmarks
 
 Qwen3-30B-A3B-Q4_K_M (18.5 GB, 128 experts, top-8, 48 layers) on a OnePlus 15R
-(11.3 GB RAM, UFS 4.x), 4 compute threads:
+(11.3 GB RAM, UFS 4.x), 4 compute threads, 256-token steady-state runs:
 
-| Expert cache | I/O lanes | s/token | tok/s | flash read/token | cache hit |
-|-------------:|----------:|--------:|------:|-----------------:|----------:|
-| off          | 1         | 0.95    | ~1.05 | 1050 MB          | —         |
-| 4000 MiB     | 1         | 0.73    | ~1.4  | 496 MB           | 46%       |
-| **4000 MiB** | **4**     | **0.55–0.57** | **~1.8** | 248–538 MB | 59–67% |
+| Expert cache | I/O lanes | tok/s (mean) | flash read/token | cache hit |
+|-------------:|----------:|-------------:|-----------------:|----------:|
+| mmap only    | —         | 1.86 (unstable) | —             | —         |
+| off (stream) | 4         | 1.78         | 1051 MB          | —         |
+| 2000 MiB     | 4         | 2.47         | 480 MB           | 53%       |
+| 4000 MiB     | 2         | 3.38         | 225 MB           | 76%       |
+| **4000 MiB** | **4**     | **3.75**     | 225 MB           | 76%       |
 
-Decode is flash-I/O-bound (~79% I/O at the best setting). The cache rule is **0 or
-≥ ~2 GB** — a budget smaller than one token's routed working set thrashes and is slower
-than no cache at all. Full method: [docs/benchmark-method.md](docs/benchmark-method.md).
+Cache size is the dominant lever (2000 → 4000 MiB nearly doubles throughput as the hit rate
+climbs); read lanes help mainly when the cache is small. `mmap`-only looks comparable on
+average but is unstable (single tokens from 0.36 to 8.34 tok/s) and evicts other apps —
+streaming with a bounded cache stays responsive. The cache rule is **0 or ≥ ~2 GB**: a
+smaller budget thrashes and is slower than no cache. Gemma-4-26B-A4B-Q4_K_M reaches
+**3.48 tok/s** at the same best setting. Full matrix and method:
+[docs/benchmarks.md](docs/benchmarks.md), [docs/benchmark-method.md](docs/benchmark-method.md).
 
 The same works on desktop for a model larger than the machine's RAM. Qwen3-30B-A3B-Q4_K_M
 (17.3 GiB) on a Windows PC with 14.8 GiB RAM (1.17× RAM, so it cannot be held resident),
