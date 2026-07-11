@@ -34,6 +34,50 @@ gather them (stride-aware) and trigger the slice reads.
 `gguf_get_tensor_offset` (all public) give each tensor's absolute byte offset in the file,
 without loading any tensor data. We match these to the captured tensors by name.
 
+## 3. The expert-ready hook (fork extension)
+
+Sections 1 and 2 are enough for the *serial* streamer: block on the expert reads, then let
+the layer compute. Overlapping the two — reading a token's experts while the same token's
+expert matmuls are running — needs a wait point that no public API exposes. That is the one
+place where BigMoeOnEdge carries a llama.cpp extension.
+
+**What it is.** A single optional hook, ~25 lines, living on the fork branch
+`bmoe/expert-ready-hook` of `Helldez/llama.cpp` as a single commit on top of the upstream
+pin. It adds nothing to the model files and changes no data layout; it is a callback the
+CPU MoE kernel invokes.
+
+**Exact API and call site.**
+
+```c
+// ggml-cpu.h
+void ggml_cpu_set_expert_ready_hook(ggml_expert_ready_hook_t hook, void * user_data);
+```
+
+`ggml_compute_forward_mul_mat_id` calls the hook at the top of its per-expert loop, right
+after the "expert not routed this token" skip, before it consumes that expert's weight
+slice. Every compute thread calls it for every routed expert; the hook may block. There is
+**no barrier inside the expert loop**, so a thread blocking on one expert cannot deadlock
+the threadpool — other threads proceed to the experts whose slices are already resident.
+The streamer's hook blocks until the requested expert slice has been read in, then returns.
+When no hook is registered (stock upstream, or `--overlap` off) the call is a single null
+check — zero cost.
+
+**Why it exists.** The topk eval-callback (section 1) is the only public hook near routing,
+and it can only fire *before* the expert matmuls of a layer run — it cannot pause partway
+through them. Overlapping expert reads with expert compute requires a per-expert wait point
+*inside* the kernel, which the public API does not provide. Hence the extension.
+
+**Graceful degradation.** CMake probes `ggml-cpu.h` for the hook symbol and, when present,
+defines `BMOE_HAVE_EXPERT_READY_HOOK`. Built against stock upstream (symbol absent) the
+whole project still compiles and runs — the serial streaming path is unchanged; only
+`--overlap` is affected, and it fails with a clear runtime error instead of silently
+falling back.
+
+**Sunset condition.** This fork exists *solely* for this one hook. The moment upstream
+ships an equivalent per-expert readiness/residency callback, the branch is dropped and the
+submodule bumps straight back to `ggml-org/llama.cpp`. It is a tide-me-over until the wait
+point is public, not a divergence we intend to maintain.
+
 ## The chat glue: llama.cpp `common` (not the streaming seam)
 
 Separate from the two streaming hooks above, `runtime.cpp` links llama.cpp's `common`
@@ -63,13 +107,23 @@ returns. This is how `ggml_backend_sched` implements the eval-callback today
 
 ## Upgrading llama.cpp
 
+Because the submodule pins the `bmoe/expert-ready-hook` fork branch (section 3), a bump
+rebases that 1-commit branch onto the new upstream tag, re-pushes it, and re-pins:
+
 ```bash
-cd third_party/llama.cpp && git fetch && git checkout <newer-tag>
+# in a Helldez/llama.cpp checkout: rebase the single hook commit onto the new tag
+git fetch upstream && git checkout bmoe/expert-ready-hook
+git rebase <newer-upstream-tag> && git push --force-with-lease origin bmoe/expert-ready-hook
+
+# in this repo: move the submodule to the rebased commit, rebuild, run the gates
+cd third_party/llama.cpp && git fetch origin && git checkout <rebased-commit>
 cd ../.. && git add third_party/llama.cpp && scripts/build-host.sh
 cd build && ctest --output-on-failure     # gates must stay green
 ```
 
-Most bumps are exactly this: update, rebuild, gates green. The fragility is not the public
+When the sunset condition lands (upstream ships the readiness callback) this collapses back
+to a plain `git checkout <newer-tag>` against `ggml-org/llama.cpp` with no branch to carry.
+Either way the gates are the enforcement. The fragility is not the public
 API but the *internal naming conventions* the seam attaches to — the tensor suffixes and
 the `ffn_moe_topk` node name are how llama.cpp happens to build MoE graphs today, not a
 guaranteed contract, so upstream can rename or restructure them (Gemma 4's fused
@@ -80,5 +134,7 @@ output. Each supported architecture adds one more gate to keep green across a bu
 If a future release moves the two hooks (a stable expert-residency API, say) upstream,
 this seam shrinks further or disappears — `core/` does not change.
 
-Pinned submodule at the time of writing: upstream `ggml-org/llama.cpp` master
-`22b69b6` (see `.gitmodules` / `git submodule status` for the current pin).
+Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
+`bmoe/expert-ready-hook`, commit `5236140` — the single expert-ready-hook commit (section 3)
+on top of upstream `ggml-org/llama.cpp` master `22b69b6` (see `.gitmodules` /
+`git submodule status` for the current pin).

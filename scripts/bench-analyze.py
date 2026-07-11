@@ -9,7 +9,8 @@
 import os, sys, statistics
 
 BENCH = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\raffa\Documents\BigMoeOnEdge\.bench"
-ORDER = ["mmap", "stream", "c2000_l2", "c2000_l4", "c4000_l2", "c4000_l4"]
+ORDER = ["mmap", "stream", "c2000_l2", "c2000_l4", "c4000_l2", "c4000_l4",
+         "stream_ov", "c4000_l4_ov"]
 LABEL = {
     "mmap": "solo mmap (no streaming)",
     "stream": "streaming O_DIRECT, cache 0, lane 4",
@@ -17,6 +18,8 @@ LABEL = {
     "c2000_l4": "streaming + cache 2000 MiB, lane 4",
     "c4000_l2": "streaming + cache 4000 MiB, lane 2",
     "c4000_l4": "streaming + cache 4000 MiB, lane 4",
+    "stream_ov": "streaming O_DIRECT + overlap, cache 0, lane 4",
+    "c4000_l4_ov": "streaming + cache 4000 MiB, lane 4, overlap",
 }
 
 def pct(v, q):
@@ -41,7 +44,7 @@ def num(d, k):
         return None
 
 def analyze(csv_path):
-    walls, summ = [], {}
+    walls, stalls, summ = [], [], {}
     with open(csv_path) as f:
         for row in f:
             row = row.strip()
@@ -52,10 +55,17 @@ def analyze(csv_path):
                     if "=" in tok:
                         k, v = tok.split("=", 1); summ[k] = v
                 continue
+            cols = row.split(",")
             try:
-                walls.append(float(row.split(",")[2]))
+                walls.append(float(cols[2]))
             except (IndexError, ValueError):
-                pass
+                continue
+            # stall_ms is an optional trailing column (index 7); absent in pre-overlap CSVs.
+            if len(cols) > 7:
+                try:
+                    stalls.append(float(cols[7]))
+                except ValueError:
+                    pass
     if not walls:
         return None
     n = len(walls); tps = sorted(1000.0 / w for w in walls if w > 0)
@@ -69,6 +79,7 @@ def analyze(csv_path):
         "median": statistics.median(tps), "p5": pct(tps, 0.05), "p95": pct(tps, 0.95),
         "cache_hit": summ.get("cache_hit_pct", "-"),
         "read_MiB_tok": (g("read_MiB") / n) if n else 0.0,
+        "stall_ms_tok": (statistics.mean(stalls) if stalls else None),
         "prefill_tps": g("prefill_tps"), "load_s": g("load_s"),
         "prefill_s": g("prefill_s"), "ttft": g("load_s") + g("prefill_s"),
         "peak_rss_gb": (num(m, "peak_rss_kb") or 0) / 1048576.0,
@@ -87,16 +98,17 @@ for model, pretty in (("qwen", "Qwen3-30B-A3B-Q4_K_M (18.5 GB, 128 experts, top-
         rows.append((key, analyze(p) if os.path.exists(p) else None))
 
     print(f"\n===== {model.upper()} — throughput =====")
-    print(f"{'config':36s} {'mean':>6s} {'min':>6s} {'max':>6s} {'med':>6s} {'p95':>6s} {'pref':>6s} {'TTFT':>6s} {'hit':>5s} {'MiB/t':>6s}")
+    print(f"{'config':36s} {'mean':>6s} {'min':>6s} {'max':>6s} {'med':>6s} {'p95':>6s} {'pref':>6s} {'TTFT':>6s} {'hit':>5s} {'MiB/t':>6s} {'stall':>7s}")
     md.append(f"\n### {pretty}\n\n**Throughput** (tok/s; mean = aggregate decode, prefill = prompt-processing):\n")
-    md.append("| Config | decode mean | min | max | median | p95 | prefill tok/s | TTFT (s) | cache hit | flash read/token |")
-    md.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+    md.append("| Config | decode mean | min | max | median | p95 | prefill tok/s | TTFT (s) | cache hit | flash read/token | stall ms/tok |")
+    md.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
     for key, r in rows:
         if r is None:
-            md.append(f"| {LABEL[key]} | — | — | — | — | — | — | — | — | — |"); continue
+            md.append(f"| {LABEL[key]} | — | — | — | — | — | — | — | — | — | — |"); continue
         hit = f"{float(r['cache_hit']):.0f}%" if r['cache_hit'] not in ("-", "-1.0") else "—"
-        print(f"{LABEL[key]:36s} {r['mean']:6.2f} {r['min']:6.2f} {r['max']:6.2f} {r['median']:6.2f} {r['p95']:6.2f} {r['prefill_tps']:6.2f} {r['ttft']:6.1f} {hit:>5s} {r['read_MiB_tok']:5.0f}M")
-        md.append(f"| {LABEL[key]} | **{r['mean']:.2f}** | {r['min']:.2f} | {r['max']:.2f} | {r['median']:.2f} | {r['p95']:.2f} | {r['prefill_tps']:.2f} | {r['ttft']:.1f} | {hit} | {r['read_MiB_tok']:.0f} MiB |")
+        stall = f"{r['stall_ms_tok']:.1f}" if r['stall_ms_tok'] is not None else "—"
+        print(f"{LABEL[key]:36s} {r['mean']:6.2f} {r['min']:6.2f} {r['max']:6.2f} {r['median']:6.2f} {r['p95']:6.2f} {r['prefill_tps']:6.2f} {r['ttft']:6.1f} {hit:>5s} {r['read_MiB_tok']:5.0f}M {stall:>7s}")
+        md.append(f"| {LABEL[key]} | **{r['mean']:.2f}** | {r['min']:.2f} | {r['max']:.2f} | {r['median']:.2f} | {r['p95']:.2f} | {r['prefill_tps']:.2f} | {r['ttft']:.1f} | {hit} | {r['read_MiB_tok']:.0f} MiB | {stall} |")
 
     print(f"\n===== {model.upper()} — device pressure =====")
     print(f"{'config':36s} {'peakRSS':>8s} {'RAMfloor':>9s} {'CPU0':>6s} {'CPUmax':>7s} {'battMax':>8s}")
