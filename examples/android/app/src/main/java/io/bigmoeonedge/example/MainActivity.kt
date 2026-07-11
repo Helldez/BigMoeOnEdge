@@ -190,6 +190,16 @@ private fun MainScreen(settings: AppSettings, onOpenSettings: () -> Unit) {
             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
+        if (ui.loading) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text("Loading model…", fontSize = 14.sp)
+            }
+        }
+
         TelemetryCard(ui)
 
         if (ui.answer.isNotEmpty()) {

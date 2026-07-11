@@ -72,10 +72,6 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     "Thinking", "Qwen3 reasoning; off appends the /no_think switch",
                     current.thinking,
                 ) { onChange(current.copy(thinking = it)) }
-                SwitchRow(
-                    "ChatML template", "Wrap the prompt in a chat turn",
-                    current.chatml,
-                ) { onChange(current.copy(chatml = it)) }
             }
 
             Section("Debug") {

@@ -39,6 +39,7 @@ class RunService : Service() {
 
         RunBus.reset()
         RunBus.setRunning(true)
+        RunBus.setLoading(true) // held until the first token arrives (model load + prompt eval)
 
         wake = (getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "bmoe:gen").apply { acquire(30 * 60 * 1000L) }
@@ -70,6 +71,7 @@ class RunService : Service() {
                     if (telemetry.onLine(line)) {
                         RunBus.update {
                             it.copy(
+                                loading = false, // first telemetry line means the model is up
                                 telemetry = telemetry.current.copy(),
                                 summary = telemetry.summary,
                                 answer = telemetry.current.text,

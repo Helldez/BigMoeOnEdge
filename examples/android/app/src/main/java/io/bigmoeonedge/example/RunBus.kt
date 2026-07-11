@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.update
 /** Immutable snapshot of a run, observed by the Compose UI. */
 data class UiState(
     val running: Boolean = false,
+    val loading: Boolean = false, // model started, first token not yet emitted
     val telemetry: Telemetry = Telemetry(),
     val answer: String = "",
     val summary: String = "",
@@ -24,6 +25,8 @@ object RunBus {
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     fun reset() = _state.update { UiState(running = it.running) }
-    fun setRunning(running: Boolean) = _state.update { it.copy(running = running) }
+    fun setRunning(running: Boolean) =
+        _state.update { it.copy(running = running, loading = if (running) it.loading else false) }
+    fun setLoading(loading: Boolean) = _state.update { it.copy(loading = loading) }
     fun update(block: (UiState) -> UiState) = _state.update(block)
 }
