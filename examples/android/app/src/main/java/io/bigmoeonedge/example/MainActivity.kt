@@ -53,26 +53,12 @@ class MainActivity : ComponentActivity() {
         ) {
             requestNotif.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        requestAllFilesAccess()
+        // All-files access is NOT requested at startup: downloaded, imported and picked models
+        // live in the app-specific dir and need no permission. The dev flavor asks for it only
+        // when the user explicitly rescans device storage (Refresh) for adb-pushed models.
         setContent {
             MaterialTheme(colorScheme = if (isSystemDark()) darkColorScheme() else lightColorScheme()) {
                 Surface(color = MaterialTheme.colorScheme.background) { Root() }
-            }
-        }
-    }
-
-    // Only the dev flavor reads models in place from shared storage; the Play flavor takes them
-    // through the in-app downloader / file picker and needs no broad storage permission.
-    private fun requestAllFilesAccess() {
-        if (!BuildConfig.SHARED_STORAGE) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-            runCatching {
-                startActivity(
-                    Intent(
-                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        Uri.parse("package:$packageName"),
-                    )
-                )
             }
         }
     }
@@ -81,6 +67,25 @@ class MainActivity : ComponentActivity() {
         val flag = resources.configuration.uiMode and
             android.content.res.Configuration.UI_MODE_NIGHT_MASK
         return flag == android.content.res.Configuration.UI_MODE_NIGHT_YES
+    }
+}
+
+/**
+ * Request all-files access, needed only by the dev flavor to scan device storage for adb-pushed
+ * models. Called on an explicit user action (Refresh), never at startup. No-op on the Play flavor
+ * and when access is already granted.
+ */
+fun requestSharedStorageAccess(context: android.content.Context) {
+    if (!BuildConfig.SHARED_STORAGE) return
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+        runCatching {
+            context.startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:${context.packageName}"),
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
     }
 }
 
@@ -166,7 +171,7 @@ private fun MainScreen(
                         fontFamily = FontFamily.Monospace,
                     )
                 }
-                TextButton(onClick = onRefresh) { Text("Refresh") }
+                TextButton(onClick = { requestSharedStorageAccess(context); onRefresh() }) { Text("Refresh") }
             }
             else -> LabeledDropdown(
                 label = "Model",
@@ -383,8 +388,15 @@ private fun TelemetryCard(ui: UiState) {
             }
             val t = ui.telemetry
             val hit = if (t.cacheHitPct >= 0) String.format(Locale.US, "%.0f%%", t.cacheHitPct) else "—"
+            // Once the run finishes the summary carries the aggregate average; show that as the
+            // headline rate. While generating, show the live instantaneous (last-token) rate.
+            val done = t.avgTokensPerSecond > 0
             Text(
-                String.format(Locale.US, "%.2f tok/s   (token %d/%d)", t.tokensPerSecond, t.step, t.steps),
+                if (done) {
+                    String.format(Locale.US, "%.2f tok/s   avg (%d tokens)", t.avgTokensPerSecond, t.steps)
+                } else {
+                    String.format(Locale.US, "%.2f tok/s   (token %d/%d)", t.tokensPerSecond, t.step, t.steps)
+                },
                 fontWeight = FontWeight.Bold, fontSize = 18.sp,
             )
             MeterRow("compute", t.computeMs, t.computeMs + t.ioMs, MaterialTheme.colorScheme.primary)

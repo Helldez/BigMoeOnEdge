@@ -11,6 +11,10 @@ data class Telemetry(
     var computeMs: Double = 0.0,
     var cacheHitPct: Double = -1.0,
     var text: String = "",
+    // Aggregate decode rate over the whole run, parsed from the final summary line; -1 until
+    // generation finishes. The per-token [tokensPerSecond] is instantaneous (last token only),
+    // so the UI shows this average once it is available.
+    var avgTokensPerSecond: Double = -1.0,
 ) {
     val tokensPerSecond: Double get() = if (wallMs > 0) 1000.0 / wallMs else 0.0
 }
@@ -45,6 +49,11 @@ class TelemetryParser {
             }
             t.startsWith("generation:") || t.startsWith("moe-stream:") || t.startsWith("moe-cache:") -> {
                 summary = if (summary.isEmpty()) t else summary + "\n" + t
+                // "generation: N tokens, X s/token (Y tok/s)" — Y is the aggregate average.
+                if (t.startsWith("generation:")) {
+                    Regex("""\(([\d.]+) tok/s\)""").find(t)?.groupValues?.get(1)?.toDoubleOrNull()
+                        ?.let { current.avgTokensPerSecond = it }
+                }
                 true
             }
             else -> false
