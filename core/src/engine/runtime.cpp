@@ -115,13 +115,13 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
             common_chat_params cp = common_chat_templates_apply(chat_tmpls.get(), inputs);
             prompt = cp.prompt;
             parse_params = common_chat_parser_params(cp);
-            // The common_chat_parser_params(cp) constructor copies only format + generation_prompt;
-            // it does NOT carry the generated PEG parser. Without it common_chat_parse cannot find
-            // the template's reasoning delimiters, so a model's thinking markers (Qwen's <think>,
-            // Gemma's thought channel) leak into content. Load the arena as the server does.
-            if (!cp.parser.empty()) parse_params.parser.load(cp.parser);
             // AUTO extracts reasoning into msg.reasoning_content (format-driven from the template),
             // leaving msg.content as just the final answer.
+            //
+            // NOTE: we deliberately do NOT load the generated PEG parser (cp.parser) here. Running
+            // it over the streamed partial text mangles the content on real templates. Reasoning is
+            // suppressed at the source instead via inputs.enable_thinking above; any residual empty
+            // markers are cosmetic. A safe display-time strip is tracked separately.
             parse_params.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
         } catch (const std::exception & e) {
             std::fprintf(stderr, "bmoe: chat template unavailable (%s); using raw prompt\n", e.what());
