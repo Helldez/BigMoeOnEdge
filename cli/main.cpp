@@ -194,6 +194,11 @@ int main(int argc, char ** argv) {
     }
     std::printf("generation: %d tokens, %.3f s/token (%.3f tok/s)\n", s.n_generated, s.s_per_token,
                 s.tokens_per_second);
+    if (s.n_prompt > 0) {
+        double prefill_tps = s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0;
+        std::printf("prefill: %d tokens, %.3f s (%.1f tok/s) | model load %.3f s | TTFT %.3f s\n", s.n_prompt,
+                    s.prefill_seconds, prefill_tps, s.load_seconds, s.load_seconds + s.prefill_seconds);
+    }
     if (cfg.moe.enabled) {
         std::printf("moe-stream: read %.1f MiB (%.2f MiB/token), decode %.3f s/token "
                     "(compute %.3f + flash I/O %.3f s/token, %.0f MiB/s)\n",

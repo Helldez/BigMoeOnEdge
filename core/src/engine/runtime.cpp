@@ -58,6 +58,11 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
         ~BackendGuard() { llama_backend_free(); }
     } backend_guard;
 
+    // Startup timing for the TTFT / prefill metrics (additive telemetry only). load spans
+    // model load + streaming capture/init; prefill is timed separately just below.
+    auto t_load0 = clock_t_::now();
+    double load_seconds = 0.0, prefill_seconds = 0.0;
+
     // Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
     // q4_K buffer would break the rebind), experts on CPU.
     llama_model_params mparams = llama_model_default_params();
@@ -195,10 +200,13 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
     }
 
     // ── prefill ──
+    auto t_prefill0 = clock_t_::now();
+    load_seconds = secs(t_load0, t_prefill0); // everything up to here is "load"
     {
         llama_batch pf = llama_batch_get_one(tokens.data(), n_prompt);
         if (llama_decode(ctx, pf) != 0) return fail("prefill decode failed");
     }
+    prefill_seconds = secs(t_prefill0, clock_t_::now());
     const float * logits = llama_get_logits_ith(ctx, -1); // logits of the last output
 
     // ── greedy generation ──
@@ -282,6 +290,9 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
     s.gen_seconds = gen_seconds;
     s.s_per_token = n_gen ? gen_seconds / n_gen : 0.0;
     s.tokens_per_second = gen_seconds > 0 ? n_gen / gen_seconds : 0.0;
+    s.n_prompt = n_prompt;
+    s.load_seconds = load_seconds;
+    s.prefill_seconds = prefill_seconds;
     if (cfg.moe.enabled) {
         IExpertSource::Stats st = source.stats();
         // Generation-phase figures, summed from the measured per-token deltas (prefill
