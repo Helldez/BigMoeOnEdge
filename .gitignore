@@ -6,6 +6,11 @@ cmake-build-*/
 # Models and large artifacts (never commit weights)
 *.gguf
 *.bin
+*.apk
+
+# Local test scratch (downloaded models/APKs, container build scripts/logs)
+/.models/
+/.apk/
 *.safetensors
 
 # Android
