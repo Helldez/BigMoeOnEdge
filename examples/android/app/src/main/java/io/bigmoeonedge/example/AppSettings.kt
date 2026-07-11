@@ -16,18 +16,17 @@ data class AppSettings(
     val loadAll: Boolean = false,// debug: read ALL experts each token (A/B baseline)
 ) {
     /**
-     * Build the bmoe-cli argument list. `arch` is the gguf `general.architecture` (may be null);
-     * it selects arch-specific prompt handling: the engine applies the model family's chat turn
-     * via --chatml, and Qwen3's /no_think soft switch is only appended for Qwen3 models (it is
-     * meaningless — and pollutes the prompt — for other families such as Gemma).
+     * Build the bmoe-cli argument list. The engine renders the model family's own chat template
+     * via --chatml; reasoning is turned off with --no-think, which the template honours through
+     * its `enable_thinking` kwarg. This is model-agnostic (works for Qwen3 and Gemma alike),
+     * unlike the old Qwen-only /no_think prompt suffix. `arch` is kept for future arch-specific
+     * handling but is no longer needed for the thinking switch.
      */
     fun toArgv(cliPath: String, modelPath: String, prompt: String, arch: String?): List<String> {
-        val isQwen3 = arch?.contains("qwen3") == true
-        val effectivePrompt = if (isQwen3 && !thinking) "$prompt /no_think" else prompt
         val a = mutableListOf(
             cliPath,
             "-m", modelPath,
-            "-p", effectivePrompt,
+            "-p", prompt,
             "-n", nPredict.toString(),
             "-t", threads.toString(),
             "--chatml", // apply the model family's chat turn (gemma / chatml)
@@ -36,6 +35,7 @@ data class AppSettings(
             "--io-threads", ioThreads.toString(),
             "--progress",
         )
+        if (!thinking) a += "--no-think"
         if (!oDirect) a += "--no-odirect"
         if (loadAll) a += "--load-all"
         return a

@@ -45,6 +45,13 @@ struct RunConfig {
     bool chatml = false;   // wrap the prompt in the model family's chat turn (arch-aware)
     bool progress = false; // emit machine telemetry (one JSON line per token)
 
+    // Render the chat template with reasoning enabled. Passed to the template as the
+    // `enable_thinking` kwarg, so a reasoning model (Qwen3, thinking Gemma, …) only emits
+    // its thinking channel when true. Off suppresses reasoning at the source rather than
+    // relying on the display-time parser, which cannot strip a format it does not know.
+    // Only meaningful with chatml; the raw-prompt path ignores it.
+    bool think = true;
+
     MoeStreamConfig moe;
 };
 
