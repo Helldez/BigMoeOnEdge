@@ -231,10 +231,10 @@ private fun MainScreen(
 
         TelemetryCard(ui)
 
-        // Show only the final response; a reasoning model's internal "thinking" is hidden.
-        val answer = ReasoningFilter.visible(ui.answer)
-        if (answer.isNotEmpty()) {
-            SelectionContainer { Text(answer, fontSize = 15.sp) }
+        // The engine already hides a reasoning model's internal thinking (common_chat_parse),
+        // so the streamed answer is the final response.
+        if (ui.answer.isNotEmpty()) {
+            SelectionContainer { Text(ui.answer, fontSize = 15.sp) }
         }
     }
 }
