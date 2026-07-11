@@ -20,8 +20,10 @@ large share of the I/O. Requires a routing predictor or speculative prefetch.
 
 ## More architectures
 
-Beyond `qwen3moe`: other `build_moe_ffn` models (one recipe row each), then the merged
-`ffn_gate_up_exps` layout and shared-expert models. See
+Beyond `qwen3moe`: other `build_moe_ffn` models are one recipe row each. The merged
+`ffn_gate_up_exps` layout and shared-expert models are supported too (`gemma4` / Gemma 4
+MoE exercises both). Remaining frontier: architectures whose routing node is not the shared
+`ffn_moe_topk` (e.g. custom gating), which the capture/stream hook would need to learn. See
 [adding-a-model.md](adding-a-model.md).
 
 ## Expert quantization on the fly
