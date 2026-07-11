@@ -69,10 +69,17 @@ class RunService : Service() {
             val p = pb.start().also { proc = it }
 
             // Drain stderr so the CLI never blocks on a full pipe; surface the tail on error.
+            // Wrap in try/catch: Stop calls proc.destroy(), which closes this stream and makes
+            // forEachLine throw. Uncaught here it would kill the whole app process, not just the
+            // CLI — this is the crash the Stop button used to trigger.
             val errTail = StringBuilder()
             thread(name = "bmoe-cli-err") {
-                BufferedReader(InputStreamReader(p.errorStream)).forEachLine {
-                    if (errTail.length < 4000) errTail.append(it).append('\n')
+                try {
+                    BufferedReader(InputStreamReader(p.errorStream)).forEachLine {
+                        if (errTail.length < 4000) errTail.append(it).append('\n')
+                    }
+                } catch (_: Throwable) {
+                    // stream closed by destroy() on Stop — nothing to surface.
                 }
             }
 
