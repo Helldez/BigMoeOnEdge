@@ -12,6 +12,7 @@ data class AppSettings(
     val threads: Int = 4,        // compute threads (-t); 4 is the measured optimum
     val nPredict: Int = 48,
     val oDirect: Boolean = true, // bypass the page cache
+    val overlap: Boolean = false,// prefetch experts while the layer computes (experimental)
     val thinking: Boolean = false,// Qwen3 reasoning; off appends the /no_think soft switch
     val loadAll: Boolean = false,// debug: read ALL experts each token (A/B baseline)
 ) {
@@ -37,6 +38,7 @@ data class AppSettings(
         )
         if (!thinking) a += "--no-think"
         if (!oDirect) a += "--no-odirect"
+        if (overlap) a += "--overlap"
         if (loadAll) a += "--load-all"
         return a
     }
@@ -45,6 +47,7 @@ data class AppSettings(
         ctx.prefs().edit()
             .putInt("cacheMb", cacheMb).putInt("ioThreads", ioThreads).putInt("threads", threads)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
+            .putBoolean("overlap", overlap)
             .putBoolean("thinking", thinking).putBoolean("loadAll", loadAll)
             .apply()
     }
@@ -66,6 +69,7 @@ data class AppSettings(
                 threads = p.getInt("threads", d.threads),
                 nPredict = p.getInt("nPredict", d.nPredict),
                 oDirect = p.getBoolean("oDirect", d.oDirect),
+                overlap = p.getBoolean("overlap", d.overlap),
                 thinking = p.getBoolean("thinking", d.thinking),
                 loadAll = p.getBoolean("loadAll", d.loadAll),
             )

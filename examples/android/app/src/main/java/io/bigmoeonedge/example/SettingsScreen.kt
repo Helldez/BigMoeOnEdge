@@ -56,6 +56,11 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     "Direct I/O (O_DIRECT)", "Bypass the page cache when reading experts",
                     current.oDirect,
                 ) { onChange(current.copy(oDirect = it)) }
+                SwitchRow(
+                    "I/O–compute overlap",
+                    "Prefetch experts while the layer computes (experimental)",
+                    current.overlap,
+                ) { onChange(current.copy(overlap = it)) }
             }
 
             Section("Compute") {
