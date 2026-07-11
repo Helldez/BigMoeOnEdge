@@ -29,6 +29,12 @@ struct RunSummary {
     double s_per_token = 0.0;
     double tokens_per_second = 0.0;
 
+    // Startup phase (additive telemetry): model load + streaming setup, and prefill.
+    // TTFT ~= load_seconds + prefill_seconds; prefill tok/s = n_prompt / prefill_seconds.
+    int n_prompt = 0;
+    double load_seconds = 0.0;
+    double prefill_seconds = 0.0;
+
     // MoE streaming totals (zero when streaming is off)
     double moe_read_mib = 0.0;
     double moe_io_seconds = 0.0;

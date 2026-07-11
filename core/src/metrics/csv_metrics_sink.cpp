@@ -23,9 +23,11 @@ public:
     void on_summary(const RunSummary & s) override {
         std::fprintf(f_,
                      "# summary tokens=%d s/tok=%.3f tok/s=%.3f read_MiB=%.1f "
-                     "io_s=%.2f compute_s/tok=%.3f io_s/tok=%.3f cache_hit_pct=%.1f\n",
+                     "io_s=%.2f compute_s/tok=%.3f io_s/tok=%.3f cache_hit_pct=%.1f "
+                     "n_prompt=%d load_s=%.3f prefill_s=%.3f prefill_tps=%.2f\n",
                      s.n_generated, s.s_per_token, s.tokens_per_second, s.moe_read_mib, s.moe_io_seconds,
-                     s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct);
+                     s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct, s.n_prompt, s.load_seconds,
+                     s.prefill_seconds, s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0);
         std::fflush(f_);
     }
 
