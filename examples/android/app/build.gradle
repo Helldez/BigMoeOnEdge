@@ -19,6 +19,30 @@ android {
         }
     }
 
+    // Two distribution channels differing only in how a model reaches the device.
+    //   dev   sideloaded (GitHub Release). Keeps all-files access, so it can read a gguf
+    //         adb-pushed to /sdcard/Download or /data/local/tmp — the fastest way to get a
+    //         multi-GB model onto a dev device. Declares MANAGE_EXTERNAL_STORAGE via
+    //         src/dev/AndroidManifest.xml.
+    //   play  Play-Store-compliant. No broad storage permission: models arrive only through
+    //         the in-app URL downloader or the system file picker (SAF), both writing to the
+    //         app-specific external files dir, which needs no permission.
+    // SHARED_STORAGE gates the storage-permission code paths; no model names or URLs are
+    // ever hardcoded — the scanned directories are the only difference.
+    flavorDimensions += 'distribution'
+    productFlavors {
+        dev {
+            dimension 'distribution'
+            applicationIdSuffix '.dev'
+            versionNameSuffix '-dev'
+            buildConfigField 'boolean', 'SHARED_STORAGE', 'true'
+        }
+        play {
+            dimension 'distribution'
+            buildConfigField 'boolean', 'SHARED_STORAGE', 'false'
+        }
+    }
+
     // The CLI is a real executable shipped as lib*.so; it must reach the device
     // uncompressed and extracted into nativeLibraryDir so it can be exec'd.
     packagingOptions {
@@ -41,6 +65,7 @@ android {
     }
     buildFeatures {
         compose true
+        buildConfig true
     }
     composeOptions {
         // Matches Kotlin 1.9.24 (see the Compose-Kotlin compatibility map).

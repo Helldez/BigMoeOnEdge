@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- dev flavor only. A gguf is tens of GB; with all-files access the dev build can read
+         one adb-pushed to /sdcard/Download or /data/local/tmp in place, without copying it
+         into app storage. The Play flavor omits this and takes models via the in-app
+         downloader / file picker instead. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+</manifest>
