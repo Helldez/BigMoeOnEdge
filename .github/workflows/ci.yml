@@ -85,7 +85,7 @@ jobs:
           jni=examples/android/app/src/main/jniLibs/arm64-v8a
           mkdir -p "$jni"
           cp build-android/cli/bmoe-cli "$jni/libbmoe-cli.so"
-          find build-android \( -name 'libggml*.so' -o -name 'libllama.so' \) -exec cp {} "$jni/" \;
+          find build-android \( -name 'libggml*.so' -o -name 'libllama*.so' \) -exec cp {} "$jni/" \;
           # bmoe-cli links the c++_shared STL; ship its runtime from the NDK sysroot.
           cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$jni/"
           ls -la "$jni"
