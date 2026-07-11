@@ -128,6 +128,37 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     }
     fsize_ = pio::file_size(primary);
 
+    // Verify O_DIRECT actually returns correct bytes on this storage. On some emulated / FUSE-backed
+    // volumes (e.g. an app-private dir under /storage/emulated) the open SUCCEEDS but direct reads
+    // return garbage, silently corrupting expert weights → nonsense output. Compare one aligned
+    // block read directly against the same block read buffered; on any mismatch, fall back to
+    // buffered I/O for this file. On real filesystems (adb-pushed models, desktop) the two match
+    // and O_DIRECT is kept.
+    if (o_direct_ && fsize_ >= (uint64_t) align_) {
+        uint64_t voff = (fsize_ / 2) & ~(uint64_t) (align_ - 1);
+        if (voff + align_ > fsize_) voff = 0;
+        void * dbuf = pio::alloc_aligned(align_, align_);
+        pio::fd_t vfd = pio::open_read(gguf_path.c_str(), false);
+        if (dbuf && pio::fd_ok(vfd)) {
+            std::vector<char> bbuf(align_);
+            long long gd = pio::pread_at(primary, dbuf, align_, voff);
+            long long gb = pio::pread_at(vfd, bbuf.data(), align_, voff);
+            if (gd != (long long) align_ || gb != (long long) align_ ||
+                std::memcmp(dbuf, bbuf.data(), align_) != 0) {
+                std::fprintf(stderr, "bmoe: O_DIRECT returns wrong data on this storage — using buffered I/O\n");
+                o_direct_ = false;
+                pio::close_fd(primary);
+                primary = pio::open_read(gguf_path.c_str(), false);
+            }
+        }
+        if (dbuf) pio::aligned_free(dbuf);
+        if (pio::fd_ok(vfd)) pio::close_fd(vfd);
+        if (!pio::fd_ok(primary)) {
+            std::fprintf(stderr, "bmoe: reopen after O_DIRECT check failed\n");
+            return false;
+        }
+    }
+
     fds_.assign(io_threads_, pio::fd_invalid);
     fds_buf_.assign(io_threads_, pio::fd_invalid);
     bounces_.assign(io_threads_, nullptr);

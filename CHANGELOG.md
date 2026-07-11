@@ -22,6 +22,11 @@ Semantic Versioning.
   plus an **I/O–compute overlap** toggle; the streaming controls disable when mmap is on.
 
 ### Fixed
+- Storage where O_DIRECT lies is now handled: some emulated / FUSE-backed volumes (an app-private
+  dir under `/storage/emulated`, where imported and downloaded models land) let the O_DIRECT open
+  succeed but return garbage on read, silently corrupting expert weights into nonsense output. The
+  streamer now verifies a direct read against a buffered read at init and falls back to buffered
+  I/O when they disagree; real filesystems (adb-pushed models, desktop) keep O_DIRECT.
 - Android: **Stop** no longer terminates the whole app — the stderr drain thread is guarded,
   so the stream close from `Process.destroy()` no longer throws on its own thread; a separate
   wakelock under-lock race on Stop is also fixed.
