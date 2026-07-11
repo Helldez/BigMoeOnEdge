@@ -21,8 +21,11 @@ public:
 
     // Make layer `il`'s routed experts resident. `ids` holds n_ids expert indices
     // (duplicates allowed; the union across a batch's tokens for prefill, exactly the
-    // top-k for n=1 decode). Blocks until every routed slice is in place at its
-    // canonical offset inside the bound tensor. Returns false on I/O failure.
+    // top-k for n=1 decode). In the default (serial) mode this BLOCKS until every routed
+    // slice is in place at its canonical offset inside the bound tensor. In overlap mode
+    // it only publishes the reads and returns immediately; the layer's matmul then blocks
+    // per expert (via the fork's expert-ready hook) until that expert's slice arrives.
+    // Returns false on I/O failure (serial) or if a prior async batch already failed.
     virtual bool load_layer(int il, const int32_t * ids, int n_ids) = 0;
 
     // Cumulative streaming statistics, for telemetry and the end-of-run summary.
@@ -32,6 +35,7 @@ public:
         long long cache_hits = 0;          // expert lookups served from the cache
         long long cache_lookups = 0;       // total expert lookups (hits + misses)
         uint64_t cache_resident_bytes = 0; // currently resident cached slice bytes
+        double stall_seconds = 0.0;        // overlap: summed across compute threads (0 when serial)
     };
     virtual Stats stats() const = 0;
 };

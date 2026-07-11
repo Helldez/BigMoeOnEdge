@@ -25,6 +25,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 struct ggml_tensor;
@@ -64,6 +65,16 @@ public:
     bool load_layer(int il, const int32_t * ids, int n_ids) override;
     Stats stats() const override;
 
+    // Register the process-global expert-ready hook so the CPU matmul blocks per expert
+    // until its slice is resident. Only meaningful in overlap mode; a no-op if the fork
+    // hook was not compiled in. Paired with shutdown(), which unregisters it.
+    void enable_overlap_hook();
+
+    // True once an async read has failed or the source is shutting down. Wired to
+    // llama_set_abort_callback so a mid-decode I/O failure aborts the graph cleanly
+    // instead of computing on a half-read expert.
+    bool fatal() const { return fatal_.load(std::memory_order_acquire); }
+
     void shutdown();
 
 private:
@@ -71,11 +82,24 @@ private:
         void * dst = nullptr;
         uint64_t off = 0;
         uint64_t nbytes = 0;
+        int32_t flag = -1; // overlap: index into ready_ to publish on completion; -1 = serial
+    };
+
+    // One readiness cell per (projection, expert). A cell is "ready for the layer in flight"
+    // exactly when gen == async_gen_; padded to a cache line so the compute threads polling it
+    // do not false-share the LRU/job bookkeeping the load thread mutates alongside.
+    struct alignas(64) ReadyFlag {
+        std::atomic<uint32_t> gen{0};
     };
 
     bool read_slice(int lane, void * dst, uint64_t off, uint64_t nbytes);
     void io_drain(int lane, uint64_t my_gen);
     void io_worker(int lane);
+
+    bool load_layer_async(int il, const int32_t * ids, int n_ids); // overlap path
+
+    static void c_expert_ready(const ggml_tensor * src0, int expert, void * user_data);
+    void on_expert_ready(const ggml_tensor * src0, int expert);
 
     // LRU helpers (active only when cache_max_ > 0)
     void lru_unlink(int32_t id);
@@ -86,6 +110,7 @@ private:
     bool active_ = false;
     bool o_direct_ = false;
     bool load_all_ = false;
+    bool overlap_ = false;
     int n_layer_ = 0;
     int n_expert_ = 0;
     uint64_t fsize_ = 0;
@@ -127,10 +152,26 @@ private:
     size_t next_idx_ = 0, done_cnt_ = 0;
     bool io_stop_ = false;
     std::atomic<bool> io_err_{false};
+    uint32_t batch_flag_gen_ = 0; // async_gen_ of the batch in flight; snapshot under io_mtx_ at publish
 
     std::atomic<long long> read_bytes_{0};
     std::atomic<long long> read_ns_{0};
     std::atomic<long long> io_syscall_ns_{0};
+
+    // ── overlap mode: one layer in flight at a time (guaranteed by graph order) ──
+    // A ReadyFlag is ready iff its gen == async_gen_; the load thread bumps async_gen_ per
+    // layer, marks cache hits ready immediately, and workers mark misses ready after the read.
+    // The compute threads look a captured expert tensor up in texp_, then spin/wait on its flag.
+    std::vector<ReadyFlag> ready_;                  // size max_exps * n_expert_; idx = p*n_expert_+e
+    std::atomic<uint32_t> async_gen_{0};
+    std::atomic<int> cur_il_{-1};                   // layer whose experts the hook may wait on
+    std::atomic<bool> fatal_{false};
+    std::mutex ready_mtx_;
+    std::condition_variable ready_cv_;
+    std::atomic<long long> stall_ns_{0};            // summed across all stalling compute threads
+    std::unordered_map<const void *, uint32_t> texp_; // expert tensor* -> (il<<8)|p, built in init
+    std::vector<int> staged_;                       // per-load sorted unique expert scratch
+    bool hook_registered_ = false;
 };
 
 } // namespace bmoe

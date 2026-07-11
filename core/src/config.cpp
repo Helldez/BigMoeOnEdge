@@ -25,6 +25,12 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("n_ctx must be positive");
     }
 
+    // overlap is meaningless without streaming (it gates the streamer's own reads). The
+    // hook-availability check is deferred to run(): validate() stays pure (no native).
+    if (cfg.moe.overlap && !cfg.moe.enabled) {
+        return fail("moe.overlap requires moe.enabled");
+    }
+
     if (cfg.moe.enabled) {
         const MoeStreamConfig & m = cfg.moe;
         if (m.io_threads < 1 || m.io_threads > MoeStreamConfig::io_threads_max) {
