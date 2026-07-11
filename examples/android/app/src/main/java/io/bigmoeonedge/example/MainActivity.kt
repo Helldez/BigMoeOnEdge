@@ -225,7 +225,7 @@ private fun MainScreen(
                 "cache ${if (settings.cacheMb == 0) "off" else "${settings.cacheMb} MiB"} · " +
                     "${settings.ioThreads} lanes${if (settings.overlap) " · overlap" else ""} · " +
                     "${settings.threads} threads · thinking ${if (settings.thinking) "on" else "off"}"
-            },
+            } + " · build ${BuildConfig.GIT_SHA}",
             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
