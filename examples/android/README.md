@@ -19,16 +19,13 @@ research harness and keeps the app a thin driver over the CLI.
    This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-cli.so` and the
    `libllama`/`libggml` shared libraries.
 
-2. Build and install the APK. Open this folder in Android Studio, or from the command
-   line generate the Gradle wrapper once (`gradle wrapper`) and then:
+2. Build and install the APK. Open this folder in Android Studio, or use the committed
+   Gradle wrapper directly:
 
    ```bash
    ./gradlew assembleDebug
    adb install app/build/outputs/apk/debug/app-debug.apk
    ```
-
-   The `gradle-wrapper.jar` is intentionally not committed; Android Studio and
-   `gradle wrapper` both produce it.
 
 ## Push a model
 
