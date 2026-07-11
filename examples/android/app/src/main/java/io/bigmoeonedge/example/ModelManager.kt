@@ -22,9 +22,16 @@ object ModelManager {
     private val MOE_MARKER = "ffn_down_exps".toByteArray(Charsets.US_ASCII)
     private const val PROBE_BYTES = 16 * 1024 * 1024
 
+    // A gguf larger than the free space on shared storage cannot be copied there, but it can
+    // still be adb-pushed to /data/local/tmp (same physical partition, no duplicate needed) and
+    // read in place: the path is world-traversable and the file world-readable, so the app's
+    // untrusted_app domain can open it. Scanned in addition to shared storage for that case.
+    private val TMP_MODEL_DIR = File("/data/local/tmp/shardllm")
+
     private fun scanDirs(ctx: Context): List<File> = buildList {
         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)?.let { add(it) }
         ctx.getExternalFilesDir(null)?.let { add(it) }
+        if (TMP_MODEL_DIR.isDirectory) add(TMP_MODEL_DIR)
     }
 
     private fun allGguf(ctx: Context): List<File> =
