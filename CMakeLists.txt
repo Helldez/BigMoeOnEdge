@@ -24,14 +24,22 @@ endif()
 option(BMOE_BUILD_TESTS "Build byte-identity gates and unit tests" ON)
 option(BMOE_BUILD_CLI   "Build the bmoe-cli host tool"              ON)
 
-# --- Optional native dependency: llama.cpp (public API only) ----------------------
+# --- Optional native dependency: llama.cpp ----------------------------------------
+# The streaming seam uses only the public C API (llama.h). We additionally link llama.cpp's
+# `common` layer for one thing: chat-template rendering + reasoning parsing (common_chat_*),
+# so prompt formatting and thinking-extraction are template-driven per model instead of
+# hardcoded. Unlike the streaming seam, `common` is NOT a stable API — it can change between
+# upstream versions, so a submodule bump may need the chat glue in runtime.cpp updated (the
+# gates catch it at build time). That trade-off is deliberate; see docs/seam.md.
 set(BMOE_HAVE_LLAMA OFF)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     set(BMOE_HAVE_LLAMA ON)
-    # We consume only the public library; examples/tests/server of upstream are off.
+    # Upstream examples/tests/server stay off; build the common utils we link for chat.
     set(LLAMA_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_SERVER  OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_COMMON  ON  CACHE BOOL "" FORCE)
+    set(LLAMA_CURL          OFF CACHE BOOL "" FORCE)  # common's model-download path unused
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
 endif()
 

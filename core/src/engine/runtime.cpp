@@ -7,9 +7,15 @@
 #include "llama.h"
 #include "ggml.h"
 
+// llama.cpp's `common` layer (NOT the stable public API): chat-template rendering and
+// reasoning parsing. See the note in the root CMakeLists / docs/seam.md.
+#include "chat.h"
+#include "common.h"
+
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -32,19 +38,6 @@ llama_token argmax(const float * logits, int n_vocab) {
             best = v;
         }
     return best;
-}
-
-// Wrap a single user turn in the architecture's chat format. This is a minimal runtime
-// with no Jinja engine, so instead of rendering the gguf's tokenizer.chat_template
-// (Gemma 4's is a 16 KB Jinja program with tool-call macros that llama.cpp's non-Jinja
-// llama_chat_apply_template cannot parse), we emit the small, stable turn format for the
-// model family. Add a branch here when supporting another instruct family.
-std::string apply_chat_template(const char * arch, const std::string & user) {
-    if (std::strncmp(arch, "gemma", 5) == 0) {
-        return "<start_of_turn>user\n" + user + "<end_of_turn>\n<start_of_turn>model\n";
-    }
-    // Qwen family and default: ChatML.
-    return "<|im_start|>user\n" + user + "<|im_end|>\n<|im_start|>assistant\n";
 }
 
 RunResult fail(std::string msg) {
@@ -91,8 +84,36 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
                         "' — add one in core/src/moe/arch_registry.cpp (see docs/adding-a-model.md)");
     }
 
-    // Tokenize the (optionally chat-templated) prompt, using the model family's turn format.
-    const std::string prompt = cfg.chatml ? apply_chat_template(arch, cfg.prompt) : cfg.prompt;
+    // Format the prompt. With cfg.chatml, render the model's OWN chat template via llama.cpp's
+    // `common` layer — real Jinja, so it works for Gemma's channel format, Qwen ChatML, etc. —
+    // and set up reasoning parsing so a thinking model's internal reasoning is stripped from the
+    // shown answer. Without cfg.chatml the raw prompt is sent verbatim (the deterministic gates
+    // use this path). If no template is available, fall back to raw.
+    std::string prompt = cfg.prompt;
+    bool chat_on = cfg.chatml;
+    common_chat_templates_ptr chat_tmpls;
+    common_chat_parser_params parse_params;
+    if (chat_on) {
+        try {
+            chat_tmpls = common_chat_templates_init(model, "");
+            common_chat_templates_inputs inputs;
+            common_chat_msg user_msg;
+            user_msg.role = "user";
+            user_msg.content = cfg.prompt;
+            inputs.messages = {user_msg};
+            inputs.add_generation_prompt = true;
+            inputs.use_jinja = true;
+            common_chat_params cp = common_chat_templates_apply(chat_tmpls.get(), inputs);
+            prompt = cp.prompt;
+            parse_params = common_chat_parser_params(cp);
+            // AUTO extracts reasoning into msg.reasoning_content (format-driven from the template),
+            // leaving msg.content as just the final answer.
+            parse_params.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+        } catch (const std::exception & e) {
+            std::fprintf(stderr, "bmoe: chat template unavailable (%s); using raw prompt\n", e.what());
+            chat_on = false;
+        }
+    }
     std::vector<llama_token> tokens(prompt.size() + 8);
     int n_prompt = llama_tokenize(vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
                                   /*add_special*/ true, /*parse_special*/ true);
@@ -187,6 +208,18 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
     int n_gen = 0;
     double gen_seconds = 0.0;
 
+    // The text to surface: with chat on, parse the raw output so a reasoning model's internal
+    // thinking is hidden (msg.reasoning_content) and only the answer (msg.content) is shown.
+    // Streaming-safe via is_partial. Generation itself always uses the raw tokens.
+    auto shown_text = [&](const std::string & raw, bool partial) -> std::string {
+        if (!chat_on) return raw;
+        try {
+            return common_chat_parse(raw, partial, parse_params).content;
+        } catch (const std::exception &) {
+            return raw;
+        }
+    };
+
     // Baseline snapshot taken AFTER prefill: the summary reports the generation phase
     // only, from real per-token deltas, never a total divided by n_gen. Prefill routes
     // the union of the prompt's experts (near the whole bank), so folding it into a
@@ -223,7 +256,7 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
         m.steps = cfg.n_predict;
         m.wall_ms = wall * 1000.0;
         m.piece = delta;
-        m.text = gen;
+        m.text = shown_text(gen, /*partial*/ true);
         if (cfg.moe.enabled) {
             IExpertSource::Stats st = source.stats();
             m.read_bytes = (uint64_t) ((long long) st.read_bytes - prev_bytes);
@@ -263,7 +296,7 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
     }
     if (sink) sink->on_summary(s);
 
-    res.generated_text = std::move(gen);
+    res.generated_text = shown_text(gen, /*partial*/ false);
 
     // Tear the source's I/O pool down before the context/model guards fire.
     source.shutdown();
