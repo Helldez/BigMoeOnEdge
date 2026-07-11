@@ -254,8 +254,8 @@ void ExpertStreamSource::io_drain(int lane, uint64_t my_gen) {
             ready_[(size_t) j.flag].gen.store(batch_flag_gen_, std::memory_order_release);
             {
                 std::lock_guard<std::mutex> lk(ready_mtx_);
+                ready_cv_.notify_all();
             }
-            ready_cv_.notify_all();
         }
         std::lock_guard<std::mutex> lk(io_mtx_);
         if (++done_cnt_ == batch_njobs_) io_cv_done_.notify_all();
@@ -563,8 +563,8 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
         fatal_.store(true, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lk(ready_mtx_);
+            ready_cv_.notify_all();
         }
-        ready_cv_.notify_all();
         return;
     }
     const size_t idx = (size_t) p * (size_t) n_expert_ + (size_t) expert;
@@ -625,8 +625,8 @@ void ExpertStreamSource::shutdown() {
     fatal_.store(true, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lk(ready_mtx_);
+        ready_cv_.notify_all();
     }
-    ready_cv_.notify_all();
     {
         std::lock_guard<std::mutex> lk(io_mtx_);
         io_stop_ = true;
