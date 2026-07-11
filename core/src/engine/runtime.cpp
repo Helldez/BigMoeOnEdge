@@ -108,6 +108,10 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
             inputs.messages = {user_msg};
             inputs.add_generation_prompt = true;
             inputs.use_jinja = true;
+            // Suppress the model's thinking channel at the template level when reasoning is off,
+            // so a model whose reasoning format the display parser cannot strip (e.g. Gemma)
+            // simply never generates it. A template that ignores the kwarg is unaffected.
+            inputs.enable_thinking = cfg.think;
             common_chat_params cp = common_chat_templates_apply(chat_tmpls.get(), inputs);
             prompt = cp.prompt;
             parse_params = common_chat_parser_params(cp);

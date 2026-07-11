@@ -66,6 +66,7 @@ static void print_usage(const char * argv0) {
                 "  -t, --threads N         compute threads (default 4)\n"
                 "  -c, --ctx-size N        context size (default 2048)\n"
                 "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
+                "      --no-think          render the chat template with reasoning disabled\n"
                 "      --progress          emit machine telemetry (one JSON line per token)\n"
                 "      --csv PATH          also write per-token metrics as CSV\n"
                 "\n"
@@ -107,6 +108,8 @@ int main(int argc, char ** argv) {
             cfg.n_ctx = std::atoi(next("-c"));
         else if (a == "--chatml")
             cfg.chatml = true;
+        else if (a == "--no-think")
+            cfg.think = false;
         else if (a == "--progress")
             cfg.progress = true;
         else if (a == "--csv")
