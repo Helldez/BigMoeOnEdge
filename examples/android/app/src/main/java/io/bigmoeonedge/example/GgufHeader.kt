@@ -50,6 +50,42 @@ object GgufHeader {
         runCatching { f.inputStream().buffered().use { parseIsMoe(Counting(it)) } }
             .getOrElse { substringFallback(f) }
 
+    /**
+     * The gguf `general.architecture` string (e.g. "gemma4", "qwen3moe"), or null if it can't
+     * be read. Used to pick the right chat turn format and to gate arch-specific prompt switches.
+     * Cheap: this key is normally the first KV, so only a few hundred bytes are read.
+     */
+    fun arch(f: File): String? =
+        runCatching { f.inputStream().buffered().use { parseArch(Counting(it)) } }.getOrNull()
+
+    private fun parseArch(s: Counting): String? {
+        readMagicAndVersion(s)
+        s.u64() // tensor count
+        val kvCount = s.u64()
+        if (kvCount < 0) return null
+        for (i in 0 until kvCount) {
+            val key = readString(s)
+            val type = s.u32()
+            if (key == "general.architecture" && type == T_STRING) return readString(s)
+            skipValue(s, type)
+            if (s.pos > MAX_HEADER_BYTES) return null
+        }
+        return null
+    }
+
+    // Read and validate the "GGUF" magic and version (v2+); throws on anything else.
+    private fun readMagicAndVersion(s: Counting) {
+        val magic = ByteArray(4)
+        s.readFully(magic)
+        if (magic[0].toInt() != 'G'.code || magic[1].toInt() != 'G'.code ||
+            magic[2].toInt() != 'U'.code || magic[3].toInt() != 'F'.code
+        ) {
+            throw IllegalArgumentException("not a gguf file")
+        }
+        val version = s.u32()
+        if (version < 2) throw IllegalArgumentException("unsupported gguf version $version")
+    }
+
     private fun parseIsMoe(s: Counting): Boolean {
         val magic = ByteArray(4)
         s.readFully(magic)
