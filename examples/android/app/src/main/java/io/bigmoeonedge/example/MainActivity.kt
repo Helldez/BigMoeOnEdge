@@ -231,8 +231,10 @@ private fun MainScreen(
 
         TelemetryCard(ui)
 
-        if (ui.answer.isNotEmpty()) {
-            SelectionContainer { Text(ui.answer, fontSize = 15.sp) }
+        // Show only the final response; a reasoning model's internal "thinking" is hidden.
+        val answer = ReasoningFilter.visible(ui.answer)
+        if (answer.isNotEmpty()) {
+            SelectionContainer { Text(answer, fontSize = 15.sp) }
         }
     }
 }
