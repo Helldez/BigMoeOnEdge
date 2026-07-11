@@ -49,6 +49,11 @@ smaller budget thrashes and is slower than no cache. Gemma-4-26B-A4B-Q4_K_M reac
 **3.48 tok/s** at the same best setting. Full matrix and method:
 [docs/benchmarks.md](docs/benchmarks.md), [docs/benchmark-method.md](docs/benchmark-method.md).
 
+An optional `--overlap` mode pipelines each layer's expert reads with its compute (via the
+fork's per-expert readiness hook) instead of blocking on them, aiming to hide flash I/O
+behind FFN compute. It is byte-identical to the serial path (gate G4); its on-device
+throughput is being measured and the table will gain an overlap row once those numbers land.
+
 The same works on desktop for a model larger than the machine's RAM. Qwen3-30B-A3B-Q4_K_M
 (17.3 GiB) on a Windows PC with 14.8 GiB RAM (1.17× RAM, so it cannot be held resident),
 cache 4000 MiB, 4 I/O lanes, 4 threads → **2.58 tok/s**, 861 MiB/token, 44.8% cache hit,
@@ -67,6 +72,10 @@ build/cli/bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf --moe-stream \
   --cache-mb 4000 --io-threads 4 -t 4 -n 48 --chatml -p "Explain MoE routing."
 ```
 
+Add `--overlap` to pipeline expert reads with compute (needs the fork submodule), and
+`--no-think` to render the chat template with reasoning off. Omit `--moe-stream` entirely
+for the plain mmap baseline the streaming modes are compared against.
+
 Run the byte-identity gates (needs `python3` with the `gguf` package):
 
 ```bash
@@ -77,7 +86,11 @@ cd build && ctest --output-on-failure
 
 A minimal chat app with a live telemetry panel is in
 [`examples/android`](examples/android). Build the CLI for arm64 with
-`scripts/build-android.ps1`, then build the APK and push a model.
+`scripts/build-android.ps1`, then build the APK and push a model. Its settings expose the
+streaming knobs (expert cache, I/O lanes, O_DIRECT, I/O–compute overlap), a reasoning
+toggle, and an **mmap baseline** switch that turns streaming off entirely so you can compare
+modes on the same device; the panel reports per-token compute-vs-flash split, cache hit rate
+and the aggregate tok/s at the end of a run.
 
 ## How it works, briefly
 

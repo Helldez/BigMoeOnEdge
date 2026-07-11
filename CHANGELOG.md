@@ -14,6 +14,24 @@ Semantic Versioning.
   fork branch (`bmoe/expert-ready-hook`) on `Helldez/llama.cpp` with an explicit sunset;
   the serial streaming path still builds and runs against stock upstream. See
   `docs/seam.md` § 3.
+- Model-agnostic reasoning control (`--no-think`): renders the chat template with
+  `enable_thinking=false`, suppressing a reasoning model's thinking channel at the source
+  for Qwen3, Gemma and any template that honours the kwarg — replacing the Qwen-only
+  `/no_think` prompt suffix.
+- Android example: an **mmap baseline (no streaming)** settings toggle to compare against,
+  plus an **I/O–compute overlap** toggle; the streaming controls disable when mmap is on.
+
+### Fixed
+- Reasoning is now stripped from the shown answer: the chat parser arena is loaded from the
+  applied template, so `common_chat_parse` finds the reasoning delimiters instead of leaking
+  a model's (empty or not) thinking markers into the content.
+- Android: **Stop** no longer terminates the whole app — the stderr drain thread is guarded,
+  so the stream close from `Process.destroy()` no longer throws on its own thread; a separate
+  wakelock under-lock race on Stop is also fixed.
+- Android: all-files access is requested on demand (an explicit storage rescan), not at
+  startup — downloaded, imported and picked models need no permission.
+- Android: the headline tok/s reports the aggregate average once generation finishes, rather
+  than the last token's instantaneous rate.
 
 ## [0.1.0] - 2026-07-11
 
