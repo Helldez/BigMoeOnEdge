@@ -23,8 +23,10 @@ expert-selective streaming that stays lossless and requires no fork.
 - **CPU experts.** Streamed experts are computed on CPU; the rebind targets host memory.
   GPU offload of the streamed experts is not supported (the dense parts can still use the
   GPU). Decode is flash-I/O-bound anyway, so this is rarely the bottleneck.
-- **Three separate projections.** Models that pack gate+up into one expert tensor are not
-  yet supported (see [adding-a-model.md](adding-a-model.md)).
+- **Shared experts stay resident.** Architectures with an always-on shared expert (e.g.
+  `gemma4`) stream the routed experts but keep the shared expert — and any dense layers —
+  mmap-resident, so the streamed fraction (and the memory saving) is smaller than for a
+  purely routed model like `qwen3moe`.
 - **Repack must stay off.** Loading uses `use_extra_bufts=false`; you cannot combine
   streaming with weight repacking.
 - **Windows throughput.** The cache's reserve-then-commit-per-slice path is heavier on
