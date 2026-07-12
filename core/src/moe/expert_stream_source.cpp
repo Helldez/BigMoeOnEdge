@@ -362,6 +362,10 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     cgen_++;
     jobs_.clear();
 
+    // Cache-management work (vm commit + LRU bookkeeping, then eviction below) is timed into
+    // mgmt_ns_ so the metrics can split it out of the compute residual instead of hiding it there.
+    const auto tm0 = clock_t_::now();
+
     auto stage = [&](int e) -> bool {
         if (cache_max_ == 0) {
             for (int p = 0; p < MoeRecipe::max_exps; ++p) {
@@ -415,6 +419,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     }
 
     const size_t njobs = jobs_.size();
+    mgmt_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - tm0).count());
     const auto t0 = clock_t_::now();
     if (io_threads_ <= 1 || njobs <= 1) {
         for (size_t i = 0; i < njobs; ++i) {
@@ -442,8 +447,11 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     read_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
 
     if (cache_max_) {
+        const auto te0 = clock_t_::now();
         while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
             evict_tail();
+        mgmt_ns_.fetch_add(
+            (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - te0).count());
     }
     return true;
 }
@@ -467,6 +475,11 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
         io_cv_done_.wait(lk, [&] { return done_cnt_ == batch_njobs_ || io_stop_; });
     }
     if (fatal_.load(std::memory_order_acquire)) return false;
+
+    // Cache-management work below (dedup/sort, vm commit, LRU bookkeeping and the eviction at
+    // the end) runs on the eval thread and would otherwise hide inside the compute residual. Time
+    // it into mgmt_ns_ so the metrics can surface it. The drain wait above is I/O, not mgmt.
+    const auto tm0 = clock_t_::now();
 
     // 2. New generation for this layer. A flag counts as ready only once its gen matches.
     const uint32_t gen = async_gen_.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -573,6 +586,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
         while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
             evict_tail();
     }
+    mgmt_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - tm0).count());
     return true;
 }
 
@@ -636,6 +650,7 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     // caller never blocks, so "I/O time" is instead the summed lane-busy time (io_syscall_ns_),
     // which the runtime reports as lane-busy per token rather than as a slice of wall time.
     s.read_seconds = (overlap_ ? io_syscall_ns_.load() : read_ns_.load()) / 1e9;
+    s.mgmt_seconds = mgmt_ns_.load() / 1e9;
     s.cache_hits = chits_;
     s.cache_lookups = clookups_;
     s.cache_resident_bytes = (uint64_t) cresident_;

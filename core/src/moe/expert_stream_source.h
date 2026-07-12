@@ -157,6 +157,7 @@ private:
     std::atomic<long long> read_bytes_{0};
     std::atomic<long long> read_ns_{0};
     std::atomic<long long> io_syscall_ns_{0};
+    std::atomic<long long> mgmt_ns_{0}; // staging-section time: vm commit + evict + LRU bookkeeping
 
     // ── overlap mode: one layer in flight at a time (guaranteed by graph order) ──
     // A ReadyFlag is ready iff its gen == async_gen_; the load thread bumps async_gen_ per

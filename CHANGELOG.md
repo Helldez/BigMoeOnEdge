@@ -7,6 +7,12 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- Cache-management time is now surfaced as its own telemetry term (`mgmt_ms` per token,
+  `cache mgmt` in the `moe-stream:` summary, `mgmt_ms` CSV column, `mgmt_s/tok` in the summary
+  line). It times the virtual-memory commit, eviction and LRU bookkeeping that were previously
+  hidden inside the `compute_ms` residual — high on the first tokens after prefill, near zero at
+  steady state. `compute_ms` is documented as a residual (`wall − io − mgmt`, or `wall − stall −
+  mgmt` under overlap), not a measured matmul time. Bytes served are unchanged (gates G1–G4).
 - Intra-layer I/O–compute overlap (`--overlap`): expert reads for a layer run on the I/O
   pool while the same layer's routed experts are computed, hiding flash latency behind FFN
   compute. Opt-in and byte-identical to the serial path (gates G4a/b/c). Requires one
