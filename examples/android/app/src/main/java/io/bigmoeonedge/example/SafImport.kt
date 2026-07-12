@@ -10,9 +10,10 @@ import java.io.File
 /**
  * Imports a gguf the user picked with the system file picker (Storage Access Framework). The
  * picker hands back a content:// URI, but the bmoe-cli subprocess needs a real filesystem path,
- * so we stream the bytes into the app-specific external files dir (no permission required). This
- * is the Play-flavor path for a model already downloaded with the browser — public Downloads is
- * not readable without all-files access.
+ * so we stream the bytes into the app-internal models dir (no permission required, and on a real
+ * f2fs/ext4 volume where O_DIRECT works — see ModelManager.internalModelsDir). This is the
+ * Play-flavor path for a model already downloaded with the browser — public Downloads is not
+ * readable without all-files access.
  *
  * Copied as `<name>.gguf.part`, renamed on completion, so a partial copy is never listed.
  */
@@ -30,7 +31,9 @@ object SafImport {
             val name = displayName.filter { it.isLetterOrDigit() || it in "._-" }
             require(name.endsWith(".gguf")) { "please pick a .gguf file" }
 
-            val dir = ModelManager.appModelsDir(ctx) ?: error("no app storage available")
+            // Import into app-internal storage (real f2fs/ext4), not the emulated external dir:
+            // O_DIRECT works there, so the streamed model reads back at full speed.
+            val dir = ModelManager.internalModelsDir(ctx)
             val finalFile = File(dir, name)
             if (finalFile.isFile) return@runCatching finalFile
 

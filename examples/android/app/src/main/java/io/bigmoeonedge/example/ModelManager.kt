@@ -25,10 +25,19 @@ object ModelManager {
     // untrusted_app domain can open it.
     private val TMP_MODEL_DIR = File("/data/local/tmp/shardllm")
 
-    /** The app-specific external files dir — the download/import target, readable with no permission. */
+    /** The app-specific external files dir — the download target, readable with no permission. */
     fun appModelsDir(ctx: Context): File? = ctx.getExternalFilesDir(null)
 
+    /**
+     * App-internal models dir — lives on /data (a real f2fs/ext4 volume), NOT the emulated/FUSE
+     * external storage. That matters because O_DIRECT returns correct data here, so streamed
+     * expert reads stay fast; on the emulated external dir O_DIRECT silently corrupts reads and
+     * the engine has to fall back to slower buffered I/O. Imports land here for that reason.
+     */
+    fun internalModelsDir(ctx: Context): File = File(ctx.filesDir, "models").apply { mkdirs() }
+
     private fun scanDirs(ctx: Context): List<File> = buildList {
+        add(internalModelsDir(ctx))
         appModelsDir(ctx)?.let { add(it) }
         if (BuildConfig.SHARED_STORAGE) {
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)?.let { add(it) }
