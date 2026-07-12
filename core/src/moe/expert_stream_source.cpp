@@ -36,6 +36,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     o_direct_ = cfg.o_direct;
     load_all_ = cfg.load_all;
     overlap_ = cfg.overlap;
+    prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
 
@@ -106,6 +107,8 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         cstamp_.assign(n_entry, 0);
         cprev_.assign(n_entry, -1);
         cnext_.assign(n_entry, -1);
+        cspec_.assign(n_entry, 0);
+        spec_remaining_.assign(n_entry, 0);
         chead_ = ctail_ = -1;
         cresident_ = 0;
         cgen_ = 0;
@@ -297,15 +300,137 @@ void ExpertStreamSource::io_drain(int lane, uint64_t my_gen) {
 void ExpertStreamSource::io_worker(int lane) {
     uint64_t seen = 0;
     for (;;) {
-        uint64_t g;
         {
             std::unique_lock<std::mutex> lk(io_mtx_);
-            io_cv_.wait(lk, [&] { return io_stop_ || batch_gen_ > seen; });
+            io_cv_.wait(lk, [&] { return io_stop_ || batch_gen_ > seen || spec_next_ < spec_jobs_.size(); });
             if (io_stop_) return;
-            g = batch_gen_;
-            seen = g;
         }
-        io_drain(lane, g);
+        uint64_t g;
+        {
+            std::lock_guard<std::mutex> lk(io_mtx_);
+            g = batch_gen_;
+        }
+        if (g > seen) { // real batch first — it is latency-critical
+            seen = g;
+            io_drain(lane, g);
+        }
+        // Then use spare capacity on queued speculative reads, yielding the moment a real batch
+        // arrives (drain_spec bails when batch_gen_ advances past this worker's `seen`).
+        drain_spec(lane, seen);
+    }
+}
+
+// Prefetch: on the eval thread, commit pages and enqueue speculative per-projection reads for the
+// given experts of layer il. LRU-safe (same thread as load_layer); workers only read the bytes.
+void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
+    if (!active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0)
+        return;
+    const LayerExperts & L = layers_[il];
+    bool any = false;
+    std::lock_guard<std::mutex> lk(io_mtx_);
+    for (int i = 0; i < n_ids; ++i) {
+        const int e = ids[i];
+        if (e < 0 || e >= n_expert_) continue;
+        const int32_t id = il * n_expert_ + e;
+        if (cvalid_[id] || spec_remaining_[id] != 0) continue; // already resident or already queued
+        int njobs = 0;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            const uint64_t slice = L.proj[p].nb2;
+            if (slice == 0) continue;
+            char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
+            uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
+            uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
+            if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) return; // low on memory — stop quietly
+            spec_jobs_.push_back({dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id});
+            ++njobs;
+        }
+        if (njobs == 0) continue;
+        spec_remaining_[id] = njobs;
+        spec_touched_.push_back(id);
+        any = true;
+    }
+    if (!any) return;
+    if (prefetch_sync_) {
+        // Test path: read the queued slices now on lane 0 (free on the eval thread in serial mode),
+        // so the next quiesce integrates them deterministically. Mirrors drain_spec's accounting.
+        for (;;) {
+            IoJob j;
+            uint64_t g;
+            if (spec_next_ >= spec_jobs_.size()) break;
+            g = spec_gen_;
+            j = spec_jobs_[spec_next_++];
+            ++spec_inflight_;
+            const bool ok = read_slice(0, j.dst, j.off, j.nbytes);
+            if (ok && g == spec_gen_) {
+                spec_read_bytes_.fetch_add((long long) j.nbytes);
+                if (--spec_remaining_[j.flag] == 0) spec_done_.push_back(j.flag);
+            }
+            --spec_inflight_;
+        }
+        return;
+    }
+    io_cv_.notify_all();
+}
+
+// Drain queued speculative reads on an idle lane. Bails as soon as a real batch this worker has
+// not served appears, so speculation never delays real work. A completed entry (all projections
+// read under the current spec generation) is handed to the eval thread via spec_done_.
+void ExpertStreamSource::drain_spec(int lane, uint64_t worker_seen) {
+    for (;;) {
+        IoJob j;
+        uint64_t g;
+        {
+            std::lock_guard<std::mutex> lk(io_mtx_);
+            if (io_stop_ || batch_gen_ > worker_seen) return; // shutting down, or real work waiting
+            if (spec_next_ >= spec_jobs_.size()) return;
+            g = spec_gen_;
+            j = spec_jobs_[spec_next_++];
+            ++spec_inflight_;
+        }
+        const bool ok = read_slice(lane, j.dst, j.off, j.nbytes);
+        {
+            std::lock_guard<std::mutex> lk(io_mtx_);
+            if (ok && g == spec_gen_) { // ignore reads from a cancelled round
+                spec_read_bytes_.fetch_add((long long) j.nbytes);
+                if (--spec_remaining_[j.flag] == 0) spec_done_.push_back(j.flag);
+            }
+            if (--spec_inflight_ == 0) io_cv_done_.notify_all();
+        }
+    }
+}
+
+// Quiesce speculation before real staging: cancel queued reads, wait out in-flight ones, then on
+// this (eval) thread integrate every fully-read entry into the cache and release the rest. All LRU
+// mutation happens here, single-threaded, so it never races the real staging that follows.
+void ExpertStreamSource::quiesce_spec() {
+    std::vector<int32_t> done, touched;
+    {
+        std::unique_lock<std::mutex> lk(io_mtx_);
+        ++spec_gen_; // cancel queued-but-unstarted reads and disown in-flight ones on completion
+        spec_jobs_.clear();
+        spec_next_ = 0;
+        io_cv_done_.wait(lk, [&] { return spec_inflight_ == 0 || io_stop_; });
+        done.swap(spec_done_);
+        touched.swap(spec_touched_);
+    }
+    // Integrate completed entries (all projections resident) into the LRU cache.
+    for (int32_t id : done) {
+        if (spec_remaining_[id] != 0 || cvalid_[id]) { // incomplete, or a real read already took it
+            spec_remaining_[id] = 0;
+            continue;
+        }
+        cvalid_[id] = 1;
+        cspec_[id] = 1; // speculative until a real lookup hits it (then counted useful)
+        cstamp_[id] = 0; // not used this generation → evictable if the budget is tight
+        cresident_ += entry_bytes(id / n_expert_);
+        lru_push_front(id);
+        spec_experts_.fetch_add(1);
+    }
+    // Release pages of entries that never finished (a cancelled or failed read).
+    for (int32_t id : touched) {
+        if (spec_remaining_[id] == 0) continue; // completed above (or already integrated)
+        release_entry_pages(id);
+        spec_remaining_[id] = 0;
     }
 }
 
@@ -338,8 +463,9 @@ size_t ExpertStreamSource::entry_bytes(int il) const {
         bytes += (size_t) L.proj[p].nb2; // absent slots contribute 0
     return bytes;
 }
-void ExpertStreamSource::evict_tail() {
-    const int32_t id = ctail_;
+// Release the physical pages fully contained in an entry's slices (never a partial page shared
+// with a neighbouring expert). Shared by eviction and by discarding an incomplete spec entry.
+void ExpertStreamSource::release_entry_pages(int32_t id) {
     const int il = id / n_expert_, e = id % n_expert_;
     for (int p = 0; p < MoeRecipe::max_exps; ++p) {
         const uint64_t slice = layers_[il].proj[p].nb2;
@@ -349,8 +475,13 @@ void ExpertStreamSource::evict_tail() {
         uintptr_t a1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
         if (a1 > a0) pio::vm_evict((void *) a0, (size_t) (a1 - a0));
     }
+}
+void ExpertStreamSource::evict_tail() {
+    const int32_t id = ctail_;
+    release_entry_pages(id);
     cvalid_[id] = 0;
-    cresident_ -= entry_bytes(il);
+    cspec_[id] = 0;
+    cresident_ -= entry_bytes(id / n_expert_);
     lru_unlink(id);
 }
 
@@ -365,6 +496,10 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     // Cache-management work (vm commit + LRU bookkeeping, then eviction below) is timed into
     // mgmt_ns_ so the metrics can split it out of the compute residual instead of hiding it there.
     const auto tm0 = clock_t_::now();
+
+    // Integrate / discard any speculative prefetch before this layer's real staging touches the
+    // cache. After this returns no spec read is in flight and completed ones are resident hits.
+    if (cache_max_) quiesce_spec();
 
     auto stage = [&](int e) -> bool {
         if (cache_max_ == 0) {
@@ -381,6 +516,10 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
         cstamp_[id] = cgen_;
         if (cvalid_[id]) {
             chits_++;
+            if (cspec_[id]) { // this hit was served by a speculative prefetch — count it useful once
+                spec_useful_.fetch_add(1);
+                cspec_[id] = 0;
+            }
             lru_unlink(id);
             lru_push_front(id);
             return true;
@@ -398,6 +537,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             jobs_.push_back({dst, L.proj[p].file_off + (uint64_t) e * slice, slice});
         }
         cvalid_[id] = 1;
+        cspec_[id] = 0; // a real read, not speculative
         cresident_ += entry_bytes(il);
         lru_push_front(id);
         return true;
@@ -481,6 +621,10 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     // it into mgmt_ns_ so the metrics can surface it. The drain wait above is I/O, not mgmt.
     const auto tm0 = clock_t_::now();
 
+    // Integrate / discard speculative prefetch before this layer's real staging (the previous
+    // batch is already drained above, so this only waits on in-flight spec reads).
+    if (cache_max_) quiesce_spec();
+
     // 2. New generation for this layer. A flag counts as ready only once its gen matches.
     const uint32_t gen = async_gen_.fetch_add(1, std::memory_order_relaxed) + 1;
     cur_il_.store(il, std::memory_order_relaxed);
@@ -531,6 +675,10 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             cstamp_[id] = cgen_;
             if (cvalid_[id]) {
                 chits_++;
+                if (cspec_[id]) {
+                    spec_useful_.fetch_add(1);
+                    cspec_[id] = 0;
+                }
                 lru_unlink(id);
                 lru_push_front(id);
                 for (int p = 0; p < MoeRecipe::max_exps; ++p)
@@ -550,6 +698,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
                 }
             }
             cvalid_[id] = 1;
+            cspec_[id] = 0; // a real read, not speculative
             cresident_ += entry_bytes(il);
             lru_push_front(id);
             seen_[e] = 1; // this expert missed → its projections need reads
@@ -651,6 +800,9 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     // which the runtime reports as lane-busy per token rather than as a slice of wall time.
     s.read_seconds = (overlap_ ? io_syscall_ns_.load() : read_ns_.load()) / 1e9;
     s.mgmt_seconds = mgmt_ns_.load() / 1e9;
+    s.spec_read_bytes = (uint64_t) spec_read_bytes_.load();
+    s.spec_experts = spec_experts_.load();
+    s.spec_useful = spec_useful_.load();
     s.cache_hits = chits_;
     s.cache_lookups = clookups_;
     s.cache_resident_bytes = (uint64_t) cresident_;
@@ -677,12 +829,17 @@ void ExpertStreamSource::shutdown() {
     {
         std::lock_guard<std::mutex> lk(io_mtx_);
         io_stop_ = true;
+        ++spec_gen_; // disown any in-flight speculative reads
+        spec_jobs_.clear();
+        spec_next_ = 0;
     }
     io_cv_.notify_all();
     io_cv_done_.notify_all();
     for (auto & t : io_pool_)
         if (t.joinable()) t.join();
     io_pool_.clear();
+    spec_done_.clear();
+    spec_touched_.clear();
 
     for (int p = 0; p < MoeRecipe::max_exps; ++p)
         if (slot_[p]) {

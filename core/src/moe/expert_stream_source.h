@@ -63,6 +63,7 @@ public:
 
     // IExpertSource
     bool load_layer(int il, const int32_t * ids, int n_ids) override;
+    void prefetch(int il, const int32_t * ids, int n_ids) override;
     Stats stats() const override;
 
     // Register the process-global expert-ready hook so the CPU matmul blocks per expert
@@ -96,6 +97,12 @@ private:
     void io_drain(int lane, uint64_t my_gen);
     void io_worker(int lane);
 
+    // Speculative prefetch (temporal): drain queued spec reads on an idle lane, and integrate /
+    // discard them on the eval thread at the next real load. See docs/prefetch.md.
+    void drain_spec(int lane, uint64_t worker_seen);
+    void quiesce_spec();
+    void release_entry_pages(int32_t id);
+
     bool load_layer_async(int il, const int32_t * ids, int n_ids); // overlap path
 
     static void c_expert_ready(const ggml_tensor * src0, int expert, void * user_data);
@@ -111,6 +118,7 @@ private:
     bool o_direct_ = false;
     bool load_all_ = false;
     bool overlap_ = false;
+    bool prefetch_sync_ = false; // test only: drain prefetch reads synchronously (serial mode)
     int n_layer_ = 0;
     int n_expert_ = 0;
     uint64_t fsize_ = 0;
@@ -130,10 +138,27 @@ private:
     std::vector<uint8_t> cvalid_;
     std::vector<int32_t> cprev_, cnext_;
     std::vector<uint32_t> cstamp_;
+    std::vector<uint8_t> cspec_; // 1 if this resident entry was filled speculatively, until first hit
     int32_t chead_ = -1, ctail_ = -1;
     uint32_t cgen_ = 0;
     size_t cresident_ = 0;
     long long chits_ = 0, clookups_ = 0;
+
+    // ── speculative prefetch queue (all fields guarded by io_mtx_) ──
+    // prefetch() (eval thread) commits pages and enqueues per-projection reads tagged with the
+    // entry id; workers drain them on idle lanes; quiesce_spec() (eval thread, at the next real
+    // load) integrates fully-read entries into the cache and releases the rest. spec_gen_ bumps to
+    // cancel a round. All LRU mutation stays on the eval thread — workers only read bytes.
+    std::vector<IoJob> spec_jobs_;
+    size_t spec_next_ = 0;
+    uint64_t spec_gen_ = 0;
+    size_t spec_inflight_ = 0;
+    std::vector<int32_t> spec_done_;      // entry ids whose every projection read completed
+    std::vector<int32_t> spec_touched_;   // entry ids queued this round (for cleanup at quiesce)
+    std::vector<int32_t> spec_remaining_; // per entry id: projection reads still pending (0 = none)
+    std::atomic<long long> spec_read_bytes_{0};
+    std::atomic<long long> spec_experts_{0};
+    std::atomic<long long> spec_useful_{0};
 
     std::vector<uint8_t> seen_; // per-load dedup scratch [n_expert]
 

@@ -43,6 +43,10 @@ public:
 
     void set_source(IExpertSource * src) { source_ = src; } // enter stream mode
 
+    // Temporal prefetch depth K: while streaming layer l, hint the source to read ahead the
+    // experts the previous token used at layers l+1..l+K. 0 (default) disables it.
+    void set_prefetch_layers(int k) { prefetch_layers_ = k; }
+
 private:
     bool on_eval(ggml_tensor * t, bool ask);
 
@@ -56,6 +60,11 @@ private:
     IExpertSource * source_ = nullptr; // non-null → stream mode
     std::vector<LayerExperts> captured_;
     std::vector<int32_t> gathered_; // reused scratch for stream-mode id gather
+
+    // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
+    // during prefill). Empty when prefetch is off or a layer has not been seen yet.
+    int prefetch_layers_ = 0;
+    std::vector<std::vector<int32_t>> prev_ids_;
 };
 
 } // namespace bmoe
