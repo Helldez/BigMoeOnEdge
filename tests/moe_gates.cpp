@@ -20,6 +20,8 @@
 //   S2  same, under overlap
 //   G5  streaming + temporal prefetch == streaming (prefetch changes latency, not bytes)
 //         a) serial + cache + prefetch   b) overlap + cache + prefetch
+//   G6  streaming + speculative gating == streaming (isolating the router-input node, and feeding
+//       its prediction to the prefetch queue, must not change the produced bytes)
 //
 // S1/S2 guard the session refactor: the expert LRU cache now survives across generate() calls,
 // so a second prompt starts warm. That must change only latency, never the produced bytes.
@@ -252,6 +254,46 @@ int main(int argc, char ** argv) {
         return 2;
     }
     fails += check("G5c prefetch(sync integrate+hit) == streaming(cache off)", s_s0, s_pf_sync);
+
+    // ── G6: speculative gating must not change bytes ──
+    // Isolating the router-input node to read its hidden state, and prefetching the predicted
+    // next-layer experts, must not alter output — the prediction only warms the cache.
+    RunConfig sg = base(model);
+    sg.moe.enabled = true;
+    sg.moe.cache_mb = 2;
+    sg.moe.force_cache = true;
+    sg.moe.io_threads = 4;
+    sg.moe.spec_gate = true;
+    std::string s_sg;
+    if (!gen(sg, s_sg, err)) {
+        std::fprintf(stderr, "spec-gate run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G6a spec-gate == streaming(cache off)", s_s0, s_sg);
+
+    // With synchronous prefetch the predicted experts actually become resident and get hit,
+    // exercising the whole predict→prefetch→integrate→hit path deterministically.
+    RunConfig sg_sync = sg;
+    sg_sync.moe.prefetch_sync = true;
+    std::string s_sg_sync;
+    if (!gen(sg_sync, s_sg_sync, err)) {
+        std::fprintf(stderr, "spec-gate(sync) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G6b spec-gate(sync predict+integrate+hit) == streaming(cache off)", s_s0, s_sg_sync);
+
+#ifdef BMOE_HAVE_EXPERT_READY_HOOK
+    RunConfig sg_ov = sg;
+    sg_ov.moe.overlap = true;
+    std::string s_sg_ov;
+    if (!gen(sg_ov, s_sg_ov, err)) {
+        std::fprintf(stderr, "spec-gate overlap run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G6c overlap(spec-gate) == streaming(cache off)", s_s0, s_sg_ov);
+#else
+    std::printf("[SKIP] G6c (expert-ready hook not built)\n");
+#endif
 
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
     RunConfig sess_ov = sess;
