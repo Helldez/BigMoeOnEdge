@@ -15,10 +15,18 @@
 // If G3 passes, the streamer provably never gathers an unrouted (garbage) slice. If G4
 // passes, the async path gates each expert correctly — compute never races ahead of its read.
 // G4 is compiled only when the fork's expert-ready hook is present (BMOE_HAVE_EXPERT_READY_HOOK).
+//
+//   S1  two sequential Session generates (warm cache) == one-shot resident, per prompt
+//   S2  same, under overlap
+//
+// S1/S2 guard the session refactor: the expert LRU cache now survives across generate() calls,
+// so a second prompt starts warm. That must change only latency, never the produced bytes.
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
+#include "bmoe/session.h"
 
 #include <cstdio>
+#include <memory>
 #include <string>
 
 using namespace bmoe;
@@ -40,6 +48,41 @@ static bool gen(const RunConfig & c, std::string & out, std::string & err) {
         return false;
     }
     out = r.generated_text;
+    return true;
+}
+
+// Open a Session from a RunConfig and generate the same prompt twice. The second generate runs
+// against the cache the first left warm — the whole point of session mode — so its output is the
+// interesting one: it must still match the cold one-shot reference.
+static bool session_two_gens(const RunConfig & c, std::string & out1, std::string & out2, std::string & err) {
+    SessionConfig sc;
+    sc.model_path = c.model_path;
+    sc.n_threads = c.n_threads;
+    sc.n_ctx = c.n_ctx;
+    sc.n_batch = c.n_ctx;
+    sc.chatml = c.chatml;
+    sc.moe = c.moe;
+
+    std::unique_ptr<Session> s = Session::open(sc, err);
+    if (!s) return false;
+
+    GenerateRequest req;
+    req.prompt = c.prompt;
+    req.n_predict = c.n_predict;
+    req.clear_kv = true;
+
+    RunResult r1 = s->generate(req);
+    if (!r1) {
+        err = r1.error;
+        return false;
+    }
+    RunResult r2 = s->generate(req);
+    if (!r2) {
+        err = r2.error;
+        return false;
+    }
+    out1 = r1.generated_text;
+    out2 = r2.generated_text;
     return true;
 }
 
@@ -146,6 +189,37 @@ int main(int argc, char ** argv) {
     fails += check("G4c overlap(io_threads=1) == streaming(cache off)", s_s0, s_ov1);
 #else
     std::printf("[SKIP] G4 (expert-ready hook not built)\n");
+#endif
+
+    // ── S1/S2: warm cache across Session generates must not change bytes ──
+    // A forced small LRU cache so the first generate leaves state (resident + evicted entries)
+    // the second one reuses — exercising the "starts warm" path, not a cold re-run.
+    RunConfig sess = base(model);
+    sess.moe.enabled = true;
+    sess.moe.cache_mb = 2;
+    sess.moe.force_cache = true;
+    sess.moe.io_threads = 4;
+
+    std::string s_g1, s_g2;
+    if (!session_two_gens(sess, s_g1, s_g2, err)) {
+        std::fprintf(stderr, "session run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("S1a session generate #1 == resident", s_res, s_g1);
+    fails += check("S1b session generate #2 (warm cache) == resident", s_res, s_g2);
+
+#ifdef BMOE_HAVE_EXPERT_READY_HOOK
+    RunConfig sess_ov = sess;
+    sess_ov.moe.overlap = true;
+    std::string s_og1, s_og2;
+    if (!session_two_gens(sess_ov, s_og1, s_og2, err)) {
+        std::fprintf(stderr, "session overlap run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("S2a session+overlap generate #1 == resident", s_res, s_og1);
+    fails += check("S2b session+overlap generate #2 (warm cache) == resident", s_res, s_og2);
+#else
+    std::printf("[SKIP] S2 (expert-ready hook not built)\n");
 #endif
 
     if (fails == 0) std::printf("\nall MoE byte-identity gates passed\n");
