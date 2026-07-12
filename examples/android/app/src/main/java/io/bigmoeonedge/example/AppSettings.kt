@@ -15,6 +15,7 @@ data class AppSettings(
     val oDirect: Boolean = true, // bypass the page cache
     val overlap: Boolean = false,// prefetch experts while the layer computes (experimental)
     val prefetchLayers: Int = 0, // temporal prefetch depth K (0 = off); needs the cache
+    val specGate: Boolean = false,// predict next layer's experts via its router; needs the cache
     val thinking: Boolean = false,// reasoning; off passes --no-think (enable_thinking=false)
     val loadAll: Boolean = false,// debug: read ALL experts each token (A/B baseline)
 ) {
@@ -44,6 +45,7 @@ data class AppSettings(
             if (!oDirect) a += "--no-odirect"
             if (overlap) a += "--overlap"
             if (prefetchLayers > 0 && cacheMb > 0) a += listOf("--prefetch", prefetchLayers.toString())
+            if (specGate && cacheMb > 0) a += "--spec-gate"
             if (loadAll) a += "--load-all"
         }
         return a
@@ -56,7 +58,7 @@ data class AppSettings(
      * excluded — they vary per request without touching the loaded model.
      */
     fun sessionSignature(modelPath: String): String =
-        listOf(modelPath, mmap, cacheMb, ioThreads, threads, oDirect, overlap, prefetchLayers, loadAll)
+        listOf(modelPath, mmap, cacheMb, ioThreads, threads, oDirect, overlap, prefetchLayers, specGate, loadAll)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -65,6 +67,7 @@ data class AppSettings(
             .putInt("cacheMb", cacheMb).putInt("ioThreads", ioThreads).putInt("threads", threads)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
             .putBoolean("overlap", overlap).putInt("prefetchLayers", prefetchLayers)
+            .putBoolean("specGate", specGate)
             .putBoolean("thinking", thinking).putBoolean("loadAll", loadAll)
             .apply()
     }
@@ -95,6 +98,7 @@ data class AppSettings(
                 oDirect = p.getBoolean("oDirect", d.oDirect),
                 overlap = p.getBoolean("overlap", d.overlap),
                 prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
+                specGate = p.getBoolean("specGate", d.specGate),
                 thinking = p.getBoolean("thinking", d.thinking),
                 loadAll = p.getBoolean("loadAll", d.loadAll),
             )

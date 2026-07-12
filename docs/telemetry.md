@@ -56,6 +56,15 @@ moe-prefetch: <mib> MiB speculative, <useful>/<prefetched> experts useful (<pct>
 `<prefetched>` the experts fully read ahead, and `<useful>` how many of those a later routing
 actually hit. See [prefetch.md](prefetch.md).
 
+With `--spec-gate` a `moe-spec-gate:` line is also added:
+
+```
+moe-spec-gate: <pct>% router prediction recall
+```
+
+the fraction of experts the speculative router predicted that the layer actually routed. See
+[spec-gating.md](spec-gating.md).
+
 Under `--overlap` the `moe-stream:` line additionally reports `stall_s/tok=<s>` — the mean
 wall time per token that compute threads waited for expert reads to complete. It is `0` in
 serial mode (where the read wait is already folded into decode time).
