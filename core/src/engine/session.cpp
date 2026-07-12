@@ -262,7 +262,8 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & 
 }
 
 RunResult Session::generate(const GenerateRequest & req,
-                            const std::function<void(const TokenMetrics &)> & on_token, IMetricsSink * sink) {
+                            const std::function<void(const TokenMetrics &)> & on_token,
+                            IMetricsSink * sink) {
     Impl & im = *impl_;
     const MoeStreamConfig & moe = im.cfg.moe;
     llama_context * ctx = im.ctx.get();

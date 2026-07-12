@@ -35,7 +35,7 @@ struct MoeRecipe {
     // top-k ids are needed — they feed the prefetch hint — so a mispredict just wastes a read and
     // never affects output. router_input_fmt == nullptr means the architecture is not wired for
     // speculative gating (the feature then refuses rather than guesses).
-    const char * router_input_fmt = nullptr;   // graph node to observe, e.g. "ffn_norm-%d"
+    const char * router_input_fmt = nullptr;    // graph node to observe, e.g. "ffn_norm-%d"
     const char * router_suffix = nullptr;       // mmap-resident gate weight suffix ("ffn_gate_inp")
     const char * router_scale_suffix = nullptr; // per-channel scale suffix, or nullptr
     RouterPre router_pre = RouterPre::kNone;

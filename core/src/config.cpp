@@ -47,8 +47,8 @@ ValidationResult validate(const RunConfig & cfg) {
                         std::to_string(MoeStreamConfig::cache_min_mb) + ", or set force_cache to override.");
         }
         if (m.prefetch_layers < 0 || m.prefetch_layers > MoeStreamConfig::prefetch_layers_max) {
-            return fail("moe.prefetch_layers must be in [0, " +
-                        std::to_string(MoeStreamConfig::prefetch_layers_max) + "]");
+            return fail("moe.prefetch_layers must be in [0, " + std::to_string(MoeStreamConfig::prefetch_layers_max) +
+                        "]");
         }
         if (m.prefetch_layers > 0 && m.cache_mb == 0) {
             return fail("moe.prefetch_layers requires the LRU cache (cache_mb > 0): speculative reads "

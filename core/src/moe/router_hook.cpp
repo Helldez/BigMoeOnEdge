@@ -102,10 +102,8 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                     ggml_tensor * src = t->src[s];
                     if (!src || src->name[0] == '\0') continue;
                     int il = -1;
-                    if (match_named(src->name, recipe_.router_suffix, ".weight", n_layer_, il))
-                        gate_w_[il] = src;
-                    if (match_named(src->name, recipe_.router_scale_suffix, ".scale", n_layer_, il))
-                        gate_s_[il] = src;
+                    if (match_named(src->name, recipe_.router_suffix, ".weight", n_layer_, il)) gate_w_[il] = src;
+                    if (match_named(src->name, recipe_.router_scale_suffix, ".scale", n_layer_, il)) gate_s_[il] = src;
                 }
             }
         }
@@ -117,9 +115,8 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     int il = -1;
     const bool is_topk = std::sscanf(t->name, "ffn_moe_topk-%d", &il) == 1 && il >= 0;
     int ril = -1;
-    const bool is_router_in =
-        spec_gate_ && !spec_disabled_ && recipe_.router_input_fmt &&
-        std::sscanf(t->name, recipe_.router_input_fmt, &ril) == 1 && ril >= 0 && ril < n_layer_;
+    const bool is_router_in = spec_gate_ && !spec_disabled_ && recipe_.router_input_fmt &&
+                              std::sscanf(t->name, recipe_.router_input_fmt, &ril) == 1 && ril >= 0 && ril < n_layer_;
     if (ask) return is_topk || is_router_in;
 
     if (source_ && is_router_in && t->data) predict_and_prefetch(t, ril);
@@ -162,8 +159,8 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             rec.clear();
             const int last = nt - 1;
             for (int k = 0; k < nu; ++k)
-                rec.push_back(*(const int32_t *) ((const char *) t->data + (size_t) last * t->nb[1] +
-                                                  (size_t) k * t->nb[0]));
+                rec.push_back(
+                    *(const int32_t *) ((const char *) t->data + (size_t) last * t->nb[1] + (size_t) k * t->nb[0]));
         }
     }
     return true;
@@ -197,7 +194,8 @@ void RouterHook::predict_and_prefetch(const ggml_tensor * node, int il) {
             *(const float *) ((const char *) node->data + (size_t) j * node->nb[1] + (size_t) d * node->nb[0]);
     if (recipe_.router_pre == RouterPre::kRmsScaled) {
         double ss = 0.0;
-        for (int d = 0; d < n_embd; ++d) ss += (double) spec_hidden_[d] * spec_hidden_[d];
+        for (int d = 0; d < n_embd; ++d)
+            ss += (double) spec_hidden_[d] * spec_hidden_[d];
         const float inv_rms = 1.0f / std::sqrt((float) (ss / n_embd) + rms_eps_);
         const float inv_sqrt_d = 1.0f / std::sqrt((float) n_embd);
         const ggml_tensor * sc = gate_s_[target];
@@ -216,10 +214,12 @@ void RouterHook::predict_and_prefetch(const ggml_tensor * node, int il) {
         double acc = 0.0;
         if (gw->type == GGML_TYPE_F32) {
             const float * r = (const float *) row;
-            for (int d = 0; d < n_embd; ++d) acc += (double) r[d] * spec_hidden_[d];
+            for (int d = 0; d < n_embd; ++d)
+                acc += (double) r[d] * spec_hidden_[d];
         } else {
             const ggml_fp16_t * r = (const ggml_fp16_t *) row;
-            for (int d = 0; d < n_embd; ++d) acc += (double) ggml_fp16_to_fp32(r[d]) * spec_hidden_[d];
+            for (int d = 0; d < n_embd; ++d)
+                acc += (double) ggml_fp16_to_fp32(r[d]) * spec_hidden_[d];
         }
         spec_logits_[e] = (float) acc;
     }

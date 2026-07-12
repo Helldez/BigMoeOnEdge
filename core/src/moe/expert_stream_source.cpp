@@ -323,8 +323,7 @@ void ExpertStreamSource::io_worker(int lane) {
 // Prefetch: on the eval thread, commit pages and enqueue speculative per-projection reads for the
 // given experts of layer il. LRU-safe (same thread as load_layer); workers only read the bytes.
 void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
-    if (!active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0)
-        return;
+    if (!active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return;
     const LayerExperts & L = layers_[il];
     bool any = false;
     std::lock_guard<std::mutex> lk(io_mtx_);
@@ -420,7 +419,7 @@ void ExpertStreamSource::quiesce_spec() {
             continue;
         }
         cvalid_[id] = 1;
-        cspec_[id] = 1; // speculative until a real lookup hits it (then counted useful)
+        cspec_[id] = 1;  // speculative until a real lookup hits it (then counted useful)
         cstamp_[id] = 0; // not used this generation → evictable if the budget is tight
         cresident_ += entry_bytes(id / n_expert_);
         lru_push_front(id);

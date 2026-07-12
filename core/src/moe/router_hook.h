@@ -84,10 +84,10 @@ private:
     bool spec_disabled_ = false; // set once if the gate weight is quantized (unsupported), logged
     int n_expert_used_ = 0;
     float rms_eps_ = 1e-6f;
-    std::vector<const ggml_tensor *> gate_w_; // per-layer router weight (mmap-resident), or null
-    std::vector<const ggml_tensor *> gate_s_; // per-layer router per-channel scale, or null
-    std::vector<int> next_moe_layer_;         // next bound MoE layer after il, or -1
-    std::vector<std::vector<int32_t>> spec_pred_; // predicted experts per layer, for recall scoring
+    std::vector<const ggml_tensor *> gate_w_;      // per-layer router weight (mmap-resident), or null
+    std::vector<const ggml_tensor *> gate_s_;      // per-layer router per-channel scale, or null
+    std::vector<int> next_moe_layer_;              // next bound MoE layer after il, or -1
+    std::vector<std::vector<int32_t>> spec_pred_;  // predicted experts per layer, for recall scoring
     std::vector<float> spec_hidden_, spec_logits_; // scratch
     long long spec_pred_total_ = 0, spec_pred_hit_ = 0;
 };
