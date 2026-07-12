@@ -13,6 +13,7 @@ data class UiState(
     val answer: String = "",
     val summary: String = "",
     val error: String? = null,
+    val ioMode: String? = null, // effective read mode reported by the engine (direct / buffered)
 )
 
 /**

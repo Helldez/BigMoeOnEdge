@@ -75,8 +75,21 @@ class RunService : Service() {
             val errTail = StringBuilder()
             thread(name = "bmoe-cli-err") {
                 try {
-                    BufferedReader(InputStreamReader(p.errorStream)).forEachLine {
-                        if (errTail.length < 4000) errTail.append(it).append('\n')
+                    BufferedReader(InputStreamReader(p.errorStream)).forEachLine { line ->
+                        if (errTail.length < 4000) errTail.append(line).append('\n')
+                        // Surface the engine's effective read mode. The fallback notice (printed
+                        // before the "streaming ON" line) wins, so it is not overwritten after.
+                        when {
+                            "O_DIRECT returns wrong data" in line ->
+                                RunBus.update { it.copy(ioMode = "buffered (O_DIRECT unsupported on this storage)") }
+                            "expert streaming ON" in line ->
+                                Regex("""o_direct=(\d)""").find(line)?.groupValues?.get(1)?.let { d ->
+                                    RunBus.update {
+                                        if (it.ioMode != null) it
+                                        else it.copy(ioMode = if (d == "1") "direct (O_DIRECT)" else "buffered")
+                                    }
+                                }
+                        }
                     }
                 } catch (_: Throwable) {
                     // stream closed by destroy() on Stop — nothing to surface.
