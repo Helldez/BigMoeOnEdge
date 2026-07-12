@@ -693,7 +693,20 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     std::fill(seen_.begin(), seen_.end(), (uint8_t) 0);
     for (int i = 0; i < n_ids; ++i) {
         const int e = load_all_ ? (i < n_expert_ ? i : -1) : ids[i];
-        if (e < 0 || e >= n_expert_ || seen_[e]) continue;
+        if (e < 0 || e >= n_expert_) continue;
+        if (seen_[e]) {
+            // Already staged in this batch: still promote so the LRU order reflects the LAST
+            // token that used this expert (ids arrive token-major), not its first touch — this
+            // keeps the prompt tail's experts hot across prefill. Reads are scheduled only once
+            // (the seen_ guard below), so this is bookkeeping only. In decode (n=1) the top-k ids
+            // are distinct, so this branch never runs and behaviour is unchanged.
+            if (cache_max_) {
+                const int32_t id = il * n_expert_ + e;
+                lru_unlink(id);
+                lru_push_front(id);
+            }
+            continue;
+        }
         seen_[e] = 1;
         if (!stage(e)) return false;
     }
@@ -861,6 +874,21 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
                 const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
                 jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice,
                                  L.proj[p].file_off + (uint64_t) e * slice, slice, flag});
+            }
+        }
+
+        // Promote every touched expert in raw id order (token-major) so the LRU order reflects
+        // the LAST token that used it, not the sorted/first-touch order staged_ imposes — this
+        // keeps the prompt tail's experts hot across prefill. Bookkeeping only; every id staged
+        // above is now valid and linked. In decode (n=1, distinct top-k) this is a no-op reshuffle.
+        // Skipped in load_all (everything is resident, so LRU order is meaningless).
+        if (!load_all_) {
+            for (int i = 0; i < n_ids; ++i) {
+                const int e = ids[i];
+                if (e < 0 || e >= n_expert_) continue;
+                const int32_t id = il * n_expert_ + e;
+                lru_unlink(id);
+                lru_push_front(id);
             }
         }
     }
