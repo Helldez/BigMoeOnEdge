@@ -141,10 +141,11 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         pio::fd_t vfd = pio::open_read(gguf_path.c_str(), false);
         if (dbuf && pio::fd_ok(vfd)) {
             std::vector<char> bbuf(align_);
-            long long gd = pio::pread_at(primary, dbuf, align_, voff);
-            long long gb = pio::pread_at(vfd, bbuf.data(), align_, voff);
-            if (gd != (long long) align_ || gb != (long long) align_ ||
-                std::memcmp(dbuf, bbuf.data(), align_) != 0) {
+            const long long want = (long long) align_;
+            const long long gd = pio::pread_at(primary, dbuf, align_, voff);
+            const long long gb = pio::pread_at(vfd, bbuf.data(), align_, voff);
+            const bool bad = gd != want || gb != want || std::memcmp(dbuf, bbuf.data(), align_) != 0;
+            if (bad) {
                 std::fprintf(stderr, "bmoe: O_DIRECT returns wrong data on this storage — using buffered I/O\n");
                 o_direct_ = false;
                 pio::close_fd(primary);
