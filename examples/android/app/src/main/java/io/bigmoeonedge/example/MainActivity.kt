@@ -197,23 +197,33 @@ private fun MainScreen(
             Button(
                 onClick = {
                     if (models.isNotEmpty()) {
-                        startRun(context, models[modelIdx.coerceIn(0, models.size - 1)],
-                            prompt.ifBlank { "The capital of Japan is" }, settings)
+                        launchPrompt(context, models[modelIdx.coerceIn(0, models.size - 1)],
+                            prompt.ifBlank { "The capital of Japan is" }, settings, ui.sessionSig)
                     }
                 },
-                enabled = !ui.running && models.isNotEmpty(),
+                enabled = !ui.busy && models.isNotEmpty(),
                 modifier = Modifier.weight(1f),
-            ) { Text("Run") }
+            ) { Text(if (ui.ready) "Send" else "Run") }
 
             OutlinedButton(
                 onClick = {
                     context.startService(
-                        Intent(context, RunService::class.java).setAction(RunService.ACTION_STOP)
+                        Intent(context, RunService::class.java).setAction(RunService.ACTION_CANCEL)
                     )
                 },
-                enabled = ui.running,
+                enabled = ui.generating,
                 modifier = Modifier.weight(1f),
             ) { Text("Stop") }
+        }
+
+        // The session keeps the model resident (and the cache warm) between prompts. Free it
+        // explicitly, or let the service auto-unload after an idle timeout.
+        if (ui.ready || ui.loading) {
+            TextButton(onClick = {
+                context.startService(
+                    Intent(context, RunService::class.java).setAction(RunService.ACTION_SHUTDOWN)
+                )
+            }) { Text("Unload model") }
         }
 
         // A quick reminder of the active config (full controls in Settings).
@@ -426,15 +436,40 @@ private fun MeterRow(label: String, value: Double, total: Double, color: android
     }
 }
 
-private fun startRun(context: android.content.Context, model: File, prompt: String, settings: AppSettings) {
-    // Read the arch (cheap header read) so the CLI applies the right chat template and skips
-    // Qwen-only prompt switches for other families.
-    val arch = GgufHeader.arch(model)
-    val argv = ArrayList(settings.toArgv(ModelManager.cliPath(context), model.absolutePath, prompt, arch))
-    val intent = Intent(context, RunService::class.java)
-        .putExtra(RunService.EXTRA_MODEL, model.absolutePath)
-        .putExtra(RunService.EXTRA_PROMPT, prompt)
-        .putStringArrayListExtra(RunService.EXTRA_ARGV, argv)
-    ContextCompat.startForegroundService(context, intent)
-    RunBus.reset()
+/**
+ * Send [prompt] to the engine. If a session is already loaded for this exact model+settings
+ * ([currentSig] matches), the prompt just goes to the warm process (no reload, cache intact);
+ * otherwise the session is (re)started with this configuration and the prompt runs as soon as it
+ * reports ready. Per-prompt options (n_predict, thinking) ride the request, not the session.
+ */
+private fun launchPrompt(
+    context: android.content.Context,
+    model: File,
+    prompt: String,
+    settings: AppSettings,
+    currentSig: String?,
+) {
+    RunBus.resetGeneration()
+    val sig = settings.sessionSignature(model.absolutePath)
+    if (currentSig == sig) {
+        context.startService(
+            Intent(context, RunService::class.java)
+                .setAction(RunService.ACTION_GENERATE)
+                .putExtra(RunService.EXTRA_PROMPT, prompt)
+                .putExtra(RunService.EXTRA_NPREDICT, settings.nPredict)
+                .putExtra(RunService.EXTRA_THINK, settings.thinking)
+        )
+    } else {
+        val argv = ArrayList(settings.sessionArgv(ModelManager.cliPath(context), model.absolutePath))
+        ContextCompat.startForegroundService(
+            context,
+            Intent(context, RunService::class.java)
+                .putExtra(RunService.EXTRA_MODEL, model.absolutePath)
+                .putStringArrayListExtra(RunService.EXTRA_ARGV, argv)
+                .putExtra(RunService.EXTRA_SIG, sig)
+                .putExtra(RunService.EXTRA_PROMPT, prompt)
+                .putExtra(RunService.EXTRA_NPREDICT, settings.nPredict)
+                .putExtra(RunService.EXTRA_THINK, settings.thinking)
+        )
+    }
 }
