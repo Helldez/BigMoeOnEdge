@@ -402,6 +402,9 @@ private fun TelemetryCard(ui: UiState) {
             MeterRow("compute", t.computeMs, t.computeMs + t.ioMs, MaterialTheme.colorScheme.primary)
             MeterRow("flash I/O", t.ioMs, t.computeMs + t.ioMs, MaterialTheme.colorScheme.tertiary)
             Text("cache hit $hit", fontSize = 13.sp)
+            if (ui.ioMode != null) {
+                Text("I/O ${ui.ioMode}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             if (ui.summary.isNotEmpty()) {
                 Text(ui.summary, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
             }
