@@ -33,7 +33,7 @@ cd build && ctest -R moe_gates --output-on-failure
 
 If G1 (streamed == resident) passes, the architecture streams losslessly. For a layout
 `make-tiny-moe.py` does not yet emit, either teach it that arch (preferred — permanent CI
-coverage) or validate the recipe against a real model, as was done for `llada-moe`.
+coverage) or validate the recipe against a real model of that architecture.
 
 ## When one row is not enough
 

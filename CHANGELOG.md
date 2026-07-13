@@ -54,6 +54,13 @@ Semantic Versioning.
 - Android example: an **mmap baseline (no streaming)** settings toggle to compare against,
   plus an **I/O–compute overlap** toggle; the streaming controls disable when mmap is on.
 
+### Removed
+- Dropped the `llada-moe` recipe. LLaDA is a diffusion model, and expert streaming only pays
+  off for single-token (n=1) decode; the diffusion canvas processes many tokens at once, so it
+  does not benefit. It was out of scope for the mobile autoregressive target and is removed to
+  keep the supported set to what the project actually optimises for. The registry can take the
+  row back in one line if a validated use case appears.
+
 ### Fixed
 - Storage where O_DIRECT lies is now handled: some emulated / FUSE-backed volumes (an app-private
   dir under `/storage/emulated`, where imported and downloaded models land) let the O_DIRECT open
