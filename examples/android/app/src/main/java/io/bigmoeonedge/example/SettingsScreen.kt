@@ -81,6 +81,11 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         "previous token. Needs the cache on.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                SwitchRow(
+                    "Speculative gating",
+                    "Predict the next layer's experts by running its router on the current hidden state",
+                    current.specGate, enabled = stream && current.cacheMb > 0,
+                ) { onChange(current.copy(specGate = it)) }
             }
 
             Section("Compute") {

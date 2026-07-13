@@ -7,6 +7,15 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Speculative gating** (`--spec-gate`, env `BMOE_SPEC_GATE`): predict the next MoE layer's
+  experts by running its (tiny, mmap-resident) router on the current layer's hidden state — the
+  residual stream changes slowly between layers — and prefetch the top-k. Sharper than temporal
+  prefetch and composes with it. Recipe-driven per architecture (qwen3moe/qwen2moe post-norm
+  router; gemma4's `rms_norm·1/√n_embd·scale` transform on attn_out, with interleaved dense layers
+  handled); `n_expert_used` and the rms epsilon come from gguf metadata; a quantized router
+  disables it. Predictions only feed the byte-safe prefetch queue, so a mispredict wastes a read
+  but never changes output — gates G6a/b/c prove byte-identity. A `moe-spec-gate:` line reports
+  router prediction recall; an Android settings toggle exposes it. See `docs/spec-gating.md`.
 - **Temporal prefetch** (`--prefetch K`, env `BMOE_PREFETCH`): while a token computes layer *l*,
   the experts the previous token routed at layers *l+1…l+K* are read speculatively on the idle I/O
   lanes, so a correct guess turns the next layer's read into a cache hit. Requires the LRU cache.

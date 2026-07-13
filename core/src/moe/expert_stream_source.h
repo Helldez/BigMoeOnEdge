@@ -111,6 +111,7 @@ private:
     // LRU helpers (active only when cache_max_ > 0)
     void lru_unlink(int32_t id);
     void lru_push_front(int32_t id);
+    void lru_push_back(int32_t id);
     size_t entry_bytes(int il) const;
     void evict_tail();
 
