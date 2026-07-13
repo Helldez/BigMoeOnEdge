@@ -1,5 +1,7 @@
 #include "router_hook.h"
 
+#include "spec_dot.h"
+
 #include "ggml.h"
 
 #include <algorithm>
@@ -261,20 +263,12 @@ void RouterHook::spec_compute(int target, const std::vector<float> & hidden, std
     // logits[e] = dot(gate_row_e, hidden). Gate is [n_embd, n_expert], row-major per expert.
     const int n_expert = (int) gw->ne[1];
     if (n_expert <= 0) return;
+    const bool row_f32 = gw->type == GGML_TYPE_F32;
     std::vector<float> logits(n_expert);
     for (int e = 0; e < n_expert; ++e) {
         const char * row = (const char *) gw->data + (size_t) e * gw->nb[1];
-        double acc = 0.0;
-        if (gw->type == GGML_TYPE_F32) {
-            const float * r = (const float *) row;
-            for (int d = 0; d < n_embd; ++d)
-                acc += (double) r[d] * h[d];
-        } else {
-            const ggml_fp16_t * r = (const ggml_fp16_t *) row;
-            for (int d = 0; d < n_embd; ++d)
-                acc += (double) ggml_fp16_to_fp32(r[d]) * h[d];
-        }
-        logits[e] = (float) acc;
+        logits[e] = row_f32 ? spec_dot_f32((const float *) row, h.data(), n_embd)
+                            : spec_dot_f16((const uint16_t *) row, h.data(), n_embd);
     }
 
     // Top-k experts by logit (exact weights are irrelevant — only the ids feed prefetch).
