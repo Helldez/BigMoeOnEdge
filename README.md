@@ -4,24 +4,27 @@
 speed, by streaming only the experts each token actually routes to** — losslessly, and
 without forking llama.cpp.
 
-A MoE layer holds many experts, but a single token uses only its top-k of them. For
-Qwen3-30B-A3B that is 8 of 128 per layer — about 6% of the expert weights. BigMoeOnEdge keeps
-the small, dense parts of the model resident and reads just those routed expert slices from
-flash on demand, so an **18.5 GB model runs on an 11 GB phone** and the output is byte-identical
-to a full in-memory run.
+The idea is simple. A MoE layer holds many experts, but each token only uses a few of them —
+for Qwen3-30B-A3B, 8 out of 128 per layer, about 6% of the expert weights. So instead of holding
+the whole model in RAM, BigMoeOnEdge keeps the small, always-used parts in memory and reads just
+the experts a token needs from flash storage, right when it needs them. That lets an **18.5 GB
+model run on an 11 GB phone**, with output identical to running the full model in RAM.
+
+The target is mobile: phones are where memory is tight and this trade — trading some speed for a
+much smaller memory footprint — is worth making.
 
 - **Measured** (Qwen3-30B-A3B-Q4_K_M, OnePlus 15R, 11.3 GB RAM): **1.71 tok/s** streaming with
   no cache → **3.47 tok/s** with a 4 GiB expert cache and 4 read lanes → **3.98 tok/s** adding
   intra-layer I/O–compute overlap. Trading routing width down to `--n-expert-used 6` adds a
   further **+24%** (5.01 tok/s). See [Benchmarks](#benchmarks).
-- **Public-API streaming seam.** Expert streaming is driven entirely through llama.cpp's public
-  eval-callback and public gguf accessors, and runs against stock upstream. The one exception is
-  the optional overlap mode, which needs a ~25-line per-expert readiness hook carried as a
-  single-commit fork branch — an explicit tide-me-over dropped the moment upstream ships an
-  equivalent callback. See [docs/seam.md](docs/seam.md).
-- **Modular by construction.** A ports-and-adapters engine: the streaming strategy, the metrics
-  sink and the run target are interfaces. Adding a MoE architecture is one registry row — no
-  change to the streaming path.
+- **Built on llama.cpp, not a fork.** All the streaming runs through llama.cpp's public API,
+  against the stock upstream code — so keeping up with llama.cpp is just a submodule bump. The one
+  exception is the optional overlap mode, which needs a tiny (~25-line) addition to llama.cpp, kept
+  on a one-commit branch and meant to be dropped the moment upstream ships an equivalent hook. See
+  [docs/seam.md](docs/seam.md).
+- **Modular by design.** The engine is built from interchangeable parts (the streaming strategy,
+  the metrics sink, the run target are all interfaces), so adding a new MoE model is one line in a
+  registry — no change to the streaming code. See [Supported models](#supported-models-and-architectures).
 
 > Prior art, credited: this is an engineering package of ideas from AirLLM, Apple's *LLM in a
 > flash*, FlexGen, PowerInfer and EdgeMoE — not a novel technique. See
@@ -71,7 +74,6 @@ model-specific constants in the streaming path. Most llama.cpp MoE models share 
 | `qwen3moe` | Qwen3-30B-A3B and siblings | `ffn_{gate,up,down}_exps` (separate) | Shipped default; validated in the benchmarks below |
 | `qwen2moe` | Qwen2 MoE family | `ffn_{gate,up,down}_exps` (separate) | Same seam as qwen3moe |
 | `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | `ffn_gate_up_exps` (**fused** gate+up) + `ffn_down_exps` | Fused gate+up = 2× per-expert stride; an always-on dense/shared expert stays mmap-resident, lowering the streamed fraction |
-| `llada-moe` | LLaDA diffusion MoE | `ffn_{gate,up,down}_exps` (separate) | Streaming applies mechanically; diffusion decode lacks the n=1 routing sparsity autoregressive decode relies on — see [docs/limitations.md](docs/limitations.md) |
 
 Run `bmoe-cli --list-archs` to print the compiled-in set.
 
@@ -114,20 +116,31 @@ Gemma's heavier resident footprint OOMs a 4 GiB cache on this device, so it tops
 cache-2000 + overlap. Its fused gate+up layout and resident shared expert are handled by the
 `gemma4` registry row with no streaming-path changes.
 
-### Turbo top-k (`--n-expert-used 6`) — matched A/B, same session, `--cache-mb 4000 --io-threads 4`
+### Turbo top-k (`--n-expert-used 6`)
 
-Measured fresh on a cool device, so each pair is compared to **its own** default baseline (higher
-than the matrix above), never across tables.
+Every model ships a routing width — the number of experts each token uses. Qwen3-30B-A3B uses 8.
+`--n-expert-used 6` forces it down to 6: fewer experts means less compute **and** less flash to
+read, so it runs faster.
+
+The rows below are an A/B test: same model, same session, same settings (`--cache-mb 4000
+--io-threads 4`), only the routing width changes. **"default" is the model's own width** — this is
+the baseline each `k=6` row is compared against. (These runs were done back-to-back on a cool
+device, so the default numbers here are a bit higher than the cache/lane table above, which came
+from a separate, warmer session — so compare `k=6` only to the `default` row in *this* table.)
 
 | Model | Routing | tok/s (mean) | flash read/token | cache hit | Δ tok/s | Δ flash |
 |---|---|---:|---:|---:|---:|---:|
-| Qwen3-30B-A3B | default (k=8) | 4.03 | 224.65 MiB | 76.5% | — | — |
-| Qwen3-30B-A3B | **k=6** | **5.01** | 164.52 MiB | 76.7% | **+24.3%** | −26.8% |
+| Qwen3-30B-A3B | default (8 experts) | 4.03 | 224.65 MiB | 76.5% | — | — |
+| Qwen3-30B-A3B | **6 experts** | **5.01** | 164.52 MiB | 76.7% | **+24.3%** | −26.8% |
 | Gemma-4-26B-A4B | default | 4.09 | 143.50 MiB | 81.7% | — | — |
-| Gemma-4-26B-A4B | **k=6** | **4.99** | 97.81 MiB | 82.8% | **+22.1%** | −31.8% |
+| Gemma-4-26B-A4B | **6 experts** | **4.99** | 97.81 MiB | 82.8% | **+22.1%** | −31.8% |
 
-`k=6` on Qwen reads ≈6/8 of default (−26.8%), confirming the top-8 default. This is a
-speed/quality trade-off — fewer active experts **changes the output**.
+**This is the one lossy option.** Everything else here is byte-identical to the full model — the
+streaming, cache and overlap change *how* the weights are fetched, never the math. Dropping experts
+changes *what* the model computes, so the output differs from the full model and quality can degrade.
+It is a deliberate speed-for-quality trade you opt into, and you should judge the quality on your own
+task before shipping it. The speed gain tracks the cut: 6 of 8 experts reads ≈¼ less from flash
+(−26.8%), which is where most of the +24% comes from.
 
 ### Adaptive cache budget (`--cache-mb auto`)
 
@@ -136,13 +149,14 @@ fixed budget: on Qwen, adaptive-**capped** at 4000 MiB + 4 lanes + overlap is th
 recipe (**5.23 tok/s**, 76% hit); uncapped auto over-allocates (4675 MiB) and regresses. Details:
 [docs/adaptive-cache.md](docs/adaptive-cache.md).
 
-### Desktop (over-RAM)
+### Desktop is not the target (for now)
 
-The same engine runs a model larger than the machine's RAM on desktop. Qwen3-30B-A3B-Q4_K_M
-(17.3 GiB) on a Windows PC with **14.8 GiB RAM** (1.17× RAM, cannot be held resident), cache
-4000 MiB, 4 lanes, 4 threads → **2.58 tok/s**, 861 MiB/token, 44.8% cache hit, 1.28 GiB/s
-O_DIRECT, coherent output. If a model fits in RAM, run it resident instead (faster) — streaming is
-what makes an over-RAM MoE runnable at all.
+This project is built for **mobile** — phones are where RAM is scarce and flash streaming earns its
+keep. The engine does also run on desktop, and the same trick makes a model larger than the
+machine's RAM runnable there (a quick check: Qwen3-30B-A3B-Q4_K_M, 17.3 GiB, on a Windows PC with
+14.8 GiB of RAM streamed at **2.58 tok/s**, coherent output). But desktop isn't tuned or a priority
+right now — it may get a proper look later. On a machine where the model fits in RAM, just run it
+resident; it will be faster.
 
 ## Quickstart (host)
 
