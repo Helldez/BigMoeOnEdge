@@ -103,8 +103,8 @@ data class AppSettings(
         // memory pressure on devices where free RAM is tight.
         val CACHE_CEIL_CHOICES = intArrayOf(0, 2000, 3000, 4000, 5000, 6000)
         val IO_CHOICES = intArrayOf(1, 2, 4, 8)
-        // 0 = model default (top-k as trained). 6/4 trade output quality for tok/s (fewer routed experts).
-        val N_EXPERT_CHOICES = intArrayOf(0, 6, 4)
+        // 0 = model default (top-k as trained). 6/4/3/2 trade output quality for tok/s (fewer routed experts).
+        val N_EXPERT_CHOICES = intArrayOf(0, 6, 4, 3, 2)
         val PREFETCH_CHOICES = intArrayOf(0, 1, 2, 4)
         val THREAD_CHOICES = intArrayOf(2, 4, 6, 8)
         val NPREDICT_CHOICES = intArrayOf(16, 32, 48, 64, 128, 256, 512, 1024, 2048)
