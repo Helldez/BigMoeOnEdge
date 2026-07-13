@@ -20,10 +20,22 @@ RouterHook::RouterHook(const MoeRecipe & recipe, int n_layer) : recipe_(recipe),
     spec_pred_.assign(n, std::vector<int32_t>{});
 }
 
-void RouterHook::set_spec_gate(bool on, int n_expert_used, float rms_eps) {
+RouterHook::~RouterHook() {
+    spec_stop_worker();
+}
+
+void RouterHook::set_spec_gate(bool on, int n_expert_used, float rms_eps, bool sync) {
     spec_gate_ = on;
+    spec_sync_ = sync;
     n_expert_used_ = n_expert_used;
     if (rms_eps > 0.0f) rms_eps_ = rms_eps;
+}
+
+void RouterHook::set_source(IExpertSource * src) {
+    source_ = src; // non-null → stream mode
+    // Spin up the prediction worker once, when streaming begins. Sync mode keeps prediction inline.
+    if (source_ && spec_gate_ && !spec_sync_ && !pred_worker_.joinable())
+        pred_worker_ = std::thread(&RouterHook::spec_worker_loop, this);
 }
 
 // Match "blk.<il>.<suffix><tail>" (e.g. suffix "ffn_gate_inp", tail ".weight"). Returns the layer.
@@ -119,7 +131,11 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                               std::sscanf(t->name, recipe_.router_input_fmt, &ril) == 1 && ril >= 0 && ril < n_layer_;
     if (ask) return is_topk || is_router_in;
 
-    if (source_ && is_router_in && t->data) predict_and_prefetch(t, ril);
+    // Pick up any prediction the worker finished since the last callback and queue its prefetch
+    // here, on the eval thread, so the streamer's LRU and prefetch queue stay single-threaded.
+    if (source_ && spec_gate_ && !spec_sync_) spec_drain_mailbox();
+
+    if (source_ && is_router_in && t->data) spec_request(t, ril);
 
     if (source_ && is_topk && t->data && t->type == GGML_TYPE_I32) {
         // selected_experts is [n_expert_used, n_tokens] but a VIEW of the full argsort
@@ -166,10 +182,10 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     return true;
 }
 
-// Predict the NEXT MoE layer's routing by running its gate on THIS layer's hidden state (the
-// residual stream changes slowly between layers), and prefetch the top-k. Only the ids matter —
-// they feed the byte-safe prefetch queue — so approximations here cost a wasted read at worst.
-void RouterHook::predict_and_prefetch(const ggml_tensor * node, int il) {
+// Eval thread. Resolve the layer whose router we predict, snapshot its input hidden state (the
+// residual stream changes slowly between layers), and dispatch the matvec. This is the only work
+// charged to the eval thread inside the router-input barrier — the copy is a few KiB.
+void RouterHook::spec_request(const ggml_tensor * node, int il) {
     const int target = next_moe_layer_[il];
     if (target < 0) return;
     const ggml_tensor * gw = gate_w_[target];
@@ -187,52 +203,138 @@ void RouterHook::predict_and_prefetch(const ggml_tensor * node, int il) {
     if (n_embd <= 0 || (int) gw->ne[0] != n_embd) return;
     const int j = nt - 1; // last token's column
 
-    // Read the hidden state, applying the architecture's router pre-transform.
-    spec_hidden_.resize(n_embd);
-    for (int d = 0; d < n_embd; ++d)
-        spec_hidden_[d] =
-            *(const float *) ((const char *) node->data + (size_t) j * node->nb[1] + (size_t) d * node->nb[0]);
+    auto snapshot = [&](std::vector<float> & dst) {
+        dst.resize(n_embd);
+        for (int d = 0; d < n_embd; ++d)
+            dst[d] =
+                *(const float *) ((const char *) node->data + (size_t) j * node->nb[1] + (size_t) d * node->nb[0]);
+    };
+
+    if (spec_sync_) {
+        // Deterministic path (gates): compute and prefetch inline, exactly as the value phase used to.
+        std::vector<float> hidden;
+        snapshot(hidden);
+        std::vector<int32_t> idx;
+        spec_compute(target, hidden, idx);
+        if (!idx.empty()) {
+            source_->prefetch(target, idx.data(), (int) idx.size());
+            spec_pred_[target].swap(idx);
+        }
+        return;
+    }
+
+    // Async path: hand the snapshot to the worker, overwriting any request it has not taken yet
+    // (latest layer wins — a stale prediction is only a wasted read).
+    {
+        std::lock_guard<std::mutex> lk(pred_mtx_);
+        snapshot(pred_req_hidden_);
+        pred_req_target_ = target;
+        pred_req_pending_ = true;
+    }
+    pred_cv_.notify_one();
+}
+
+// Worker (or inline in sync mode). Pure function of immutable post-capture state: apply the
+// router pre-transform, score every expert's logit, return the top-k ids. Only the ids matter —
+// they feed the byte-safe prefetch queue — so approximations here cost a wasted read at worst.
+void RouterHook::spec_compute(int target, const std::vector<float> & hidden, std::vector<int32_t> & out) const {
+    out.clear();
+    const ggml_tensor * gw = gate_w_[target];
+    const int n_embd = (int) hidden.size();
+    if (!gw || n_embd <= 0 || (int) gw->ne[0] != n_embd) return;
+
+    // Router pre-transform into a local copy (worker-private; no shared scratch).
+    std::vector<float> h(hidden);
     if (recipe_.router_pre == RouterPre::kRmsScaled) {
         double ss = 0.0;
         for (int d = 0; d < n_embd; ++d)
-            ss += (double) spec_hidden_[d] * spec_hidden_[d];
+            ss += (double) h[d] * h[d];
         const float inv_rms = 1.0f / std::sqrt((float) (ss / n_embd) + rms_eps_);
         const float inv_sqrt_d = 1.0f / std::sqrt((float) n_embd);
         const ggml_tensor * sc = gate_s_[target];
         for (int d = 0; d < n_embd; ++d) {
             const float s = sc ? *(const float *) ((const char *) sc->data + (size_t) d * sc->nb[0]) : 1.0f;
-            spec_hidden_[d] = spec_hidden_[d] * inv_rms * inv_sqrt_d * s;
+            h[d] = h[d] * inv_rms * inv_sqrt_d * s;
         }
     }
 
     // logits[e] = dot(gate_row_e, hidden). Gate is [n_embd, n_expert], row-major per expert.
     const int n_expert = (int) gw->ne[1];
     if (n_expert <= 0) return;
-    spec_logits_.resize(n_expert);
+    std::vector<float> logits(n_expert);
     for (int e = 0; e < n_expert; ++e) {
         const char * row = (const char *) gw->data + (size_t) e * gw->nb[1];
         double acc = 0.0;
         if (gw->type == GGML_TYPE_F32) {
             const float * r = (const float *) row;
             for (int d = 0; d < n_embd; ++d)
-                acc += (double) r[d] * spec_hidden_[d];
+                acc += (double) r[d] * h[d];
         } else {
             const ggml_fp16_t * r = (const ggml_fp16_t *) row;
             for (int d = 0; d < n_embd; ++d)
-                acc += (double) ggml_fp16_to_fp32(r[d]) * spec_hidden_[d];
+                acc += (double) ggml_fp16_to_fp32(r[d]) * h[d];
         }
-        spec_logits_[e] = (float) acc;
+        logits[e] = (float) acc;
     }
 
     // Top-k experts by logit (exact weights are irrelevant — only the ids feed prefetch).
     const int k = std::min(n_expert_used_ > 0 ? n_expert_used_ : 1, n_expert);
-    std::vector<int32_t> idx(n_expert);
-    std::iota(idx.begin(), idx.end(), 0);
-    std::partial_sort(idx.begin(), idx.begin() + k, idx.end(),
-                      [&](int32_t a, int32_t b) { return spec_logits_[a] > spec_logits_[b]; });
-    idx.resize(k);
-    source_->prefetch(target, idx.data(), k);
-    spec_pred_[target] = idx; // scored against the actual routing when the target layer runs
+    out.resize(n_expert);
+    std::iota(out.begin(), out.end(), 0);
+    std::partial_sort(out.begin(), out.begin() + k, out.end(),
+                      [&](int32_t a, int32_t b) { return logits[a] > logits[b]; });
+    out.resize(k);
+}
+
+// Eval thread. Enqueue the worker's finished prediction into the streamer's prefetch queue. The
+// prefetch call takes the streamer's own I/O lock, so it runs OUTSIDE pred_mtx_ (no lock nesting).
+void RouterHook::spec_drain_mailbox() {
+    int target = -1;
+    std::vector<int32_t> ids;
+    {
+        std::lock_guard<std::mutex> lk(pred_mtx_);
+        if (!pred_res_ready_) return;
+        target = pred_res_target_;
+        ids.swap(pred_res_ids_);
+        pred_res_ready_ = false;
+    }
+    if (target >= 0 && !ids.empty()) {
+        source_->prefetch(target, ids.data(), (int) ids.size());
+        spec_pred_[target].swap(ids); // scored against the actual routing when the target layer runs
+    }
+}
+
+void RouterHook::spec_worker_loop() {
+    std::vector<float> hidden;
+    std::vector<int32_t> ids;
+    for (;;) {
+        int target;
+        {
+            std::unique_lock<std::mutex> lk(pred_mtx_);
+            pred_cv_.wait(lk, [&] { return pred_stop_ || pred_req_pending_; });
+            if (pred_stop_) return;
+            target = pred_req_target_;
+            hidden.swap(pred_req_hidden_); // take the request; leaves pred_req_hidden_ reusable
+            pred_req_pending_ = false;
+        }
+        spec_compute(target, hidden, ids);
+        {
+            std::lock_guard<std::mutex> lk(pred_mtx_);
+            pred_res_target_ = target;
+            pred_res_ids_.swap(ids); // latest prediction wins; an undrained older one is dropped
+            pred_res_ready_ = true;
+        }
+    }
+}
+
+void RouterHook::spec_stop_worker() {
+    if (!pred_worker_.joinable()) return;
+    {
+        std::lock_guard<std::mutex> lk(pred_mtx_);
+        pred_stop_ = true;
+    }
+    pred_cv_.notify_all();
+    pred_worker_.join();
 }
 
 } // namespace bmoe

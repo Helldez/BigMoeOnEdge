@@ -175,7 +175,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & 
         };
         const int n_used = meta_int(std::string(arch) + ".expert_used_count", 8);
         const float eps = meta_float(std::string(arch) + ".attention.layer_norm_rms_epsilon", 1e-6f);
-        im.hook->set_spec_gate(true, n_used, eps);
+        // prefetch_sync (test-only) keeps prediction inline on the eval thread so the
+        // predict → prefetch → integrate → hit path stays deterministic for the byte-identity gates.
+        im.hook->set_spec_gate(true, n_used, eps, cfg.moe.prefetch_sync);
     }
 
     llama_context_params cparams = llama_context_default_params();
