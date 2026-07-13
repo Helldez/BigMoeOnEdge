@@ -44,11 +44,17 @@ def num(d, k):
         return None
 
 def analyze(csv_path):
-    walls, stalls, summ = [], [], {}
+    walls, stalls, mgmts, summ = [], [], [], {}
+    # Column layout is read from the header so trailing additive columns (stall_ms, then mgmt_ms)
+    # are picked up by NAME; older CSVs that lack them are handled transparently.
+    col = {}
     with open(csv_path) as f:
         for row in f:
             row = row.strip()
-            if not row or row.startswith("step,"):
+            if row.startswith("step,"):
+                col = {name: i for i, name in enumerate(row.split(","))}
+                continue
+            if not row:
                 continue
             if row.startswith("# summary"):
                 for tok in row.replace("# summary", "").split():
@@ -60,12 +66,16 @@ def analyze(csv_path):
                 walls.append(float(cols[2]))
             except (IndexError, ValueError):
                 continue
-            # stall_ms is an optional trailing column (index 7); absent in pre-overlap CSVs.
-            if len(cols) > 7:
-                try:
-                    stalls.append(float(cols[7]))
-                except ValueError:
-                    pass
+            def by_name(name, dst):
+                i = col.get(name)
+                if i is not None and i < len(cols):
+                    try:
+                        dst.append(float(cols[i]))
+                    except ValueError:
+                        pass
+            # stall_ms and mgmt_ms are optional trailing columns; absent in older CSVs.
+            by_name("stall_ms", stalls)
+            by_name("mgmt_ms", mgmts)
     if not walls:
         return None
     n = len(walls); tps = sorted(1000.0 / w for w in walls if w > 0)
@@ -80,6 +90,7 @@ def analyze(csv_path):
         "cache_hit": summ.get("cache_hit_pct", "-"),
         "read_MiB_tok": (g("read_MiB") / n) if n else 0.0,
         "stall_ms_tok": (statistics.mean(stalls) if stalls else None),
+        "mgmt_ms_tok": (statistics.mean(mgmts) if mgmts else None),
         "prefill_tps": g("prefill_tps"), "load_s": g("load_s"),
         "prefill_s": g("prefill_s"), "ttft": g("load_s") + g("prefill_s"),
         "peak_rss_gb": (num(m, "peak_rss_kb") or 0) / 1048576.0,

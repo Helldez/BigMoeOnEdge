@@ -32,6 +32,7 @@ public:
     struct Stats {
         uint64_t read_bytes = 0;           // bytes pulled from flash (aligned windows)
         double read_seconds = 0.0;         // wall time spent in the read phase
+        double mgmt_seconds = 0.0;         // cache management: vm commit + evict + LRU bookkeeping
         long long cache_hits = 0;          // expert lookups served from the cache
         long long cache_lookups = 0;       // total expert lookups (hits + misses)
         uint64_t cache_resident_bytes = 0; // currently resident cached slice bytes
