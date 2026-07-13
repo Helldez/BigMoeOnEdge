@@ -49,14 +49,22 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 ) { onChange(current.copy(mmap = it)) }
 
                 val stream = !current.mmap
+                val cacheOn = current.cacheMb == AppSettings.CACHE_AUTO || current.cacheMb > 0
                 IntSetting(
                     "Expert cache (MiB)", AppSettings.CACHE_CHOICES, current.cacheMb,
-                    format = { if (it == 0) "off" else "$it MiB" },
+                    format = {
+                        when (it) {
+                            AppSettings.CACHE_AUTO -> "Auto"
+                            0 -> "off"
+                            else -> "$it MiB"
+                        }
+                    },
                     enabled = stream,
                 ) { onChange(current.copy(cacheMb = it)) }
                 Text(
-                    "0 or ≥ 2000 MiB. A smaller cache thrashes (evict + re-read) and is " +
-                        "slower than off, so 1000 is intentionally not offered.",
+                    "Auto sizes the cache to free RAM and shrinks under pressure. Otherwise 0 or " +
+                        "≥ 2000 MiB — a smaller fixed cache thrashes (evict + re-read) and is slower " +
+                        "than off, so 1000 is intentionally not offered.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 IntSetting("Parallel I/O lanes", AppSettings.IO_CHOICES, current.ioThreads, enabled = stream) {
@@ -74,7 +82,7 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 IntSetting(
                     "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
                     format = { if (it == 0) "off" else "$it" },
-                    enabled = stream && current.cacheMb > 0,
+                    enabled = stream && cacheOn,
                 ) { onChange(current.copy(prefetchLayers = it)) }
                 Text(
                     "Read the next K layers' likely experts on idle lanes, predicted from the " +
@@ -84,7 +92,7 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 SwitchRow(
                     "Speculative gating",
                     "Predict the next layer's experts by running its router on the current hidden state",
-                    current.specGate, enabled = stream && current.cacheMb > 0,
+                    current.specGate, enabled = stream && cacheOn,
                 ) { onChange(current.copy(specGate = it)) }
             }
 

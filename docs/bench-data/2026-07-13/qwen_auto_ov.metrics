@@ -1,0 +1,9 @@
+peak_rss_kb=6311312
+mem_avail_before_kb=6355396
+mem_avail_floor_kb=1511164
+mem_avail_after_kb=6815688
+batt_temp_before_dC=389
+batt_temp_max_dC=391
+batt_temp_after_dC=391
+cpu_temp_before_mC=45100
+cpu_temp_max_mC=86900

@@ -48,4 +48,8 @@ bool vm_commit(void * p, size_t sz);
 void vm_evict(void * p, size_t sz);
 void vm_release(void * p, size_t sz);
 
+// Physical memory currently allocatable without paging, in bytes. 0 = unknown. Used to size the
+// expert cache to the device (--cache-mb auto) and to shrink it under memory pressure at runtime.
+uint64_t mem_available_bytes();
+
 } // namespace bmoe::pio

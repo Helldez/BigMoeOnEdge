@@ -50,13 +50,27 @@ ValidationResult validate(const RunConfig & cfg) {
             return fail("moe.prefetch_layers must be in [0, " + std::to_string(MoeStreamConfig::prefetch_layers_max) +
                         "]");
         }
-        if (m.prefetch_layers > 0 && m.cache_mb == 0) {
-            return fail("moe.prefetch_layers requires the LRU cache (cache_mb > 0): speculative reads "
-                        "land in the per-layer cache buffers, which do not exist with the cache off.");
+        if (m.cache_auto && m.cache_mb > 0) {
+            return fail("moe.cache_auto and an explicit moe.cache_mb are mutually exclusive: choose "
+                        "auto-sizing (cache_mb = 0, cache_auto) or a fixed budget (cache_mb > 0).");
         }
-        if (m.spec_gate && m.cache_mb == 0) {
-            return fail("moe.spec_gate requires the LRU cache (cache_mb > 0): its predictions feed the "
-                        "speculative read queue, which caches into the per-layer buffers.");
+        if (m.cache_floor_mb < 0) {
+            return fail("moe.cache_floor_mb must be >= 0");
+        }
+        if (m.cache_ceil_mb < 0) {
+            return fail("moe.cache_ceil_mb must be >= 0 (0 = no explicit ceiling)");
+        }
+        // "The LRU cache is on" means a fixed budget OR auto-sizing (which sizes a real LRU cache).
+        const bool cache_on = m.cache_mb > 0 || m.cache_auto;
+        if (m.prefetch_layers > 0 && !cache_on) {
+            return fail("moe.prefetch_layers requires the LRU cache (cache_mb > 0 or cache_auto): "
+                        "speculative reads land in the per-layer cache buffers, which do not exist "
+                        "with the cache off.");
+        }
+        if (m.spec_gate && !cache_on) {
+            return fail("moe.spec_gate requires the LRU cache (cache_mb > 0 or cache_auto): its "
+                        "predictions feed the speculative read queue, which caches into the per-layer "
+                        "buffers.");
         }
         if (m.spec_recall_min_pct < 0 || m.spec_recall_min_pct > 100) {
             return fail("moe.spec_recall_min_pct must be in [0, 100] (0 disables the recall self-check)");

@@ -40,12 +40,15 @@ data class AppSettings(
         )
         if (!mmap) {
             a += "--moe-stream"
-            a += listOf("--cache-mb", cacheMb.toString())
+            a += if (cacheMb == CACHE_AUTO) listOf("--cache-mb", "auto")
+                 else listOf("--cache-mb", cacheMb.toString())
             a += listOf("--io-threads", ioThreads.toString())
             if (!oDirect) a += "--no-odirect"
             if (overlap) a += "--overlap"
-            if (prefetchLayers > 0 && cacheMb > 0) a += listOf("--prefetch", prefetchLayers.toString())
-            if (specGate && cacheMb > 0) a += "--spec-gate"
+            // Auto sizing is a live LRU cache, so it satisfies the prefetch/spec-gate cache requirement.
+            val cacheOn = cacheMb == CACHE_AUTO || cacheMb > 0
+            if (prefetchLayers > 0 && cacheOn) a += listOf("--prefetch", prefetchLayers.toString())
+            if (specGate && cacheOn) a += "--spec-gate"
             if (loadAll) a += "--load-all"
         }
         return a
@@ -78,9 +81,11 @@ data class AppSettings(
         // rejected recoverably by the CLI, leaving the session usable.
         const val SESSION_CTX = 4096
 
-        // 1000 is deliberately absent: a budget below the ~1500 MiB pathological band
-        // thrashes and is slower than no cache — the engine rejects it. Use 0 or >= 2000.
-        val CACHE_CHOICES = intArrayOf(0, 2000, 3000, 4000, 5000, 6000)
+        // -1 (Auto) sizes the cache to the device's free RAM at runtime (--cache-mb auto). 1000 is
+        // deliberately absent: a budget below the ~1500 MiB pathological band thrashes and is slower
+        // than no cache — the engine rejects it. Use Auto, 0, or >= 2000.
+        const val CACHE_AUTO = -1
+        val CACHE_CHOICES = intArrayOf(CACHE_AUTO, 0, 2000, 3000, 4000, 5000, 6000)
         val IO_CHOICES = intArrayOf(1, 2, 4, 8)
         val PREFETCH_CHOICES = intArrayOf(0, 1, 2, 4)
         val THREAD_CHOICES = intArrayOf(2, 4, 6, 8)

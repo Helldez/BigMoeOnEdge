@@ -9,10 +9,12 @@ Hardware for the reference numbers: OnePlus 15R, Snapdragon-class SoC, 11.3 GB R
 UFS 4.x storage. Model: Qwen3-30B-A3B-Q4_K_M (18.5 GB), ~1.7× device RAM.
 
 Reproducible drivers (used for [benchmarks.md](benchmarks.md)): `scripts/bench-run.sh`
-(one device-side run, prompt baked in so no quoting has to survive adb), `scripts/
-bench-matrix.ps1` (the full 12-run matrix over adb), `scripts/bench-analyze.py`
-(mean/min/max + median/p5/p95 from the CSVs). Use a fixed prompt and a fixed `-n`
-(≥256 tokens, so the expert cache reaches steady state) across every config.
+(one device-side run, prompt baked in so no quoting has to survive adb, and it also samples
+the device-pressure axis — peak RSS, `MemAvailable` floor, CPU/battery temperature),
+`scripts/bench-matrix.ps1` (the full matrix over adb — 8 configs × 2 models, including two
+`--overlap` rows), `scripts/bench-analyze.py` (mean/min/max + median/p5/p95 and the pressure
+table from the CSVs + `.metrics`). Use a fixed prompt and a fixed `-n` (≥256 tokens, so the
+expert cache reaches steady state) across every config.
 
 ```bash
 # push the model
@@ -33,9 +35,10 @@ Vary one axis at a time:
 
 | Axis | Values | Expectation |
 |------|--------|-------------|
-| cache-mb | 0, 2000, 4000, 6000 | monotone improvement; 0-or-≥2000 only |
+| cache-mb | 0, 2000, 4000, 6000 | monotone improvement; 0-or-≥2000 only. On a device whose resident model already fills RAM (Gemma), the top of this range OOMs — watch the `MemAvailable` floor |
 | io-threads | 1, 4 | 4 ≈ 3× the serial read bandwidth |
 | threads (-t) | 2, 4, 8 | U-shape, 4 optimal, 8 regresses |
+| overlap | off, on | net gain **only over a warm cache** (hides residual flash wait behind compute); a net loss on a cold cache-0 stream, where I/O dwarfs compute |
 
 ### Caveats
 
