@@ -7,6 +7,15 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Session mode**: the engine can now load a model once and serve many prompts against it, with
+  the expert LRU cache staying warm between prompts, instead of re-paying the model load and the
+  cold-cache ramp on every generation. `run()` splits into a `Session` (`open` / `generate` /
+  `close`); `generate()` can be called repeatedly and cancelled mid-flight via the abort callback.
+  `bmoe-cli --session` drives it over a stdin/stdout JSON line protocol, and the Android example
+  runs one persistent session per model (reusing the warm process across prompts, freeing it on an
+  idle timeout). Independent prompts by default (KV cleared, cache warm); multi-turn chat is a
+  `clear_kv=false` follow-up. Byte-identity gates S1/S2 prove a warm generate matches the cold
+  one-shot reference. See `docs/session.md`.
 - Cache-management time is now surfaced as its own telemetry term (`mgmt_ms` per token,
   `cache mgmt` in the `moe-stream:` summary, `mgmt_ms` CSV column, `mgmt_s/tok` in the summary
   line). It times the virtual-memory commit, eviction and LRU bookkeeping that were previously

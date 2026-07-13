@@ -18,6 +18,7 @@ namespace bmoe {
 
 struct RunResult {
     bool ok = false;
+    bool cancelled = false; // generation was interrupted by Session::cancel() (ok stays true)
     std::string error;
     std::string generated_text;
     RunSummary summary;

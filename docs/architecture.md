@@ -70,13 +70,18 @@ on.
 
 ## The generation loop
 
-`run()` (core/src/engine/runtime.cpp):
+The composition root is `Session` (core/src/engine/session.cpp):
 
-1. Load model (mmap on, repack off, experts on CPU).
-2. If streaming: resolve the architecture recipe, install the router hook, do the capture
-   warm-up, bind the expert source, clear the warm-up KV.
-3. Prefill the prompt, then greedily decode `n_predict` tokens, reporting per-token
-   metrics.
+1. `open()` — load model (mmap on, repack off, experts on CPU); if streaming, resolve the
+   architecture recipe, install the router hook, do the capture warm-up, bind the expert
+   source, clear the warm-up KV. Done **once** per model.
+2. `generate()` — prefill the prompt, then greedily decode `n_predict` tokens, reporting
+   per-token metrics. Callable repeatedly; the expert cache stays warm between calls (see
+   [session.md](session.md)). Cancellable mid-flight via the abort callback.
+3. Destructor — tear down in order: I/O pool, context, hook, model, backend.
+
+`run()` (core/src/engine/runtime.cpp) is a thin one-shot wrapper — open, one generate, close —
+so the gates and the interactive session share the same code path.
 
 Greedy sampling makes the output a deterministic function of the graph — the property the
 [byte-identity gates](../tests/moe_gates.cpp) assert.
