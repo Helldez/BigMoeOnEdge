@@ -95,8 +95,8 @@ static bool session_two_gens(const RunConfig & c, std::string & out1, std::strin
 // Open a Session (cache on), generate, shrink the cache budget hard between generations to force a
 // mass eviction of the warm cache, then generate again. The second output must still match the cold
 // resident reference: a runtime resize only changes residency, never the produced bytes.
-static bool session_shrink_gen(const RunConfig & c, int shrink_mib, std::string & out1, std::string & out2,
-                               std::string & err) {
+static bool
+session_shrink_gen(const RunConfig & c, int shrink_mib, std::string & out1, std::string & out2, std::string & err) {
     SessionConfig sc;
     sc.model_path = c.model_path;
     sc.n_threads = c.n_threads;
