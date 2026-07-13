@@ -25,11 +25,6 @@ static const MoeRecipe k_recipes[] = {
      "ffn_gate_inp",
      nullptr,
      RouterPre::kNone},
-    // llada-moe is a diffusion MoE; the expert layout is standard, so expert streaming
-    // applies mechanically. Note that its diffusion inference does not have the n=1
-    // routing sparsity autoregressive decode relies on — see docs/limitations.md.
-    // Speculative gating is left unwired (no router_input_fmt) pending validation.
-    {"llada-moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
     // gemma4 (Gemma 4 MoE, e.g. 26B-A4B) fuses gate+up into blk.<il>.ffn_gate_up_exps —
     // to the streamer just an expert tensor with a 2x per-expert stride. The per-expert
     // ffn_down_exps.scale, the router (ffn_gate_inp.{weight,scale}) and the always-on
