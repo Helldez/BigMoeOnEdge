@@ -6,6 +6,14 @@ on:
     tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
+    paths-ignore: [ '**/*.md', 'docs/**', 'LICENSE', '.gitignore' ]
+  workflow_dispatch: {}
+
+# A newer push to the same ref cancels the older, still-running CI — so a burst of commits
+# spends minutes only on the last one instead of building every intermediate commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   format:
@@ -35,6 +43,9 @@ jobs:
         run: cd build && ctest --output-on-failure
 
   host-windows:
+    # Windows minutes bill at 2x. It only compile-checks the Win32 I/O paths, so run it where it
+    # matters — PRs (before merge) and release tags — not on every main push (already tested on PR).
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,6 +60,10 @@ jobs:
   # APK around it, uploading the APK as an artifact — and attaching it to the release on a
   # tag push. Debug-signed: for on-device validation, not Play distribution.
   android-apk:
+    # The long job (NDK + cross-compile + gradle). Build it on PRs (catch APK breakage before merge)
+    # and on release tags (attach the APK), but not on every main push. Trigger a one-off manually
+    # with the Run workflow button (workflow_dispatch) if you need a fresh main APK between releases.
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write   # only used by the tag-triggered release attach step
