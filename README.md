@@ -8,10 +8,11 @@ Qwen3-30B-A3B that is 8 of 128 per layer — about 6% of the expert weights. Big
 keeps the small, dense parts of the model resident and reads just those routed expert
 slices from flash on demand, so an 18.5 GB model runs on an 11 GB phone, losslessly.
 
-- **Measured:** Qwen3-30B-A3B-Q4_K_M on a OnePlus 15R (11.3 GB RAM) → **1.8 tok/s** with no
-  cache, up to **3.75 tok/s** with a 4 GiB expert cache and 4 read lanes, byte-identical to
-  a full in-memory run. See the table below, or [docs/benchmarks.md](docs/benchmarks.md) for
-  the full matrix (Qwen + Gemma, mean/min/max/p95).
+- **Measured:** Qwen3-30B-A3B-Q4_K_M on a OnePlus 15R (11.3 GB RAM) → **1.7 tok/s** with no
+  cache, **3.47 tok/s** with a 4 GiB expert cache and 4 read lanes, and **3.98 tok/s** with
+  intra-layer I/O–compute overlap on top — byte-identical to a full in-memory run. See the
+  table below, or [docs/benchmarks.md](docs/benchmarks.md) for the full matrix (Qwen + Gemma,
+  mean/min/max/p95, plus device-pressure numbers).
 - **Public-API streaming seam.** Expert streaming is driven entirely through llama.cpp's
   public eval-callback and public gguf accessors and works against stock upstream. The one
   exception is the optional intra-layer overlap feature (`--overlap`), which needs a ~25-line
@@ -35,24 +36,28 @@ Qwen3-30B-A3B-Q4_K_M (18.5 GB, 128 experts, top-8, 48 layers) on a OnePlus 15R
 
 | Expert cache | I/O lanes | tok/s (mean) | flash read/token | cache hit |
 |-------------:|----------:|-------------:|-----------------:|----------:|
-| mmap only    | —         | 1.86 (unstable) | —             | —         |
-| off (stream) | 4         | 1.78         | 1051 MB          | —         |
-| 2000 MiB     | 4         | 2.47         | 480 MB           | 53%       |
-| 4000 MiB     | 2         | 3.38         | 225 MB           | 76%       |
-| **4000 MiB** | **4**     | **3.75**     | 225 MB           | 76%       |
+| mmap only    | —         | 2.00 (unstable) | —             | —         |
+| off (stream) | 4         | 1.71         | 1051 MB          | —         |
+| 2000 MiB     | 4         | 2.37         | 480 MB           | 53%       |
+| 4000 MiB     | 2         | 3.12         | 225 MB           | 76%       |
+| 4000 MiB     | 4         | 3.47         | 225 MB           | 76%       |
+| **4000 MiB + overlap** | **4** | **3.98** | 225 MB       | 76%       |
 
 Cache size is the dominant lever (2000 → 4000 MiB nearly doubles throughput as the hit rate
 climbs); read lanes help mainly when the cache is small. `mmap`-only looks comparable on
-average but is unstable (single tokens from 0.36 to 8.34 tok/s) and evicts other apps —
+average but is unstable (single tokens from 0.15 to 8.15 tok/s) and evicts other apps —
 streaming with a bounded cache stays responsive. The cache rule is **0 or ≥ ~2 GB**: a
 smaller budget thrashes and is slower than no cache. Gemma-4-26B-A4B-Q4_K_M reaches
-**3.48 tok/s** at the same best setting. Full matrix and method:
+**2.78 tok/s** (cache 2000 + overlap — its 17 GB resident footprint won't spare a 4 GiB cache,
+so cache 4000 OOMs on this device). Full matrix, device-pressure numbers and method:
 [docs/benchmarks.md](docs/benchmarks.md), [docs/benchmark-method.md](docs/benchmark-method.md).
 
-An optional `--overlap` mode pipelines each layer's expert reads with its compute (via the
-fork's per-expert readiness hook) instead of blocking on them, aiming to hide flash I/O
-behind FFN compute. It is byte-identical to the serial path (gate G4); its on-device
-throughput is being measured and the table will gain an overlap row once those numbers land.
+The `--overlap` mode pipelines each layer's expert reads with its compute (via the fork's
+per-expert readiness hook) instead of blocking on them, hiding flash I/O behind FFN compute.
+It is byte-identical to the serial path (gate G4). It pays off **over a warm cache** — the
+best-config gain above (3.47 → 3.98 tok/s, per-token flash stall down to 0.06 s) — but
+regresses on a cold cache-0 stream (1.71 → 1.27), where there is far more I/O than compute
+can mask.
 
 The same works on desktop for a model larger than the machine's RAM. Qwen3-30B-A3B-Q4_K_M
 (17.3 GiB) on a Windows PC with 14.8 GiB RAM (1.17× RAM, so it cannot be held resident),

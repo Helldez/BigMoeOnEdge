@@ -1,0 +1,13 @@
+﻿generation: 256 tokens, 0.288 s/token (3.469 tok/s)
+prefill: 34 tokens, 10.845 s (3.1 tok/s) | model load 18.009 s | TTFT 28.853 s
+moe-stream: read 57509.4 MiB (224.65 MiB/token), decode 0.288 s/token (compute 0.161 + flash I/O 0.127 s/token, 1763 MiB/s)
+moe-cache: 76.5% hit, resident 3997.9 MiB
+peak_rss_kb=5830692
+mem_avail_before_kb=5908056
+mem_avail_floor_kb=1879568
+mem_avail_after_kb=6042160
+batt_temp_before_dC=394
+batt_temp_max_dC=394
+batt_temp_after_dC=390
+cpu_temp_before_mC=48200
+cpu_temp_max_mC=73700
