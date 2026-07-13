@@ -81,6 +81,13 @@ Add `--overlap` to pipeline expert reads with compute (needs the fork submodule)
 `--no-think` to render the chat template with reasoning off. Omit `--moe-stream` entirely
 for the plain mmap baseline the streaming modes are compared against.
 
+`--n-expert-used N` overrides the model's top-k routing (e.g. 8 → 6 on Qwen3-30B-A3B),
+cutting per-token compute and — under `--moe-stream` — flash I/O roughly in proportion.
+It is a speed/quality trade-off: fewer active experts **changes the output**. Implemented
+purely through a llama.cpp `kv_override` on the arch-prefixed `expert_used_count` metadata
+(no fork, no patch); the value must stay in `[1, n_expert]`. `0` (default) keeps the model's
+own count. Works with or without streaming.
+
 Run the byte-identity gates (needs `python3` with the `gguf` package):
 
 ```bash

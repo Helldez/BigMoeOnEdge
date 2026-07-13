@@ -101,6 +101,13 @@ struct RunConfig {
     // Only meaningful with chatml; the raw-prompt path ignores it.
     bool think = true;
 
+    // Override the number of active MoE experts per token (top-k routing). 0 = use the
+    // model's own <arch>.expert_used_count from the gguf. A lower value cuts per-token
+    // compute (and, with moe.enabled, flash I/O) proportionally, at a quality cost — it
+    // changes the output. Applied at load via a llama.cpp kv_override on the arch-prefixed
+    // expert_used_count metadata key; must stay in [1, n_expert]. Independent of streaming.
+    int n_expert_used = 0;
+
     MoeStreamConfig moe;
 };
 

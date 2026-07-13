@@ -191,6 +191,67 @@ the 1.5 s/tok of lane reads cannot be hidden behind ~0.19 s of compute.
   because cache lookup/copy is counted inside compute; it settles back down at cache 4000 as
   the hit rate makes those copies rarer.)
 
+## Active-expert override (`--n-expert-used`) — Turbo top-k
+
+`--n-expert-used N` lowers the model's top-k routing (e.g. 8 → 6) at load, via a llama.cpp
+`kv_override` on the arch-prefixed `expert_used_count` metadata — no fork, no patch. Fewer
+active experts cut both per-token compute *and* the streamed flash reads, at a quality cost
+(it changes the output). This is a **matched A/B**: default vs `k=6`, same session, same
+`--cache-mb 4000 --io-threads 4` config, same 45 s cooldown, thermally comparable (CPU peak
+within ~1–2 °C between the two rows), so the delta is the override's alone — not a warm-vs-cold
+artefact. (These rows are measured fresh on a cool device, so their *default* mean is higher
+than the 2026-07-11 matrix above, which is why the pair is compared to its own baseline, not
+to that table.)
+
+### Qwen3-30B-A3B-Q4_K_M — default (top-8) vs k=6
+
+| Config | mean | min | max | median | p5 | p95 | cache hit | flash read/token | decode: compute + I/O (s/tok) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| default (k=8) | **4.03** | 1.55 | 9.34 | 4.19 | 2.65 | 7.08 | 76.5% | 224.65 MiB | 0.127 + 0.121 |
+| **k=6** | **5.01** | 1.90 | 9.58 | 5.23 | 3.36 | 7.99 | 76.7% | 164.52 MiB | 0.106 + 0.093 |
+| Δ | **+24.3%** | | | | | | +0.2 pt | **−26.8%** | −0.048 |
+
+### Gemma-4-26B-A4B-it-Q4_K_M — default vs k=6
+
+| Config | mean | min | max | median | p5 | p95 | cache hit | flash read/token | decode: compute + I/O (s/tok) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| default | **4.09** | 0.58 | 7.05 | 4.42 | 2.82 | 6.08 | 81.7% | 143.50 MiB | 0.150 + 0.095 |
+| **k=6** | **4.99** | 1.18 | 7.77 | 5.19 | 3.61 | 7.05 | 82.8% | 97.81 MiB | 0.134 + 0.066 |
+| Δ | **+22.1%** | | | | | | +1.1 pt | **−31.8%** | −0.045 |
+
+> **On Gemma's default routing width:** the "A4B" label is ~4 **billion active parameters**,
+> not 4 active experts — `k=6` reads 31.8 % *less* than default, which is only possible if the
+> default routes well above 6. The exact `expert_used_count` should be confirmed from the gguf
+> metadata; the I/O ratio (97.81 / 143.50 = 0.68) is consistent with a default of 8.
+
+Device pressure captured on the same runs (peak process RSS / free-RAM floor / CPU start→max /
+battery max): Qwen default 5.89 GB / 2.23 GB / 38.6→62.9 °C / 35.5 °C, Qwen k=6 5.08 GB /
+2.09 GB / 38.6→62.1 °C / 34.2 °C; Gemma default 6.04 GB / 2.15 GB / 40.1→71.0 °C / 36.5 °C,
+Gemma k=6 6.22 GB / 2.34 GB / 40.1→69.1 °C / 34.9 °C. Reducing k trims peak RSS and the thermal
+rise slightly, as expected from the smaller working set and lower compute.
+
+**On theory.** Qwen's −26.8 % flash read matches 6/8 = 0.75 (the small extra comes from the hit
+rate holding), confirming its default is top-8. The throughput gain (+22–24 %) tracks the s/token
+drop (−18 to −19 %): cutting ~25 % of the routed work removes ~25 % of the decode time.
+
+**Quality.** Greedy decoding is deterministic, so a narrower top-k changes the argmax from the
+first token whose routing differs — the text **diverges** from the default. On the fixed essay
+prompt no degradation was observed at k=6: both models stayed coherent and factually accurate
+(Qwen at k=6 even surfaced more specific history — the Antikythera mechanism, Al-Khwarizmi → the
+word "algorithm"; Gemma produced the same chronological outline as its default). This is a single
+prompt, not a quality benchmark — treat k=6 as a speed/quality knob to evaluate per use case,
+not a free win.
+
+Reproduce (feature branch `feat/expert-count-override`):
+
+```bash
+scripts/bench-run.sh 256 <model.gguf> <out.csv> <out.metrics> \
+  --moe-stream --cache-mb 4000 --io-threads 4 --n-expert-used 6
+```
+
+Raw per-token CSVs, `.metrics`, and generated text for both the default and k=6 runs are in
+`.bench-k6/` (git-ignored), measured 2026-07-13.
+
 ## Device pressure — not just tokens
 
 Tokens/s is only half the story. Under `mmap`-only the model is faulted in through the
