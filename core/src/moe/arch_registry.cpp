@@ -25,6 +25,14 @@ static const MoeRecipe k_recipes[] = {
      "ffn_gate_inp",
      nullptr,
      RouterPre::kNone},
+    // qwen35moe (Qwen3.5 MoE, e.g. 35B-A3B) is a hybrid attention/SSM stack: some layers run
+    // full attention, others a Mamba-style SSM block, but every MoE layer names its experts
+    // with the standard split suffixes, so streaming is one row. There is also an always-on
+    // shared expert (ffn_*_shexp) that stays mmap-resident and lowers the streamed fraction.
+    // Speculative gating is left unwired (router_input_fmt=nullptr): the observed router-input
+    // node is not uniform across the hybrid layer types, so --spec-gate refuses here rather
+    // than guessing. Basic streaming and the auto cache are unaffected.
+    {"qwen35moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}, nullptr, nullptr, nullptr, RouterPre::kNone},
     // gemma4 (Gemma 4 MoE, e.g. 26B-A4B) fuses gate+up into blk.<il>.ffn_gate_up_exps —
     // to the streamer just an expert tensor with a 2x per-expert stride. The per-expert
     // ffn_down_exps.scale, the router (ffn_gate_inp.{weight,scale}) and the always-on
