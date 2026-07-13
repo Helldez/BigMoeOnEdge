@@ -7,22 +7,21 @@ import android.content.Context
  * flags; the Settings screen edits them and [toArgv] builds the command line.
  */
 data class AppSettings(
-    // Conservative, device-agnostic defaults: a modest fixed expert cache, streaming with overlap,
-    // 4 compute + 4 read lanes, model's own top-k. No device- or benchmark-specific tuning — the
-    // knobs below let the user tune for their own hardware.
-    val mmap: Boolean = false,   // baseline: no streaming — llama.cpp mmap loads the whole model
-    val cacheMb: Int = 3000,     // LRU expert cache budget; Auto / 0 / >= 2000 (see CACHE_CHOICES)
-    val cacheCeilMb: Int = 4000, // with cacheMb=Auto: upper bound on the auto budget (0 = no cap)
-    val ioThreads: Int = 4,      // parallel expert-read lanes
-    val threads: Int = 4,        // compute threads (-t)
-    val nExpertUsed: Int = 0,    // top-k override (0 = model default); lower = faster, changes output
+    // Conservative, device-agnostic defaults: an auto-sized expert cache capped at 3000 MiB,
+    // streaming with overlap, 4 compute + 4 read lanes, model's own top-k. No device- or
+    // benchmark-specific tuning — the knobs below let the user tune for their own hardware.
+    val mmap: Boolean = false,          // baseline: no streaming — llama.cpp mmap loads the whole model
+    val cacheMb: Int = CACHE_AUTO,      // LRU expert cache budget; Auto / 0 / >= 2000 (see CACHE_CHOICES)
+    val cacheCeilMb: Int = 3000,        // with cacheMb=Auto: upper bound on the auto budget (0 = no cap)
+    val ioThreads: Int = 4,             // parallel expert-read lanes
+    val threads: Int = 4,               // compute threads (-t)
+    val nExpertUsed: Int = 0,           // top-k override (0 = model default); lower = faster, changes output
     val nPredict: Int = 48,
-    val oDirect: Boolean = true, // bypass the page cache
-    val overlap: Boolean = true, // read the next experts while the current layer computes
-    val prefetchLayers: Int = 0, // temporal prefetch depth K (0 = off); needs the cache
-    val specGate: Boolean = false,// predict next layer's experts via its router; needs the cache
-    val thinking: Boolean = false,// reasoning; off passes --no-think (enable_thinking=false)
-    val loadAll: Boolean = false,// debug: read ALL experts each token (A/B baseline)
+    val oDirect: Boolean = true,        // bypass the page cache
+    val overlap: Boolean = true,        // read the next experts while the current layer computes
+    val prefetchLayers: Int = 0,        // temporal prefetch depth K (0 = off); needs the cache
+    val specGate: Boolean = false,      // predict next layer's experts via its router; needs the cache
+    val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
 ) {
     /**
      * Build the argv that OPENS a persistent bmoe-cli session (`--session`): everything fixed for
@@ -31,8 +30,8 @@ data class AppSettings(
      * are NOT here; they travel as JSON requests over stdin, one per generation.
      *
      * When [mmap] is set, expert streaming is turned off entirely: the CLI omits --moe-stream and
-     * every streaming knob (cache / lanes / O_DIRECT / overlap / load-all), so llama.cpp loads the
-     * whole model via mmap through the page cache — the baseline the streaming modes compare to.
+     * every streaming knob (cache / lanes / O_DIRECT / overlap), so llama.cpp loads the whole model
+     * via mmap through the page cache — the baseline the streaming modes compare to.
      */
     fun sessionArgv(cliPath: String, modelPath: String): List<String> {
         val a = mutableListOf(
@@ -61,7 +60,6 @@ data class AppSettings(
             val cacheOn = cacheMb == CACHE_AUTO || cacheMb > 0
             if (prefetchLayers > 0 && cacheOn) a += listOf("--prefetch", prefetchLayers.toString())
             if (specGate && cacheOn) a += "--spec-gate"
-            if (loadAll) a += "--load-all"
         }
         return a
     }
@@ -74,7 +72,7 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, oDirect, overlap,
-               prefetchLayers, specGate, loadAll)
+               prefetchLayers, specGate)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -86,7 +84,7 @@ data class AppSettings(
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
             .putBoolean("overlap", overlap).putInt("prefetchLayers", prefetchLayers)
             .putBoolean("specGate", specGate)
-            .putBoolean("thinking", thinking).putBoolean("loadAll", loadAll)
+            .putBoolean("thinking", thinking)
             .apply()
     }
 
@@ -103,7 +101,7 @@ data class AppSettings(
         val CACHE_CHOICES = intArrayOf(CACHE_AUTO, 0, 2000, 3000, 4000, 5000, 6000)
         // Upper bound for the Auto budget (0 = no cap). A cap keeps Auto from over-growing into
         // memory pressure on devices where free RAM is tight.
-        val CACHE_CEIL_CHOICES = intArrayOf(0, 3000, 4000, 5000, 6000)
+        val CACHE_CEIL_CHOICES = intArrayOf(0, 2000, 3000, 4000, 5000, 6000)
         val IO_CHOICES = intArrayOf(1, 2, 4, 8)
         // 0 = model default (top-k as trained). 6/4 trade output quality for tok/s (fewer routed experts).
         val N_EXPERT_CHOICES = intArrayOf(0, 6, 4)
@@ -127,7 +125,6 @@ data class AppSettings(
                 prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
                 specGate = p.getBoolean("specGate", d.specGate),
                 thinking = p.getBoolean("thinking", d.thinking),
-                loadAll = p.getBoolean("loadAll", d.loadAll),
             )
         }
 

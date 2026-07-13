@@ -143,13 +143,6 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     current.thinking,
                 ) { onChange(current.copy(thinking = it)) }
             }
-
-            Section("Debug") {
-                SwitchRow(
-                    "Load all experts", "Read every expert each token (A/B baseline; slow)",
-                    current.loadAll, enabled = !current.mmap,
-                ) { onChange(current.copy(loadAll = it)) }
-            }
         }
     }
 }
