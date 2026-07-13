@@ -119,9 +119,9 @@ private:
     std::vector<int> next_moe_layer_;             // next bound MoE layer after il, or -1
     std::vector<std::vector<int32_t>> spec_pred_; // predicted experts per layer, for recall scoring
     long long spec_pred_total_ = 0, spec_pred_hit_ = 0;
-    int spec_recall_min_pct_ = 0;       // 0 = self-governor off
-    long long spec_recall_warmup_ = 0;  // predictions to score before the recall check arms
-    bool spec_auto_off_ = false;        // set once when the self-governor disables spec-gating
+    int spec_recall_min_pct_ = 0;      // 0 = self-governor off
+    long long spec_recall_warmup_ = 0; // predictions to score before the recall check arms
+    bool spec_auto_off_ = false;       // set once when the self-governor disables spec-gating
 
     // Prediction worker. The eval thread posts a latest-wins request (hidden-state snapshot + target
     // layer); the worker computes the top-k and posts it back in a single-slot mailbox that the eval

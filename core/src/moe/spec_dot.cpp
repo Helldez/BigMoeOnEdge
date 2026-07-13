@@ -20,7 +20,7 @@ static inline float half2float(uint16_t h) {
         if (man == 0) {
             bits = sign; // +/- zero
         } else {
-            int e = 0;      // normalise the subnormal
+            int e = 0; // normalise the subnormal
             uint32_t m = man;
             while ((m & 0x400u) == 0) {
                 m <<= 1;

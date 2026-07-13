@@ -221,8 +221,7 @@ void RouterHook::spec_request(const ggml_tensor * node, int il) {
     auto snapshot = [&](std::vector<float> & dst) {
         dst.resize(n_embd);
         for (int d = 0; d < n_embd; ++d)
-            dst[d] =
-                *(const float *) ((const char *) node->data + (size_t) j * node->nb[1] + (size_t) d * node->nb[0]);
+            dst[d] = *(const float *) ((const char *) node->data + (size_t) j * node->nb[1] + (size_t) d * node->nb[0]);
     };
 
     if (spec_sync_) {
