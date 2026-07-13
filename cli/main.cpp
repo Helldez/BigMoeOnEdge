@@ -482,8 +482,13 @@ int main(int argc, char ** argv) {
                     s.moe_read_mib, s.n_generated ? s.moe_read_mib / s.n_generated : 0.0, s.s_per_token,
                     s.moe_compute_s_per_token, s.moe_mgmt_s_per_token, s.moe_io_s_per_token,
                     s.moe_io_seconds > 0 ? s.moe_read_mib / s.moe_io_seconds : 0.0);
-        if (s.cache_hit_pct >= 0.0)
-            std::printf("moe-cache: %.1f%% hit, resident %.1f MiB\n", s.cache_hit_pct, s.cache_resident_mib);
+        if (s.cache_hit_pct >= 0.0) {
+            if (cfg.moe.cache_auto)
+                std::printf("moe-cache: %.1f%% hit, resident %.1f MiB, budget %.0f MiB (auto, resized %lld×)\n",
+                            s.cache_hit_pct, s.cache_resident_mib, s.cache_budget_mib, s.cache_resizes);
+            else
+                std::printf("moe-cache: %.1f%% hit, resident %.1f MiB\n", s.cache_hit_pct, s.cache_resident_mib);
+        }
         if (cfg.moe.overlap)
             std::printf("moe-overlap: stall %.3f s/token (flash reads overlapped with FFN compute)\n",
                         s.moe_stall_s_per_token);

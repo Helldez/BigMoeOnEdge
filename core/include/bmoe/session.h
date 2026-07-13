@@ -70,6 +70,11 @@ public:
     const std::string & arch() const; // model architecture ("qwen3moe", "gemma4", …)
     int n_ctx() const;
 
+    // Set the expert-cache budget in MiB and evict down to it now. PRECONDITION: no generate() in
+    // flight — call it between generations (e.g. from an app's memory-pressure callback). A no-op
+    // when the cache is off. Complements --cache-mb auto's automatic tracking with explicit control.
+    void set_cache_budget_mb(int mib);
+
 private:
     Session();
     struct Impl;

@@ -46,6 +46,8 @@ struct RunSummary {
     double moe_stall_s_per_token = 0.0; // overlap only: per-token wall the kernel waited on flash
     double cache_hit_pct = -1.0;        // -1 when no cache
     double cache_resident_mib = 0.0;
+    double cache_budget_mib = 0.0;      // current cache budget (moves under --cache-mb auto)
+    long long cache_resizes = 0;        // runtime budget changes (0 unless auto/explicit resize)
 
     // Temporal prefetch (zero when --prefetch is off): speculative bytes read during generation,
     // experts successfully prefetched, and how many of those a later routing actually used.

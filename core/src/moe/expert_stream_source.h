@@ -76,6 +76,12 @@ public:
     // instead of computing on a half-read expert.
     bool fatal() const { return fatal_.load(std::memory_order_acquire); }
 
+    // Explicitly set the cache budget in bytes and evict down to it immediately (clamped to the
+    // full expert-set size). PRECONDITION: no decode in flight — the caller must not be inside a
+    // load_layer/generate. Intended for an app's memory-pressure callback (Android onTrimMemory)
+    // and exercised by the shrink gate. Clamped up: an explicit raise also lifts the grow ceiling.
+    void set_cache_budget(size_t bytes);
+
     void shutdown();
 
 private:
@@ -102,6 +108,11 @@ private:
     void drain_spec(int lane, uint64_t worker_seen);
     void quiesce_spec();
     void release_entry_pages(int32_t id);
+
+    // Adaptive sizing (cache_auto): re-probe device memory (throttled) and nudge cache_max_ so it
+    // tracks free RAM. Eval-thread only, called in the mgmt section of load_layer; the eviction
+    // loop that follows drains any shrink.
+    void adapt_cache_budget();
 
     bool load_layer_async(int il, const int32_t * ids, int n_ids); // overlap path
 

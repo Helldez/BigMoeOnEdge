@@ -94,6 +94,9 @@ const std::string & Session::arch() const {
 int Session::n_ctx() const {
     return impl_->cfg.n_ctx;
 }
+void Session::set_cache_budget_mb(int mib) {
+    impl_->source.set_cache_budget((size_t) std::max(0, mib) * 1024ull * 1024ull);
+}
 void Session::cancel() {
     impl_->cancel_requested.store(true, std::memory_order_relaxed);
 }
@@ -462,6 +465,8 @@ RunResult Session::generate(const GenerateRequest & req,
         if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
         s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
         s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);
+        s.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
+        s.cache_resizes = st.cache_resizes;
         s.moe_spec_read_mib = ((long long) st.spec_read_bytes - prev_spec_bytes) / (1024.0 * 1024.0);
         s.moe_spec_experts = st.spec_experts - prev_spec_experts;
         s.moe_spec_useful = st.spec_useful - prev_spec_useful;
