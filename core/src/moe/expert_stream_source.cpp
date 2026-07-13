@@ -49,6 +49,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
             max_full[p] = std::max(max_full[p], full);
+            total_expert_bytes_ += full; // every expert of every bound layer resident = the full set
         }
     }
     size_t max_full_any = 0;
@@ -57,6 +58,36 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     if (max_full_any == 0) {
         std::fprintf(stderr, "bmoe: no MoE layers were bound\n");
         return false;
+    }
+
+    // Adaptive budget: size the cache to the device now that the full expert-set size is known.
+    // (validate() guarantees cache_mb == 0 here, so this is the sole source of cache_max_ when auto.)
+    if (cfg.cache_auto) {
+        cache_auto_ = true;
+        cache_floor_ = (size_t) std::max(0, cfg.cache_floor_mb) * 1024ull * 1024ull;
+        // Hard cap: the whole expert set, further capped by the user's ceiling when set. Every auto
+        // budget (init and runtime grow-back) stays at or below this.
+        const size_t ceil = (size_t) std::max(0, cfg.cache_ceil_mb) * 1024ull * 1024ull;
+        cache_hard_cap_ = ceil > 0 ? std::min(ceil, total_expert_bytes_) : total_expert_bytes_;
+        const size_t min_budget =
+            std::min<size_t>((size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull, cache_hard_cap_);
+        const uint64_t avail = pio::mem_available_bytes();
+        if (avail == 0) {
+            cache_max_ = min_budget;
+            std::fprintf(stderr, "bmoe: cache auto — available memory unknown, using the %zu MiB floor\n",
+                         min_budget / (1024 * 1024));
+        } else {
+            size_t budget = avail > cache_floor_ ? (size_t) (avail - cache_floor_) : 0;
+            budget = std::max(budget, min_budget);
+            budget = std::min(budget, cache_hard_cap_);
+            cache_max_ = budget;
+            std::fprintf(stderr,
+                         "bmoe: cache auto — %llu MiB available, leaving %zu MiB free → %zu MiB budget"
+                         " (cap %zu MiB)\n",
+                         (unsigned long long) (avail / (1024 * 1024)), cache_floor_ / (1024 * 1024),
+                         cache_max_ / (1024 * 1024), cache_hard_cap_ / (1024 * 1024));
+        }
+        cache_target_ = cache_max_;
     }
 
     if (cache_max_ == 0) {
@@ -433,6 +464,48 @@ void ExpertStreamSource::quiesce_spec() {
     }
 }
 
+// Track free RAM and nudge the budget: shrink by the shortfall when memory dips under the floor,
+// grow back toward the init target (within the floor's headroom) when it recovers. Called on the
+// eval thread inside load_layer's mgmt window; the eviction loop right after drains any shrink.
+void ExpertStreamSource::adapt_cache_budget() {
+    if (!cache_auto_) return;
+    if (++probe_tick_ % 128 != 0) return; // one /proc read per ~128 layer loads (~2-3 tokens)
+    const uint64_t avail = pio::mem_available_bytes();
+    if (avail == 0) return; // unknown this time — leave the budget as is
+    const size_t min_budget = (size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull;
+    const size_t grow_hysteresis = 512ull * 1024 * 1024; // only grow when comfortably above the floor
+    size_t budget = cache_max_;
+    if (avail < cache_floor_) {
+        const size_t deficit = (size_t) (cache_floor_ - avail); // hand back roughly the shortfall
+        budget = cache_max_ > deficit ? cache_max_ - deficit : 0;
+        budget = std::max(budget, min_budget);
+    } else if (avail > cache_floor_ + grow_hysteresis && cache_max_ < cache_target_) {
+        const size_t step = std::min<size_t>(256ull * 1024 * 1024, (size_t) (avail - cache_floor_));
+        budget = std::min(cache_max_ + step, cache_target_);
+    }
+    budget = std::min(budget, cache_hard_cap_); // never exceed the ceiling ∧ full expert-set size
+    if (budget != cache_max_) {
+        cache_max_ = budget;
+        ++cache_resizes_;
+    }
+}
+
+// Explicit budget change from outside a decode (memory-pressure callback, or the shrink gate).
+void ExpertStreamSource::set_cache_budget(size_t bytes) {
+    if (cache_max_ == 0) return; // initialised off (shared-slot mode); the LRU buffers do not exist
+    quiesce_spec();              // cancel/drain spec reads so no worker is mid-write to an evicted page
+    // Keep the budget strictly positive. The shared-slot buffers were never allocated (LRU mode was
+    // chosen at init), and load_layer branches on cache_max_ == 0 to pick shared-slot vs LRU — so a
+    // runtime zero would route into buffers that do not exist. This shrinks toward, never to, zero.
+    cache_max_ = std::max<size_t>(1, std::min(bytes, total_expert_bytes_));
+    cache_target_ = std::max(cache_target_, cache_max_); // an explicit raise lifts the grow ceiling
+    ++cache_resizes_;
+    // No cstamp guard: with no decode in flight, nothing is staged for the current generation, so
+    // every resident entry (coldest first) is a valid eviction target.
+    while (cresident_ > cache_max_ && ctail_ != -1)
+        evict_tail();
+}
+
 // ── LRU plumbing ────────────────────────────────────────────────────────────────────
 void ExpertStreamSource::lru_unlink(int32_t id) {
     int32_t pv = cprev_[id], nx = cnext_[id];
@@ -509,7 +582,10 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
 
     // Integrate / discard any speculative prefetch before this layer's real staging touches the
     // cache. After this returns no spec read is in flight and completed ones are resident hits.
-    if (cache_max_) quiesce_spec();
+    if (cache_max_) {
+        quiesce_spec();
+        adapt_cache_budget(); // re-size to free RAM before this layer stages + evicts
+    }
 
     auto stage = [&](int e) -> bool {
         if (cache_max_ == 0) {
@@ -633,7 +709,10 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
 
     // Integrate / discard speculative prefetch before this layer's real staging (the previous
     // batch is already drained above, so this only waits on in-flight spec reads).
-    if (cache_max_) quiesce_spec();
+    if (cache_max_) {
+        quiesce_spec();
+        adapt_cache_budget(); // re-size to free RAM before this layer stages + evicts
+    }
 
     // 2. New generation for this layer. A flag counts as ready only once its gen matches.
     const uint32_t gen = async_gen_.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -817,6 +896,8 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.cache_lookups = clookups_;
     s.cache_resident_bytes = (uint64_t) cresident_;
     s.stall_seconds = stall_ns_.load() / 1e9;
+    s.cache_budget_bytes = (uint64_t) cache_max_;
+    s.cache_resizes = cache_resizes_;
     return s;
 }
 

@@ -7,26 +7,33 @@ numbers the README table and the headline claim are drawn from; the how-to lives
 
 ## TL;DR
 
-- Streaming a >RAM MoE model is **stable and usable**: ~1.7–1.8 tok/s with no cache, up to
-  **~3.5–3.75 tok/s** with a 4 GiB expert cache and 4 read lanes — on an 11 GB phone
-  holding an 18.5 GB (Qwen) or 17.0 GB (Gemma) model.
-- **Expert-cache size is the dominant lever.** Going 2000 → 4000 MiB roughly doubles
-  throughput because the cache hit rate climbs (Qwen 53 % → 76 %, Gemma 58 % → 82 %) and
-  flash read per token collapses (Qwen 480 → 225 MiB, Gemma 366 → 144 MiB).
-- **Parallel read lanes are a secondary lever.** Lane 2 → 4 adds ~10–20 % at a 2000 MiB
-  cache and almost nothing at 4000 MiB (once the cache absorbs most reads, decode is no
-  longer I/O-bound).
-- **`mmap`-only is a trap.** Its *median* token rate looks fine (Qwen 2.06, Gemma 1.96
-  tok/s) but its *aggregate* throughput collapses (Gemma **0.61** tok/s) because a handful
-  of page-cache-eviction stalls (single tokens as slow as 7.7 s) dominate the total — and
-  during those stalls the phone is effectively unusable for anything else (see
+- Streaming a >RAM MoE model is **stable and usable**: ~1.6–1.7 tok/s with no cache, and up
+  to **3.98 tok/s (Qwen) / 2.78 tok/s (Gemma)** with the best viable cache plus intra-layer
+  I/O–compute overlap — on an 11 GB phone holding an 18.5 GB (Qwen) or 17.0 GB (Gemma) model.
+- **Expert-cache size is the dominant lever.** Larger cache raises the hit rate and collapses
+  flash read per token (Qwen 480 MiB at cache 2000 → 225 MiB at cache 4000, hit 53 % → 76 %;
+  Gemma 366 MiB at cache 2000, hit 58 %). Qwen nearly doubles from cache 2000 → 4000; Gemma
+  cannot reach cache 4000 on this device (OOM — see the Gemma table note), so it tops out at
+  cache 2000.
+- **Intra-layer overlap is the second lever, but only over a warm cache.** Pipelining each
+  layer's expert reads with its compute (`--overlap`) lifts the best config on both models —
+  Qwen 3.47 → **3.98**, Gemma 2.24 → **2.78** — by hiding the residual flash wait behind FFN
+  compute (the stall drops to 0.06 s/tok on Qwen). Over a cold cache-0 stream it is a **loss**
+  (Qwen 1.71 → 1.27) because there is far more I/O than compute can mask.
+- **Parallel read lanes are a secondary lever.** Lane 2 → 4 adds ~15–20 % at a 2000 MiB
+  cache and little at 4000 MiB (once the cache absorbs most reads, decode is no longer
+  I/O-bound).
+- **`mmap`-only is a trap.** Its *median* token rate looks fine (Qwen 2.76 tok/s) but its
+  *aggregate* throughput collapses (Gemma **0.36** tok/s) because a handful of
+  page-cache-eviction stalls (single tokens as slow as 8 s) dominate the total — and during
+  those stalls the phone is effectively unusable for anything else (see
   [Device pressure](#device-pressure-not-just-tokens)).
-- **At a 4 GiB cache, decode is compute-bound, not I/O-bound.** The engine reports the
-  decode split as `compute + flash I/O`. At cache 4000 the flash I/O share drops to
-  ~0.10–0.15 s/token while compute (~0.14 Qwen, ~0.19 Gemma) dominates. Streaming overhead
-  is therefore small: with a perfectly-sized cache the ceiling would be **~7.0 tok/s (Qwen)
-  / ~5.3 tok/s (Gemma)**, which is the same SoC's in-RAM decode speed. The streaming path
-  is no longer the bottleneck — the compute kernels are.
+- **With a warm cache, decode is compute-bound, not I/O-bound.** The engine reports the
+  decode split as `compute + flash I/O`. At Qwen's cache 4000 the serial flash I/O share is
+  ~0.13 s/token against ~0.16 s of compute; with overlap the flash wait (stall) falls to
+  ~0.06 s. Zeroing I/O entirely — an infinite cache — would only reach 1/compute ≈ **6.2 tok/s
+  (Qwen)**, this SoC's in-RAM decode speed. The streaming path is no longer the bottleneck —
+  the compute kernels are.
 
 ## Environment
 
@@ -36,7 +43,7 @@ numbers the README table and the headline claim are drawn from; the how-to lives
 | SoC / cores | Snapdragon-class, 8 cores, `arm64-v8a` |
 | RAM | 11.3 GB (`MemTotal` 11 366 276 kB) |
 | Storage | UFS 4.x, models read from `/sdcard/Download` (O_DIRECT verified working) |
-| Engine | `bmoe-cli` built from branch `test/gemma4-apk` (integrates the model-import and fused-expert-recipe PRs) |
+| Engine | `bmoe-cli` built from `main` @ `f3371aa` (arm64, NDK r29, `armv8.2-a+dotprod+i8mm+fp16`) |
 | Compute threads | 4 (`-t` default) |
 | Decoding | greedy (argmax) — output is deterministic, so token content is identical across configs |
 
@@ -67,7 +74,7 @@ Reproduce with the committed drivers:
 # device-side single run (prompt lives in the script, n and flags are args)
 scripts/bench-run.sh 256 <model.gguf> <out.csv> [--moe-stream --cache-mb 4000 --io-threads 4]
 
-# full 12-run matrix over adb, one CSV per config
+# full matrix over adb (8 configs × 2 models), one CSV per config
 pwsh scripts/bench-matrix.ps1        # writes .bench/*.csv
 python scripts/bench-analyze.py      # mean/min/max/median/p5/p95 + .bench/summary.md
 ```
@@ -83,6 +90,8 @@ reproduces exactly by re-running its config:
 | streaming + cache 2000 MiB, lane 4 | `--moe-stream --cache-mb 2000 --io-threads 4` |
 | streaming + cache 4000 MiB, lane 2 | `--moe-stream --cache-mb 4000 --io-threads 2` |
 | streaming + cache 4000 MiB, lane 4 | `--moe-stream --cache-mb 4000 --io-threads 4` |
+| streaming O_DIRECT + overlap, cache 0, lane 4 | `--moe-stream --cache-mb 0 --io-threads 4 --overlap` |
+| streaming + cache 4000 MiB, lane 4, overlap | `--moe-stream --cache-mb 4000 --io-threads 4 --overlap` |
 
 The `compute + I/O` split, `flash read/token` and `cache hit` columns are parsed from the
 engine's own `moe-stream:` / `moe-cache:` stderr summary printed at the end of each run —
@@ -103,12 +112,22 @@ it shows how much of decode is spent waiting on flash vs. running kernels.
 
 | Config | mean | min | max | median | p5 | p95 | cache hit | flash read/token | decode: compute + I/O (s/tok) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| solo mmap (no streaming) | **1.86** | 0.36 | 8.34 | 2.06 | 0.95 | 5.18 | — | 0 MiB | — |
-| streaming O_DIRECT, cache 0, lane 4 | **1.78** | 1.56 | 1.82 | 1.79 | 1.73 | 1.81 | — | 1051 MiB | 0.102 + 0.459 |
-| streaming + cache 2000 MiB, lane 2 | **2.00** | 0.20 | 4.98 | 2.19 | 1.38 | 3.42 | 53% | 480 MiB | 0.199 + 0.302 |
-| streaming + cache 2000 MiB, lane 4 | **2.47** | 1.54 | 5.27 | 2.51 | 1.81 | 3.66 | 53% | 480 MiB | 0.177 + 0.228 |
-| streaming + cache 4000 MiB, lane 2 | **3.38** | 1.57 | 7.66 | 3.51 | 2.16 | 5.98 | 76% | 225 MiB | 0.144 + 0.152 |
-| streaming + cache 4000 MiB, lane 4 | **3.75** | 1.88 | 7.81 | 3.88 | 2.51 | 6.22 | 76% | 225 MiB | 0.143 + 0.124 |
+| solo mmap (no streaming) | **2.00** | 0.15 | 8.15 | 2.76 | 0.93 | 5.90 | — | 0 MiB | — |
+| streaming O_DIRECT, cache 0, lane 4 | **1.71** | 0.50 | 1.81 | 1.78 | 1.62 | 1.80 | — | 1051 MiB | 0.123 + 0.462 |
+| streaming + cache 2000 MiB, lane 2 | **2.01** | 1.17 | 4.66 | 2.04 | 1.42 | 3.17 | 53% | 480 MiB | 0.187 + 0.312 |
+| streaming + cache 2000 MiB, lane 4 | **2.37** | 1.45 | 4.88 | 2.40 | 1.73 | 3.57 | 53% | 480 MiB | 0.181 + 0.241 |
+| streaming + cache 4000 MiB, lane 2 | **3.12** | 1.24 | 6.66 | 3.30 | 2.01 | 5.46 | 76% | 225 MiB | 0.159 + 0.161 |
+| streaming + cache 4000 MiB, lane 4 | **3.47** | 1.09 | 7.62 | 3.64 | 2.15 | 6.00 | 76% | 225 MiB | 0.161 + 0.127 |
+| streaming O_DIRECT + overlap, cache 0, lane 4 † | **1.27** | 0.58 | 2.02 | 1.44 | 0.83 | 2.00 | — | 1051 MiB | 0.412 + 1.627 |
+| **streaming + cache 4000 MiB, lane 4, overlap †** | **3.98** | 1.26 | 8.43 | 4.89 | 2.00 | 7.37 | 76% | 225 MiB | 0.193 + 0.300 |
+
+† Overlap rows: I/O runs concurrently with compute, so the `compute + I/O` split no longer sums
+to wall time — the I/O figure is the **sum of per-lane busy time** (it can exceed wall because
+lanes read in parallel). The wall time compute actually lost to flash is the **stall**: 0.058 s/tok
+for cache 4000 + overlap, 0.373 s/tok for cache 0 + overlap. So overlap on the 4000 MiB cache lifts
+the best config from 3.47 → **3.98 tok/s** (median 3.64 → 4.89) by hiding almost all of the residual
+flash wait behind FFN compute; overlap on a cold cache-0 stream is a net loss (1.71 → 1.27) because
+there is too much I/O — 1.6 s/tok of lane-busy reads — to hide behind ~0.4 s of compute.
 
 ### Gemma-4-26B-A4B-it-Q4_K_M
 
@@ -117,37 +136,60 @@ it shows how much of decode is spent waiting on flash vs. running kernels.
 
 | Config | mean | min | max | median | p5 | p95 | cache hit | flash read/token | decode: compute + I/O (s/tok) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| solo mmap (no streaming) | **0.61** | 0.13 | 5.91 | 1.96 | 0.18 | 4.18 | — | 0 MiB | — |
-| streaming O_DIRECT, cache 0, lane 4 | **1.69** | 1.36 | 1.73 | 1.70 | 1.66 | 1.72 | — | 904 MiB | 0.156 + 0.435 |
-| streaming + cache 2000 MiB, lane 2 | **2.24** | 1.33 | 4.21 | 2.27 | 1.67 | 3.26 | 58% | 366 MiB | 0.203 + 0.243 |
-| streaming + cache 2000 MiB, lane 4 | **2.34** | 1.50 | 3.98 | 2.40 | 1.80 | 3.23 | 58% | 366 MiB | 0.212 + 0.215 |
-| streaming + cache 4000 MiB, lane 2 | **3.39** | 1.34 | 5.74 | 3.55 | 2.39 | 5.01 | 82% | 144 MiB | 0.185 + 0.110 |
-| streaming + cache 4000 MiB, lane 4 | **3.48** | 0.96 | 5.84 | 3.65 | 2.54 | 5.19 | 82% | 144 MiB | 0.187 + 0.100 |
+| solo mmap (no streaming) | **0.36** | 0.12 | 4.47 | 0.44 | 0.15 | 3.41 | — | 0 MiB | — |
+| streaming O_DIRECT, cache 0, lane 4 | **1.61** | 1.08 | 1.68 | 1.62 | 1.57 | 1.66 | — | 904 MiB | 0.172 + 0.449 |
+| streaming + cache 2000 MiB, lane 2 | **2.08** | 1.21 | 4.02 | 2.14 | 1.49 | 2.98 | 58% | 366 MiB | 0.225 + 0.256 |
+| streaming + cache 2000 MiB, lane 4 | **2.24** | 1.19 | 3.86 | 2.29 | 1.67 | 3.09 | 58% | 366 MiB | 0.226 + 0.221 |
+| streaming O_DIRECT + overlap, cache 0, lane 4 † | **1.81** | 1.50 | 1.90 | 1.83 | 1.73 | 1.86 | — | 904 MiB | 0.185 + 1.503 |
+| **streaming + cache 2000 MiB, lane 4, overlap †** | **2.78** | 1.78 | 4.04 | 2.82 | 2.24 | 3.58 | 58% | 365 MiB | 0.237 + 0.540 |
+
+**Cache 4000 MiB is not viable for Gemma on this device.** Gemma's 17.0 GB file, held resident
+through mmap, already fills most of the page cache; reserving a further 4 GiB pinned expert cache
+on top pushes `MemAvailable` to zero and the run is OOM-killed by the Android low-memory-killer
+before it generates a token (the successful cache-2000 runs hold a ~3.8 GiB free-RAM floor; a
+cache-4000 attempt started from ~2.3 GiB free and collapsed). Gemma therefore tops out at the
+**cache-2000 + overlap** setting; the two `cache 4000` rows are omitted rather than reported as
+failures. Qwen (18.5 GB but only 3 B active, lighter page-cache footprint) sustains cache 4000
+with a ~1.8 GiB floor, so its best row uses it.
+
+† Overlap rows: I/O runs concurrently with compute, so the `compute + I/O` split no longer sums to
+wall time — the I/O figure is the **sum of per-lane busy time** and exceeds wall. The wall time
+compute actually lost to flash is the **stall**: 0.123 s/tok for cache 2000 + overlap, 0.367 s/tok
+for cache 0 + overlap. Overlap lifts Gemma's best viable config from 2.24 → **2.78 tok/s**
+(median 2.29 → 2.82); on the cold cache-0 stream it is a smaller gain (1.61 → 1.81) because most of
+the 1.5 s/tok of lane reads cannot be hidden behind ~0.19 s of compute.
 
 ## Reading the numbers
 
-- **Cache dominates, lanes assist.** Throughput tracks the hit rate almost linearly. At a
-  4000 MiB cache the routed working set is mostly resident, so extra read lanes have little
-  left to hide — lane 2 vs 4 is within noise (Qwen 3.38 → 3.75, Gemma 3.39 → 3.48).
-- **Streaming without a cache is the most *predictable* setting.** cache-0 has the tightest
-  spread (Qwen p5–p95 = 1.73–1.81) because every token re-reads the same ~1 GiB with
+- **Cache dominates, lanes assist.** Throughput tracks the hit rate almost linearly. As the
+  cache absorbs more reads the routed working set goes mostly resident and extra read lanes
+  have less left to hide — the lane 2 → 4 gain shrinks from ~18 % at cache 2000 (Qwen 2.01 →
+  2.37) to ~11 % at cache 4000 (Qwen 3.12 → 3.47).
+- **Overlap is the top of the stack, but only over a warm cache.** Pipelining reads with
+  compute converts residual flash wait into hidden time: on Qwen's cache-4000 config it drops
+  the per-token stall to 0.058 s and lifts mean 3.47 → **3.98** (median 3.64 → 4.89); on
+  Gemma's cache-2000 config, 2.24 → **2.78**. On a cold cache-0 stream it *regresses* (Qwen
+  1.71 → 1.27) — with 1.6 s/tok of lane reads and only ~0.4 s of compute, there is nothing to
+  hide the I/O behind, and the overlap machinery's own stalls dominate.
+- **Streaming without a cache is the most *predictable* setting.** cache-0 (serial) has the
+  tightest spread (Qwen p5–p95 = 1.62–1.80) because every token re-reads the same ~1 GiB with
   O_DIRECT: no cache warm-up, no eviction cliffs. It is slower on average but jitter-free.
 - **`mmap`-only trades average speed and system health for nothing.** Qwen's mmap mean
-  (1.86) edges out streaming-only (1.78), but that number is page-cache-dependent and its
-  spread is enormous (min 0.36, max 8.34). On Gemma the same mode collapses to 0.61 tok/s
-  aggregate despite a healthy 1.96 median — proof that a few multi-second eviction stalls,
-  not the typical token, set the user-visible speed. Streaming replaces those unbounded
-  stalls with a bounded, O_DIRECT read the engine controls.
+  (2.00) edges out streaming-only (1.71), but that number is page-cache-dependent and its
+  spread is enormous (min 0.15, max 8.15). On Gemma the same mode collapses to 0.36 tok/s
+  aggregate despite a 0.44 median — proof that a few multi-second eviction stalls, not the
+  typical token, set the user-visible speed. Streaming replaces those unbounded stalls with
+  a bounded, O_DIRECT read the engine controls.
 - **The remaining bottleneck is compute, not the seam.** Follow the `compute + I/O` column
-  down each table: at cache 0 flash I/O is 74–82 % of decode (Qwen 0.459 of 0.561, Gemma
-  0.435 of 0.591); at cache 4000 it inverts to compute-bound (Qwen compute 0.143 vs I/O
-  0.124; Gemma 0.187 vs 0.100). Zeroing I/O entirely — an infinite cache — would only reach
-  1/compute ≈ **7.0 tok/s (Qwen) / 5.3 tok/s (Gemma)**, i.e. this SoC's in-RAM decode
-  speed. So a well-sized cache has already recovered most of what streaming can recover;
-  further gains have to come from the compute kernels, not from the streaming path.
-  (Note the compute share *rises* when the cache is enabled — cache-0's 0.10–0.16 s grows
-  to ~0.18–0.21 s at cache 2000 — because cache lookup/copy is counted inside compute;
-  it settles back down at cache 4000 as the hit rate makes those copies rarer.)
+  down the Qwen table: at cache 0 flash I/O is ~79 % of decode (0.462 of 0.585); at cache
+  4000 it inverts to compute-bound (compute 0.161 vs serial I/O 0.127, and with overlap the
+  flash wait falls to a 0.058 s stall). Zeroing I/O entirely — an infinite cache — would only
+  reach 1/compute ≈ **6.2 tok/s (Qwen)**, i.e. this SoC's in-RAM decode speed. So a well-sized
+  cache plus overlap has already recovered most of what streaming can recover; further gains
+  have to come from the compute kernels, not from the streaming path. (Note the compute share
+  *rises* when the cache is enabled — cache-0's ~0.12 s grows to ~0.18 s at cache 2000 —
+  because cache lookup/copy is counted inside compute; it settles back down at cache 4000 as
+  the hit rate makes those copies rarer.)
 
 ## Device pressure — not just tokens
 
@@ -159,33 +201,52 @@ the slow tokens above. Expert streaming with a bounded cache avoids this: it hol
 declared amount (2–4 GiB) and reads the rest with O_DIRECT, which **bypasses the page
 cache**, so the rest of the system keeps its working set.
 
-**This axis is not yet measured** — the tables above are throughput only. Future runs
-should record, alongside tok/s, an indicator of the pressure a config puts on the device.
-Accessible on this phone **without root**:
+`scripts/bench-run.sh` now samples this axis alongside tok/s: peak process RSS, the
+`MemAvailable` **floor** (its lowest point during the run), and CPU/battery temperature
+before and at peak. All are read over adb **without root** (`dumpsys battery`,
+`/sys/class/thermal/thermal_zone*/temp`, `/proc/meminfo`). Kernel **PSI**
+(`/proc/pressure/*`) — the cleanest stall metric — returns *Permission denied* without root,
+so it is not recorded. Runs are cooled to a common baseline (45 s between configs) so
+sustained-decode throttling does not confound the comparison.
 
-| Signal | Source (adb, no root) | Notes |
-|---|---|---|
-| Battery / phone temperature | `dumpsys battery` → `temperature` (deci-°C), `PhoneTemp` | e.g. `415` = 41.5 °C |
-| Per-component temperature | `/sys/class/thermal/thermal_zone*/temp` + `.../type` | CPU/GPU/skin zones readable by shell (`cpu-*`, `gpuss-*`) |
-| Free-RAM headroom | `/proc/meminfo` → `MemAvailable` | collapse under mmap is the pressure signal |
-| Thermal throttling state | `dumpsys thermalservice` | throttle status / trip transitions |
+**Qwen — device pressure**
 
-Not available without root on this device: the kernel **PSI** counters
-(`/proc/pressure/{memory,io,cpu}`) return *Permission denied* — the cleanest
-memory/IO-stall metric, but it needs root or a privileged helper.
+| Config | peak RSS | free-RAM floor | CPU start → max | battery max |
+|---|---:|---:|---:|---:|
+| solo mmap | 5.87 GB | 5.76 GB | 39.0 → 64.8 °C | 35.1 °C |
+| stream (cache 0, lane 4) | 6.13 GB | 4.62 GB | 42.8 → 66.8 °C | 36.6 °C |
+| cache 2000, lane 4 | 5.62 GB | 3.58 GB | 44.8 → 62.9 °C | 38.9 °C |
+| cache 4000, lane 2 | 5.97 GB | 2.01 GB | 45.5 → 63.3 °C | 39.4 °C |
+| cache 4000, lane 4 | 5.56 GB | 1.79 GB | 48.2 → 73.7 °C | 39.4 °C |
+| cache 4000, lane 4, overlap | 5.80 GB | 1.98 GB | 46.7 → 70.2 °C | 39.4 °C |
 
-Recommended protocol for the next round: sample battery temperature + `MemAvailable`
-before, mid-run, and after each config; warm up, then measure a steady thermal window;
-and cool the device to a common baseline between configs so sustained-decode throttling
-doesn't confound the comparison. The goal is a second table — *tok/s vs. thermal rise and
-free-RAM floor* — that makes the "mmap is fast until the phone melts" cost explicit.
+**Gemma — device pressure**
+
+| Config | peak RSS | free-RAM floor | CPU start → max | battery max |
+|---|---:|---:|---:|---:|
+| solo mmap | 5.85 GB | 5.68 GB | 47.1 → 67.2 °C | 41.1 °C |
+| stream (cache 0, lane 4) | 6.16 GB | 4.96 GB | 45.9 → 62.1 °C | 40.9 °C |
+| cache 2000, lane 4 | 6.08 GB | 3.85 GB | 47.1 → 63.3 °C | 41.3 °C |
+| cache 2000, lane 4, overlap | 6.06 GB | 4.11 GB | 53.2 → 73.7 °C | 45.5 °C |
+
+The **free-RAM floor is the number that governs which cache size is usable.** Qwen's
+cache-4000 configs run the device down to a ~1.8–2.0 GiB floor and still complete; Gemma at
+cache 2000 keeps a comfortable ~3.9 GiB floor, but a cache-4000 attempt (not shown) started
+from ~2.3 GiB free and was OOM-killed before its first token — the extra 2 GiB of pinned cache
+is exactly what Gemma's heavier resident footprint cannot spare. Overlap costs a few extra °C
+(more concurrent flash + compute) but does not change the memory floor. `mmap`-only keeps the
+highest apparent floor because it *is* the page cache — but that is the mode that evicts every
+other app, which the floor number does not capture.
 
 ## Provenance
 
-Measured 2026-07-11 on branch `test/gemma4-apk`. Raw per-token CSVs and full `.log` stderr
-dumps in `.bench/` (git-ignored); drivers in `scripts/bench-run.sh`, `scripts/bench-matrix.ps1`,
-`scripts/bench-analyze.py`. Both models read from `/sdcard/Download`; O_DIRECT streaming from
-that path was verified working before the matrix ran.
+Measured 2026-07-12 on `main` @ `f3371aa`. Raw per-token CSVs, `.metrics` sidecars and full
+`.log` stderr dumps are committed under [`bench-data/2026-07-12/`](bench-data/2026-07-12/)
+(the live `.bench/` working dir is git-ignored); drivers in `scripts/bench-run.sh`,
+`scripts/bench-matrix.ps1`, `scripts/bench-analyze.py`. Both models read from `/sdcard/Download`;
+O_DIRECT streaming from that path was verified working before the matrix ran. The two Gemma
+`cache 4000` configs are absent by design — they OOM on this device (see the Gemma throughput
+table note).
 
 Model files (both Q4_K_M GGUF, staged on the device at `/sdcard/Download/`):
 

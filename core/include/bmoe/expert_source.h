@@ -46,6 +46,8 @@ public:
         uint64_t spec_read_bytes = 0;      // bytes read speculatively by prefetch (subset of read_bytes)
         long long spec_experts = 0;        // experts fully prefetched
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
+        uint64_t cache_budget_bytes = 0;   // current cache budget (moves under --cache-mb auto)
+        long long cache_resizes = 0;       // times the budget changed at runtime (auto + explicit)
     };
     virtual Stats stats() const = 0;
 };

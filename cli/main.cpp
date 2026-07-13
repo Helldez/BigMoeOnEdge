@@ -314,7 +314,9 @@ static void print_usage(const char * argv0) {
         "\n"
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
-        "      --cache-mb N        LRU expert cache budget in MiB (0=off, or >=%d)\n"
+        "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
+        "      --cache-floor-mb N  with --cache-mb auto: RAM to leave free (default 1536)\n"
+        "      --cache-ceil-mb N   with --cache-mb auto: upper bound on the budget (0 = no cap)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
@@ -365,8 +367,16 @@ int main(int argc, char ** argv) {
             csv_path = next("--csv");
         else if (a == "--moe-stream")
             cfg.moe.enabled = true;
-        else if (a == "--cache-mb")
-            cfg.moe.cache_mb = std::atoi(next("--cache-mb"));
+        else if (a == "--cache-mb") {
+            const std::string v = next("--cache-mb");
+            if (v == "auto")
+                cfg.moe.cache_auto = true;
+            else
+                cfg.moe.cache_mb = std::atoi(v.c_str());
+        } else if (a == "--cache-floor-mb")
+            cfg.moe.cache_floor_mb = std::atoi(next("--cache-floor-mb"));
+        else if (a == "--cache-ceil-mb")
+            cfg.moe.cache_ceil_mb = std::atoi(next("--cache-ceil-mb"));
         else if (a == "--io-threads")
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
@@ -401,7 +411,7 @@ int main(int argc, char ** argv) {
     }
 
     // Env overrides (flag wins: only apply when the flag left the default).
-    if (cfg.moe.cache_mb == 0) cfg.moe.cache_mb = env_int("BMOE_CACHE_MB", 0);
+    if (cfg.moe.cache_mb == 0 && !cfg.moe.cache_auto) cfg.moe.cache_mb = env_int("BMOE_CACHE_MB", 0);
     if (cfg.moe.io_threads == 4) cfg.moe.io_threads = env_int("BMOE_IO_THREADS", 4);
     if (!cfg.progress) cfg.progress = env_int("BMOE_PROGRESS", 0) != 0;
     if (!cfg.moe.overlap) cfg.moe.overlap = env_int("BMOE_OVERLAP", 0) != 0;
@@ -475,8 +485,13 @@ int main(int argc, char ** argv) {
                     s.moe_read_mib, s.n_generated ? s.moe_read_mib / s.n_generated : 0.0, s.s_per_token,
                     s.moe_compute_s_per_token, s.moe_mgmt_s_per_token, s.moe_io_s_per_token,
                     s.moe_io_seconds > 0 ? s.moe_read_mib / s.moe_io_seconds : 0.0);
-        if (s.cache_hit_pct >= 0.0)
-            std::printf("moe-cache: %.1f%% hit, resident %.1f MiB\n", s.cache_hit_pct, s.cache_resident_mib);
+        if (s.cache_hit_pct >= 0.0) {
+            if (cfg.moe.cache_auto)
+                std::printf("moe-cache: %.1f%% hit, resident %.1f MiB, budget %.0f MiB (auto, resized %lld×)\n",
+                            s.cache_hit_pct, s.cache_resident_mib, s.cache_budget_mib, s.cache_resizes);
+            else
+                std::printf("moe-cache: %.1f%% hit, resident %.1f MiB\n", s.cache_hit_pct, s.cache_resident_mib);
+        }
         if (cfg.moe.overlap)
             std::printf("moe-overlap: stall %.3f s/token (flash reads overlapped with FFN compute)\n",
                         s.moe_stall_s_per_token);

@@ -76,6 +76,12 @@ public:
     // instead of computing on a half-read expert.
     bool fatal() const { return fatal_.load(std::memory_order_acquire); }
 
+    // Explicitly set the cache budget in bytes and evict down to it immediately (clamped to the
+    // full expert-set size). PRECONDITION: no decode in flight — the caller must not be inside a
+    // load_layer/generate. Intended for an app's memory-pressure callback (Android onTrimMemory)
+    // and exercised by the shrink gate. Clamped up: an explicit raise also lifts the grow ceiling.
+    void set_cache_budget(size_t bytes);
+
     void shutdown();
 
 private:
@@ -102,6 +108,11 @@ private:
     void drain_spec(int lane, uint64_t worker_seen);
     void quiesce_spec();
     void release_entry_pages(int32_t id);
+
+    // Adaptive sizing (cache_auto): re-probe device memory (throttled) and nudge cache_max_ so it
+    // tracks free RAM. Eval-thread only, called in the mgmt section of load_layer; the eviction
+    // loop that follows drains any shrink.
+    void adapt_cache_budget();
 
     bool load_layer_async(int il, const int32_t * ids, int n_ids); // overlap path
 
@@ -132,8 +143,19 @@ private:
     size_t slot_sz_[MoeRecipe::max_exps] = {0, 0, 0};
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
-    size_t cache_max_ = 0;
+    size_t cache_max_ = 0; // live budget in bytes; mutated at runtime when cache_auto_
     size_t page_ = 4096;
+
+    // Adaptive sizing (cache_auto): budget derived from device memory at init, then re-checked
+    // during generation on the eval thread so it tracks free RAM. cache_target_ is the init budget,
+    // the ceiling for grow-back; cache_floor_ is the RAM to leave free; total_expert_bytes_ caps it.
+    bool cache_auto_ = false;
+    size_t cache_floor_ = 0;
+    size_t cache_target_ = 0;
+    size_t total_expert_bytes_ = 0;
+    size_t cache_hard_cap_ = 0; // upper bound on the auto budget (ceiling ∧ full expert-set size)
+    unsigned probe_tick_ = 0; // throttles the mem_available re-probe (once per N load_layer calls)
+    long long cache_resizes_ = 0;
     std::vector<void *> lbuf_[MoeRecipe::max_exps];
     std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];
     std::vector<uint8_t> cvalid_;

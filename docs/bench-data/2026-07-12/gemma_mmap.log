@@ -1,0 +1,11 @@
+﻿generation: 256 tokens, 2.767 s/token (0.361 tok/s)
+prefill: 42 tokens, 16.911 s (2.5 tok/s) | model load 16.641 s | TTFT 33.552 s
+peak_rss_kb=6131256
+mem_avail_before_kb=6118412
+mem_avail_floor_kb=5956112
+mem_avail_after_kb=6545580
+batt_temp_before_dC=409
+batt_temp_max_dC=411
+batt_temp_after_dC=406
+cpu_temp_before_mC=47100
+cpu_temp_max_mC=67200
