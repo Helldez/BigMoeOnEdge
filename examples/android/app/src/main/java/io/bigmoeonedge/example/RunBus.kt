@@ -12,6 +12,9 @@ import kotlinx.coroutines.flow.update
  */
 enum class EngineState { IDLE, LOADING, READY, GENERATING, ERROR }
 
+/** One committed message in the multi-turn transcript. metrics is a compact per-turn line. */
+data class ChatTurn(val role: String, val text: String, val metrics: String = "")
+
 /** Immutable snapshot of the session + current generation, observed by the Compose UI. */
 data class UiState(
     val state: EngineState = EngineState.IDLE,
@@ -21,6 +24,8 @@ data class UiState(
     val error: String? = null,
     val ioMode: String? = null,     // effective read mode reported by the engine (direct / buffered)
     val sessionSig: String? = null, // signature of the loaded session (AppSettings.sessionSignature)
+    val transcript: List<ChatTurn> = emptyList(), // committed turns; the in-flight answer is `answer`
+    val streaming: Boolean = true,  // is the loaded session using the MoE streamer (vs mmap baseline)?
 ) {
     val loading get() = state == EngineState.LOADING
     val generating get() = state == EngineState.GENERATING

@@ -22,19 +22,40 @@ the byte-identity gates exercise the same machinery an interactive session uses.
 assert that a second, warm generate produces output identical to the cold one-shot reference:
 warming the cache changes latency, never the bytes.
 
-## Independent prompts vs chat
+## Independent prompts vs multi-turn chat
 
-`GenerateRequest::clear_kv` (default `true`) clears the KV cache before each prompt, so prompts
-are independent while the expert cache stays warm. Setting it `false` continues the KV cache for
-multi-turn chat (the caller renders the running conversation into the prompt). The default keeps
-the two concerns separate: the KV cache is per-conversation, the expert cache is per-model.
+`GenerateRequest::clear_kv` selects between two modes:
+
+- **`true` (new chat / independent prompt):** the KV cache and the engine-held conversation are
+  dropped before the prompt runs. The expert cache stays warm. This is the one-shot path — `run()`
+  always uses it, and the byte-identity gates exercise it.
+- **`false` (continue):** the prompt continues the current conversation. In chat mode the Session
+  owns the conversation (`chat_history`) and re-renders the model's chat template over the *whole*
+  history each turn, so the caller sends only the new user message — not the running transcript.
+
+**KV prefix reuse.** Re-rendering the full history would re-tokenize the entire conversation, but
+most of it is already decoded into the KV. Each turn the engine diffs the freshly rendered tokens
+against `kv_tokens` (the tokens currently in the KV, in order), keeps the common prefix, removes the
+divergent tail with `llama_memory_seq_rm`, and prefills only the suffix. So a follow-up turn pays
+for its own tokens, not a full re-prefill — which matters because prefill is the slow phase on
+device. `BMOE_DONE.n_prompt` reports the tokens actually prefilled this turn; `n_past` is the total
+context length after it.
+
+**Fallbacks and costs.** SWA-style memory (e.g. Gemma) can refuse a partial `seq_rm`; the engine
+then clears the KV and re-prefills the whole prompt for that turn (correct, just slower). With
+thinking **on**, the template strips the previous turn's reasoning on re-render, so the rendered
+prefix diverges at the last answer and up to one answer's worth of tokens is re-prefilled per turn;
+with thinking **off** (the app default) the re-fed suffix is just the new user turn plus a few
+wrapper tokens.
 
 ## Cancel
 
 `Session::cancel()` is thread-safe and interrupts an in-flight `generate()` at the next decode
 boundary via llama's abort callback (installed unconditionally at open, so it works in serial and
 overlap alike). It leaves the model and cache intact; the returned `RunResult` has `cancelled =
-true`. Cancel is distinct from a fatal streaming error, which is sticky and ends the session.
+true`. In chat mode a cancel **rolls the turn back** to the reused prefix (dropping this turn's KV
+and un-appending the user message) so prior turns stay usable and the conversation can continue.
+Cancel is distinct from a fatal streaming error, which is sticky and ends the session.
 
 ## Fixed context
 

@@ -15,6 +15,10 @@ data class Telemetry(
     // generation finishes. The per-token [tokensPerSecond] is instantaneous (last token only),
     // so the UI shows this average once it is available.
     var avgTokensPerSecond: Double = -1.0,
+    // Per-token AVERAGES over the whole run, from the final summary — shown at the end instead of
+    // the last token's instantaneous [computeMs]/[ioMs]. -1 until generation finishes.
+    var avgComputeMs: Double = -1.0,
+    var avgIoMs: Double = -1.0,
 ) {
     val tokensPerSecond: Double get() = if (wallMs > 0) 1000.0 / wallMs else 0.0
 }

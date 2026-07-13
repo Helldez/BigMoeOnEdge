@@ -257,9 +257,10 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
             if (m.read_bytes || m.io_ms > 0.0)
                 std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
             std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
-                        "\"compute_ms\":%.1f,\"cache_hit_pct\":%.1f,\"text\":\"%s\"}\n",
-                        m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.cache_hit_pct,
-                        json_escape(m.text).c_str());
+                        "\"compute_ms\":%.1f,\"mgmt_ms\":%.1f,\"stall_ms\":%.1f,\"read_mb\":%.2f,"
+                        "\"cache_hit_pct\":%.1f,\"text\":\"%s\"}\n",
+                        m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.mgmt_ms, m.stall_ms,
+                        m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, json_escape(m.text).c_str());
             std::fflush(stdout);
         };
 
@@ -286,9 +287,14 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
         }
         const RunSummary & s = r.summary;
         std::printf("BMOE_DONE {\"id\":%d,\"cancelled\":%s,\"tokens\":%d,\"tok_s\":%.3f,\"prefill_s\":%.3f,"
-                    "\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"text\":\"%s\"}\n",
+                    "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
+                    "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
+                    "\"spec_recall_pct\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"text\":\"%s\"}\n",
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
-                    s.load_seconds, s.cache_hit_pct, json_escape(r.generated_text).c_str());
+                    (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
+                    s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
+                    s.cache_budget_mib, s.moe_spec_recall_pct, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
+                    json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
 
@@ -457,9 +463,10 @@ int main(int argc, char ** argv) {
             if (m.read_bytes || m.io_ms > 0.0)
                 std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
             std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
-                        "\"compute_ms\":%.1f,\"cache_hit_pct\":%.1f,\"text\":\"%s\"}\n",
-                        m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.cache_hit_pct,
-                        json_escape(m.text).c_str());
+                        "\"compute_ms\":%.1f,\"mgmt_ms\":%.1f,\"stall_ms\":%.1f,\"read_mb\":%.2f,"
+                        "\"cache_hit_pct\":%.1f,\"text\":\"%s\"}\n",
+                        m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.mgmt_ms, m.stall_ms,
+                        m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, json_escape(m.text).c_str());
             std::fflush(stdout);
         } else {
             std::fwrite(m.piece.data(), 1, m.piece.size(), stdout);

@@ -68,6 +68,13 @@ struct Session::Impl {
     common_chat_templates_ptr chat_tmpls;
     bool backend_inited = false;
 
+    // Multi-turn chat state (chat mode only). chat_history is the running conversation the
+    // template is re-rendered over each turn; kv_tokens mirrors the tokens currently decoded
+    // into the context's KV (seq 0), in order, so the next turn can reuse the common prefix
+    // and prefill only the diverging suffix instead of re-running the whole conversation.
+    std::vector<common_chat_msg> chat_history;
+    std::vector<llama_token> kv_tokens;
+
     std::atomic<bool> cancel_requested{false};
 
     ~Impl() {
@@ -313,21 +320,31 @@ RunResult Session::generate(const GenerateRequest & req,
         return res;
     };
 
-    if (req.clear_kv) llama_memory_clear(llama_get_memory(ctx), true);
+    // clear_kv = "new chat": drop the KV and the engine-held conversation. Otherwise this turn
+    // continues the conversation, reusing the KV prefix already decoded from earlier turns.
+    if (req.clear_kv) {
+        llama_memory_clear(llama_get_memory(ctx), true);
+        im.chat_history.clear();
+        im.kv_tokens.clear();
+    }
 
-    // Format the prompt. With chat on, render the model's OWN chat template (real Jinja) and
-    // set up reasoning parsing so a thinking model's internal reasoning is stripped from the
-    // shown answer. req.think drives the template's enable_thinking kwarg, per prompt.
+    // Format the prompt. With chat on, render the model's OWN chat template (real Jinja) over the
+    // WHOLE conversation so far, and set up reasoning parsing so a thinking model's internal
+    // reasoning is stripped from the shown answer. req.think drives enable_thinking, per prompt.
     std::string prompt = req.prompt;
     bool chat_on = im.chat_on;
+    bool history_pushed = false; // did we append this turn's user message to chat_history?
     common_chat_parser_params parse_params;
     if (chat_on) {
         try {
-            common_chat_templates_inputs inputs;
             common_chat_msg user_msg;
             user_msg.role = "user";
             user_msg.content = req.prompt;
-            inputs.messages = {user_msg};
+            im.chat_history.push_back(user_msg);
+            history_pushed = true;
+
+            common_chat_templates_inputs inputs;
+            inputs.messages = im.chat_history; // the full conversation, not just this turn
             inputs.add_generation_prompt = true;
             inputs.use_jinja = true;
             inputs.enable_thinking = req.think;
@@ -337,6 +354,10 @@ RunResult Session::generate(const GenerateRequest & req,
             parse_params.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
         } catch (const std::exception & e) {
             std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
+            if (history_pushed) {
+                im.chat_history.pop_back();
+                history_pushed = false;
+            }
             chat_on = false;
         }
     }
@@ -366,14 +387,51 @@ RunResult Session::generate(const GenerateRequest & req,
         }
     };
 
-    // ── prefill (chunked by n_batch; positions auto-continue across chunks) ──
+    // Reuse the KV prefix already decoded from earlier turns (chat mode only): find how many
+    // leading tokens still match the cache, drop the divergent tail, and prefill only the suffix.
+    // Keeping at least one token to decode means a turn is never a no-op. clear_kv leaves
+    // kv_tokens empty, so n_common = 0 and this reduces to a full prefill — the one-shot path the
+    // byte-identity gates exercise stays unchanged.
+    size_t n_common = 0;
+    if (chat_on && !im.kv_tokens.empty()) {
+        const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
+        while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
+            ++n_common;
+        if (n_common < im.kv_tokens.size()) {
+            // SWA-style memory (e.g. Gemma) can refuse a partial removal; fall back to a full
+            // re-prefill in that case rather than continuing from an inconsistent cache.
+            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
+                llama_memory_clear(llama_get_memory(ctx), true);
+                n_common = 0;
+            }
+            im.kv_tokens.resize(n_common);
+        }
+    }
+
+    // Roll this turn back to the state before it started: drop the KV added this turn, forget the
+    // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
+    auto rollback_turn = [&]() {
+        if (chat_on) {
+            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1))
+                llama_memory_clear(llama_get_memory(ctx), true);
+            im.kv_tokens.resize(n_common);
+            if (history_pushed) {
+                im.chat_history.pop_back();
+                history_pushed = false;
+            }
+        } else {
+            llama_memory_clear(llama_get_memory(ctx), true);
+        }
+    };
+
+    // ── prefill (chunked by n_batch; positions auto-continue from the reused prefix) ──
     const auto t_prefill0 = clock_t_::now();
-    for (int i = 0; i < n_prompt; i += im.cfg.n_batch) {
+    for (int i = (int) n_common; i < n_prompt; i += im.cfg.n_batch) {
         const int chunk = std::min(im.cfg.n_batch, n_prompt - i);
         llama_batch pf = llama_batch_get_one(tokens.data() + i, chunk);
         if (llama_decode(ctx, pf) != 0) {
             if (im.cancel_requested.load(std::memory_order_relaxed)) {
-                llama_memory_clear(llama_get_memory(ctx), true);
+                rollback_turn();
                 res.ok = true;
                 res.cancelled = true;
                 return res;
@@ -382,6 +440,10 @@ RunResult Session::generate(const GenerateRequest & req,
             return fail("prefill decode failed");
         }
     }
+    // The suffix is now in the KV; record it so the next turn can diff against it.
+    if (chat_on)
+        for (int i = (int) n_common; i < n_prompt; ++i)
+            im.kv_tokens.push_back(tokens[i]);
     const double prefill_seconds = secs(t_prefill0, clock_t_::now());
     const float * logits = llama_get_logits_ith(ctx, -1);
 
@@ -432,6 +494,7 @@ RunResult Session::generate(const GenerateRequest & req,
             return fail("decode failed during generation");
         }
         logits = llama_get_logits_ith(ctx, -1);
+        if (chat_on) im.kv_tokens.push_back(tok); // this token is now in the KV
 
         ++n_gen;
         double wall = secs(s0, s1);
@@ -478,7 +541,8 @@ RunResult Session::generate(const GenerateRequest & req,
     s.gen_seconds = gen_seconds;
     s.s_per_token = n_gen ? gen_seconds / n_gen : 0.0;
     s.tokens_per_second = gen_seconds > 0 ? n_gen / gen_seconds : 0.0;
-    s.n_prompt = n_prompt;
+    s.n_prompt = n_prompt - (int) n_common; // tokens actually prefilled this turn (after KV reuse)
+    s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
     if (moe.enabled) {
@@ -509,9 +573,22 @@ RunResult Session::generate(const GenerateRequest & req,
 
     res.generated_text = shown_text(gen, /*partial*/ false);
 
-    // A cancel left the KV cache holding a partial generation; clear it so the next prompt
-    // (which clears anyway when clear_kv=true) never continues from stale state.
-    if (res.cancelled) llama_memory_clear(llama_get_memory(ctx), true);
+    if (res.cancelled) {
+        // Undo the whole turn (KV, fed tokens, and the pushed user message) so the conversation
+        // is left exactly as it was before this prompt and stays continuable.
+        rollback_turn();
+    } else if (chat_on) {
+        // Commit the assistant turn to the running conversation. Parsing separates a thinking
+        // model's reasoning from the answer; the next turn re-renders history from these messages.
+        common_chat_msg assistant;
+        try {
+            assistant = common_chat_parse(gen, /*is_partial*/ false, parse_params);
+        } catch (const std::exception &) {
+            assistant.content = gen;
+        }
+        assistant.role = "assistant";
+        im.chat_history.push_back(assistant);
+    }
     return res;
 }
 

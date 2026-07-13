@@ -33,7 +33,10 @@ struct RunSummary {
 
     // Startup phase (additive telemetry): model load + streaming setup, and prefill.
     // TTFT ~= load_seconds + prefill_seconds; prefill tok/s = n_prompt / prefill_seconds.
+    // In a multi-turn chat n_prompt is the tokens actually prefilled THIS turn (the suffix
+    // after the reused KV prefix), and n_past is the total context length after the turn.
     int n_prompt = 0;
+    int n_past = 0;
     double load_seconds = 0.0;
     double prefill_seconds = 0.0;
 
