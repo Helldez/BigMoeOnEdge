@@ -39,6 +39,14 @@ Vary one axis at a time:
 | io-threads | 1, 4 | 4 ≈ 3× the serial read bandwidth |
 | threads (-t) | 2, 4, 8 | U-shape, 4 optimal, 8 regresses |
 | overlap | off, on | net gain **only over a warm cache** (hides residual flash wait behind compute); a net loss on a cold cache-0 stream, where I/O dwarfs compute |
+| n-expert-used | default, 6 | fewer active experts cut compute + I/O ~linearly (8→6 ≈ −25%), changes the output |
+
+When sweeping `--n-expert-used`, run it as a **matched A/B against the model's own default**
+in the same session (same config, same cooldown) rather than against an older table — a
+cool-vs-warm device shifts the baseline enough to swamp the effect. Greedy decode makes the
+output diverge once routing narrows, so inspect the generated text for quality alongside tok/s;
+it is a speed/quality trade-off, not a free speedup. See the Turbo top-k section in
+[benchmarks.md](benchmarks.md) for a measured pair.
 
 ### Caveats
 

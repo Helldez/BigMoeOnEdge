@@ -181,6 +181,7 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
     sc.n_ctx = cfg.n_ctx;
     sc.n_batch = cfg.n_ctx; // one-batch prefill for any prompt that fits the context
     sc.chatml = cfg.chatml;
+    sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.moe = cfg.moe;
 
     std::string error;
@@ -311,6 +312,8 @@ static void print_usage(const char * argv0) {
         "      --progress          emit machine telemetry (one JSON line per token)\n"
         "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
         "      --csv PATH          also write per-token metrics as CSV\n"
+        "      --n-expert-used N   override active MoE experts per token (top-k); lower = faster\n"
+        "                          but changes the output (quality). 0 = model default\n"
         "\n"
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
@@ -327,7 +330,8 @@ static void print_usage(const char * argv0) {
         "      --spec-recall-min P auto-disable --spec-gate below P%% router recall (default 75, 0=never)\n"
         "      --list-archs        print supported MoE architectures and exit\n"
         "\n"
-        "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH\n",
+        "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
+        "BMOE_N_EXPERT_USED\n",
         argv0, MoeStreamConfig::cache_min_mb, MoeStreamConfig::io_threads_max);
 }
 
@@ -355,6 +359,8 @@ int main(int argc, char ** argv) {
             cfg.n_threads = std::atoi(next("-t"));
         else if (a == "-c" || a == "--ctx-size")
             cfg.n_ctx = std::atoi(next("-c"));
+        else if (a == "--n-expert-used")
+            cfg.n_expert_used = std::atoi(next("--n-expert-used"));
         else if (a == "--chatml")
             cfg.chatml = true;
         else if (a == "--no-think")
@@ -417,6 +423,7 @@ int main(int argc, char ** argv) {
     if (!cfg.moe.overlap) cfg.moe.overlap = env_int("BMOE_OVERLAP", 0) != 0;
     if (cfg.moe.prefetch_layers == 0) cfg.moe.prefetch_layers = env_int("BMOE_PREFETCH", 0);
     if (!cfg.moe.spec_gate) cfg.moe.spec_gate = env_int("BMOE_SPEC_GATE", 0) != 0;
+    if (cfg.n_expert_used == 0) cfg.n_expert_used = env_int("BMOE_N_EXPERT_USED", 0);
 
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);

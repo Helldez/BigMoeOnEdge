@@ -24,6 +24,12 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.n_ctx <= 0) {
         return fail("n_ctx must be positive");
     }
+    // Lower bound only: 0 means "use the model default". The upper bound (<= the model's
+    // real expert count) needs the loaded gguf, so it is deferred to run() where the model
+    // is available — same rationale as the streaming checks that stay out of this pure path.
+    if (cfg.n_expert_used < 0) {
+        return fail("n_expert_used must be >= 0 (0 = model default)");
+    }
 
     // overlap is meaningless without streaming (it gates the streamer's own reads). The
     // hook-availability check is deferred to run(): validate() stays pure (no native).
