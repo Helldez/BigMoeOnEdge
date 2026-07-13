@@ -154,7 +154,7 @@ private:
     size_t cache_target_ = 0;
     size_t total_expert_bytes_ = 0;
     size_t cache_hard_cap_ = 0; // upper bound on the auto budget (ceiling ∧ full expert-set size)
-    unsigned probe_tick_ = 0; // throttles the mem_available re-probe (once per N load_layer calls)
+    unsigned probe_tick_ = 0;   // throttles the mem_available re-probe (once per N load_layer calls)
     long long cache_resizes_ = 0;
     std::vector<void *> lbuf_[MoeRecipe::max_exps];
     std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];
