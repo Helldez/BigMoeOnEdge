@@ -92,6 +92,43 @@ static bool session_two_gens(const RunConfig & c, std::string & out1, std::strin
     return true;
 }
 
+// Open a Session (cache on), generate, shrink the cache budget hard between generations to force a
+// mass eviction of the warm cache, then generate again. The second output must still match the cold
+// resident reference: a runtime resize only changes residency, never the produced bytes.
+static bool session_shrink_gen(const RunConfig & c, int shrink_mib, std::string & out1, std::string & out2,
+                               std::string & err) {
+    SessionConfig sc;
+    sc.model_path = c.model_path;
+    sc.n_threads = c.n_threads;
+    sc.n_ctx = c.n_ctx;
+    sc.n_batch = c.n_ctx;
+    sc.chatml = c.chatml;
+    sc.moe = c.moe;
+
+    std::unique_ptr<Session> s = Session::open(sc, err);
+    if (!s) return false;
+
+    GenerateRequest req;
+    req.prompt = c.prompt;
+    req.n_predict = c.n_predict;
+    req.clear_kv = true;
+
+    RunResult r1 = s->generate(req);
+    if (!r1) {
+        err = r1.error;
+        return false;
+    }
+    s->set_cache_budget_mb(shrink_mib); // between generations (no decode in flight): evicts to budget
+    RunResult r2 = s->generate(req);
+    if (!r2) {
+        err = r2.error;
+        return false;
+    }
+    out1 = r1.generated_text;
+    out2 = r2.generated_text;
+    return true;
+}
+
 static int check(const char * name, const std::string & a, const std::string & b) {
     if (a == b) {
         std::printf("[PASS] %s\n", name);
@@ -213,6 +250,17 @@ int main(int argc, char ** argv) {
     }
     fails += check("S1a session generate #1 == resident", s_res, s_g1);
     fails += check("S1b session generate #2 (warm cache) == resident", s_res, s_g2);
+
+    // S3: shrinking the cache budget at runtime (adaptive sizing / memory-pressure callback) evicts
+    // warm entries mid-session; the next generation must rebuild them from flash byte-for-byte. Reuse
+    // the small forced cache, then drop it to ~0 MiB between generates to force a full eviction pass.
+    std::string s_sh1, s_sh2;
+    if (!session_shrink_gen(sess, /*shrink_mib=*/0, s_sh1, s_sh2, err)) {
+        std::fprintf(stderr, "session shrink run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("S3a session generate #1 == resident", s_res, s_sh1);
+    fails += check("S3b session generate #2 (after budget shrink) == resident", s_res, s_sh2);
 
     // ── G5: temporal prefetch must not change bytes ──
     // A forced cache (prefetch needs one) plus a couple of look-ahead layers, exercising the
