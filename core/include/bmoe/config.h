@@ -30,6 +30,9 @@ struct MoeStreamConfig {
     // Mutually exclusive with an explicit cache_mb > 0. See docs/adaptive-cache.md.
     bool cache_auto = false;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing
+    int cache_ceil_mb = 0;     // upper bound on the auto budget in MiB (0 = cap only at the full
+                               // expert-set size); useful to keep the cache from taking all the
+                               // headroom when the marginal hit-rate gain no longer justifies the RAM
 
     // Parallel expert-slice read lanes (incl. the calling thread). 1 = serial baseline.
     // Clamped to [1, io_threads_max]. 4 is the measured sweet spot on UFS4 phones.

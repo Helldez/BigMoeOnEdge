@@ -65,20 +65,27 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     if (cfg.cache_auto) {
         cache_auto_ = true;
         cache_floor_ = (size_t) std::max(0, cfg.cache_floor_mb) * 1024ull * 1024ull;
-        const size_t min_budget = (size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull;
+        // Hard cap: the whole expert set, further capped by the user's ceiling when set. Every auto
+        // budget (init and runtime grow-back) stays at or below this.
+        const size_t ceil = (size_t) std::max(0, cfg.cache_ceil_mb) * 1024ull * 1024ull;
+        cache_hard_cap_ = ceil > 0 ? std::min(ceil, total_expert_bytes_) : total_expert_bytes_;
+        const size_t min_budget =
+            std::min<size_t>((size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull, cache_hard_cap_);
         const uint64_t avail = pio::mem_available_bytes();
         if (avail == 0) {
-            cache_max_ = std::min(min_budget, total_expert_bytes_);
-            std::fprintf(stderr, "bmoe: cache auto — available memory unknown, using the %d MiB floor\n",
-                         MoeStreamConfig::cache_min_mb);
+            cache_max_ = min_budget;
+            std::fprintf(stderr, "bmoe: cache auto — available memory unknown, using the %zu MiB floor\n",
+                         min_budget / (1024 * 1024));
         } else {
             size_t budget = avail > cache_floor_ ? (size_t) (avail - cache_floor_) : 0;
             budget = std::max(budget, min_budget);
-            budget = std::min(budget, total_expert_bytes_);
+            budget = std::min(budget, cache_hard_cap_);
             cache_max_ = budget;
-            std::fprintf(stderr, "bmoe: cache auto — %llu MiB available, leaving %zu MiB free → %zu MiB budget\n",
+            std::fprintf(stderr,
+                         "bmoe: cache auto — %llu MiB available, leaving %zu MiB free → %zu MiB budget"
+                         " (cap %zu MiB)\n",
                          (unsigned long long) (avail / (1024 * 1024)), cache_floor_ / (1024 * 1024),
-                         cache_max_ / (1024 * 1024));
+                         cache_max_ / (1024 * 1024), cache_hard_cap_ / (1024 * 1024));
         }
         cache_target_ = cache_max_;
     }
@@ -476,7 +483,7 @@ void ExpertStreamSource::adapt_cache_budget() {
         const size_t step = std::min<size_t>(256ull * 1024 * 1024, (size_t) (avail - cache_floor_));
         budget = std::min(cache_max_ + step, cache_target_);
     }
-    budget = std::min(budget, total_expert_bytes_);
+    budget = std::min(budget, cache_hard_cap_); // never exceed the ceiling ∧ full expert-set size
     if (budget != cache_max_) {
         cache_max_ = budget;
         ++cache_resizes_;

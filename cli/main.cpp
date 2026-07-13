@@ -316,6 +316,7 @@ static void print_usage(const char * argv0) {
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
         "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
         "      --cache-floor-mb N  with --cache-mb auto: RAM to leave free (default 1536)\n"
+        "      --cache-ceil-mb N   with --cache-mb auto: upper bound on the budget (0 = no cap)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
@@ -374,6 +375,8 @@ int main(int argc, char ** argv) {
                 cfg.moe.cache_mb = std::atoi(v.c_str());
         } else if (a == "--cache-floor-mb")
             cfg.moe.cache_floor_mb = std::atoi(next("--cache-floor-mb"));
+        else if (a == "--cache-ceil-mb")
+            cfg.moe.cache_ceil_mb = std::atoi(next("--cache-ceil-mb"));
         else if (a == "--io-threads")
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")

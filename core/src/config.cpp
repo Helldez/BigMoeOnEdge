@@ -57,6 +57,9 @@ ValidationResult validate(const RunConfig & cfg) {
         if (m.cache_floor_mb < 0) {
             return fail("moe.cache_floor_mb must be >= 0");
         }
+        if (m.cache_ceil_mb < 0) {
+            return fail("moe.cache_ceil_mb must be >= 0 (0 = no explicit ceiling)");
+        }
         // "The LRU cache is on" means a fixed budget OR auto-sizing (which sizes a real LRU cache).
         const bool cache_on = m.cache_mb > 0 || m.cache_auto;
         if (m.prefetch_layers > 0 && !cache_on) {
