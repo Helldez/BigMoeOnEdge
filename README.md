@@ -96,13 +96,17 @@ cd build && ctest --output-on-failure
 
 ## Quickstart (Android)
 
-A minimal chat app with a live telemetry panel is in
+A **multi-turn chat** app with a live telemetry panel is in
 [`examples/android`](examples/android). Build the CLI for arm64 with
 `scripts/build-android.ps1`, then build the APK and push a model. Its settings expose the
-streaming knobs (expert cache, I/O lanes, O_DIRECT, I/O–compute overlap), a reasoning
-toggle, and an **mmap baseline** switch that turns streaming off entirely so you can compare
-modes on the same device; the panel reports per-token compute-vs-flash split, cache hit rate
-and the aggregate tok/s at the end of a run.
+streaming knobs (expert cache with an auto-ceiling, I/O lanes, O_DIRECT, I/O–compute overlap),
+the **active-experts / top-k** speed-quality knob, a reasoning toggle, and an **mmap baseline**
+switch that turns streaming off entirely so you can compare modes on the same device — each knob
+carries a one-line note on what it does and whether it actually helps tok/s. The defaults are the
+measured winning recipe (auto cache capped, 4 lanes, overlap on). The panel reports per-token
+compute-vs-flash split, cache hit rate and per-turn tok/s; in the mmap baseline it shows only the
+honest metrics (the page-cache I/O is not observable). The conversation keeps the KV between turns
+and prefills only each new turn; **New chat** starts over.
 
 ## How it works, briefly
 

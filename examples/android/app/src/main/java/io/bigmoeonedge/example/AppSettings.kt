@@ -7,13 +7,18 @@ import android.content.Context
  * flags; the Settings screen edits them and [toArgv] builds the command line.
  */
 data class AppSettings(
+    // Conservative, device-agnostic defaults: a modest fixed expert cache, streaming with overlap,
+    // 4 compute + 4 read lanes, model's own top-k. No device- or benchmark-specific tuning — the
+    // knobs below let the user tune for their own hardware.
     val mmap: Boolean = false,   // baseline: no streaming — llama.cpp mmap loads the whole model
-    val cacheMb: Int = 4000,     // LRU expert cache budget; 0 or >= 2000 (see CACHE_CHOICES)
+    val cacheMb: Int = 3000,     // LRU expert cache budget; Auto / 0 / >= 2000 (see CACHE_CHOICES)
+    val cacheCeilMb: Int = 4000, // with cacheMb=Auto: upper bound on the auto budget (0 = no cap)
     val ioThreads: Int = 4,      // parallel expert-read lanes
-    val threads: Int = 4,        // compute threads (-t); 4 is the measured optimum
+    val threads: Int = 4,        // compute threads (-t)
+    val nExpertUsed: Int = 0,    // top-k override (0 = model default); lower = faster, changes output
     val nPredict: Int = 48,
     val oDirect: Boolean = true, // bypass the page cache
-    val overlap: Boolean = false,// prefetch experts while the layer computes (experimental)
+    val overlap: Boolean = true, // read the next experts while the current layer computes
     val prefetchLayers: Int = 0, // temporal prefetch depth K (0 = off); needs the cache
     val specGate: Boolean = false,// predict next layer's experts via its router; needs the cache
     val thinking: Boolean = false,// reasoning; off passes --no-think (enable_thinking=false)
@@ -38,10 +43,17 @@ data class AppSettings(
             "--chatml", // apply the model family's chat turn (gemma / chatml)
             "--session",
         )
+        // Active-expert (top-k) override is a load-time kv_override, valid with or without
+        // streaming — so it lives outside the mmap gate below.
+        if (nExpertUsed > 0) a += listOf("--n-expert-used", nExpertUsed.toString())
         if (!mmap) {
             a += "--moe-stream"
-            a += if (cacheMb == CACHE_AUTO) listOf("--cache-mb", "auto")
-                 else listOf("--cache-mb", cacheMb.toString())
+            if (cacheMb == CACHE_AUTO) {
+                a += listOf("--cache-mb", "auto")
+                if (cacheCeilMb > 0) a += listOf("--cache-ceil-mb", cacheCeilMb.toString())
+            } else {
+                a += listOf("--cache-mb", cacheMb.toString())
+            }
             a += listOf("--io-threads", ioThreads.toString())
             if (!oDirect) a += "--no-odirect"
             if (overlap) a += "--overlap"
@@ -61,13 +73,16 @@ data class AppSettings(
      * excluded — they vary per request without touching the loaded model.
      */
     fun sessionSignature(modelPath: String): String =
-        listOf(modelPath, mmap, cacheMb, ioThreads, threads, oDirect, overlap, prefetchLayers, specGate, loadAll)
+        listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, oDirect, overlap,
+               prefetchLayers, specGate, loadAll)
             .joinToString("|")
 
     fun save(ctx: Context) {
         ctx.prefs().edit()
             .putBoolean("mmap", mmap)
-            .putInt("cacheMb", cacheMb).putInt("ioThreads", ioThreads).putInt("threads", threads)
+            .putInt("cacheMb", cacheMb).putInt("cacheCeilMb", cacheCeilMb)
+            .putInt("ioThreads", ioThreads).putInt("threads", threads)
+            .putInt("nExpertUsed", nExpertUsed)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
             .putBoolean("overlap", overlap).putInt("prefetchLayers", prefetchLayers)
             .putBoolean("specGate", specGate)
@@ -81,12 +96,17 @@ data class AppSettings(
         // rejected recoverably by the CLI, leaving the session usable.
         const val SESSION_CTX = 4096
 
-        // -1 (Auto) sizes the cache to the device's free RAM at runtime (--cache-mb auto). 1000 is
-        // deliberately absent: a budget below the ~1500 MiB pathological band thrashes and is slower
-        // than no cache — the engine rejects it. Use Auto, 0, or >= 2000.
+        // -1 (Auto) sizes the cache to the device's free RAM at runtime (--cache-mb auto). Values
+        // between 0 and 2000 are omitted: a very small cache thrashes (evict + re-read) and the
+        // engine rejects it. Use Auto, 0, or >= 2000.
         const val CACHE_AUTO = -1
         val CACHE_CHOICES = intArrayOf(CACHE_AUTO, 0, 2000, 3000, 4000, 5000, 6000)
+        // Upper bound for the Auto budget (0 = no cap). A cap keeps Auto from over-growing into
+        // memory pressure on devices where free RAM is tight.
+        val CACHE_CEIL_CHOICES = intArrayOf(0, 3000, 4000, 5000, 6000)
         val IO_CHOICES = intArrayOf(1, 2, 4, 8)
+        // 0 = model default (top-k as trained). 6/4 trade output quality for tok/s (fewer routed experts).
+        val N_EXPERT_CHOICES = intArrayOf(0, 6, 4)
         val PREFETCH_CHOICES = intArrayOf(0, 1, 2, 4)
         val THREAD_CHOICES = intArrayOf(2, 4, 6, 8)
         val NPREDICT_CHOICES = intArrayOf(16, 32, 48, 64, 128, 256, 512, 1024, 2048)
@@ -97,8 +117,10 @@ data class AppSettings(
             return AppSettings(
                 mmap = p.getBoolean("mmap", d.mmap),
                 cacheMb = p.getInt("cacheMb", d.cacheMb),
+                cacheCeilMb = p.getInt("cacheCeilMb", d.cacheCeilMb),
                 ioThreads = p.getInt("ioThreads", d.ioThreads),
                 threads = p.getInt("threads", d.threads),
+                nExpertUsed = p.getInt("nExpertUsed", d.nExpertUsed),
                 nPredict = p.getInt("nPredict", d.nPredict),
                 oDirect = p.getBoolean("oDirect", d.oDirect),
                 overlap = p.getBoolean("overlap", d.overlap),

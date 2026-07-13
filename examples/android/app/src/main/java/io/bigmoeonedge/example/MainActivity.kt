@@ -13,9 +13,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -144,119 +144,179 @@ private fun MainScreen(
     val ui by RunBus.state.collectAsStateWithLifecycle()
 
     var prompt by rememberSaveable { mutableStateOf("Explain what a mixture-of-experts model is, in two sentences.") }
+    val listState = rememberLazyListState()
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+    // Keep the newest content in view as the answer streams in and turns commit. Item 0 is the
+    // controls block; the transcript and the in-flight answer follow it.
+    val liveShown = ui.answer.isNotEmpty()
+    val total = 1 + ui.transcript.size + (if (liveShown) 1 else 0)
+    LaunchedEffect(ui.transcript.size, liveShown, ui.answer.length) {
+        if (total > 1) runCatching { listState.animateScrollToItem(total - 1) }
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("BigMoeOnEdge", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-            TextButton(onClick = onOpenSettings) { Text("Settings") }
-        }
+        item(key = "controls") {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("BigMoeOnEdge", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    TextButton(onClick = onOpenSettings) { Text("Settings") }
+                }
 
-        when {
-            scanning -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                Text("Scanning for MoE models…", fontSize = 14.sp)
-            }
-            models.isEmpty() -> {
-                ElevatedCard {
-                    Text(
-                        ModelManager.pushHint(),
-                        Modifier.padding(12.dp),
-                        fontSize = 13.sp,
-                        fontFamily = FontFamily.Monospace,
+                when {
+                    scanning -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("Scanning for MoE models…", fontSize = 14.sp)
+                    }
+                    models.isEmpty() -> {
+                        ElevatedCard {
+                            Text(
+                                ModelManager.pushHint(),
+                                Modifier.padding(12.dp),
+                                fontSize = 13.sp,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                        }
+                        TextButton(onClick = { requestSharedStorageAccess(context); onRefresh() }) { Text("Refresh") }
+                    }
+                    else -> LabeledDropdown(
+                        label = "Model",
+                        options = models.map { it.name },
+                        selected = modelIdx,
+                        onSelect = onSelectModel,
                     )
                 }
-                TextButton(onClick = { requestSharedStorageAccess(context); onRefresh() }) { Text("Refresh") }
-            }
-            else -> LabeledDropdown(
-                label = "Model",
-                options = models.map { it.name },
-                selected = modelIdx,
-                onSelect = onSelectModel,
-            )
-        }
 
-        // Bring a model onto the device without adb: download by URL or pick a local file.
-        // Both land in the app models dir; on completion we re-scan so it appears above.
-        AddModelSection(onModelReady = onRefresh)
+                // Bring a model onto the device without adb: download by URL or pick a local file.
+                // Both land in the app models dir; on completion we re-scan so it appears above.
+                AddModelSection(onModelReady = onRefresh)
 
-        OutlinedTextField(
-            value = prompt,
-            onValueChange = { prompt = it },
-            label = { Text("Prompt") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 2,
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(
-                onClick = {
-                    if (models.isNotEmpty()) {
-                        launchPrompt(context, models[modelIdx.coerceIn(0, models.size - 1)],
-                            prompt.ifBlank { "The capital of Japan is" }, settings, ui.sessionSig)
-                    }
-                },
-                enabled = !ui.busy && models.isNotEmpty(),
-                modifier = Modifier.weight(1f),
-            ) { Text(if (ui.ready) "Send" else "Run") }
-
-            OutlinedButton(
-                onClick = {
-                    context.startService(
-                        Intent(context, RunService::class.java).setAction(RunService.ACTION_CANCEL)
-                    )
-                },
-                enabled = ui.generating,
-                modifier = Modifier.weight(1f),
-            ) { Text("Stop") }
-        }
-
-        // The session keeps the model resident (and the cache warm) between prompts. Free it
-        // explicitly, or let the service auto-unload after an idle timeout.
-        if (ui.ready || ui.loading) {
-            TextButton(onClick = {
-                context.startService(
-                    Intent(context, RunService::class.java).setAction(RunService.ACTION_SHUTDOWN)
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it },
+                    label = { Text("Prompt") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
                 )
-            }) { Text("Unload model") }
-        }
 
-        // A quick reminder of the active config (full controls in Settings).
-        Text(
-            if (settings.mmap) {
-                "mmap baseline (no streaming) · ${settings.threads} threads · " +
-                    "thinking ${if (settings.thinking) "on" else "off"}"
-            } else {
-                "cache ${if (settings.cacheMb == 0) "off" else "${settings.cacheMb} MiB"} · " +
-                    "${settings.ioThreads} lanes${if (settings.overlap) " · overlap" else ""} · " +
-                    "${settings.threads} threads · thinking ${if (settings.thinking) "on" else "off"}"
-            } + " · build ${BuildConfig.GIT_SHA}",
-            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        onClick = {
+                            if (models.isNotEmpty()) {
+                                // First message of a conversation clears the KV; a follow-up continues it.
+                                launchPrompt(context, models[modelIdx.coerceIn(0, models.size - 1)],
+                                    prompt.ifBlank { "The capital of Japan is" }, settings, ui.sessionSig,
+                                    clearKv = ui.transcript.isEmpty())
+                            }
+                        },
+                        enabled = !ui.busy && models.isNotEmpty(),
+                        modifier = Modifier.weight(1f),
+                    ) { Text(if (ui.transcript.isNotEmpty()) "Send" else if (ui.ready) "Send" else "Run") }
 
-        if (ui.loading) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                Text("Loading model…", fontSize = 14.sp)
+                    OutlinedButton(
+                        onClick = {
+                            context.startService(
+                                Intent(context, RunService::class.java).setAction(RunService.ACTION_CANCEL)
+                            )
+                        },
+                        enabled = ui.generating,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Stop") }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // Start a new conversation: the next Send clears the KV. Keeps the model loaded.
+                    TextButton(
+                        onClick = { RunBus.update { it.copy(transcript = emptyList(), answer = "", summary = "", error = null) } },
+                        enabled = ui.transcript.isNotEmpty() && !ui.busy,
+                    ) { Text("New chat") }
+
+                    // The session keeps the model resident (and the cache warm) between prompts. Free it
+                    // explicitly, or let the service auto-unload after an idle timeout.
+                    if (ui.ready || ui.loading) {
+                        TextButton(onClick = {
+                            context.startService(
+                                Intent(context, RunService::class.java).setAction(RunService.ACTION_SHUTDOWN)
+                            )
+                        }) { Text("Unload model") }
+                    }
+                }
+
+                // A quick reminder of the active config (full controls in Settings).
+                Text(configSummary(settings), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                if (ui.loading) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("Loading model…", fontSize = 14.sp)
+                    }
+                }
+                // After the model is loaded, the prompt is prefilled before the first token streams
+                // (no BMOE_PROGRESS yet). Signal that phase so a slow prefill does not look stuck.
+                if (ui.generating && ui.telemetry.step == 0) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("Prefilling prompt…", fontSize = 14.sp)
+                    }
+                }
+
+                TelemetryCard(ui)
             }
         }
 
-        TelemetryCard(ui)
+        // Committed turns.
+        items(ui.transcript.size) { i -> TurnView(ui.transcript[i]) }
 
-        // The engine already hides a reasoning model's internal thinking (common_chat_parse),
-        // so the streamed answer is the final response.
-        if (ui.answer.isNotEmpty()) {
-            SelectionContainer { Text(ui.answer, fontSize = 15.sp) }
+        // The in-flight assistant answer as it streams (its user turn is already in the transcript).
+        if (liveShown) {
+            item(key = "live") {
+                TurnView(ChatTurn("assistant", ui.answer))
+            }
         }
     }
+}
+
+/** One transcript bubble: a small role label and the message, with an optional metrics line. */
+@Composable
+private fun TurnView(turn: ChatTurn) {
+    val isUser = turn.role == "user"
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            if (isUser) "You" else "Assistant",
+            fontSize = 12.sp, fontWeight = FontWeight.Bold,
+            color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+        )
+        SelectionContainer { Text(turn.text, fontSize = 15.sp) }
+        if (turn.metrics.isNotEmpty()) {
+            Text(turn.metrics, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** One-line reminder of the active configuration, mirroring the key Settings knobs. */
+private fun configSummary(s: AppSettings): String {
+    val core = if (s.mmap) {
+        "mmap baseline (no streaming) · ${s.threads} threads"
+    } else {
+        val cache = when {
+            s.cacheMb == AppSettings.CACHE_AUTO -> if (s.cacheCeilMb > 0) "cache auto≤${s.cacheCeilMb}" else "cache auto"
+            s.cacheMb == 0 -> "cache off"
+            else -> "cache ${s.cacheMb} MiB"
+        }
+        "$cache · ${s.ioThreads} lanes${if (s.overlap) " · overlap" else ""} · ${s.threads} threads"
+    }
+    val topk = if (s.nExpertUsed > 0) " · top-k ${s.nExpertUsed}" else ""
+    return "$core$topk · thinking ${if (s.thinking) "on" else "off"} · build ${BuildConfig.GIT_SHA}"
 }
 
 /**
@@ -394,10 +454,15 @@ private fun TelemetryCard(ui: UiState) {
             if (ui.error != null) {
                 Text("error", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
                 Text(ui.error, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                // The context-overflow error is recoverable: the session stays loaded, but the
+                // conversation is full. Point the user at New chat.
+                if ("n_ctx" in ui.error) {
+                    Text("Conversation is full — tap New chat to start over.",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 return@Column
             }
             val t = ui.telemetry
-            val hit = if (t.cacheHitPct >= 0) String.format(Locale.US, "%.0f%%", t.cacheHitPct) else "—"
             // Once the run finishes the summary carries the aggregate average; show that as the
             // headline rate. While generating, show the live instantaneous (last-token) rate.
             val done = t.avgTokensPerSecond > 0
@@ -409,11 +474,27 @@ private fun TelemetryCard(ui: UiState) {
                 },
                 fontWeight = FontWeight.Bold, fontSize = 18.sp,
             )
-            MeterRow("compute", t.computeMs, t.computeMs + t.ioMs, MaterialTheme.colorScheme.primary)
-            MeterRow("flash I/O", t.ioMs, t.computeMs + t.ioMs, MaterialTheme.colorScheme.tertiary)
-            Text("cache hit $hit", fontSize = 13.sp)
-            if (ui.ioMode != null) {
-                Text("I/O ${ui.ioMode}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (ui.streaming) {
+                // The compute-vs-flash split and cache hit rate only mean anything with the streamer
+                // running. Under mmap the model faults in through the OS page cache, invisible here.
+                // Once done, show the per-token AVERAGE split; while generating, the live last token.
+                val useAvg = done && t.avgComputeMs >= 0 && t.avgIoMs >= 0
+                val compute = if (useAvg) t.avgComputeMs else t.computeMs
+                val io = if (useAvg) t.avgIoMs else t.ioMs
+                val suffix = if (useAvg) " avg" else ""
+                val hit = if (t.cacheHitPct >= 0) String.format(Locale.US, "%.0f%%", t.cacheHitPct) else "—"
+                MeterRow("compute$suffix", compute, compute + io, MaterialTheme.colorScheme.primary)
+                MeterRow("flash I/O$suffix", io, compute + io, MaterialTheme.colorScheme.tertiary)
+                Text("cache hit $hit", fontSize = 13.sp)
+                if (ui.ioMode != null) {
+                    Text("I/O ${ui.ioMode}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                Text(
+                    "mmap baseline — the model is read through the OS page cache, so per-token flash I/O, " +
+                        "the compute split and cache hits are not observable in this mode.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             if (ui.summary.isNotEmpty()) {
                 Text(ui.summary, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
@@ -448,6 +529,7 @@ private fun launchPrompt(
     prompt: String,
     settings: AppSettings,
     currentSig: String?,
+    clearKv: Boolean,
 ) {
     RunBus.resetGeneration()
     val sig = settings.sessionSignature(model.absolutePath)
@@ -458,8 +540,11 @@ private fun launchPrompt(
                 .putExtra(RunService.EXTRA_PROMPT, prompt)
                 .putExtra(RunService.EXTRA_NPREDICT, settings.nPredict)
                 .putExtra(RunService.EXTRA_THINK, settings.thinking)
+                .putExtra(RunService.EXTRA_CLEAR_KV, clearKv)
         )
     } else {
+        // A new session starts with an empty KV and a cleared transcript, so its first turn
+        // always clears regardless of [clearKv].
         val argv = ArrayList(settings.sessionArgv(ModelManager.cliPath(context), model.absolutePath))
         ContextCompat.startForegroundService(
             context,
@@ -470,6 +555,7 @@ private fun launchPrompt(
                 .putExtra(RunService.EXTRA_PROMPT, prompt)
                 .putExtra(RunService.EXTRA_NPREDICT, settings.nPredict)
                 .putExtra(RunService.EXTRA_THINK, settings.thinking)
+                .putExtra(RunService.EXTRA_CLEAR_KV, true)
         )
     }
 }

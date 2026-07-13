@@ -62,21 +62,35 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     enabled = stream,
                 ) { onChange(current.copy(cacheMb = it)) }
                 Text(
-                    "Auto sizes the cache to free RAM and shrinks under pressure. Otherwise 0 or " +
-                        "≥ 2000 MiB — a smaller fixed cache thrashes (evict + re-read) and is slower " +
-                        "than off, so 1000 is intentionally not offered.",
+                    "Larger cache = fewer flash reads per token, but more RAM. Auto sizes to free RAM and " +
+                        "shrinks under memory pressure. Fixed values are 0 (off) or ≥ 2000 MiB.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                IntSetting(
+                    "Auto cache ceiling (MiB)", AppSettings.CACHE_CEIL_CHOICES, current.cacheCeilMb,
+                    format = { if (it == 0) "no cap" else "$it MiB" },
+                    enabled = stream && current.cacheMb == AppSettings.CACHE_AUTO,
+                ) { onChange(current.copy(cacheCeilMb = it)) }
+                Text(
+                    "Upper bound on the Auto budget, so it does not grow into memory pressure on " +
+                        "devices with tight free RAM.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 IntSetting("Parallel I/O lanes", AppSettings.IO_CHOICES, current.ioThreads, enabled = stream) {
                     onChange(current.copy(ioThreads = it))
                 }
+                Text(
+                    "Number of parallel flash-read threads for the expert stream.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 SwitchRow(
-                    "Direct I/O (O_DIRECT)", "Bypass the page cache when reading experts",
+                    "Direct I/O (O_DIRECT)",
+                    "Bypass the page cache for expert reads. Falls back to buffered automatically if unsupported",
                     current.oDirect, enabled = stream,
                 ) { onChange(current.copy(oDirect = it)) }
                 SwitchRow(
                     "I/O–compute overlap",
-                    "Prefetch experts while the layer computes (experimental)",
+                    "Read the next experts while the current layer computes, hiding read latency",
                     current.overlap, enabled = stream,
                 ) { onChange(current.copy(overlap = it)) }
                 IntSetting(
@@ -85,15 +99,33 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     enabled = stream && cacheOn,
                 ) { onChange(current.copy(prefetchLayers = it)) }
                 Text(
-                    "Read the next K layers' likely experts on idle lanes, predicted from the " +
-                        "previous token. Needs the cache on.",
+                    "Experimental. Prefetch the next K layers' likely experts on idle read lanes. Needs the cache on.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 SwitchRow(
                     "Speculative gating",
-                    "Predict the next layer's experts by running its router on the current hidden state",
+                    "Experimental. Predict the next layer's experts by running its router early",
                     current.specGate, enabled = stream && cacheOn,
                 ) { onChange(current.copy(specGate = it)) }
+            }
+
+            Section("Speed / quality") {
+                // Active-expert (top-k) override is a load-time kv_override, valid in both streaming
+                // and mmap mode, so it is not gated on the streamer.
+                IntSetting(
+                    "Active experts (top-k)", AppSettings.N_EXPERT_CHOICES, current.nExpertUsed,
+                    format = {
+                        when (it) {
+                            0 -> "Model default"
+                            else -> "$it"
+                        }
+                    },
+                ) { onChange(current.copy(nExpertUsed = it)) }
+                Text(
+                    "Route fewer experts per token than the model's default. Faster and lighter on flash, " +
+                        "but the output changes — a speed/quality trade-off.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Section("Compute") {

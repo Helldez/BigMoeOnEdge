@@ -10,12 +10,15 @@ Emitted once per generated token, in order:
 ```
 BMOE_LOAD {"mb":<float>,"ms":<float>}
 BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
-               "compute_ms":<float>,"cache_hit_pct":<float>,"text":"<string>"}
+               "compute_ms":<float>,"mgmt_ms":<float>,"stall_ms":<float>,"read_mb":<float>,
+               "cache_hit_pct":<float>,"text":"<string>"}
 ```
 
 - `BMOE_LOAD` appears only when experts were read this token; `mb` is the flash bytes read,
   `ms` the read time.
 - `BMOE_PROGRESS.step`/`steps` are 1-based index and target token counts.
+- `read_mb` is the flash bytes read this token; `stall_ms` is the overlap-only wall time compute
+  lost to reads (0 in serial mode).
 - `wall_ms` = total token time; `io_ms` = flash read time. `compute_ms` is a **residual, not a
   measured quantity**: there is no clock around llama.cpp's matmul kernels (adding one would mean
   patching the submodule), so compute is whatever wall time is left after the measured terms are
@@ -111,7 +114,10 @@ Requests (stdin):
 ```
 
 `prompt` is JSON-escaped (newlines as `\n`); `n_predict`/`think`/`clear_kv` are optional and
-default to the process's flags / `true`. `cancel` may arrive at any time, including mid-generation.
+default to the process's flags / `true`. `clear_kv:true` starts a **new chat** (drops the KV and
+the engine-held conversation); `clear_kv:false` **continues** the conversation — send only the new
+user message, the engine re-renders the whole history and reuses the KV prefix (see
+[session.md](session.md)). `cancel` may arrive at any time, including mid-generation.
 
 Responses (stdout):
 
@@ -120,11 +126,21 @@ BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>}          # once, a
 BMOE_BEGIN {"id":<int>}                                                # a generation started
 BMOE_LOAD / BMOE_PROGRESS ...                                          # per token, as above
 BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
-            "prefill_s":<float>,"load_s":<float>,"cache_hit_pct":<float>,"text":"<string>"}
+            "prefill_s":<float>,"prefill_tps":<float>,"load_s":<float>,"cache_hit_pct":<float>,
+            "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
+            "cache_resident_mib":<float>,"cache_budget_mib":<float>,
+            "spec_recall_pct":<float>,"stall_s_tok":<float>,"mgmt_s_tok":<float>,"text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
 
 `BMOE_DONE` carries the end-of-generation summary (the one-shot mode's `generation:` /
-`moe-stream:` text lines are not emitted in session mode). `BMOE_ERROR` with `fatal:false` is a
-rejected request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
+`moe-stream:` text lines are not emitted in session mode). `n_prompt` is the tokens actually
+prefilled **this turn** (the suffix after any reused KV prefix), and `n_past` is the total context
+length after the turn — so a multi-turn UI can show both per-turn prefill cost and how full the
+context is. `prefill_tps` is the prompt prefill rate; `compute_s_tok`/`io_s_tok` are the per-token
+AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not just the last token).
+`cache_resident_mib`/`cache_budget_mib` track the (possibly auto-adapting) cache,
+`spec_recall_pct` the spec-gating predictor (`-1` when off), and `stall_s_tok`/`mgmt_s_tok` the
+per-token overlap stall and cache-management cost. `BMOE_ERROR` with `fatal:false` is a rejected
+request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
 `fatal:true` means the process is ending.

@@ -5,7 +5,18 @@
 # named lib*.so are extracted there, hence the rename.
 #
 # Requires the Android NDK. Point $env:ANDROID_NDK_HOME at it, or let this script try the
-# default SDK location. Targets armv8.2-a+dotprod+i8mm+fp16 (int8 SIMD for Q4_K MoE).
+# default SDK location.
+#
+# CPU target — armv8.2-a + dotprod + fp16, deliberately NOT i8mm. i8mm (armv8.6) is only on
+# ~2021+ flagships; a build that pins it SIGILLs during the prefill GEMM on older SoCs (e.g. the
+# Snapdragon 865 / OnePlus 8 Pro). dotprod + fp16 (armv8.2, ~2018+) is supported by every SoC
+# that can realistically run a >RAM MoE model, so this one binary is device-agnostic across the
+# viable device range while keeping every int8/fp16 kernel that matters for Q4_K experts.
+#
+# Note: ggml's per-device runtime dispatch (GGML_CPU_ALL_VARIANTS + GGML_BACKEND_DL) is NOT used
+# because it splits the CPU backend into dlopen'd variant .so's, which drops the bmoe fork's
+# statically-linked `ggml_cpu_set_expert_ready_hook` (the I/O–compute overlap hook) — the two are
+# mutually exclusive today. A single dotprod baseline keeps overlap and still covers the field.
 param(
     [string]$BuildDir = "build-android",
     [string]$Abi      = "arm64-v8a",
@@ -40,7 +51,7 @@ cmake -S $root -B $buildPath `
     -DBMOE_BUILD_TESTS=OFF `
     -DGGML_NATIVE=OFF `
     -DGGML_OPENMP=OFF `
-    -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+i8mm+fp16" `
+    -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" `
     -DLLAMA_CURL=OFF
 
 cmake --build $buildPath -j
