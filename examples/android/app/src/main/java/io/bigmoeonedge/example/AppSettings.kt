@@ -14,6 +14,7 @@ data class AppSettings(
     val nPredict: Int = 48,
     val oDirect: Boolean = true, // bypass the page cache
     val overlap: Boolean = false,// prefetch experts while the layer computes (experimental)
+    val prefetchLayers: Int = 0, // temporal prefetch depth K (0 = off); needs the cache
     val thinking: Boolean = false,// reasoning; off passes --no-think (enable_thinking=false)
     val loadAll: Boolean = false,// debug: read ALL experts each token (A/B baseline)
 ) {
@@ -42,6 +43,7 @@ data class AppSettings(
             a += listOf("--io-threads", ioThreads.toString())
             if (!oDirect) a += "--no-odirect"
             if (overlap) a += "--overlap"
+            if (prefetchLayers > 0 && cacheMb > 0) a += listOf("--prefetch", prefetchLayers.toString())
             if (loadAll) a += "--load-all"
         }
         return a
@@ -54,14 +56,15 @@ data class AppSettings(
      * excluded — they vary per request without touching the loaded model.
      */
     fun sessionSignature(modelPath: String): String =
-        listOf(modelPath, mmap, cacheMb, ioThreads, threads, oDirect, overlap, loadAll).joinToString("|")
+        listOf(modelPath, mmap, cacheMb, ioThreads, threads, oDirect, overlap, prefetchLayers, loadAll)
+            .joinToString("|")
 
     fun save(ctx: Context) {
         ctx.prefs().edit()
             .putBoolean("mmap", mmap)
             .putInt("cacheMb", cacheMb).putInt("ioThreads", ioThreads).putInt("threads", threads)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
-            .putBoolean("overlap", overlap)
+            .putBoolean("overlap", overlap).putInt("prefetchLayers", prefetchLayers)
             .putBoolean("thinking", thinking).putBoolean("loadAll", loadAll)
             .apply()
     }
@@ -76,6 +79,7 @@ data class AppSettings(
         // thrashes and is slower than no cache — the engine rejects it. Use 0 or >= 2000.
         val CACHE_CHOICES = intArrayOf(0, 2000, 3000, 4000, 5000, 6000)
         val IO_CHOICES = intArrayOf(1, 2, 4, 8)
+        val PREFETCH_CHOICES = intArrayOf(0, 1, 2, 4)
         val THREAD_CHOICES = intArrayOf(2, 4, 6, 8)
         val NPREDICT_CHOICES = intArrayOf(16, 32, 48, 64, 128, 256, 512, 1024, 2048)
 
@@ -90,6 +94,7 @@ data class AppSettings(
                 nPredict = p.getInt("nPredict", d.nPredict),
                 oDirect = p.getBoolean("oDirect", d.oDirect),
                 overlap = p.getBoolean("overlap", d.overlap),
+                prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
                 thinking = p.getBoolean("thinking", d.thinking),
                 loadAll = p.getBoolean("loadAll", d.loadAll),
             )

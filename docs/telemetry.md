@@ -46,6 +46,16 @@ moe-cache: <pct>% hit, resident <mib> MiB
 `compute` in the `moe-stream:` line is the same residual described for `compute_ms` above; `cache
 mgmt` is the per-token mean of `mgmt_ms`.
 
+With `--prefetch K` a `moe-prefetch:` line is added:
+
+```
+moe-prefetch: <mib> MiB speculative, <useful>/<prefetched> experts useful (<pct>%)
+```
+
+`<mib>` is the flash read done speculatively this generation (a subset of the total read),
+`<prefetched>` the experts fully read ahead, and `<useful>` how many of those a later routing
+actually hit. See [prefetch.md](prefetch.md).
+
 Under `--overlap` the `moe-stream:` line additionally reports `stall_s/tok=<s>` — the mean
 wall time per token that compute threads waited for expert reads to complete. It is `0` in
 serial mode (where the read wait is already folded into decode time).

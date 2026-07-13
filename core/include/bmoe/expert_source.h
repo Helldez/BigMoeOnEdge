@@ -28,6 +28,12 @@ public:
     // Returns false on I/O failure (serial) or if a prior async batch already failed.
     virtual bool load_layer(int il, const int32_t * ids, int n_ids) = 0;
 
+    // Hint that layer `il` is likely to route `ids` (n_ids of them) on a future token, so the
+    // implementation may read them ahead on otherwise-idle lanes. Purely advisory: a correct
+    // guess makes the later load_layer(il, …) a cache hit, a wrong guess wastes a read — neither
+    // changes what load_layer produces. Default: no-op (a source without a speculative path).
+    virtual void prefetch(int /*il*/, const int32_t * /*ids*/, int /*n_ids*/) {}
+
     // Cumulative streaming statistics, for telemetry and the end-of-run summary.
     struct Stats {
         uint64_t read_bytes = 0;           // bytes pulled from flash (aligned windows)
@@ -37,6 +43,9 @@ public:
         long long cache_lookups = 0;       // total expert lookups (hits + misses)
         uint64_t cache_resident_bytes = 0; // currently resident cached slice bytes
         double stall_seconds = 0.0;        // overlap: summed across compute threads (0 when serial)
+        uint64_t spec_read_bytes = 0;      // bytes read speculatively by prefetch (subset of read_bytes)
+        long long spec_experts = 0;        // experts fully prefetched
+        long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
     };
     virtual Stats stats() const = 0;
 };

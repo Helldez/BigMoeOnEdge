@@ -7,6 +7,15 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Temporal prefetch** (`--prefetch K`, env `BMOE_PREFETCH`): while a token computes layer *l*,
+  the experts the previous token routed at layers *l+1…l+K* are read speculatively on the idle I/O
+  lanes, so a correct guess turns the next layer's read into a cache hit. Requires the LRU cache.
+  The speculative path never delays real work (workers drain it only as spare capacity and yield
+  to real batches; all cache-state mutation stays on the eval thread) and never changes output (a
+  speculative read is the identical read a real miss would issue). Gates G5a/b/c prove
+  byte-identity, including the integrate-then-hit path. A `moe-prefetch:` summary line reports the
+  speculative bytes and useful-hit rate; an Android settings row exposes the depth. See
+  `docs/prefetch.md`.
 - **Session mode**: the engine can now load a model once and serve many prompts against it, with
   the expert LRU cache staying warm between prompts, instead of re-paying the model load and the
   cold-cache ramp on every generation. `run()` splits into a `Session` (`open` / `generate` /

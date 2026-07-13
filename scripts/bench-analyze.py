@@ -10,7 +10,8 @@ import os, sys, statistics
 
 BENCH = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\raffa\Documents\BigMoeOnEdge\.bench"
 ORDER = ["mmap", "stream", "c2000_l2", "c2000_l4", "c4000_l2", "c4000_l4",
-         "stream_ov", "c4000_l4_ov"]
+         "stream_ov", "c2000_l4_ov", "c4000_l4_ov",
+         "c4000_l4_pf1", "c4000_l4_pf2", "c4000_l4_pf4"]
 LABEL = {
     "mmap": "solo mmap (no streaming)",
     "stream": "streaming O_DIRECT, cache 0, lane 4",
@@ -19,7 +20,11 @@ LABEL = {
     "c4000_l2": "streaming + cache 4000 MiB, lane 2",
     "c4000_l4": "streaming + cache 4000 MiB, lane 4",
     "stream_ov": "streaming O_DIRECT + overlap, cache 0, lane 4",
+    "c2000_l4_ov": "streaming + cache 2000 MiB, lane 4, overlap",
     "c4000_l4_ov": "streaming + cache 4000 MiB, lane 4, overlap",
+    "c4000_l4_pf1": "streaming + cache 4000 MiB, lane 4, prefetch 1",
+    "c4000_l4_pf2": "streaming + cache 4000 MiB, lane 4, prefetch 2",
+    "c4000_l4_pf4": "streaming + cache 4000 MiB, lane 4, prefetch 4",
 }
 
 def pct(v, q):

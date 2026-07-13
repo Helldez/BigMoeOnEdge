@@ -154,6 +154,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & 
     }
 
     im.hook = std::make_unique<RouterHook>(recipe ? *recipe : MoeRecipe{}, im.n_layer);
+    im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
@@ -341,6 +342,9 @@ RunResult Session::generate(const GenerateRequest & req,
     double prev_io_s = moe.enabled ? im.source.stats().read_seconds : 0.0;
     double prev_mgmt_s = moe.enabled ? im.source.stats().mgmt_seconds : 0.0;
     double prev_stall_s = moe.enabled ? im.source.stats().stall_seconds : 0.0;
+    long long prev_spec_bytes = moe.enabled ? (long long) im.source.stats().spec_read_bytes : 0;
+    long long prev_spec_experts = moe.enabled ? im.source.stats().spec_experts : 0;
+    long long prev_spec_useful = moe.enabled ? im.source.stats().spec_useful : 0;
 
     uint64_t gen_read_bytes = 0;
     double gen_io_seconds = 0.0;
@@ -430,6 +434,9 @@ RunResult Session::generate(const GenerateRequest & req,
         if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
         s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
         s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);
+        s.moe_spec_read_mib = ((long long) st.spec_read_bytes - prev_spec_bytes) / (1024.0 * 1024.0);
+        s.moe_spec_experts = st.spec_experts - prev_spec_experts;
+        s.moe_spec_useful = st.spec_useful - prev_spec_useful;
     }
     if (sink) sink->on_summary(s);
 

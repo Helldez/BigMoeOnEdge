@@ -9,6 +9,7 @@ namespace bmoe {
 
 RouterHook::RouterHook(const MoeRecipe & recipe, int n_layer) : recipe_(recipe), n_layer_(n_layer) {
     captured_.assign(n_layer_ > 0 ? n_layer_ : 0, LayerExperts{});
+    prev_ids_.assign(n_layer_ > 0 ? n_layer_ : 0, std::vector<int32_t>{});
 }
 
 // Match a tensor name of the form "blk.<il>.<suffix>.weight" against the recipe's expert
@@ -82,6 +83,23 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 gathered_.push_back(
                     *(const int32_t *) ((const char *) t->data + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]));
         source_->load_layer(il, gathered_.data(), (int) gathered_.size());
+
+        // Temporal prefetch: hint the next K layers with what the PREVIOUS token routed there,
+        // to be read on idle lanes while this layer computes; then record this layer's routing
+        // (the last token's row during prefill) for the next token to predict from.
+        if (prefetch_layers_ > 0 && il >= 0 && il < n_layer_) {
+            for (int k = 1; k <= prefetch_layers_; ++k) {
+                const int tl = il + k;
+                if (tl < n_layer_ && !prev_ids_[tl].empty())
+                    source_->prefetch(tl, prev_ids_[tl].data(), (int) prev_ids_[tl].size());
+            }
+            std::vector<int32_t> & rec = prev_ids_[il];
+            rec.clear();
+            const int last = nt - 1;
+            for (int k = 0; k < nu; ++k)
+                rec.push_back(*(const int32_t *) ((const char *) t->data + (size_t) last * t->nb[1] +
+                                                  (size_t) k * t->nb[0]));
+        }
     }
     return true;
 }

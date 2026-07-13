@@ -71,6 +71,16 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     "Prefetch experts while the layer computes (experimental)",
                     current.overlap, enabled = stream,
                 ) { onChange(current.copy(overlap = it)) }
+                IntSetting(
+                    "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
+                    format = { if (it == 0) "off" else "$it" },
+                    enabled = stream && current.cacheMb > 0,
+                ) { onChange(current.copy(prefetchLayers = it)) }
+                Text(
+                    "Read the next K layers' likely experts on idle lanes, predicted from the " +
+                        "previous token. Needs the cache on.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Section("Compute") {
