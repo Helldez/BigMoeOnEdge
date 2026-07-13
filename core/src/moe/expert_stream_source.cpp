@@ -323,8 +323,7 @@ void ExpertStreamSource::io_worker(int lane) {
 // Prefetch: on the eval thread, commit pages and enqueue speculative per-projection reads for the
 // given experts of layer il. LRU-safe (same thread as load_layer); workers only read the bytes.
 void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
-    if (!active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0)
-        return;
+    if (!active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return;
     const LayerExperts & L = layers_[il];
     bool any = false;
     std::lock_guard<std::mutex> lk(io_mtx_);
@@ -420,10 +419,10 @@ void ExpertStreamSource::quiesce_spec() {
             continue;
         }
         cvalid_[id] = 1;
-        cspec_[id] = 1; // speculative until a real lookup hits it (then counted useful)
+        cspec_[id] = 1;  // speculative until a real lookup hits it (then counted useful)
         cstamp_[id] = 0; // not used this generation → evictable if the budget is tight
         cresident_ += entry_bytes(id / n_expert_);
-        lru_push_front(id);
+        lru_push_back(id); // cold end: a mispredicted expert is reclaimed before any demanded one
         spec_experts_.fetch_add(1);
     }
     // Release pages of entries that never finished (a cancelled or failed read).
@@ -455,6 +454,17 @@ void ExpertStreamSource::lru_push_front(int32_t id) {
     else
         ctail_ = id;
     chead_ = id;
+}
+// Insert at the LRU (cold) end. Speculative entries enter here so a wrong prediction is the first
+// thing evicted and can never displace a demanded expert; a real lookup promotes it to the front.
+void ExpertStreamSource::lru_push_back(int32_t id) {
+    cnext_[id] = -1;
+    cprev_[id] = ctail_;
+    if (ctail_ != -1)
+        cnext_[ctail_] = id;
+    else
+        chead_ = id;
+    ctail_ = id;
 }
 size_t ExpertStreamSource::entry_bytes(int il) const {
     const LayerExperts & L = layers_[il];

@@ -66,7 +66,7 @@ public:
     // callback and leaves the model/cache intact for the next generate().
     void cancel();
 
-    double load_seconds() const;    // model load + streaming setup, measured once at open()
+    double load_seconds() const;      // model load + streaming setup, measured once at open()
     const std::string & arch() const; // model architecture ("qwen3moe", "gemma4", …)
     int n_ctx() const;
 

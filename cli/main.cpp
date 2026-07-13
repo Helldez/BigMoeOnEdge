@@ -78,12 +78,24 @@ static std::string json_unescape(const std::string & s) {
         }
         char c = s[++i];
         switch (c) {
-        case 'n': o += '\n'; break;
-        case 'r': o += '\r'; break;
-        case 't': o += '\t'; break;
-        case '"': o += '"'; break;
-        case '\\': o += '\\'; break;
-        case '/': o += '/'; break;
+        case 'n':
+            o += '\n';
+            break;
+        case 'r':
+            o += '\r';
+            break;
+        case 't':
+            o += '\t';
+            break;
+        case '"':
+            o += '"';
+            break;
+        case '\\':
+            o += '\\';
+            break;
+        case '/':
+            o += '/';
+            break;
         case 'u':
             if (i + 4 < s.size()) {
                 int code = (int) std::strtol(s.substr(i + 1, 4).c_str(), nullptr, 16);
@@ -93,7 +105,9 @@ static std::string json_unescape(const std::string & s) {
                 i += 4;
             }
             break;
-        default: o += c; break;
+        default:
+            o += c;
+            break;
         }
     }
     return o;
@@ -112,7 +126,8 @@ static size_t json_value_pos(const std::string & line, const char * key) {
 static bool json_get_string(const std::string & line, const char * key, std::string & out) {
     size_t p = json_value_pos(line, key);
     if (p == std::string::npos) return false;
-    while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t'))
+        ++p;
     if (p >= line.size() || line[p] != '"') return false;
     ++p;
     std::string raw;
@@ -140,7 +155,8 @@ static int json_get_int(const std::string & line, const char * key, int dflt) {
 static bool json_get_bool(const std::string & line, const char * key, bool dflt) {
     size_t p = json_value_pos(line, key);
     if (p == std::string::npos) return dflt;
-    while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t'))
+        ++p;
     return line.compare(p, 4, "true") == 0;
 }
 
@@ -256,9 +272,8 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
         if (!r) {
             // A bad request (empty prompt, context overflow) leaves the session usable; a decode
             // failure means the context is compromised, so end the loop.
-            bool recoverable =
-                r.error.find("exceeds the session n_ctx") != std::string::npos ||
-                r.error.find("empty prompt") != std::string::npos;
+            bool recoverable = r.error.find("exceeds the session n_ctx") != std::string::npos ||
+                               r.error.find("empty prompt") != std::string::npos;
             std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"msg\":\"%s\"}\n", cmd.id, recoverable ? "false" : "true",
                         json_escape(r.error).c_str());
             std::fflush(stdout);
@@ -283,32 +298,35 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
 }
 
 static void print_usage(const char * argv0) {
-    std::printf("usage: %s -m <model.gguf> [options]\n"
-                "\n"
-                "  -m, --model PATH        gguf model (required)\n"
-                "  -p, --prompt STR        prompt text\n"
-                "  -n, --n-predict N       tokens to generate (default 32)\n"
-                "  -t, --threads N         compute threads (default 4)\n"
-                "  -c, --ctx-size N        context size (default 2048)\n"
-                "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
-                "      --no-think          render the chat template with reasoning disabled\n"
-                "      --progress          emit machine telemetry (one JSON line per token)\n"
-                "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
-                "      --csv PATH          also write per-token metrics as CSV\n"
-                "\n"
-                "  MoE expert streaming:\n"
-                "      --moe-stream        stream only the routed experts per token (MoE models)\n"
-                "      --cache-mb N        LRU expert cache budget in MiB (0=off, or >=%d)\n"
-                "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
-                "      --no-odirect        do not bypass the page cache\n"
-                "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
-                "      --force-cache       allow a cache-mb in the pathological band\n"
-                "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
-                "      --prefetch K        temporally prefetch the next K layers' experts (needs the cache)\n"
-                "      --list-archs        print supported MoE architectures and exit\n"
-                "\n"
-                "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH\n",
-                argv0, MoeStreamConfig::cache_min_mb, MoeStreamConfig::io_threads_max);
+    std::printf(
+        "usage: %s -m <model.gguf> [options]\n"
+        "\n"
+        "  -m, --model PATH        gguf model (required)\n"
+        "  -p, --prompt STR        prompt text\n"
+        "  -n, --n-predict N       tokens to generate (default 32)\n"
+        "  -t, --threads N         compute threads (default 4)\n"
+        "  -c, --ctx-size N        context size (default 2048)\n"
+        "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
+        "      --no-think          render the chat template with reasoning disabled\n"
+        "      --progress          emit machine telemetry (one JSON line per token)\n"
+        "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
+        "      --csv PATH          also write per-token metrics as CSV\n"
+        "\n"
+        "  MoE expert streaming:\n"
+        "      --moe-stream        stream only the routed experts per token (MoE models)\n"
+        "      --cache-mb N        LRU expert cache budget in MiB (0=off, or >=%d)\n"
+        "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
+        "      --no-odirect        do not bypass the page cache\n"
+        "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
+        "      --force-cache       allow a cache-mb in the pathological band\n"
+        "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
+        "      --prefetch K        temporally prefetch the next K layers' experts (needs the cache)\n"
+        "      --spec-gate         predict+prefetch the next layer's experts via its router (needs the cache)\n"
+        "      --spec-recall-min P auto-disable --spec-gate below P%% router recall (default 75, 0=never)\n"
+        "      --list-archs        print supported MoE architectures and exit\n"
+        "\n"
+        "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH\n",
+        argv0, MoeStreamConfig::cache_min_mb, MoeStreamConfig::io_threads_max);
 }
 
 int main(int argc, char ** argv) {
@@ -363,6 +381,10 @@ int main(int argc, char ** argv) {
             cfg.moe.prefetch_layers = std::atoi(next("--prefetch"));
         else if (a == "--prefetch-sync") // debug: complete speculative reads synchronously
             cfg.moe.prefetch_sync = true;
+        else if (a == "--spec-gate")
+            cfg.moe.spec_gate = true;
+        else if (a == "--spec-recall-min") // auto-disable spec-gating below this recall %% (0 = never)
+            cfg.moe.spec_recall_min_pct = std::atoi(next("--spec-recall-min"));
         else if (a == "--list-archs") {
             std::printf("supported MoE architectures:\n");
             for (int k = 0; k < n_moe_recipes(); ++k)
@@ -384,6 +406,7 @@ int main(int argc, char ** argv) {
     if (!cfg.progress) cfg.progress = env_int("BMOE_PROGRESS", 0) != 0;
     if (!cfg.moe.overlap) cfg.moe.overlap = env_int("BMOE_OVERLAP", 0) != 0;
     if (cfg.moe.prefetch_layers == 0) cfg.moe.prefetch_layers = env_int("BMOE_PREFETCH", 0);
+    if (!cfg.moe.spec_gate) cfg.moe.spec_gate = env_int("BMOE_SPEC_GATE", 0) != 0;
 
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);
@@ -457,10 +480,17 @@ int main(int argc, char ** argv) {
         if (cfg.moe.overlap)
             std::printf("moe-overlap: stall %.3f s/token (flash reads overlapped with FFN compute)\n",
                         s.moe_stall_s_per_token);
-        if (cfg.moe.prefetch_layers > 0)
-            std::printf("moe-prefetch: %.1f MiB speculative, %lld/%lld experts useful (%.0f%%)\n",
-                        s.moe_spec_read_mib, s.moe_spec_useful, s.moe_spec_experts,
+        if (cfg.moe.prefetch_layers > 0 || cfg.moe.spec_gate)
+            std::printf("moe-prefetch: %.1f MiB speculative, %lld/%lld experts useful (%.0f%%)\n", s.moe_spec_read_mib,
+                        s.moe_spec_useful, s.moe_spec_experts,
                         s.moe_spec_experts > 0 ? 100.0 * s.moe_spec_useful / s.moe_spec_experts : 0.0);
+        if (cfg.moe.spec_gate && s.moe_spec_recall_pct >= 0.0) {
+            if (s.moe_spec_auto_off)
+                std::printf("moe-spec-gate: %.0f%% router prediction recall (auto-disabled below %d%%)\n",
+                            s.moe_spec_recall_pct, cfg.moe.spec_recall_min_pct);
+            else
+                std::printf("moe-spec-gate: %.0f%% router prediction recall\n", s.moe_spec_recall_pct);
+        }
     }
     return 0;
 }
