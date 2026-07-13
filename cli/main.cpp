@@ -314,7 +314,8 @@ static void print_usage(const char * argv0) {
         "\n"
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
-        "      --cache-mb N        LRU expert cache budget in MiB (0=off, or >=%d)\n"
+        "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
+        "      --cache-floor-mb N  with --cache-mb auto: RAM to leave free (default 1536)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
@@ -365,8 +366,14 @@ int main(int argc, char ** argv) {
             csv_path = next("--csv");
         else if (a == "--moe-stream")
             cfg.moe.enabled = true;
-        else if (a == "--cache-mb")
-            cfg.moe.cache_mb = std::atoi(next("--cache-mb"));
+        else if (a == "--cache-mb") {
+            const std::string v = next("--cache-mb");
+            if (v == "auto")
+                cfg.moe.cache_auto = true;
+            else
+                cfg.moe.cache_mb = std::atoi(v.c_str());
+        } else if (a == "--cache-floor-mb")
+            cfg.moe.cache_floor_mb = std::atoi(next("--cache-floor-mb"));
         else if (a == "--io-threads")
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
@@ -401,7 +408,7 @@ int main(int argc, char ** argv) {
     }
 
     // Env overrides (flag wins: only apply when the flag left the default).
-    if (cfg.moe.cache_mb == 0) cfg.moe.cache_mb = env_int("BMOE_CACHE_MB", 0);
+    if (cfg.moe.cache_mb == 0 && !cfg.moe.cache_auto) cfg.moe.cache_mb = env_int("BMOE_CACHE_MB", 0);
     if (cfg.moe.io_threads == 4) cfg.moe.io_threads = env_int("BMOE_IO_THREADS", 4);
     if (!cfg.progress) cfg.progress = env_int("BMOE_PROGRESS", 0) != 0;
     if (!cfg.moe.overlap) cfg.moe.overlap = env_int("BMOE_OVERLAP", 0) != 0;

@@ -49,6 +49,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
             max_full[p] = std::max(max_full[p], full);
+            total_expert_bytes_ += full; // every expert of every bound layer resident = the full set
         }
     }
     size_t max_full_any = 0;
@@ -57,6 +58,29 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     if (max_full_any == 0) {
         std::fprintf(stderr, "bmoe: no MoE layers were bound\n");
         return false;
+    }
+
+    // Adaptive budget: size the cache to the device now that the full expert-set size is known.
+    // (validate() guarantees cache_mb == 0 here, so this is the sole source of cache_max_ when auto.)
+    if (cfg.cache_auto) {
+        cache_auto_ = true;
+        cache_floor_ = (size_t) std::max(0, cfg.cache_floor_mb) * 1024ull * 1024ull;
+        const size_t min_budget = (size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull;
+        const uint64_t avail = pio::mem_available_bytes();
+        if (avail == 0) {
+            cache_max_ = std::min(min_budget, total_expert_bytes_);
+            std::fprintf(stderr, "bmoe: cache auto — available memory unknown, using the %d MiB floor\n",
+                         MoeStreamConfig::cache_min_mb);
+        } else {
+            size_t budget = avail > cache_floor_ ? (size_t) (avail - cache_floor_) : 0;
+            budget = std::max(budget, min_budget);
+            budget = std::min(budget, total_expert_bytes_);
+            cache_max_ = budget;
+            std::fprintf(stderr, "bmoe: cache auto — %llu MiB available, leaving %zu MiB free → %zu MiB budget\n",
+                         (unsigned long long) (avail / (1024 * 1024)), cache_floor_ / (1024 * 1024),
+                         cache_max_ / (1024 * 1024));
+        }
+        cache_target_ = cache_max_;
     }
 
     if (cache_max_ == 0) {

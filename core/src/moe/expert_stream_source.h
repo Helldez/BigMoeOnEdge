@@ -132,8 +132,18 @@ private:
     size_t slot_sz_[MoeRecipe::max_exps] = {0, 0, 0};
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
-    size_t cache_max_ = 0;
+    size_t cache_max_ = 0; // live budget in bytes; mutated at runtime when cache_auto_
     size_t page_ = 4096;
+
+    // Adaptive sizing (cache_auto): budget derived from device memory at init, then re-checked
+    // during generation on the eval thread so it tracks free RAM. cache_target_ is the init budget,
+    // the ceiling for grow-back; cache_floor_ is the RAM to leave free; total_expert_bytes_ caps it.
+    bool cache_auto_ = false;
+    size_t cache_floor_ = 0;
+    size_t cache_target_ = 0;
+    size_t total_expert_bytes_ = 0;
+    unsigned probe_tick_ = 0;   // throttles the mem_available re-probe (once per N load_layer calls)
+    long long cache_resizes_ = 0;
     std::vector<void *> lbuf_[MoeRecipe::max_exps];
     std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];
     std::vector<uint8_t> cvalid_;
