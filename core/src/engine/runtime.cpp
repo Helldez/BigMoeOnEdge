@@ -258,11 +258,13 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
     // per-token average would badly inflate the flash-I/O figure.
     long long prev_bytes = cfg.moe.enabled ? (long long) source.stats().read_bytes : 0;
     double prev_io_s = cfg.moe.enabled ? source.stats().read_seconds : 0.0;
+    double prev_mgmt_s = cfg.moe.enabled ? source.stats().mgmt_seconds : 0.0;
     double prev_stall_s = cfg.moe.enabled ? source.stats().stall_seconds : 0.0;
 
     // Generation-only accumulators, summed from the measured per-token values.
     uint64_t gen_read_bytes = 0;
     double gen_io_seconds = 0.0;
+    double gen_mgmt_seconds = 0.0;
     double gen_stall_seconds = 0.0;
 
     for (int t = 0; t < cfg.n_predict; ++t) {
@@ -298,22 +300,26 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
             IExpertSource::Stats st = source.stats();
             m.read_bytes = (uint64_t) ((long long) st.read_bytes - prev_bytes);
             m.io_ms = (st.read_seconds - prev_io_s) * 1000.0;
+            m.mgmt_ms = (st.mgmt_seconds - prev_mgmt_s) * 1000.0;
             if (cfg.moe.overlap) {
                 // stall_seconds is summed across all compute threads that blocked on flash; divide
                 // by the thread count for a wall-clock approximation of the token's flash wait.
-                // compute is then wall minus that wait (io_ms here is lane-busy work, overlapped).
+                // compute is the residual after the flash wait and the cache-management work (io_ms
+                // here is lane-busy work, overlapped, so it is not subtracted).
                 m.stall_ms = (st.stall_seconds - prev_stall_s) * 1000.0 / cfg.n_threads;
-                m.compute_ms = m.wall_ms - m.stall_ms;
+                m.compute_ms = m.wall_ms - m.stall_ms - m.mgmt_ms;
             } else {
-                m.compute_ms = m.wall_ms - m.io_ms;
+                m.compute_ms = m.wall_ms - m.io_ms - m.mgmt_ms;
             }
             if (m.compute_ms < 0) m.compute_ms = 0;
             m.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
             prev_bytes = (long long) st.read_bytes;
             prev_io_s = st.read_seconds;
+            prev_mgmt_s = st.mgmt_seconds;
             prev_stall_s = st.stall_seconds;
             gen_read_bytes += m.read_bytes;
             gen_io_seconds += m.io_ms / 1000.0;
+            gen_mgmt_seconds += m.mgmt_ms / 1000.0;
             gen_stall_seconds += m.stall_ms / 1000.0;
         } else {
             m.compute_ms = m.wall_ms;
@@ -339,10 +345,13 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
         s.moe_read_mib = gen_read_bytes / (1024.0 * 1024.0);
         s.moe_io_seconds = gen_io_seconds;
         s.moe_io_s_per_token = n_gen ? gen_io_seconds / n_gen : 0.0;
+        s.moe_mgmt_s_per_token = n_gen ? gen_mgmt_seconds / n_gen : 0.0;
         s.moe_stall_s_per_token = n_gen ? gen_stall_seconds / n_gen : 0.0;
-        // Overlap: compute is wall minus the flash wait (I/O runs alongside it, so subtracting
-        // io would double-count). Serial: I/O is a slice of wall, so compute is wall minus io.
-        s.moe_compute_s_per_token = s.s_per_token - (cfg.moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token);
+        // Compute is a residual: the token's wall minus the measured terms. Overlap subtracts the
+        // flash wait (I/O runs alongside compute, so subtracting io would double-count); serial
+        // subtracts io (a slice of wall). Both also subtract the cache-management time.
+        s.moe_compute_s_per_token =
+            s.s_per_token - (cfg.moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token) - s.moe_mgmt_s_per_token;
         if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
         s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
         s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);

@@ -208,9 +208,9 @@ int main(int argc, char ** argv) {
     }
     if (cfg.moe.enabled) {
         std::printf("moe-stream: read %.1f MiB (%.2f MiB/token), decode %.3f s/token "
-                    "(compute %.3f + flash I/O %.3f s/token, %.0f MiB/s)\n",
+                    "(compute %.3f + cache mgmt %.3f + flash I/O %.3f s/token, %.0f MiB/s)\n",
                     s.moe_read_mib, s.n_generated ? s.moe_read_mib / s.n_generated : 0.0, s.s_per_token,
-                    s.moe_compute_s_per_token, s.moe_io_s_per_token,
+                    s.moe_compute_s_per_token, s.moe_mgmt_s_per_token, s.moe_io_s_per_token,
                     s.moe_io_seconds > 0 ? s.moe_read_mib / s.moe_io_seconds : 0.0);
         if (s.cache_hit_pct >= 0.0)
             std::printf("moe-cache: %.1f%% hit, resident %.1f MiB\n", s.cache_hit_pct, s.cache_resident_mib);
