@@ -47,6 +47,17 @@ static const MoeRecipe k_recipes[] = {
      "ffn_gate_inp",
      "ffn_gate_inp", // the ".scale" tail is added by the capture matcher
      RouterPre::kRmsScaled},
+    // gpt-oss (OpenAI MoE, e.g. gpt-oss-20b/120b: 24/36 layers, 128 experts, top-4) is a purely
+    // routed MoE with the standard split suffixes, so streaming is one row — and, unlike gemma4,
+    // it keeps NO shared/dense expert resident, so the streamed fraction is as high as qwen3moe's.
+    // Its weights ship in MXFP4; the streamer is quant-agnostic (the per-expert stride is read from
+    // the tensor's nb[2], whatever the block layout), so the native MXFP4 layout needs no special
+    // handling and the split-layout gate (qwen3moe) already covers this streaming path.
+    // Speculative gating is left unwired (router_input_fmt=nullptr): gpt-oss's router carries a bias
+    // (ffn_gate_inp.bias) and uses OAI-SwiGLU softmax-weight gating, neither of which the spec-gate
+    // router replay models — so it refuses here rather than mispredicting. Basic streaming and the
+    // auto cache are unaffected.
+    {"gpt-oss", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}, nullptr, nullptr, nullptr, RouterPre::kNone},
 };
 
 static const int k_n_recipes = (int) (sizeof(k_recipes) / sizeof(k_recipes[0]));
