@@ -46,6 +46,12 @@ struct RunSummary {
     double moe_stall_s_per_token = 0.0; // overlap only: per-token wall the kernel waited on flash
     double cache_hit_pct = -1.0;        // -1 when no cache
     double cache_resident_mib = 0.0;
+
+    // Temporal prefetch (zero when --prefetch is off): speculative bytes read during generation,
+    // experts successfully prefetched, and how many of those a later routing actually used.
+    double moe_spec_read_mib = 0.0;
+    long long moe_spec_experts = 0;
+    long long moe_spec_useful = 0;
 };
 
 // Optional per-token sink (e.g. CSV for benchmarks). The engine calls on_token for each

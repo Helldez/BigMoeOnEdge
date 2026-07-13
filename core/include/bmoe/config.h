@@ -37,8 +37,24 @@ struct MoeStreamConfig {
     // Requires the Helldez/llama.cpp fork submodule (the hook); run() fails fast otherwise.
     bool overlap = false;
 
+    // Temporal prefetch: while a token computes layer l, speculatively read on the idle I/O
+    // lanes the experts the PREVIOUS token routed at layers l+1..l+prefetch_layers, betting on
+    // the strong temporal locality of routing. A correct guess turns the next layer's read into
+    // a cache hit; a wrong guess only wastes a read. 0 disables it. Needs the LRU cache on
+    // (speculative slices land in the per-layer cache buffers), so validate() rejects it with
+    // cache_mb == 0. See docs/prefetch.md.
+    int prefetch_layers = 0;
+
+    // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
+    // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
+    // overlap compute) but makes speculative integration deterministic, so the byte-identity
+    // gates can exercise the integrate-then-hit path that a timing race otherwise seldom reaches
+    // on a fast host. Serial mode only. Never set in production.
+    bool prefetch_sync = false;
+
     static constexpr int cache_min_mb = 1500; // smallest non-pathological cache (see above)
     static constexpr int io_threads_max = 8;
+    static constexpr int prefetch_layers_max = 8;
 };
 
 // A full run: model, prompt, decoding, streaming, telemetry.

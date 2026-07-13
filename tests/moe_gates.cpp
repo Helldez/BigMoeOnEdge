@@ -18,9 +18,13 @@
 //
 //   S1  two sequential Session generates (warm cache) == one-shot resident, per prompt
 //   S2  same, under overlap
+//   G5  streaming + temporal prefetch == streaming (prefetch changes latency, not bytes)
+//         a) serial + cache + prefetch   b) overlap + cache + prefetch
 //
 // S1/S2 guard the session refactor: the expert LRU cache now survives across generate() calls,
 // so a second prompt starts warm. That must change only latency, never the produced bytes.
+// G5 guards temporal prefetch: speculatively reading the next layers' experts must only warm the
+// cache — the routed slices a token actually consumes, and thus its output, are unchanged.
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
@@ -207,6 +211,47 @@ int main(int argc, char ** argv) {
     }
     fails += check("S1a session generate #1 == resident", s_res, s_g1);
     fails += check("S1b session generate #2 (warm cache) == resident", s_res, s_g2);
+
+    // ── G5: temporal prefetch must not change bytes ──
+    // A forced cache (prefetch needs one) plus a couple of look-ahead layers, exercising the
+    // speculative queue, integration and eviction against the plain streamed reference.
+    RunConfig pf = base(model);
+    pf.moe.enabled = true;
+    pf.moe.cache_mb = 2;
+    pf.moe.force_cache = true;
+    pf.moe.io_threads = 4;
+    pf.moe.prefetch_layers = 2;
+    std::string s_pf;
+    if (!gen(pf, s_pf, err)) {
+        std::fprintf(stderr, "prefetch run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G5a streaming(prefetch) == streaming(cache off)", s_s0, s_pf);
+
+#ifdef BMOE_HAVE_EXPERT_READY_HOOK
+    RunConfig pf_ov = pf;
+    pf_ov.moe.overlap = true;
+    std::string s_pf_ov;
+    if (!gen(pf_ov, s_pf_ov, err)) {
+        std::fprintf(stderr, "prefetch overlap run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G5b overlap(prefetch) == streaming(cache off)", s_s0, s_pf_ov);
+#else
+    std::printf("[SKIP] G5b (expert-ready hook not built)\n");
+#endif
+
+    // G5c forces speculative reads to complete synchronously, so the integrate-then-hit path (a
+    // prefetched expert becoming resident and a later routing hitting it) is deterministically
+    // exercised — the timing race in G5a/b rarely reaches it on a fast host.
+    RunConfig pf_sync = pf;
+    pf_sync.moe.prefetch_sync = true;
+    std::string s_pf_sync;
+    if (!gen(pf_sync, s_pf_sync, err)) {
+        std::fprintf(stderr, "prefetch(sync) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G5c prefetch(sync integrate+hit) == streaming(cache off)", s_s0, s_pf_sync);
 
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
     RunConfig sess_ov = sess;
