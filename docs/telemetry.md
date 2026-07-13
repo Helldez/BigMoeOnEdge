@@ -70,3 +70,38 @@ mode); `mgmt_ms` is the cache-management time described above. Both are additive
 fewer columns, so consumers must read by column NAME (from the header row) and treat either as
 optional. The `# summary` line likewise gains `stall_s/tok=<s>` and `mgmt_s/tok=<s>` (see the
 `io_ms` note above for how the read-time columns are reinterpreted under overlap).
+
+## Session mode
+
+With `--session`, `bmoe-cli` keeps the model loaded and the expert cache warm across prompts
+instead of exiting after one generation (see [session.md](session.md)). Requests arrive as one
+JSON object per line on **stdin**; responses interleave control lines with the same per-token
+lines above on **stdout**. The control lines are also `BMOE_<TAG> {json}`, so a per-token parser
+extends to them naturally.
+
+Requests (stdin):
+
+```
+{"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>}
+{"cmd":"cancel"}          # interrupt the in-flight generation; the session stays loaded
+{"cmd":"close"}           # end the session (EOF on stdin does the same)
+```
+
+`prompt` is JSON-escaped (newlines as `\n`); `n_predict`/`think`/`clear_kv` are optional and
+default to the process's flags / `true`. `cancel` may arrive at any time, including mid-generation.
+
+Responses (stdout):
+
+```
+BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>}          # once, after the model loads
+BMOE_BEGIN {"id":<int>}                                                # a generation started
+BMOE_LOAD / BMOE_PROGRESS ...                                          # per token, as above
+BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
+            "prefill_s":<float>,"load_s":<float>,"cache_hit_pct":<float>,"text":"<string>"}
+BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
+```
+
+`BMOE_DONE` carries the end-of-generation summary (the one-shot mode's `generation:` /
+`moe-stream:` text lines are not emitted in session mode). `BMOE_ERROR` with `fatal:false` is a
+rejected request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
+`fatal:true` means the process is ending.

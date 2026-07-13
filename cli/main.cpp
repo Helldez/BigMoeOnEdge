@@ -9,14 +9,21 @@
 // engine stays env-free. The flag always wins over the env value.
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
+#include "bmoe/session.h"
 #include "bmoe/recipe.h"
 #include "bmoe/metrics.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 
 using namespace bmoe;
 
@@ -57,6 +64,224 @@ static std::string json_escape(const std::string & s) {
     return o;
 }
 
+// ── minimal flat-JSON reading for the --session request protocol ──
+// The session request objects are flat (string/int/bool fields only), so a tiny hand-rolled
+// extractor keeps the CLI dependency-free, mirroring the hand-written JSON it already emits.
+
+static std::string json_unescape(const std::string & s) {
+    std::string o;
+    o.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] != '\\' || i + 1 >= s.size()) {
+            o += s[i];
+            continue;
+        }
+        char c = s[++i];
+        switch (c) {
+        case 'n': o += '\n'; break;
+        case 'r': o += '\r'; break;
+        case 't': o += '\t'; break;
+        case '"': o += '"'; break;
+        case '\\': o += '\\'; break;
+        case '/': o += '/'; break;
+        case 'u':
+            if (i + 4 < s.size()) {
+                int code = (int) std::strtol(s.substr(i + 1, 4).c_str(), nullptr, 16);
+                // The protocol only carries ASCII control chars as \u00xx (from json_escape);
+                // decode those directly. Anything else is passed through as the literal char.
+                o += (char) (code & 0xff);
+                i += 4;
+            }
+            break;
+        default: o += c; break;
+        }
+    }
+    return o;
+}
+
+// Find `"key"`, skip to its value. Returns the index just past the colon, or npos.
+static size_t json_value_pos(const std::string & line, const char * key) {
+    std::string pat = std::string("\"") + key + "\"";
+    size_t k = line.find(pat);
+    if (k == std::string::npos) return std::string::npos;
+    size_t c = line.find(':', k + pat.size());
+    if (c == std::string::npos) return std::string::npos;
+    return c + 1;
+}
+
+static bool json_get_string(const std::string & line, const char * key, std::string & out) {
+    size_t p = json_value_pos(line, key);
+    if (p == std::string::npos) return false;
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+    if (p >= line.size() || line[p] != '"') return false;
+    ++p;
+    std::string raw;
+    for (; p < line.size(); ++p) {
+        if (line[p] == '\\' && p + 1 < line.size()) {
+            raw += line[p];
+            raw += line[p + 1];
+            ++p;
+        } else if (line[p] == '"') {
+            break;
+        } else {
+            raw += line[p];
+        }
+    }
+    out = json_unescape(raw);
+    return true;
+}
+
+static int json_get_int(const std::string & line, const char * key, int dflt) {
+    size_t p = json_value_pos(line, key);
+    if (p == std::string::npos) return dflt;
+    return std::atoi(line.c_str() + p);
+}
+
+static bool json_get_bool(const std::string & line, const char * key, bool dflt) {
+    size_t p = json_value_pos(line, key);
+    if (p == std::string::npos) return dflt;
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+    return line.compare(p, 4, "true") == 0;
+}
+
+// A parsed stdin command. cancel is handled inline by the reader thread (it calls
+// Session::cancel directly), so only generate/close travel through the queue.
+struct SessionCmd {
+    enum Kind { kGenerate, kClose } kind;
+    std::string prompt;
+    int id = 0;
+    int n_predict = 32;
+    bool think = true;
+    bool clear_kv = true;
+};
+
+// Interactive session: keep the model loaded and the expert cache warm across prompts, reading
+// one JSON request per line from stdin and emitting the BMOE_* line protocol on stdout. See
+// docs/telemetry.md. Returns the process exit code.
+static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
+    SessionConfig sc;
+    sc.model_path = cfg.model_path;
+    sc.n_threads = cfg.n_threads;
+    sc.n_ctx = cfg.n_ctx;
+    sc.n_batch = cfg.n_ctx; // one-batch prefill for any prompt that fits the context
+    sc.chatml = cfg.chatml;
+    sc.moe = cfg.moe;
+
+    std::string error;
+    std::unique_ptr<Session> session = Session::open(sc, error);
+    if (!session) {
+        std::printf("BMOE_ERROR {\"id\":0,\"fatal\":true,\"msg\":\"%s\"}\n", json_escape(error).c_str());
+        std::fflush(stdout);
+        return 1;
+    }
+    std::printf("BMOE_READY {\"load_s\":%.3f,\"arch\":\"%s\",\"n_ctx\":%d}\n", session->load_seconds(),
+                json_escape(session->arch()).c_str(), session->n_ctx());
+    std::fflush(stdout);
+
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::deque<SessionCmd> queue;
+    std::atomic<bool> stop{false};
+
+    // Reader thread: parse stdin lines. "cancel" is applied immediately (thread-safe) so it can
+    // interrupt an in-flight generate; "generate"/"close" are queued for the main loop. EOF ends
+    // the session like an explicit close.
+    std::thread reader([&] {
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            std::string cmd;
+            if (!json_get_string(line, "cmd", cmd)) continue;
+            if (cmd == "cancel") {
+                session->cancel();
+                continue;
+            }
+            SessionCmd c;
+            if (cmd == "close") {
+                c.kind = SessionCmd::kClose;
+            } else if (cmd == "generate") {
+                c.kind = SessionCmd::kGenerate;
+                json_get_string(line, "prompt", c.prompt);
+                c.id = json_get_int(line, "id", 0);
+                c.n_predict = json_get_int(line, "n_predict", cfg.n_predict);
+                c.think = json_get_bool(line, "think", cfg.think);
+                c.clear_kv = json_get_bool(line, "clear_kv", true);
+            } else {
+                continue;
+            }
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+                queue.push_back(std::move(c));
+            }
+            cv.notify_one();
+        }
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            stop.store(true);
+            queue.push_back({SessionCmd::kClose, "", 0, 0, true, true});
+        }
+        cv.notify_one();
+    });
+
+    int rc = 0;
+    for (;;) {
+        SessionCmd cmd;
+        {
+            std::unique_lock<std::mutex> lk(mtx);
+            cv.wait(lk, [&] { return !queue.empty(); });
+            cmd = std::move(queue.front());
+            queue.pop_front();
+        }
+        if (cmd.kind == SessionCmd::kClose) break;
+
+        std::printf("BMOE_BEGIN {\"id\":%d}\n", cmd.id);
+        std::fflush(stdout);
+
+        auto on_token = [&](const TokenMetrics & m) {
+            if (m.read_bytes || m.io_ms > 0.0)
+                std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
+            std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
+                        "\"compute_ms\":%.1f,\"cache_hit_pct\":%.1f,\"text\":\"%s\"}\n",
+                        m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.cache_hit_pct,
+                        json_escape(m.text).c_str());
+            std::fflush(stdout);
+        };
+
+        GenerateRequest req;
+        req.prompt = cmd.prompt;
+        req.n_predict = cmd.n_predict;
+        req.think = cmd.think;
+        req.clear_kv = cmd.clear_kv;
+
+        RunResult r = session->generate(req, on_token, sink);
+        if (!r) {
+            // A bad request (empty prompt, context overflow) leaves the session usable; a decode
+            // failure means the context is compromised, so end the loop.
+            bool recoverable =
+                r.error.find("exceeds the session n_ctx") != std::string::npos ||
+                r.error.find("empty prompt") != std::string::npos;
+            std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"msg\":\"%s\"}\n", cmd.id, recoverable ? "false" : "true",
+                        json_escape(r.error).c_str());
+            std::fflush(stdout);
+            if (!recoverable) {
+                rc = 1;
+                break;
+            }
+            continue;
+        }
+        const RunSummary & s = r.summary;
+        std::printf("BMOE_DONE {\"id\":%d,\"cancelled\":%s,\"tokens\":%d,\"tok_s\":%.3f,\"prefill_s\":%.3f,"
+                    "\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"text\":\"%s\"}\n",
+                    cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
+                    s.load_seconds, s.cache_hit_pct, json_escape(r.generated_text).c_str());
+        std::fflush(stdout);
+    }
+
+    // Unblock the reader if it is still waiting on stdin (it exits on EOF; on an explicit close
+    // it has usually already returned). Detach so process exit is not held up by a blocking read.
+    if (reader.joinable()) reader.detach();
+    return rc;
+}
+
 static void print_usage(const char * argv0) {
     std::printf("usage: %s -m <model.gguf> [options]\n"
                 "\n"
@@ -68,6 +293,7 @@ static void print_usage(const char * argv0) {
                 "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
                 "      --no-think          render the chat template with reasoning disabled\n"
                 "      --progress          emit machine telemetry (one JSON line per token)\n"
+                "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
                 "      --csv PATH          also write per-token metrics as CSV\n"
                 "\n"
                 "  MoE expert streaming:\n"
@@ -87,6 +313,7 @@ static void print_usage(const char * argv0) {
 int main(int argc, char ** argv) {
     RunConfig cfg;
     std::string csv_path;
+    bool session_mode = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -113,6 +340,8 @@ int main(int argc, char ** argv) {
             cfg.think = false;
         else if (a == "--progress")
             cfg.progress = true;
+        else if (a == "--session")
+            session_mode = true;
         else if (a == "--csv")
             csv_path = next("--csv");
         else if (a == "--moe-stream")
@@ -166,6 +395,11 @@ int main(int argc, char ** argv) {
         sink.reset(make_csv_metrics_sink(csv_path));
         if (!sink) std::fprintf(stderr, "warning: could not open csv %s\n", csv_path.c_str());
     }
+
+    // Interactive session: one persistent process serves many prompts over stdin, keeping the
+    // model loaded and the expert cache warm between them. Prompts arrive as JSON requests, not
+    // via -p. This is a superset of --progress output (BMOE_* lines), so it never streams inline.
+    if (session_mode) return run_session_loop(cfg, sink.get());
 
     if (!cfg.progress) {
         std::printf("%s", cfg.prompt.c_str());
