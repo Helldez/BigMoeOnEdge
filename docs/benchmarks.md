@@ -143,14 +143,17 @@ there is too much I/O — 1.6 s/tok of lane-busy reads — to hide behind ~0.4 s
 | streaming O_DIRECT + overlap, cache 0, lane 4 † | **1.81** | 1.50 | 1.90 | 1.83 | 1.73 | 1.86 | — | 904 MiB | 0.185 + 1.503 |
 | **streaming + cache 2000 MiB, lane 4, overlap †** | **2.78** | 1.78 | 4.04 | 2.82 | 2.24 | 3.58 | 58% | 365 MiB | 0.237 + 0.540 |
 
-**Cache 4000 MiB is not viable for Gemma on this device.** Gemma's 17.0 GB file, held resident
-through mmap, already fills most of the page cache; reserving a further 4 GiB pinned expert cache
-on top pushes `MemAvailable` to zero and the run is OOM-killed by the Android low-memory-killer
-before it generates a token (the successful cache-2000 runs hold a ~3.8 GiB free-RAM floor; a
-cache-4000 attempt started from ~2.3 GiB free and collapsed). Gemma therefore tops out at the
-**cache-2000 + overlap** setting; the two `cache 4000` rows are omitted rather than reported as
-failures. Qwen (18.5 GB but only 3 B active, lighter page-cache footprint) sustains cache 4000
-with a ~1.8 GiB floor, so its best row uses it.
+**Cache 4000 MiB is borderline for Gemma on this device — it depends on the free RAM at launch.**
+Gemma's 17.0 GB file, held resident through mmap, already fills most of the page cache; reserving a
+further 4 GiB pinned expert cache on top can push `MemAvailable` to zero and get the run OOM-killed
+by the Android low-memory-killer before it generates a token. In this session it did: the
+successful cache-2000 runs held a ~3.8 GiB free-RAM floor, while a cache-4000 attempt started from
+only ~2.3 GiB free and collapsed. So the matrix above tops Gemma out at **cache-2000 + overlap**,
+and the two `cache 4000` rows are omitted rather than reported as failures. On a cooler device with
+more headroom cache 4000 *does* fit — the Turbo top-k A/B below happens to have run Gemma at cache
+4000 (81.7 % hit) — but it is not dependable here, so it is not the recommended steady setting.
+Qwen (18.5 GB but only 3 B active, lighter page-cache footprint) sustains cache 4000 with a
+~1.8 GiB floor, so its best row uses it.
 
 † Overlap rows: I/O runs concurrently with compute, so the `compute + I/O` split no longer sums to
 wall time — the I/O figure is the **sum of per-lane busy time** and exceeds wall. The wall time
