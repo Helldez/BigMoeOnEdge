@@ -10,6 +10,7 @@
 #else
 #include <fcntl.h>
 #include <unistd.h>
+#include <cstdio>
 #include <cstdlib>
 #include <sys/mman.h>
 #ifndef O_DIRECT
@@ -84,6 +85,12 @@ void vm_release(void * p, size_t /*sz*/) {
     if (p) VirtualFree(p, 0, MEM_RELEASE);
 }
 
+uint64_t mem_available_bytes() {
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullAvailPhys : 0;
+}
+
 #else
 
 const fd_t fd_invalid = -1;
@@ -133,6 +140,30 @@ void vm_evict(void * p, size_t sz) {
 }
 void vm_release(void * p, size_t sz) {
     if (p) munmap(p, sz);
+}
+
+uint64_t mem_available_bytes() {
+    // Linux/Android: MemAvailable is the kernel's own estimate of what can be allocated without
+    // swapping (it accounts for reclaimable page cache), which is exactly the sizing signal we want.
+    if (FILE * f = std::fopen("/proc/meminfo", "re")) {
+        char line[256];
+        while (std::fgets(line, sizeof(line), f)) {
+            unsigned long long kb = 0;
+            if (std::sscanf(line, "MemAvailable: %llu kB", &kb) == 1) {
+                std::fclose(f);
+                return (uint64_t) kb * 1024ull;
+            }
+        }
+        std::fclose(f);
+    }
+    // Fallback where /proc is absent (e.g. macOS): free physical pages. An underestimate — it omits
+    // reclaimable cache — but non-zero and safe to size a cache against.
+#if defined(_SC_AVPHYS_PAGES)
+    const long pages = sysconf(_SC_AVPHYS_PAGES);
+    const long ps = sysconf(_SC_PAGESIZE);
+    if (pages > 0 && ps > 0) return (uint64_t) pages * (uint64_t) ps;
+#endif
+    return 0;
 }
 
 #endif
