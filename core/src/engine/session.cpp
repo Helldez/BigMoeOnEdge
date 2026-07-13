@@ -126,6 +126,30 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & 
     mparams.use_extra_bufts = false;
     mparams.n_gpu_layers = 0;
 
+    // Optional active-expert override: reduce the model's top-k routing (e.g. 8 -> 6) to cut
+    // per-token compute and — under streaming — flash I/O, at a quality cost. Applied purely
+    // through llama.cpp's public kv_overrides on the arch-prefixed expert_used_count key: the
+    // graph then routes to fewer experts and the whole streaming path adapts automatically
+    // (the router hook reads the top-k width from the graph). The array must outlive the load
+    // call below. See docs/adding-a-model.md — no llama.cpp patch, no per-arch constants.
+    llama_model_kv_override kv_overrides[2];
+    std::memset(kv_overrides, 0, sizeof(kv_overrides)); // second entry stays the key[0]==0 terminator
+    if (cfg.n_expert_used > 0) {
+        GgufModelInfo info = read_gguf_model_info(cfg.model_path.c_str());
+        if (!info.ok) return fail("cannot read gguf metadata: " + cfg.model_path);
+        if (info.arch.empty()) return fail("gguf has no general.architecture; cannot set n_expert_used");
+        if (info.n_expert <= 0)
+            return fail("n_expert_used was set but the model is not MoE (no " + info.arch + ".expert_count)");
+        if (cfg.n_expert_used > info.n_expert)
+            return fail("n_expert_used=" + std::to_string(cfg.n_expert_used) + " exceeds the model's expert count (" +
+                        std::to_string(info.n_expert) + ")");
+        const std::string key = info.arch + ".expert_used_count";
+        kv_overrides[0].tag = LLAMA_KV_OVERRIDE_TYPE_INT;
+        std::snprintf(kv_overrides[0].key, sizeof(kv_overrides[0].key), "%s", key.c_str());
+        kv_overrides[0].val_i64 = cfg.n_expert_used;
+        mparams.kv_overrides = kv_overrides;
+    }
+
     llama_model * model = llama_model_load_from_file(cfg.model_path.c_str(), mparams);
     if (!model) return fail("failed to load model: " + cfg.model_path);
     im.model.reset(model);
@@ -176,7 +200,11 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & 
             if (llama_model_meta_val_str(model, key.c_str(), buf, sizeof(buf)) >= 0) return (float) std::atof(buf);
             return dflt;
         };
-        const int n_used = meta_int(std::string(arch) + ".expert_used_count", 8);
+        // A --n-expert-used override changes the graph's top-k but does NOT rewrite the gguf
+        // metadata that meta_int reads, so honour the override here or the predictor would score
+        // the model's original width against a narrower routed set.
+        const int n_used =
+            cfg.n_expert_used > 0 ? cfg.n_expert_used : meta_int(std::string(arch) + ".expert_used_count", 8);
         const float eps = meta_float(std::string(arch) + ".attention.layer_norm_rms_epsilon", 1e-6f);
         // prefetch_sync (test-only) keeps prediction inline on the eval thread so the
         // predict → prefetch → integrate → hit path stays deterministic for the byte-identity gates.

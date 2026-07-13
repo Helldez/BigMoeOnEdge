@@ -12,6 +12,8 @@ cmake-build-*/
 /.models/
 /.apk/
 /.bench/
+# Dated bench working dirs (raw CSV/log/metrics before curation into docs/bench-data/)
+/.bench-*/
 *.safetensors
 /*.log
 

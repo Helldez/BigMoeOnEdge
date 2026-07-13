@@ -33,6 +33,9 @@ struct SessionConfig {
     int n_ctx = 2048;
     int n_batch = 512; // prefill chunk capacity; longer prompts are prefilled in n_batch slices
     bool chatml = false;
+    // Active-expert (top-k) override applied at load via a kv_override on the arch-prefixed
+    // expert_used_count key. 0 = use the model's own count. See RunConfig::n_expert_used.
+    int n_expert_used = 0;
     MoeStreamConfig moe;
 };
 

@@ -24,6 +24,7 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
     sc.n_ctx = cfg.n_ctx;
     sc.n_batch = cfg.n_ctx; // one-batch prefill for any prompt that fits the context
     sc.chatml = cfg.chatml;
+    sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.moe = cfg.moe;
 
     std::string error;
