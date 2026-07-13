@@ -13,10 +13,10 @@ model run on an 11 GB phone**, with output identical to running the full model i
 The target is mobile: phones are where memory is tight and this trade — trading some speed for a
 much smaller memory footprint — is worth making.
 
-- **Measured** (Qwen3-30B-A3B-Q4_K_M, OnePlus 15R, 11.3 GB RAM): **1.71 tok/s** streaming with
-  no cache → **3.47 tok/s** with a 4 GiB expert cache and 4 read lanes → **3.98 tok/s** adding
-  intra-layer I/O–compute overlap. Trading routing width down to `--n-expert-used 6` adds a
-  further **+24%** (5.01 tok/s). See [Benchmarks](#benchmarks).
+- **Measured** on a OnePlus 15R (11.3 GB RAM, UFS 4.x): Qwen3-30B-A3B-Q4_K_M runs at up to
+  **5.01 tok/s** streamed, against **2.00 tok/s** for a plain mmap load of the same model;
+  Gemma-4-26B-A4B up to **4.99 tok/s** vs **0.36 tok/s** for mmap. See [Benchmarks](#benchmarks)
+  for the full method, the config behind each number, and the lossless streaming-only figures.
 - **Built on llama.cpp, not a fork.** All the streaming runs through llama.cpp's public API,
   against the stock upstream code — so keeping up with llama.cpp is just a submodule bump. The one
   exception is the optional overlap mode, which needs a tiny (~25-line) addition to llama.cpp, kept
@@ -39,9 +39,13 @@ much smaller memory footprint — is worth making.
   a fixed MiB budget or one sized to the device (free RAM minus a floor), clamped to
   `[1.5 GiB, full expert-set size]` and re-checked during generation so it shrinks and grows with
   available memory. Cache size is the single biggest throughput lever.
-- **Multi-lane O_DIRECT I/O** (`--io-threads 1..8`) — parallel expert-read lanes that bypass the
-  page cache, so streaming stays fast without evicting other apps. 4 lanes is the measured UFS 4.x
-  sweet spot.
+- **Direct-from-flash reads, O_DIRECT** (`--io-threads 1..8`, `--no-odirect`) — each expert slice
+  is read straight from flash into the engine's own buffer, skipping the operating system's page
+  cache. That cache normally keeps a second copy of everything you read in spare RAM; here it would
+  only duplicate weights the engine is already caching itself, waste memory, and evict the user's
+  other apps. Reading direct keeps memory bounded and read latency predictable. Several read lanes
+  run in parallel (4 is the UFS 4.x sweet spot), and the engine falls back to normal buffered reads
+  on the odd filesystem that mishandles O_DIRECT.
 - **Intra-layer I/O–compute overlap** (`--overlap`) — pipelines each layer's async expert reads
   with its FFN compute, hiding flash latency behind the matmul; byte-identical to the serial path.
   Top throughput lever over a warm cache. Requires the fork submodule.
@@ -112,9 +116,11 @@ Cache size is the dominant lever (2000 → 4000 MiB nearly doubles throughput as
 | 2000 MiB | 4 | 2.24 | 366 MiB | 58% |
 | **2000 MiB + overlap** | **4** | **2.78** | 365 MiB | 58% |
 
-Gemma's heavier resident footprint OOMs a 4 GiB cache on this device, so it tops out at
-cache-2000 + overlap. Its fused gate+up layout and resident shared expert are handled by the
-`gemma4` registry row with no streaming-path changes.
+Gemma's heavier resident footprint makes a 4 GiB cache unreliable on this device — it can be
+OOM-killed depending on how much RAM is free at launch — so its dependable setting tops out at
+cache-2000 + overlap. (The Turbo top-k table below did manage cache-4000 on a cooler run; it just
+isn't something to count on here.) Its fused gate+up layout and always-resident shared expert are
+handled by the `gemma4` registry row with no streaming-path changes.
 
 ### Turbo top-k (`--n-expert-used 6`)
 
