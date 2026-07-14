@@ -10,10 +10,23 @@ the device and keeps it there as free memory moves.
 ## What it does
 
 - **At init**, once the full expert-set size is known, the budget is set to
-  `available_RAM − cache_floor_mb` (default floor 1536 MiB), clamped to
-  `[cache_min_mb, total expert bytes]`. Available memory is read from the platform
-  (`/proc/meminfo` `MemAvailable` on Linux/Android, `GlobalMemoryStatusEx` on Windows); if it is
-  unknown the budget falls back to the `cache_min_mb` floor.
+  `available_RAM − cache_floor_mb`, clamped to `[cache_min_mb, total expert bytes]`. Available memory
+  is read from the platform (`/proc/meminfo` `MemAvailable` on Linux/Android, `GlobalMemoryStatusEx`
+  on Windows); if it is unknown the budget falls back to the `cache_min_mb` floor.
+- **Also at init**, the dense (non-expert) regions of the gguf — header, embeddings, attention,
+  norms, lm_head, the tensors the streamer leaves mmap-resident — are warmed into the page cache with
+  one sequential buffered sweep (reported as `bmoe: dense warm-up`), so the first tokens do not pay
+  for them as random 4 KiB faults. On a model far larger than RAM this is the difference between a
+  fast first token and a ~20-token slow-start ramp: measured on gpt-oss-120b, the first-five-token
+  wall average drops ~20× (see [benchmarks.md](benchmarks.md)). On models whose dense set is small it
+  is a harmless no-op. On by default; `--no-warm-dense` disables the sweep for A/B runs.
+  The warm-up is deliberately kept *out* of the budget: it only pre-faults the mmap-resident pages,
+  it does not pin or reserve them, so the expert-cache budget above is unchanged and its hit rate is
+  identical with and without it. (An alternative that folds the dense bytes into the floor —
+  reserving RAM so the expert cache can never evict them — was measured and rejected: on a
+  cache-sensitive model it lowers the budget and the hit rate, e.g. Gemma budget 4000→2909 MiB, hit
+  83%→73%, trading throughput for OOM headroom that the warm-up already avoids needing. See
+  [bench-data/2026-07-14-warmup/](bench-data/2026-07-14-warmup/).)
 - **During generation**, on the eval thread inside each layer's cache-management window, a throttled
   re-probe (about every 128 layer loads, ≈2–3 tokens — one `/proc` read) tracks free RAM: if it dips
   under the floor the budget shrinks by the shortfall and the normal eviction pass drains the cache
@@ -33,7 +46,8 @@ the rest of the system.
 | Flag | Meaning |
 |---|---|
 | `--cache-mb auto` | size the cache to the device instead of a fixed MiB (mutually exclusive with a numeric `--cache-mb`) |
-| `--cache-floor-mb N` | RAM to leave free when auto-sizing (default 1536) |
+| `--cache-floor-mb N` | RAM to leave free for the rest of the system when auto-sizing (default 1536) |
+| `--no-warm-dense` | skip the load-time sweep that page-caches the non-expert weights |
 
 `auto` is a real LRU cache, so it satisfies the cache requirement of `--prefetch`.
 

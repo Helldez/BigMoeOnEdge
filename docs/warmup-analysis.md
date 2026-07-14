@@ -159,8 +159,45 @@ Reading these:
 > figures. They are included only to show the warm-up *shape*; a clean headline number needs
 > a cool, freshly-booted device.
 
+## The fix — dense warm-up
+
+Regime 2 is not inherent: the cold head exists only because the non-expert pages fault in
+*lazily*, one random 4 KiB page at a time, during the first decodes. Reading them **eagerly and
+sequentially at load** removes it. The engine now does exactly that — one buffered sweep over the
+file's non-expert byte ranges (the complement of the expert tensor offsets) right after the streamer
+initialises, before the first token. Sequential flash bandwidth turns thousands of scattered major
+faults into a single ~1 s read, paid once inside `load_seconds` instead of inside `compute_ms`.
+
+It is on by default (`--no-warm-dense` to disable) and touches neither the expert cache nor the
+budget, so the streaming path is byte-for-byte unchanged — `cache_hit%` is identical step-for-step
+with and without it.
+
+Re-measured on the same device, warm-up on vs. the old lazy-fault binary
+([`bench-data/2026-07-14-warmup/`](bench-data/2026-07-14-warmup/)):
+
+| model | first-5 wall avg | tok/s | hit% | budget |
+|---|---|---|---|---|
+| gpt-oss-120b k4 | 16641 → **829 ms (20×)** | 0.134 → 1.150 | 13.4 = 13.4 | 3000 = 3000 |
+| Qwen3-30B-A3B k8 | 367 → 399 ms | 4.92 → 4.57 | 77.1 = 77.1 | 4000 = 4000 |
+| Gemma-4-26B-A4B k8 | 329 → 397 ms | 4.76 → 4.76 | 82.9 = 82.9 | 4000 = 4000 |
+
+The Regime-2 cold head collapses ~20× on gpt-oss-120b; the first token drops from ~18 s to ~1 s.
+Regime-1 models are neutral (their dense set is ~1 GB and the kernel pages it in fast regardless),
+with no change to hit rate or budget — confirming the warm-up only moves cost out of the hot path.
+
+**Why not just reserve the dense pages in the budget?** The obvious alternative — subtract the dense
+bytes from the auto-cache floor so the expert cache can never evict them — was measured and rejected.
+It lowers the budget on a cache-sensitive model and, with it, the hit rate (Gemma:
+budget 4000→2909 MiB, hit 83%→73%, tok/s 4.76→3.76), trading throughput for OOM headroom the warm-up
+makes unnecessary. The warm-up pre-faults the same pages without touching the budget, so it keeps the
+full hit rate — a strictly better trade on every model measured (`reserve_gemma_k8.csv` alongside the
+data above).
+
 ## Takeaways
 
+- **The >>RAM cold head is fixed, not inherent.** Dense warm-up front-loads the non-expert working
+  set at load, collapsing Regime 2's first-token stall ~20× (gpt-oss-120b: ~18 s → ~1 s). The points
+  below describe the *un-warmed* dynamics the fix addresses.
 - **Streaming bounds memory correctly regardless of model size.** Experts always stream via
   O_DIRECT into the fixed cache; the 62 GB model never loads into RAM. What is *not* bounded
   by streaming is the mmap-resident, non-expert working set — and that is what thrashes once
