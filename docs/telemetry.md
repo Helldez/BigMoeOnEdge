@@ -115,7 +115,7 @@ BMOE_LOAD / BMOE_PROGRESS ...                                          # per tok
 BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "prefill_s":<float>,"prefill_tps":<float>,"load_s":<float>,"cache_hit_pct":<float>,
             "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
-            "cache_resident_mib":<float>,"cache_budget_mib":<float>,
+            "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
             "stall_s_tok":<float>,"mgmt_s_tok":<float>,"text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
@@ -126,8 +126,8 @@ prefilled **this turn** (the suffix after any reused KV prefix), and `n_past` is
 length after the turn — so a multi-turn UI can show both per-turn prefill cost and how full the
 context is. `prefill_tps` is the prompt prefill rate; `compute_s_tok`/`io_s_tok` are the per-token
 AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not just the last token).
-`cache_resident_mib`/`cache_budget_mib` track the (possibly auto-adapting) cache, and
-`stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and cache-management cost. `BMOE_ERROR`
-with `fatal:false` is a rejected
+`cache_resident_mib`/`cache_budget_mib` track the (possibly auto-adapting) cache, `read_mib` is the
+total flash streamed this generation, and `stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and
+cache-management cost. `BMOE_ERROR` with `fatal:false` is a rejected
 request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
 `fatal:true` means the process is ending.
