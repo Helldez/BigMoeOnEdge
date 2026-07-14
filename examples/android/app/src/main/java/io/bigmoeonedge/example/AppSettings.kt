@@ -19,6 +19,7 @@ data class AppSettings(
     val nPredict: Int = 48,
     val oDirect: Boolean = true,        // bypass the page cache
     val overlap: Boolean = true,        // read the next experts while the current layer computes
+    val warmDense: Boolean = true,      // page-cache the non-expert weights at load (kills >RAM slow-start)
     val prefetchLayers: Int = 0,        // temporal prefetch depth K (0 = off); needs the cache
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
 ) {
@@ -55,6 +56,8 @@ data class AppSettings(
             a += listOf("--io-threads", ioThreads.toString())
             if (!oDirect) a += "--no-odirect"
             if (overlap) a += "--overlap"
+            // Warm-up is on by default in the engine; only surface the opt-out flag.
+            if (!warmDense) a += "--no-warm-dense"
             // Auto sizing is a live LRU cache, so it satisfies the prefetch cache requirement.
             val cacheOn = cacheMb == CACHE_AUTO || cacheMb > 0
             if (prefetchLayers > 0 && cacheOn) a += listOf("--prefetch", prefetchLayers.toString())
@@ -70,7 +73,7 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, oDirect, overlap,
-               prefetchLayers)
+               warmDense, prefetchLayers)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -80,7 +83,8 @@ data class AppSettings(
             .putInt("ioThreads", ioThreads).putInt("threads", threads)
             .putInt("nExpertUsed", nExpertUsed)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
-            .putBoolean("overlap", overlap).putInt("prefetchLayers", prefetchLayers)
+            .putBoolean("overlap", overlap).putBoolean("warmDense", warmDense)
+            .putInt("prefetchLayers", prefetchLayers)
             .putBoolean("thinking", thinking)
             .apply()
     }
@@ -119,6 +123,7 @@ data class AppSettings(
                 nPredict = p.getInt("nPredict", d.nPredict),
                 oDirect = p.getBoolean("oDirect", d.oDirect),
                 overlap = p.getBoolean("overlap", d.overlap),
+                warmDense = p.getBoolean("warmDense", d.warmDense),
                 prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
                 thinking = p.getBoolean("thinking", d.thinking),
             )

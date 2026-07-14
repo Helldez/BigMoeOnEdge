@@ -93,6 +93,11 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     "Read the next experts while the current layer computes, hiding read latency",
                     current.overlap, enabled = stream,
                 ) { onChange(current.copy(overlap = it)) }
+                SwitchRow(
+                    "Dense weight warm-up",
+                    "Page-cache the non-expert weights at load. Removes the slow first tokens on models larger than RAM",
+                    current.warmDense, enabled = stream,
+                ) { onChange(current.copy(warmDense = it)) }
                 IntSetting(
                     "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
                     format = { if (it == 0) "off" else "$it" },
