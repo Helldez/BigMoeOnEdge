@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -193,8 +195,11 @@ class RunService : Service() {
                 }
                 main.post { notify("Generating…") }
             }
-            telemetry.onLine(t) -> RunBus.update {
-                it.copy(telemetry = telemetry.current.copy(), answer = telemetry.current.text)
+            telemetry.onLine(t) -> {
+                sampleBatteryTemp()
+                RunBus.update {
+                    it.copy(telemetry = telemetry.current.copy(), answer = telemetry.current.text)
+                }
             }
             t.startsWith("BMOE_DONE ") -> onDone(t.removePrefix("BMOE_DONE "))
             t.startsWith("BMOE_ERROR ") -> onError(t.removePrefix("BMOE_ERROR "))
@@ -212,12 +217,23 @@ class RunService : Service() {
             val nPast = o.optInt("n_past", -1)
             val avgComputeMs = o.optDouble("compute_s_tok", -0.001) * 1000.0
             val avgIoMs = o.optDouble("io_s_tok", -0.001) * 1000.0
+            val prefillTps = o.optDouble("prefill_tps", -1.0)
+            val loadS = o.optDouble("load_s", -1.0)
+            val readMib = o.optDouble("read_mib", -1.0)
+            val cacheResidentMib = o.optDouble("cache_resident_mib", -1.0)
+            val cacheBudgetMib = o.optDouble("cache_budget_mib", -1.0)
+            // Time-to-first-token: the model load plus this turn's prompt prefill.
+            val ttft = if (loadS >= 0 && prefill >= 0) loadS + prefill else -1.0
             val cancelled = o.optBoolean("cancelled")
             val text = o.optString("text")
             val loc = java.util.Locale.US
             val summary = buildString {
                 append(String.format(loc, "generation: %d tokens (%.2f tok/s)", tokens, tokS))
-                if (prefill > 0) append(String.format(loc, " | prefill %.2fs", prefill))
+                if (prefill > 0) {
+                    append(String.format(loc, " | prefill %.2fs", prefill))
+                    if (prefillTps > 0) append(String.format(loc, " (%.1f tok/s)", prefillTps))
+                }
+                if (ttft >= 0) append(String.format(loc, " | TTFT %.2fs", ttft))
                 if (hit >= 0) append(String.format(loc, " | cache %.0f%%", hit))
                 if (cancelled) append(" | cancelled")
             }
@@ -232,7 +248,11 @@ class RunService : Service() {
                 if (hit >= 0) append(String.format(loc, " · cache %.0f%%", hit))
                 if (cancelled) append(" · cancelled")
             }
-            val tel = telemetry.current.copy(avgTokensPerSecond = tokS, avgComputeMs = avgComputeMs, avgIoMs = avgIoMs)
+            val tel = telemetry.current.copy(
+                avgTokensPerSecond = tokS, avgComputeMs = avgComputeMs, avgIoMs = avgIoMs,
+                prefillTps = prefillTps, ttftS = ttft, readMib = readMib,
+                cacheResidentMib = cacheResidentMib, cacheBudgetMib = cacheBudgetMib,
+            )
             RunBus.update {
                 val answer = if (text.isNotEmpty()) text else it.answer
                 // Commit the assistant turn (skip a cancelled empty turn); the user turn was added on send.
@@ -243,10 +263,25 @@ class RunService : Service() {
                     transcript = transcript)
             }
         }
+        sampleBatteryTemp()
         releaseWake()
         inFlightPrompt = ""
         main.post { notify("Model ready") }
         scheduleIdleUnload()
+    }
+
+    /**
+     * Sample the device battery temperature and publish it to [RunBus]. Sourced from the sticky
+     * ACTION_BATTERY_CHANGED broadcast (EXTRA_TEMPERATURE, tenths of a °C) — no permission, available
+     * on every device, and a good proxy for how hot the phone is getting under a long generation. It
+     * does not travel through the engine; it is read here on the Android side while streaming.
+     */
+    private fun sampleBatteryTemp() {
+        val tenths = runCatching {
+            registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+                ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
+        }.getOrDefault(Int.MIN_VALUE)
+        if (tenths != Int.MIN_VALUE) RunBus.update { it.copy(batteryTempC = tenths / 10.0) }
     }
 
     private fun onError(json: String) {

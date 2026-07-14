@@ -489,6 +489,27 @@ private fun TelemetryCard(ui: UiState) {
                 if (ui.ioMode != null) {
                     Text("I/O ${ui.ioMode}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                // Battery temperature — live while generating, a proxy for thermal headroom.
+                ui.batteryTempC?.let {
+                    Text(String.format(Locale.US, "temp %.1f°C", it), fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                // End-of-run figures from the summary: prefill rate, time-to-first-token, the flash
+                // streamed this turn and the cache footprint. Only meaningful once generation finishes.
+                if (done) {
+                    if (t.prefillTps > 0 || t.ttftS >= 0) {
+                        val prefill = if (t.prefillTps > 0) String.format(Locale.US, "prefill %.1f tok/s", t.prefillTps) else ""
+                        val ttft = if (t.ttftS >= 0) String.format(Locale.US, "TTFT %.2fs", t.ttftS) else ""
+                        Text(listOf(prefill, ttft).filter { it.isNotEmpty() }.joinToString("   ·   "), fontSize = 13.sp)
+                    }
+                    if (t.readMib >= 0 || t.cacheResidentMib >= 0) {
+                        val streamed = if (t.readMib >= 0) String.format(Locale.US, "streamed %.0f MB", t.readMib) else ""
+                        val cache = if (t.cacheResidentMib >= 0)
+                            String.format(Locale.US, "cache %.0f/%.0f MiB", t.cacheResidentMib, t.cacheBudgetMib) else ""
+                        Text(listOf(streamed, cache).filter { it.isNotEmpty() }.joinToString("   ·   "),
+                            fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             } else {
                 Text(
                     "mmap baseline — the model is read through the OS page cache, so per-token flash I/O, " +
