@@ -48,5 +48,5 @@ MEM1=$(memavail); T1=$(batt_temp)
   echo "cpu_temp_max_mC=$CPU_MAX"
 } > "$METRICS"
 
-grep -E "generation:|prefill:|moe-stream:|moe-cache:|moe-overlap:|moe-prefetch:|moe-spec-gate:" /data/local/tmp/cli_stdout.txt
+grep -E "generation:|prefill:|moe-stream:|moe-cache:|moe-overlap:|moe-prefetch:" /data/local/tmp/cli_stdout.txt
 cat "$METRICS"
