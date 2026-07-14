@@ -19,26 +19,10 @@ namespace bmoe {
 // the recipe names and never needs to know which projection a given tensor carries — a
 // fused gate_up is just an expert tensor with a larger per-expert stride, discovered at
 // runtime like any other.
-// How the router's input is derived from the observed graph node, before the gate matmul.
-//   kNone      — the observed node IS the router input (a post-norm hidden state).
-//   kRmsScaled — rms_norm(node) * (1/sqrt(n_embd)) * per-channel scale (Gemma 4's router, which
-//                runs on the raw attn_out with an explicit normalise-and-scale in the graph).
-enum class RouterPre { kNone, kRmsScaled };
-
 struct MoeRecipe {
     static constexpr int max_exps = 3;
     const char * arch;                  // gguf general.architecture, e.g. "qwen3moe"
     const char * exps_suffix[max_exps]; // e.g. {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}
-
-    // Speculative gating (optional): predict the NEXT MoE layer's experts by running its router on
-    // the current layer's hidden state (which changes slowly along the residual stream). Only the
-    // top-k ids are needed — they feed the prefetch hint — so a mispredict just wastes a read and
-    // never affects output. router_input_fmt == nullptr means the architecture is not wired for
-    // speculative gating (the feature then refuses rather than guesses).
-    const char * router_input_fmt = nullptr;    // graph node to observe, e.g. "ffn_norm-%d"
-    const char * router_suffix = nullptr;       // mmap-resident gate weight suffix ("ffn_gate_inp")
-    const char * router_scale_suffix = nullptr; // per-channel scale suffix, or nullptr
-    RouterPre router_pre = RouterPre::kNone;
 };
 
 // Look up a recipe by gguf architecture string. Returns nullptr if the architecture is

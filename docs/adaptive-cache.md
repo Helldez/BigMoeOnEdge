@@ -35,7 +35,7 @@ the rest of the system.
 | `--cache-mb auto` | size the cache to the device instead of a fixed MiB (mutually exclusive with a numeric `--cache-mb`) |
 | `--cache-floor-mb N` | RAM to leave free when auto-sizing (default 1536) |
 
-`auto` is a real LRU cache, so it satisfies the cache requirement of `--prefetch` and `--spec-gate`.
+`auto` is a real LRU cache, so it satisfies the cache requirement of `--prefetch`.
 
 ## Explicit control
 

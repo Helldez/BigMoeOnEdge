@@ -1,6 +1,6 @@
-# On-device A/B for temporal prefetch (PR2) and speculative gating (PR3), on top of each model's
-# best measured config from docs/bench-data/2026-07-12 (Qwen: cache 4000, lane 4, overlap; Gemma:
-# cache 2000, lane 4, overlap). One matrix per model: base / +prefetch / +spec-gate / +both.
+# On-device A/B for temporal prefetch, on top of each model's best measured config from
+# docs/bench-data/2026-07-12 (Qwen: cache 4000, lane 4, overlap; Gemma: cache 2000, lane 4,
+# overlap). One matrix per model: base / +prefetch.
 param(
   [string]$OutDir = "C:\Users\raffa\Documents\BigMoeOnEdge\.bench-pr23",
   [int]$NPred = 256,
@@ -18,7 +18,7 @@ function Run-Cfg($tag, $model, $flags) {
   $t0 = Get-Date
   $log = & adb shell "sh $DEV/bench-run.sh $NPred $model $DEV/$tag.csv $DEV/$tag.metrics $flags" 2>&1
   $dt = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
-  $log | Where-Object { $_ -match "generation:|prefill:|moe-stream:|moe-cache:|moe-overlap:|moe-prefetch:|moe-spec-gate:|peak_rss|mem_avail_floor|batt_temp_max|cpu_temp_max" } | ForEach-Object { Write-Host "  $_" }
+  $log | Where-Object { $_ -match "generation:|prefill:|moe-stream:|moe-cache:|moe-overlap:|moe-prefetch:|peak_rss|mem_avail_floor|batt_temp_max|cpu_temp_max" } | ForEach-Object { Write-Host "  $_" }
   Write-Host "  wall(incl load)=${dt}s"
   $log | Out-File -FilePath "$OutDir\$tag.log" -Encoding utf8
   & adb pull "$DEV/$tag.csv" "$OutDir\$tag.csv" 2>&1 | Out-Null
@@ -30,14 +30,10 @@ function Run-Cfg($tag, $model, $flags) {
 $QB = "--moe-stream --cache-mb 4000 --io-threads 4 --overlap"
 Run-Cfg "qwen_base"     $QWEN  $QB
 Run-Cfg "qwen_pf2"      $QWEN  "$QB --prefetch 2"
-Run-Cfg "qwen_sg"       $QWEN  "$QB --spec-gate"
-Run-Cfg "qwen_sg_pf2"   $QWEN  "$QB --spec-gate --prefetch 2"
 
 # Gemma — best baseline: cache 2000 MiB, lane 4, overlap
 $GB = "--moe-stream --cache-mb 2000 --io-threads 4 --overlap"
 Run-Cfg "gemma_base"    $GEMMA $GB
 Run-Cfg "gemma_pf2"     $GEMMA "$GB --prefetch 2"
-Run-Cfg "gemma_sg"      $GEMMA "$GB --spec-gate"
-Run-Cfg "gemma_sg_pf2"  $GEMMA "$GB --spec-gate --prefetch 2"
 
 Write-Host "ALL DONE -> $OutDir"

@@ -30,13 +30,12 @@ public:
                      "io_s=%.2f compute_s/tok=%.3f io_s/tok=%.3f cache_hit_pct=%.1f "
                      "n_prompt=%d load_s=%.3f prefill_s=%.3f prefill_tps=%.2f stall_s/tok=%.3f mgmt_s/tok=%.3f "
                      "cache_resident_MiB=%.1f cache_budget_MiB=%.1f cache_resizes=%lld "
-                     "spec_recall_pct=%.1f spec_auto_off=%d spec_read_MiB=%.1f spec_experts=%lld spec_useful=%lld\n",
+                     "spec_read_MiB=%.1f spec_experts=%lld spec_useful=%lld\n",
                      s.n_generated, s.s_per_token, s.tokens_per_second, s.moe_read_mib, s.moe_io_seconds,
                      s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct, s.n_prompt, s.load_seconds,
                      s.prefill_seconds, s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0,
                      s.moe_stall_s_per_token, s.moe_mgmt_s_per_token, s.cache_resident_mib, s.cache_budget_mib,
-                     s.cache_resizes, s.moe_spec_recall_pct, s.moe_spec_auto_off ? 1 : 0, s.moe_spec_read_mib,
-                     s.moe_spec_experts, s.moe_spec_useful);
+                     s.cache_resizes, s.moe_spec_read_mib, s.moe_spec_experts, s.moe_spec_useful);
         std::fflush(f_);
     }
 

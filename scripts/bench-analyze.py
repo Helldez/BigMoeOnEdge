@@ -107,7 +107,6 @@ def analyze(csv_path):
         # 2026-07-13 rework metrics (0 / absent on older CSVs that predate them).
         "cache_budget_MiB": g("cache_budget_MiB"), "cache_resizes": g("cache_resizes"),
         "cache_resident_MiB": g("cache_resident_MiB"),
-        "spec_recall_pct": summ.get("spec_recall_pct", "-"), "spec_auto_off": g("spec_auto_off"),
         "spec_read_MiB_tok": (g("spec_read_MiB") / n) if n else 0.0,
         "spec_useful_pct": (100.0 * g("spec_useful") / g("spec_experts")) if g("spec_experts") else 0.0,
         "peak_rss_gb": (num(m, "peak_rss_kb") or 0) / 1048576.0,
@@ -149,23 +148,22 @@ for model, pretty in (("qwen", "Qwen3-30B-A3B-Q4_K_M (18.5 GB, 128 experts, top-
         print(f"{LABEL[key]:36s} {r['peak_rss_gb']:6.2f}GB {r['mem_floor_gb']:7.2f}GB {r['cpu0']:5.1f}C {r['cpu_max']:6.1f}C {r['batt_max']:7.1f}C")
         md.append(f"| {LABEL[key]} | {r['peak_rss_gb']:.2f} GB | {r['mem_floor_gb']:.2f} GB | {r['cpu0']:.1f} °C | {r['cpu_max']:.1f} °C | {r['batt_max']:.1f} °C |")
 
-    # Third table: adaptive-cache and speculative-gating specifics — only for configs that exercise
-    # them (a fixed non-spec run has cache_budget==resident and no recall, so it is uninformative).
-    adaptive = [(k, r) for k, r in rows if r and (r["cache_budget_MiB"] > 0 or r["spec_recall_pct"] not in ("-", "-1.0"))]
+    # Third table: adaptive-cache and temporal-prefetch specifics — only for configs that exercise
+    # them (a fixed non-prefetch run has cache_budget==resident and no speculative reads, so it is
+    # uninformative).
+    adaptive = [(k, r) for k, r in rows if r and (r["cache_budget_MiB"] > 0 or r["spec_read_MiB_tok"] > 0)]
     if adaptive:
-        print(f"\n===== {model.upper()} — adaptive cache / speculative gating =====")
-        md.append(f"\n**Adaptive cache & speculative gating** (budget & resizes under `--cache-mb auto`; "
-                  f"router-prediction recall, useful-hit rate and auto-off under `--spec-gate`):\n")
-        md.append("| Config | cache budget | resizes | resident | spec recall | spec useful | spec read/token | auto-off |")
-        md.append("|---|---:|---:|---:|---:|---:|---:|:--:|")
+        print(f"\n===== {model.upper()} — adaptive cache / temporal prefetch =====")
+        md.append(f"\n**Adaptive cache & temporal prefetch** (budget & resizes under `--cache-mb auto`; "
+                  f"speculative read volume and useful-hit rate under `--prefetch`):\n")
+        md.append("| Config | cache budget | resizes | resident | prefetch useful | prefetch read/token |")
+        md.append("|---|---:|---:|---:|---:|---:|")
         for key, r in adaptive:
             budget = f"{r['cache_budget_MiB']:.0f} MiB" if r["cache_budget_MiB"] > 0 else "—"
             resiz = f"{r['cache_resizes']:.0f}" if r["cache_budget_MiB"] > 0 else "—"
-            recall = f"{float(r['spec_recall_pct']):.0f}%" if r["spec_recall_pct"] not in ("-", "-1.0") else "—"
             useful = f"{r['spec_useful_pct']:.0f}%" if r["spec_read_MiB_tok"] > 0 else "—"
             sread = f"{r['spec_read_MiB_tok']:.0f} MiB" if r["spec_read_MiB_tok"] > 0 else "—"
-            aoff = "yes" if r["spec_auto_off"] >= 1 else ("no" if recall != "—" else "—")
-            md.append(f"| {LABEL[key]} | {budget} | {resiz} | {r['cache_resident_MiB']:.0f} MiB | {recall} | {useful} | {sread} | {aoff} |")
+            md.append(f"| {LABEL[key]} | {budget} | {resiz} | {r['cache_resident_MiB']:.0f} MiB | {useful} | {sread} |")
 
 out = os.path.join(BENCH, "summary.md")
 open(out, "w", encoding="utf-8").write("\n".join(md) + "\n")

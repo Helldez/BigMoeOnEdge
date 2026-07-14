@@ -58,10 +58,9 @@ much smaller memory footprint — is worth making.
 - **Honest, per-token telemetry** — `--progress`/`--csv` emit a per-token breakdown: compute vs
   cache-management vs flash-I/O vs stall seconds, cache hit rate, flash bytes read, cache
   residency and resizes. The Android panel renders it live.
-- **Experimental, default-off**: temporal prefetch (`--prefetch K`, a cold-start/TTFT tool) and
-  speculative gating (`--spec-gate`, predicts the next layer's experts with a recall self-governor).
-  Both are honest toggles kept for provability; neither helps steady-state throughput on current
-  hardware — see [Benchmarks](#benchmarks).
+- **Experimental, default-off**: temporal prefetch (`--prefetch K`, a cold-start/TTFT tool) reads
+  the next layers' likely experts on idle I/O lanes. An honest toggle kept for provability; it does
+  not help steady-state throughput on current hardware — see [Benchmarks](#benchmarks).
 - **Android demo APK** ([`examples/android`](examples/android)) — a multi-turn chat app with a live
   telemetry panel and every streaming knob exposed with a one-line note on what it does.
 

@@ -102,11 +102,6 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     "Experimental. Prefetch the next K layers' likely experts on idle read lanes. Needs the cache on.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                SwitchRow(
-                    "Speculative gating",
-                    "Experimental. Predict the next layer's experts by running its router early",
-                    current.specGate, enabled = stream && cacheOn,
-                ) { onChange(current.copy(specGate = it)) }
             }
 
             Section("Speed / quality") {
