@@ -7,6 +7,14 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **gpt-oss recipe** (OpenAI MoE, e.g. gpt-oss-20b/120b: 128 experts, top-4): a purely routed
+  MoE registered as a single row with the standard `ffn_{gate,up,down}_exps` split suffixes.
+  Unlike gemma4 it keeps no shared/dense expert resident, so the streamed fraction is as high as
+  qwen3moe's. Weights ship in MXFP4; the streamer is quant-agnostic (the per-expert stride is read
+  from the tensor's `nb[2]`, whatever the block layout), so the native MXFP4 layout needs no special
+  handling and the existing split-layout gate already covers this streaming path. The Android
+  example's active-experts (top-k) dropdown gains 3 and 2, so gpt-oss can be run below its native
+  top-4 to trade quality for a smaller streamed working set.
 - **Speculative gating** (`--spec-gate`, env `BMOE_SPEC_GATE`): predict the next MoE layer's
   experts by running its (tiny, mmap-resident) router on the current layer's hidden state — the
   residual stream changes slowly between layers — and prefetch the top-k. Sharper than temporal
