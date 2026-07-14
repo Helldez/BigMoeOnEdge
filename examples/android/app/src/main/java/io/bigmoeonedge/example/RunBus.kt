@@ -23,6 +23,7 @@ data class UiState(
     val summary: String = "",
     val error: String? = null,
     val ioMode: String? = null,     // effective read mode reported by the engine (direct / buffered)
+    val batteryTempC: Double? = null, // device battery temperature (°C), sampled while generating
     val sessionSig: String? = null, // signature of the loaded session (AppSettings.sessionSignature)
     val transcript: List<ChatTurn> = emptyList(), // committed turns; the in-flight answer is `answer`
     val streaming: Boolean = true,  // is the loaded session using the MoE streamer (vs mmap baseline)?

@@ -19,6 +19,12 @@ data class Telemetry(
     // the last token's instantaneous [computeMs]/[ioMs]. -1 until generation finishes.
     var avgComputeMs: Double = -1.0,
     var avgIoMs: Double = -1.0,
+    // End-of-run figures from the final summary (BMOE_DONE); -1 / 0 until generation finishes.
+    var prefillTps: Double = -1.0,      // prompt prefill rate (tok/s)
+    var ttftS: Double = -1.0,           // time-to-first-token = model load + prompt prefill (s)
+    var readMib: Double = -1.0,         // total flash streamed this generation (MiB)
+    var cacheResidentMib: Double = -1.0, // expert cache resident size (MiB)
+    var cacheBudgetMib: Double = -1.0,  // current (possibly auto-adapting) cache budget (MiB)
 ) {
     val tokensPerSecond: Double get() = if (wallMs > 0) 1000.0 / wallMs else 0.0
 }

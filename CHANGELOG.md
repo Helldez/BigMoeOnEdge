@@ -7,6 +7,13 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Richer Android telemetry**: the live panel now also shows prefill rate (tok/s), time-to-first-token
+  (model load + prompt prefill), the flash streamed this turn (MB) and the expert-cache footprint
+  (resident/budget MiB), plus a live **device temperature** read from the battery sensor
+  (`BatteryManager`, no permission) as a proxy for thermal headroom under a long generation. The
+  engine already computed the first four; a `read_mib` field was added to the `BMOE_DONE` session
+  line to carry the streamed total (see `docs/telemetry.md`). Temperature is read on the Android side
+  and does not travel through the engine.
 - **gpt-oss recipe** (OpenAI MoE, e.g. gpt-oss-20b/120b: 128 experts, top-4): a purely routed
   MoE registered as a single row with the standard `ffn_{gate,up,down}_exps` split suffixes.
   Unlike gemma4 it keeps no shared/dense expert resident, so the streamed fraction is as high as
