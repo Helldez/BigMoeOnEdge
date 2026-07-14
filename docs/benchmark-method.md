@@ -48,6 +48,29 @@ output diverge once routing narrows, so inspect the generated text for quality a
 it is a speed/quality trade-off, not a free speedup. See the Turbo top-k section in
 [benchmarks.md](benchmarks.md) for a measured pair.
 
+### gpt-oss / harmony models
+
+gpt-oss uses the harmony chat format, whose template **always** opens an `analysis`
+(chain-of-thought) channel before the answer — a plain run spends its whole `-n` budget
+reasoning, so a short probe never reaches the answer and per-token timing is measuring
+analysis tokens. Pass **`--no-think`**: on harmony models the engine primes the `final`
+channel directly, so the model answers immediately with no analysis tokens. That is what
+makes a short (24-token) throughput probe meaningful on gpt-oss.
+
+Two things to keep honest when reporting gpt-oss numbers:
+
+- **`--no-think` is a speed mode, not a free lunch.** Forcing the `final` channel removes
+  the model's scratch space, so reasoning-dependent tasks degrade — on `17 × 23` the default
+  top-4 answers *wrong* while k=2/3 answer right (greedy, so it depends only on k). Always
+  inspect the generated text; report speed and correctness separately.
+- **A 24-token probe is not steady state.** The expert cache is still warming (hit rate
+  10–20 % vs ~76 % at 256 tokens on Qwen), so flash-read/token is high and tok/s is a floor.
+  For a headline number, run the 256-token protocol with `--csv` once the model of interest
+  is settled.
+
+gpt-oss must be read from the real `/data` partition (e.g. `/data/local/tmp/...`), not
+`/sdcard` — the latter is FUSE and O_DIRECT silently falls back to buffered there.
+
 ### Caveats
 
 - **Thermal.** Sustained decode throttles. Warm up, then measure a steady window; discard

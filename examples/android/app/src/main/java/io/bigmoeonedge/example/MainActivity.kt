@@ -489,9 +489,9 @@ private fun TelemetryCard(ui: UiState) {
                 if (ui.ioMode != null) {
                     Text("I/O ${ui.ioMode}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                // Battery temperature — live while generating, a proxy for thermal headroom.
-                ui.batteryTempC?.let {
-                    Text(String.format(Locale.US, "temp %.1f°C", it), fontSize = 13.sp,
+                // CPU temperature — live while generating, a proxy for thermal headroom.
+                ui.cpuTempC?.let {
+                    Text(String.format(Locale.US, "CPU %.1f°C", it), fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 // End-of-run figures from the summary: prefill rate, time-to-first-token, the flash

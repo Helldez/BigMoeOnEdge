@@ -17,6 +17,10 @@ much smaller memory footprint — is worth making.
   **5.01 tok/s** streamed, against **2.00 tok/s** for a plain mmap load of the same model;
   Gemma-4-26B-A4B up to **4.99 tok/s** vs **0.36 tok/s** for mmap. See [Benchmarks](#benchmarks)
   for the full method, the config behind each number, and the lossless streaming-only figures.
+- **Scales to a 58 GB model on the same phone.** OpenAI **gpt-oss-120b** (58.46 GB, 5.2× device RAM
+  — impossible to hold resident) streams and generates on the 11.3 GB OnePlus, **7.7× faster than a
+  plain mmap** load at top-k 2 — to our knowledge the first 120B model to run on a phone. See
+  [Benchmarks](#gpt-oss-120b--a-58-gb-model-on-the-phone-52-ram).
 - **Built on llama.cpp, not a fork.** All the streaming runs through llama.cpp's public API,
   against the stock upstream code — so keeping up with llama.cpp is just a submodule bump. The one
   exception is the optional overlap mode, which needs a tiny (~25-line) addition to llama.cpp, kept
@@ -154,6 +158,25 @@ Sizing the budget to the device and capping it (`--cache-ceil-mb`) matches or be
 fixed budget: on Qwen, adaptive-**capped** at 4000 MiB + 4 lanes + overlap is the current winning
 recipe (**5.23 tok/s**, 76% hit); uncapped auto over-allocates (4675 MiB) and regresses. Details:
 [docs/adaptive-cache.md](docs/adaptive-cache.md).
+
+### gpt-oss-120b — a 58 GB model on the phone (5.2× RAM)
+
+The same engine streams **OpenAI gpt-oss-120b** (58.46 GB, 128 experts, top-4) on the same 11.3 GB
+phone — **5.2× device RAM**, so a resident load is physically impossible. To our knowledge this is
+the first time a 120B / 58 GB model has generated tokens on a phone.
+
+| top-k | tok/s | s/token | vs mmap |
+|---:|---:|---:|---:|
+| **2** | **0.687** | 1.455 | **7.7× faster** (mmap 11.24 s/tok) |
+| 3 | 0.391 | 2.556 | — |
+| 4 (default) | 0.223 | 4.489 | 3.0× faster (mmap 13.34 s/tok) |
+
+Config: `--cache-mb auto --cache-ceil-mb 3000`, O_DIRECT, `--overlap`, 4 lanes, `-t 4`, `--no-think`.
+gpt-oss is heavily **compute-bound** (each expert is large), so **top-k is the dominant lever** — k=2
+is ~3× faster than the default k=4 — and prefetch only hurts. These are exploratory **24-token** probes
+(cache still warming, 13–21% hit), not the 256-token steady state above; treat them as a floor. Full
+matrix, the k=4 interruption caveat, and a **quality** note (`--no-think` drops gpt-oss's reasoning, so
+default k=4 answers `17×23` *wrong* while k=2/3 get it right): [docs/benchmarks.md](docs/benchmarks.md#gpt-oss-120b--a-58-gb-model-at-52-device-ram).
 
 ### Desktop is not the target (for now)
 
