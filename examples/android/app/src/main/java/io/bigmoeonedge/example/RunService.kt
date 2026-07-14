@@ -58,6 +58,9 @@ class RunService : Service() {
     // against the question that produced it.
     @Volatile private var inFlightPrompt: String = ""
 
+    // The CPU thermal-zone `temp` node, discovered once on the first sample and reused thereafter.
+    @Volatile private var cpuThermalZone: File? = null
+
     private data class Req(val prompt: String, val nPredict: Int, val think: Boolean, val clearKv: Boolean)
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -196,7 +199,7 @@ class RunService : Service() {
                 main.post { notify("Generating…") }
             }
             telemetry.onLine(t) -> {
-                sampleBatteryTemp()
+                sampleCpuTemp()
                 RunBus.update {
                     it.copy(telemetry = telemetry.current.copy(), answer = telemetry.current.text)
                 }
@@ -263,7 +266,7 @@ class RunService : Service() {
                     transcript = transcript)
             }
         }
-        sampleBatteryTemp()
+        sampleCpuTemp()
         releaseWake()
         inFlightPrompt = ""
         main.post { notify("Model ready") }
@@ -271,17 +274,56 @@ class RunService : Service() {
     }
 
     /**
-     * Sample the device battery temperature and publish it to [RunBus]. Sourced from the sticky
-     * ACTION_BATTERY_CHANGED broadcast (EXTRA_TEMPERATURE, tenths of a °C) — no permission, available
-     * on every device, and a good proxy for how hot the phone is getting under a long generation. It
-     * does not travel through the engine; it is read here on the Android side while streaming.
+     * Sample the SoC/CPU temperature and publish it to [RunBus]. Read from the kernel thermal zones
+     * (`/sys/class/thermal/thermal_zone*`), which expose the on-die sensors that track compute load
+     * directly — a far better proxy for streaming heat than the battery pack, which lags behind and
+     * reflects charging as much as compute. No permission is required and the read is best-effort:
+     * the CPU zone is discovered once by matching its `type`, and if no zone is readable (some
+     * vendors lock the sysfs node down) we fall back to the battery temperature so the figure never
+     * goes blank. It does not travel through the engine; it is read on the Android side while
+     * streaming.
      */
-    private fun sampleBatteryTemp() {
+    private fun sampleCpuTemp() {
+        val cpu = readCpuThermalZone()
+        val celsius = cpu ?: readBatteryTemp()
+        if (celsius != null) RunBus.update { it.copy(cpuTempC = celsius) }
+    }
+
+    /**
+     * Locate and read the CPU thermal zone. The zone path is resolved once (its `type` name contains
+     * "cpu" — e.g. "cpu-0-0-usr", "cpu_thermal", "mtktscpu") and cached; subsequent samples just read
+     * the `temp` node. Kernel thermal `temp` is conventionally millidegrees Celsius, but a few
+     * vendors report tenths or whole degrees, so the raw value is normalised by magnitude.
+     */
+    private fun readCpuThermalZone(): Double? {
+        val zone = cpuThermalZone ?: discoverCpuThermalZone()?.also { cpuThermalZone = it } ?: return null
+        val raw = runCatching { zone.readText().trim().toDouble() }.getOrNull() ?: return null
+        return normalizeThermal(raw).takeIf { it in 1.0..150.0 }
+    }
+
+    private fun discoverCpuThermalZone(): File? {
+        val zones = File("/sys/class/thermal").listFiles { f -> f.name.startsWith("thermal_zone") }
+            ?: return null
+        return zones.firstOrNull { z ->
+            runCatching { File(z, "type").readText().trim().contains("cpu", ignoreCase = true) }
+                .getOrDefault(false)
+        }?.let { File(it, "temp") }
+    }
+
+    /** Normalise a kernel thermal reading to Celsius: millidegrees, tenths, or already-degrees. */
+    private fun normalizeThermal(raw: Double): Double = when {
+        raw > 1000.0 -> raw / 1000.0
+        raw > 200.0  -> raw / 10.0
+        else         -> raw
+    }
+
+    /** Battery pack temperature (°C) from the sticky ACTION_BATTERY_CHANGED broadcast, in tenths. */
+    private fun readBatteryTemp(): Double? {
         val tenths = runCatching {
             registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
                 ?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         }.getOrDefault(Int.MIN_VALUE)
-        if (tenths != Int.MIN_VALUE) RunBus.update { it.copy(batteryTempC = tenths / 10.0) }
+        return if (tenths != Int.MIN_VALUE) tenths / 10.0 else null
     }
 
     private fun onError(json: String) {

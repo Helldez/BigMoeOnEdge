@@ -306,6 +306,7 @@ RunResult Session::generate(const GenerateRequest & req,
     std::string prompt = req.prompt;
     bool chat_on = im.chat_on;
     bool history_pushed = false; // did we append this turn's user message to chat_history?
+    bool forced_final = false;   // harmony no-think: primed the final channel, so skip reasoning parse
     common_chat_parser_params parse_params;
     if (chat_on) {
         try {
@@ -324,6 +325,24 @@ RunResult Session::generate(const GenerateRequest & req,
             prompt = cp.prompt;
             parse_params = common_chat_parser_params(cp);
             parse_params.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+
+            // gpt-oss / harmony ignores enable_thinking: its template always opens an
+            // <|channel|>analysis turn (only the "Reasoning:" effort level is tunable), so a
+            // reasoning model burns the whole budget on chain-of-thought before the answer.
+            // When the caller disabled thinking, prime the final channel directly so the model
+            // answers with no analysis tokens. Harmony's generation prompt ends "<|start|>assistant";
+            // that suffix is unique to it (Qwen/Gemma use different markers), so keying on it
+            // leaves every other family's --no-think behaviour untouched.
+            if (!req.think) {
+                size_t last = prompt.find_last_not_of(" \t\r\n");
+                std::string trimmed = (last == std::string::npos) ? prompt : prompt.substr(0, last + 1);
+                static const std::string kHarmonyAsst = "<|start|>assistant";
+                if (trimmed.size() >= kHarmonyAsst.size() &&
+                    trimmed.compare(trimmed.size() - kHarmonyAsst.size(), kHarmonyAsst.size(), kHarmonyAsst) == 0) {
+                    prompt = trimmed + "<|channel|>final<|message|>";
+                    forced_final = true;
+                }
+            }
         } catch (const std::exception & e) {
             std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
             if (history_pushed) {
@@ -352,6 +371,9 @@ RunResult Session::generate(const GenerateRequest & req,
     // thinking is hidden and only the answer is shown. Generation always uses the raw tokens.
     auto shown_text = [&](const std::string & raw, bool partial) -> std::string {
         if (!chat_on) return raw;
+        // Forced-final (harmony no-think) output isn't wrapped in a <|start|>assistant turn, so the
+        // structured parser has nothing to strip — the raw stream already IS the final answer.
+        if (forced_final) return raw;
         try {
             return common_chat_parse(raw, partial, parse_params).content;
         } catch (const std::exception &) {
@@ -545,10 +567,15 @@ RunResult Session::generate(const GenerateRequest & req,
         // Commit the assistant turn to the running conversation. Parsing separates a thinking
         // model's reasoning from the answer; the next turn re-renders history from these messages.
         common_chat_msg assistant;
-        try {
-            assistant = common_chat_parse(gen, /*is_partial*/ false, parse_params);
-        } catch (const std::exception &) {
+        if (forced_final) {
+            // No <|start|>assistant wrapper to parse; the raw generation is the answer verbatim.
             assistant.content = gen;
+        } else {
+            try {
+                assistant = common_chat_parse(gen, /*is_partial*/ false, parse_params);
+            } catch (const std::exception &) {
+                assistant.content = gen;
+            }
         }
         assistant.role = "assistant";
         im.chat_history.push_back(assistant);

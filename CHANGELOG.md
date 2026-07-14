@@ -7,6 +7,19 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Direct answers on gpt-oss (`--no-think`)**: the harmony chat template always opens an
+  `analysis` (chain-of-thought) channel, so `--no-think` previously had no visible effect on
+  gpt-oss — the model still reasoned before answering. It now primes the `final` channel directly
+  when thinking is disabled, so gpt-oss answers immediately with no analysis tokens. Keyed on
+  harmony's unique `"<|start|>assistant"` generation-prompt suffix, so Qwen/Gemma `--no-think` is
+  unchanged; done through the public chat-template API, no llama.cpp patch. Trade-off: forcing the
+  final channel removes the model's scratch space, so reasoning-dependent answers degrade — a
+  latency/throughput mode, not a free win (see the gpt-oss quality note in `docs/benchmarks.md`).
+- **gpt-oss-120b on-device benchmark**: streaming a 58.46 GB MoE (128 experts, top-4) on the 11.3 GB
+  OnePlus 15R — **5.2× device RAM** — at up to 7.7× a plain-mmap load (top-k 2). A top-k × lanes ×
+  prefetch sweep plus an mmap baseline, with the k=4-interruption and 24-token-probe caveats and a
+  quality note, in `docs/benchmarks.md`; raw data under `docs/bench-data/2026-07-14/`, drivers
+  `scripts/gptoss-matrix.sh` and `scripts/gptoss-mmap.sh`.
 - **Richer Android telemetry**: the live panel now also shows prefill rate (tok/s), time-to-first-token
   (model load + prompt prefill), the flash streamed this turn (MB) and the expert-cache footprint
   (resident/budget MiB), plus a live **device temperature** read from the battery sensor

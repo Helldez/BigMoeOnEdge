@@ -1,0 +1,166 @@
+==================== k2_io4_pf0 ====================
+What is 17 times 23? Then name the capital of Australia.**Answer:**  
+17 × 23 = 391  
+
+The capital of Australia is **Canberra**.
+
+generation: 24 tokens, 1.455 s/token (0.687 tok/s)
+prefill: 85 tokens, 16.721 s (5.1 tok/s) | model load 50.946 s | TTFT 67.667 s
+moe-stream: read 12858.0 MiB (535.75 MiB/token), decode 1.455 s/token (compute 1.159 + cache mgmt 0.094 + flash I/O 0.747 s/token, 717 MiB/s)
+moe-cache: 20.4% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.202 s/token (flash reads overlapped with FFN compute)
+
+==================== k2_io4_pf4 ====================
+What is 17 times 23? Then name the capital of Australia.**Answer:**  
+17 × 23 = 391  
+
+The capital of Australia is **Canberra**.
+
+generation: 24 tokens, 1.878 s/token (0.532 tok/s)
+prefill: 85 tokens, 17.053 s (5.0 tok/s) | model load 50.378 s | TTFT 67.431 s
+moe-stream: read 15381.7 MiB (640.91 MiB/token), decode 1.878 s/token (compute 1.529 + cache mgmt 0.125 + flash I/O 0.955 s/token, 671 MiB/s)
+moe-cache: 21.2% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.224 s/token (flash reads overlapped with FFN compute)
+moe-prefetch: 2874.4 MiB speculative, 28/228 experts useful (12%)
+
+==================== k2_io8_pf0 ====================
+What is 17 times 23? Then name the capital of Australia.**Answer:**  
+17 × 23 = 391  
+
+The capital of Australia is **Canberra**.
+
+generation: 24 tokens, 1.613 s/token (0.620 tok/s)
+prefill: 85 tokens, 17.178 s (4.9 tok/s) | model load 52.060 s | TTFT 69.237 s
+moe-stream: read 12858.0 MiB (535.75 MiB/token), decode 1.613 s/token (compute 1.310 + cache mgmt 0.100 + flash I/O 0.977 s/token, 548 MiB/s)
+moe-cache: 20.4% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.204 s/token (flash reads overlapped with FFN compute)
+
+==================== k2_io8_pf4 ====================
+What is 17 times 23? Then name the capital of Australia.**Answer:**  
+17 × 23 = 391  
+
+The capital of Australia is **Canberra**.
+
+generation: 24 tokens, 1.937 s/token (0.516 tok/s)
+prefill: 85 tokens, 16.383 s (5.2 tok/s) | model load 57.796 s | TTFT 74.179 s
+moe-stream: read 15381.7 MiB (640.91 MiB/token), decode 1.937 s/token (compute 1.647 + cache mgmt 0.122 + flash I/O 1.172 s/token, 547 MiB/s)
+moe-cache: 21.2% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.167 s/token (flash reads overlapped with FFN compute)
+moe-prefetch: 2874.4 MiB speculative, 28/228 experts useful (12%)
+
+==================== k3_io4_pf0 ====================
+What is 17 times 23? Then name the capital of Australia.**17 × 23 = 391**  
+
+The capital of Australia is **Canberra**.
+
+generation: 22 tokens, 2.556 s/token (0.391 tok/s)
+prefill: 85 tokens, 18.812 s (4.5 tok/s) | model load 58.166 s | TTFT 76.978 s
+moe-stream: read 20366.2 MiB (925.74 MiB/token), decode 2.556 s/token (compute 2.118 + cache mgmt 0.178 + flash I/O 1.225 s/token, 756 MiB/s)
+moe-cache: 16.9% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.260 s/token (flash reads overlapped with FFN compute)
+
+==================== k3_io4_pf4 ====================
+What is 17 times 23? Then name the capital of Australia.**17 × 23 = 391**  
+
+The capital of Australia is **Canberra**.
+
+generation: 22 tokens, 3.293 s/token (0.304 tok/s)
+prefill: 85 tokens, 22.804 s (3.7 tok/s) | model load 60.400 s | TTFT 83.204 s
+moe-stream: read 24214.9 MiB (1100.68 MiB/token), decode 3.293 s/token (compute 2.854 + cache mgmt 0.218 + flash I/O 1.597 s/token, 689 MiB/s)
+moe-cache: 18.1% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.221 s/token (flash reads overlapped with FFN compute)
+moe-prefetch: 4500.6 MiB speculative, 53/356 experts useful (15%)
+
+==================== k3_io8_pf0 ====================
+What is 17 times 23? Then name the capital of Australia.**17 × 23 = 391**  
+
+The capital of Australia is **Canberra**.
+
+generation: 22 tokens, 3.581 s/token (0.279 tok/s)
+prefill: 85 tokens, 20.411 s (4.2 tok/s) | model load 60.670 s | TTFT 81.080 s
+moe-stream: read 20366.2 MiB (925.74 MiB/token), decode 3.581 s/token (compute 3.074 + cache mgmt 0.243 + flash I/O 2.141 s/token, 432 MiB/s)
+moe-cache: 16.9% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.264 s/token (flash reads overlapped with FFN compute)
+
+==================== k3_io8_pf4 ====================
+What is 17 times 23? Then name the capital of Australia.**17 × 23 = 391**  
+
+The capital of Australia is **Canberra**.
+
+generation: 22 tokens, 3.394 s/token (0.295 tok/s)
+prefill: 85 tokens, 22.828 s (3.7 tok/s) | model load 75.353 s | TTFT 98.181 s
+moe-stream: read 24214.9 MiB (1100.68 MiB/token), decode 3.394 s/token (compute 2.924 + cache mgmt 0.265 + flash I/O 2.449 s/token, 449 MiB/s)
+moe-cache: 18.1% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.205 s/token (flash reads overlapped with FFN compute)
+moe-prefetch: 4513.2 MiB speculative, 53/358 experts useful (15%)
+
+==================== k4_io4_pf0 ====================
+What is 17 times 23? Then name the capital of Australia.**Answer:**
+
+- **17 × 23 = 387**  
+- The capital **Canberra** is
+
+generation: 24 tokens, 4.489 s/token (0.223 tok/s)
+prefill: 85 tokens, 24.971 s (3.4 tok/s) | model load 71.940 s | TTFT 96.910 s
+moe-stream: read 33666.1 MiB (1402.75 MiB/token), decode 4.489 s/token (compute 3.869 + cache mgmt 0.364 + flash I/O 2.078 s/token, 675 MiB/s)
+moe-cache: 13.4% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.257 s/token (flash reads overlapped with FFN compute)
+
+==================== k4_io4_pf4 ====================
+What is 17 times 23? Then name the capital of Australia.**Answer:**
+
+- **17 × 23 = 387**  
+- The capital **Canberra** is
+
+generation: 24 tokens, 5.327 s/token (0.188 tok/s)
+prefill: 85 tokens, 25.086 s (3.4 tok/s) | model load 72.874 s | TTFT 97.960 s
+moe-stream: read 38873.2 MiB (1619.72 MiB/token), decode 5.327 s/token (compute 4.701 + cache mgmt 0.422 + flash I/O 2.544 s/token, 637 MiB/s)
+moe-cache: 14.7% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.204 s/token (flash reads overlapped with FFN compute)
+moe-prefetch: 6076.5 MiB speculative, 73/479 experts useful (15%)
+
+==================== k4_io8_pf0 ====================
+What is 17 times 23? Then name the capital of Australia.**Answer:**
+
+- **17 × 23 = 387**  
+- The capital **Canberra** is
+
+generation: 24 tokens, 2.613 s/token (0.383 tok/s)
+prefill: 85 tokens, 29.622 s (2.9 tok/s) | model load 89.992 s | TTFT 119.613 s
+moe-stream: read 33666.1 MiB (1402.75 MiB/token), decode 2.613 s/token (compute 2.042 + cache mgmt 0.276 + flash I/O 3.353 s/token, 418 MiB/s)
+moe-cache: 13.4% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.294 s/token (flash reads overlapped with FFN compute)
+
+==================== k4_io8_pf4 ====================
+What is 17 times 23? Then name the capital of Australia.**Answer:**
+
+- **17 × 23 = 387**  
+- The capital **Canberra** is
+
+generation: 24 tokens, 4.704 s/token (0.213 tok/s)
+prefill: 85 tokens, 26.016 s (3.3 tok/s) | model load 70.438 s | TTFT 96.454 s
+moe-stream: read 38965.8 MiB (1623.57 MiB/token), decode 4.704 s/token (compute 4.045 + cache mgmt 0.419 + flash I/O 4.335 s/token, 375 MiB/s)
+moe-cache: 14.7% hit, resident 2987.8 MiB, budget 3000 MiB (auto, resized 0×)
+moe-overlap: stall 0.240 s/token (flash reads overlapped with FFN compute)
+moe-prefetch: 6215.2 MiB speculative, 73/493 experts useful (15%)
+
+ALL DONE
+==================== mmap_k4 ====================
+What is 17 times 23? Then name the capital of Australia.**Answer:**
+
+- **17 × 23 = 387**  
+- The capital **Canberra** is
+
+generation: 24 tokens, 13.337 s/token (0.075 tok/s)
+prefill: 85 tokens, 32.004 s (2.7 tok/s) | model load 45.372 s | TTFT 77.376 s
+
+==================== mmap_k2 ====================
+What is 17 times 23? Then name the capital of Australia.**Answer:**  
+17 × 23 = 391  
+
+The capital of Australia is **Canberra**.
+
+generation: 24 tokens, 11.240 s/token (0.089 tok/s)
+prefill: 85 tokens, 35.141 s (2.4 tok/s) | model load 45.153 s | TTFT 80.294 s
+
+MMAP DONE
