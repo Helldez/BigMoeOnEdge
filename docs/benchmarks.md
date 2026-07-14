@@ -193,6 +193,11 @@ the 1.5 s/tok of lane reads cannot be hidden behind ~0.19 s of compute.
   *rises* when the cache is enabled — cache-0's ~0.12 s grows to ~0.18 s at cache 2000 —
   because cache lookup/copy is counted inside compute; it settles back down at cache 4000 as
   the hit rate makes those copies rarer.)
+- **The mean is a steady-state number; a fresh run warms up to it.** Each `--n 256` figure is
+  the steady rate after the expert cache fills (hit 4.5% → ~77–83% over the first tokens), so a
+  short generation reads slower than the table. The per-token trajectory — flat `compute_ms`
+  with the warm-up carried entirely by the cache-hit climb, and hidden by overlap — is dissected
+  in [warmup-analysis.md](warmup-analysis.md).
 
 ## Active-expert override (`--n-expert-used`) — Turbo top-k
 
@@ -411,6 +416,12 @@ it stays ~0.2–0.3 s/tok throughout, i.e. overlap hides almost all of the flash
 - **Lanes 4 vs 8: 4 wins where it's trustworthy.** At k=2 io4 beats io8 (1.455 vs 1.613) — with the
   flash wait already overlapped, extra lanes only add contention. The k=4 lane comparison is confounded
   (caveat 2), so no lane claim is made there.
+- **A 24-token probe is mostly warm-up.** Unlike Qwen/Gemma, gpt-oss at 5.2× RAM warms up *inside*
+  compute: the first tokens fault the mmap-resident, non-expert working set in from flash (`compute_ms`
+  ~18 s), settling to sub-second once hot. The mean over 24 tokens is therefore a floor dominated by that
+  cold head, and the steady tail is several × faster. This memory-residency warm-up — distinct from the
+  gentle, I/O-bound cache warm-up on Qwen/Gemma — is analysed token-by-token in
+  [warmup-analysis.md](warmup-analysis.md).
 
 ## Quality — the cost of dropping reasoning
 

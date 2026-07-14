@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <utility>
 
 namespace bmoe {
 
@@ -242,6 +243,12 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         }
     }
 
+    // Warm the dense (non-expert) regions into the page cache before the first token, so the early
+    // decodes do not fault them in one scattered 4 KiB page at a time. Independent of the cache
+    // budget: it only pre-faults the mmap-resident pages, it neither pins nor reserves them. Runs on
+    // the caller's thread (the workers are not started yet).
+    if (cfg.warm_dense) warm_dense_regions(gguf_path);
+
     active_ = true;
     // Serial: lane 0 is the calling thread (it drains inline), workers own lanes 1..N-1.
     // Overlap: the caller never drains — every lane 0..N-1 gets a worker so reads proceed
@@ -253,6 +260,60 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     std::fprintf(stderr, "bmoe: expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB\n", n_expert_,
                  (int) o_direct_, io_threads_, cache_max_ >> 20);
     return true;
+}
+
+// ── dense warm-up: sequentially page-cache everything that is not an expert tensor ──
+void ExpertStreamSource::warm_dense_regions(const std::string & gguf_path) {
+    // The complement of the expert byte ranges is the dense set: gguf header/metadata plus every
+    // tensor the streamer leaves mmap-resident (embeddings, attention, norms, lm_head). Buffered
+    // reads land in the same page cache the mmap is served from, so one sequential sweep here
+    // replaces thousands of random 4 KiB major faults during the first decodes. Best-effort: a read
+    // failure only leaves the corresponding pages cold.
+    std::vector<std::pair<uint64_t, uint64_t>> expert_ranges;
+    for (const LayerExperts & L : layers_) {
+        if (!L.bound) continue;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            const uint64_t sz = (uint64_t) L.proj[p].nb2 * (uint64_t) n_expert_;
+            if (sz) expert_ranges.push_back({L.proj[p].file_off, L.proj[p].file_off + sz});
+        }
+    }
+    std::sort(expert_ranges.begin(), expert_ranges.end());
+
+    pio::fd_t fd = pio::open_read(gguf_path.c_str(), false);
+    if (!pio::fd_ok(fd)) return;
+    const size_t chunk = 8ull << 20;
+    void * buf = pio::alloc_aligned(align_, chunk);
+    if (!buf) {
+        pio::close_fd(fd);
+        return;
+    }
+
+    const auto t0 = clock_t_::now();
+    uint64_t warmed = 0;
+    bool ok = true;
+    auto sweep = [&](uint64_t beg, uint64_t end) {
+        for (uint64_t a = beg; a < end && ok;) {
+            const long long got = pio::pread_at(fd, buf, (size_t) std::min<uint64_t>(chunk, end - a), a);
+            if (got <= 0) {
+                ok = false; // best-effort: those pages just stay cold
+                break;
+            }
+            a += (uint64_t) got;
+            warmed += (uint64_t) got;
+        }
+    };
+    uint64_t pos = 0;
+    for (const auto & r : expert_ranges) {
+        if (r.first > pos) sweep(pos, r.first); // gap before this expert range is dense
+        pos = std::max(pos, r.second);
+    }
+    if (pos < fsize_) sweep(pos, fsize_); // trailing dense tail (lm_head et al.)
+
+    pio::aligned_free(buf);
+    pio::close_fd(fd);
+    const double s = std::chrono::duration<double>(clock_t_::now() - t0).count();
+    std::fprintf(stderr, "bmoe: dense warm-up — %llu MiB in %.1f s%s\n", (unsigned long long) (warmed >> 20), s,
+                 ok ? "" : " (partial)");
 }
 
 // ── one aligned slice read on a lane ────────────────────────────────────────────────
