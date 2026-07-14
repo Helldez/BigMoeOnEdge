@@ -109,6 +109,12 @@ private:
     void quiesce_spec();
     void release_entry_pages(int32_t id);
 
+    // One sequential buffered sweep over the file's non-expert byte ranges (header, embeddings,
+    // attention, norms, lm_head) to populate the kernel page cache at load time, so the mmap'd
+    // dense tensors do not demand-fault 4 KiB at a time inside the first decodes. Best-effort:
+    // a read failure only leaves the corresponding pages cold.
+    void warm_dense_regions(const std::string & gguf_path);
+
     // Adaptive sizing (cache_auto): re-probe device memory (throttled) and nudge cache_max_ so it
     // tracks free RAM. Eval-thread only, called in the mgmt section of load_layer; the eviction
     // loop that follows drains any shrink.
