@@ -56,6 +56,14 @@ struct MoeStreamConfig {
     // cache_mb == 0. See docs/prefetch.md.
     int prefetch_layers = 0;
 
+    // Warm the dense (non-expert) file regions into the page cache at init with one sequential
+    // buffered sweep: gguf header/metadata, embeddings, attention, norms, lm_head. Those tensors
+    // stay mmap-resident (the streamer only rebinds experts), so without warming they demand-page
+    // from flash in 4 KiB faults inside the first decodes — on a >RAM model that serialises into
+    // tens of seconds of apparent "compute" before the page cache settles. One sweep at load
+    // moves that cost into load_seconds at sequential-read bandwidth. Off for A/B measurements.
+    bool warm_dense = true;
+
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
     // overlap compute) but makes speculative integration deterministic, so the byte-identity
