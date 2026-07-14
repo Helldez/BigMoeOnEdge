@@ -78,6 +78,7 @@ model-specific constants in the streaming path. Most llama.cpp MoE models share 
 | `qwen3moe` | Qwen3-30B-A3B and siblings | `ffn_{gate,up,down}_exps` (separate) | Shipped default; validated in the benchmarks below |
 | `qwen2moe` | Qwen2 MoE family | `ffn_{gate,up,down}_exps` (separate) | Same seam as qwen3moe |
 | `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | `ffn_gate_up_exps` (**fused** gate+up) + `ffn_down_exps` | Fused gate+up = 2× per-expert stride; an always-on dense/shared expert stays mmap-resident, lowering the streamed fraction |
+| `gpt-oss` | OpenAI gpt-oss-20b / 120b | `ffn_{gate,up,down}_exps` (separate) | Purely routed (no resident shared expert → high streamed fraction); MXFP4 weights stream unchanged since the stride is read from `nb[2]`, quant-agnostic |
 
 Run `bmoe-cli --list-archs` to print the compiled-in set.
 
