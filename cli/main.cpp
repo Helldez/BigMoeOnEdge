@@ -289,11 +289,11 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
         std::printf("BMOE_DONE {\"id\":%d,\"cancelled\":%s,\"tokens\":%d,\"tok_s\":%.3f,\"prefill_s\":%.3f,"
                     "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
-                    "\"spec_recall_pct\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"text\":\"%s\"}\n",
+                    "\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"text\":\"%s\"}\n",
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
-                    s.cache_budget_mib, s.moe_spec_recall_pct, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
+                    s.cache_budget_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
                     json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
@@ -332,8 +332,6 @@ static void print_usage(const char * argv0) {
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
         "      --prefetch K        temporally prefetch the next K layers' experts (needs the cache)\n"
-        "      --spec-gate         predict+prefetch the next layer's experts via its router (needs the cache)\n"
-        "      --spec-recall-min P auto-disable --spec-gate below P%% router recall (default 75, 0=never)\n"
         "      --list-archs        print supported MoE architectures and exit\n"
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
@@ -403,10 +401,6 @@ int main(int argc, char ** argv) {
             cfg.moe.prefetch_layers = std::atoi(next("--prefetch"));
         else if (a == "--prefetch-sync") // debug: complete speculative reads synchronously
             cfg.moe.prefetch_sync = true;
-        else if (a == "--spec-gate")
-            cfg.moe.spec_gate = true;
-        else if (a == "--spec-recall-min") // auto-disable spec-gating below this recall %% (0 = never)
-            cfg.moe.spec_recall_min_pct = std::atoi(next("--spec-recall-min"));
         else if (a == "--list-archs") {
             std::printf("supported MoE architectures:\n");
             for (int k = 0; k < n_moe_recipes(); ++k)
@@ -428,7 +422,6 @@ int main(int argc, char ** argv) {
     if (!cfg.progress) cfg.progress = env_int("BMOE_PROGRESS", 0) != 0;
     if (!cfg.moe.overlap) cfg.moe.overlap = env_int("BMOE_OVERLAP", 0) != 0;
     if (cfg.moe.prefetch_layers == 0) cfg.moe.prefetch_layers = env_int("BMOE_PREFETCH", 0);
-    if (!cfg.moe.spec_gate) cfg.moe.spec_gate = env_int("BMOE_SPEC_GATE", 0) != 0;
     if (cfg.n_expert_used == 0) cfg.n_expert_used = env_int("BMOE_N_EXPERT_USED", 0);
 
     if (cfg.model_path.empty()) {
@@ -509,17 +502,10 @@ int main(int argc, char ** argv) {
         if (cfg.moe.overlap)
             std::printf("moe-overlap: stall %.3f s/token (flash reads overlapped with FFN compute)\n",
                         s.moe_stall_s_per_token);
-        if (cfg.moe.prefetch_layers > 0 || cfg.moe.spec_gate)
+        if (cfg.moe.prefetch_layers > 0)
             std::printf("moe-prefetch: %.1f MiB speculative, %lld/%lld experts useful (%.0f%%)\n", s.moe_spec_read_mib,
                         s.moe_spec_useful, s.moe_spec_experts,
                         s.moe_spec_experts > 0 ? 100.0 * s.moe_spec_useful / s.moe_spec_experts : 0.0);
-        if (cfg.moe.spec_gate && s.moe_spec_recall_pct >= 0.0) {
-            if (s.moe_spec_auto_off)
-                std::printf("moe-spec-gate: %.0f%% router prediction recall (auto-disabled below %d%%)\n",
-                            s.moe_spec_recall_pct, cfg.moe.spec_recall_min_pct);
-            else
-                std::printf("moe-spec-gate: %.0f%% router prediction recall\n", s.moe_spec_recall_pct);
-        }
     }
     return 0;
 }

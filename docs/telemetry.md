@@ -59,19 +59,6 @@ moe-prefetch: <mib> MiB speculative, <useful>/<prefetched> experts useful (<pct>
 `<prefetched>` the experts fully read ahead, and `<useful>` how many of those a later routing
 actually hit. See [prefetch.md](prefetch.md).
 
-With `--spec-gate` a `moe-spec-gate:` line is also added:
-
-```
-moe-spec-gate: <pct>% router prediction recall
-moe-spec-gate: <pct>% router prediction recall (auto-disabled below <P>%)
-```
-
-the fraction of experts the speculative router predicted that the layer actually routed; the
-`(auto-disabled below <P>%)` suffix appears when the recall self-governor turned the feature off
-mid-run. Note the spec-gating prediction runs on its own worker thread, so its CPU time is **not**
-part of the `compute` residual above — only the eval-thread hidden-state snapshot is. See
-[spec-gating.md](spec-gating.md).
-
 Under `--overlap` the `moe-stream:` line additionally reports `stall_s/tok=<s>` — the mean
 wall time per token that compute threads waited for expert reads to complete. It is `0` in
 serial mode (where the read wait is already folded into decode time).
@@ -129,7 +116,7 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "prefill_s":<float>,"prefill_tps":<float>,"load_s":<float>,"cache_hit_pct":<float>,
             "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,
-            "spec_recall_pct":<float>,"stall_s_tok":<float>,"mgmt_s_tok":<float>,"text":"<string>"}
+            "stall_s_tok":<float>,"mgmt_s_tok":<float>,"text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
 
@@ -139,8 +126,8 @@ prefilled **this turn** (the suffix after any reused KV prefix), and `n_past` is
 length after the turn — so a multi-turn UI can show both per-turn prefill cost and how full the
 context is. `prefill_tps` is the prompt prefill rate; `compute_s_tok`/`io_s_tok` are the per-token
 AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not just the last token).
-`cache_resident_mib`/`cache_budget_mib` track the (possibly auto-adapting) cache,
-`spec_recall_pct` the spec-gating predictor (`-1` when off), and `stall_s_tok`/`mgmt_s_tok` the
-per-token overlap stall and cache-management cost. `BMOE_ERROR` with `fatal:false` is a rejected
+`cache_resident_mib`/`cache_budget_mib` track the (possibly auto-adapting) cache, and
+`stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and cache-management cost. `BMOE_ERROR`
+with `fatal:false` is a rejected
 request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
 `fatal:true` means the process is ending.

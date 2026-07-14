@@ -20,7 +20,7 @@ function Run-Cfg($tag, $model, $flags) {
   $t0 = Get-Date
   $log = & adb shell "sh $DEV/bench-run.sh $NPred $model $DEV/$tag.csv $DEV/$tag.metrics $flags" 2>&1
   $dt = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
-  $log | Where-Object { $_ -match "generation:|prefill:|moe-stream:|moe-cache:|moe-overlap:|moe-spec-gate:|peak_rss|mem_avail_floor|batt_temp_max|cpu_temp_max" } | ForEach-Object { Write-Host "  $_" }
+  $log | Where-Object { $_ -match "generation:|prefill:|moe-stream:|moe-cache:|moe-overlap:|moe-prefetch:|peak_rss|mem_avail_floor|batt_temp_max|cpu_temp_max" } | ForEach-Object { Write-Host "  $_" }
   Write-Host "  wall(incl load)=${dt}s"
   $log | Out-File -FilePath "$OutDir\$tag.log" -Encoding utf8
   & adb pull "$DEV/$tag.csv" "$OutDir\$tag.csv" 2>&1 | Out-Null
@@ -28,7 +28,7 @@ function Run-Cfg($tag, $model, $flags) {
   if (Test-Path "$OutDir\$tag.csv") { Write-Host "  -> $tag.csv + .metrics + .log saved" } else { Write-Host "  !! no CSV for $tag" }
 }
 
-# Per-model config: fixed reference, adaptive (uncapped), adaptive (capped at the reference), spec-gate.
+# Per-model config: fixed reference, adaptive (uncapped), adaptive (capped at the reference).
 $matrix = @(
   @{ n = "qwen";  m = $QWEN;  cap = 4000 },
   @{ n = "gemma"; m = $GEMMA; cap = 2000 }
@@ -38,6 +38,5 @@ foreach ($e in $matrix) {
   Run-Cfg "${n}_base_ov"    $m "--moe-stream --cache-mb $cap --io-threads 4 --overlap"
   Run-Cfg "${n}_auto_ov"    $m "--moe-stream --cache-mb auto --io-threads 4 --overlap"
   Run-Cfg "${n}_autocap_ov" $m "--moe-stream --cache-mb auto --cache-ceil-mb $cap --io-threads 4 --overlap"
-  Run-Cfg "${n}_sg_ov"      $m "--moe-stream --cache-mb $cap --io-threads 4 --overlap --spec-gate"
 }
 Write-Host "ALL DONE"

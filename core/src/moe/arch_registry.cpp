@@ -11,53 +11,27 @@ namespace bmoe {
 // `ffn_gate_up_exps`) name two expert tensors instead of three; that is still one row,
 // with the fused suffix in the first slot and a nullptr tail.
 static const MoeRecipe k_recipes[] = {
-    // Speculative-gating fields: qwen3moe/qwen2moe route on the post-norm hidden state
-    // (node "ffn_norm-<il>"), so the observed node is the router input directly (kNone).
-    {"qwen3moe",
-     {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"},
-     "ffn_norm-%d",
-     "ffn_gate_inp",
-     nullptr,
-     RouterPre::kNone},
-    {"qwen2moe",
-     {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"},
-     "ffn_norm-%d",
-     "ffn_gate_inp",
-     nullptr,
-     RouterPre::kNone},
+    {"qwen3moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    {"qwen2moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
     // qwen35moe (Qwen3.5 MoE, e.g. 35B-A3B) is a hybrid attention/SSM stack: some layers run
     // full attention, others a Mamba-style SSM block, but every MoE layer names its experts
     // with the standard split suffixes, so streaming is one row. There is also an always-on
     // shared expert (ffn_*_shexp) that stays mmap-resident and lowers the streamed fraction.
-    // Speculative gating is left unwired (router_input_fmt=nullptr): the observed router-input
-    // node is not uniform across the hybrid layer types, so --spec-gate refuses here rather
-    // than guessing. Basic streaming and the auto cache are unaffected.
-    {"qwen35moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}, nullptr, nullptr, nullptr, RouterPre::kNone},
+    {"qwen35moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
     // gemma4 (Gemma 4 MoE, e.g. 26B-A4B) fuses gate+up into blk.<il>.ffn_gate_up_exps —
     // to the streamer just an expert tensor with a 2x per-expert stride. The per-expert
     // ffn_down_exps.scale, the router (ffn_gate_inp.{weight,scale}) and the always-on
     // shared expert (the layer's dense ffn_{gate,up,down}) match no suffix and stay mmap-
     // resident; the resident shared expert lowers the streamed fraction — see
     // docs/limitations.md.
-    // Gemma's router runs on the raw attn_out ("attn_out-<il>") with an explicit
-    // rms_norm * 1/sqrt(n_embd) * per-channel-scale (ffn_gate_inp.scale) before the gate.
-    {"gemma4",
-     {"ffn_gate_up_exps", "ffn_down_exps", nullptr},
-     "attn_out-%d",
-     "ffn_gate_inp",
-     "ffn_gate_inp", // the ".scale" tail is added by the capture matcher
-     RouterPre::kRmsScaled},
+    {"gemma4", {"ffn_gate_up_exps", "ffn_down_exps", nullptr}},
     // gpt-oss (OpenAI MoE, e.g. gpt-oss-20b/120b: 24/36 layers, 128 experts, top-4) is a purely
     // routed MoE with the standard split suffixes, so streaming is one row — and, unlike gemma4,
     // it keeps NO shared/dense expert resident, so the streamed fraction is as high as qwen3moe's.
     // Its weights ship in MXFP4; the streamer is quant-agnostic (the per-expert stride is read from
     // the tensor's nb[2], whatever the block layout), so the native MXFP4 layout needs no special
     // handling and the split-layout gate (qwen3moe) already covers this streaming path.
-    // Speculative gating is left unwired (router_input_fmt=nullptr): gpt-oss's router carries a bias
-    // (ffn_gate_inp.bias) and uses OAI-SwiGLU softmax-weight gating, neither of which the spec-gate
-    // router replay models — so it refuses here rather than mispredicting. Basic streaming and the
-    // auto cache are unaffected.
-    {"gpt-oss", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}, nullptr, nullptr, nullptr, RouterPre::kNone},
+    {"gpt-oss", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
 };
 
 static const int k_n_recipes = (int) (sizeof(k_recipes) / sizeof(k_recipes[0]));

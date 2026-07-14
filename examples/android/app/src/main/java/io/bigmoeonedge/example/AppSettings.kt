@@ -20,7 +20,6 @@ data class AppSettings(
     val oDirect: Boolean = true,        // bypass the page cache
     val overlap: Boolean = true,        // read the next experts while the current layer computes
     val prefetchLayers: Int = 0,        // temporal prefetch depth K (0 = off); needs the cache
-    val specGate: Boolean = false,      // predict next layer's experts via its router; needs the cache
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
 ) {
     /**
@@ -56,10 +55,9 @@ data class AppSettings(
             a += listOf("--io-threads", ioThreads.toString())
             if (!oDirect) a += "--no-odirect"
             if (overlap) a += "--overlap"
-            // Auto sizing is a live LRU cache, so it satisfies the prefetch/spec-gate cache requirement.
+            // Auto sizing is a live LRU cache, so it satisfies the prefetch cache requirement.
             val cacheOn = cacheMb == CACHE_AUTO || cacheMb > 0
             if (prefetchLayers > 0 && cacheOn) a += listOf("--prefetch", prefetchLayers.toString())
-            if (specGate && cacheOn) a += "--spec-gate"
         }
         return a
     }
@@ -72,7 +70,7 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, oDirect, overlap,
-               prefetchLayers, specGate)
+               prefetchLayers)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -83,7 +81,6 @@ data class AppSettings(
             .putInt("nExpertUsed", nExpertUsed)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
             .putBoolean("overlap", overlap).putInt("prefetchLayers", prefetchLayers)
-            .putBoolean("specGate", specGate)
             .putBoolean("thinking", thinking)
             .apply()
     }
@@ -123,7 +120,6 @@ data class AppSettings(
                 oDirect = p.getBoolean("oDirect", d.oDirect),
                 overlap = p.getBoolean("overlap", d.overlap),
                 prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
-                specGate = p.getBoolean("specGate", d.specGate),
                 thinking = p.getBoolean("thinking", d.thinking),
             )
         }
