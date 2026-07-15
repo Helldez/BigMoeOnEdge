@@ -1,8 +1,9 @@
 // The cache governor is pure policy, so its device is a function: "faults iff the budget exceeds
 // what I concede". That makes the properties that actually matter testable without a phone —
-// convergence, that it never cuts below what a token demands, that it stops oscillating — none of
-// which a byte-identity gate can see, because the governor changes what is resident and never what
-// is computed.
+// that it converges just under an unobservable concession and stops, that it keeps cutting for as
+// long as the device keeps taking, that it never cuts below the layer it must stage — none of which
+// a byte-identity gate can see, because the governor changes what is resident and never what is
+// computed.
 
 #include "bmoe/cache_governor.h"
 
@@ -124,15 +125,26 @@ void test_cooldown_collapses_a_burst() {
     check(g.cuts() == 1, "one cut for one burst");
 }
 
-void test_never_cuts_below_a_token_demand() {
-    const size_t demand = 500 * MiB;
+// Regression, measured on gpt-oss-120b (docs/bench-data/2026-07-15-pressure/): flooring the loop at
+// one TOKEN's working set (1815 MiB there) pinned the budget one cut below the ceiling, inside a war
+// the reflex could see and not act on. The floor is mechanical — one LAYER — and pressure outranks
+// it: a budget the device refuses is not worth defending at any hit rate.
+void test_cuts_below_a_token_working_set_when_the_device_refuses_it() {
+    const size_t layer = 50 * MiB;   // the mechanical floor: the layer being staged
+    const size_t token = 1815 * MiB; // one token's working set — informative, not a floor
     CacheGovernor g(params(2000 * MiB, 2000 * MiB, /*min_cap*/ 16 * MiB));
-    // Sustained, unrelenting reclaim: the device wants everything back.
     for (int i = 0; i < 500; ++i)
-        g.on_token(reclaiming(0.2, demand));
-    check(g.cap() == demand, "the floor is one token's routed working set, not zero");
-    // Below the floor a smaller cache cannot buy anything: the misses would be the model's own
-    // demand. Stopping there is the difference between a small cache and a broken one.
+        g.on_token(reclaiming(0.2, layer));
+    check(g.cap() < token, "sustained reclaim cuts below one token's working set");
+    check(g.cap() == layer, "and stops at the mechanical floor, not at zero");
+}
+
+void test_floor_is_respected_when_it_is_reachable() {
+    const size_t layer = 50 * MiB;
+    CacheGovernor g(params(2000 * MiB, 2000 * MiB, /*min_cap*/ 16 * MiB));
+    for (int i = 0; i < 500; ++i)
+        g.on_token(reclaiming(0.2, layer));
+    check(g.cap() >= layer, "never cuts below the layer it must stage");
 }
 
 void test_growth_is_additive_and_capped() {
@@ -232,7 +244,8 @@ int main() {
     test_fault_reflex_needs_a_baseline();
     test_small_fault_counts_are_noise();
     test_cooldown_collapses_a_burst();
-    test_never_cuts_below_a_token_demand();
+    test_cuts_below_a_token_working_set_when_the_device_refuses_it();
+    test_floor_is_respected_when_it_is_reachable();
     test_growth_is_additive_and_capped();
     test_growth_retreats_from_a_known_ceiling();
     test_probe_forgets_a_stale_ceiling();

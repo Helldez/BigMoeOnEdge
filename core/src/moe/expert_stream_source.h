@@ -206,12 +206,20 @@ private:
     bool cache_dynamic_ = false;
     double resident_frac_ = -1.0; // last sampled cache residency; -1 = never measured
 
-    // One token's routed working set, measured: the bytes demanded between two visits to the same
-    // layer. Below it, every token evicts what the next one needs and the cache can only thrash —
-    // which is what cache_min_mb encodes as a static guess. This is the same bound, discovered per
-    // model and top-k at runtime instead, and it is what floors the governor.
+    // Two measured demands, and the difference between them decides the whole policy.
+    //
+    // token_demand_: the bytes routed between two visits to the same layer — one token's working
+    // set. Below it the cache stops holding anything BETWEEN tokens, so its hit rate collapses to
+    // inter-token correlation only. Informative (it says where hits start), never a floor: measured
+    // on gpt-oss it is 1815 MiB, more than the device concedes, so flooring there just pins the
+    // budget inside a war it cannot win. See bmoe/cache_governor.h.
+    //
+    // layer_demand_: the largest single layer's routed bytes. THIS is the floor, because it is
+    // mechanical — the cache has to hold the layer it is staging right now.
     size_t demand_accum_ = 0;
     size_t token_demand_ = 0;
+    size_t layer_demand_accum_ = 0;
+    size_t layer_demand_ = 0;
     int last_il_ = -1;
     std::vector<void *> lbuf_[MoeRecipe::max_exps];
     std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];

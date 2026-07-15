@@ -326,11 +326,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             CacheGovernorParams gp;
             gp.user_cap = (size_t) configured;
             gp.initial = (size_t) configured;
-            // Until a token has been routed, the streamer cannot know the working set, so hold the
-            // configured floor. validate() rejects a sub-floor cache_mb without --force-cache, and
-            // an operator who forced one meant it: never let the governor undo that choice upward.
-            gp.min_cap =
-                std::min<size_t>((size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull, (size_t) configured);
+            // Holds only until the streamer has staged a layer and can report the real mechanical
+            // floor. It must stay small: cache_min_mb would put a 1500 MiB floor here, which on a
+            // model the device concedes less to is just the pinned-inside-a-war failure wearing a
+            // rounder number. Being briefly too small costs hits for a few tokens; being too big
+            // costs the war this loop exists to end.
+            gp.min_cap = std::min<size_t>(64ull * 1024 * 1024, (size_t) configured);
             im.gov = std::make_unique<CacheGovernor>(gp);
         }
 
@@ -707,7 +708,7 @@ RunResult Session::generate(const GenerateRequest & req,
                 CacheSignals sig;
                 sig.majflt = m.majflt;
                 sig.resident_frac = st.cache_resident_frac;
-                sig.floor = (size_t) st.token_demand_bytes;
+                sig.floor = (size_t) st.layer_demand_bytes;
                 const CacheGovernor::Decision d = im.gov->on_token(sig);
                 if (d.changed) im.source.set_cache_budget(d.cap);
             }
@@ -748,6 +749,7 @@ RunResult Session::generate(const GenerateRequest & req,
         s.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
         s.cache_resizes = st.cache_resizes;
         s.token_demand_mib = st.token_demand_bytes / (1024.0 * 1024.0);
+        s.layer_demand_mib = st.layer_demand_bytes / (1024.0 * 1024.0);
         s.cache_cuts = im.gov ? im.gov->cuts() : 0;
         s.moe_spec_read_mib = ((long long) st.spec_read_bytes - prev_spec_bytes) / (1024.0 * 1024.0);
         s.moe_spec_experts = st.spec_experts - prev_spec_experts;

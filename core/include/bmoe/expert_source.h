@@ -75,9 +75,13 @@ public:
         // throttled, sensing off, or a platform that cannot report). Below 1 means the kernel is
         // reclaiming the cache out from under us.
         double cache_resident_frac = -1.0;
-        // Bytes of distinct experts one token routes, measured (0 = not yet known). The floor a
-        // cache must clear to hold anything between tokens.
+        // Bytes of distinct experts one token routes, measured (0 = not yet known). What a cache
+        // must clear to hold anything BETWEEN tokens — where hits start, not a floor to defend:
+        // on a >RAM model it can exceed what the device concedes. See bmoe/cache_governor.h.
         uint64_t token_demand_bytes = 0;
+        // Bytes the widest single layer routes, measured (0 = not yet known). The mechanical floor:
+        // the cache must hold the layer being staged.
+        uint64_t layer_demand_bytes = 0;
     };
     virtual Stats stats() const = 0;
 };

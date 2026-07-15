@@ -614,10 +614,14 @@ void ExpertStreamSource::sample_residency() {
 void ExpertStreamSource::account_demand(int il, int n_unique) {
     if (il <= last_il_) {
         token_demand_ = demand_accum_;
+        layer_demand_ = layer_demand_accum_;
         demand_accum_ = 0;
+        layer_demand_accum_ = 0;
     }
     last_il_ = il;
-    demand_accum_ += (size_t) n_unique * entry_bytes(il);
+    const size_t bytes = (size_t) n_unique * entry_bytes(il);
+    demand_accum_ += bytes;
+    layer_demand_accum_ = std::max(layer_demand_accum_, bytes); // the widest layer of this pass
 }
 
 // Explicit budget change from outside a decode (memory-pressure callback, the governor, or the
@@ -1112,6 +1116,7 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.cache_resizes = cache_resizes_;
     s.cache_resident_frac = resident_frac_;
     s.token_demand_bytes = (uint64_t) token_demand_;
+    s.layer_demand_bytes = (uint64_t) layer_demand_;
     return s;
 }
 

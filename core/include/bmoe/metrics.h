@@ -75,6 +75,8 @@ struct RunSummary {
     // hits from inter-token routing correlation only. Reading it against cache_budget_mib is how a
     // budget stops being a guess. 0 when streaming is off or nothing was routed.
     double token_demand_mib = 0.0;
+    // The widest layer's routed bytes: the mechanical floor the governor may never cut below.
+    double layer_demand_mib = 0.0;
     // Times --cache-dynamic cut the budget because the device was reclaiming the cache (0 when off).
     long long cache_cuts = 0;
 

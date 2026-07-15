@@ -13,10 +13,9 @@ CacheGovernor::CacheGovernor(const CacheGovernorParams & p) : p_(p) {
     since_cut_ = p_.cut_cooldown;
 }
 
-// The floor is one token's routed working set once the streamer has measured it, and the
-// configured minimum until then. Never above the cap the user allowed: if a single token already
-// demands more than the whole budget, the cache is pathological whatever we do here, and the
-// governor's job is only to stop making it worse.
+// The mechanical floor: the largest layer we must be able to stage, once the streamer has measured
+// it, and the configured minimum until then. Deliberately NOT one token's working set — see the
+// note in the header. Never above the cap the user allowed.
 size_t CacheGovernor::floor_of(const CacheSignals & s) const {
     return std::min(s.floor ? s.floor : p_.min_cap, p_.user_cap);
 }
@@ -47,8 +46,9 @@ CacheGovernor::Decision CacheGovernor::on_token(const CacheSignals & s) {
 
     if (pressure) {
         calm_ = 0;
-        // Below the floor a smaller cache cannot help: the misses are the model's own demand, not
-        // the kernel's doing, and cutting further only trades hits for the same war.
+        // Keep cutting for as long as the device keeps taking memory, all the way down to the
+        // mechanical floor. There is no budget worth defending against a kernel that will not
+        // concede it: the hits a smaller cache gives up are bounded, the war is not.
         if (since_cut_ >= p_.cut_cooldown && cap_ > floor) {
             ceiling_ = cap_;
             cap_ = std::max((size_t) ((double) cap_ * p_.cut_factor), floor);

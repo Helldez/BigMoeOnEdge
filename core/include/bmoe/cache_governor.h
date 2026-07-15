@@ -38,11 +38,29 @@ struct CacheSignals {
     // before those pages fault back and cost a read.
     double resident_frac = -1.0;
 
-    // One token's routed working set in bytes, measured by the streamer (0 = not yet known). The
-    // floor: below it every token evicts what the next one needs, so the cache can only thrash.
-    // Measured rather than assumed, because it is a property of the model and top-k, not the device.
+    // The largest single layer's routed working set in bytes, measured by the streamer (0 = not yet
+    // known). This is the floor, and it is a mechanical one: the cache must be able to hold the
+    // layer currently being staged. It is NOT "one token's working set" — see the note below.
     size_t floor = 0;
 };
+
+// A note on the floor, because the obvious choice is wrong and it was measured to be wrong.
+//
+// The tempting floor is one TOKEN's routed working set: below it, every token evicts what the next
+// one needs, so the cache stops holding anything between tokens and its hit rate collapses. That is
+// true, and it is what MoeStreamConfig::cache_min_mb encodes. It is still the wrong floor.
+//
+// Measured on gpt-oss-120b at top-4 (docs/bench-data/2026-07-15-pressure/): one token routes
+// 1815 MiB. Flooring the governor there pinned the budget at exactly 1815 MiB — a 9% cut from 2000
+// — where it bought an 8% hit rate and went on losing the memory war at 0.37 tok/s, with the fault
+// reflex firing into a floor that would not yield. Meanwhile a hand-set 1000 MiB budget, far BELOW
+// that floor, runs the same model well.
+//
+// The flaw is the comparison. "Below the floor the cache can only thrash" weighs the hits lost and
+// ignores that the memory itself is the cost: an unaffordable cache does not merely fail to earn
+// its hits, it starts a reclaim war that costs several times what any hit rate could return. Losing
+// inter-token hits is bounded and cheap; losing the war is neither. So usefulness must yield to
+// pressure, and the only floor that may not yield is the mechanical one.
 
 struct CacheGovernorParams {
     size_t user_cap = 0; // never exceed: the configured budget (--cache-mb, or the auto ceiling)
