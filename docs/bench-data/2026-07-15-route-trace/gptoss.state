@@ -1,0 +1,22 @@
+--- BEFORE ---
+date: Wed Jul 15 09:09:48 CEST 2026
+policy0: scaling_max=1900800 hw_max=3321600 cur=806400
+policy6: scaling_max=1651200 hw_max=3801600 cur=806400
+meminfo: MemFree:         3664856 kB MemAvailable:    6875628 kB Cached:          3360792 kB 
+battery_temp_dC: 
+Thermal Status: 2
+	Temperature{mValue=99.6, mType=0, mName=CPU0, mStatus=0}
+	Temperature{mValue=97.3, mType=0, mName=CPU1, mStatus=0}
+	Temperature{mValue=99.6, mType=0, mName=CPU2, mStatus=0}
+	Temperature{mValue=99.6, mType=0, mName=CPU3, mStatus=0}
+--- AFTER ---
+date: Wed Jul 15 09:13:33 CEST 2026
+policy0: scaling_max=1747200 hw_max=3321600 cur=691200
+policy6: scaling_max=1651200 hw_max=3801600 cur=806400
+meminfo: MemFree:         3186204 kB MemAvailable:    7184292 kB Cached:          4164384 kB 
+battery_temp_dC: 
+Thermal Status: 2
+	Temperature{mValue=99.6, mType=0, mName=CPU0, mStatus=0}
+	Temperature{mValue=97.3, mType=0, mName=CPU1, mStatus=0}
+	Temperature{mValue=99.6, mType=0, mName=CPU2, mStatus=0}
+	Temperature{mValue=99.6, mType=0, mName=CPU3, mStatus=0}
