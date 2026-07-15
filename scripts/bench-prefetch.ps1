@@ -2,7 +2,7 @@
 # docs/bench-data/2026-07-12 (Qwen: cache 4000, lane 4, overlap; Gemma: cache 2000, lane 4,
 # overlap). One matrix per model: base / +prefetch.
 param(
-  [string]$OutDir = "C:\Users\raffa\Documents\BigMoeOnEdge\.bench-pr23",
+  [string]$OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) ".bench-pr23"),
   [int]$NPred = 256,
   [int]$CooldownSec = 45
 )

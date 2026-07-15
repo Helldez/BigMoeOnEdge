@@ -4,7 +4,7 @@
 # bench-analyze.py picks them up) but with today's four configs per model. Qwen uses a 4000 MiB
 # reference/ceiling, Gemma a 2000 MiB one (4000 OOMs on this device).
 param(
-  [string]$OutDir = "C:\Users\raffa\Documents\BigMoeOnEdge\.bench",
+  [string]$OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) ".bench"),
   [int]$NPred = 256,
   [int]$CooldownSec = 45
 )

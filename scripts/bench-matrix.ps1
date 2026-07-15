@@ -1,6 +1,6 @@
 # On-device benchmark matrix driver. Invokes the instrumented device-side bench-run.sh.
 param(
-  [string]$OutDir = "C:\Users\raffa\Documents\BigMoeOnEdge\.bench",
+  [string]$OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) ".bench"),
   [int]$NPred = 256,
   [int]$CooldownSec = 45   # let the SoC cool to a similar baseline before each run
 )
