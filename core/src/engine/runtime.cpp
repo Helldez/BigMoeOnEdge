@@ -13,7 +13,9 @@ namespace bmoe {
 RunResult run(const RunConfig & cfg,
               const std::function<void(const TokenMetrics &)> & on_token,
               IMetricsSink * sink,
-              IRouteTraceSink * route_trace) {
+              IRouteTraceSink * route_trace,
+              IComputeTraceSink * compute_trace,
+              IIoTraceSink * io_trace) {
     ValidationResult v = validate(cfg);
     if (!v) {
         RunResult r;
@@ -31,7 +33,7 @@ RunResult run(const RunConfig & cfg,
     sc.moe = cfg.moe;
 
     std::string error;
-    std::unique_ptr<Session> session = Session::open(sc, error, route_trace);
+    std::unique_ptr<Session> session = Session::open(sc, error, route_trace, compute_trace, io_trace);
     if (!session) {
         RunResult r;
         r.error = error;

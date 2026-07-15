@@ -1,6 +1,7 @@
 #include "bmoe/session.h"
 #include "bmoe/recipe.h"
 #include "bmoe/route_trace.h"
+#include "bmoe/decode_trace.h"
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
@@ -106,6 +107,13 @@ struct Session::Impl {
     IRouteTraceSink * route_trace = nullptr;
     int trace_turn = 0;
 
+    // Decode traces (diagnostics): null unless requested. The compute trace needs no streaming —
+    // it measures the graph, which a dense mmap run has too; the I/O trace needs the streamer,
+    // since there are no engine-issued reads without it. See bmoe/decode_trace.h.
+    IComputeTraceSink * compute_trace = nullptr;
+    IIoTraceSink * io_trace = nullptr;
+    std::vector<IoTraceRow> io_rows_scratch;
+
     std::atomic<bool> cancel_requested{false};
 
     ~Impl() {
@@ -139,7 +147,11 @@ void Session::cancel() {
     impl_->cancel_requested.store(true, std::memory_order_relaxed);
 }
 
-std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & error, IRouteTraceSink * route_trace) {
+std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
+                                       std::string & error,
+                                       IRouteTraceSink * route_trace,
+                                       IComputeTraceSink * compute_trace,
+                                       IIoTraceSink * io_trace) {
     auto fail = [&](std::string msg) -> std::unique_ptr<Session> {
         error = std::move(msg);
         return nullptr;
@@ -226,7 +238,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & 
     cparams.n_ctx = cfg.n_ctx;
     cparams.n_batch = cfg.n_batch;
     cparams.n_ubatch = cfg.n_batch;
-    if (cfg.moe.enabled) {
+    // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
+    // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
+    // mmap baseline the streamed numbers are argued against.
+    if (cfg.moe.enabled || compute_trace) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = im.hook.get();
     }
@@ -317,6 +332,11 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & 
             route_trace->on_static(st);
         }
 
+        if (io_trace) {
+            im.io_trace = io_trace;
+            im.source.set_io_trace(true);
+        }
+
         if (cfg.moe.overlap) {
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
             im.source.enable_overlap_hook();
@@ -326,6 +346,26 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & 
         }
 
         llama_memory_clear(llama_get_memory(ctx), true); // discard warm-up KV
+    }
+
+    // Decode traces. Outside the streaming block on purpose: the compute trace measures the graph,
+    // which exists with or without the streamer, so a dense mmap baseline can be traced and
+    // compared. The I/O trace was armed above (it needs the source) and only reports here.
+    if (compute_trace || im.io_trace) {
+        DecodeTraceStatic st;
+        st.model = cfg.model_path;
+        st.arch = im.arch;
+        st.n_layer = im.n_layer;
+        st.n_threads = cfg.n_threads;
+        st.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
+        st.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
+        st.overlap = cfg.moe.enabled && cfg.moe.overlap;
+        if (compute_trace) {
+            im.compute_trace = compute_trace;
+            im.hook->set_compute_trace(true);
+            compute_trace->on_static(st);
+        }
+        if (im.io_trace) im.io_trace->on_static(st);
     }
 
     im.load_seconds = secs(t_load0, clock_t_::now());
@@ -479,15 +519,40 @@ RunResult Session::generate(const GenerateRequest & req,
     // Route trace: frame one decode's rows, then hand them to the sink once it has returned —
     // never from inside the callback, which runs on a compute thread mid-graph. `base_pos` is
     // the context position of the batch's first token, so prefill rows carry real step numbers.
+    // The frame the I/O rows are stamped with at flush; the other traces carry their own.
+    int trace_phase = 0, trace_step = 0;
     auto trace_begin = [&](int base_pos, int n_tokens, int phase) {
         if (im.route_trace) im.hook->begin_trace_batch(base_pos, n_tokens, phase, im.trace_turn);
+        // A node is computed once for the whole batch, not per token, so a prefill chunk's graph is
+        // attributed to its last position rather than pretending to split across the chunk.
+        if (im.compute_trace) im.hook->begin_compute_batch(base_pos + n_tokens - 1, phase, im.trace_turn);
+        trace_phase = phase;
+        trace_step = base_pos + n_tokens - 1;
     };
     auto trace_flush = [&]() {
-        if (!im.route_trace) return;
-        im.hook->end_trace_batch();
-        std::vector<RouteTraceRow> & rows = im.hook->trace_rows();
-        if (!rows.empty()) im.route_trace->on_rows(rows.data(), rows.size());
-        rows.clear();
+        if (im.route_trace) {
+            im.hook->end_trace_batch();
+            std::vector<RouteTraceRow> & rows = im.hook->trace_rows();
+            if (!rows.empty()) im.route_trace->on_rows(rows.data(), rows.size());
+            rows.clear();
+        }
+        if (im.compute_trace) {
+            std::vector<ComputeTraceRow> & rows = im.hook->compute_rows();
+            if (!rows.empty()) im.compute_trace->on_rows(rows.data(), rows.size());
+            rows.clear();
+        }
+        if (im.io_trace) {
+            // The reads carry no frame of their own — a lane does not know which token it serves —
+            // so stamp them with the decode they were drained after.
+            im.source.take_io_trace_rows(im.io_rows_scratch);
+            for (IoTraceRow & r : im.io_rows_scratch) {
+                r.turn = im.trace_turn;
+                r.phase = trace_phase;
+                r.step = trace_step;
+            }
+            if (!im.io_rows_scratch.empty()) im.io_trace->on_rows(im.io_rows_scratch.data(), im.io_rows_scratch.size());
+            im.io_rows_scratch.clear();
+        }
     };
 
     // ── prefill (chunked by n_batch; positions auto-continue from the reused prefix) ──

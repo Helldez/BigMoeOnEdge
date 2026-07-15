@@ -20,9 +20,11 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
 - `read_mb` is the flash bytes read this token; `stall_ms` is the overlap-only wall time compute
   lost to reads (0 in serial mode).
 - `wall_ms` = total token time; `io_ms` = flash read time. `compute_ms` is a **residual, not a
-  measured quantity**: there is no clock around llama.cpp's matmul kernels (adding one would mean
-  patching the submodule), so compute is whatever wall time is left after the measured terms are
-  subtracted — `wall_ms − io_ms − mgmt_ms` in serial, `wall_ms − stall_ms − mgmt_ms` under overlap.
+  measured quantity**: no clock runs around llama.cpp's matmul kernels in a normal run, so compute
+  is whatever wall time is left after the measured terms are subtracted — `wall_ms − io_ms −
+  mgmt_ms` in serial, `wall_ms − stall_ms − mgmt_ms` under overlap. When that residual is the
+  number in question, `--compute-trace` measures it directly instead (see [Decode
+  traces](#decode-traces)) — at a cost that makes it a diagnostic, not telemetry.
   In serial mode `io_ms` is the wall time blocked on reads (a subset of `wall_ms`). Under
   `--overlap` its meaning changes: it is the **sum of per-lane busy time**, so it can exceed
   `wall_ms` because lanes read in parallel with compute. Use `stall_ms` for the wall time
@@ -234,3 +236,64 @@ total flash streamed this generation, and `stall_s_tok`/`mgmt_s_tok` the per-tok
 cache-management cost. `BMOE_ERROR` with `fatal:false` is a rejected
 request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
 `fatal:true` means the process is ending.
+
+## Decode traces
+
+`--compute-trace PATH` and `--io-trace PATH` decompose the two terms the per-token CSV can only
+report as totals. The route trace answers *what the router asked for*; these answer *where the
+time went*, and they exist because the headline number they decompose is not measured at all —
+`compute_ms` is a residual, so every cost the engine does not itself clock (page faults, scheduler
+stalls, the matmuls) is pooled into it.
+
+Both are **diagnostics, not telemetry**, and both perturb what they measure. **A traced run is not
+a benchmark run.** Read the shares, not the absolutes.
+
+### `--compute-trace` — one row per graph node
+
+Returning `true` from the eval callback makes ggml compute exactly up to that node, synchronize,
+and call back — so the wall delta between consecutive boundaries is that node's real compute time,
+measured, not inferred. The same boundaries sample major faults, which is the point: on a >RAM
+model most of "compute" is flash faults, and no residual can show that. The cost is a barrier per
+node and no operator coalescing, so the total is inflated well above an untraced run.
+
+Unlike the other traces this one does **not** need `--moe-stream`: it times the graph, which a
+plain mmap run has too, so a dense baseline can be traced and compared against a streamed one.
+
+```
+# compute_trace v1
+# model=... arch=qwen3moe n_layer=48 n_threads=4 io_threads=4 o_direct=1 overlap=0
+turn,phase,step,seq,layer,op,name,wall_ns,majflt
+0,1,29,0,-1,GET_ROWS,embd,428500,0
+0,1,29,1,0,RMS_NORM,norm-0,19500,0
+```
+
+`seq` is the node's execution order in the decode; `layer` is parsed from the node name's `-<il>`
+suffix (`-1` = belongs to no layer: embeddings, the output head, masks). `op` and `name` are raw —
+which node is attention vs dense FFN vs expert matmul is naming policy that varies by
+architecture, so the engine reports what the graph said and the analysis script classifies.
+
+### `--io-trace` — one row per flash read
+
+Needs `--moe-stream` (no engine-issued reads without it). Records every `pread` the streamer
+issues, tagged with the `(layer, expert, projection)` it serves.
+
+```
+# io_trace v1
+turn,phase,step,layer,expert,proj,lane,spec,offset,req_bytes,read_bytes,latency_ns
+0,1,29,0,87,1,0,0,1526304,65536,69632,416800
+```
+
+`req_bytes` is what the caller wanted; `read_bytes` is the aligned window actually pulled — the
+gap is O_DIRECT alignment waste, and `read_bytes` is what effective bandwidth must be judged
+against. `spec=1` marks a speculative prefetch read. Rows are stamped with the decode they were
+drained after, so a read straddling a token boundary is attributed to the decode that flushed it.
+
+### Reading them
+
+`scripts/decode-analyze.py` (stdlib only) reports what each file is for:
+
+```bash
+scripts/decode-analyze.py compute ct.csv --layers   # share by op, fault attribution, by layer
+scripts/decode-analyze.py io io.csv --adjacent      # latency percentiles, size/bandwidth, lanes,
+                                                    # and the coalescing ceiling
+```

@@ -1,6 +1,7 @@
 #include "router_hook.h"
 
 #include "ggml.h"
+#include "../io/platform_io.h"
 
 #include <cstdio>
 #include <cstring>
@@ -153,7 +154,56 @@ bool RouterHook::c_eval(ggml_tensor * t, bool ask, void * user_data) {
     return static_cast<RouterHook *>(user_data)->on_eval(t, ask);
 }
 
+// Layer id from a node name. llama.cpp suffixes per-layer nodes with "-<il>"; anything else
+// (embeddings, the output head, the KQ mask) belongs to no layer and reports -1. Kept generic on
+// purpose: the trace must not carry a table of which node names a given architecture emits.
+static int node_layer(const char * name) {
+    const char * dash = std::strrchr(name, '-');
+    if (!dash || !dash[1]) return -1;
+    for (const char * p = dash + 1; *p; ++p)
+        if (*p < '0' || *p > '9') return -1;
+    return std::atoi(dash + 1);
+}
+
+void RouterHook::set_compute_trace(bool on) {
+    ctrace_on_ = on;
+    compute_rows_.clear();
+}
+
+void RouterHook::begin_compute_batch(int step, int phase, int turn) {
+    ctrace_step_ = step;
+    ctrace_phase_ = phase;
+    ctrace_turn_ = turn;
+    ctrace_seq_ = 0;
+    // The first node of the graph is charged from here, so the mark must be taken as close to
+    // llama_decode as the caller can manage — anything between them lands on node 0.
+    ctrace_mark_ = std::chrono::steady_clock::now();
+    ctrace_faults_ = pio::major_faults();
+}
+
 bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
+    // ── compute trace: close the previous node's interval, open the next ──
+    // Ordering matters: this runs before every other job below, so the timestamp is as close to the
+    // boundary as possible and the streamer's own work (load_layer, the residency query) lands
+    // inside the routing node's interval where it belongs — that IS what routing costs here.
+    if (ctrace_on_ && !ask) {
+        const auto now = std::chrono::steady_clock::now();
+        const uint64_t faults = pio::major_faults();
+        ComputeTraceRow r;
+        r.turn = ctrace_turn_;
+        r.phase = ctrace_phase_;
+        r.step = ctrace_step_;
+        r.seq = ctrace_seq_++;
+        r.layer = node_layer(t->name);
+        r.op = ggml_op_name(t->op);
+        r.name = t->name;
+        r.wall_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(now - ctrace_mark_).count();
+        r.majflt = faults - ctrace_faults_;
+        compute_rows_.push_back(std::move(r));
+        ctrace_mark_ = now;
+        ctrace_faults_ = faults;
+    }
+
     // ── capture: harvest expert weight tensors from every node's sources ──
     if (capturing_) {
         if (ask) {
@@ -179,7 +229,8 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // Only a traced run asks for the weight nodes: each extra ask is another barrier.
     int wl = -1;
     const bool is_weights = trace_on_ && match_weights(t->name, wl);
-    if (ask) return is_topk || is_weights;
+    // The compute trace wants every node isolated; the streamer only wants the routing ones.
+    if (ask) return ctrace_on_ || is_topk || is_weights;
 
     // Weights follow their layer's topk, so the pending record is already open; keep the last
     // one offered (match_weights explains why) and let the flush read it.

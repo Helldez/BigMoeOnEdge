@@ -13,6 +13,7 @@
 #include "bmoe/recipe.h"
 #include "bmoe/metrics.h"
 #include "bmoe/route_trace.h"
+#include "bmoe/decode_trace.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -350,6 +351,8 @@ int main(int argc, char ** argv) {
     RunConfig cfg;
     std::string csv_path;
     std::string route_trace_path;
+    std::string compute_trace_path;
+    std::string io_trace_path;
     bool session_mode = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -385,6 +388,10 @@ int main(int argc, char ** argv) {
             csv_path = next("--csv");
         else if (a == "--route-trace")
             route_trace_path = next("--route-trace");
+        else if (a == "--compute-trace")
+            compute_trace_path = next("--compute-trace");
+        else if (a == "--io-trace")
+            io_trace_path = next("--io-trace");
         else if (a == "--moe-stream")
             cfg.moe.enabled = true;
         else if (a == "--cache-mb") {
@@ -466,6 +473,25 @@ int main(int argc, char ** argv) {
         }
     }
 
+    // The compute trace works without streaming — timing the graph is what a dense mmap baseline
+    // needs too — so unlike the other two it carries no --moe-stream requirement.
+    std::unique_ptr<IComputeTraceSink> compute_trace;
+    if (!compute_trace_path.empty()) {
+        compute_trace.reset(make_csv_compute_trace_sink(compute_trace_path));
+        if (!compute_trace)
+            std::fprintf(stderr, "warning: could not open compute trace %s\n", compute_trace_path.c_str());
+    }
+
+    std::unique_ptr<IIoTraceSink> io_trace;
+    if (!io_trace_path.empty()) {
+        if (!cfg.moe.enabled) {
+            std::fprintf(stderr, "warning: --io-trace needs --moe-stream; no trace will be written\n");
+        } else {
+            io_trace.reset(make_csv_io_trace_sink(io_trace_path));
+            if (!io_trace) std::fprintf(stderr, "warning: could not open io trace %s\n", io_trace_path.c_str());
+        }
+    }
+
     // Interactive session: one persistent process serves many prompts over stdin, keeping the
     // model loaded and the expert cache warm between them. Prompts arrive as JSON requests, not
     // via -p. This is a superset of --progress output (BMOE_* lines), so it never streams inline.
@@ -493,7 +519,7 @@ int main(int argc, char ** argv) {
         }
     };
 
-    RunResult r = run(cfg, on_token, sink.get(), route_trace.get());
+    RunResult r = run(cfg, on_token, sink.get(), route_trace.get(), compute_trace.get(), io_trace.get());
     if (!r) {
         std::fprintf(stderr, "\nerror: %s\n", r.error.c_str());
         return 1;
@@ -511,9 +537,8 @@ int main(int argc, char ** argv) {
     // occupancy = CPU-time ÷ (wall × threads): ~1 is compute-bound, well under 1 is a throttled or
     // preempted core; major faults/token > 0 means dense weights re-faulted from flash inside decode.
     if (s.cpu_s_per_token > 0.0 || s.majflt_per_token > 0.0) {
-        const double occ = s.s_per_token > 0 && cfg.n_threads > 0
-                               ? s.cpu_s_per_token / (s.s_per_token * cfg.n_threads)
-                               : 0.0;
+        const double occ =
+            s.s_per_token > 0 && cfg.n_threads > 0 ? s.cpu_s_per_token / (s.s_per_token * cfg.n_threads) : 0.0;
         std::printf("compute: %.1f%% CPU occupancy (%.4f cpu-s/token over %d threads), %.2f major faults/token\n",
                     occ * 100.0, s.cpu_s_per_token, cfg.n_threads, s.majflt_per_token);
     }

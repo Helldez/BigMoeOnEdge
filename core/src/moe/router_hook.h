@@ -23,8 +23,10 @@
 
 #include "bmoe/recipe.h"
 #include "bmoe/route_trace.h"
+#include "bmoe/decode_trace.h"
 #include "expert_stream_source.h"
 
+#include <chrono>
 #include <cstdint>
 #include <unordered_set>
 #include <vector>
@@ -61,6 +63,22 @@ public:
     // thread mid-graph, so it must not do I/O — and the session drains them once llama_decode
     // has returned. Off by default: asking for the extra nodes costs a barrier per layer.
     void set_trace(bool on);
+
+    // ── compute trace (diagnostics; see bmoe/decode_trace.h) ────────────────────────
+    // When on, the hook asks for EVERY node, which makes ggml compute and synchronize each one
+    // alone — so the wall delta between consecutive callbacks is that node's real compute time,
+    // and the major-fault delta across it is the flash re-read that time was actually spent on.
+    // This is the only way to measure compute from outside llama.cpp, and it is expensive by
+    // construction: a barrier per node, and no operator coalescing. Off by default; a traced run
+    // is not a benchmark run. Independent of streaming — a dense baseline can be traced too.
+    void set_compute_trace(bool on);
+
+    // Frame the rows of one llama_decode, as begin_trace_batch does for the route trace. Rows are
+    // stamped with `step`; a prefill chunk attributes its whole graph to the batch's last position,
+    // since a node is computed once for the batch, not per token.
+    void begin_compute_batch(int step, int phase, int turn);
+
+    std::vector<ComputeTraceRow> & compute_rows() { return compute_rows_; }
 
     // Frame the rows of one llama_decode. `base_pos` is the context position of the batch's
     // first token and `n_tokens` its length, so a prefill chunk's rows carry real per-token step
@@ -108,6 +126,15 @@ private:
     PendingLayer pending_;
     std::vector<RouteTraceRow> trace_rows_;
     std::unordered_set<int32_t> charged_; // per-flush scratch: experts already charged for a read
+
+    // Compute trace. All of this is inert unless ctrace_on_. `ctrace_mark_` is the previous
+    // isolation boundary: the node reported by the next callback is charged the wall since it.
+    bool ctrace_on_ = false;
+    int ctrace_step_ = 0, ctrace_phase_ = 0, ctrace_turn_ = 0;
+    int ctrace_seq_ = 0;
+    std::chrono::steady_clock::time_point ctrace_mark_;
+    uint64_t ctrace_faults_ = 0;
+    std::vector<ComputeTraceRow> compute_rows_;
 };
 
 } // namespace bmoe
