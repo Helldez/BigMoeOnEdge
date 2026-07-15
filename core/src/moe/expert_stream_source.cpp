@@ -629,6 +629,34 @@ void ExpertStreamSource::evict_tail() {
     lru_unlink(id);
 }
 
+// ── route-trace support: describe what a routing costs, without changing it ─────────
+void ExpertStreamSource::settle_spec() {
+    // Only the LRU path speculates, so mirror load_layer's own guard. Running the quiesce here
+    // makes the one inside the load_layer that follows a cheap no-op: nothing left queued, and
+    // nothing in flight. The cost is that its time lands outside the mgmt_ns_ window — which is
+    // why a traced run is not a benchmark run.
+    if (active_ && cache_max_) quiesce_spec();
+}
+
+void ExpertStreamSource::query_residency(int il, const int32_t * ids, int n_ids, uint8_t * out) const {
+    for (int i = 0; i < n_ids; ++i)
+        out[i] = 0;
+    if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids) return;
+    if (cache_max_ == 0) return; // shared-slot mode: nothing is kept, so every routing re-reads
+    for (int i = 0; i < n_ids; ++i) {
+        const int e = ids[i];
+        if (e < 0 || e >= n_expert_) continue;
+        const int32_t id = il * n_expert_ + e;
+        if (!cvalid_[id]) continue;  // miss: this routing pays a read
+        out[i] = cspec_[id] ? 2 : 1; // resident; 2 = a speculative prefetch guessed it right
+    }
+}
+
+uint64_t ExpertStreamSource::expert_bytes(int il) const {
+    if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound) return 0;
+    return (uint64_t) entry_bytes(il);
+}
+
 // ── load: stage routed experts, read the batch, evict cold entries to budget ────────
 bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return false;

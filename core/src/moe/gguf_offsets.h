@@ -13,6 +13,10 @@ namespace bmoe {
 struct GgufOffsets {
     // tensor name -> absolute file offset of its data (data_offset + per-tensor offset)
     std::unordered_map<std::string, uint64_t> off_by_name;
+    // tensor name -> its data size in bytes. The streamer does not need this (an expert slice
+    // is strided by nb2, read from the graph's tensor), but the route trace does: it is the
+    // only way to say how many bytes of a layer are dense, i.e. left mmap-resident.
+    std::unordered_map<std::string, uint64_t> size_by_name;
     bool ok = false;
 };
 

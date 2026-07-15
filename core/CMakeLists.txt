@@ -24,6 +24,7 @@ if(BMOE_HAVE_LLAMA)
         src/engine/session.cpp
         src/engine/runtime.cpp
         src/metrics/csv_metrics_sink.cpp
+        src/metrics/route_trace_sink.cpp
     )
     # `llama` is the stable public API the streaming seam uses. `llama-common` (llama.cpp's
     # `common` utils) is linked only for chat-template rendering + reasoning parsing

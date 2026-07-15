@@ -110,6 +110,82 @@ column NAME (from the header row) and treat any as optional. The `# summary` lin
 `stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>` and `cpu_s/tok=<s>` (see the `io_ms` note
 above for how the read-time columns are reinterpreted under overlap).
 
+## Route trace
+
+`--route-trace PATH` writes the per-step, per-layer MoE routing trace. Everything above answers
+*how long* a token took; this answers *what the router asked for* — which experts each layer
+routed, how strongly, and whether they were already resident. It needs `--moe-stream` (without
+streaming there is no routing to observe) and it is a **diagnostic, not telemetry**: capturing it
+asks the compute graph for extra nodes, which adds a barrier per MoE layer, and it writes a row
+per routed expert. **A traced run is not a benchmark run** — the numbers in the `--csv` of a
+traced run are slower than the real thing, and `mgmt_ms` in particular shifts, because settling
+speculative prefetch moves outside the window that times it.
+
+The file is long format: a `#` preamble carrying the run's static facts, then one row per routed
+expert. Conceptually it is a matrix — rows are steps, columns are layers — and a **cell** is the
+`n_expert_used` rows sharing `(turn, phase, step, layer)`.
+
+```
+# route_trace v1
+# model=<path> arch=<string> n_layer=<int> n_expert=<int> n_expert_used=<int>
+# layer=<int> expert_bytes=<int> dense_bytes=<int>        (one per layer)
+turn,phase,step,layer,slot,expert,weight,residency,expert_bytes
+```
+
+| column | meaning |
+| --- | --- |
+| `turn` | session-mode turn; `0` for a one-shot run. One file per run, appended across turns. |
+| `phase` | `0` = prefill (one batched decode over many tokens), `1` = decode (one token per step). |
+| `step` | absolute context position of the token being routed, so prefill and decode share one axis. |
+| `layer` | MoE layer. Dense layers never appear. |
+| `slot` | `0..n_expert_used-1`, the router's rank order — slot 0 is its top choice. |
+| `expert` | **the routed expert id**: the cell's payload, and what every reuse question is asked of. |
+| `weight` | the final applied routing weight, after whatever softmax/normalise/scale the architecture uses. `nan` when the graph exposed no weight node — "unknown", never `0`. |
+| `residency` | `0` = miss (this routing reads from flash), `1` = hit, `2` = hit on a speculative prefetch's first touch. |
+| `expert_bytes` | flash bytes this routing reads; `0` unless `residency=0`. |
+
+`(turn, phase, step, layer, slot)` is unique. Two asymmetries are deliberate:
+
+- **`residency` is per routing, `expert_bytes` is per read.** During prefill many tokens of one
+  batch may route the same expert; the streamer reads it once, so only the first row carries the
+  bytes while every row keeps `residency=0` — each of those routings *did* face a cold cache.
+  Summing `residency==0` therefore over-counts misses versus `cache_hit_pct` in prefill; summing
+  `expert_bytes` is right. In decode (one token per step) the question does not arise.
+- **`dense_bytes` is static, `expert_bytes` is not.** Dense weights are mmap-resident and never
+  streamed, so there is nothing to measure per step: `dense_bytes` is what a cold layer costs to
+  page in, stated once. Per-layer *I/O time* is absent for the same kind of reason — under
+  `--overlap` reads complete asynchronously, so any per-layer timing would be fiction.
+
+**The last layer has only one prefill step, and that is real.** Before the final layer's FFN,
+llama.cpp gathers only the tokens whose logits were asked for (`inp_out_ids`; see `il == n_layer
+- 1` in `third_party/llama.cpp/src/models/*.cpp`). The engine asks for the last token only, so
+during prefill the last MoE layer routes exactly one token while every other layer routes the
+whole prompt. The trace reports this faithfully — that layer's row carries the *final* prompt
+position, not position 0 — so do not read the gap as lost rows. It also means a long prompt warms
+every layer's experts except the last one's.
+
+A `step` below zero would mean a row that could not be attributed to a position (more than one
+output token in a batch). The CLI's greedy loops never produce one.
+
+Join it to `--csv` on `step` (subtracting the prompt length from the trace's `step` for the
+decode phase) to put per-token wall time next to what was routed.
+
+`scripts/route-analyze.py` reads the file — stdlib only, nothing to install:
+
+```
+python scripts/route-analyze.py trace.csv                        # the default view set
+python scripts/route-analyze.py trace.csv --view matrix --steps 0-15 --layers 0-11
+python scripts/route-analyze.py trace.csv --view reuse           # reuse distance -> cache policy
+```
+
+Size: roughly `steps x moe_layers x n_expert_used` rows — ~200k rows (~8 MiB) for a 500-token
+decode on a 48-layer, top-8 model. Prefill adds a row per prompt token, so a long prompt
+dominates the file; `--phase decode` is the usual lens.
+
+Real traces from Qwen3-30B-A3B, Gemma-4-26B-A4B and gpt-oss-120b on device, with the analysis they
+support, are archived in
+[bench-data/2026-07-15-route-trace/](bench-data/2026-07-15-route-trace/findings.md).
+
 ## Session mode
 
 With `--session`, `bmoe-cli` keeps the model loaded and the expert cache warm across prompts

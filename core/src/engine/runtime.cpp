@@ -10,7 +10,10 @@ namespace bmoe {
 // thin wrapper means the byte-identity gates exercise the exact same open/generate machinery an
 // interactive session uses. n_batch = n_ctx so the whole prompt still prefills in one batch, and
 // n_ctx is passed through untouched so the gates run at exactly the context they specify.
-RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics &)> & on_token, IMetricsSink * sink) {
+RunResult run(const RunConfig & cfg,
+              const std::function<void(const TokenMetrics &)> & on_token,
+              IMetricsSink * sink,
+              IRouteTraceSink * route_trace) {
     ValidationResult v = validate(cfg);
     if (!v) {
         RunResult r;
@@ -28,7 +31,7 @@ RunResult run(const RunConfig & cfg, const std::function<void(const TokenMetrics
     sc.moe = cfg.moe;
 
     std::string error;
-    std::unique_ptr<Session> session = Session::open(sc, error);
+    std::unique_ptr<Session> session = Session::open(sc, error, route_trace);
     if (!session) {
         RunResult r;
         r.error = error;
