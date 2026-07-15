@@ -37,7 +37,19 @@ Bitdefender APK scan (161 % CPU) was waited out before starting. See the `.state
 | `gptoss` | gpt-oss-120b-Q4_K_M | `--cache-mb auto --cache-ceil-mb 3000 --overlap --io-threads 4 --n-expert-used 2`, `-n 64` | 0.503 | 32.4 % | 1.705 s | [route](gptoss.route.csv) · [metrics](gptoss.metrics) · [state](gptoss.state) · [log](gptoss.log) |
 
 `cache hit` is the cumulative figure from the `# summary` line (it includes prefill, so it is lower
-than the decode-only hit rate the trace shows). Read the traces with `scripts/route-analyze.py`.
+than the decode-only hit rate the trace shows).
+
+Two ways to read the traces, both stdlib-only:
+
+```
+python scripts/route-analyze.py docs/bench-data/2026-07-15-route-trace/qwen.route.csv
+python scripts/route-viewer.py  docs/bench-data/2026-07-15-route-trace/ viewer.html
+```
+
+`route-analyze.py` answers questions in the terminal; `route-viewer.py` packs the whole session into
+one self-contained HTML page — the step × layer matrix with the expert ids in its cells, hot experts
+per layer, the per-token metrics and the raw rows — for when there is no spreadsheet around. The
+page rounds weights to 4 decimals; these CSVs carry the full precision.
 
 ## What the routing looks like
 
