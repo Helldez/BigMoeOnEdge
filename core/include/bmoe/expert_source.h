@@ -69,6 +69,15 @@ public:
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
         uint64_t cache_budget_bytes = 0;   // current cache budget (moves under --cache-mb auto)
         long long cache_resizes = 0;       // times the budget changed at runtime (auto + explicit)
+
+        // ── pressure sensing (--cache-dynamic; see bmoe/cache_governor.h) ──
+        // Sampled fraction of the cache's own pages still in RAM, or -1 when not measured (sampler
+        // throttled, sensing off, or a platform that cannot report). Below 1 means the kernel is
+        // reclaiming the cache out from under us.
+        double cache_resident_frac = -1.0;
+        // Bytes of distinct experts one token routes, measured (0 = not yet known). The floor a
+        // cache must clear to hold anything between tokens.
+        uint64_t token_demand_bytes = 0;
     };
     virtual Stats stats() const = 0;
 };

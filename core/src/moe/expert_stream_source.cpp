@@ -38,6 +38,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     load_all_ = cfg.load_all;
     overlap_ = cfg.overlap;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
+    cache_dynamic_ = cfg.cache_dynamic;
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
 
@@ -585,15 +586,58 @@ void ExpertStreamSource::adapt_cache_budget() {
     }
 }
 
-// Explicit budget change from outside a decode (memory-pressure callback, or the shrink gate).
+// Ask the kernel which of our own cache pages it still has. Walking from the LRU tail samples the
+// coldest entries: they are neither the ones a decode is about to touch nor the ones we would keep
+// under our own eviction, so what is missing there was taken by reclaim, not by us. Bounded by
+// residency_sample_entries and throttled — this runs inside the mgmt window of a layer load.
+void ExpertStreamSource::sample_residency() {
+    if (++probe_tick_ % residency_probe_every != 0) return;
+    size_t sampled = 0, resident = 0;
+    int32_t id = ctail_;
+    for (int n = 0; n < residency_sample_entries && id != -1; ++n, id = cprev_[id]) {
+        const int il = id / n_expert_, e = id % n_expert_;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            const uint64_t slice = layers_[il].proj[p].nb2;
+            if (slice == 0) continue; // absent slot in a fused layout
+            if (!pio::vm_resident_sample((char *) lbuf_[p][il] + (uint64_t) e * slice, slice, &sampled, &resident))
+                return; // platform cannot report: keep the last reading rather than invent one
+        }
+    }
+    // No resident entries yet (early prefill) is not a residency of zero — it is no sample at all.
+    resident_frac_ = sampled ? (double) resident / (double) sampled : -1.0;
+}
+
+// A token's pass over the layer stack is monotonic in il, so a non-increasing layer index means the
+// previous token's pass just ended and the bytes it demanded are known. Prefill measures the
+// batch's union (larger); the first decode token overwrites it with the decode value, which is the
+// one the governor reads.
+void ExpertStreamSource::account_demand(int il, int n_unique) {
+    if (il <= last_il_) {
+        token_demand_ = demand_accum_;
+        demand_accum_ = 0;
+    }
+    last_il_ = il;
+    demand_accum_ += (size_t) n_unique * entry_bytes(il);
+}
+
+// Explicit budget change from outside a decode (memory-pressure callback, the governor, or the
+// shrink gate).
 void ExpertStreamSource::set_cache_budget(size_t bytes) {
     if (cache_max_ == 0) return; // initialised off (shared-slot mode); the LRU buffers do not exist
-    quiesce_spec();              // cancel/drain spec reads so no worker is mid-write to an evicted page
+    if (bytes > cache_max_) {
+        // Growing evicts nothing, so it needs no quiesce — and must not do one: cancelling the
+        // speculative reads in flight on every grow would quietly defeat --prefetch.
+        cache_max_ = std::min(bytes, total_expert_bytes_);
+        cache_target_ = std::max(cache_target_, cache_max_); // an explicit raise lifts the grow ceiling
+        ++cache_resizes_;
+        return;
+    }
+    if (bytes == cache_max_) return;
+    quiesce_spec(); // cancel/drain spec reads so no worker is mid-write to an evicted page
     // Keep the budget strictly positive. The shared-slot buffers were never allocated (LRU mode was
     // chosen at init), and load_layer branches on cache_max_ == 0 to pick shared-slot vs LRU — so a
     // runtime zero would route into buffers that do not exist. This shrinks toward, never to, zero.
-    cache_max_ = std::max<size_t>(1, std::min(bytes, total_expert_bytes_));
-    cache_target_ = std::max(cache_target_, cache_max_); // an explicit raise lifts the grow ceiling
+    cache_max_ = std::max<size_t>(1, bytes);
     ++cache_resizes_;
     // No cstamp guard: with no decode in flight, nothing is staged for the current generation, so
     // every resident entry (coldest first) is a valid eviction target.
@@ -707,7 +751,13 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     // cache. After this returns no spec read is in flight and completed ones are resident hits.
     if (cache_max_) {
         quiesce_spec();
-        adapt_cache_budget(); // re-size to free RAM before this layer stages + evicts
+        // Exactly one hand on the budget: with the governor on it owns cache_max_ (from the token
+        // loop, where an evicting shrink is safe) and we only sense here; otherwise the legacy
+        // free-RAM tracking sizes it in place.
+        if (cache_dynamic_)
+            sample_residency();
+        else
+            adapt_cache_budget(); // re-size to free RAM before this layer stages + evicts
     }
 
     auto stage = [&](int e) -> bool {
@@ -754,6 +804,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     };
 
     std::fill(seen_.begin(), seen_.end(), (uint8_t) 0);
+    int n_unique = 0;
     for (int i = 0; i < n_ids; ++i) {
         const int e = load_all_ ? (i < n_expert_ ? i : -1) : ids[i];
         if (e < 0 || e >= n_expert_) continue;
@@ -771,15 +822,18 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             continue;
         }
         seen_[e] = 1;
+        ++n_unique;
         if (!stage(e)) return false;
     }
     if (load_all_) {
         for (int e = 0; e < n_expert_; ++e) {
             if (seen_[e]) continue;
             seen_[e] = 1;
+            ++n_unique;
             if (!stage(e)) return false;
         }
     }
+    account_demand(il, n_unique);
 
     const size_t njobs = jobs_.size();
     mgmt_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - tm0).count());
@@ -848,7 +902,11 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     // batch is already drained above, so this only waits on in-flight spec reads).
     if (cache_max_) {
         quiesce_spec();
-        adapt_cache_budget(); // re-size to free RAM before this layer stages + evicts
+        // See the serial path: the governor owns the budget when it is on, and only senses here.
+        if (cache_dynamic_)
+            sample_residency();
+        else
+            adapt_cache_budget(); // re-size to free RAM before this layer stages + evicts
     }
 
     // 2. New generation for this layer. A flag counts as ready only once its gen matches.
@@ -878,6 +936,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
         }
     }
     std::sort(staged_.begin(), staged_.end());
+    account_demand(il, (int) staged_.size());
 
     if (cache_max_ == 0) {
         // Cache off: every (projection, expert) is a fresh read into the shared full-size slot
@@ -1051,6 +1110,8 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.stall_seconds = stall_ns_.load() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
+    s.cache_resident_frac = resident_frac_;
+    s.token_demand_bytes = (uint64_t) token_demand_;
     return s;
 }
 

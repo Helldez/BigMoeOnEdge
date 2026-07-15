@@ -73,6 +73,11 @@ ValidationResult validate(const RunConfig & cfg) {
                         "speculative reads land in the per-layer cache buffers, which do not exist "
                         "with the cache off.");
         }
+        if (m.cache_dynamic && !cache_on) {
+            return fail("moe.cache_dynamic requires the LRU cache (cache_mb > 0 or cache_auto): it "
+                        "sizes a cache budget at runtime, and there is no budget to size with the "
+                        "cache off.");
+        }
     }
 
     return r;

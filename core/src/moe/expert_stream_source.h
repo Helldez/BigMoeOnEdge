@@ -139,6 +139,15 @@ private:
     // loop that follows drains any shrink.
     void adapt_cache_budget();
 
+    // Pressure sensing (cache_dynamic): sample (throttled) how much of the cache the kernel still
+    // has in RAM, walking the LRU cold end — the pages reclaim takes first, so a dip here is the
+    // earliest evidence the budget outgrew what the device concedes. Sets resident_frac_ for the
+    // governor; changes no budget itself. Eval-thread only (it walks the LRU list).
+    void sample_residency();
+
+    // Accumulate one token's routed working set. Eval-thread only, called per layer load.
+    void account_demand(int il, int n_unique);
+
     bool load_layer_async(int il, const int32_t * ids, int n_ids); // overlap path
 
     static void c_expert_ready(const ggml_tensor * src0, int expert, void * user_data);
@@ -185,8 +194,25 @@ private:
     size_t cache_target_ = 0;
     size_t total_expert_bytes_ = 0;
     size_t cache_hard_cap_ = 0; // upper bound on the auto budget (ceiling ∧ full expert-set size)
-    unsigned probe_tick_ = 0;   // throttles the mem_available re-probe (once per N load_layer calls)
+    unsigned probe_tick_ = 0;   // throttles the periodic sensing (once per N load_layer calls)
     long long cache_resizes_ = 0;
+
+    // ── pressure sensing (cache_dynamic): the engine senses, bmoe::CacheGovernor decides ──
+    // Sampling the whole cache every layer would cost more than the reclaim it detects, so a probe
+    // reads a bounded window of the cold end. Cost lands in mgmt_ns_, where a regression is visible
+    // rather than hidden in the compute residual.
+    static constexpr unsigned residency_probe_every = 128; // load_layer calls between probes (~2-3 tokens)
+    static constexpr int residency_sample_entries = 16;    // coldest entries read per probe
+    bool cache_dynamic_ = false;
+    double resident_frac_ = -1.0; // last sampled cache residency; -1 = never measured
+
+    // One token's routed working set, measured: the bytes demanded between two visits to the same
+    // layer. Below it, every token evicts what the next one needs and the cache can only thrash —
+    // which is what cache_min_mb encodes as a static guess. This is the same bound, discovered per
+    // model and top-k at runtime instead, and it is what floors the governor.
+    size_t demand_accum_ = 0;
+    size_t token_demand_ = 0;
+    int last_il_ = -1;
     std::vector<void *> lbuf_[MoeRecipe::max_exps];
     std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];
     std::vector<uint8_t> cvalid_;
