@@ -81,6 +81,13 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         "devices with tight free RAM.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                SwitchRow(
+                    "Pressure-aware cache sizing",
+                    "Experimental. Treat the cache budget as a ceiling: the engine watches its own pages, " +
+                        "shrinks the cache when the device starts reclaiming it, and grows back when the " +
+                        "pressure lifts. Needs the cache on",
+                    current.cacheDynamic, enabled = stream && cacheOn,
+                ) { onChange(current.copy(cacheDynamic = it)) }
                 IntSetting("Parallel I/O lanes", AppSettings.IO_CHOICES, current.ioThreads, enabled = stream) {
                     onChange(current.copy(ioThreads = it))
                 }
