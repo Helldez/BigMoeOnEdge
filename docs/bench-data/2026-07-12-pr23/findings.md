@@ -1,5 +1,10 @@
 # On-device A/B for temporal prefetch (PR2) and speculative gating (PR3)
 
+> **Archived, 2026-07-12.** Speculative gating has since been removed from the engine to restore
+> the modular seam; `--spec-gate` is no longer a flag. The `spec-gate` rows and the advice about
+> tuning it below are kept as a record of why that decision was made — they are not actionable.
+> See [../README.md](../README.md).
+
 OnePlus 15R (11.3 GB), 256-token decode, prompt-processing + steady-state. Each config on top of
 its model's best measured baseline (Qwen: cache 4000, lane 4, overlap; Gemma: cache 2000, lane 4,
 overlap). See `summary.md` for the full tables. Device was cooler than the 2026-07-12 baseline run,
