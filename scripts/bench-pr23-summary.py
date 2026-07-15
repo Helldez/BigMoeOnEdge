@@ -3,7 +3,8 @@
 # prefetch/spec-gate lines) and .metrics (device pressure) into one markdown table per model.
 import os, re, sys, statistics
 
-BENCH = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\raffa\Documents\BigMoeOnEdge\.bench-pr23"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BENCH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, ".bench-pr23")
 
 CFG_FULL = [
     ("base", "baseline (overlap)"),
