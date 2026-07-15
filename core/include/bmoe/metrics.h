@@ -25,10 +25,15 @@ struct TokenMetrics {
     // them). They tell WHY a token's compute residual is large: major faults = dense weight re-read
     // from flash inside the decode; cpu_ms vs wall_ms×threads = how CPU-bound the decode really was
     // (low occupancy ⇒ throttled/preempted, not heavy math). See docs/telemetry.md.
-    uint64_t majflt = 0;        // major page faults during this decode (backing-store reads)
-    double cpu_ms = 0.0;        // CPU time summed across all threads during this decode
-    std::string piece;          // text of just this token (delta, for inline streaming)
-    std::string text;           // full generated text so far (for UI streaming)
+    uint64_t majflt = 0; // major page faults during this decode (backing-store reads)
+    double cpu_ms = 0.0; // CPU time summed across all threads during this decode
+    // Fraction of the expert cache's own pages the kernel still had in RAM at the last sample, or -1
+    // when unmeasured (sampler throttled, streaming off, platform can't report). Under 1 the device
+    // is reclaiming the cache mid-run — the pressure --cache-dynamic sizes against. See
+    // docs/pressure.md.
+    double resident_frac = -1.0;
+    std::string piece; // text of just this token (delta, for inline streaming)
+    std::string text;  // full generated text so far (for UI streaming)
 };
 
 struct RunSummary {
@@ -62,8 +67,16 @@ struct RunSummary {
     double majflt_per_token = 0.0;
     double cpu_s_per_token = 0.0;
     double cache_resident_mib = 0.0;
-    double cache_budget_mib = 0.0; // current cache budget (moves under --cache-mb auto)
-    long long cache_resizes = 0;   // runtime budget changes (0 unless auto/explicit resize)
+    double cache_budget_mib = 0.0; // current cache budget (moves under --cache-mb auto/--cache-dynamic)
+    long long cache_resizes = 0;   // runtime budget changes (0 unless auto/dynamic/explicit resize)
+
+    // What one token actually demands of the cache, measured: the distinct expert bytes routed per
+    // token. A cache below this can hold nothing between tokens; a cache far above it is buying
+    // hits from inter-token routing correlation only. Reading it against cache_budget_mib is how a
+    // budget stops being a guess. 0 when streaming is off or nothing was routed.
+    double token_demand_mib = 0.0;
+    // Times --cache-dynamic cut the budget because the device was reclaiming the cache (0 when off).
+    long long cache_cuts = 0;
 
     // Temporal prefetch (zero when --prefetch is off): speculative bytes read during generation,
     // experts successfully prefetched, and how many of those a later routing actually used.

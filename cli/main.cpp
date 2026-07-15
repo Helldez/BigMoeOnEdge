@@ -260,10 +260,11 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
                 std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
             std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
                         "\"compute_ms\":%.1f,\"mgmt_ms\":%.1f,\"stall_ms\":%.1f,\"read_mb\":%.2f,"
-                        "\"cache_hit_pct\":%.1f,\"majflt\":%llu,\"cpu_ms\":%.1f,\"text\":\"%s\"}\n",
+                        "\"cache_hit_pct\":%.1f,\"majflt\":%llu,\"cpu_ms\":%.1f,\"resident_frac\":%.3f,"
+                        "\"text\":\"%s\"}\n",
                         m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.mgmt_ms, m.stall_ms,
                         m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, (unsigned long long) m.majflt, m.cpu_ms,
-                        json_escape(m.text).c_str());
+                        m.resident_frac, json_escape(m.text).c_str());
             std::fflush(stdout);
         };
 
@@ -293,12 +294,13 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
                     "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
-                    "\"text\":\"%s\"}\n",
+                    "\"token_demand_mib\":%.1f,\"cache_cuts\":%lld,\"text\":\"%s\"}\n",
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
-                    s.majflt_per_token, s.cpu_s_per_token, json_escape(r.generated_text).c_str());
+                    s.majflt_per_token, s.cpu_s_per_token, s.token_demand_mib, s.cache_cuts,
+                    json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
 
@@ -333,6 +335,9 @@ static void print_usage(const char * argv0) {
         "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
         "      --cache-floor-mb N  with --cache-mb auto: RAM to leave free (default 1536)\n"
         "      --cache-ceil-mb N   with --cache-mb auto: upper bound on the budget (0 = no cap)\n"
+        "      --cache-dynamic     treat --cache-mb as a ceiling and find the budget the device\n"
+        "                          concedes: shrink when reclaim starts taking the cache, grow back\n"
+        "                          when it stops (needs the cache; see docs/pressure.md)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache\n"
         "      --no-warm-dense     skip the load-time sweep that page-caches the non-expert weights\n"
@@ -404,6 +409,10 @@ int main(int argc, char ** argv) {
             cfg.moe.cache_floor_mb = std::atoi(next("--cache-floor-mb"));
         else if (a == "--cache-ceil-mb")
             cfg.moe.cache_ceil_mb = std::atoi(next("--cache-ceil-mb"));
+        else if (a == "--cache-dynamic")
+            cfg.moe.cache_dynamic = true;
+        else if (a == "--no-cache-dynamic")
+            cfg.moe.cache_dynamic = false;
         else if (a == "--io-threads")
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
@@ -508,10 +517,11 @@ int main(int argc, char ** argv) {
                 std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
             std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
                         "\"compute_ms\":%.1f,\"mgmt_ms\":%.1f,\"stall_ms\":%.1f,\"read_mb\":%.2f,"
-                        "\"cache_hit_pct\":%.1f,\"majflt\":%llu,\"cpu_ms\":%.1f,\"text\":\"%s\"}\n",
+                        "\"cache_hit_pct\":%.1f,\"majflt\":%llu,\"cpu_ms\":%.1f,\"resident_frac\":%.3f,"
+                        "\"text\":\"%s\"}\n",
                         m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.mgmt_ms, m.stall_ms,
                         m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, (unsigned long long) m.majflt, m.cpu_ms,
-                        json_escape(m.text).c_str());
+                        m.resident_frac, json_escape(m.text).c_str());
             std::fflush(stdout);
         } else {
             std::fwrite(m.piece.data(), 1, m.piece.size(), stdout);
