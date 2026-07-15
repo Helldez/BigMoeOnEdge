@@ -86,11 +86,22 @@ void vm_evict(void * p, size_t sz) {
 void vm_release(void * p, size_t /*sz*/) {
     if (p) VirtualFree(p, 0, MEM_RELEASE);
 }
+void vm_willneed(void * /*p*/, size_t /*sz*/) {
+    // PrefetchVirtualMemory is the nearest equivalent, but nothing on this build path needs it:
+    // rewarm is driven by process_swapped_bytes(), which reports 0 here, so it never runs.
+}
 
 uint64_t mem_available_bytes() {
     MEMORYSTATUSEX ms;
     ms.dwLength = sizeof(ms);
     return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullAvailPhys : 0;
+}
+
+// Windows pages to a file rather than to a compressed in-RAM device, and the host build exists for
+// the byte-identity gates, not for perf on a memory-constrained phone. 0 = "nothing was taken",
+// which keeps rewarm off on this platform.
+uint64_t process_swapped_bytes() {
+    return 0;
 }
 
 // The host build exists for the byte-identity gates, not perf measurement, so these stay
@@ -153,6 +164,12 @@ void vm_evict(void * p, size_t sz) {
 void vm_release(void * p, size_t sz) {
     if (p) munmap(p, sz);
 }
+void vm_willneed(void * p, size_t sz) {
+    // Best-effort by contract: the kernel may ignore the hint under pressure, and a failure only
+    // leaves the pages where they were — the caller's next touch faults them in as it would have
+    // anyway. Nothing here can make the range less resident than it already is.
+    if (sz) madvise(p, sz, MADV_WILLNEED);
+}
 
 uint64_t mem_available_bytes() {
     // Linux/Android: MemAvailable is the kernel's own estimate of what can be allocated without
@@ -176,6 +193,25 @@ uint64_t mem_available_bytes() {
     if (pages > 0 && ps > 0) return (uint64_t) pages * (uint64_t) ps;
 #endif
     return 0;
+}
+
+uint64_t process_swapped_bytes() {
+    // VmSwap is this process's anonymous memory currently held in swap (zram on Android). It is the
+    // only field that distinguishes "the kernel took my pages" from "I never allocated them": RSS
+    // falling could equally mean the cache was evicted on purpose, whereas VmSwap rising means the
+    // pages are still ours, just compressed and waiting to be faulted back one by one.
+    if (FILE * f = std::fopen("/proc/self/status", "re")) {
+        char line[256];
+        while (std::fgets(line, sizeof(line), f)) {
+            unsigned long long kb = 0;
+            if (std::sscanf(line, "VmSwap: %llu kB", &kb) == 1) {
+                std::fclose(f);
+                return (uint64_t) kb * 1024ull;
+            }
+        }
+        std::fclose(f);
+    }
+    return 0; // no /proc (macOS) — treat as "unmeasured", which keeps rewarm off
 }
 
 uint64_t major_faults() {

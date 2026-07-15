@@ -293,12 +293,13 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
                     "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
-                    "\"text\":\"%s\"}\n",
+                    "\"rewarm_s\":%.3f,\"rewarm_mib\":%.0f,\"text\":\"%s\"}\n",
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
-                    s.majflt_per_token, s.cpu_s_per_token, json_escape(r.generated_text).c_str());
+                    s.majflt_per_token, s.cpu_s_per_token, s.rewarm_seconds, s.rewarm_recovered_mib,
+                    json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
 
@@ -336,6 +337,8 @@ static void print_usage(const char * argv0) {
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache\n"
         "      --no-warm-dense     skip the load-time sweep that page-caches the non-expert weights\n"
+        "      --no-rewarm         skip the per-prompt bulk restore of memory the kernel swapped out\n"
+        "      --rewarm-threshold-mb N  swapped-out MiB above which the rewarm runs (default 256)\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -410,6 +413,10 @@ int main(int argc, char ** argv) {
             cfg.moe.o_direct = false;
         else if (a == "--no-warm-dense")
             cfg.moe.warm_dense = false;
+        else if (a == "--no-rewarm")
+            cfg.moe.rewarm = false;
+        else if (a == "--rewarm-threshold-mb")
+            cfg.moe.rewarm_threshold_mb = std::atoi(next("--rewarm-threshold-mb"));
         else if (a == "--load-all")
             cfg.moe.load_all = true;
         else if (a == "--force-cache")
@@ -545,8 +552,14 @@ int main(int argc, char ** argv) {
     if (s.n_prompt > 0) {
         double prefill_tps = s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0;
         std::printf("prefill: %d tokens, %.3f s (%.1f tok/s) | model load %.3f s | TTFT %.3f s\n", s.n_prompt,
-                    s.prefill_seconds, prefill_tps, s.load_seconds, s.load_seconds + s.prefill_seconds);
+                    s.prefill_seconds, prefill_tps, s.load_seconds,
+                    s.load_seconds + s.rewarm_seconds + s.prefill_seconds);
     }
+    // Only when the pass ran: on a one-shot run nothing has had time to be reclaimed, so a constant
+    // "rewarm: 0 MiB" line would be noise in every benchmark cell.
+    if (s.rewarm_seconds > 0.0)
+        std::printf("rewarm: %.1f MiB restored from swap in %.3f s (before this turn's prefill)\n",
+                    s.rewarm_recovered_mib, s.rewarm_seconds);
     if (cfg.moe.enabled) {
         std::printf("moe-stream: read %.1f MiB (%.2f MiB/token), decode %.3f s/token "
                     "(compute %.3f + cache mgmt %.3f + flash I/O %.3f s/token, %.0f MiB/s)\n",

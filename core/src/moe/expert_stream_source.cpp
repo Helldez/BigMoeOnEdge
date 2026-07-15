@@ -34,9 +34,11 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     n_expert_ = n_expert;
     layers_ = std::move(layers);
     n_layer_ = (int) layers_.size();
+    gguf_path_ = gguf_path;
     o_direct_ = cfg.o_direct;
     load_all_ = cfg.load_all;
     overlap_ = cfg.overlap;
+    warm_dense_ = cfg.warm_dense;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
@@ -599,6 +601,46 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
     // every resident entry (coldest first) is a valid eviction target.
     while (cresident_ > cache_max_ && ctail_ != -1)
         evict_tail();
+}
+
+// ── rewarm: bulk-restore what the kernel reclaimed while nothing was decoding ────────
+uint64_t ExpertStreamSource::rewarm(double * seconds_out) {
+    if (seconds_out) *seconds_out = 0.0;
+    if (!active_) return 0;
+    // Settle speculation first, as every other path that reasons about residency does: entries whose
+    // reads finished join the cache, the rest hand their pages back. Otherwise this would fault in
+    // pages for entries that are about to be discarded, and report residency that no longer holds.
+    quiesce_spec();
+
+    const auto t0 = clock_t_::now();
+    const uint64_t swapped_before = pio::process_swapped_bytes();
+
+    // Hint whole buffers rather than walking the LRU for resident entries. The kernel's swapin walk
+    // acts only on pages that hold a swap entry, so the uncommitted holes between cached experts
+    // cost a page-table skip and nothing else — no memory is committed for experts that were never
+    // cached, and the reserved-but-untouched span stays untouched. Whole-buffer order is also
+    // ascending address order, which is what the swap device reads back fastest.
+    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        if (slot_[p]) pio::vm_willneed(slot_[p], slot_sz_[p]); // shared-slot mode (cache off)
+        if (lbuf_[p].empty()) continue;                        // LRU buffers absent in that mode
+        for (int il = 0; il < n_layer_; ++il)
+            if (lbuf_[p][il] && lbuf_sz_[p][il]) pio::vm_willneed(lbuf_[p][il], lbuf_sz_[p][il]);
+    }
+
+    // Dense weights are file-backed, so reclaim drops them instead of swapping them: VmSwap never
+    // accounts for them and the sweep is the only way back. Skipped when the session opted out of
+    // dense warming at init, so an A/B that measures without it keeps measuring without it.
+    if (warm_dense_) warm_dense_regions(gguf_path_);
+
+    const uint64_t swapped_after = pio::process_swapped_bytes();
+    const double s = std::chrono::duration<double>(clock_t_::now() - t0).count();
+    if (seconds_out) *seconds_out = s;
+    // Report against the reading taken before the pass: MADV_WILLNEED is a hint the kernel may
+    // decline under pressure, so what came back is a measurement, not the span we asked for.
+    const uint64_t recovered = swapped_before > swapped_after ? swapped_before - swapped_after : 0;
+    std::fprintf(stderr, "bmoe: rewarm — %llu MiB back from swap in %.1f s (%llu MiB still swapped)\n",
+                 (unsigned long long) (recovered >> 20), s, (unsigned long long) (swapped_after >> 20));
+    return recovered;
 }
 
 // ── LRU plumbing ────────────────────────────────────────────────────────────────────

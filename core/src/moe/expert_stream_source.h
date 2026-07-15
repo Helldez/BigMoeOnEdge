@@ -93,6 +93,14 @@ public:
     void set_io_trace(bool on);
     void take_io_trace_rows(std::vector<IoTraceRow> & out);
 
+    // Pull back in bulk what the kernel reclaimed while nothing was decoding: hint every expert
+    // buffer's swapped-out pages back into RAM in address order, and re-sweep the dense regions if
+    // they were warmed at init. Restores state the cache already accounts for — no entry is added,
+    // evicted or invalidated, so the cache's contents and the bytes any decode reads are unchanged.
+    // PRECONDITION: no decode in flight. Returns the swapped bytes the process shed and reports the
+    // elapsed seconds through `seconds_out` (nullable). See docs/rewarm.md.
+    uint64_t rewarm(double * seconds_out = nullptr);
+
     void shutdown();
 
 private:
@@ -131,7 +139,8 @@ private:
     // One sequential buffered sweep over the file's non-expert byte ranges (header, embeddings,
     // attention, norms, lm_head) to populate the kernel page cache at load time, so the mmap'd
     // dense tensors do not demand-fault 4 KiB at a time inside the first decodes. Best-effort:
-    // a read failure only leaves the corresponding pages cold.
+    // a read failure only leaves the corresponding pages cold. Also re-run by rewarm(), since
+    // reclaim drops those file-backed pages just as readily as it swaps the anonymous ones.
     void warm_dense_regions(const std::string & gguf_path);
 
     // Adaptive sizing (cache_auto): re-probe device memory (throttled) and nudge cache_max_ so it
@@ -162,10 +171,12 @@ private:
     bool load_all_ = false;
     bool overlap_ = false;
     bool prefetch_sync_ = false; // test only: drain prefetch reads synchronously (serial mode)
+    bool warm_dense_ = false;    // dense sweep was requested at init; rewarm() repeats it
     int n_layer_ = 0;
     int n_expert_ = 0;
     uint64_t fsize_ = 0;
     size_t align_ = 4096;
+    std::string gguf_path_; // kept for rewarm()'s dense re-sweep, which reopens the file
 
     std::vector<LayerExperts> layers_;
 

@@ -221,7 +221,7 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
             "stall_s_tok":<float>,"mgmt_s_tok":<float>,"majflt_tok":<float>,"cpu_s_tok":<float>,
-            "text":"<string>"}
+            "rewarm_s":<float>,"rewarm_mib":<float>,"text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
 
@@ -233,7 +233,10 @@ context is. `prefill_tps` is the prompt prefill rate; `compute_s_tok`/`io_s_tok`
 AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not just the last token).
 `cache_resident_mib`/`cache_budget_mib` track the (possibly auto-adapting) cache, `read_mib` is the
 total flash streamed this generation, and `stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and
-cache-management cost. `BMOE_ERROR` with `fatal:false` is a rejected
+cache-management cost. `rewarm_s`/`rewarm_mib` are this turn's bulk restore of memory the kernel
+reclaimed while the session idled — both `0` unless the pass ran, and when it did its seconds are
+part of the turn's time-to-first-token, not of the decode (see [rewarm.md](rewarm.md)).
+`BMOE_ERROR` with `fatal:false` is a rejected
 request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
 `fatal:true` means the process is ending.
 

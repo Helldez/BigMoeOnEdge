@@ -18,11 +18,14 @@
 //
 //   S1  two sequential Session generates (warm cache) == one-shot resident, per prompt
 //   S2  same, under overlap
+//   S4  same, with a forced rewarm before each generate
 //   G5  streaming + temporal prefetch == streaming (prefetch changes latency, not bytes)
 //         a) serial + cache + prefetch   b) overlap + cache + prefetch
 //
 // S1/S2 guard the session refactor: the expert LRU cache now survives across generate() calls,
 // so a second prompt starts warm. That must change only latency, never the produced bytes.
+// S4 guards the rewarm pass: pulling reclaimed pages back in bulk restores where the cache's bytes
+// live, never what they are.
 // G5 guards temporal prefetch: speculatively reading the next layers' experts must only warm the
 // cache — the routed slices a token actually consumes, and thus its output, are unchanged.
 #include "bmoe/config.h"
@@ -259,6 +262,23 @@ int main(int argc, char ** argv) {
     }
     fails += check("S3a session generate #1 == resident", s_res, s_sh1);
     fails += check("S3b session generate #2 (after budget shrink) == resident", s_res, s_sh2);
+
+    // ── S4: a rewarm between generates must not change bytes ──
+    // Threshold 0 forces the pass on every generate, whatever the host has swapped out — otherwise
+    // this gate would only ever run on a machine under memory pressure. Prefetch is on so the pass
+    // meets a populated speculative queue, the one piece of state it has to settle before hinting
+    // pages back. Restoring residency must change latency only: same cache contents, same bytes.
+    RunConfig sess_rw = sess;
+    sess_rw.moe.prefetch_layers = 2;
+    sess_rw.moe.rewarm = true;
+    sess_rw.moe.rewarm_threshold_mb = 0;
+    std::string s_rw1, s_rw2;
+    if (!session_two_gens(sess_rw, s_rw1, s_rw2, err)) {
+        std::fprintf(stderr, "session rewarm run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("S4a session+rewarm generate #1 == resident", s_res, s_rw1);
+    fails += check("S4b session+rewarm generate #2 (after rewarm) == resident", s_res, s_rw2);
 
     // ── G5: temporal prefetch must not change bytes ──
     // A forced cache (prefetch needs one) plus a couple of look-ahead layers, exercising the

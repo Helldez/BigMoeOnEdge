@@ -48,9 +48,24 @@ bool vm_commit(void * p, size_t sz);
 void vm_evict(void * p, size_t sz);
 void vm_release(void * p, size_t sz);
 
+// Ask the kernel to bring a range back into RAM now, sequentially (MADV_WILLNEED). Advisory and
+// asynchronous: it queues the pages, it does not pin them and does not guarantee they arrive.
+// Restoring a swapped-out range this way runs at the swap device's sequential rate, versus the
+// scattered per-page major faults the same range would otherwise take on first touch.
+// A no-op where the platform has no equivalent.
+void vm_willneed(void * p, size_t sz);
+
 // Physical memory currently allocatable without paging, in bytes. 0 = unknown. Used to size the
 // expert cache to the device (--cache-mb auto) and to shrink it under memory pressure at runtime.
 uint64_t mem_available_bytes();
+
+// Bytes of THIS process's anonymous memory the kernel has pushed to swap, or 0 when the platform
+// cannot report it. On Android that swap is zram: the reclaim daemon compresses the pages of an
+// idle process, so an engine that sat between two prompts finds its expert cache and KV swapped
+// out and pays to decompress them one major fault at a time. This is the signal that says how
+// much was taken, and thus whether a bulk rewarm is worth doing before decoding. See
+// docs/rewarm.md.
+uint64_t process_swapped_bytes();
 
 // Process-wide compute-decomposition counters, cumulative since process start; the caller deltas
 // them across a single decode to split the per-token "compute" residual into its real causes.

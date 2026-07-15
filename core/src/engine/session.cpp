@@ -555,6 +555,22 @@ RunResult Session::generate(const GenerateRequest & req,
         }
     };
 
+    // ── rewarm: undo the reclaim this session slept through ──
+    // A session that sat between turns is exactly what Android's reclaim daemon targets: it
+    // compresses an idle process's anonymous memory into zram, so the expert cache this session
+    // exists to keep warm is still "resident" in the LRU's books while its pages are gone. Left
+    // alone, the decode pays that back one major fault at a time, per layer, for the whole answer.
+    // Restoring it in one sequential pass first costs the same bytes once, before the first token.
+    // Runs only when a real reclaim happened (threshold), so a session the kernel left alone pays
+    // one /proc read for the check.
+    double rewarm_seconds = 0.0;
+    uint64_t rewarm_recovered = 0;
+    if (moe.enabled && moe.rewarm) {
+        const uint64_t swapped = pio::process_swapped_bytes();
+        if (swapped >= (uint64_t) std::max(0, moe.rewarm_threshold_mb) * 1024ull * 1024ull)
+            rewarm_recovered = im.source.rewarm(&rewarm_seconds);
+    }
+
     // ── prefill (chunked by n_batch; positions auto-continue from the reused prefix) ──
     const auto t_prefill0 = clock_t_::now();
     for (int i = (int) n_common; i < n_prompt; i += im.cfg.n_batch) {
@@ -694,6 +710,8 @@ RunResult Session::generate(const GenerateRequest & req,
     s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
+    s.rewarm_seconds = rewarm_seconds;
+    s.rewarm_recovered_mib = rewarm_recovered / (1024.0 * 1024.0);
     s.majflt_per_token = n_gen ? (double) gen_majflt / n_gen : 0.0;
     s.cpu_s_per_token = n_gen ? gen_cpu_seconds / n_gen : 0.0;
     if (moe.enabled) {

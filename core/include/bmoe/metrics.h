@@ -37,14 +37,21 @@ struct RunSummary {
     double s_per_token = 0.0;
     double tokens_per_second = 0.0;
 
-    // Startup phase (additive telemetry): model load + streaming setup, and prefill.
-    // TTFT ~= load_seconds + prefill_seconds; prefill tok/s = n_prompt / prefill_seconds.
-    // In a multi-turn chat n_prompt is the tokens actually prefilled THIS turn (the suffix
-    // after the reused KV prefix), and n_past is the total context length after the turn.
+    // Startup phase (additive telemetry): model load + streaming setup, rewarm, and prefill.
+    // TTFT ~= load_seconds + rewarm_seconds + prefill_seconds; prefill tok/s = n_prompt /
+    // prefill_seconds. In a multi-turn chat n_prompt is the tokens actually prefilled THIS turn
+    // (the suffix after the reused KV prefix), and n_past is the total context length after the turn.
     int n_prompt = 0;
     int n_past = 0;
     double load_seconds = 0.0;
     double prefill_seconds = 0.0;
+
+    // Bulk restore of memory the kernel reclaimed while the session was idle (--rewarm). Both stay 0
+    // when the pass did not run, which is the common case: it triggers only above the swap threshold.
+    // The seconds belong in TTFT, not in the decode — that is the whole point of the pass, and
+    // hiding them would make a turn that paid the pause look identical to one that did not.
+    double rewarm_seconds = 0.0;
+    double rewarm_recovered_mib = 0.0; // anonymous bytes pulled back out of swap
 
     // MoE streaming totals (zero when streaming is off)
     double moe_read_mib = 0.0;
