@@ -41,6 +41,15 @@ Because expert reads use O_DIRECT they never enter the page cache, so the only l
 allocation the engine controls *is* this budget — shrinking it is what actually hands RAM back to
 the rest of the system.
 
+> **The budget is not only a throughput knob — it is what the kernel judges you by.** On Android the
+> LRU promotes a page to the protected list only on a *second* reference, and a cache hit is that
+> second reference: a cache with a high hit rate defends itself, one with a low hit rate is correctly
+> read as cold and reclaimed. Measured on gpt-oss-120b, where 3000 MiB covers 5.2% of the expert bank
+> and returns a 13% hit, the cache is taken back *while decoding* and the fight costs far more than
+> the hits are worth. `MemAvailable` also over-states the headroom here, since it counts the page
+> cache holding this model's own dense weights as free. Before trusting `auto` on a model whose
+> expert set dwarfs the budget, read [android-memory.md](android-memory.md).
+
 ## Flags
 
 | Flag | Meaning |
