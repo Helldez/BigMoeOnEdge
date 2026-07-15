@@ -103,6 +103,12 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     "Page-cache the non-expert weights at load. Removes the slow first tokens on models larger than RAM",
                     current.warmDense, enabled = stream,
                 ) { onChange(current.copy(warmDense = it)) }
+                SwitchRow(
+                    "Rewarm after reclaim",
+                    "Android compresses an idle session's memory away within seconds. Restore it in one pass " +
+                        "before answering, instead of paying it back a page at a time for the whole reply",
+                    current.rewarm, enabled = stream,
+                ) { onChange(current.copy(rewarm = it)) }
                 IntSetting(
                     "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
                     format = { if (it == 0) "off" else "$it" },

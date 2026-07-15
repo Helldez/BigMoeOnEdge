@@ -32,7 +32,12 @@ data class Telemetry(
     var avgMgmtMs: Double = -1.0,
     // End-of-run figures from the final summary (BMOE_DONE); -1 / 0 until generation finishes.
     var prefillTps: Double = -1.0,      // prompt prefill rate (tok/s)
-    var ttftS: Double = -1.0,           // time-to-first-token = model load + prompt prefill (s)
+    var ttftS: Double = -1.0,           // time-to-first-token = model load + rewarm + prompt prefill (s)
+    // This turn's bulk restore of memory Android reclaimed while the session idled (docs/rewarm.md).
+    // 0 unless the pass ran — which is itself the interesting bit, so the turn line shows it whenever
+    // it is non-zero: it marks the turns that started with their working set confiscated.
+    var rewarmS: Double = 0.0,          // seconds spent restoring, part of TTFT rather than the decode
+    var rewarmMib: Double = 0.0,        // memory pulled back out of swap (MiB)
     var readMib: Double = -1.0,         // total flash streamed this generation (MiB)
     var cacheResidentMib: Double = -1.0, // expert cache resident size (MiB)
     var cacheBudgetMib: Double = -1.0,  // current (possibly auto-adapting) cache budget (MiB)

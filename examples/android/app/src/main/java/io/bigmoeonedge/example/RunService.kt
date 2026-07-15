@@ -238,13 +238,15 @@ class RunService : Service() {
             val avgMgmtMs = o.optDouble("mgmt_s_tok", -0.001) * 1000.0
             val prefillTps = o.optDouble("prefill_tps", -1.0)
             val loadS = o.optDouble("load_s", -1.0)
+            val rewarmS = o.optDouble("rewarm_s", 0.0)
+            val rewarmMib = o.optDouble("rewarm_mib", 0.0)
             val readMib = o.optDouble("read_mib", -1.0)
             val cacheResidentMib = o.optDouble("cache_resident_mib", -1.0)
             val cacheBudgetMib = o.optDouble("cache_budget_mib", -1.0)
             val majfltPerTok = o.optDouble("majflt_tok", -1.0)
             val cpuSPerTok = o.optDouble("cpu_s_tok", -1.0)
-            // Time-to-first-token: the model load plus this turn's prompt prefill.
-            val ttft = if (loadS >= 0 && prefill >= 0) loadS + prefill else -1.0
+            // Time-to-first-token: the model load, any rewarm this turn paid, and its prompt prefill.
+            val ttft = if (loadS >= 0 && prefill >= 0) loadS + rewarmS + prefill else -1.0
             val cancelled = o.optBoolean("cancelled")
             val text = o.optString("text")
             val loc = java.util.Locale.US
@@ -254,6 +256,7 @@ class RunService : Service() {
                     append(String.format(loc, " | prefill %.2fs", prefill))
                     if (prefillTps > 0) append(String.format(loc, " (%.1f tok/s)", prefillTps))
                 }
+                if (rewarmS > 0) append(String.format(loc, " | rewarm %.2fs (%.0f MiB)", rewarmS, rewarmMib))
                 if (ttft >= 0) append(String.format(loc, " | TTFT %.2fs", ttft))
                 if (hit >= 0) append(String.format(loc, " | cache %.0f%%", hit))
                 if (cancelled) append(" | cancelled")
@@ -267,6 +270,9 @@ class RunService : Service() {
                 }
                 if (nPast >= 0) append(String.format(loc, " · ctx %d/%d", nPast, AppSettings.SESSION_CTX))
                 if (hit >= 0) append(String.format(loc, " · cache %.0f%%", hit))
+                // Only on the turns that paid it: this is what separates a turn that started with its
+                // memory confiscated from an ordinary one, which is otherwise invisible in the numbers.
+                if (rewarmS > 0) append(String.format(loc, " · rewarm %.1fs", rewarmS))
                 if (cancelled) append(" · cancelled")
             }
             val tel = telemetry.current.copy(
