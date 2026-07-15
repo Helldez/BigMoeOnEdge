@@ -40,16 +40,13 @@ much smaller memory footprint — is worth making.
   flash. Loads `use_mmap=true`, repack off, and rebinds each expert tensor onto a streaming
   buffer in the native gguf layout. Fails fast if the model is not MoE.
 - **LRU expert cache with an auto budget and ceiling** (`--cache-mb N|auto`, `--cache-ceil-mb`) —
-  a fixed MiB budget or one sized to the device (free RAM minus a floor), clamped to
-  `[1.5 GiB, full expert-set size]` and re-checked during generation so it shrinks and grows with
-  available memory. Cache size is the single biggest throughput lever.
+  a fixed MiB budget, or one sized to the device and re-checked during generation so it tracks
+  available memory. The single biggest throughput lever; see
+  [docs/adaptive-cache.md](docs/adaptive-cache.md).
 - **Direct-from-flash reads, O_DIRECT** (`--io-threads 1..8`, `--no-odirect`) — each expert slice
-  is read straight from flash into the engine's own buffer, skipping the operating system's page
-  cache. That cache normally keeps a second copy of everything you read in spare RAM; here it would
-  only duplicate weights the engine is already caching itself, waste memory, and evict the user's
-  other apps. Reading direct keeps memory bounded and read latency predictable. Several read lanes
-  run in parallel (4 is the UFS 4.x sweet spot), and the engine falls back to normal buffered reads
-  on the odd filesystem that mishandles O_DIRECT.
+  is read straight into the engine's own buffer, bypassing the page cache that would otherwise hold
+  a second copy of weights the engine already caches. Several read lanes run in parallel (4 is the
+  UFS 4.x sweet spot), with a buffered fallback where O_DIRECT misbehaves.
 - **Intra-layer I/O–compute overlap** (`--overlap`) — pipelines each layer's async expert reads
   with its FFN compute, hiding flash latency behind the matmul; byte-identical to the serial path.
   Top throughput lever over a warm cache. Requires the fork submodule.
@@ -62,11 +59,15 @@ much smaller memory footprint — is worth making.
 - **Honest, per-token telemetry** — `--progress`/`--csv` emit a per-token breakdown: compute vs
   cache-management vs flash-I/O vs stall seconds, cache hit rate, flash bytes read, cache
   residency and resizes. The Android panel renders it live.
+- **Routing traces** (`--route-trace PATH`) — records which experts every token actually routed to,
+  per layer, for offline analysis (`scripts/route-analyze.py`, `scripts/route-viewer.py`). A
+  diagnostic: it perturbs the run, so its tok/s are not comparable with the benchmark tables.
 - **Experimental, default-off**: temporal prefetch (`--prefetch K`, a cold-start/TTFT tool) reads
   the next layers' likely experts on idle I/O lanes. An honest toggle kept for provability; it does
   not help steady-state throughput on current hardware — see [Benchmarks](#benchmarks).
-- **Android demo APK** ([`examples/android`](examples/android)) — a multi-turn chat app with a live
-  telemetry panel and every streaming knob exposed with a one-line note on what it does.
+- **Android demo APK** ([`examples/android`](examples/android)) — a multi-turn chat app with
+  Markdown-rendered answers, a live telemetry panel, and every streaming knob exposed with a
+  one-line note on what it does.
 
 ## Supported models and architectures
 
@@ -176,7 +177,7 @@ gpt-oss is heavily **compute-bound** (each expert is large), so **top-k is the d
 is ~3× faster than the default k=4 — and prefetch only hurts. These are exploratory **24-token** probes
 (cache still warming, 13–21% hit), not the 256-token steady state above; treat them as a floor. Full
 matrix, the k=4 interruption caveat, and a **quality** note (`--no-think` drops gpt-oss's reasoning, so
-default k=4 answers `17×23` *wrong* while k=2/3 get it right): [docs/benchmarks.md](docs/benchmarks.md#gpt-oss-120b--a-58-gb-model-at-52-device-ram).
+default k=4 answers `17×23` *wrong* while k=2/3 get it right): [docs/benchmarks-gpt-oss.md](docs/benchmarks-gpt-oss.md).
 
 ### Desktop is not the target (for now)
 
@@ -247,6 +248,8 @@ it, or reproduce the measurements. The entry points most people want:
 - [docs/seam.md](docs/seam.md) — the exact contract with llama.cpp's public API.
 - [docs/adding-a-model.md](docs/adding-a-model.md) — supporting a new MoE architecture.
 - [docs/telemetry.md](docs/telemetry.md) — the `BMOE_*` line protocol and CSV schema.
+- [docs/android-memory.md](docs/android-memory.md) — what reclaims the engine's memory on a phone,
+  and which levers actually exist.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured results, and [how they were
   produced](docs/benchmark-method.md).
 
