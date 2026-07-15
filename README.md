@@ -238,6 +238,18 @@ A prebuilt debug APK is attached to each [release](https://github.com/Helldez/Bi
 Details: [docs/moe-streaming.md](docs/moe-streaming.md),
 [docs/architecture.md](docs/architecture.md).
 
+## Documentation
+
+[docs/](docs/README.md) is indexed by what you are trying to do — understand the design, extend
+it, or reproduce the measurements. The entry points most people want:
+
+- [docs/architecture.md](docs/architecture.md) — the layer map, and why llama.cpp is not forked.
+- [docs/seam.md](docs/seam.md) — the exact contract with llama.cpp's public API.
+- [docs/adding-a-model.md](docs/adding-a-model.md) — supporting a new MoE architecture.
+- [docs/telemetry.md](docs/telemetry.md) — the `BMOE_*` line protocol and CSV schema.
+- [docs/benchmarks.md](docs/benchmarks.md) — measured results, and [how they were
+  produced](docs/benchmark-method.md).
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
