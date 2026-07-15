@@ -132,7 +132,9 @@ there is too much I/O — 1.6 s/tok of lane-busy reads — to hide behind ~0.4 s
 ### Gemma-4-26B-A4B-it-Q4_K_M
 
 - **File:** `Gemma-4-26B-A4B-it-Q4_K_M.gguf` — 17.0 GB on disk, Q4_K_M quantization.
-- **Shape:** fused gate+up expert layout, A4B (4 experts active). ≈1.51× device RAM (11.3 GB).
+- **Shape:** fused gate+up expert layout. The "A4B" label is ~4 **billion active parameters**, not
+  4 active experts — the measured I/O ratio puts the default routing width at 8 (see the
+  active-expert override section below). ≈1.51× device RAM (11.3 GB).
 
 | Config | mean | min | max | median | p5 | p95 | cache hit | flash read/token | decode: compute + I/O (s/tok) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
