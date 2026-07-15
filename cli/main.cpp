@@ -337,7 +337,8 @@ static void print_usage(const char * argv0) {
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache\n"
         "      --no-warm-dense     skip the load-time sweep that page-caches the non-expert weights\n"
-        "      --no-rewarm         skip the per-prompt bulk restore of memory the kernel swapped out\n"
+        "      --rewarm            per-prompt bulk restore of memory the kernel swapped out\n"
+        "                          (measured ineffective on device — see docs/rewarm.md)\n"
         "      --rewarm-threshold-mb N  swapped-out MiB above which the rewarm runs (default 256)\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
@@ -413,8 +414,8 @@ int main(int argc, char ** argv) {
             cfg.moe.o_direct = false;
         else if (a == "--no-warm-dense")
             cfg.moe.warm_dense = false;
-        else if (a == "--no-rewarm")
-            cfg.moe.rewarm = false;
+        else if (a == "--rewarm")
+            cfg.moe.rewarm = true;
         else if (a == "--rewarm-threshold-mb")
             cfg.moe.rewarm_threshold_mb = std::atoi(next("--rewarm-threshold-mb"));
         else if (a == "--load-all")

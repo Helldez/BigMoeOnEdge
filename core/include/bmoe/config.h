@@ -73,13 +73,17 @@ struct MoeStreamConfig {
 
     // Before a generation, if the kernel has swapped out at least rewarm_threshold_mb of this
     // process's memory, pull the expert cache and the dense regions back in one bulk sequential
-    // pass instead of letting the decode fault them in a page at a time. A long-lived session is
-    // the target: Android's reclaim compresses an idle process's anonymous memory into zram within
-    // seconds, so the turn after a pause re-faults its whole working set — measured on gpt-oss-120b
-    // as a drop from ~2 tok/s to ~0.3 tok/s for the entire answer. Bulk restore pays the same bytes
-    // once, sequentially, before the first token. Costs one /proc read per generation when nothing
-    // was swapped, so it stays on by default; off for A/B measurements. See docs/rewarm.md.
-    bool rewarm = true;
+    // pass instead of letting the decode fault them in a page at a time.
+    //
+    // OFF by default: measured on device, it does not work. The pass does what it claims — 2.0 GiB
+    // of cache restored, VmSwap 1.76 GiB → 0.46 GiB, in 6.4 s — and the kernel had taken it back
+    // 8 seconds later, mid-decode, with the turn still at 0.3 tok/s. Restoring residency cannot win
+    // when the process is asking for more than the device will concede (~3.8 GiB wanted against a
+    // system that holds MemFree near 100 MiB): it buys seconds of truce for a several-second pause.
+    // Kept behind this flag because the mechanism and its telemetry are what a real fix — one that
+    // shrinks the ask instead of re-fetching what was taken — will be measured against.
+    // See docs/rewarm.md and docs/bench-data/2026-07-15-rewarm/.
+    bool rewarm = false;
 
     // Swapped-out MiB below which a rewarm is not worth its pause. Under a few hundred MiB the
     // refault cost is spread thin enough that the decode absorbs it, while the bulk pass would

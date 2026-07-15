@@ -104,9 +104,10 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     current.warmDense, enabled = stream,
                 ) { onChange(current.copy(warmDense = it)) }
                 SwitchRow(
-                    "Rewarm after reclaim",
-                    "Android compresses an idle session's memory away within seconds. Restore it in one pass " +
-                        "before answering, instead of paying it back a page at a time for the whole reply",
+                    "Rewarm after reclaim (measured ineffective)",
+                    "Restore memory Android compressed away while the session idled, before answering. " +
+                        "It does restore it — and the kernel takes it back seconds later, mid-reply, for no " +
+                        "gain. Kept to re-measure on other devices; expect a pause and no speed-up",
                     current.rewarm, enabled = stream,
                 ) { onChange(current.copy(rewarm = it)) }
                 IntSetting(

@@ -20,7 +20,7 @@ data class AppSettings(
     val oDirect: Boolean = true,        // bypass the page cache
     val overlap: Boolean = true,        // read the next experts while the current layer computes
     val warmDense: Boolean = true,      // page-cache the non-expert weights at load (kills >RAM slow-start)
-    val rewarm: Boolean = true,         // restore memory Android reclaimed while the session sat idle
+    val rewarm: Boolean = false,        // measured ineffective (docs/rewarm.md); left switchable to re-measure
     val prefetchLayers: Int = 0,        // temporal prefetch depth K (0 = off); needs the cache
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
 ) {
@@ -62,8 +62,8 @@ data class AppSettings(
             if (overlap) a += "--overlap"
             // Warm-up is on by default in the engine; only surface the opt-out flag.
             if (!warmDense) a += "--no-warm-dense"
-            // Likewise the per-prompt rewarm: on by default, so only the opt-out needs a flag.
-            if (!rewarm) a += "--no-rewarm"
+            // The rewarm is off in the engine (measured ineffective); surface the opt-IN flag.
+            if (rewarm) a += "--rewarm"
             // Auto sizing is a live LRU cache, so it satisfies the prefetch cache requirement.
             val cacheOn = cacheMb == CACHE_AUTO || cacheMb > 0
             if (prefetchLayers > 0 && cacheOn) a += listOf("--prefetch", prefetchLayers.toString())

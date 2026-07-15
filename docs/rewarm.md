@@ -1,4 +1,8 @@
-# Rewarm after reclaim
+# Rewarm after reclaim — a measured failure
+
+**This does not work. It is off by default and documented here so the next attempt does not repeat
+it.** The pass does exactly what it claims and the problem is untouched; the reason why is the useful
+part.
 
 A session keeps the model loaded and the expert cache warm so the second prompt does not re-pay the
 first one's costs (see [session mode](telemetry.md)). Android disagrees. Its reclaim daemon targets
@@ -10,6 +14,9 @@ Nothing announces this. The next prompt starts, the cache reports the same hit r
 and every hit touches a page that has to be decompressed back out of zram first — one major fault at
 a time, per expert, per layer, for the whole answer. The result reads as a mysteriously slow turn on
 a session that should have started warm.
+
+That diagnosis is correct, and the conclusion drawn from it — restore the pages first — is not. See
+[what actually happened](#what-actually-happened) below.
 
 ## What it does
 
@@ -43,11 +50,48 @@ almost nothing to do, which is what a session that was left alone should report.
 That is the intended trade: the same bytes move either way, but sequentially and once, before the
 first token, instead of scattered across every token of the answer.
 
-## What is measured, and what is still open
+## What actually happened
 
-The reclaim and its cost are established. On a OnePlus 15R running gpt-oss-120b-Q4_K_M with the
-Android example's own configuration (4096 ctx, fixed 2000 MiB cache, 4 lanes, top-2), two turns of a
-session separated by a four-minute idle:
+In the app, on a turn that started with 1.76 GiB swapped out, the pass fired and worked:
+
+| | before the turn | after the pass (t=4 s) |
+|---|---|---|
+| expert cache resident (`RssAnon`) | 0.65 GiB | **2.02 GiB** — the full budget |
+| dense resident (`RssFile`) | 0.30 GiB | **1.29 GiB** |
+| `VmSwap` | 1.76 GiB | **0.46 GiB** |
+
+It cost 6.4 s. Eight seconds later the kernel had started taking it back, and it kept taking it, all
+the way through the decode (`app-turn-after-rewarm.csv`):
+
+```
+t=4    RssAnon 2.02 GB   swap 463 MB     <- restored
+t=12   RssAnon 1.86 GB   swap 620 MB     <- already going
+t=20   RssAnon 1.57 GB   swap 917 MB
+t=44   RssAnon 1.46 GB   swap 1.02 GB
+t=68   RssAnon 2.02 GB   swap 468 MB     <- the engine faults it back
+t=88   RssAnon 1.88 GB   swap 596 MB     <- and loses it again
+```
+
+The turn ran at 0.3 tok/s — no better than with no rewarm at all. `MemFree` sat between 35 and
+300 MiB for the entire generation.
+
+That oscillation is the whole finding. This is not a session that was reclaimed while idle and could
+be made whole again; it is a process asking for about 3.8 GiB (2.0 of expert cache plus 1.77 of dense
+weights) on a device that will concede roughly 3.0, with the kernel balancing the books continuously
+while it works. Restoring residency cannot win that: it buys seconds of truce for a several-second
+pause. **The ask has to shrink — re-fetching what was taken is treating the scoreboard.**
+
+Where to look next, on this evidence: the expert cache costs 2 GiB and returns an 8–9% hit rate on
+gpt-oss-120b (128 experts at top-2 — the working set is orders of magnitude past any budget that
+fits). It buys one expert in eleven at the price of the memory war that is costing far more, so the
+first thing worth measuring is simply turning it off for >RAM models. Also note `--cache-mb auto`
+sizes itself from `MemAvailable`, which counts the page cache holding this model's own dense weights
+as free — so it over-asks by construction here.
+
+## The A/B that led here
+
+On a OnePlus 15R running gpt-oss-120b-Q4_K_M with the Android example's own configuration (4096 ctx,
+fixed 2000 MiB cache, 4 lanes, top-2), two turns of a session separated by a four-minute idle:
 
 | | turn 1 | turn 2, after the idle |
 |---|---|---|
@@ -62,18 +106,13 @@ handling. Meanwhile `VmSwap` rose from 337 MiB to 1.46 GiB and RSS fell from 3.8
 Android app is hit far harder than this: its engine drops from 3.5 GiB resident to 3.5 MiB within
 five seconds of a reply finishing, where an adb session takes minutes to lose half as much.
 
-**What is not yet established is that restoring the swapped pages is what fixes it.** A second run
-of the same A/B was reclaimed very differently — `VmSwap` stayed flat at 346 MiB, RSS lost only
-170 MiB — and its turn 2 was *equally* slow (0.754 tok/s, 387 major faults/token). Two runs, an
-order of magnitude apart in swap, identical slowdown. Anonymous swap therefore cannot be the whole
-cause, and the prime suspect for the rest is the mmap'd dense weights: they are file-backed, so
-reclaim drops them without `VmSwap` ever moving, and refaulting them reads flash inside the decode.
-
-That matters for the trigger. The pass restores both (the `MADV_WILLNEED` hints and the dense sweep),
-but it only *runs* when `VmSwap` crosses the threshold — a signal blind to the dense case. Sizing
-that effect, and picking a trigger that sees it (`RssFile` from the same `/proc/self/status` read is
-the obvious candidate), is the open work. Until then this is a mechanism with a partial trigger, not
-a settled fix.
+The first warning that restoring pages would not be enough came from the second arm of this same
+A/B, before the app test settled it. That run was reclaimed very differently — `VmSwap` stayed flat
+at 346 MiB, RSS lost only 170 MiB, so the pass never even fired — and its turn 2 was *equally* slow
+(0.754 tok/s, 387 major faults/token). Two runs an order of magnitude apart in swap, one identical
+slowdown: anonymous swap was never the whole cause. The mmap'd dense weights are the rest of it, and
+they are file-backed, so reclaim drops them without `VmSwap` moving at all — which also means the
+trigger was blind to half the problem it was built for.
 
 ## Why the threshold
 
@@ -83,32 +122,37 @@ the cache was evicted on purpose, whereas `VmSwap` rising means the pages are st
 compressed and waiting.
 
 Below a few hundred MiB the refault cost is spread thin enough that the decode absorbs it, while the
-bulk pass would still stall the first token — hence the default of 256 MiB. On a device that never
-swaps (enough RAM, or no zram) `VmSwap` stays at zero, the threshold never trips, and the feature
-costs one `/proc` read per generation. That is why it is on by default and needs no per-device
-tuning. `0` means "always rewarm", which is how the gates force the pass on a host that has nothing
-swapped out.
+bulk pass would still stall the first token — hence the 256 MiB default. `0` means "always rewarm",
+which is how gate S4 forces the pass on a host that has nothing swapped out.
+
+The threshold also explains why the first app test looked like a bug and was not: the turn ran fast,
+no `rewarm` appeared, and the reply degraded anyway. `VmSwap` was still low when that turn *started*
+— the kernel did its taking during the generation. Reading the signal once, up front, cannot see a
+thief that arrives later, which is the same reason the pass cannot fix this.
 
 ## Flags
 
 | Flag | Meaning |
 |---|---|
-| `--no-rewarm` | skip the per-prompt bulk restore (A/B measurements) |
+| `--rewarm` | opt in to the per-prompt bulk restore (off by default: measured ineffective) |
 | `--rewarm-threshold-mb N` | swapped-out MiB above which the pass runs (default 256; 0 = always) |
 
 ## Scope
 
-- **Universal, not device-specific.** `madvise` and `/proc/self/status` are plain Linux, available to
-  any app without permissions or vendor APIs, and zram-backed reclaim of idle processes is the norm
-  across Android vendors. Nothing here keys on a device or a model. On Windows the primitives report
-  "nothing swapped" and the pass never runs.
-- **It does not prevent reclaim.** No app-reachable API can: `mlock` is capped at a few tens of KiB
-  for unprivileged processes, far below a multi-GiB cache. This makes recovery cheap rather than
-  making confiscation impossible, and the pages it faults back are pages the decode was about to
-  touch anyway — it changes when they arrive, not how many.
-- **The KV cache is not covered.** It belongs to llama.cpp, which exposes no buffer pointer to hint
-  on, so it refaults on first touch as before. It is far smaller than the expert cache and is touched
-  linearly, so it costs much less than either.
+If someone revisits this, these still hold:
+
+- **The mechanism is sound and universal.** `madvise` and `/proc/self/status` are plain Linux,
+  available to any app without permissions or vendor APIs, and zram-backed reclaim of idle processes
+  is the norm across Android vendors. It measurably restores what it targets. On Windows the
+  primitives report "nothing swapped" and the pass never runs.
+- **Nothing app-reachable can prevent reclaim.** `mlock` is capped at a few tens of KiB for an
+  unprivileged process, far below a multi-GiB cache. That constraint is what pushed this design
+  toward recovery — and recovery is what failed. The remaining lever is the size of the ask.
+- **A trigger read once per turn is structurally wrong here.** Reclaim is continuous during the
+  decode, not a one-off during the idle. Anything reactive would have to run *inside* generation, and
+  would then be competing with the kernel on its own schedule.
+- **`VmSwap` sees only half the reclaim.** The dense weights are file-backed and vanish without it
+  moving; `RssFile` from the same read sees them. Any future trigger needs both.
 - **A genuinely cold start is a different problem.** Nothing is in swap when a process has just
   started: the model load and the expert cache's first fill are physics, not reclaim, and the
   load-time dense warm-up is what addresses their first-token share.

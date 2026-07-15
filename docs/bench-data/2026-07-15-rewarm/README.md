@@ -52,9 +52,38 @@ undone by four minutes of sitting still.
 
 The reclaim itself is not in doubt, and the app has it far worse than adb does: its engine goes from
 3.5 GiB resident to 3.5 MiB within five seconds of a reply finishing, where an adb session took four
-minutes to lose half that. What is still open is which half of the reclaim dominates the cost, and
-therefore whether `VmSwap` is the right trigger. `RssFile`, from the same `/proc/self/status` read,
-would see the dense case that `VmSwap` is blind to.
+minutes to lose half that.
+
+## The app test that settled it — `app-turn-after-rewarm.csv`
+
+Sampled every 4 s through one in-app turn (gpt-oss-120b, `--cache-mb 2000`, rewarm on) that started
+with 1.76 GiB swapped out. The pass fired, reported 6.4 s, and worked: by t=4 s `RssAnon` was back to
+2.02 GiB — the full 2000 MiB budget — `RssFile` to 1.29 GiB, and `VmSwap` down to 463 MiB.
+
+Then, without the turn doing anything unusual:
+
+| t (s) | RssAnon | VmSwap | |
+|---|---|---|---|
+| 4 | 2.02 GB | 463 MB | restored by the pass |
+| 12 | 1.86 GB | 620 MB | the kernel is already taking it back |
+| 20 | 1.57 GB | 917 MB | |
+| 44 | 1.46 GB | 1.02 GB | |
+| 68 | 2.02 GB | 468 MB | the engine faults it back in |
+| 88 | 1.88 GB | 596 MB | and loses it again |
+
+It oscillates like this for the whole generation, `MemFree` pinned between 35 and 300 MiB. **The turn
+still ran at 0.3 tok/s** — indistinguishable from no rewarm, after a 6.4 s pause.
+
+That is the answer, and it is a negative one. This is not an idle session that can be made whole; it
+is a process asking for ~3.8 GiB (2.0 expert cache + 1.77 dense) where the device concedes ~3.0, with
+the kernel settling the difference continuously *while it decodes*. Restoring residency buys seconds
+of truce for a several-second pause. The rewarm is now off by default.
+
+The lever that remains is the size of the ask. On this model the 2 GiB expert cache returns an 8–9%
+hit rate — 128 experts at top-2 puts the working set orders of magnitude beyond any budget that fits
+— so it buys one expert in eleven at the price of the war. Measuring `--cache-mb 0` against `2000`
+in-app is the obvious next step. (`auto` is not a fix here either: it sizes from `MemAvailable`, which
+counts the page cache holding this model's own dense weights as free.)
 
 ## Note on thermal
 
