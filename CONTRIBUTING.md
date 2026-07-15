@@ -23,8 +23,7 @@ cd build && ctest --output-on-failure
 
 ## Good first contributions
 
-- A new MoE architecture recipe + its gate.
-- Support for the merged `ffn_gate_up_exps` expert layout.
+- A new MoE architecture recipe + its gate (`docs/adding-a-model.md`).
 - Read coalescing / expert-contiguous layout experiments (see `docs/roadmap.md`).
 
 ## PRs
