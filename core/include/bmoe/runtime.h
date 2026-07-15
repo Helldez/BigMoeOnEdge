@@ -17,6 +17,8 @@
 namespace bmoe {
 
 class IRouteTraceSink;
+class IComputeTraceSink;
+class IIoTraceSink;
 
 struct RunResult {
     bool ok = false;
@@ -29,11 +31,13 @@ struct RunResult {
 
 // Run one generation. `on_token` (nullable) is invoked once per generated token before
 // the next decode; `sink` (nullable) receives the same per-token metrics plus the final
-// summary. `route_trace` (nullable) records the per-step, per-layer routing trace — a
-// diagnostic, see bmoe/route_trace.h. Blocks until generation completes or errors.
+// summary. The trace sinks (all nullable) are diagnostics that perturb what they measure — see
+// bmoe/route_trace.h and bmoe/decode_trace.h. Blocks until generation completes or errors.
 RunResult run(const RunConfig & cfg,
               const std::function<void(const TokenMetrics &)> & on_token = nullptr,
               IMetricsSink * sink = nullptr,
-              IRouteTraceSink * route_trace = nullptr);
+              IRouteTraceSink * route_trace = nullptr,
+              IComputeTraceSink * compute_trace = nullptr,
+              IIoTraceSink * io_trace = nullptr);
 
 } // namespace bmoe

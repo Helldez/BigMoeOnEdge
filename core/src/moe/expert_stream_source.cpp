@@ -317,7 +317,9 @@ void ExpertStreamSource::warm_dense_regions(const std::string & gguf_path) {
 }
 
 // ── one aligned slice read on a lane ────────────────────────────────────────────────
-bool ExpertStreamSource::read_slice(int lane, void * dst, uint64_t off, uint64_t nbytes) {
+bool ExpertStreamSource::read_slice(int lane, const IoJob & j) {
+    void * const dst = j.dst;
+    const uint64_t off = j.off, nbytes = j.nbytes;
     if (nbytes == 0) return true;
     const uint64_t a0 = off & ~(uint64_t) (align_ - 1);
     const uint64_t a1 = (off + nbytes + align_ - 1) & ~(uint64_t) (align_ - 1);
@@ -355,10 +357,41 @@ bool ExpertStreamSource::read_slice(int lane, void * dst, uint64_t off, uint64_t
         a += (uint64_t) got;
     }
     const auto t1 = clock_t_::now();
-    io_syscall_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+    const uint64_t lat_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    io_syscall_ns_.fetch_add((long long) lat_ns);
     std::memcpy(dst, b + (off - a0), (size_t) nbytes);
     read_bytes_.fetch_add((long long) (read_end - a0));
+
+    // The trace records the read as issued, not as accounted: `read_bytes` is the aligned window
+    // actually pulled, which is what the drive was asked for and what the effective bandwidth must
+    // be judged against — `req_bytes` is only what the caller wanted out of it.
+    if (io_trace_on_) {
+        IoTraceRow r;
+        r.layer = j.layer;
+        r.expert = j.expert;
+        r.proj = (int8_t) j.proj;
+        r.lane = (int8_t) lane;
+        r.spec = j.spec;
+        r.offset = off;
+        r.req_bytes = nbytes;
+        r.read_bytes = read_end - a0;
+        r.latency_ns = lat_ns;
+        std::lock_guard<std::mutex> lk(io_trace_mtx_);
+        io_trace_rows_.push_back(r);
+    }
     return true;
+}
+
+void ExpertStreamSource::set_io_trace(bool on) {
+    std::lock_guard<std::mutex> lk(io_trace_mtx_);
+    io_trace_on_ = on;
+    io_trace_rows_.clear();
+}
+
+void ExpertStreamSource::take_io_trace_rows(std::vector<IoTraceRow> & out) {
+    std::lock_guard<std::mutex> lk(io_trace_mtx_);
+    out.swap(io_trace_rows_);
+    io_trace_rows_.clear();
 }
 
 void ExpertStreamSource::io_drain(int lane, uint64_t my_gen) {
@@ -370,7 +403,7 @@ void ExpertStreamSource::io_drain(int lane, uint64_t my_gen) {
             i = next_idx_++;
         }
         const IoJob & j = jobs_[i];
-        if (!read_slice(lane, j.dst, j.off, j.nbytes)) {
+        if (!read_slice(lane, j)) {
             io_err_.store(true);
             if (overlap_) fatal_.store(true, std::memory_order_release);
         }
@@ -432,7 +465,8 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
             uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
             uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
             if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) return; // low on memory — stop quietly
-            spec_jobs_.push_back({dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id});
+            spec_jobs_.push_back(
+                {dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, e, (int16_t) il, (int8_t) p, 1});
             ++njobs;
         }
         if (njobs == 0) continue;
@@ -451,7 +485,7 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
             g = spec_gen_;
             j = spec_jobs_[spec_next_++];
             ++spec_inflight_;
-            const bool ok = read_slice(0, j.dst, j.off, j.nbytes);
+            const bool ok = read_slice(0, j);
             if (ok && g == spec_gen_) {
                 spec_read_bytes_.fetch_add((long long) j.nbytes);
                 if (--spec_remaining_[j.flag] == 0) spec_done_.push_back(j.flag);
@@ -478,7 +512,7 @@ void ExpertStreamSource::drain_spec(int lane, uint64_t worker_seen) {
             j = spec_jobs_[spec_next_++];
             ++spec_inflight_;
         }
-        const bool ok = read_slice(lane, j.dst, j.off, j.nbytes);
+        const bool ok = read_slice(lane, j);
         {
             std::lock_guard<std::mutex> lk(io_mtx_);
             if (ok && g == spec_gen_) { // ignore reads from a cancelled round
@@ -681,8 +715,8 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             for (int p = 0; p < MoeRecipe::max_exps; ++p) {
                 const uint64_t slice = L.proj[p].nb2;
                 if (slice == 0) continue; // absent slot in a fused layout
-                jobs_.push_back(
-                    {(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice, slice});
+                jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
+                                 slice, -1, e, (int16_t) il, (int8_t) p, 0});
             }
             return true;
         }
@@ -709,7 +743,8 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
                 std::fprintf(stderr, "bmoe: commit failed\n");
                 return false;
             }
-            jobs_.push_back({dst, L.proj[p].file_off + (uint64_t) e * slice, slice});
+            jobs_.push_back(
+                {dst, L.proj[p].file_off + (uint64_t) e * slice, slice, -1, e, (int16_t) il, (int8_t) p, 0});
         }
         cvalid_[id] = 1;
         cspec_[id] = 0; // a real read, not speculative
@@ -752,7 +787,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (io_threads_ <= 1 || njobs <= 1) {
         for (size_t i = 0; i < njobs; ++i) {
             const IoJob & j = jobs_[i];
-            if (!read_slice(0, j.dst, j.off, j.nbytes)) return false;
+            if (!read_slice(0, j)) return false;
         }
     } else {
         uint64_t my_gen;
@@ -852,8 +887,8 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             if (slice == 0) continue; // absent slot in a fused layout
             for (int e : staged_) {
                 const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
-                jobs_.push_back(
-                    {(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice, slice, flag});
+                jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
+                                 slice, flag, e, (int16_t) il, (int8_t) p, 0});
             }
         }
     } else {
@@ -901,7 +936,8 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
                 if (!seen_[e]) continue; // cache hit, already marked ready
                 const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
                 jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice,
-                                 L.proj[p].file_off + (uint64_t) e * slice, slice, flag});
+                                 L.proj[p].file_off + (uint64_t) e * slice, slice, flag, e, (int16_t) il, (int8_t) p,
+                                 0});
             }
         }
 

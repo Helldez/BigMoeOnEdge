@@ -16,6 +16,7 @@
 
 #include "bmoe/expert_source.h"
 #include "bmoe/config.h"
+#include "bmoe/decode_trace.h"
 #include "bmoe/recipe.h"
 #include "../io/platform_io.h"
 
@@ -85,6 +86,13 @@ public:
     // and exercised by the shrink gate. Clamped up: an explicit raise also lifts the grow ceiling.
     void set_cache_budget(size_t bytes);
 
+    // ── I/O trace (diagnostics; see bmoe/decode_trace.h) ────────────────────────────
+    // When on, every read_slice records one row. Rows are appended under a dedicated leaf mutex
+    // (reads happen on N lanes at once), so this costs a lock per read and is off by default.
+    // take_io_trace_rows moves the buffer out; the caller stamps the frame it belongs to.
+    void set_io_trace(bool on);
+    void take_io_trace_rows(std::vector<IoTraceRow> & out);
+
     void shutdown();
 
 private:
@@ -93,6 +101,13 @@ private:
         uint64_t off = 0;
         uint64_t nbytes = 0;
         int32_t flag = -1; // overlap: index into ready_ to publish on completion; -1 = serial
+        // Which (layer, expert, projection) this read serves. Known at every enqueue site and
+        // otherwise thrown away; carried so the I/O trace can attribute a read without the read
+        // path having to guess. Inert unless the trace is on.
+        int32_t expert = -1;
+        int16_t layer = -1;
+        int8_t proj = -1;
+        uint8_t spec = 0; // 1 if enqueued speculatively by prefetch
     };
 
     // One readiness cell per (projection, expert). A cell is "ready for the layer in flight"
@@ -102,7 +117,8 @@ private:
         std::atomic<uint32_t> gen{0};
     };
 
-    bool read_slice(int lane, void * dst, uint64_t off, uint64_t nbytes);
+    // `j` carries the read AND (for the trace) what it serves; `lane` is who is doing it.
+    bool read_slice(int lane, const IoJob & j);
     void io_drain(int lane, uint64_t my_gen);
     void io_worker(int lane);
 
@@ -134,6 +150,12 @@ private:
     void lru_push_back(int32_t id);
     size_t entry_bytes(int il) const;
     void evict_tail();
+
+    // I/O trace buffer. Its own leaf mutex, never held across a read: the lanes append
+    // concurrently, and the eval thread swaps the buffer out between decodes.
+    bool io_trace_on_ = false;
+    std::mutex io_trace_mtx_;
+    std::vector<IoTraceRow> io_trace_rows_;
 
     bool active_ = false;
     bool o_direct_ = false;

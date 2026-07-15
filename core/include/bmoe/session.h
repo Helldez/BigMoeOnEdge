@@ -25,6 +25,8 @@
 namespace bmoe {
 
 class IRouteTraceSink;
+class IComputeTraceSink;
+class IIoTraceSink;
 
 // Everything fixed for the model's lifetime — set once at open(). n_ctx and n_batch are
 // baked into the llama context at creation and cannot change per prompt, so size them for
@@ -58,11 +60,19 @@ public:
     // Returns nullptr and sets `error` on failure. The returned session owns all native
     // state and must outlive every generate() call.
     //
-    // `route_trace` (nullable) turns on the per-step, per-layer routing trace for every
-    // generate() on this session and must outlive it — a diagnostic, ignored when streaming is
-    // off, and never on for a benchmark run. See bmoe/route_trace.h.
-    static std::unique_ptr<Session>
-    open(const SessionConfig & cfg, std::string & error, IRouteTraceSink * route_trace = nullptr);
+    // The trace sinks (all nullable) turn on their diagnostic for every generate() on this session
+    // and must outlive it. None is ever on for a benchmark run — each perturbs what it measures.
+    //   * route_trace   — per-step, per-layer routing; ignored when streaming is off (no routing to
+    //                     observe). See bmoe/route_trace.h.
+    //   * compute_trace — per-node compute and fault attribution. Works with or without streaming,
+    //                     so a dense mmap baseline can be compared against a streamed run.
+    //   * io_trace      — per-read flash latency/size; ignored when streaming is off (no reads).
+    // See bmoe/decode_trace.h for the latter two.
+    static std::unique_ptr<Session> open(const SessionConfig & cfg,
+                                         std::string & error,
+                                         IRouteTraceSink * route_trace = nullptr,
+                                         IComputeTraceSink * compute_trace = nullptr,
+                                         IIoTraceSink * io_trace = nullptr);
 
     // Generate one response. Serialized: one generation at a time per session. `on_token`
     // and `sink` receive the same per-token metrics as run(). Cache state carries over from
