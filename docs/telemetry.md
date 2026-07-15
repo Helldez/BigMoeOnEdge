@@ -11,7 +11,7 @@ Emitted once per generated token, in order:
 BMOE_LOAD {"mb":<float>,"ms":<float>}
 BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
                "compute_ms":<float>,"mgmt_ms":<float>,"stall_ms":<float>,"read_mb":<float>,
-               "cache_hit_pct":<float>,"text":"<string>"}
+               "cache_hit_pct":<float>,"majflt":<int>,"cpu_ms":<float>,"text":"<string>"}
 ```
 
 - `BMOE_LOAD` appears only when experts were read this token; `mb` is the flash bytes read,
@@ -27,12 +27,30 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   `--overlap` its meaning changes: it is the **sum of per-lane busy time**, so it can exceed
   `wall_ms` because lanes read in parallel with compute. Use `stall_ms` for the wall time
   compute actually lost to reads under overlap.
+  - **`stall_ms` has a structural floor above zero** — overlap cannot hide *all* flash. Which experts
+    a token needs is only known once the router gate runs, immediately before the FFN consumes them,
+    so on a cache miss the first missed expert's read is issued *after* routing and the FFN waits for
+    it (overlap still hides experts 2…k of that layer behind expert 1's compute). The residual stall
+    therefore tracks the miss rate: it approaches zero only at ~100 % cache hit (the whole expert set
+    resident, i.e. no streaming) or with perfect speculative `--prefetch`. Empirically it never
+    reaches zero — measured per-token minimum ≈ 5–15 ms at 76–81 % hit (Qwen/Gemma), rising to
+    hundreds of ms at 12–18 % hit (gpt-oss). A run that reads as "compute-bound" once warm is the
+    *expected* success case: streaming has hidden the bulk of I/O, leaving compute as the bottleneck.
 - `mgmt_ms` (not emitted in the JSON, but folded into the `compute_ms` residual above and written
   to the CSV) is the cache-management time this token: virtual-memory commit of newly cached
   pages, eviction of cold pages, and the LRU bookkeeping. On the first few tokens after prefill it
   can be a large share of the token; at steady state it is near zero. Surfacing it stops the "all
   compute" reading on warm-up tokens where the real cost is cache churn, not matmul.
 - `cache_hit_pct` is the cumulative cache hit rate, or `-1` when no cache is used.
+- `majflt` / `cpu_ms` **decompose the `compute_ms` residual** — the whole point being that "compute"
+  above is a catch-all that silently absorbs page faults and scheduler stalls, not just matmul.
+  They are measured directly around `llama_decode` (no submodule patch needed): `majflt` is the
+  major page faults served this token — a non-zero count means a mmap-resident (dense) weight was
+  re-faulted from flash *inside* the decode, i.e. a >RAM residency stall masquerading as compute.
+  `cpu_ms` is CPU time summed across all threads; compare it to `wall_ms × threads` for occupancy —
+  near 100% is genuinely compute-bound, well below means the cores were throttled, preempted, or
+  blocked (a low-clock frequency cap or a co-resident process), not doing more math. Both are `0`
+  when the platform can't report them (the Windows host build); treat `0` as "unmeasured".
 - `text` is the full generated text so far, JSON-escaped (for streaming into a UI).
 
 ## End-of-run lines
@@ -42,9 +60,15 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
 <full generated text>
 === perf ===
 generation: <n> tokens, <s> s/token (<t> tok/s)
+compute: <pct>% CPU occupancy (<c> cpu-s/token over <n> threads), <f> major faults/token
 moe-stream: read <mib> MiB (<mib/tok> MiB/token), decode <s> s/token (compute <c> + cache mgmt <m> + flash I/O <i> s/token, <bw> MiB/s)
 moe-cache: <pct>% hit, resident <mib> MiB
 ```
+
+The `compute:` line decomposes the residual: low CPU occupancy points at a throttled/preempted
+core (a frequency cap, a co-resident process) rather than heavy math, and non-zero major
+faults/token means dense weights were re-faulting from flash inside the decode. It is omitted on
+platforms that can't measure it (the Windows host build).
 
 `compute` in the `moe-stream:` line is the same residual described for `compute_ms` above; `cache
 mgmt` is the per-token mean of `mgmt_ms`.
@@ -72,17 +96,19 @@ prints just the summary lines.
 `--csv PATH` additionally writes one row per token:
 
 ```
-step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms
+step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms
 ```
 
 followed by a `# summary ...` comment line. Intended for the benchmark sweep.
 
-`stall_ms` and `mgmt_ms` are trailing columns appended (in that order) after the original seven.
-`stall_ms` is the wall time compute threads waited for expert reads that token (`0` in serial
-mode); `mgmt_ms` is the cache-management time described above. Both are additive: older CSVs have
-fewer columns, so consumers must read by column NAME (from the header row) and treat either as
-optional. The `# summary` line likewise gains `stall_s/tok=<s>` and `mgmt_s/tok=<s>` (see the
-`io_ms` note above for how the read-time columns are reinterpreted under overlap).
+`stall_ms`, `mgmt_ms`, `majflt` and `cpu_ms` are trailing columns appended (in that order) after
+the original seven. `stall_ms` is the wall time compute threads waited for expert reads that token
+(`0` in serial mode); `mgmt_ms` is the cache-management time described above; `majflt`/`cpu_ms` are
+the fault + CPU-time decomposition of the compute residual (see the `BMOE_PROGRESS` notes above),
+`0` when unmeasured. All are additive: older CSVs have fewer columns, so consumers must read by
+column NAME (from the header row) and treat any as optional. The `# summary` line likewise gains
+`stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>` and `cpu_s/tok=<s>` (see the `io_ms` note
+above for how the read-time columns are reinterpreted under overlap).
 
 ## Session mode
 
@@ -116,7 +142,8 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "prefill_s":<float>,"prefill_tps":<float>,"load_s":<float>,"cache_hit_pct":<float>,
             "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
-            "stall_s_tok":<float>,"mgmt_s_tok":<float>,"text":"<string>"}
+            "stall_s_tok":<float>,"mgmt_s_tok":<float>,"majflt_tok":<float>,"cpu_s_tok":<float>,
+            "text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
 
