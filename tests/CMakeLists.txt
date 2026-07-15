@@ -6,6 +6,12 @@
 add_executable(bmoe_moe_gates moe_gates.cpp)
 target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
 
+# The cache governor is pure policy (no llama.cpp, no syscalls, no model), so unlike the gates it
+# needs neither a fixture nor the native backend: it runs against a synthetic device.
+add_executable(bmoe_cache_governor_test cache_governor_test.cpp)
+target_link_libraries(bmoe_cache_governor_test PRIVATE bmoe_core)
+add_test(NAME cache_governor COMMAND bmoe_cache_governor_test)
+
 find_program(PYTHON3 NAMES python3 python)
 
 if(PYTHON3)
