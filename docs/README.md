@@ -22,6 +22,7 @@ for the idea the project is built on.
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
 | [adaptive-cache.md](adaptive-cache.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
 | [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output. |
+| [android-memory.md](android-memory.md) | What reclaims the engine's memory on a phone, which levers exist (almost none), and why the cache hit rate is what the kernel judges you by. |
 
 ## Measurements
 
