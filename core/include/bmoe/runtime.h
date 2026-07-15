@@ -16,6 +16,8 @@
 
 namespace bmoe {
 
+class IRouteTraceSink;
+
 struct RunResult {
     bool ok = false;
     bool cancelled = false; // generation was interrupted by Session::cancel() (ok stays true)
@@ -27,9 +29,11 @@ struct RunResult {
 
 // Run one generation. `on_token` (nullable) is invoked once per generated token before
 // the next decode; `sink` (nullable) receives the same per-token metrics plus the final
-// summary. Blocks until generation completes or errors.
+// summary. `route_trace` (nullable) records the per-step, per-layer routing trace — a
+// diagnostic, see bmoe/route_trace.h. Blocks until generation completes or errors.
 RunResult run(const RunConfig & cfg,
               const std::function<void(const TokenMetrics &)> & on_token = nullptr,
-              IMetricsSink * sink = nullptr);
+              IMetricsSink * sink = nullptr,
+              IRouteTraceSink * route_trace = nullptr);
 
 } // namespace bmoe

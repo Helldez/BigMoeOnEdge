@@ -12,6 +12,7 @@
 #include "bmoe/session.h"
 #include "bmoe/recipe.h"
 #include "bmoe/metrics.h"
+#include "bmoe/route_trace.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -174,7 +175,7 @@ struct SessionCmd {
 // Interactive session: keep the model loaded and the expert cache warm across prompts, reading
 // one JSON request per line from stdin and emitting the BMOE_* line protocol on stdout. See
 // docs/telemetry.md. Returns the process exit code.
-static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
+static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTraceSink * route_trace) {
     SessionConfig sc;
     sc.model_path = cfg.model_path;
     sc.n_threads = cfg.n_threads;
@@ -185,7 +186,7 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
     sc.moe = cfg.moe;
 
     std::string error;
-    std::unique_ptr<Session> session = Session::open(sc, error);
+    std::unique_ptr<Session> session = Session::open(sc, error, route_trace);
     if (!session) {
         std::printf("BMOE_ERROR {\"id\":0,\"fatal\":true,\"msg\":\"%s\"}\n", json_escape(error).c_str());
         std::fflush(stdout);
@@ -320,6 +321,9 @@ static void print_usage(const char * argv0) {
         "      --progress          emit machine telemetry (one JSON line per token)\n"
         "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
         "      --csv PATH          also write per-token metrics as CSV\n"
+        "      --route-trace PATH  diagnostics: write the per-step per-layer MoE routing trace\n"
+        "                          (which experts each layer routed, their weight, cache state).\n"
+        "                          Needs --moe-stream; costs speed — not for benchmark runs\n"
         "      --n-expert-used N   override active MoE experts per token (top-k); lower = faster\n"
         "                          but changes the output (quality). 0 = model default\n"
         "\n"
@@ -345,6 +349,7 @@ static void print_usage(const char * argv0) {
 int main(int argc, char ** argv) {
     RunConfig cfg;
     std::string csv_path;
+    std::string route_trace_path;
     bool session_mode = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -378,6 +383,8 @@ int main(int argc, char ** argv) {
             session_mode = true;
         else if (a == "--csv")
             csv_path = next("--csv");
+        else if (a == "--route-trace")
+            route_trace_path = next("--route-trace");
         else if (a == "--moe-stream")
             cfg.moe.enabled = true;
         else if (a == "--cache-mb") {
@@ -446,10 +453,23 @@ int main(int argc, char ** argv) {
         if (!sink) std::fprintf(stderr, "warning: could not open csv %s\n", csv_path.c_str());
     }
 
+    std::unique_ptr<IRouteTraceSink> route_trace;
+    if (!route_trace_path.empty()) {
+        if (!cfg.moe.enabled) {
+            // Say so rather than writing an empty file: without streaming there is no routing to
+            // observe, and a header-only trace looks like a model that routed nothing.
+            std::fprintf(stderr, "warning: --route-trace needs --moe-stream; no trace will be written\n");
+        } else {
+            route_trace.reset(make_csv_route_trace_sink(route_trace_path));
+            if (!route_trace)
+                std::fprintf(stderr, "warning: could not open route trace %s\n", route_trace_path.c_str());
+        }
+    }
+
     // Interactive session: one persistent process serves many prompts over stdin, keeping the
     // model loaded and the expert cache warm between them. Prompts arrive as JSON requests, not
     // via -p. This is a superset of --progress output (BMOE_* lines), so it never streams inline.
-    if (session_mode) return run_session_loop(cfg, sink.get());
+    if (session_mode) return run_session_loop(cfg, sink.get(), route_trace.get());
 
     if (!cfg.progress) {
         std::printf("%s", cfg.prompt.c_str());
@@ -473,7 +493,7 @@ int main(int argc, char ** argv) {
         }
     };
 
-    RunResult r = run(cfg, on_token, sink.get());
+    RunResult r = run(cfg, on_token, sink.get(), route_trace.get());
     if (!r) {
         std::fprintf(stderr, "\nerror: %s\n", r.error.c_str());
         return 1;
