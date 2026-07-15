@@ -19,6 +19,7 @@ import java.io.BufferedWriter
 import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
@@ -53,6 +54,11 @@ class RunService : Service() {
     private val writeLock = Any()
     private val main = Handler(Looper.getMainLooper())
     private val idleUnload = Runnable { shutdownSession() }
+
+    // The backstop that force-kills a session which did not exit on its own after a `close`. It is a
+    // field, not an inline lambda, so startSession can cancel it: a shutdown followed quickly by a
+    // new prompt would otherwise let a stale kill land on the fresh process.
+    private val forceKill = Runnable { killProcess() }
 
     // The prompt of the in-flight generation, so onDone can commit the completed turn's answer
     // against the question that produced it.
@@ -90,15 +96,16 @@ class RunService : Service() {
         }
         // Different model/settings (or nothing running): tear down and start fresh. A fresh session
         // has an empty KV, so its first turn always clears; and the conversation starts over.
-        // Supersede any old session FIRST (bump epoch before killing its process), so the old
-        // thread — which unblocks the moment we destroy its process — sees a newer epoch in its
-        // finally and skips the cleanup that would otherwise clobber this fresh session.
+        // Supersede any old session FIRST (bump epoch before detaching its process), so the old
+        // thread — which unblocks once that process exits — sees a newer epoch in its finally and
+        // skips the cleanup that would otherwise clobber this fresh session.
         val myEpoch = ++epoch
-        killProcess()
+        val dying = detachProcess()
         shuttingDown = false
         pending = req?.copy(clearKv = true)
         sessionSig = sig
         main.removeCallbacks(idleUnload)
+        main.removeCallbacks(forceKill)
 
         val streaming = argv.contains("--moe-stream")
         startForeground(NOTIF_ID, buildNotification("Loading model…"))
@@ -107,14 +114,18 @@ class RunService : Service() {
                 transcript = emptyList(), streaming = streaming)
         }
 
-        thread(name = "bmoe-session") { runSession(argv, model, myEpoch) }
+        thread(name = "bmoe-session") { runSession(argv, model, myEpoch, dying) }
     }
 
     /** True while this session thread is still the current one and not shutting down. */
     private fun current(myEpoch: Int) = epoch == myEpoch && !shuttingDown
 
-    private fun runSession(argv: ArrayList<String>, model: String, myEpoch: Int) {
+    private fun runSession(argv: ArrayList<String>, model: String, myEpoch: Int, dying: Process?) {
         try {
+            // The superseded process must be gone before this one starts — see awaitExit. Done here
+            // rather than in startSession because that runs on the main thread, which must not block.
+            awaitExit(dying)
+
             val nativeDir = applicationInfo.nativeLibraryDir
             val pb = ProcessBuilder(argv)
             pb.redirectErrorStream(false)
@@ -387,10 +398,21 @@ class RunService : Service() {
     private fun shutdownSession() {
         shuttingDown = true
         main.removeCallbacks(idleUnload)
-        send("""{"cmd":"close"}""")
-        // Give the process a moment to exit cleanly on close, then force it.
-        main.postDelayed({ killProcess() }, 1500)
+        requestClose()
+        main.postDelayed(forceKill, FORCE_KILL_MS)
         RunBus.update { it.copy(state = EngineState.IDLE, sessionSig = null) }
+    }
+
+    /**
+     * Ask the session to wind down on its own terms, so it runs the ordered teardown — unhook,
+     * join the IO pool, unlock the dense pins, free the expert cache — rather than leaving it all
+     * to the kernel. `close` is queued behind an in-flight generate, hence the cancel first: the
+     * engine applies that off its reader thread and aborts the decode, letting close land at once.
+     * Callers back this up with a deadline ([forceKill] or [awaitExit]).
+     */
+    private fun requestClose() {
+        send("""{"cmd":"cancel"}""")
+        send("""{"cmd":"close"}""")
     }
 
     private fun killProcess() {
@@ -400,6 +422,36 @@ class RunService : Service() {
         }
         runCatching { proc?.destroy() }
         proc = null
+    }
+
+    /** Wind the current session down and hand its process off, without waiting, so the caller can
+     *  install a fresh session immediately while the old one drains. */
+    private fun detachProcess(): Process? {
+        requestClose()
+        synchronized(writeLock) {
+            runCatching { procWriter?.close() } // EOF: also closes a session that ignored the command
+            procWriter = null
+        }
+        val p = proc
+        proc = null
+        return p
+    }
+
+    /**
+     * Block until a superseded process is really gone. destroy() only signals; until the kernel has
+     * reaped it, it still holds its model and expert cache. The replacement sizes its own cache from
+     * MemAvailable as it starts, so overlapping the two makes the fresh session read a deflated
+     * figure and quietly starve its cache — and on a >RAM model the combined footprint risks an OOM
+     * kill. Waiting here costs the teardown time once, on a path that is already reloading a model.
+     */
+    private fun awaitExit(p: Process?) {
+        p ?: return
+        runCatching {
+            if (!p.waitFor(EXIT_GRACE_MS, TimeUnit.MILLISECONDS)) {
+                p.destroyForcibly()
+                p.waitFor(EXIT_FORCE_MS, TimeUnit.MILLISECONDS)
+            }
+        }
     }
 
     private fun scheduleIdleUnload() {
@@ -434,6 +486,7 @@ class RunService : Service() {
     override fun onDestroy() {
         shuttingDown = true
         main.removeCallbacks(idleUnload)
+        main.removeCallbacks(forceKill)
         killProcess()
         releaseWake()
         super.onDestroy()
@@ -476,6 +529,15 @@ class RunService : Service() {
         // Free the model after this long with no generation, so an idle session does not hold
         // ~model-sized RAM and a foreground service indefinitely. The next prompt reloads.
         private const val IDLE_UNLOAD_MS = 10 * 60 * 1000L
+
+        // How long a session gets to honour `close` and tear down cleanly before it is killed.
+        private const val FORCE_KILL_MS = 1500L
+
+        // Budget for a superseded process to exit before the replacement spawns. The grace window
+        // covers an ordered teardown; past it the process is SIGKILLed and the kernel reclaims,
+        // which is quick but not instant — hence the second, shorter wait.
+        private const val EXIT_GRACE_MS = 2000L
+        private const val EXIT_FORCE_MS = 3000L
 
         private fun jsonEscape(s: String): String {
             val o = StringBuilder(s.length + 8)
