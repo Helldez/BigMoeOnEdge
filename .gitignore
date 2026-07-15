@@ -16,6 +16,9 @@ cmake-build-*/
 /.bench-*/
 *.safetensors
 /*.log
+# Scratch notes and raw run samples at the root. Curated CSVs live in docs/bench-data/.
+/*.csv
+/NEXT-SESSION-PROMPT.md
 
 # Android
 examples/android/.gradle/

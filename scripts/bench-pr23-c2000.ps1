@@ -2,7 +2,7 @@
 # ~7 tok/s compute ceiling) and test the one new feature with a real shot here — shallow prefetch
 # (depth 1, low speculative volume, unlike spec-gate). Baseline vs +prefetch 1, at lane 4 overlap.
 param(
-  [string]$OutDir = "C:\Users\raffa\Documents\BigMoeOnEdge\.bench-pr23",
+  [string]$OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) ".bench-pr23"),
   [int]$NPred = 256,
   [int]$CooldownSec = 45
 )

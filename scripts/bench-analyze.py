@@ -8,7 +8,8 @@
 #   mean = aggregate n_tokens / total_seconds ; min/max = slowest/fastest single token.
 import os, sys, statistics
 
-BENCH = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\raffa\Documents\BigMoeOnEdge\.bench"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BENCH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, ".bench")
 ORDER = ["mmap", "stream", "c2000_l2", "c2000_l4", "c4000_l2", "c4000_l4",
          "stream_ov", "c2000_l4_ov", "c4000_l4_ov",
          "c4000_l4_pf1", "c4000_l4_pf2", "c4000_l4_pf4",
