@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -146,141 +147,174 @@ private fun MainScreen(
     var prompt by rememberSaveable { mutableStateOf("Explain what a mixture-of-experts model is, in two sentences.") }
     val listState = rememberLazyListState()
 
-    // Keep the newest content in view as the answer streams in and turns commit. Item 0 is the
-    // controls block; the transcript and the in-flight answer follow it.
+    // Item 0 is the controls block; the transcript and the in-flight answer follow it.
     val liveShown = ui.answer.isNotEmpty()
     val total = 1 + ui.transcript.size + (if (liveShown) 1 else 0)
-    LaunchedEffect(ui.transcript.size, liveShown, ui.answer.length) {
-        if (total > 1) runCatching { listState.animateScrollToItem(total - 1) }
+
+    // Follow the tail only while the user is parked at the bottom. A long answer streams for a
+    // long time, and scrolling back to re-read it must not fight a per-token scroll command:
+    // dragging the list detaches the follow, coming back to the bottom re-arms it.
+    var followTail by remember { mutableStateOf(true) }
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            last == null ||
+                (last.index == info.totalItemsCount - 1 && last.offset + last.size <= info.viewportEndOffset)
+        }
+    }
+    LaunchedEffect(listState) {
+        listState.interactionSource.interactions.collect { if (it is DragInteraction.Start) followTail = false }
+    }
+    // Re-arm on settle, not the moment the bottom is touched: while an answer streams the bottom
+    // keeps moving away, so only where a scroll actually comes to rest says what the user wants.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) followTail = atBottom }
+    }
+    LaunchedEffect(total, ui.answer.length, followTail) {
+        // A long answer is taller than the viewport, so aligning the item's top would park the view
+        // on its beginning; the large offset pins the list to the newest text instead.
+        if (followTail && total > 1) runCatching { listState.scrollToItem(total - 1, Int.MAX_VALUE) }
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item(key = "controls") {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("BigMoeOnEdge", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    TextButton(onClick = onOpenSettings) { Text("Settings") }
-                }
-
-                when {
-                    scanning -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Text("Scanning for MoE models…", fontSize = 14.sp)
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item(key = "controls") {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("BigMoeOnEdge", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        TextButton(onClick = onOpenSettings) { Text("Settings") }
                     }
-                    models.isEmpty() -> {
-                        ElevatedCard {
-                            Text(
-                                ModelManager.pushHint(),
-                                Modifier.padding(12.dp),
-                                fontSize = 13.sp,
-                                fontFamily = FontFamily.Monospace,
-                            )
+
+                    when {
+                        scanning -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Text("Scanning for MoE models…", fontSize = 14.sp)
                         }
-                        TextButton(onClick = { requestSharedStorageAccess(context); onRefresh() }) { Text("Refresh") }
-                    }
-                    else -> LabeledDropdown(
-                        label = "Model",
-                        options = models.map { it.name },
-                        selected = modelIdx,
-                        onSelect = onSelectModel,
-                    )
-                }
-
-                // Bring a model onto the device without adb: download by URL or pick a local file.
-                // Both land in the app models dir; on completion we re-scan so it appears above.
-                AddModelSection(onModelReady = onRefresh)
-
-                OutlinedTextField(
-                    value = prompt,
-                    onValueChange = { prompt = it },
-                    label = { Text("Prompt") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2,
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(
-                        onClick = {
-                            if (models.isNotEmpty()) {
-                                // First message of a conversation clears the KV; a follow-up continues it.
-                                launchPrompt(context, models[modelIdx.coerceIn(0, models.size - 1)],
-                                    prompt.ifBlank { "The capital of Japan is" }, settings, ui.sessionSig,
-                                    clearKv = ui.transcript.isEmpty())
+                        models.isEmpty() -> {
+                            ElevatedCard {
+                                Text(
+                                    ModelManager.pushHint(),
+                                    Modifier.padding(12.dp),
+                                    fontSize = 13.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                )
                             }
-                        },
-                        enabled = !ui.busy && models.isNotEmpty(),
-                        modifier = Modifier.weight(1f),
-                    ) { Text(if (ui.transcript.isNotEmpty()) "Send" else if (ui.ready) "Send" else "Run") }
-
-                    OutlinedButton(
-                        onClick = {
-                            context.startService(
-                                Intent(context, RunService::class.java).setAction(RunService.ACTION_CANCEL)
-                            )
-                        },
-                        enabled = ui.generating,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Stop") }
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // Start a new conversation: the next Send clears the KV. Keeps the model loaded.
-                    TextButton(
-                        onClick = { RunBus.update { it.copy(transcript = emptyList(), answer = "", summary = "", error = null) } },
-                        enabled = ui.transcript.isNotEmpty() && !ui.busy,
-                    ) { Text("New chat") }
-
-                    // The session keeps the model resident (and the cache warm) between prompts. Free it
-                    // explicitly, or let the service auto-unload after an idle timeout.
-                    if (ui.ready || ui.loading) {
-                        TextButton(onClick = {
-                            context.startService(
-                                Intent(context, RunService::class.java).setAction(RunService.ACTION_SHUTDOWN)
-                            )
-                        }) { Text("Unload model") }
+                            TextButton(onClick = { requestSharedStorageAccess(context); onRefresh() }) { Text("Refresh") }
+                        }
+                        else -> LabeledDropdown(
+                            label = "Model",
+                            options = models.map { it.name },
+                            selected = modelIdx,
+                            onSelect = onSelectModel,
+                        )
                     }
-                }
 
-                // A quick reminder of the active config (full controls in Settings).
-                Text(configSummary(settings), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // Bring a model onto the device without adb: download by URL or pick a local file.
+                    // Both land in the app models dir; on completion we re-scan so it appears above.
+                    AddModelSection(onModelReady = onRefresh)
 
-                if (ui.loading) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Text("Loading model…", fontSize = 14.sp)
+                    OutlinedTextField(
+                        value = prompt,
+                        onValueChange = { prompt = it },
+                        label = { Text("Prompt") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(
+                            onClick = {
+                                if (models.isNotEmpty()) {
+                                    // First message of a conversation clears the KV; a follow-up continues it.
+                                    launchPrompt(context, models[modelIdx.coerceIn(0, models.size - 1)],
+                                        prompt.ifBlank { "The capital of Japan is" }, settings, ui.sessionSig,
+                                        clearKv = ui.transcript.isEmpty())
+                                }
+                            },
+                            enabled = !ui.busy && models.isNotEmpty(),
+                            modifier = Modifier.weight(1f),
+                        ) { Text(if (ui.transcript.isNotEmpty()) "Send" else if (ui.ready) "Send" else "Run") }
+
+                        OutlinedButton(
+                            onClick = {
+                                context.startService(
+                                    Intent(context, RunService::class.java).setAction(RunService.ACTION_CANCEL)
+                                )
+                            },
+                            enabled = ui.generating,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Stop") }
                     }
-                }
-                // After the model is loaded, the prompt is prefilled before the first token streams
-                // (no BMOE_PROGRESS yet). Signal that phase so a slow prefill does not look stuck.
-                if (ui.generating && ui.telemetry.step == 0) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Text("Prefilling prompt…", fontSize = 14.sp)
-                    }
-                }
 
-                TelemetryCard(ui, settings.threads)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        // Start a new conversation: the next Send clears the KV. Keeps the model loaded.
+                        TextButton(
+                            onClick = { RunBus.update { it.copy(transcript = emptyList(), answer = "", summary = "", error = null) } },
+                            enabled = ui.transcript.isNotEmpty() && !ui.busy,
+                        ) { Text("New chat") }
+
+                        // The session keeps the model resident (and the cache warm) between prompts. Free it
+                        // explicitly, or let the service auto-unload after an idle timeout.
+                        if (ui.ready || ui.loading) {
+                            TextButton(onClick = {
+                                context.startService(
+                                    Intent(context, RunService::class.java).setAction(RunService.ACTION_SHUTDOWN)
+                                )
+                            }) { Text("Unload model") }
+                        }
+                    }
+
+                    // A quick reminder of the active config (full controls in Settings).
+                    Text(configSummary(settings), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                    if (ui.loading) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Text("Loading model…", fontSize = 14.sp)
+                        }
+                    }
+                    // After the model is loaded, the prompt is prefilled before the first token streams
+                    // (no BMOE_PROGRESS yet). Signal that phase so a slow prefill does not look stuck.
+                    if (ui.generating && ui.telemetry.step == 0) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            Text("Prefilling prompt…", fontSize = 14.sp)
+                        }
+                    }
+
+                    TelemetryCard(ui, settings.threads)
+                }
+            }
+
+            // Committed turns.
+            items(ui.transcript.size) { i -> TurnView(ui.transcript[i]) }
+
+            // The in-flight assistant answer as it streams (its user turn is already in the transcript).
+            if (liveShown) {
+                item(key = "live") {
+                    TurnView(ChatTurn("assistant", ui.answer))
+                }
             }
         }
 
-        // Committed turns.
-        items(ui.transcript.size) { i -> TurnView(ui.transcript[i]) }
-
-        // The in-flight assistant answer as it streams (its user turn is already in the transcript).
-        if (liveShown) {
-            item(key = "live") {
-                TurnView(ChatTurn("assistant", ui.answer))
-            }
+        // Once the follow is detached, the way back to a still-growing answer is a long drag.
+        if (!followTail && !atBottom) {
+            val scope = rememberCoroutineScope()
+            FilledTonalButton(
+                onClick = { scope.launch { listState.animateScrollToItem(total - 1, Int.MAX_VALUE) } },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
+            ) { Text("Jump to latest") }
         }
     }
 }
@@ -295,7 +329,10 @@ private fun TurnView(turn: ChatTurn) {
             fontSize = 12.sp, fontWeight = FontWeight.Bold,
             color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
         )
-        SelectionContainer { Text(turn.text, fontSize = 15.sp) }
+        // The user's own prompt is echoed verbatim; only the model's answer is read as Markdown.
+        SelectionContainer {
+            if (isUser) Text(turn.text, fontSize = 15.sp) else MarkdownText(turn.text)
+        }
         if (turn.metrics.isNotEmpty()) {
             Text(turn.metrics, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
