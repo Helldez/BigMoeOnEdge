@@ -24,6 +24,8 @@
 
 namespace bmoe {
 
+class IRouteTraceSink;
+
 // Everything fixed for the model's lifetime — set once at open(). n_ctx and n_batch are
 // baked into the llama context at creation and cannot change per prompt, so size them for
 // the longest prompt+generation the session will serve.
@@ -55,7 +57,12 @@ public:
     // Load the model, discover the MoE expert tensors, and initialise the expert source.
     // Returns nullptr and sets `error` on failure. The returned session owns all native
     // state and must outlive every generate() call.
-    static std::unique_ptr<Session> open(const SessionConfig & cfg, std::string & error);
+    //
+    // `route_trace` (nullable) turns on the per-step, per-layer routing trace for every
+    // generate() on this session and must outlive it — a diagnostic, ignored when streaming is
+    // off, and never on for a benchmark run. See bmoe/route_trace.h.
+    static std::unique_ptr<Session>
+    open(const SessionConfig & cfg, std::string & error, IRouteTraceSink * route_trace = nullptr);
 
     // Generate one response. Serialized: one generation at a time per session. `on_token`
     // and `sink` receive the same per-token metrics as run(). Cache state carries over from

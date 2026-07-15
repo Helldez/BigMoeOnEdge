@@ -1,5 +1,6 @@
 #include "bmoe/session.h"
 #include "bmoe/recipe.h"
+#include "bmoe/route_trace.h"
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
@@ -22,6 +23,7 @@
 #include <exception>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -43,6 +45,29 @@ llama_token argmax(const float * logits, int n_vocab) {
             best = v;
         }
     return best;
+}
+
+// Each layer's bytes that the streamer does NOT manage: everything under blk.<il>. except the
+// expert weight tensors it rebinds — attention, norms, the router, and any per-expert scale left
+// mmap-resident. This is what the layer costs to page in, and it is a static property of the
+// file: nothing about decoding changes it, which is why the route trace states it once in the
+// static block instead of pretending to measure it per step.
+std::vector<uint64_t>
+dense_bytes_per_layer(const GgufOffsets & offs, const std::vector<LayerExperts> & layers, int n_layer) {
+    std::unordered_set<std::string> streamed;
+    for (const LayerExperts & L : layers) {
+        if (!L.bound) continue;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            if (L.proj[p].tensor) streamed.insert(L.proj[p].tensor->name);
+    }
+    std::vector<uint64_t> out((size_t) std::max(0, n_layer), 0);
+    for (const auto & kv : offs.size_by_name) {
+        int il = -1;
+        if (std::sscanf(kv.first.c_str(), "blk.%d.", &il) != 1) continue;
+        if (il < 0 || il >= n_layer || streamed.count(kv.first)) continue;
+        out[(size_t) il] += kv.second;
+    }
+    return out;
 }
 
 } // namespace
@@ -75,6 +100,11 @@ struct Session::Impl {
     // and prefill only the diverging suffix instead of re-running the whole conversation.
     std::vector<common_chat_msg> chat_history;
     std::vector<llama_token> kv_tokens;
+
+    // Route trace (diagnostics): null unless requested AND streaming is on — there is no routing
+    // to trace otherwise. trace_turn labels each generate()'s rows in a multi-turn session.
+    IRouteTraceSink * route_trace = nullptr;
+    int trace_turn = 0;
 
     std::atomic<bool> cancel_requested{false};
 
@@ -109,7 +139,7 @@ void Session::cancel() {
     impl_->cancel_requested.store(true, std::memory_order_relaxed);
 }
 
-std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & error) {
+std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & error, IRouteTraceSink * route_trace) {
     auto fail = [&](std::string msg) -> std::unique_ptr<Session> {
         error = std::move(msg);
         return nullptr;
@@ -256,9 +286,36 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg, std::string & 
         }
         if (n_bound == 0) return fail("no MoE expert tensors captured — is this a MoE model?");
 
+        // Computed before init consumes `layers`: the dense split needs the captured expert
+        // tensor names and the gguf sizes together.
+        std::vector<uint64_t> dense_bytes;
+        if (route_trace) dense_bytes = dense_bytes_per_layer(offs, layers, im.n_layer);
+
         if (!im.source.init(cfg.model_path, n_expert, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
+
+        if (route_trace) {
+            im.route_trace = route_trace;
+            im.hook->set_trace(true);
+
+            RouteTraceStatic st;
+            st.model = cfg.model_path;
+            st.arch = im.arch;
+            st.n_layer = im.n_layer;
+            st.n_expert = n_expert;
+            // The effective top-k: an override IS the applied width, otherwise the model's own.
+            st.n_expert_used = cfg.n_expert_used;
+            if (st.n_expert_used <= 0) {
+                GgufModelInfo info = read_gguf_model_info(cfg.model_path.c_str());
+                st.n_expert_used = info.ok ? info.n_expert_used : 0;
+            }
+            st.dense_bytes_per_layer = std::move(dense_bytes);
+            st.expert_bytes_per_layer.resize((size_t) im.n_layer);
+            for (int il = 0; il < im.n_layer; ++il)
+                st.expert_bytes_per_layer[(size_t) il] = im.source.expert_bytes(il);
+            route_trace->on_static(st);
+        }
 
         if (cfg.moe.overlap) {
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
@@ -419,11 +476,26 @@ RunResult Session::generate(const GenerateRequest & req,
         }
     };
 
+    // Route trace: frame one decode's rows, then hand them to the sink once it has returned —
+    // never from inside the callback, which runs on a compute thread mid-graph. `base_pos` is
+    // the context position of the batch's first token, so prefill rows carry real step numbers.
+    auto trace_begin = [&](int base_pos, int n_tokens, int phase) {
+        if (im.route_trace) im.hook->begin_trace_batch(base_pos, n_tokens, phase, im.trace_turn);
+    };
+    auto trace_flush = [&]() {
+        if (!im.route_trace) return;
+        im.hook->end_trace_batch();
+        std::vector<RouteTraceRow> & rows = im.hook->trace_rows();
+        if (!rows.empty()) im.route_trace->on_rows(rows.data(), rows.size());
+        rows.clear();
+    };
+
     // ── prefill (chunked by n_batch; positions auto-continue from the reused prefix) ──
     const auto t_prefill0 = clock_t_::now();
     for (int i = (int) n_common; i < n_prompt; i += im.cfg.n_batch) {
         const int chunk = std::min(im.cfg.n_batch, n_prompt - i);
         llama_batch pf = llama_batch_get_one(tokens.data() + i, chunk);
+        trace_begin(i, chunk, /*phase*/ 0);
         if (llama_decode(ctx, pf) != 0) {
             if (im.cancel_requested.load(std::memory_order_relaxed)) {
                 rollback_turn();
@@ -434,6 +506,7 @@ RunResult Session::generate(const GenerateRequest & req,
             if (moe.overlap && im.source.fatal()) return fail("expert stream I/O failed during overlap prefill");
             return fail("prefill decode failed");
         }
+        trace_flush();
     }
     // The suffix is now in the KV; record it so the next turn can diff against it.
     if (chat_on)
@@ -482,6 +555,7 @@ RunResult Session::generate(const GenerateRequest & req,
         const double c0 = pio::process_cpu_seconds();
         auto s0 = clock_t_::now();
         llama_batch step = llama_batch_get_one(&tok, 1);
+        trace_begin(n_prompt + t, /*n_tokens*/ 1, /*phase*/ 1); // decodes at the position after the prompt
         int dec = llama_decode(ctx, step);
         auto s1 = clock_t_::now();
         const uint64_t f1 = pio::major_faults();
@@ -494,6 +568,7 @@ RunResult Session::generate(const GenerateRequest & req,
             if (moe.overlap && im.source.fatal()) return fail("expert stream I/O failed during overlap decode");
             return fail("decode failed during generation");
         }
+        trace_flush(); // outside the s0..s1 bracket: the trace's own writes must not bill wall_ms
         logits = llama_get_logits_ith(ctx, -1);
         if (chat_on) im.kv_tokens.push_back(tok); // this token is now in the KV
 
@@ -541,6 +616,8 @@ RunResult Session::generate(const GenerateRequest & req,
         if (on_token) on_token(m);
         if (sink) sink->on_token(m);
     }
+
+    if (im.route_trace) ++im.trace_turn; // this turn's rows are written; label the next one apart
 
     // ── summary ──
     RunSummary & s = res.summary;

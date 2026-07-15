@@ -15,3 +15,4 @@ maintained docs for current guidance; read these to check where a number came fr
 | `2026-07-13/` | adaptive cache budget | Source of the capped-auto recipe numbers. |
 | `2026-07-14/` | per-token warm-up | Feeds `warmup-analysis.md`. |
 | `2026-07-14-warmup/` | dense warm-up A/B | Feeds `adaptive-cache.md` and `warmup-analysis.md`. |
+| `2026-07-15-route-trace/` | first `--route-trace` capture (Qwen / Gemma / gpt-oss) | Routing data, not throughput: every run had the trace **on**, so its `tok/s` are not comparable with `benchmarks.md` and must not feed those tables. |
