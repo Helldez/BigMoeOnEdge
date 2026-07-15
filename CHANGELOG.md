@@ -6,6 +6,39 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **Decode traces** (`--compute-trace PATH`, `--io-trace PATH`): returning `true` for every node from
+  the eval callback forces ggml to isolate and synchronise each one, so the wall delta between
+  callbacks is that node's real compute and the major-fault delta attributes a >RAM stall to the node
+  that paid for it. This is what turns `compute_ms` from a residual into a measurement. `--io-trace`
+  emits one row per `read_slice` (latency, aligned window, layer/expert/projection/lane). Both are
+  diagnostics that perturb the run they measure, so only shares are meaningful — read them with
+  `scripts/decode-analyze.py`. Done from outside llama.cpp through the public `cb_eval`, no patch.
+- **Android: 500 and 1000 MiB expert-cache rungs.** Settings previously offered 0 or >= 2000, because
+  the engine rejects a fixed budget under its 1500 MiB floor. That floor says a cache smaller than one
+  token's routed working set can only thrash — sound, but measured on models whose cache pays for
+  itself. On gpt-oss-120b at top-2 (~886 MB routed per token, an 8–13% hit from a 2000–3000 MiB
+  budget covering ~5% of a 56.8 GB expert bank) the question is live, so the small rungs route through
+  the floor's own escape hatch (`--force-cache`) and the help text says what they are for.
+
+### Fixed
+- **Android: a superseded session no longer starves the one replacing it.** Changing the model or
+  settings started a new engine while the old process still held its model and expert cache, so the
+  replacement sized its cache against a `MemAvailable` still deflated by the dying one — the app was
+  triggering "two engines at once" on itself at every settings change, silently starving the very
+  cache being retuned, and the combined footprint could be OOM-killed. The new session now reaps the
+  old process off the main thread before probing memory. The delayed force-kill also became a
+  cancellable field: a shutdown followed quickly by a new prompt could previously let a stale kill
+  land on the fresh process (`exited 137`).
+
+### Documentation
+- **`docs/android-memory.md`**: what reclaims a >RAM engine's memory on a phone, which levers exist
+  (almost none), and why the cache hit rate is the signal the kernel judges you by — the LRU promotes
+  a page only on a *second* reference, and a cache hit is that reference. Records the watermarks, the
+  vendor's swappiness-160 override, the 65536-byte `RLIMIT_MEMLOCK` ceiling that makes `mlock`
+  unusable here, and the anon/file asymmetry that is the unnoticed cost of the O_DIRECT design.
+- `docs/benchmarks.md` split into the Android matrix and `docs/benchmarks-gpt-oss.md`.
+
 ### Changed
 - **Prompt-tail retention across prefill**: the whole prompt is one prefill ubatch, so `load_layer`
   sees every prompt token's routed experts at once, token-major. The in-batch dedup guard skipped
