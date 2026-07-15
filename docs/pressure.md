@@ -74,27 +74,49 @@ every token, after the decode:
         after a long calm at the ceiling: forget it and re-test (the device may have changed)
 ```
 
-## The floor is measured, not guessed
+## The floor is measured — and it is not the obvious one
 
-A cache below **one token's routed working set** can hold nothing between tokens: every token evicts
-what the next one needs, so it cannot buy a single hit and still pays the management cost. That
-bound — not any particular number of MiB — is what `MoeStreamConfig::cache_min_mb` (1500 MiB)
-encodes as a static guess, and the guess is model-specific: it is roughly right for Qwen3-30B at
-top-8 (1051 MiB/token) and much too high for gpt-oss-120b at top-2 (536 MiB/token).
+The tempting floor is **one token's routed working set**. Below it, every token evicts what the next
+one needs, so the cache holds nothing between tokens and its hit rate collapses. That is true, and
+it is the bound `MoeStreamConfig::cache_min_mb` (1500 MiB) encodes as a static guess. It is still
+the wrong floor, and the device said so.
 
-So the streamer measures it. The bytes of distinct experts routed between two visits to the same
-layer *is* the working set; it is reported as `token_demand_MiB` in the run summary and it is what
-floors the governor. That keeps the loop honest on a model nobody has benchmarked yet: below the
-floor a smaller cache cannot help, because the misses there are the model's own demand and not the
-kernel's doing.
+Measured on gpt-oss-120b at top-4, `--cache-mb 2000 --cache-dynamic`:
+
+| | |
+|---|---|
+| `token_demand_MiB` | 1815.4 |
+| `cache_budget_MiB` | 1815.4 — the budget *is* the floor, to the decimal |
+| `cache_cuts` | 1 — cut once, then pinned |
+| `cache_hit_pct` | 8.2 — 1.8 GiB of RAM, for 8% of hits |
+| `majflt/tok` | 5174, at 0.37 tok/s |
+
+The loop cut 2000 → max(1400, 1815.4) = 1815.4 and stopped, because `cap > floor` was now false.
+The sensor kept firing (`resident_frac` 1.000 → 0.937, 47k faults on one token) into a floor that
+could not yield. A 9% cut, and the war went on.
+
+The flaw is the comparison. "Below the floor the cache can only thrash" weighs the hits given up and
+ignores that **the memory itself is the cost**: an unaffordable cache does not merely fail to earn
+its hits, it starts a reclaim war worth several times any hit rate — and here it was buying 8%. The
+falsifying evidence was already on the table: a hand-set 1000 MiB budget, far below that "floor",
+runs this model well.
+
+So usefulness yields to pressure. The only floor that may not yield is the **mechanical** one — the
+widest layer of a pass, which the cache must be able to stage — and it is measured the same way
+(`layer_demand_MiB`). `token_demand_MiB` stays in the telemetry, because where hits start is worth
+knowing; it is simply not the same claim as where the cache must stop.
 
 ## Reading it
 
 Per token (`--csv`, `BMOE_PROGRESS`): `resident_frac` — the sampled fraction of the cache still in
 RAM, `-1` when unmeasured (throttled sample, streaming off, or a host that cannot report).
 
-Per run (`# summary`, `BMOE_DONE`): `token_demand_MiB` (what one token demands), `cache_budget_MiB`
-(where the loop settled), `cache_cuts` (how often the device pushed back), `cache_resizes`.
+Per run (`# summary`, `BMOE_DONE`): `token_demand_MiB` (what one token demands), `layer_demand_MiB`
+(the mechanical floor), `cache_budget_MiB` (where the loop settled), `cache_cuts` (how often the
+device pushed back), `cache_resizes`.
+
+A budget sitting exactly on `token_demand_MiB` with `cache_cuts` stuck at 1 is the failure above:
+the loop wanted to cut and something floored it.
 
 Reading `cache_budget_MiB` against `token_demand_MiB` is how a budget stops being a guess: a budget
 near the demand holds about one token of routing history and its hits come from inter-token

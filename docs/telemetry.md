@@ -117,8 +117,9 @@ that token (`0` in serial mode); `mgmt_ms` is the cache-management time describe
 `-1` when unmeasured. All are additive: older CSVs have fewer columns, so consumers must read by
 column NAME (from the header row) and treat any as optional. The `# summary` line likewise gains
 `stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>`, `cpu_s/tok=<s>`, `token_demand_MiB=<f>` (the
-expert bytes one token routes, measured — the floor a cache must clear to hold anything between
-tokens) and `cache_cuts=<int>` (times `--cache-dynamic` shrank the budget under reclaim); see the
+expert bytes one token routes, measured — where cache hits start, NOT a floor to defend; see
+[pressure.md](pressure.md)), `layer_demand_MiB=<f>` (the widest layer's routed bytes: the mechanical
+floor the governor may not cut below) and `cache_cuts=<int>` (times `--cache-dynamic` shrank the budget under reclaim); see the
 `io_ms` note above for how the read-time columns are reinterpreted under overlap.
 
 ## Route trace
