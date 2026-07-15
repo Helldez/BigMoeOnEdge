@@ -11,7 +11,7 @@ data class AppSettings(
     // streaming with overlap, 4 compute + 4 read lanes, model's own top-k. No device- or
     // benchmark-specific tuning — the knobs below let the user tune for their own hardware.
     val mmap: Boolean = false,          // baseline: no streaming — llama.cpp mmap loads the whole model
-    val cacheMb: Int = CACHE_AUTO,      // LRU expert cache budget; Auto / 0 / >= 2000 (see CACHE_CHOICES)
+    val cacheMb: Int = CACHE_AUTO,      // LRU expert cache budget; Auto / 0 / 500..6000 (see CACHE_CHOICES)
     val cacheCeilMb: Int = 3000,        // with cacheMb=Auto: upper bound on the auto budget (0 = no cap)
     val ioThreads: Int = 4,             // parallel expert-read lanes
     val threads: Int = 4,               // compute threads (-t)
@@ -52,6 +52,9 @@ data class AppSettings(
                 if (cacheCeilMb > 0) a += listOf("--cache-ceil-mb", cacheCeilMb.toString())
             } else {
                 a += listOf("--cache-mb", cacheMb.toString())
+                // The engine refuses a budget under its floor unless told the caller means it; the
+                // small rungs exist precisely to probe that floor, so send the override with them.
+                if (cacheNeedsForce(cacheMb)) a += "--force-cache"
             }
             a += listOf("--io-threads", ioThreads.toString())
             if (!oDirect) a += "--no-odirect"
@@ -95,11 +98,22 @@ data class AppSettings(
         // rejected recoverably by the CLI, leaving the session usable.
         const val SESSION_CTX = 4096
 
-        // -1 (Auto) sizes the cache to the device's free RAM at runtime (--cache-mb auto). Values
-        // between 0 and 2000 are omitted: a very small cache thrashes (evict + re-read) and the
-        // engine rejects it. Use Auto, 0, or >= 2000.
+        // -1 (Auto) sizes the cache to the device's free RAM at runtime (--cache-mb auto).
+        //
+        // 500 and 1000 are below the engine's cache_min_mb floor, so picking them makes [sessionArgv]
+        // add --force-cache. The floor exists because a cache smaller than one token's routed working
+        // set can only thrash — but that verdict was measured on models whose cache pays for itself,
+        // and it is exactly what is in question on a >RAM model: gpt-oss-120b at top-2 routes ~886 MB
+        // per token and returns an 8-13% hit rate from a 2000-3000 MiB budget, so its cache may
+        // already be below the floor's intent while sitting well above its number. These rungs are
+        // here to measure where the cache stops earning the memory pressure it creates.
+        // See docs/android-memory.md.
         const val CACHE_AUTO = -1
-        val CACHE_CHOICES = intArrayOf(CACHE_AUTO, 0, 2000, 3000, 4000, 5000, 6000)
+        val CACHE_CHOICES = intArrayOf(CACHE_AUTO, 0, 500, 1000, 2000, 3000, 4000, 5000, 6000)
+
+        /** True for a fixed budget the engine would reject without --force-cache. */
+        fun cacheNeedsForce(mb: Int) = mb in 1 until CACHE_MIN_MB
+        const val CACHE_MIN_MB = 1500 // mirrors MoeStreamConfig::cache_min_mb
         // Upper bound for the Auto budget (0 = no cap). A cap keeps Auto from over-growing into
         // memory pressure on devices where free RAM is tight.
         val CACHE_CEIL_CHOICES = intArrayOf(0, 2000, 3000, 4000, 5000, 6000)

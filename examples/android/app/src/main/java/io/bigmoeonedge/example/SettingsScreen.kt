@@ -62,8 +62,13 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     enabled = stream,
                 ) { onChange(current.copy(cacheMb = it)) }
                 Text(
-                    "Larger cache = fewer flash reads per token, but more RAM. Auto sizes to free RAM and " +
-                        "shrinks under memory pressure. Fixed values are 0 (off) or ≥ 2000 MiB.",
+                    "Larger cache = fewer flash reads per token, but more RAM — and RAM the kernel takes " +
+                        "back is paid for twice. Auto sizes to free RAM and shrinks under memory pressure. " +
+                        if (AppSettings.cacheNeedsForce(current.cacheMb))
+                            "500 and 1000 are below the engine's floor (--force-cache): a cache under one " +
+                                "token's routed experts can only thrash. Kept for measuring where the cache " +
+                                "stops earning its memory."
+                        else "500 and 1000 sit below the engine's floor and need --force-cache.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 IntSetting(
