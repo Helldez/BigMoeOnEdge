@@ -3,6 +3,7 @@
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
+#include "../io/platform_io.h"
 
 #include "llama.h"
 #include "ggml.h"
@@ -463,6 +464,8 @@ RunResult Session::generate(const GenerateRequest & req,
     double gen_io_seconds = 0.0;
     double gen_mgmt_seconds = 0.0;
     double gen_stall_seconds = 0.0;
+    uint64_t gen_majflt = 0;
+    double gen_cpu_seconds = 0.0;
 
     for (int t = 0; t < req.n_predict; ++t) {
         llama_token tok = argmax(logits, im.n_vocab);
@@ -473,10 +476,16 @@ RunResult Session::generate(const GenerateRequest & req,
         std::string delta = np > 0 ? std::string(piece, np) : std::string();
         gen += delta;
 
+        // Bracket ONLY the decode: major faults and CPU-time deltas here decompose this token's
+        // compute residual into flash-fault stalls vs. genuine (or throttled) computation.
+        const uint64_t f0 = pio::major_faults();
+        const double c0 = pio::process_cpu_seconds();
         auto s0 = clock_t_::now();
         llama_batch step = llama_batch_get_one(&tok, 1);
         int dec = llama_decode(ctx, step);
         auto s1 = clock_t_::now();
+        const uint64_t f1 = pio::major_faults();
+        const double c1 = pio::process_cpu_seconds();
         if (dec != 0) {
             if (im.cancel_requested.load(std::memory_order_relaxed)) {
                 res.cancelled = true;
@@ -498,6 +507,12 @@ RunResult Session::generate(const GenerateRequest & req,
         m.wall_ms = wall * 1000.0;
         m.piece = delta;
         m.text = shown_text(gen, /*partial*/ true);
+        // Fault/CPU decomposition is independent of streaming — dense-weight faults show up in the
+        // mmap baseline too — so record it for every token before the moe/no-moe split below.
+        m.majflt = f1 - f0;
+        m.cpu_ms = (c1 - c0) * 1000.0;
+        gen_majflt += m.majflt;
+        gen_cpu_seconds += (c1 - c0);
         if (moe.enabled) {
             IExpertSource::Stats st = im.source.stats();
             m.read_bytes = (uint64_t) ((long long) st.read_bytes - prev_bytes);
@@ -537,6 +552,8 @@ RunResult Session::generate(const GenerateRequest & req,
     s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
+    s.majflt_per_token = n_gen ? (double) gen_majflt / n_gen : 0.0;
+    s.cpu_s_per_token = n_gen ? gen_cpu_seconds / n_gen : 0.0;
     if (moe.enabled) {
         IExpertSource::Stats st = im.source.stats();
         s.moe_read_mib = gen_read_bytes / (1024.0 * 1024.0);

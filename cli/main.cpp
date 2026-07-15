@@ -258,9 +258,10 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
                 std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
             std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
                         "\"compute_ms\":%.1f,\"mgmt_ms\":%.1f,\"stall_ms\":%.1f,\"read_mb\":%.2f,"
-                        "\"cache_hit_pct\":%.1f,\"text\":\"%s\"}\n",
+                        "\"cache_hit_pct\":%.1f,\"majflt\":%llu,\"cpu_ms\":%.1f,\"text\":\"%s\"}\n",
                         m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.mgmt_ms, m.stall_ms,
-                        m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, json_escape(m.text).c_str());
+                        m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, (unsigned long long) m.majflt, m.cpu_ms,
+                        json_escape(m.text).c_str());
             std::fflush(stdout);
         };
 
@@ -289,12 +290,13 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink) {
         std::printf("BMOE_DONE {\"id\":%d,\"cancelled\":%s,\"tokens\":%d,\"tok_s\":%.3f,\"prefill_s\":%.3f,"
                     "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
-                    "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"text\":\"%s\"}\n",
+                    "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
+                    "\"text\":\"%s\"}\n",
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
-                    json_escape(r.generated_text).c_str());
+                    s.majflt_per_token, s.cpu_s_per_token, json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
 
@@ -460,9 +462,10 @@ int main(int argc, char ** argv) {
                 std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
             std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
                         "\"compute_ms\":%.1f,\"mgmt_ms\":%.1f,\"stall_ms\":%.1f,\"read_mb\":%.2f,"
-                        "\"cache_hit_pct\":%.1f,\"text\":\"%s\"}\n",
+                        "\"cache_hit_pct\":%.1f,\"majflt\":%llu,\"cpu_ms\":%.1f,\"text\":\"%s\"}\n",
                         m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.mgmt_ms, m.stall_ms,
-                        m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, json_escape(m.text).c_str());
+                        m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, (unsigned long long) m.majflt, m.cpu_ms,
+                        json_escape(m.text).c_str());
             std::fflush(stdout);
         } else {
             std::fwrite(m.piece.data(), 1, m.piece.size(), stdout);
@@ -484,6 +487,16 @@ int main(int argc, char ** argv) {
     }
     std::printf("generation: %d tokens, %.3f s/token (%.3f tok/s)\n", s.n_generated, s.s_per_token,
                 s.tokens_per_second);
+    // Compute decomposition (0 s/tok CPU means the platform couldn't measure it — Windows host).
+    // occupancy = CPU-time ÷ (wall × threads): ~1 is compute-bound, well under 1 is a throttled or
+    // preempted core; major faults/token > 0 means dense weights re-faulted from flash inside decode.
+    if (s.cpu_s_per_token > 0.0 || s.majflt_per_token > 0.0) {
+        const double occ = s.s_per_token > 0 && cfg.n_threads > 0
+                               ? s.cpu_s_per_token / (s.s_per_token * cfg.n_threads)
+                               : 0.0;
+        std::printf("compute: %.1f%% CPU occupancy (%.4f cpu-s/token over %d threads), %.2f major faults/token\n",
+                    occ * 100.0, s.cpu_s_per_token, cfg.n_threads, s.majflt_per_token);
+    }
     if (s.n_prompt > 0) {
         double prefill_tps = s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0;
         std::printf("prefill: %d tokens, %.3f s (%.1f tok/s) | model load %.3f s | TTFT %.3f s\n", s.n_prompt,

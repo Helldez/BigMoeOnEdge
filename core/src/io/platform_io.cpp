@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <sys/mman.h>
+#include <sys/resource.h>
+#include <ctime>
 #ifndef O_DIRECT
 #define O_DIRECT 0
 #endif
@@ -91,6 +93,16 @@ uint64_t mem_available_bytes() {
     return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullAvailPhys : 0;
 }
 
+// The host build exists for the byte-identity gates, not perf measurement, so these stay
+// unmeasured (0) rather than pulling in the imperfect Windows equivalents (PageFaultCount counts
+// soft faults too; GetProcessTimes would work but there is no consumer for it here).
+uint64_t major_faults() {
+    return 0;
+}
+double process_cpu_seconds() {
+    return 0.0;
+}
+
 #else
 
 const fd_t fd_invalid = -1;
@@ -164,6 +176,23 @@ uint64_t mem_available_bytes() {
     if (pages > 0 && ps > 0) return (uint64_t) pages * (uint64_t) ps;
 #endif
     return 0;
+}
+
+uint64_t major_faults() {
+    // ru_majflt counts faults that required a backing-store read (the ones that stall on flash).
+    // RUSAGE_SELF aggregates every thread of the process, matching the multi-threaded decode.
+    struct rusage ru;
+    return getrusage(RUSAGE_SELF, &ru) == 0 ? (uint64_t) ru.ru_majflt : 0;
+}
+
+double process_cpu_seconds() {
+    // Total CPU consumed across all threads. Divided by wall×threads downstream, this is the
+    // occupancy signal that tells a frequency cap / preemption apart from genuine heavy compute.
+#if defined(CLOCK_PROCESS_CPUTIME_ID)
+    struct timespec ts;
+    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) == 0) return (double) ts.tv_sec + ts.tv_nsec * 1e-9;
+#endif
+    return 0.0;
 }
 
 #endif

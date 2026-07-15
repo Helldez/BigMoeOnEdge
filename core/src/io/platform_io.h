@@ -52,4 +52,19 @@ void vm_release(void * p, size_t sz);
 // expert cache to the device (--cache-mb auto) and to shrink it under memory pressure at runtime.
 uint64_t mem_available_bytes();
 
+// Process-wide compute-decomposition counters, cumulative since process start; the caller deltas
+// them across a single decode to split the per-token "compute" residual into its real causes.
+// Both return 0 when the platform cannot report them (Windows host build), which the metrics treat
+// as "unmeasured" rather than "zero work".
+//
+//   * major_faults(): hard page faults served from backing store (getrusage ru_majflt). A non-zero
+//     per-token delta means a mmap-resident weight was re-faulted from flash *inside* the decode —
+//     the >RAM residency stall that would otherwise masquerade as compute.
+//   * process_cpu_seconds(): CPU time summed across all threads (CLOCK_PROCESS_CPUTIME_ID). Compared
+//     against wall×threads it reveals occupancy: cpu≈wall×threads is genuine compute-bound work;
+//     cpu≪wall×threads means the threads were descheduled or blocked (frequency cap, preemption,
+//     fault wait) rather than computing.
+uint64_t major_faults();
+double process_cpu_seconds();
+
 } // namespace bmoe::pio
