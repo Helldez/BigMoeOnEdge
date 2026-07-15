@@ -87,6 +87,34 @@ void vm_release(void * p, size_t /*sz*/) {
     if (p) VirtualFree(p, 0, MEM_RELEASE);
 }
 
+size_t vm_lock(void * p, size_t sz) {
+    if (!p || !sz) return 0;
+    // VirtualLock draws from the process working set, which carries a small default quota — grow it
+    // first or the lock fails as soon as that quota is reached. Ask for the range plus slack for
+    // what the process already holds; if the grow is refused the lock loop still reports the truth.
+    SIZE_T mn = 0, mx = 0;
+    if (GetProcessWorkingSetSize(GetCurrentProcess(), &mn, &mx)) {
+        const SIZE_T want = (SIZE_T) sz + (64u << 20);
+        SetProcessWorkingSetSize(GetCurrentProcess(), mn + want, mx + want);
+    }
+    const size_t chunk = 64ull << 20; // truncate at the quota rather than fail the whole range
+    size_t done = 0;
+    while (done < sz) {
+        const size_t n = sz - done < chunk ? sz - done : chunk;
+        if (!VirtualLock((char *) p + done, n)) break;
+        done += n;
+    }
+    return done;
+}
+
+void vm_unlock(void * p, size_t sz) {
+    if (p && sz) VirtualUnlock(p, sz);
+}
+
+uint64_t vm_lock_limit_raise() {
+    return ~0ull; // no RLIMIT_MEMLOCK equivalent; the working-set quota is handled inside vm_lock
+}
+
 uint64_t mem_available_bytes() {
     MEMORYSTATUSEX ms;
     ms.dwLength = sizeof(ms);
@@ -152,6 +180,54 @@ void vm_evict(void * p, size_t sz) {
 }
 void vm_release(void * p, size_t sz) {
     if (p) munmap(p, sz);
+}
+
+size_t vm_lock(void * p, size_t sz) {
+#if defined(_POSIX_MEMLOCK_RANGE)
+    if (!p || !sz) return 0;
+    // Chunked: mlock() is all-or-nothing per call, so one call over the whole dense set would fail
+    // outright against a small RLIMIT_MEMLOCK and pin nothing. Locking in chunks pins what fits and
+    // stops at the first refusal — the remainder degrades to ordinary reclaimable page cache.
+    const size_t chunk = 64ull << 20;
+    size_t done = 0;
+    while (done < sz) {
+        const size_t n = sz - done < chunk ? sz - done : chunk;
+        if (mlock((char *) p + done, n) != 0) break;
+        done += n;
+    }
+    return done;
+#else
+    (void) p;
+    (void) sz;
+    return 0;
+#endif
+}
+
+void vm_unlock(void * p, size_t sz) {
+#if defined(_POSIX_MEMLOCK_RANGE)
+    if (p && sz) munlock(p, sz);
+#else
+    (void) p;
+    (void) sz;
+#endif
+}
+
+uint64_t vm_lock_limit_raise() {
+#if defined(RLIMIT_MEMLOCK)
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_MEMLOCK, &rl) != 0) return 0;
+    if (rl.rlim_cur != rl.rlim_max) {
+        // Raising the soft limit up to the hard one needs no privilege. The hard limit is set by the
+        // OS/container (on Android it is typically generous for a shell process and tight for an
+        // app), and lifting THAT would need CAP_SYS_RESOURCE — out of scope for a library.
+        struct rlimit want = rl;
+        want.rlim_cur = rl.rlim_max;
+        if (setrlimit(RLIMIT_MEMLOCK, &want) == 0) rl = want;
+    }
+    return rl.rlim_cur == RLIM_INFINITY ? ~0ull : (uint64_t) rl.rlim_cur;
+#else
+    return ~0ull;
+#endif
 }
 
 uint64_t mem_available_bytes() {

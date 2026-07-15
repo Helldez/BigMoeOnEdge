@@ -25,10 +25,10 @@ struct TokenMetrics {
     // them). They tell WHY a token's compute residual is large: major faults = dense weight re-read
     // from flash inside the decode; cpu_ms vs wall_ms×threads = how CPU-bound the decode really was
     // (low occupancy ⇒ throttled/preempted, not heavy math). See docs/telemetry.md.
-    uint64_t majflt = 0;        // major page faults during this decode (backing-store reads)
-    double cpu_ms = 0.0;        // CPU time summed across all threads during this decode
-    std::string piece;          // text of just this token (delta, for inline streaming)
-    std::string text;           // full generated text so far (for UI streaming)
+    uint64_t majflt = 0; // major page faults during this decode (backing-store reads)
+    double cpu_ms = 0.0; // CPU time summed across all threads during this decode
+    std::string piece;   // text of just this token (delta, for inline streaming)
+    std::string text;    // full generated text so far (for UI streaming)
 };
 
 struct RunSummary {
@@ -64,6 +64,8 @@ struct RunSummary {
     double cache_resident_mib = 0.0;
     double cache_budget_mib = 0.0; // current cache budget (moves under --cache-mb auto)
     long long cache_resizes = 0;   // runtime budget changes (0 unless auto/explicit resize)
+    double locked_dense_mib = 0.0; // dense weights pinned into RAM (--lock-dense); reads with
+                                   // majflt_per_token — pinned dense is what keeps that near zero
 
     // Temporal prefetch (zero when --prefetch is off): speculative bytes read during generation,
     // experts successfully prefetched, and how many of those a later routing actually used.

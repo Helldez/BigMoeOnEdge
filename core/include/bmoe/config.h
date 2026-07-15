@@ -64,6 +64,30 @@ struct MoeStreamConfig {
     // moves that cost into load_seconds at sequential-read bandwidth. Off for A/B measurements.
     bool warm_dense = true;
 
+    // Pin those same dense regions into RAM (mlock) after warming them, so the kernel cannot reclaim
+    // them again. Warming alone only fills the page cache, which is reclaimable *by definition*: on
+    // a model whose expert traffic dwarfs RAM the streamer's own reads evict the dense weights right
+    // back out and they re-fault from flash inside the next decode — measured at 6.0k→8.4k major
+    // faults per token on gpt-oss-120b, where the wait is billed to "compute" because it happens
+    // under llama_decode (see docs/bench-data/2026-07-15-route-trace/).
+    //
+    // OFF by default: this is a >RAM knob, not a free win. The pinned RAM has to come from somewhere,
+    // and on an auto budget it comes out of the expert cache — pinned pages leave MemAvailable, so
+    // the budget probe below sizes the cache around them. That trade is already measured: reserving
+    // Gemma's ~1.2 GiB of dense cost budget 4000→2909 MiB, hit 82.9→73.5 % and tok/s 4.76→3.76
+    // (docs/bench-data/2026-07-14-warmup/). Worth it only where cache hit rate is cheap to sell —
+    // gpt-oss-120b's cache holds ~5 % of a 58 GiB expert set and hits 13-32 %, so trading a slice of
+    // it for guaranteed dense residency is a good bet; Gemma/Qwen fit a useful cache, fault barely
+    // (18-49 majflt/token) and have nothing to gain. Judge it on majflt/token, not on principle.
+    //
+    // Deliberately NOT llama.cpp's mparams.use_mlock: that pins the whole mapping, experts included,
+    // which is the exact opposite of streaming (it would pin 58 GiB of gpt-oss onto an 11 GiB phone).
+    // Only the non-expert complement is locked; the expert region must stay reclaimable.
+    //
+    // Best-effort: the OS caps lockable memory (RLIMIT_MEMLOCK), so a refusal only means the pages
+    // stay merely warm, i.e. the warm_dense-only behaviour.
+    bool lock_dense = false;
+
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
     // overlap compute) but makes speculative integration deterministic, so the byte-identity

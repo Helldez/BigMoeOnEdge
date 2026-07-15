@@ -34,13 +34,13 @@ public:
                      "n_prompt=%d load_s=%.3f prefill_s=%.3f prefill_tps=%.2f stall_s/tok=%.3f mgmt_s/tok=%.3f "
                      "cache_resident_MiB=%.1f cache_budget_MiB=%.1f cache_resizes=%lld "
                      "spec_read_MiB=%.1f spec_experts=%lld spec_useful=%lld "
-                     "majflt/tok=%.2f cpu_s/tok=%.4f\n",
+                     "majflt/tok=%.2f cpu_s/tok=%.4f locked_dense_MiB=%.1f\n",
                      s.n_generated, s.s_per_token, s.tokens_per_second, s.moe_read_mib, s.moe_io_seconds,
                      s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct, s.n_prompt, s.load_seconds,
                      s.prefill_seconds, s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0,
                      s.moe_stall_s_per_token, s.moe_mgmt_s_per_token, s.cache_resident_mib, s.cache_budget_mib,
-                     s.cache_resizes, s.moe_spec_read_mib, s.moe_spec_experts, s.moe_spec_useful,
-                     s.majflt_per_token, s.cpu_s_per_token);
+                     s.cache_resizes, s.moe_spec_read_mib, s.moe_spec_experts, s.moe_spec_useful, s.majflt_per_token,
+                     s.cpu_s_per_token, s.locked_dense_mib);
         std::fflush(f_);
     }
 

@@ -69,6 +69,8 @@ public:
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
         uint64_t cache_budget_bytes = 0;   // current cache budget (moves under --cache-mb auto)
         long long cache_resizes = 0;       // times the budget changed at runtime (auto + explicit)
+        uint64_t locked_dense_bytes = 0;   // dense weight bytes pinned into RAM (--lock-dense); 0 = none
+                                           // pinned, which is what a majflt/token reading is judged against
     };
     virtual Stats stats() const = 0;
 };

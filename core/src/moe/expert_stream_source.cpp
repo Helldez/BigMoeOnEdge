@@ -61,6 +61,24 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         return false;
     }
 
+    // Dense residency, before the adaptive budget below probes free RAM and before the rebind that
+    // moves the expert tensors off the mmap. Ordering is load-bearing on both sides:
+    //   * lock before the probe — pinned pages leave MemAvailable, so the cache must size itself
+    //     against the RAM that is actually left, not against RAM it is about to lose;
+    //   * lock before the rebind — the mapping base is derived from the expert tensors, which only
+    //     point into the model's mmap until then.
+    // Both steps are best-effort and independent: warming without locking is the pre-lock
+    // behaviour, and locking pages the warm sweep already pulled in costs no I/O.
+    if (cfg.warm_dense || cfg.lock_dense) {
+        pio::fd_t dfd = pio::open_read(gguf_path.c_str(), false);
+        if (pio::fd_ok(dfd)) {
+            const auto dense = dense_file_ranges(pio::file_size(dfd));
+            if (cfg.warm_dense) warm_dense_regions(dfd, dense);
+            if (cfg.lock_dense) lock_dense_regions(dense);
+            pio::close_fd(dfd);
+        }
+    }
+
     // Adaptive budget: size the cache to the device now that the full expert-set size is known.
     // (validate() guarantees cache_mb == 0 here, so this is the sole source of cache_max_ when auto.)
     if (cfg.cache_auto) {
@@ -243,12 +261,6 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         }
     }
 
-    // Warm the dense (non-expert) regions into the page cache before the first token, so the early
-    // decodes do not fault them in one scattered 4 KiB page at a time. Independent of the cache
-    // budget: it only pre-faults the mmap-resident pages, it neither pins nor reserves them. Runs on
-    // the caller's thread (the workers are not started yet).
-    if (cfg.warm_dense) warm_dense_regions(gguf_path);
-
     active_ = true;
     // Serial: lane 0 is the calling thread (it drains inline), workers own lanes 1..N-1.
     // Overlap: the caller never drains — every lane 0..N-1 gets a worker so reads proceed
@@ -262,13 +274,8 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     return true;
 }
 
-// ── dense warm-up: sequentially page-cache everything that is not an expert tensor ──
-void ExpertStreamSource::warm_dense_regions(const std::string & gguf_path) {
-    // The complement of the expert byte ranges is the dense set: gguf header/metadata plus every
-    // tensor the streamer leaves mmap-resident (embeddings, attention, norms, lm_head). Buffered
-    // reads land in the same page cache the mmap is served from, so one sequential sweep here
-    // replaces thousands of random 4 KiB major faults during the first decodes. Best-effort: a read
-    // failure only leaves the corresponding pages cold.
+// ── the dense set: everything in the file that is not an expert tensor ──────────────
+std::vector<std::pair<uint64_t, uint64_t>> ExpertStreamSource::dense_file_ranges(uint64_t fsize) const {
     std::vector<std::pair<uint64_t, uint64_t>> expert_ranges;
     for (const LayerExperts & L : layers_) {
         if (!L.bound) continue;
@@ -279,21 +286,32 @@ void ExpertStreamSource::warm_dense_regions(const std::string & gguf_path) {
     }
     std::sort(expert_ranges.begin(), expert_ranges.end());
 
-    pio::fd_t fd = pio::open_read(gguf_path.c_str(), false);
-    if (!pio::fd_ok(fd)) return;
+    // Walk the sorted expert ranges and keep the gaps between them.
+    std::vector<std::pair<uint64_t, uint64_t>> dense;
+    uint64_t pos = 0;
+    for (const auto & r : expert_ranges) {
+        if (r.first > pos) dense.push_back({pos, r.first});
+        pos = std::max(pos, r.second);
+    }
+    if (pos < fsize) dense.push_back({pos, fsize}); // trailing dense tail (lm_head et al.)
+    return dense;
+}
+
+// ── dense warm-up: sequentially page-cache everything that is not an expert tensor ──
+void ExpertStreamSource::warm_dense_regions(pio::fd_t fd, const std::vector<std::pair<uint64_t, uint64_t>> & dense) {
+    // Buffered reads land in the same page cache the mmap is served from, so one sequential sweep
+    // here replaces thousands of random 4 KiB major faults during the first decodes. Best-effort: a
+    // read failure only leaves the corresponding pages cold.
     const size_t chunk = 8ull << 20;
     void * buf = pio::alloc_aligned(align_, chunk);
-    if (!buf) {
-        pio::close_fd(fd);
-        return;
-    }
+    if (!buf) return;
 
     const auto t0 = clock_t_::now();
     uint64_t warmed = 0;
     bool ok = true;
-    auto sweep = [&](uint64_t beg, uint64_t end) {
-        for (uint64_t a = beg; a < end && ok;) {
-            const long long got = pio::pread_at(fd, buf, (size_t) std::min<uint64_t>(chunk, end - a), a);
+    for (const auto & r : dense) {
+        for (uint64_t a = r.first; a < r.second && ok;) {
+            const long long got = pio::pread_at(fd, buf, (size_t) std::min<uint64_t>(chunk, r.second - a), a);
             if (got <= 0) {
                 ok = false; // best-effort: those pages just stay cold
                 break;
@@ -301,19 +319,81 @@ void ExpertStreamSource::warm_dense_regions(const std::string & gguf_path) {
             a += (uint64_t) got;
             warmed += (uint64_t) got;
         }
-    };
-    uint64_t pos = 0;
-    for (const auto & r : expert_ranges) {
-        if (r.first > pos) sweep(pos, r.first); // gap before this expert range is dense
-        pos = std::max(pos, r.second);
+        if (!ok) break;
     }
-    if (pos < fsize_) sweep(pos, fsize_); // trailing dense tail (lm_head et al.)
 
     pio::aligned_free(buf);
-    pio::close_fd(fd);
     const double s = std::chrono::duration<double>(clock_t_::now() - t0).count();
     std::fprintf(stderr, "bmoe: dense warm-up — %llu MiB in %.1f s%s\n", (unsigned long long) (warmed >> 20), s,
                  ok ? "" : " (partial)");
+}
+
+// ── where the model's mapping starts ────────────────────────────────────────────────
+const uint8_t * ExpertStreamSource::mmap_base() const {
+    const uint8_t * base = nullptr;
+    for (const LayerExperts & L : layers_) {
+        if (!L.bound) continue;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            const ExpertTensorRef & r = L.proj[p];
+            if (!r.tensor || !r.tensor->data) continue;
+            const uint8_t * b = (const uint8_t *) r.tensor->data - r.file_off;
+            if (!base)
+                base = b;
+            else if (base != b)
+                return nullptr; // tensors disagree → not one mapping of the whole file
+        }
+    }
+    return base;
+}
+
+// ── dense lock: hold the warmed pages against reclaim ───────────────────────────────
+void ExpertStreamSource::lock_dense_regions(const std::vector<std::pair<uint64_t, uint64_t>> & dense) {
+    const uint8_t * base = mmap_base();
+    if (!base) {
+        std::fprintf(stderr, "bmoe: dense lock — model is not a single file mapping, skipped\n");
+        return;
+    }
+    const uint64_t cap = pio::vm_lock_limit_raise();
+    const size_t page = pio::vm_page();
+
+    const auto t0 = clock_t_::now();
+    uint64_t want = 0;
+    for (const auto & r : dense) {
+        // Align outward: a dense range's edge pages are still dense data we want held. This can pull
+        // in the page an edge shares with an adjacent expert range — a few KiB per boundary, which
+        // is a rounding error against the dense set and costs nothing to pin.
+        const uint64_t beg = r.first & ~(uint64_t) (page - 1);
+        const uint64_t end = (r.second + page - 1) & ~(uint64_t) (page - 1);
+        const size_t len = (size_t) (end - beg);
+        want += len;
+        const size_t got = pio::vm_lock((void *) (base + beg), len);
+        if (got) {
+            locked_.push_back({(void *) (base + beg), got});
+            locked_bytes_ += got;
+        }
+        if (got < len) break; // the cap is reached; the rest stays warm-but-reclaimable
+    }
+
+    const double s = std::chrono::duration<double>(clock_t_::now() - t0).count();
+    if (locked_bytes_ == want) {
+        std::fprintf(stderr, "bmoe: dense lock — %llu MiB pinned in %.1f s\n",
+                     (unsigned long long) (locked_bytes_ >> 20), s);
+    } else {
+        // The common cause is RLIMIT_MEMLOCK. Say so with the numbers, because the fix lives outside
+        // the process (ulimit -l, or a launcher with a higher hard limit) and the run would
+        // otherwise silently degrade to warm-only and just look slow.
+        char capbuf[32];
+        if (cap == ~0ull)
+            std::snprintf(capbuf, sizeof(capbuf), "unlimited");
+        else if (cap)
+            std::snprintf(capbuf, sizeof(capbuf), "%llu MiB", (unsigned long long) (cap >> 20));
+        else
+            std::snprintf(capbuf, sizeof(capbuf), "unknown");
+        std::fprintf(stderr,
+                     "bmoe: dense lock — %llu of %llu MiB pinned in %.1f s (lockable cap %s)"
+                     " — the rest stays reclaimable\n",
+                     (unsigned long long) (locked_bytes_ >> 20), (unsigned long long) (want >> 20), s, capbuf);
+    }
 }
 
 // ── one aligned slice read on a lane ────────────────────────────────────────────────
@@ -1015,6 +1095,7 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.stall_seconds = stall_ns_.load() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
+    s.locked_dense_bytes = (uint64_t) locked_bytes_;
     return s;
 }
 
@@ -1048,6 +1129,13 @@ void ExpertStreamSource::shutdown() {
     io_pool_.clear();
     spec_done_.clear();
     spec_touched_.clear();
+
+    // Unpin the dense ranges. These are addresses inside the model's mmap, which llama.cpp owns and
+    // may still be using — so release the pin only, never the mapping.
+    for (const auto & r : locked_)
+        pio::vm_unlock(r.first, r.second);
+    locked_.clear();
+    locked_bytes_ = 0;
 
     for (int p = 0; p < MoeRecipe::max_exps; ++p)
         if (slot_[p]) {

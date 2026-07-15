@@ -27,6 +27,14 @@ the device and keeps it there as free memory moves.
   cache-sensitive model it lowers the budget and the hit rate, e.g. Gemma budget 4000→2909 MiB, hit
   83%→73%, trading throughput for OOM headroom that the warm-up already avoids needing. See
   [bench-data/2026-07-14-warmup/](bench-data/2026-07-14-warmup/).)
+- **Pinning dense (`--lock-dense`) pays the same price, and the budget is where it is paid.** The
+  flag mlocks the dense ranges so expert traffic cannot evict them; because pinned pages leave
+  `MemAvailable`, and the lock runs *before* the probe above, the budget lands exactly where the
+  rejected reserve landed (Gemma: 2909 MiB). That is not an accounting artifact to engineer away —
+  the RAM genuinely has to come out of the cache, and probing before the lock instead would only
+  hand the same bill to the runtime re-probe. The flag earns its keep only when cache hit rate is
+  cheap to sell: gpt-oss-120b's budget holds ~5 % of its expert set and hits 13–32 %, while it faults
+  thousands of dense pages per token. Decide with `majflt/tok` and `locked_dense_MiB` in the summary.
 - **During generation**, on the eval thread inside each layer's cache-management window, a throttled
   re-probe (about every 128 layer loads, ≈2–3 tokens — one `/proc` read) tracks free RAM: if it dips
   under the floor the budget shrinks by the shortfall and the normal eviction pass drains the cache
@@ -48,6 +56,7 @@ the rest of the system.
 | `--cache-mb auto` | size the cache to the device instead of a fixed MiB (mutually exclusive with a numeric `--cache-mb`) |
 | `--cache-floor-mb N` | RAM to leave free for the rest of the system when auto-sizing (default 1536) |
 | `--no-warm-dense` | skip the load-time sweep that page-caches the non-expert weights |
+| `--lock-dense` | pin the non-expert weights in RAM so expert traffic cannot evict them (off by default; spends cache budget — see above) |
 
 `auto` is a real LRU cache, so it satisfies the cache requirement of `--prefetch`.
 

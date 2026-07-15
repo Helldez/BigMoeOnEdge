@@ -112,11 +112,29 @@ private:
     void quiesce_spec();
     void release_entry_pages(int32_t id);
 
-    // One sequential buffered sweep over the file's non-expert byte ranges (header, embeddings,
-    // attention, norms, lm_head) to populate the kernel page cache at load time, so the mmap'd
-    // dense tensors do not demand-fault 4 KiB at a time inside the first decodes. Best-effort:
-    // a read failure only leaves the corresponding pages cold.
-    void warm_dense_regions(const std::string & gguf_path);
+    // The file's dense byte ranges: the complement of the expert tensor ranges, i.e. the gguf
+    // header/metadata plus every tensor the streamer leaves mmap-resident (embeddings, attention,
+    // norms, lm_head). Both dense-residency steps below work off this one definition.
+    // PRECONDITION: layers_ is populated (file offsets known); safe before or after the rebind.
+    std::vector<std::pair<uint64_t, uint64_t>> dense_file_ranges(uint64_t fsize) const;
+
+    // One sequential buffered sweep over the dense ranges to populate the kernel page cache at load
+    // time, so the mmap'd dense tensors do not demand-fault 4 KiB at a time inside the first
+    // decodes. Best-effort: a read failure only leaves the corresponding pages cold.
+    void warm_dense_regions(pio::fd_t fd, const std::vector<std::pair<uint64_t, uint64_t>> & dense);
+
+    // Pin the dense ranges into RAM so expert traffic cannot evict them back to flash. Records what
+    // it pinned in locked_ for shutdown(). Best-effort: see MoeStreamConfig::lock_dense.
+    // PRECONDITION: called BEFORE the expert rebind — it derives the mapping base from the captured
+    // expert tensors, which only point into the model's mmap until then.
+    void lock_dense_regions(const std::vector<std::pair<uint64_t, uint64_t>> & dense);
+
+    // Base address of the model's file mapping, derived from the captured expert tensors: each one
+    // still points at mmap_base + its gguf file offset, so the difference is the base. Returns
+    // nullptr if the tensors disagree — i.e. this is not one contiguous mapping of the whole file
+    // (a split load, or a non-mmap load), in which case a file offset says nothing about an address
+    // and locking must be skipped rather than guessed.
+    const uint8_t * mmap_base() const;
 
     // Adaptive sizing (cache_auto): re-probe device memory (throttled) and nudge cache_max_ so it
     // tracks free RAM. Eval-thread only, called in the mgmt section of load_layer; the eviction
@@ -134,6 +152,11 @@ private:
     void lru_push_back(int32_t id);
     size_t entry_bytes(int il) const;
     void evict_tail();
+
+    // Dense ranges pinned by lock_dense_regions, unpinned at shutdown. Address ranges into the
+    // model's mmap, which the engine does not own — so this is only ever munlock'd, never unmapped.
+    std::vector<std::pair<void *, size_t>> locked_;
+    size_t locked_bytes_ = 0;
 
     bool active_ = false;
     bool o_direct_ = false;

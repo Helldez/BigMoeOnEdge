@@ -645,6 +645,7 @@ RunResult Session::generate(const GenerateRequest & req,
         s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);
         s.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
         s.cache_resizes = st.cache_resizes;
+        s.locked_dense_mib = st.locked_dense_bytes / (1024.0 * 1024.0);
         s.moe_spec_read_mib = ((long long) st.spec_read_bytes - prev_spec_bytes) / (1024.0 * 1024.0);
         s.moe_spec_experts = st.spec_experts - prev_spec_experts;
         s.moe_spec_useful = st.spec_useful - prev_spec_useful;

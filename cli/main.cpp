@@ -335,6 +335,8 @@ static void print_usage(const char * argv0) {
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache\n"
         "      --no-warm-dense     skip the load-time sweep that page-caches the non-expert weights\n"
+        "      --lock-dense        pin the non-expert weights in RAM (mlock) so expert traffic cannot\n"
+        "                          evict them; costs cache budget — for >RAM models, see the docs\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -403,6 +405,8 @@ int main(int argc, char ** argv) {
             cfg.moe.o_direct = false;
         else if (a == "--no-warm-dense")
             cfg.moe.warm_dense = false;
+        else if (a == "--lock-dense")
+            cfg.moe.lock_dense = true;
         else if (a == "--load-all")
             cfg.moe.load_all = true;
         else if (a == "--force-cache")
@@ -511,9 +515,8 @@ int main(int argc, char ** argv) {
     // occupancy = CPU-time ÷ (wall × threads): ~1 is compute-bound, well under 1 is a throttled or
     // preempted core; major faults/token > 0 means dense weights re-faulted from flash inside decode.
     if (s.cpu_s_per_token > 0.0 || s.majflt_per_token > 0.0) {
-        const double occ = s.s_per_token > 0 && cfg.n_threads > 0
-                               ? s.cpu_s_per_token / (s.s_per_token * cfg.n_threads)
-                               : 0.0;
+        const double occ =
+            s.s_per_token > 0 && cfg.n_threads > 0 ? s.cpu_s_per_token / (s.s_per_token * cfg.n_threads) : 0.0;
         std::printf("compute: %.1f%% CPU occupancy (%.4f cpu-s/token over %d threads), %.2f major faults/token\n",
                     occ * 100.0, s.cpu_s_per_token, cfg.n_threads, s.majflt_per_token);
     }

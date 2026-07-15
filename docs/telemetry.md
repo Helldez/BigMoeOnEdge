@@ -108,7 +108,10 @@ the fault + CPU-time decomposition of the compute residual (see the `BMOE_PROGRE
 `0` when unmeasured. All are additive: older CSVs have fewer columns, so consumers must read by
 column NAME (from the header row) and treat any as optional. The `# summary` line likewise gains
 `stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>` and `cpu_s/tok=<s>` (see the `io_ms` note
-above for how the read-time columns are reinterpreted under overlap).
+above for how the read-time columns are reinterpreted under overlap), plus
+`locked_dense_MiB=<f>` — the dense weight bytes pinned into RAM by `--lock-dense` (`0.0` when the
+flag is off, or when the OS refused the lock). Read it together with `majflt/tok`: the pair says
+whether the dense set is actually being held, and what the run paid in cache budget to hold it.
 
 ## Route trace
 

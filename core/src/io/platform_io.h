@@ -48,6 +48,25 @@ bool vm_commit(void * p, size_t sz);
 void vm_evict(void * p, size_t sz);
 void vm_release(void * p, size_t sz);
 
+// Pin an already-mapped byte range into RAM so the kernel cannot reclaim it (mlock / VirtualLock),
+// and release the pin. Used to hold the model's dense weights resident: warming them only fills the
+// (reclaimable) page cache, which expert-streaming pressure then evicts, re-faulting them from
+// flash inside the next decode.
+//
+// Best-effort by contract, because the amount of lockable memory is capped by the OS (POSIX
+// RLIMIT_MEMLOCK — often small on Android) and the cap is a policy we must live with, not fail on:
+// vm_lock locks in chunks and returns the bytes it actually pinned, which may be less than `sz`
+// (0 = nothing). What is not pinned simply stays ordinary reclaimable page cache, i.e. today's
+// behaviour. `p` must be page-aligned; `sz` is rounded up to a page by the OS.
+size_t vm_lock(void * p, size_t sz);
+void vm_unlock(void * p, size_t sz);
+
+// Raise the process's lockable-memory soft limit to its hard limit and report the resulting cap in
+// bytes (UINT64_MAX = unlimited, 0 = unknown). Raising the SOFT limit needs no privilege; the hard
+// limit is what the OS/container grants, so this is the whole of what a process can do for itself.
+// Call once before a batch of vm_lock calls.
+uint64_t vm_lock_limit_raise();
+
 // Physical memory currently allocatable without paging, in bytes. 0 = unknown. Used to size the
 // expert cache to the device (--cache-mb auto) and to shrink it under memory pressure at runtime.
 uint64_t mem_available_bytes();
