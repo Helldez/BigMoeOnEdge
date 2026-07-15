@@ -9,7 +9,17 @@ data class Telemetry(
     var wallMs: Double = 0.0,
     var ioMs: Double = 0.0,
     var computeMs: Double = 0.0,
+    // Cache-management time this token — the third wall-additive term. wall = compute + flash-wait +
+    // mgmt exactly (the engine defines compute as that residual), so the panel can show a breakdown
+    // that sums to the token time and makes tok/s = 1000/wall self-evident.
+    var mgmtMs: Double = 0.0,
     var cacheHitPct: Double = -1.0,
+    // Compute-decomposition of the `computeMs` residual (see docs/telemetry.md). Live per-token
+    // values from BMOE_PROGRESS: `majflt` > 0 means a dense weight re-faulted from flash inside the
+    // decode; `cpuMs` ÷ (wallMs × threads) is CPU occupancy — near 1 is compute-bound, well below
+    // means a throttled/preempted core. 0 when the platform can't measure them.
+    var majflt: Double = 0.0,
+    var cpuMs: Double = 0.0,
     var text: String = "",
     // Aggregate decode rate over the whole run, parsed from the final summary line; -1 until
     // generation finishes. The per-token [tokensPerSecond] is instantaneous (last token only),
@@ -19,12 +29,16 @@ data class Telemetry(
     // the last token's instantaneous [computeMs]/[ioMs]. -1 until generation finishes.
     var avgComputeMs: Double = -1.0,
     var avgIoMs: Double = -1.0,
+    var avgMgmtMs: Double = -1.0,
     // End-of-run figures from the final summary (BMOE_DONE); -1 / 0 until generation finishes.
     var prefillTps: Double = -1.0,      // prompt prefill rate (tok/s)
     var ttftS: Double = -1.0,           // time-to-first-token = model load + prompt prefill (s)
     var readMib: Double = -1.0,         // total flash streamed this generation (MiB)
     var cacheResidentMib: Double = -1.0, // expert cache resident size (MiB)
     var cacheBudgetMib: Double = -1.0,  // current (possibly auto-adapting) cache budget (MiB)
+    // Run averages of the compute decomposition, from the final summary (BMOE_DONE); -1 until done.
+    var avgMajfltPerTok: Double = -1.0, // major page faults per token over the run
+    var avgCpuSPerTok: Double = -1.0,   // CPU-seconds per token (summed across threads) over the run
 ) {
     val tokensPerSecond: Double get() = if (wallMs > 0) 1000.0 / wallMs else 0.0
 }
@@ -58,7 +72,10 @@ class TelemetryParser {
             current.wallMs = o.optDouble("wall_ms")
             current.ioMs = o.optDouble("io_ms")
             current.computeMs = o.optDouble("compute_ms")
+            current.mgmtMs = o.optDouble("mgmt_ms", 0.0)
             current.cacheHitPct = o.optDouble("cache_hit_pct", -1.0)
+            current.majflt = o.optDouble("majflt", 0.0)
+            current.cpuMs = o.optDouble("cpu_ms", 0.0)
             current.text = o.optString("text")
         }.isSuccess
     }
