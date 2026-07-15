@@ -103,8 +103,10 @@ class RunService : Service() {
         val streaming = argv.contains("--moe-stream")
         startForeground(NOTIF_ID, buildNotification("Loading model…"))
         RunBus.update {
+            // ioMode is re-sniffed from the new session's stderr, so clear it: it describes the
+            // session being replaced, and the sniffer's first-writer-wins guard would keep it.
             it.copy(state = EngineState.LOADING, error = null, sessionSig = sig, answer = "", summary = "",
-                transcript = emptyList(), streaming = streaming)
+                transcript = emptyList(), streaming = streaming, ioMode = null)
         }
 
         thread(name = "bmoe-session") { runSession(argv, model, myEpoch) }
@@ -137,6 +139,8 @@ class RunService : Service() {
                             "expert streaming ON" in line ->
                                 Regex("""o_direct=(\d)""").find(line)?.groupValues?.get(1)?.let { d ->
                                     if (current(myEpoch)) RunBus.update {
+                                        // First writer wins: this line trails the fallback notice above,
+                                        // whose reason is worth more than the plain "buffered" here.
                                         if (it.ioMode != null) it
                                         else it.copy(ioMode = if (d == "1") "direct (O_DIRECT)" else "buffered")
                                     }
