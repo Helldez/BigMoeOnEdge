@@ -409,8 +409,8 @@ class RunService : Service() {
 
     /**
      * Ask the session to wind down on its own terms, so it runs the ordered teardown — unhook,
-     * join the IO pool, unlock the dense pins, free the expert cache — rather than leaving it all
-     * to the kernel. `close` is queued behind an in-flight generate, hence the cancel first: the
+     * join the IO pool, free the expert cache — rather than leaving it all to the kernel.
+     * `close` is queued behind an in-flight generate, hence the cancel first: the
      * engine applies that off its reader thread and aborts the decode, letting close land at once.
      * Callers back this up with a deadline ([forceKill] or [awaitExit]).
      */
