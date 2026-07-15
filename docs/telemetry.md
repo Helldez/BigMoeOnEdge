@@ -182,6 +182,10 @@ Size: roughly `steps x moe_layers x n_expert_used` rows — ~200k rows (~8 MiB) 
 decode on a 48-layer, top-8 model. Prefill adds a row per prompt token, so a long prompt
 dominates the file; `--phase decode` is the usual lens.
 
+Real traces from Qwen3-30B-A3B, Gemma-4-26B-A4B and gpt-oss-120b on device, with the analysis they
+support, are archived in
+[bench-data/2026-07-15-route-trace/](bench-data/2026-07-15-route-trace/findings.md).
+
 ## Session mode
 
 With `--session`, `bmoe-cli` keeps the model loaded and the expert cache warm across prompts
