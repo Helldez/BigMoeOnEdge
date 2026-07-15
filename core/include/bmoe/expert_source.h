@@ -34,6 +34,27 @@ public:
     // changes what load_layer produces. Default: no-op (a source without a speculative path).
     virtual void prefetch(int /*il*/, const int32_t * /*ids*/, int /*n_ids*/) {}
 
+    // ── route-trace support (diagnostics only; see bmoe/route_trace.h) ──────────────────
+    // These let a tracer describe what a routing COST without changing what it does. All three
+    // are eval-thread only, and meaningful only between the routing node and load_layer().
+
+    // Integrate any speculative prefetch that has landed, so a residency query taken right
+    // after sees the true cache state. load_layer() already does this itself; a tracer must ask
+    // for it explicitly BEFORE querying, or an expert a prefetch correctly guessed still reads
+    // as a miss. Default: a source that never speculates.
+    virtual void settle_spec() {}
+
+    // Classify layer `il`'s `ids` against the cache as it stands NOW, writing one
+    // RouteResidency per id into `out`. Call before load_layer(il, ...) makes them resident.
+    // Default: a source with no cache, where every routing reads.
+    virtual void query_residency(int /*il*/, const int32_t * /*ids*/, int n_ids, uint8_t * out) const {
+        for (int i = 0; i < n_ids; ++i)
+            out[i] = 0;
+    }
+
+    // Flash bytes one expert of layer `il` occupies across its projections — what a miss costs.
+    virtual uint64_t expert_bytes(int /*il*/) const { return 0; }
+
     // Cumulative streaming statistics, for telemetry and the end-of-run summary.
     struct Stats {
         uint64_t read_bytes = 0;           // bytes pulled from flash (aligned windows)
