@@ -6,6 +6,18 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **Prompt-tail retention across prefill**: the whole prompt is one prefill ubatch, so `load_layer`
+  sees every prompt token's routed experts at once, token-major. The in-batch dedup guard skipped
+  the LRU promotion for an expert already staged in that batch, anchoring it at the position of the
+  *first* token that used it. Promote on every touch instead, so the LRU order at the end of prefill
+  reflects the *last* prompt tokens — the experts most likely to be routed again for the first
+  generated tokens — keeping them resident rather than first in line for eviction. Bookkeeping only:
+  reads are still scheduled once per expert, and in decode the top-k ids within a token are distinct,
+  so the path is a no-op there. Byte-identity gates unaffected. **Not yet measured on device**: the
+  whole first-10-token warm-up excess is ~1.0 s (Qwen) / ~0.7 s (Gemma) over steady state, so any
+  gain is bounded by that and is expected to matter for short chat turns rather than long runs.
+
 ### Added
 - **Direct answers on gpt-oss (`--no-think`)**: the harmony chat template always opens an
   `analysis` (chain-of-thought) channel, so `--no-think` previously had no visible effect on
