@@ -48,6 +48,19 @@ bool vm_commit(void * p, size_t sz);
 void vm_evict(void * p, size_t sz);
 void vm_release(void * p, size_t sz);
 
+// How many of a committed range's pages the kernel still has in RAM. Counts only the pages fully
+// inside [p, p+sz) — the same clipping vm_evict's callers apply — and ADDS to *sampled/*resident,
+// so several ranges can be summed into one fraction (the caller zeroes them first).
+//
+// This is the reclaim sensor. Nothing unprivileged can ask Android how much memory it will concede
+// (MemAvailable counts our own file-backed weights as free; PSI is SELinux-blocked for apps), but a
+// process may always ask about its OWN pages — and pages we wrote, then lost, are reclaim by
+// definition. One mincore() serves a whole chunk of pages, so the cost is per range, not per page.
+//
+// Returns false when the platform cannot report residency (Windows host build), leaving the
+// counters untouched: "unmeasured", which callers must not read as "nothing is resident".
+bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * resident);
+
 // Physical memory currently allocatable without paging, in bytes. 0 = unknown. Used to size the
 // expert cache to the device (--cache-mb auto) and to shrink it under memory pressure at runtime.
 uint64_t mem_available_bytes();

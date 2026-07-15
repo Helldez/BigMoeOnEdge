@@ -10,6 +10,7 @@
 #else
 #include <fcntl.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <sys/mman.h>
@@ -24,6 +25,16 @@
 #endif
 
 namespace bmoe::pio {
+
+#if !defined(_WIN32)
+// mincore's vector argument is `unsigned char *` on Linux/Android but `char *` on the BSDs and
+// macOS. Name the difference once instead of casting blind at the call site.
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+using mincore_vec_t = char;
+#else
+using mincore_vec_t = unsigned char;
+#endif
+#endif
 
 #if defined(_WIN32)
 
@@ -85,6 +96,13 @@ void vm_evict(void * p, size_t sz) {
 }
 void vm_release(void * p, size_t /*sz*/) {
     if (p) VirtualFree(p, 0, MEM_RELEASE);
+}
+
+// Unmeasured on the host build, like the fault counters below and for the same reason: the gates
+// prove byte-identity, they do not size a cache against a phone's reclaim. QueryWorkingSetEx could
+// answer this, but nothing here consumes it.
+bool vm_resident_sample(const void * /*p*/, size_t /*sz*/, size_t * /*sampled*/, size_t * /*resident*/) {
+    return false;
 }
 
 uint64_t mem_available_bytes() {
@@ -152,6 +170,26 @@ void vm_evict(void * p, size_t sz) {
 }
 void vm_release(void * p, size_t sz) {
     if (p) munmap(p, sz);
+}
+
+bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * resident) {
+    if (!p || sz == 0) return true; // an empty range is measured, and holds nothing
+    const size_t page = vm_page();
+    // Clip to the pages FULLY inside the range, matching how the eviction path releases them: an
+    // edge page shared with a neighbouring slice belongs to that neighbour, not to this sample.
+    uintptr_t a0 = ((uintptr_t) p + page - 1) & ~(uintptr_t) (page - 1);
+    uintptr_t a1 = ((uintptr_t) p + sz) & ~(uintptr_t) (page - 1);
+    if (a1 <= a0) return true;
+    unsigned char vec[512]; // one byte per page: 512 pages (2 MiB at 4 KiB pages) per syscall
+    for (uintptr_t a = a0; a < a1;) {
+        const size_t want = std::min<size_t>((size_t) (a1 - a) / page, sizeof(vec));
+        if (mincore((void *) a, want * page, (mincore_vec_t *) vec) != 0) return false;
+        for (size_t i = 0; i < want; ++i)
+            *resident += (size_t) (vec[i] & 1u); // bit 0 = the page is resident
+        *sampled += want;
+        a += want * page;
+    }
+    return true;
 }
 
 uint64_t mem_available_bytes() {
