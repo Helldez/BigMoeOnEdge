@@ -269,7 +269,7 @@ private fun MainScreen(
                     }
                 }
 
-                TelemetryCard(ui)
+                TelemetryCard(ui, settings.threads)
             }
         }
 
@@ -448,7 +448,7 @@ private fun AddModelSection(onModelReady: () -> Unit) {
 }
 
 @Composable
-private fun TelemetryCard(ui: UiState) {
+private fun TelemetryCard(ui: UiState, threads: Int) {
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (ui.error != null) {
@@ -468,7 +468,9 @@ private fun TelemetryCard(ui: UiState) {
             val done = t.avgTokensPerSecond > 0
             Text(
                 if (done) {
-                    String.format(Locale.US, "%.2f tok/s   avg (%d tokens)", t.avgTokensPerSecond, t.steps)
+                    // t.step is the last token's 1-based index = tokens actually generated (which can be
+                    // < t.steps, the n_predict target, when the model stops early on an end-of-text token).
+                    String.format(Locale.US, "%.2f tok/s   avg (%d tokens)", t.avgTokensPerSecond, t.step)
                 } else {
                     String.format(Locale.US, "%.2f tok/s   (token %d/%d)", t.tokensPerSecond, t.step, t.steps)
                 },
@@ -478,14 +480,47 @@ private fun TelemetryCard(ui: UiState) {
                 // The compute-vs-flash split and cache hit rate only mean anything with the streamer
                 // running. Under mmap the model faults in through the OS page cache, invisible here.
                 // Once done, show the per-token AVERAGE split; while generating, the live last token.
-                val useAvg = done && t.avgComputeMs >= 0 && t.avgIoMs >= 0
-                val compute = if (useAvg) t.avgComputeMs else t.computeMs
-                val io = if (useAvg) t.avgIoMs else t.ioMs
+                val useAvg = done && t.avgComputeMs >= 0
                 val suffix = if (useAvg) " avg" else ""
-                val hit = if (t.cacheHitPct >= 0) String.format(Locale.US, "%.0f%%", t.cacheHitPct) else "—"
-                MeterRow("compute$suffix", compute, compute + io, MaterialTheme.colorScheme.primary)
-                MeterRow("flash I/O$suffix", io, compute + io, MaterialTheme.colorScheme.tertiary)
-                Text("cache hit $hit", fontSize = 13.sp)
+                // The wall-additive breakdown: by the engine's own definition compute = wall − flash-wait
+                // − mgmt, so these three SUM to the token's wall time. That makes tok/s = 1000 / wall
+                // directly readable off the bars, instead of asking the user to reconcile a compute
+                // residual with a parallel (overlapped) flash-I/O figure that isn't a wall component.
+                val compute = if (useAvg) t.avgComputeMs else t.computeMs
+                val mgmt = if (useAvg) t.avgMgmtMs.coerceAtLeast(0.0) else t.mgmtMs
+                val wall = if (useAvg) (if (t.avgTokensPerSecond > 0) 1000.0 / t.avgTokensPerSecond else 0.0)
+                           else t.wallMs
+                // Flash wait = wall not spent computing or bookkeeping: the read time overlap couldn't
+                // hide (a stall under --overlap, the whole blocking read in serial mode).
+                val flashWait = (wall - compute - mgmt).coerceAtLeast(0.0)
+                val total = if (wall > 0.0) wall else (compute + flashWait + mgmt)
+
+                // Headline: token time and its inverse, so no mental arithmetic to get tok/s.
+                if (wall > 0.0) {
+                    Text(String.format(Locale.US, "%.0f ms/token  →  %.2f tok/s", wall, 1000.0 / wall),
+                        fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                }
+                MeterRow("compute$suffix", compute, total, MaterialTheme.colorScheme.primary)
+                MeterRow("flash wait$suffix", flashWait, total, MaterialTheme.colorScheme.tertiary)
+                MeterRow("cache mgmt$suffix", mgmt, total, MaterialTheme.colorScheme.secondary)
+
+                // Diagnostic line: WHY compute is what it is, plus cache hit. CPU occupancy = CPU-time ÷
+                // (wall × threads); near 100% is genuinely compute-bound, well below means a throttled/
+                // preempted core (a frequency cap, a co-resident process). Major faults/token > 0 means
+                // dense weights re-faulted from flash inside the decode. Both 0 ⇒ engine couldn't measure.
+                val useAvgCpu = useAvg && t.avgCpuSPerTok >= 0
+                val cpuSTok = if (useAvgCpu) t.avgCpuSPerTok else t.cpuMs / 1000.0
+                val faults = if (useAvgCpu) t.avgMajfltPerTok else t.majflt
+                val hit = if (t.cacheHitPct >= 0) String.format(Locale.US, "hit %.0f%%", t.cacheHitPct) else "hit —"
+                val diag = buildString {
+                    if (cpuSTok > 0.0 && wall > 0.0 && threads > 0) {
+                        append(String.format(Locale.US, "CPU %.0f%% busy", cpuSTok / (wall / 1000.0 * threads) * 100.0))
+                        if (faults >= 0.0) append(String.format(Locale.US, "  ·  %.0f faults/tok", faults))
+                        append("  ·  ")
+                    }
+                    append(hit)
+                }
+                Text(diag, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (ui.ioMode != null) {
                     Text("I/O ${ui.ioMode}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
