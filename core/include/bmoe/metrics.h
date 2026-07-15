@@ -21,6 +21,12 @@ struct TokenMetrics {
     double stall_ms = 0.0;      // overlap only: wall time the FFN kernel blocked on flash (0 when serial)
     uint64_t read_bytes = 0;    // expert bytes pulled from flash this token
     double cache_hit_pct = 0.0; // cumulative cache hit rate (-1 if no cache)
+    // Compute-decomposition counters, measured around llama_decode (0 if the platform can't report
+    // them). They tell WHY a token's compute residual is large: major faults = dense weight re-read
+    // from flash inside the decode; cpu_ms vs wall_ms×threads = how CPU-bound the decode really was
+    // (low occupancy ⇒ throttled/preempted, not heavy math). See docs/telemetry.md.
+    uint64_t majflt = 0;        // major page faults during this decode (backing-store reads)
+    double cpu_ms = 0.0;        // CPU time summed across all threads during this decode
     std::string piece;          // text of just this token (delta, for inline streaming)
     std::string text;           // full generated text so far (for UI streaming)
 };
@@ -48,6 +54,13 @@ struct RunSummary {
     double moe_mgmt_s_per_token = 0.0;  // cache-management time per token (commit + evict + LRU)
     double moe_stall_s_per_token = 0.0; // overlap only: per-token wall the kernel waited on flash
     double cache_hit_pct = -1.0;        // -1 when no cache
+
+    // Compute decomposition, generation phase only (measured whether or not streaming is on, since
+    // dense-weight faults appear in the mmap baseline too). majflt_per_token ≫ 0 flags a residency
+    // stall hiding in "compute"; cpu_util = cpu_s/token ÷ (s/token × threads) near 1 is compute-bound,
+    // well below 1 is a throttled/preempted core. 0 when the platform can't measure them.
+    double majflt_per_token = 0.0;
+    double cpu_s_per_token = 0.0;
     double cache_resident_mib = 0.0;
     double cache_budget_mib = 0.0; // current cache budget (moves under --cache-mb auto)
     long long cache_resizes = 0;   // runtime budget changes (0 unless auto/explicit resize)

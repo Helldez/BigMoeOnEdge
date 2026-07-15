@@ -33,12 +33,14 @@ Per-token CSV schema (one row per generated token):
 | column | meaning |
 |---|---|
 | `wall_ms` | real time for this token — the number that becomes tok/s (`1000 / wall_ms`) |
-| `compute_ms` | FFN + attention compute; **absorbs synchronous page-fault stalls** on resident weights |
+| `compute_ms` | FFN + attention compute; **absorbs synchronous page-fault stalls** on resident weights (a residual — `majflt`/`cpu_ms` below tell you which) |
 | `io_ms` | expert flash-read time, summed across the read lanes (so it can exceed `wall_ms` when overlapped) |
 | `read_bytes` | expert bytes streamed from flash this token |
 | `cache_hit_pct` | running LRU expert-cache hit rate |
 | `stall_ms` | residual flash wait not hidden by overlap |
 | `mgmt_ms` | cache bookkeeping (eviction/admission) |
+| `majflt` | major page faults this token — non-zero means dense weights re-faulted from flash *inside* the decode (the Regime 2 stall, made explicit instead of hiding in `compute_ms`) |
+| `cpu_ms` | CPU time summed across threads; `cpu_ms / (wall_ms × threads)` is occupancy — near 1 is compute-bound, well below flags a throttled/preempted core |
 
 ## Regime 1 — models near RAM: I/O-bound warm-up
 

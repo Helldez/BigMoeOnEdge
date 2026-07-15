@@ -7,6 +7,25 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Per-token compute decomposition** (`majflt`, `cpu_ms`): the `compute_ms` residual silently
+  absorbed page-fault stalls and scheduler idle, so a large "compute" figure could mean genuine
+  matmul, a dense-weight fault storm on a >RAM model, or a throttled CPU — indistinguishable. Two
+  directly-measured counters now decompose it, sampled around `llama_decode` with no submodule
+  patch: `majflt` (major page faults this token — a mmap-resident dense weight re-faulted from flash
+  *inside* the decode) and `cpu_ms` (CPU time summed across threads; divided by wall×threads it gives
+  occupancy — near 100 % is compute-bound, well below flags a throttled or preempted core). Surfaced
+  per token in `BMOE_PROGRESS`, as run averages in `BMOE_DONE`, as `majflt`/`cpu_ms` CSV columns and
+  `majflt/tok`/`cpu_s/tok` summary keys, and as a `compute:` line in the one-shot summary. Both read
+  `0` where the platform cannot measure them (the Windows host build). `docs/telemetry.md` also now
+  documents why `stall_ms` has a structural floor above zero (the router-to-fetch dependency). See
+  `docs/telemetry.md`.
+- **Wall-additive Android telemetry panel**: the decode meters now show the three terms that *sum to*
+  the token's wall time — `compute`, `flash wait` (the read time overlap could not hide) and `cache
+  mgmt` — under a `<ms>/token → <tok/s>` headline, so the rate is read directly instead of being
+  reconciled from a compute residual against a parallel, overlapped flash-I/O figure. A diagnostic
+  line reports CPU occupancy, major faults/token and cache hit; raw byte throughput moves to a
+  secondary line. The summary token count now reflects tokens actually generated, not the `n_predict`
+  target. Backed by new `mgmt_ms`/`majflt`/`cpu_ms` fields on the session telemetry lines.
 - **Direct answers on gpt-oss (`--no-think`)**: the harmony chat template always opens an
   `analysis` (chain-of-thought) channel, so `--no-think` previously had no visible effect on
   gpt-oss — the model still reasoned before answering. It now primes the `final` channel directly

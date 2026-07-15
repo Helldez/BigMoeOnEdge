@@ -220,11 +220,14 @@ class RunService : Service() {
             val nPast = o.optInt("n_past", -1)
             val avgComputeMs = o.optDouble("compute_s_tok", -0.001) * 1000.0
             val avgIoMs = o.optDouble("io_s_tok", -0.001) * 1000.0
+            val avgMgmtMs = o.optDouble("mgmt_s_tok", -0.001) * 1000.0
             val prefillTps = o.optDouble("prefill_tps", -1.0)
             val loadS = o.optDouble("load_s", -1.0)
             val readMib = o.optDouble("read_mib", -1.0)
             val cacheResidentMib = o.optDouble("cache_resident_mib", -1.0)
             val cacheBudgetMib = o.optDouble("cache_budget_mib", -1.0)
+            val majfltPerTok = o.optDouble("majflt_tok", -1.0)
+            val cpuSPerTok = o.optDouble("cpu_s_tok", -1.0)
             // Time-to-first-token: the model load plus this turn's prompt prefill.
             val ttft = if (loadS >= 0 && prefill >= 0) loadS + prefill else -1.0
             val cancelled = o.optBoolean("cancelled")
@@ -253,8 +256,10 @@ class RunService : Service() {
             }
             val tel = telemetry.current.copy(
                 avgTokensPerSecond = tokS, avgComputeMs = avgComputeMs, avgIoMs = avgIoMs,
+                avgMgmtMs = avgMgmtMs,
                 prefillTps = prefillTps, ttftS = ttft, readMib = readMib,
                 cacheResidentMib = cacheResidentMib, cacheBudgetMib = cacheBudgetMib,
+                avgMajfltPerTok = majfltPerTok, avgCpuSPerTok = cpuSPerTok,
             )
             RunBus.update {
                 val answer = if (text.isNotEmpty()) text else it.answer
