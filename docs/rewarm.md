@@ -2,7 +2,8 @@
 
 **This does not work. It is off by default and documented here so the next attempt does not repeat
 it.** The pass does exactly what it claims and the problem is untouched; the reason why is the useful
-part.
+part. For the mechanics underneath — what reclaims, when, and which levers exist — see
+[android-memory.md](android-memory.md).
 
 A session keeps the model loaded and the expert cache warm so the second prompt does not re-pay the
 first one's costs (see [session mode](telemetry.md)). Android disagrees. Its reclaim daemon targets

@@ -22,7 +22,8 @@ t=68   RssAnon 2.02 GB   swap 468 MB     <- the engine faults it back
 t=88   RssAnon 1.88 GB   swap 596 MB     <- and loses it again
 ```
 
-That oscillation, not any single reclaim, is what costs the turn.
+That oscillation, not any single reclaim, is what costs the turn. See
+[bench-data/2026-07-15-rewarm/](bench-data/2026-07-15-rewarm/).
 
 ## Free memory, and why 95 MB is not a crisis
 
@@ -166,7 +167,7 @@ the eviction queue*, and at swappiness 160 with `inactive_ratio = 1` the next pa
 immediately.
 
 Measured: restoring 1.76 GB took 6.4 s and the kernel had it back in 8 s, with the turn still at
-0.3 tok/s. **That 8 s is a property of the LRU, not of the code.**
+0.3 tok/s. **That 8 s is a property of the LRU, not of the code.** See [rewarm.md](rewarm.md).
 
 The corollary is the useful part: a restore is only worth anything if the pages get *hit* right
 after — which makes its value a function of the hit rate, and predicts it helps exactly the
@@ -184,6 +185,6 @@ high-hit-rate models it was not designed for.
 - **Measure in the app.** The app's engine drops 3.5 GiB → 3.5 MiB within ~5 s of a reply; an adb
   session took 4 minutes to lose half that, and a second adb run barely lost anything. Every bench
   script in this repo is single-shot and never idles, so none of them can see this class of bug.
-  Seeing it takes two turns with a timed idle gap between them, sampling `/proc` through the gap.
+  `scripts/rewarm-ab.sh` runs two turns with a timed idle gap and samples `/proc` through it.
 - Beware `pgrep -f <name>`: the shell running the command matches its own command line. A 3.8 MB
   "engine" is your own `sh`.
