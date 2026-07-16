@@ -105,8 +105,8 @@ prints just the summary lines.
 
 ```
 step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,resident_frac,
-turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,mem_available_mib,mem_free_mib,
-swap_free_mib
+dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,
+mem_available_mib,mem_free_mib,swap_free_mib
 ```
 
 followed by a `# summary ...` comment line. Intended for the benchmark sweep.
@@ -133,6 +133,7 @@ The trailing block is the memory picture, added so a run can be diagnosed from i
 | `cache_budget_mib` | the expert-cache budget this token ran under. Per token, not just in the summary: it is the governor's trajectory, and without it a loop that cut once and pinned reads exactly like one that never acted. |
 | `rss_anon_mib` | resident anonymous memory — **the expert cache lives here**. Falling while `cache_budget_mib` stays put means the kernel is taking the cache. |
 | `rss_file_mib` | resident file-backed memory — the mmap'd model. Reclaimed by being dropped, not swapped, so it never shows in `swap_mib`. |
+| `dense_resident_frac` | fraction of the DENSE mmap'd weights still in RAM, by `mincore` over the model's own VMAs (`/proc/self/maps`, which an app may read where `/proc/vmstat` it may not). Companion to `resident_frac`: that watches the anon cache, this the file-backed weights. Dense falling while `resident_frac` holds means the faults are the model, not the cache — so shrinking the cache cannot help. `-1` when unmeasured. |
 | `swap_mib` | anonymous memory already lost to zram (`VmSwap`). |
 | `rss_mib` | total resident (`VmRSS`). |
 | `mem_available_mib` / `mem_free_mib` / `swap_free_mib` | what the device claims about itself. `MemAvailable` counts this process's own mmap'd weights as reclaimable, so it over-states headroom — it is recorded next to what we measured ourselves because the gap between them is the story. |
