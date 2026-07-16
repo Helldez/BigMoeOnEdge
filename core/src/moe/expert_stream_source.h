@@ -20,6 +20,7 @@
 #include "bmoe/recipe.h"
 #include "../io/platform_io.h"
 #include "../io/file_reader.h"
+#include "dense_weights.h" // DenseWeights + DenseTensorRef
 
 #include <atomic>
 #include <condition_variable>
@@ -39,15 +40,6 @@ struct ExpertTensorRef {
     ggml_tensor * tensor = nullptr; // persistent weight tensor whose ->data we rebind
     uint64_t file_off = 0;          // absolute file offset of the tensor's data
     uint64_t nb2 = 0;               // bytes per expert (== tensor->nb[2])
-};
-
-// One dense (non-expert) weight tensor to read once via O_DIRECT and rebind onto our own
-// anonymous buffer, for the --dense-odirect experiment. Unlike an expert slice, a dense tensor is
-// read whole and contiguous: `size` bytes from `file_off`, matching its gguf on-disk layout.
-struct DenseTensorRef {
-    ggml_tensor * tensor = nullptr; // persistent weight tensor whose ->data we rebind
-    uint64_t file_off = 0;          // absolute file offset of the tensor's data
-    uint64_t size = 0;              // its data size in bytes (== ggml_nbytes)
 };
 
 // The expert weight tensors of one MoE layer, one per recipe suffix slot. The split
@@ -72,10 +64,9 @@ public:
     bool
     init(const std::string & gguf_path, int n_expert, std::vector<LayerExperts> layers, const MoeStreamConfig & cfg);
 
-    // Supply the dense (non-expert) weight tensors to read via O_DIRECT and rebind, for the
-    // --dense-odirect experiment. Call BEFORE init (which does the read); a no-op unless
-    // cfg.dense_odirect is set. The runtime builds the list from the captured weight leaves and the
-    // gguf offsets. See docs/pressure.md.
+    // Supply the dense (non-expert) weight tensors the DenseWeights policy may need (only the
+    // Anonymous mode reads+rebinds them). Call BEFORE init, which hands them to the dense module.
+    // The runtime builds the list from the captured weight leaves and the gguf offsets.
     void set_dense_tensors(std::vector<DenseTensorRef> dense) { dense_tensors_ = std::move(dense); }
 
     // IExpertSource
@@ -146,15 +137,8 @@ private:
 
     // One sequential buffered sweep over the file's non-expert byte ranges (header, embeddings,
     // attention, norms, lm_head) to populate the kernel page cache at load time, so the mmap'd
-    // dense tensors do not demand-fault 4 KiB at a time inside the first decodes. Best-effort:
-    // a read failure only leaves the corresponding pages cold.
-    void warm_dense_regions(const std::string & gguf_path);
-
-    // Experiment (--dense-odirect): read every dense tensor once via O_DIRECT into an aligned anon
-    // buffer and rebind its ->data onto it, so the dense weights are anonymous (a reclaim swaps
-    // them to zram instead of dropping them to a 4 KiB flash refault). Done once in init, on lane 0,
-    // before the workers start; the buffers are freed in shutdown(). Returns false on any failure.
-    bool read_dense_odirect();
+    // dense tensors do not demand-fault 4 KiB at a time inside the first decodes. The dense-weights
+    // policy (warm sweep, anonymous rebind, and the residency sensor) lives in DenseWeights (dense_).
 
     // Adaptive sizing (cache_auto): re-probe device memory (throttled) and nudge cache_max_ so it
     // tracks free RAM. Eval-thread only, called in the mgmt section of load_layer; the eviction
@@ -164,15 +148,9 @@ private:
     // Pressure sensing (cache_dynamic): sample (throttled) how much of the cache the kernel still
     // has in RAM, walking the LRU cold end — the pages reclaim takes first, so a dip here is the
     // earliest evidence the budget outgrew what the device concedes. Sets resident_frac_ for the
-    // governor; changes no budget itself. Eval-thread only (it walks the LRU list).
+    // governor; changes no budget itself. Eval-thread only (it walks the LRU list). The dense half of
+    // the picture is dense_.sample_residency(), fired on the same throttle from load_layer.
     void sample_residency();
-
-    // Companion sensor for the OTHER half of memory: the dense weights, which are mmap'd file-backed
-    // and reclaimed by being dropped (never swapped), so resident_frac — which watches only our anon
-    // cache — is blind to them. A stratified mincore over the dense file ranges says how much of the
-    // model itself the kernel still has. When this falls while resident_frac holds, the faults are
-    // the weights, not the cache, and shrinking the cache cannot help. Sets dense_resident_frac_.
-    void sample_dense_residency();
 
     // Accumulate one token's routed working set. Eval-thread only, called per layer load.
     void account_demand(int il, int n_unique);
@@ -235,22 +213,14 @@ private:
     // rather than hidden in the compute residual.
     static constexpr unsigned residency_probe_every = 128; // load_layer calls between probes (~2-3 tokens)
     static constexpr int residency_sample_entries = 16;    // coldest entries read per probe
-    static constexpr int dense_sample_pages = 256;         // stratified probe points over the dense weights
     bool cache_dynamic_ = false;
-    bool dense_odirect_ = false; // --dense-odirect: read dense weights via O_DIRECT into our buffers
-    std::vector<DenseTensorRef> dense_tensors_; // set before init; read+rebound when dense_odirect_
-    std::vector<void *> dense_bufs_;            // the anon buffers backing them; freed in shutdown()
-    std::vector<size_t> dense_buf_sz_;          // dense_bufs_[i]'s byte size, for the anon-residency sample
-    double resident_frac_ = -1.0;               // last sampled cache residency; -1 = never measured
-    double dense_resident_frac_ = -1.0; // last sampled dense-weight residency; -1 = never measured
+    double resident_frac_ = -1.0; // last sampled cache residency; -1 = never measured
 
-    // The dense weights' byte ranges in the file (complement of the expert ranges), and the mmap VMAs
-    // that back them — resolved once, lazily, from /proc/self/maps. Empty vma set = maps unreadable,
-    // which keeps dense_resident_frac_ at -1 rather than inventing a number.
-    std::string gguf_path_;
-    std::vector<std::pair<uint64_t, uint64_t>> dense_ranges_;
-    std::vector<pio::MappedRegion> dense_vmas_;
-    bool dense_vmas_tried_ = false;
+    // The dense (non-expert) weights: their residency policy (mmap / warm / anon), the buffers it may
+    // hold, and the sensor for the half resident_frac cannot see. Set before init via
+    // set_dense_tensors, then handed to dense_.init(); dense_.resident_frac() feeds the governor.
+    std::vector<DenseTensorRef> dense_tensors_; // pending, set before init; moved into dense_
+    DenseWeights dense_;
 
     // Two measured demands, and the difference between them decides the whole policy.
     //

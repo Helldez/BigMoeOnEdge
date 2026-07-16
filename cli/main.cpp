@@ -339,9 +339,10 @@ static void print_usage(const char * argv0) {
         "                          concedes: shrink when reclaim starts taking the cache, grow back\n"
         "                          when it stops (needs the cache; see docs/pressure.md)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
-        "      --no-odirect        do not bypass the page cache\n"
-        "      --no-warm-dense     skip the load-time sweep that page-caches the non-expert weights\n"
-        "      --dense-odirect     read the dense weights via O_DIRECT into our buffers (experiment)\n"
+        "      --no-odirect        do not bypass the page cache for expert reads\n"
+        "      --dense-weights M   dense (non-expert) weight policy: mmap | warm (default) | anon\n"
+        "                          (warm = page-cache them at load; anon = read via O_DIRECT into our\n"
+        "                          own buffers and rebind, so a reclaim hits zram not flash)\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -418,10 +419,25 @@ int main(int argc, char ** argv) {
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
             cfg.moe.o_direct = false;
+        else if (a == "--dense-weights") {
+            const std::string m = next("--dense-weights");
+            if (m == "mmap")
+                cfg.moe.dense_weights = bmoe::DenseWeightsMode::Mmap;
+            else if (m == "warm")
+                cfg.moe.dense_weights = bmoe::DenseWeightsMode::Warmed;
+            else if (m == "anon")
+                cfg.moe.dense_weights = bmoe::DenseWeightsMode::Anonymous;
+            else {
+                std::fprintf(stderr, "bmoe: --dense-weights expects mmap|warm|anon, got '%s'\n", m.c_str());
+                return 2;
+            }
+        }
+        // Deprecated aliases, kept so existing scripts and the app keep working: --no-warm-dense is
+        // the Mmap policy, --dense-odirect is Anonymous. Prefer --dense-weights.
         else if (a == "--no-warm-dense")
-            cfg.moe.warm_dense = false;
+            cfg.moe.dense_weights = bmoe::DenseWeightsMode::Mmap;
         else if (a == "--dense-odirect")
-            cfg.moe.dense_odirect = true;
+            cfg.moe.dense_weights = bmoe::DenseWeightsMode::Anonymous;
         else if (a == "--load-all")
             cfg.moe.load_all = true;
         else if (a == "--force-cache")

@@ -324,11 +324,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         std::vector<uint64_t> dense_bytes;
         if (route_trace) dense_bytes = dense_bytes_per_layer(offs, layers, im.n_layer);
 
-        // --dense-odirect: hand the streamer the dense (non-expert) model weights to read into anon
-        // buffers. The list is every captured weight leaf that IS a gguf tensor (dropping graph
-        // inputs and KV, which share the leaf shape) and is NOT one of the streamed experts. Built
-        // before init consumes `layers`. Set even when empty is harmless; the streamer no-ops it.
-        if (cfg.moe.dense_odirect) {
+        // Anonymous dense-weights mode: hand the streamer the dense (non-expert) model weights to
+        // read into anon buffers. The list is every captured weight leaf that IS a gguf tensor
+        // (dropping graph inputs and KV, which share the leaf shape) and is NOT one of the streamed
+        // experts. Built before init consumes `layers`. Only this mode needs them; the others ignore
+        // an empty list.
+        if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous) {
             std::unordered_set<std::string> expert_names;
             for (const LayerExperts & L : layers) {
                 if (!L.bound) continue;
@@ -451,8 +452,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
-        ri.warm_dense = cfg.moe.enabled && cfg.moe.warm_dense;
-        ri.dense_odirect = cfg.moe.enabled && cfg.moe.dense_odirect;
+        // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
+        ri.warm_dense = cfg.moe.enabled && cfg.moe.dense_weights == DenseWeightsMode::Warmed;
+        ri.dense_odirect = cfg.moe.enabled && cfg.moe.dense_weights == DenseWeightsMode::Anonymous;
         if (cfg.moe.enabled) {
             const IExpertSource::Stats st = im.source.stats();
             ri.cache_mb = (int) (st.cache_budget_bytes / (1024ull * 1024ull));

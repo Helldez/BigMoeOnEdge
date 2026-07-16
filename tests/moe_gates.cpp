@@ -170,18 +170,17 @@ int main(int argc, char ** argv) {
     streamall.moe.cache_mb = 0;
     streamall.moe.load_all = true;
 
-    // streaming, cache off, dense weights read via O_DIRECT into anon buffers and rebound. warm_dense
-    // off so the gate exercises the rebind alone: the rebound bytes must equal the mmap reference.
+    // streaming, cache off, dense weights read via O_DIRECT into anon buffers and rebound (the
+    // Anonymous policy, which does not warm — so the gate exercises the rebind alone: the rebound
+    // bytes must equal the mmap reference).
     RunConfig dense_od = base(model);
     dense_od.moe.enabled = true;
     dense_od.moe.cache_mb = 0;
     dense_od.moe.io_threads = 4;
-    dense_od.moe.warm_dense = false;
-    dense_od.moe.dense_odirect = true;
+    dense_od.moe.dense_weights = DenseWeightsMode::Anonymous;
 
-    // Same, but with O_DIRECT off: the dense read then lands buffered through read_slice's shared fd.
-    // The rebound bytes must still equal the mmap reference — proves --dense-odirect does not depend on
-    // the underlying read bypassing the page cache.
+    // Same, but with the expert stream's O_DIRECT off: the dense reader still bypasses the cache on
+    // its own choice, so this proves the rebind is byte-identical regardless of the expert flag.
     RunConfig dense_od_buf = dense_od;
     dense_od_buf.moe.o_direct = false;
 
@@ -220,7 +219,7 @@ int main(int argc, char ** argv) {
     // correctness proof for --dense-odirect (the risk is rebinding the wrong tensor).
     fails += check("G6 dense-odirect(rebind) == resident", s_res, s_dod);
     // G7: the rebind is byte-identical whether or not the dense read bypassed the page cache.
-    fails += check("G7 dense-odirect(no O_DIRECT) == resident", s_res, s_dodb);
+    fails += check("G7 dense=anon + expert O_DIRECT off == resident", s_res, s_dodb);
 
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // overlap, cache off

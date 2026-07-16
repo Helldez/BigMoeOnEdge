@@ -13,6 +13,14 @@
 
 namespace bmoe {
 
+// How the dense (non-expert) model weights are kept resident. See MoeStreamConfig::dense_weights and
+// core/src/moe/dense_weights.h. Ordered cheapest-effort first.
+enum class DenseWeightsMode {
+    Mmap,      // leave mmap'd, no help (the A/B baseline)
+    Warmed,    // mmap'd, but page-cached once at load
+    Anonymous, // read via O_DIRECT into our own anon buffers and rebind (swaps to zram, not flash)
+};
+
 // MoE expert-selective streaming knobs.
 struct MoeStreamConfig {
     bool enabled = false; // turn streaming on; init fails fast if the model is not MoE
@@ -70,19 +78,18 @@ struct MoeStreamConfig {
     // cache_mb == 0. See docs/prefetch.md.
     int prefetch_layers = 0;
 
-    // Warm the dense (non-expert) file regions into the page cache at init with one sequential
-    // buffered sweep: gguf header/metadata, embeddings, attention, norms, lm_head. Those tensors
-    // stay mmap-resident (the streamer only rebinds experts), so without warming they demand-page
-    // from flash in 4 KiB faults inside the first decodes — on a >RAM model that serialises into
-    // tens of seconds of apparent "compute" before the page cache settles. One sweep at load
-    // moves that cost into load_seconds at sequential-read bandwidth. Off for A/B measurements.
-    bool warm_dense = true;
-
-    // Experiment (default off, in-app toggle): read the dense (non-expert) weights once via O_DIRECT
-    // into our own buffers and rebind their tensors onto them, instead of leaving them mmap'd. Makes
-    // the dense anonymous, so a reclaim swaps it to zram (fast refault) rather than dropping it to a
-    // slow 4 KiB flash refault — at the cost of holding it as (incompressible-Q4) anon. A/B only.
-    bool dense_odirect = false;
+    // How the dense (non-expert) weights are treated. The streamer only rebinds experts; the rest —
+    // gguf header/metadata, embeddings, attention, norms, lm_head — is handled by one of three
+    // policies (see core/src/moe/dense_weights.h):
+    //   Mmap      leave them mmap'd; the kernel serves and reclaims them (a >RAM model then demand-
+    //             faults them 4 KiB at a time inside the first decodes — the slow-start this exists
+    //             to address). The A/B baseline.
+    //   Warmed    (default) leave them mmap'd, but page-cache them once at load with a sequential
+    //             sweep, so the first decodes do not fault them in. Moves the cost into load_seconds.
+    //   Anonymous read them once via O_DIRECT into our own anon buffers and rebind the tensors, so a
+    //             reclaim swaps them to zram (fast) instead of dropping them to a 4 KiB flash refault.
+    //             The measured win on a model actively losing its dense set to reclaim.
+    DenseWeightsMode dense_weights = DenseWeightsMode::Warmed;
 
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
