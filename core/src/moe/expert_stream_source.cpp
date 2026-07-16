@@ -244,6 +244,28 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         }
     }
 
+    // The dense byte ranges are the complement of the expert ranges in the file — the same set
+    // warm_dense_regions sweeps. Kept here so the dense-residency sensor can find them at runtime
+    // without recomputing; the path is kept alongside to locate the mmap in /proc/self/maps.
+    gguf_path_ = gguf_path;
+    if (cache_dynamic_) {
+        std::vector<std::pair<uint64_t, uint64_t>> exp;
+        for (const LayerExperts & L : layers_) {
+            if (!L.bound) continue;
+            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                const uint64_t sz = (uint64_t) L.proj[p].nb2 * (uint64_t) n_expert_;
+                if (sz) exp.push_back({L.proj[p].file_off, L.proj[p].file_off + sz});
+            }
+        }
+        std::sort(exp.begin(), exp.end());
+        uint64_t pos = 0;
+        for (const auto & r : exp) {
+            if (r.first > pos) dense_ranges_.push_back({pos, r.first});
+            pos = std::max(pos, r.second);
+        }
+        if (pos < fsize_) dense_ranges_.push_back({pos, fsize_});
+    }
+
     // Warm the dense (non-expert) regions into the page cache before the first token, so the early
     // decodes do not fault them in one scattered 4 KiB page at a time. Independent of the cache
     // budget: it only pre-faults the mmap-resident pages, it neither pins nor reserves them. Runs on
@@ -607,6 +629,59 @@ void ExpertStreamSource::sample_residency() {
     resident_frac_ = sampled ? (double) resident / (double) sampled : -1.0;
 }
 
+// The dense weights' residency, the half resident_frac cannot see. The weights are one mmap of the
+// gguf; a dense file offset becomes an address through the VMA that backs it (/proc/self/maps),
+// which — unlike /proc/vmstat — an app may read, being its own. Probe dense_sample_pages points
+// spread evenly across the dense byte ranges; one page each, so the cost is a few hundred mincore
+// calls, and only every residency_probe_every load. Shares probe_tick_ with sample_residency, so it
+// fires on the same throttle without a second counter.
+void ExpertStreamSource::sample_dense_residency() {
+    if (dense_ranges_.empty()) return;
+    // Share sample_residency's throttle without a second counter: it has just done the ++, so this
+    // fires exactly on the loads where it did, and skips the rest.
+    if (probe_tick_ % residency_probe_every != 0) return;
+    if (!dense_vmas_tried_) { // resolve the mmap once; llama.cpp has mapped the file by first decode
+        dense_vmas_tried_ = true;
+        const size_t slash = gguf_path_.find_last_of("/\\");
+        const std::string base = slash == std::string::npos ? gguf_path_ : gguf_path_.substr(slash + 1);
+        pio::file_mapped_regions(base.c_str(), dense_vmas_);
+    }
+    if (dense_vmas_.empty()) return; // maps unreadable → leave dense_resident_frac_ at -1
+
+    uint64_t total = 0;
+    for (const auto & r : dense_ranges_)
+        total += r.second - r.first;
+    if (total == 0) return;
+
+    // Map a file offset to a virtual address via the VMA that contains it. A large mmap can be split
+    // into several VMAs, so search rather than assume one.
+    auto addr_of = [&](uint64_t off) -> const char * {
+        for (const auto & v : dense_vmas_) {
+            const uint64_t span = (uint64_t) (v.end - v.start);
+            if (off >= v.file_offset && off < v.file_offset + span)
+                return (const char *) v.start + (off - v.file_offset);
+        }
+        return nullptr;
+    };
+
+    size_t sampled = 0, resident = 0;
+    for (int k = 0; k < dense_sample_pages; ++k) {
+        // Stratified: the k-th of dense_sample_pages evenly spaced points across the dense bytes.
+        uint64_t target = (total * (uint64_t) k) / (uint64_t) dense_sample_pages;
+        uint64_t off = 0;
+        for (const auto & r : dense_ranges_) {
+            const uint64_t len = r.second - r.first;
+            if (target < len) {
+                off = r.first + target;
+                break;
+            }
+            target -= len;
+        }
+        if (const char * a = addr_of(off)) pio::vm_resident_sample(a, page_, &sampled, &resident);
+    }
+    dense_resident_frac_ = sampled ? (double) resident / (double) sampled : -1.0;
+}
+
 // A token's pass over the layer stack is monotonic in il, so a non-increasing layer index means the
 // previous token's pass just ended and the bytes it demanded are known. Prefill measures the
 // batch's union (larger); the first decode token overwrites it with the decode value, which is the
@@ -758,10 +833,12 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
         // Exactly one hand on the budget: with the governor on it owns cache_max_ (from the token
         // loop, where an evicting shrink is safe) and we only sense here; otherwise the legacy
         // free-RAM tracking sizes it in place.
-        if (cache_dynamic_)
+        if (cache_dynamic_) {
             sample_residency();
-        else
+            sample_dense_residency();
+        } else {
             adapt_cache_budget(); // re-size to free RAM before this layer stages + evicts
+        }
     }
 
     auto stage = [&](int e) -> bool {
@@ -907,10 +984,12 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     if (cache_max_) {
         quiesce_spec();
         // See the serial path: the governor owns the budget when it is on, and only senses here.
-        if (cache_dynamic_)
+        if (cache_dynamic_) {
             sample_residency();
-        else
+            sample_dense_residency();
+        } else {
             adapt_cache_budget(); // re-size to free RAM before this layer stages + evicts
+        }
     }
 
     // 2. New generation for this layer. A flag counts as ready only once its gen matches.
@@ -1115,6 +1194,7 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
     s.cache_resident_frac = resident_frac_;
+    s.dense_resident_frac = dense_resident_frac_;
     s.token_demand_bytes = (uint64_t) token_demand_;
     s.layer_demand_bytes = (uint64_t) layer_demand_;
     return s;

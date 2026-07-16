@@ -678,13 +678,6 @@ RunResult Session::generate(const GenerateRequest & req,
     long long prev_spec_experts = moe.enabled ? im.source.stats().spec_experts : 0;
     long long prev_spec_useful = moe.enabled ? im.source.stats().spec_useful : 0;
 
-    // Baseline the system-wide reclaim counters before the first token, so each token reports the
-    // scanning that happened DURING it. Cumulative and machine-wide: the delta includes other apps,
-    // which is the price of the earliest signal there is (/proc/vmstat).
-    pio::SystemReclaim sr_prev;
-    const bool have_vmstat = pio::system_reclaim(&sr_prev);
-    const double page_mib = (double) pio::vm_page() / (1024.0 * 1024.0);
-
     uint64_t gen_read_bytes = 0;
     double gen_io_seconds = 0.0;
     double gen_mgmt_seconds = 0.0;
@@ -759,29 +752,10 @@ RunResult Session::generate(const GenerateRequest & req,
             m.mem_free_mib = dm.free_bytes / (1024.0 * 1024.0);
             m.swap_free_mib = dm.swap_free_bytes / (1024.0 * 1024.0);
         }
-        // System-wide reclaim since the previous token. -1 marks "/proc/vmstat is denied us" so it
-        // never reads as 0 = "no scanning" — a vendor SELinux label (proc_vmstat, distinct from the
-        // proc_meminfo we read fine) may forbid it, and "we cannot see" must not look like "all calm".
-        if (!have_vmstat) {
-            m.kswapd_scan_mib = -1.0;
-            m.direct_scan_mib = -1.0;
-            m.ws_refault_mib = -1.0;
-        } else {
-            pio::SystemReclaim sr;
-            if (pio::system_reclaim(&sr)) {
-                // Counters only rise; guard the delta so a wrap or a first read never prints negative.
-                auto delta_mib = [&](uint64_t cur, uint64_t prev) {
-                    return cur > prev ? (double) (cur - prev) * page_mib : 0.0;
-                };
-                m.kswapd_scan_mib = delta_mib(sr.kswapd_scan_pages, sr_prev.kswapd_scan_pages);
-                m.direct_scan_mib = delta_mib(sr.direct_scan_pages, sr_prev.direct_scan_pages);
-                m.ws_refault_mib = delta_mib(sr.workingset_refault, sr_prev.workingset_refault);
-                sr_prev = sr;
-            }
-        }
         if (moe.enabled) {
             IExpertSource::Stats st = im.source.stats();
             m.resident_frac = st.cache_resident_frac;
+            m.dense_resident_frac = st.dense_resident_frac;
             m.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
             m.read_bytes = (uint64_t) ((long long) st.read_bytes - prev_bytes);
             m.io_ms = (st.read_seconds - prev_io_s) * 1000.0;

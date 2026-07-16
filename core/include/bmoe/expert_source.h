@@ -75,6 +75,11 @@ public:
         // throttled, sensing off, or a platform that cannot report). Below 1 means the kernel is
         // reclaiming the cache out from under us.
         double cache_resident_frac = -1.0;
+        // Sampled fraction of the DENSE weights (the mmap'd model) still in RAM, or -1 when not
+        // measured. The companion to cache_resident_frac: that one watches our anon cache, this one
+        // the file-backed weights it is blind to. Dense falling while cache holds means the faults
+        // are the model, not the cache — and shrinking the cache cannot help.
+        double dense_resident_frac = -1.0;
         // Bytes of distinct experts one token routes, measured (0 = not yet known). What a cache
         // must clear to hold anything BETWEEN tokens — where hits start, not a floor to defend:
         // on a >RAM model it can exceed what the device concedes. See bmoe/cache_governor.h.

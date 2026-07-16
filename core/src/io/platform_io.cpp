@@ -106,6 +106,10 @@ bool vm_resident_sample(const void * /*p*/, size_t /*sz*/, size_t * /*sampled*/,
     return false;
 }
 
+bool file_mapped_regions(const char * /*basename*/, std::vector<MappedRegion> & /*out*/) {
+    return false; // no /proc/self/maps; the host gates do not exercise dense residency
+}
+
 uint64_t mem_available_bytes() {
     MEMORYSTATUSEX ms;
     ms.dwLength = sizeof(ms);
@@ -138,10 +142,6 @@ bool device_memory(DeviceMemory * out) {
     out->free_bytes = (uint64_t) ms.ullAvailPhys; // no separate "free vs reclaimable" here
     out->swap_free_bytes = (uint64_t) ms.ullAvailPageFile;
     return true;
-}
-
-bool system_reclaim(SystemReclaim * /*out*/) {
-    return false; // no /proc/vmstat equivalent worth wiring for the host gates
 }
 
 #else
@@ -310,34 +310,33 @@ bool device_memory(DeviceMemory * out) {
     return true;
 }
 
-bool system_reclaim(SystemReclaim * out) {
-    // /proc/vmstat is "name value\n", value a raw counter (pages for pgscan_*, events for
-    // workingset_*) — not the "Key: n kB" shape of meminfo, so it needs its own tiny parser.
-    FILE * f = std::fopen("/proc/vmstat", "re");
-    if (!f) return false; // a vendor policy may deny it; the caller reports that as unmeasured
-    char line[128];
-    // workingset_refault exists either whole (older kernels) or split into _anon + _file (~5.9+).
-    // Accumulate whatever is present, so one field covers both kernel generations.
-    uint64_t ws = 0;
+bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out) {
+    FILE * f = std::fopen("/proc/self/maps", "re");
+    if (!f) return false;
+    const size_t blen = std::strlen(basename);
+    char line[512];
     bool any = false;
+    // Each line: "start-end perms offset dev inode   pathname". We want the VMAs whose pathname ends
+    // with the model's file name — an mmap of a large file appears as one or more such VMAs.
     while (std::fgets(line, sizeof(line), f)) {
-        char name[64];
-        unsigned long long val = 0;
-        if (std::sscanf(line, "%63s %llu", name, &val) != 2) continue;
-        if (std::strcmp(name, "pgscan_kswapd") == 0) {
-            out->kswapd_scan_pages = val;
-            any = true;
-        } else if (std::strcmp(name, "pgscan_direct") == 0) {
-            out->direct_scan_pages = val;
-            any = true;
-        } else if (std::strcmp(name, "workingset_refault") == 0 || std::strcmp(name, "workingset_refault_anon") == 0 ||
-                   std::strcmp(name, "workingset_refault_file") == 0) {
-            ws += val;
-            any = true;
-        }
+        unsigned long long start = 0, end = 0, off = 0;
+        // The pathname is the last field; sscanf %n gives us where the fixed part ended so we can
+        // scan the remainder for it without copying.
+        int consumed = 0;
+        if (std::sscanf(line, "%llx-%llx %*s %llx %*s %*s %n", &start, &end, &off, &consumed) < 3) continue;
+        const char * path = line + consumed;
+        // Trim the trailing newline and any leading spaces %n may have left.
+        while (*path == ' ')
+            ++path;
+        size_t plen = std::strlen(path);
+        while (plen && (path[plen - 1] == '\n' || path[plen - 1] == ' '))
+            --plen;
+        if (plen < blen) continue;
+        if (std::strncmp(path + plen - blen, basename, blen) != 0) continue;
+        out.push_back({(uintptr_t) start, (uintptr_t) end, (uint64_t) off});
+        any = true;
     }
     std::fclose(f);
-    out->workingset_refault = ws;
     return any;
 }
 

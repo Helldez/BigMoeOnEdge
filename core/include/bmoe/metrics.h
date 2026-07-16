@@ -32,6 +32,11 @@ struct TokenMetrics {
     // is reclaiming the cache mid-run — the pressure --cache-dynamic sizes against. See
     // docs/pressure.md.
     double resident_frac = -1.0;
+    // Fraction of the DENSE weights (the mmap'd model) still in RAM, or -1 when unmeasured. The other
+    // half of memory: resident_frac watches the anon cache, this the file-backed weights. Dense
+    // falling while resident_frac holds says the faults are the model, and a smaller cache cannot fix
+    // that. See docs/pressure.md.
+    double dense_resident_frac = -1.0;
     // What those faults actually moved, in MiB (majflt × page size). The same fact as `majflt`, in
     // the unit the rest of this struct is in: 47447 faults is unreadable, 194 MiB re-faulted in one
     // token is immediately comparable to `read_bytes` — the reads we chose against the reads the
@@ -51,15 +56,6 @@ struct TokenMetrics {
     double mem_available_mib = 0.0;
     double mem_free_mib = 0.0;
     double swap_free_mib = 0.0;
-
-    // System-wide reclaim activity this token, from /proc/vmstat (MiB scanned/refaulted = page-count
-    // delta × page size). The EARLIEST warning there is, and the noisiest: system-wide, so another
-    // app moves it too — but kswapd_scan rising means the machine started hunting for victims before
-    // any page of ours was taken, and direct_scan means a thread (maybe ours) had to stop and reclaim
-    // itself. ws_refault rising means thrash already began somewhere. 0 when /proc/vmstat is denied.
-    double kswapd_scan_mib = 0.0;
-    double direct_scan_mib = 0.0;
-    double ws_refault_mib = 0.0;
 
     // The cache budget as of this token. In the summary it is only the last value; per token it is
     // the governor's trajectory — when it cut, how far, whether it grew back. Without it a run that

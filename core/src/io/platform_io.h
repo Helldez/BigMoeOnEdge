@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace bmoe::pio {
 
@@ -60,6 +61,22 @@ void vm_release(void * p, size_t sz);
 // Returns false when the platform cannot report residency (Windows host build), leaving the
 // counters untouched: "unmeasured", which callers must not read as "nothing is resident".
 bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * resident);
+
+// One file-backed VMA of this process: a virtual span [start, end) that maps the file starting at
+// file_offset. The dense model weights are mmap'd, so this is how a file byte offset becomes an
+// address to probe with mincore — addr(off) = start + (off - file_offset) for off in this VMA.
+struct MappedRegion {
+    uintptr_t start = 0;
+    uintptr_t end = 0;
+    uint64_t file_offset = 0;
+};
+
+// Read /proc/self/maps and collect every file-backed VMA whose pathname ends with `basename` — the
+// model's file name, matched by suffix so it is found however the path is spelled. This is the
+// self-inspection that IS allowed where /proc/vmstat was not: /proc/self/maps is the process's own,
+// not a system file behind a vendor SELinux label. Returns false (out untouched) on the host build
+// or if the file cannot be read — the caller reports that as unmeasured, never as "nothing resident".
+bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out);
 
 // Physical memory currently allocatable without paging, in bytes. 0 = unknown. Used to size the
 // expert cache to the device (--cache-mb auto) and to shrink it under memory pressure at runtime.
@@ -109,28 +126,5 @@ struct DeviceMemory {
     uint64_t swap_free_bytes = 0; // SwapFree
 };
 bool device_memory(DeviceMemory * out);
-
-// The earliest warning there is, from /proc/vmstat. These are SYSTEM-wide, not this process's — so
-// they are noisier (another app can move them), but they fire before any per-process signal does:
-// before a page of OURS is chosen, the machine is already scanning to find victims.
-//
-//   * kswapd_scan_pages: pgscan_kswapd, cumulative. Its per-token delta rising means kswapd woke and
-//     is walking the LRU lists looking for pages to reclaim — the war's preconditions exist, but no
-//     victim has been picked yet.
-//   * direct_scan_pages: pgscan_direct, cumulative. Scanning done in DIRECT reclaim — a thread that
-//     wanted memory and had to stop and reclaim it itself. Strictly worse than kswapd: it is a stall,
-//     not a background sweep, and one of the stalling threads may be ours.
-//   * workingset_refault: cumulative refaults of pages that had been reclaimed and were needed again
-//     — the definition of thrash. Rising means it has already started, somewhere in the system.
-//     Kernels since ~5.9 split this into _anon + _file; this sums whichever form is present.
-//
-// Values are page counts; multiply by vm_page() for bytes. False (out untouched) when /proc/vmstat
-// cannot be read — a vendor SELinux policy may deny it, which is itself worth knowing.
-struct SystemReclaim {
-    uint64_t kswapd_scan_pages = 0;
-    uint64_t direct_scan_pages = 0;
-    uint64_t workingset_refault = 0;
-};
-bool system_reclaim(SystemReclaim * out);
 
 } // namespace bmoe::pio

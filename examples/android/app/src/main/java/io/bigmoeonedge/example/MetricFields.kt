@@ -36,6 +36,7 @@ object MetricFields {
 
         MetricField("cache_budget_mib", "cache budget", "the expert-cache size this token ran under — the governor's trajectory. Bigger buys hits but risks the reclaim war, so neither direction is simply good", Better.NEUTRAL),
         MetricField("resident_frac", "cache still in RAM", "fraction of our own cache pages the kernel still had (mincore). 1.0 = all ours, below 0.9 = it is taking it, -1 = not sampled this token", Better.HIGHER),
+        MetricField("dense_resident_frac", "model weights still in RAM", "fraction of the DENSE mmap'd weights still resident (mincore). The half resident_frac misses: if this falls while resident_frac holds, the faults are the model, not the cache — so a smaller cache cannot help. -1 = not sampled", Better.HIGHER),
 
         MetricField("rss_anon_mib", "anon resident = the cache", "resident anonymous memory — where the expert cache lives. Falling while cache_budget holds = the kernel taking it", Better.NEUTRAL),
         MetricField("rss_file_mib", "file resident = the model", "resident file-backed memory: the mmap'd weights. Dropped (not swapped) under pressure, so it never shows in swap", Better.NEUTRAL),
@@ -45,10 +46,6 @@ object MetricFields {
         MetricField("mem_available_mib", "device 'available' (it lies)", "what the kernel claims is free — it counts our own mmap'd weights as reclaimable, so it over-states headroom", Better.NEUTRAL),
         MetricField("mem_free_mib", "device free", "truly free RAM, before any reclaim", Better.NEUTRAL),
         MetricField("swap_free_mib", "swap free", "zram space left before the device is truly out of room", Better.NEUTRAL),
-
-        MetricField("kswapd_scan_mib", "kswapd scanning (earliest warning)", "MiB the background reclaimer scanned this token (system-wide, so noisy). Rising = the machine started hunting for pages to reclaim, before any of ours was taken. -1 = /proc/vmstat denied by SELinux", Better.LOWER),
-        MetricField("direct_scan_mib", "direct reclaim (worse)", "MiB scanned in DIRECT reclaim — a thread that wanted memory had to stop and reclaim it itself. A stall, not a background sweep, and one of them may be ours. -1 = denied", Better.LOWER),
-        MetricField("ws_refault_mib", "thrash (system-wide)", "MiB of pages that were reclaimed and then needed again — the definition of thrash. Rising means it has already started somewhere in the system. -1 = denied", Better.LOWER),
     )
 
     private val byName = all.associateBy { it.name }

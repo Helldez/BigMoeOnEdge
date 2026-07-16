@@ -145,6 +145,13 @@ private:
     // governor; changes no budget itself. Eval-thread only (it walks the LRU list).
     void sample_residency();
 
+    // Companion sensor for the OTHER half of memory: the dense weights, which are mmap'd file-backed
+    // and reclaimed by being dropped (never swapped), so resident_frac — which watches only our anon
+    // cache — is blind to them. A stratified mincore over the dense file ranges says how much of the
+    // model itself the kernel still has. When this falls while resident_frac holds, the faults are
+    // the weights, not the cache, and shrinking the cache cannot help. Sets dense_resident_frac_.
+    void sample_dense_residency();
+
     // Accumulate one token's routed working set. Eval-thread only, called per layer load.
     void account_demand(int il, int n_unique);
 
@@ -203,8 +210,18 @@ private:
     // rather than hidden in the compute residual.
     static constexpr unsigned residency_probe_every = 128; // load_layer calls between probes (~2-3 tokens)
     static constexpr int residency_sample_entries = 16;    // coldest entries read per probe
+    static constexpr int dense_sample_pages = 256;         // stratified probe points over the dense weights
     bool cache_dynamic_ = false;
-    double resident_frac_ = -1.0; // last sampled cache residency; -1 = never measured
+    double resident_frac_ = -1.0;       // last sampled cache residency; -1 = never measured
+    double dense_resident_frac_ = -1.0; // last sampled dense-weight residency; -1 = never measured
+
+    // The dense weights' byte ranges in the file (complement of the expert ranges), and the mmap VMAs
+    // that back them — resolved once, lazily, from /proc/self/maps. Empty vma set = maps unreadable,
+    // which keeps dense_resident_frac_ at -1 rather than inventing a number.
+    std::string gguf_path_;
+    std::vector<std::pair<uint64_t, uint64_t>> dense_ranges_;
+    std::vector<pio::MappedRegion> dense_vmas_;
+    bool dense_vmas_tried_ = false;
 
     // Two measured demands, and the difference between them decides the whole policy.
     //
