@@ -42,20 +42,6 @@ struct MoeStreamConfig {
                                // expert-set size); useful to keep the cache from taking all the
                                // headroom when the marginal hit-rate gain no longer justifies the RAM
 
-    // Let the engine find the largest cache the device will actually concede, instead of trusting a
-    // number. cache_mb (or the auto budget) becomes an upper bound; from there the engine watches
-    // its OWN pages — major faults per token, and how much of the cache the kernel still has in RAM
-    // — and shrinks the budget when reclaim starts taking it, growing back when the pressure lifts.
-    //
-    // The motivation is measured: a budget the device will not concede does not merely go unused,
-    // it starts a war that runs THROUGH the decode (pages taken, faulted back, taken again) and
-    // costs several times the throughput the cache was supposed to buy. The signals are deliberately
-    // syscalls about ourselves (getrusage, mincore), because that is all an unprivileged app can
-    // rely on across devices — MemAvailable counts our own mmap'd weights as free, PSI is
-    // SELinux-blocked, onTrimMemory is late and never signals relief. Requires the LRU cache.
-    // See docs/pressure.md and bmoe/cache_governor.h.
-    bool cache_dynamic = false;
-
     // Parallel expert-slice read lanes (incl. the calling thread). 1 = serial baseline.
     // Clamped to [1, io_threads_max]. 4 is the measured sweet spot on UFS4 phones.
     int io_threads = 4;

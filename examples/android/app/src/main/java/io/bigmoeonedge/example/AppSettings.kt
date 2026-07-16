@@ -13,9 +13,6 @@ data class AppSettings(
     val mmap: Boolean = false,          // baseline: no streaming — llama.cpp mmap loads the whole model
     val cacheMb: Int = CACHE_AUTO,      // LRU expert cache budget; Auto / 0 / 500..6000 (see CACHE_CHOICES)
     val cacheCeilMb: Int = 3000,        // with cacheMb=Auto: upper bound on the auto budget (0 = no cap)
-    val cacheDynamic: Boolean = false,  // treat the budget as a ceiling and let the engine find the
-                                        // largest cache the device concedes (--cache-dynamic). Off
-                                        // until it is measured on device, like every other claim here.
     val ioThreads: Int = 4,             // parallel expert-read lanes
     val threads: Int = 4,               // compute threads (-t)
     val nExpertUsed: Int = 0,           // top-k override (0 = model default); lower = faster, changes output
@@ -79,8 +76,6 @@ data class AppSettings(
             // Auto sizing is a live LRU cache, so it satisfies the prefetch cache requirement.
             val cacheOn = cacheMb == CACHE_AUTO || cacheMb > 0
             if (prefetchLayers > 0 && cacheOn) a += listOf("--prefetch", prefetchLayers.toString())
-            // Same requirement: there is no budget to size at runtime with the cache off.
-            if (cacheDynamic && cacheOn) a += "--cache-dynamic"
         }
         return a
     }
@@ -92,7 +87,7 @@ data class AppSettings(
      * excluded — they vary per request without touching the loaded model.
      */
     fun sessionSignature(modelPath: String): String =
-        listOf(modelPath, mmap, cacheMb, cacheCeilMb, cacheDynamic, ioThreads, threads, nExpertUsed, oDirect,
+        listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, oDirect,
                overlap, warmDense, denseOdirect, prefetchLayers)
             .joinToString("|")
 
@@ -100,7 +95,6 @@ data class AppSettings(
         ctx.prefs().edit()
             .putBoolean("mmap", mmap)
             .putInt("cacheMb", cacheMb).putInt("cacheCeilMb", cacheCeilMb)
-            .putBoolean("cacheDynamic", cacheDynamic)
             .putInt("ioThreads", ioThreads).putInt("threads", threads)
             .putInt("nExpertUsed", nExpertUsed)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
@@ -175,7 +169,6 @@ data class AppSettings(
                 mmap = p.getBoolean("mmap", d.mmap),
                 cacheMb = p.getInt("cacheMb", d.cacheMb),
                 cacheCeilMb = p.getInt("cacheCeilMb", d.cacheCeilMb),
-                cacheDynamic = p.getBoolean("cacheDynamic", d.cacheDynamic),
                 ioThreads = p.getInt("ioThreads", d.ioThreads),
                 threads = p.getInt("threads", d.threads),
                 nExpertUsed = p.getInt("nExpertUsed", d.nExpertUsed),

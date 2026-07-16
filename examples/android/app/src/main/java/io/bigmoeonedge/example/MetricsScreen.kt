@@ -234,7 +234,6 @@ private class Csv(
     fun label(): String {
         if (info.isEmpty()) return ""
         val cache = when {
-            info["cache_dynamic"] == "1" -> "cache ${info["cache_mb"]}→dynamic"
             info["cache_auto"] == "1" -> "cache auto(${info["cache_mb"]})"
             else -> "cache ${info["cache_mb"]}"
         }
@@ -436,7 +435,6 @@ private val CONFIG_ORDER = listOf(
     "cache_mb" to "Cache budget (MiB)",
     "cache_auto" to "Cache auto-size",
     "cache_ceil_mb" to "Cache ceiling (MiB)",
-    "cache_dynamic" to "Pressure-aware sizing",
     "force_cache" to "Force cache",
     "io_threads" to "I/O lanes",
     "o_direct" to "Direct I/O",
@@ -444,7 +442,7 @@ private val CONFIG_ORDER = listOf(
     "prefetch" to "Temporal prefetch",
     "warm_dense" to "Dense weight warm-up",
 )
-private val CONFIG_BOOLS = setOf("moe_stream", "cache_auto", "cache_dynamic", "force_cache", "o_direct", "overlap", "warm_dense")
+private val CONFIG_BOOLS = setOf("moe_stream", "cache_auto", "force_cache", "o_direct", "overlap", "warm_dense")
 
 private fun prettyConfigValue(key: String, v: String): String = when {
     key in CONFIG_BOOLS -> if (v == "1") "on" else "off"

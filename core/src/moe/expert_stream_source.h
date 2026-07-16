@@ -140,18 +140,6 @@ private:
     // dense tensors do not demand-fault 4 KiB at a time inside the first decodes. The dense-weights
     // policy (warm sweep, anonymous rebind, and the residency sensor) lives in DenseWeights (dense_).
 
-    // Adaptive sizing (cache_auto): re-probe device memory (throttled) and nudge cache_max_ so it
-    // tracks free RAM. Eval-thread only, called in the mgmt section of load_layer; the eviction
-    // loop that follows drains any shrink.
-    void adapt_cache_budget();
-
-    // Pressure sensing (cache_dynamic): sample (throttled) how much of the cache the kernel still
-    // has in RAM, walking the LRU cold end — the pages reclaim takes first, so a dip here is the
-    // earliest evidence the budget outgrew what the device concedes. Sets resident_frac_ for the
-    // governor; changes no budget itself. Eval-thread only (it walks the LRU list). The dense half of
-    // the picture is dense_.sample_residency(), fired on the same throttle from load_layer.
-    void sample_residency();
-
     // Accumulate one token's routed working set. Eval-thread only, called per layer load.
     void account_demand(int il, int n_unique);
 
@@ -196,29 +184,20 @@ private:
     size_t cache_max_ = 0; // live budget in bytes; mutated at runtime when cache_auto_
     size_t page_ = 4096;
 
-    // Adaptive sizing (cache_auto): budget derived from device memory at init, then re-checked
-    // during generation on the eval thread so it tracks free RAM. cache_target_ is the init budget,
-    // the ceiling for grow-back; cache_floor_ is the RAM to leave free; total_expert_bytes_ caps it.
+    // Auto sizing (cache_auto): the budget is derived once from device memory at init and then fixed
+    // for the run. cache_floor_ is the RAM to leave free; total_expert_bytes_ caps it; cache_target_
+    // is the ceiling an explicit set_cache_budget() raise may climb back to (e.g. an app relaxing an
+    // onTrimMemory shrink).
     bool cache_auto_ = false;
     size_t cache_floor_ = 0;
     size_t cache_target_ = 0;
     size_t total_expert_bytes_ = 0;
     size_t cache_hard_cap_ = 0; // upper bound on the auto budget (ceiling ∧ full expert-set size)
-    unsigned probe_tick_ = 0;   // throttles the periodic sensing (once per N load_layer calls)
     long long cache_resizes_ = 0;
 
-    // ── pressure sensing (cache_dynamic): the engine senses, bmoe::CacheGovernor decides ──
-    // Sampling the whole cache every layer would cost more than the reclaim it detects, so a probe
-    // reads a bounded window of the cold end. Cost lands in mgmt_ns_, where a regression is visible
-    // rather than hidden in the compute residual.
-    static constexpr unsigned residency_probe_every = 128; // load_layer calls between probes (~2-3 tokens)
-    static constexpr int residency_sample_entries = 16;    // coldest entries read per probe
-    bool cache_dynamic_ = false;
-    double resident_frac_ = -1.0; // last sampled cache residency; -1 = never measured
-
-    // The dense (non-expert) weights: their residency policy (mmap / warm / anon), the buffers it may
-    // hold, and the sensor for the half resident_frac cannot see. Set before init via
-    // set_dense_tensors, then handed to dense_.init(); dense_.resident_frac() feeds the governor.
+    // The dense (non-expert) weights: their residency policy (mmap / warm / anon) and the buffers it
+    // may hold. Set before init via set_dense_tensors, then handed to dense_.init(). The module also
+    // exposes a residency sensor (dense_.resident_frac()), reported as telemetry.
     std::vector<DenseTensorRef> dense_tensors_; // pending, set before init; moved into dense_
     DenseWeights dense_;
 
@@ -227,8 +206,8 @@ private:
     // token_demand_: the bytes routed between two visits to the same layer — one token's working
     // set. Below it the cache stops holding anything BETWEEN tokens, so its hit rate collapses to
     // inter-token correlation only. Informative (it says where hits start), never a floor: measured
-    // on gpt-oss it is 1815 MiB, more than the device concedes, so flooring there just pins the
-    // budget inside a war it cannot win. See bmoe/cache_governor.h.
+    // on gpt-oss it is 1815 MiB, more than the device concedes — which is why cache-off is the
+    // ceiling there. Reported as telemetry.
     //
     // layer_demand_: the largest single layer's routed bytes. THIS is the floor, because it is
     // mechanical — the cache has to hold the layer it is staging right now.

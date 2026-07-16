@@ -138,7 +138,6 @@ struct RunInfo {
     int cache_mb = 0;
     bool cache_auto = false;
     int cache_ceil_mb = 0;
-    bool cache_dynamic = false;
     bool force_cache = false;
     int io_threads = 0;
     bool o_direct = false;

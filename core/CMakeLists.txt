@@ -7,7 +7,6 @@
 add_library(bmoe_core STATIC
     src/config.cpp
     src/moe/arch_registry.cpp
-    src/moe/cache_governor.cpp
 )
 
 target_include_directories(bmoe_core PUBLIC

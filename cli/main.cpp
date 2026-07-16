@@ -335,9 +335,6 @@ static void print_usage(const char * argv0) {
         "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
         "      --cache-floor-mb N  with --cache-mb auto: RAM to leave free (default 1536)\n"
         "      --cache-ceil-mb N   with --cache-mb auto: upper bound on the budget (0 = no cap)\n"
-        "      --cache-dynamic     treat --cache-mb as a ceiling and find the budget the device\n"
-        "                          concedes: shrink when reclaim starts taking the cache, grow back\n"
-        "                          when it stops (needs the cache; see docs/pressure.md)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache for expert reads\n"
         "      --dense-weights M   dense (non-expert) weight policy: mmap | warm (default) | anon\n"
@@ -411,10 +408,6 @@ int main(int argc, char ** argv) {
             cfg.moe.cache_floor_mb = std::atoi(next("--cache-floor-mb"));
         else if (a == "--cache-ceil-mb")
             cfg.moe.cache_ceil_mb = std::atoi(next("--cache-ceil-mb"));
-        else if (a == "--cache-dynamic")
-            cfg.moe.cache_dynamic = true;
-        else if (a == "--no-cache-dynamic")
-            cfg.moe.cache_dynamic = false;
         else if (a == "--io-threads")
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")

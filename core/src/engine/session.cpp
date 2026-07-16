@@ -1,5 +1,4 @@
 #include "bmoe/session.h"
-#include "bmoe/cache_governor.h"
 #include "bmoe/recipe.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
@@ -118,13 +117,6 @@ struct Session::Impl {
     IComputeTraceSink * compute_trace = nullptr;
     IIoTraceSink * io_trace = nullptr;
     std::vector<IoTraceRow> io_rows_scratch;
-
-    // Pressure-aware cache sizing (--cache-dynamic): null unless requested AND the LRU cache is on.
-    // It lives here, not in the streamer, because it ticks once per token from the generation loop —
-    // the only point where no decode is in flight and an evicting shrink is safe. It outlives a
-    // single generate() on purpose: reclaim is a property of the session's residency, and what the
-    // last turn learned about this device is exactly what the next turn needs.
-    std::unique_ptr<CacheGovernor> gov;
 
     // Stated once to a metrics sink, before the first token: the model and configuration every row
     // it writes was produced under. info_sent guards a session's many generate() calls from
@@ -356,23 +348,6 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
 
-        // The budget the streamer settled on — an explicit cache_mb, or what auto sized to — is the
-        // most the user sanctioned, so it becomes the governor's ceiling and its starting point. The
-        // loop only ever asks for less than this, and climbs back toward it when the device allows.
-        const uint64_t configured = im.source.stats().cache_budget_bytes;
-        if (cfg.moe.cache_dynamic && configured > 0) {
-            CacheGovernorParams gp;
-            gp.user_cap = (size_t) configured;
-            gp.initial = (size_t) configured;
-            // Holds only until the streamer has staged a layer and can report the real mechanical
-            // floor. It must stay small: cache_min_mb would put a 1500 MiB floor here, which on a
-            // model the device concedes less to is just the pinned-inside-a-war failure wearing a
-            // rounder number. Being briefly too small costs hits for a few tokens; being too big
-            // costs the war this loop exists to end.
-            gp.min_cap = std::min<size_t>(64ull * 1024 * 1024, (size_t) configured);
-            im.gov = std::make_unique<CacheGovernor>(gp);
-        }
-
         if (route_trace) {
             im.route_trace = route_trace;
             im.hook->set_trace(true);
@@ -446,7 +421,6 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.moe_stream = cfg.moe.enabled;
         ri.cache_auto = cfg.moe.cache_auto;
         ri.cache_ceil_mb = cfg.moe.cache_ceil_mb;
-        ri.cache_dynamic = cfg.moe.cache_dynamic;
         ri.force_cache = cfg.moe.force_cache;
         ri.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
         ri.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
@@ -806,18 +780,6 @@ RunResult Session::generate(const GenerateRequest & req,
             gen_io_seconds += m.io_ms / 1000.0;
             gen_mgmt_seconds += m.mgmt_ms / 1000.0;
             gen_stall_seconds += m.stall_ms / 1000.0;
-
-            // Size the cache to what the device concedes, here and nowhere else: between two decodes
-            // nothing is staged for a generation in flight, which is exactly the precondition
-            // set_cache_budget needs to evict the cold tail without a cstamp guard.
-            if (im.gov) {
-                CacheSignals sig;
-                sig.majflt = m.majflt;
-                sig.resident_frac = st.cache_resident_frac;
-                sig.floor = (size_t) st.layer_demand_bytes;
-                const CacheGovernor::Decision d = im.gov->on_token(sig);
-                if (d.changed) im.source.set_cache_budget(d.cap);
-            }
         } else {
             m.compute_ms = m.wall_ms;
             m.cache_hit_pct = -1.0;
@@ -856,7 +818,7 @@ RunResult Session::generate(const GenerateRequest & req,
         s.cache_resizes = st.cache_resizes;
         s.token_demand_mib = st.token_demand_bytes / (1024.0 * 1024.0);
         s.layer_demand_mib = st.layer_demand_bytes / (1024.0 * 1024.0);
-        s.cache_cuts = im.gov ? im.gov->cuts() : 0;
+        s.cache_cuts = 0; // the runtime governor that counted these was retired; the budget is fixed now
         s.moe_spec_read_mib = ((long long) st.spec_read_bytes - prev_spec_bytes) / (1024.0 * 1024.0);
         s.moe_spec_experts = st.spec_experts - prev_spec_experts;
         s.moe_spec_useful = st.spec_useful - prev_spec_useful;
