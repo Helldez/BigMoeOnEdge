@@ -759,11 +759,17 @@ RunResult Session::generate(const GenerateRequest & req,
             m.mem_free_mib = dm.free_bytes / (1024.0 * 1024.0);
             m.swap_free_mib = dm.swap_free_bytes / (1024.0 * 1024.0);
         }
-        // System-wide reclaim since the previous token. A counter can only rise; guard the delta so
-        // a wrap or a first read never prints a negative MiB.
-        if (have_vmstat) {
+        // System-wide reclaim since the previous token. -1 marks "/proc/vmstat is denied us" so it
+        // never reads as 0 = "no scanning" — a vendor SELinux label (proc_vmstat, distinct from the
+        // proc_meminfo we read fine) may forbid it, and "we cannot see" must not look like "all calm".
+        if (!have_vmstat) {
+            m.kswapd_scan_mib = -1.0;
+            m.direct_scan_mib = -1.0;
+            m.ws_refault_mib = -1.0;
+        } else {
             pio::SystemReclaim sr;
             if (pio::system_reclaim(&sr)) {
+                // Counters only rise; guard the delta so a wrap or a first read never prints negative.
                 auto delta_mib = [&](uint64_t cur, uint64_t prev) {
                     return cur > prev ? (double) (cur - prev) * page_mib : 0.0;
                 };
