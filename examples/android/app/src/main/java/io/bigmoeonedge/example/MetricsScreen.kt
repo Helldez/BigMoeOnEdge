@@ -170,15 +170,28 @@ private fun FileList(
         return
     }
     val stamp = SimpleDateFormat("d MMM HH:mm:ss", Locale.getDefault())
+    // A run's identity, not its filename: the model's initial and each turn's tok/s, read from the
+    // preamble and summaries. Computed once per file list — the files are small and few.
+    val titles = remember(files) { files.associateWith { runTitle(it) } }
     LazyColumn(modifier.fillMaxSize()) {
         items(files) { f ->
+            val title = titles[f].orEmpty()
             ListItem(
                 leadingContent = {
                     Checkbox(checked = selection.contains(f), onCheckedChange = { onToggle(f) })
                 },
-                headlineContent = { Text(f.name, fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
+                headlineContent = {
+                    Text(title.ifEmpty { f.name }, fontWeight = FontWeight.Medium, fontSize = 15.sp)
+                },
                 supportingContent = {
-                    Text("${stamp.format(Date(f.lastModified()))} · ${f.length() / 1024} KiB", fontSize = 12.sp)
+                    // Timestamp + size, then the bare filename (the ID is now the headline). The
+                    // filename drops its fixed "bmoe-" prefix and ".csv" tail — it is only there to
+                    // match a shared file, and the stamp already carries the date.
+                    val short = f.name.removePrefix("bmoe-").removeSuffix(".csv")
+                    Text(
+                        "${stamp.format(Date(f.lastModified()))} · ${f.length() / 1024} KiB · $short",
+                        fontSize = 11.sp, maxLines = 1,
+                    )
                 },
                 trailingContent = { TextButton(onClick = { onDelete(f) }) { Text("Delete") } },
                 modifier = Modifier.clickable(onClick = { onPick(f) }),
@@ -186,6 +199,23 @@ private fun FileList(
             HorizontalDivider()
         }
     }
+}
+
+/**
+ * A short human name for a run: the model's initial and each turn's tok/s, e.g. "Q · 1.45→0.75 t/s"
+ * for a two-turn Qwen session. Reads only the file's `#` lines. Empty when the file has no header
+ * (a pre-preamble CSV), so the caller falls back to the filename.
+ */
+private fun runTitle(file: File): String {
+    val lines = runCatching { file.readLines() }.getOrElse { return "" }
+    val model = lines.firstOrNull { it.startsWith("# model=") }
+        ?.substringAfter("model=", "")?.substringBefore(" ").orEmpty()
+    if (model.isEmpty()) return ""
+    val initial = model.first().uppercaseChar()
+    val tps = lines.filter { it.startsWith("# summary") }
+        .mapNotNull { Regex("""tok/s=([0-9.]+)""").find(it)?.groupValues?.get(1)?.toFloatOrNull() }
+    val tpsStr = if (tps.isEmpty()) "" else tps.joinToString("→") { fmt(it) } + " t/s"
+    return listOf(initial.toString(), tpsStr).filter { it.isNotEmpty() }.joinToString(" · ")
 }
 
 // ── the CSV, parsed once ────────────────────────────────────────────────────────────────────────
