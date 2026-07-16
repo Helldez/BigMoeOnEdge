@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
@@ -327,12 +328,17 @@ private fun CompareView(fa: File, fb: File, modifier: Modifier) {
     val colorA = MaterialTheme.colorScheme.primary
     val colorB = MaterialTheme.colorScheme.error
 
-    Column(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (metrics.isEmpty()) {
-            Text("These two files share no numeric column.", fontSize = 13.sp)
-            return@Column
-        }
+    if (metrics.isEmpty()) {
+        Box(modifier.fillMaxSize().padding(12.dp)) { Text("These two files share no numeric column.", fontSize = 13.sp) }
+        return
+    }
 
+    // The content is taller than the screen (chart + legends + two full configs), so it scrolls.
+    val changed = remember(a, b) { (a.info.keys + b.info.keys).filter { a.info[it] != b.info[it] }.toSet() }
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         Box {
             OutlinedButton(onClick = { expanded = true }) { Text(metric.ifEmpty { "pick a column" }) }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -352,12 +358,16 @@ private fun CompareView(fa: File, fb: File, modifier: Modifier) {
 
         Legend(fa.name, a.label(), colorA, sa)
         Legend(fb.name, b.label(), colorB, sb)
-        Diff(a, b)
         Text(
             "x = token index within the file (turns run end to end). Both series share one y scale, " +
                 "which is the only way the comparison means anything.",
             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // The full configuration of each run, changed settings highlighted — not just the diff, so a
+        // setting that stayed the same (was warm-dense on in both?) is still there to read.
+        Text("Configuration", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        FullConfig(a, colorA, changed)
+        FullConfig(b, colorB, changed)
     }
 }
 
@@ -381,28 +391,72 @@ private fun Legend(name: String, label: String, color: Color, series: List<Float
     }
 }
 
+// The run preamble, every field, in the settings screen's order. Kept in full — not just what
+// differs — because a setting that did NOT change between two runs is still worth seeing: "was warm
+// dense on in both?" is a real question, and a diff that hides it cannot answer it.
+private val CONFIG_ORDER = listOf(
+    "model" to "Model",
+    "arch" to "Architecture",
+    "n_layer" to "Layers",
+    "n_expert" to "Experts",
+    "n_expert_used" to "Active experts (top-k)",
+    "n_ctx" to "Context",
+    "threads" to "Compute threads",
+    "moe_stream" to "MoE streaming",
+    "cache_mb" to "Cache budget (MiB)",
+    "cache_auto" to "Cache auto-size",
+    "cache_ceil_mb" to "Cache ceiling (MiB)",
+    "cache_dynamic" to "Pressure-aware sizing",
+    "force_cache" to "Force cache",
+    "io_threads" to "I/O lanes",
+    "o_direct" to "Direct I/O",
+    "overlap" to "I/O–compute overlap",
+    "prefetch" to "Temporal prefetch",
+    "warm_dense" to "Dense weight warm-up",
+)
+private val CONFIG_BOOLS = setOf("moe_stream", "cache_auto", "cache_dynamic", "force_cache", "o_direct", "overlap", "warm_dense")
+
+private fun prettyConfigValue(key: String, v: String): String = when {
+    key in CONFIG_BOOLS -> if (v == "1") "on" else "off"
+    key == "prefetch" && v == "0" -> "off"
+    else -> v
+}
+
 /**
- * What actually differs between the two runs' configurations. With two long labels on screen the
- * eye will not find it, and the one setting that changed is the only reason to read the chart.
+ * The complete run configuration of one file — every field from the preamble, present or absent.
+ * `changed` marks the settings that differ from the other file, so "what changed" is still obvious
+ * without hiding "what did not".
  */
 @Composable
-private fun Diff(a: Csv, b: Csv) {
-    if (a.info.isEmpty() || b.info.isEmpty()) {
-        Text(
-            "One of these files has no run header — it predates it, so what it was configured with " +
-                "is unknown and the comparison is a guess.",
-            fontSize = 11.sp, color = MaterialTheme.colorScheme.error,
-        )
+private fun FullConfig(csv: Csv, accent: Color, changed: Set<String>) {
+    if (csv.info.isEmpty()) {
+        Text("No run header in this file — its configuration is unknown.",
+             fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
         return
     }
-    val keys = (a.info.keys + b.info.keys).filter { a.info[it] != b.info[it] }.sorted()
     Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
-        Text(
-            if (keys.isEmpty()) "Same configuration in both — whatever differs, the settings do not."
-            else "differs: " + keys.joinToString("   ") { "$it ${a.info[it] ?: "-"}→${b.info[it] ?: "-"}" },
-            fontFamily = FontFamily.Monospace, fontSize = 11.sp,
-            modifier = Modifier.padding(8.dp),
-        )
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Canvas(Modifier.size(12.dp)) { drawRect(accent) }
+                Text(csv.info["model"] ?: "run", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+            CONFIG_ORDER.forEach { (key, label) ->
+                val v = csv.info[key] ?: return@forEach // a field an older engine did not write
+                val isChanged = key in changed
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("$label:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                         modifier = Modifier.weight(1f))
+                    Text(
+                        prettyConfigValue(key, v),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        // A changed setting is the reason to be here; make it the thing the eye lands on.
+                        fontWeight = if (isChanged) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isChanged) accent else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -542,11 +596,14 @@ private fun CorrelateView(file: File, modifier: Modifier) {
         MaterialTheme.colorScheme.inversePrimary,
     )
 
-    Column(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if (cols.isEmpty()) {
-            Text("This file has no numeric columns to correlate.", fontSize = 13.sp)
-            return@Column
-        }
+    if (cols.isEmpty()) {
+        Box(modifier.fillMaxSize().padding(12.dp)) { Text("This file has no numeric columns to correlate.", fontSize = 13.sp) }
+        return
+    }
+    Column(
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         if (csv.info.isNotEmpty()) Text(csv.label(), fontSize = 12.sp, fontWeight = FontWeight.Medium)
 
         Box {
@@ -602,6 +659,10 @@ private fun CorrelateView(file: File, modifier: Modifier) {
                 "real range. r is vs the first field (the pivot): near ±1 they move together, near 0 they do not.",
             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // The run this file came from, in full — the correlations mean nothing without knowing the
+        // configuration that produced them.
+        Text("Configuration", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        FullConfig(csv, MaterialTheme.colorScheme.primary, emptySet())
     }
 }
 
