@@ -50,11 +50,12 @@ the rest of the system.
 > cache holding this model's own dense weights as free. Before trusting `auto` on a model whose
 > expert set dwarfs the budget, read [android-memory.md](android-memory.md).
 
-> **`auto` sizes from a signal that lies.** Everything on this page tracks `MemAvailable`, which
-> reports memory the device will not actually concede — so `auto` over-asks, and an over-ask is not
-> a wasted budget but a running fight. [`--cache-dynamic`](pressure.md) answers the same question
-> from the other end: instead of asking the OS how much memory exists, it watches what happens to
-> the pages the cache already holds, and sizes to what the device does rather than what it says.
+> **`auto` sizes from a signal that lies, so keep it modest.** `auto` reads `MemAvailable`, which
+> reports memory the device will not actually concede (it counts the model's own mmap'd weights as
+> free), so it over-asks — and an over-ask is not a wasted budget but a running fight. The runtime
+> governor that once tried to correct this from the other end (`--cache-dynamic`) was retired as a
+> net loss (see [pressure.md](pressure.md)); `auto` now sizes **once at load** and stays fixed, so
+> bound it with `--cache-ceil-mb` on a model whose expert set dwarfs the device, or use cache-off.
 
 ## Flags
 

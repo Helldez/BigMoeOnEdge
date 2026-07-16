@@ -54,11 +54,9 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   near 100% is genuinely compute-bound, well below means the cores were throttled, preempted, or
   blocked (a low-clock frequency cap or a co-resident process), not doing more math. Both are `0`
   when the platform can't report them (the Windows host build); treat `0` as "unmeasured".
-- `resident_frac` is the sampled fraction of the expert cache's own pages the kernel still had in
-  RAM at the last probe. Below `1` the device is reclaiming the cache mid-run — the pressure
-  `--cache-dynamic` sizes against (see [pressure.md](pressure.md)). It is `-1` when unmeasured: the
-  sampler is throttled (it probes every ~2-3 tokens), streaming is off, or the platform cannot
-  report residency. Treat `-1` as "no sample", never as "nothing resident".
+- `resident_frac` is the sampled fraction of the expert cache's own pages still in RAM. The runtime
+  sensor that fed the retired governor is gone, so this now always reads `-1` (unmeasured); the column
+  is kept for shape. The live residency signal is `dense_resident_frac` under `--dense-weights anon`.
 - `text` is the full generated text so far, JSON-escaped (for streaming into a UI).
 
 ## End-of-run lines
@@ -121,8 +119,8 @@ column NAME (from the header row) and treat any as optional. The `# summary` lin
 `stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>`, `cpu_s/tok=<s>`, `token_demand_MiB=<f>` (the
 expert bytes one token routes, measured — where cache hits start, NOT a floor to defend; see
 [pressure.md](pressure.md)), `layer_demand_MiB=<f>` (the widest layer's routed bytes: the mechanical
-floor the governor may not cut below) and `cache_cuts=<int>` (times `--cache-dynamic` shrank the budget under reclaim); see the
-`io_ms` note above for how the read-time columns are reinterpreted under overlap.
+floor the cache must be able to stage) and `cache_cuts=<int>` (retired with the governor, always 0);
+see the `io_ms` note above for how the read-time columns are reinterpreted under overlap.
 
 The trailing block is the memory picture, added so a run can be diagnosed from its own file:
 

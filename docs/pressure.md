@@ -1,7 +1,20 @@
-# Pressure-aware cache sizing
+# Cache policy under memory pressure
 
-`--cache-dynamic` treats the cache budget as a ceiling rather than an instruction, and lets the
-engine find the largest cache the device will actually concede. It is off by default.
+**History note.** This document described a runtime *governor* — `--cache-dynamic` / `--cache-gov2` —
+that watched the engine's own pages and resized the expert cache token by token to chase the budget
+the device would concede. On-device measurement retired it: for the >RAM models this engine exists
+for, **cache-off is the ceiling**, and the governor thrashed (gpt-oss: 0.156 tok/s governed vs 0.517
+cache-off) because a budget the device cannot concede starts a reclaim war whose churn the loop itself
+feeds. The governor, `--cache-dynamic`, and the runtime sensors are gone. The analysis below is why —
+and it is the reason the current, deliberately simple policy is what it is:
+
+- **cache-off (shared-slot) is the default**, and the recommendation for anything >RAM.
+- **`--cache-mb N`** is a fixed-budget LRU that keeps the hottest experts resident. It pays where the
+  working set fits without forcing reclaim (53–82% hit on RAM-fitting Qwen/Gemma), and nowhere else.
+- **`--cache-mb auto`** sizes that budget once from device RAM at load, then leaves it fixed — a
+  convenience, not a runtime loop. `--cache-ceil-mb` / `--cache-floor-mb` bound it.
+- The **dense weights** get their own policy (`--dense-weights`, below), which is where the measured
+  win — O_DIRECT — actually lives.
 
 ## Why a budget cannot be a constant
 
@@ -39,40 +52,17 @@ So the engine does not ask the OS anything. It watches what happens to memory it
 A process may always ask about its **own** pages, on any device, with no permission and no vendor
 cooperation — and pages we wrote, then lost, *are* reclaim, by definition.
 
-## The loop
+## Why there is no runtime loop
 
-Three roles, one per concern, so the policy is portable and the syscalls are not:
-
-- **Sense** (`core/src/io/platform_io.cpp`, `core/src/moe/expert_stream_source.cpp`)
-  - `mincore()` over the cache's own anonymous buffers, walking the LRU cold end — the pages reclaim
-    takes first. This is the primary signal: it is absolute (our pages are in RAM or they are not),
-    needs no baseline, and sees the theft *before* those pages fault back and cost a read. Bounded
-    and throttled; its cost lands in `mgmt_ms`, where a regression is visible rather than hidden.
-  - `getrusage(RUSAGE_SELF).ru_majflt` deltas per token — the fast reflex between residency samples.
-    Already measured for the telemetry, so it costs nothing new.
-- **Decide** (`core/include/bmoe/cache_governor.h`) — AIMD with hysteresis. Pure policy: no
-  syscalls, no clocks, no llama.cpp, no config reads. Unit-tested against a synthetic device
-  (`tests/cache_governor_test.cpp`).
-- **Act** (`ExpertStreamSource::set_cache_budget`) — resize and evict the cold tail. Driven once per
-  token from the generation loop, which is the only point where no decode is in flight and an
-  evicting shrink is safe.
-
-The shape is TCP's, for the same reason TCP has it: an unobservable bottleneck, probed by watching
-your own losses. Growth is additive because being wrong upward is cheap to give back; a cut is
-multiplicative because the asymmetry is real — asking too much costs a continuous war mid-decode,
-asking too little costs only a few points of hit rate.
-
-```
-every token, after the decode:
-    if sampled residency < 0.90            → the kernel is taking the cache
-    else if majflt > baseline*3 + 32       → reflex, once a calm baseline exists
-        → ceiling := cap;  cap := max(cap * 0.7, floor);  wait out a cooldown
-
-    else (calm):
-        learn the baseline from this token
-        after N calm tokens: cap += 64 MiB, up to min(user cap, ceiling * 0.9)
-        after a long calm at the ceiling: forget it and re-test (the device may have changed)
-```
+The retired governor was a TCP-shaped control loop: sense the reclaim (`mincore` over the cache's own
+pages + `getrusage` major-fault deltas), decide a new budget (AIMD — cut ×0.7 on reclaim, grow +64 MiB
+when calm), act (resize + evict), once per token. It was well-formed, and it did not help. The reason
+is the asymmetry it was built on: it assumed asking too much costs "a continuous war mid-decode" while
+asking too little costs "a few points of hit rate" — and on a >RAM model there is no budget large
+enough to earn those hits *and* small enough to avoid the war, so the loop just paid the sensing cost
+and the churn while converging on what cache-off gives for free. So the engine no longer probes: it
+either holds a fixed cache (`--cache-mb N`, which pays only where the whole working set fits) or runs
+cache-off (the default), and lets the dense-weights policy handle the other half.
 
 ## The floor is measured — and it is not the obvious one
 
@@ -108,24 +98,19 @@ knowing; it is simply not the same claim as where the cache must stop.
 
 ## Reading it
 
-Per token (`--csv`, `BMOE_PROGRESS`): `resident_frac` — the sampled fraction of the cache still in
-RAM, `-1` when unmeasured (throttled sample, streaming off, or a host that cannot report).
+Per run (`# summary`, `BMOE_DONE`): `token_demand_MiB` (what one token routes — where hits *start*,
+not a floor), `layer_demand_MiB` (the mechanical floor), `cache_budget_MiB` (the fixed budget in
+effect), `cache_hit_pct`. `cache_cuts` is retired (always 0) now that nothing resizes at runtime.
 
-Per run (`# summary`, `BMOE_DONE`): `token_demand_MiB` (what one token demands), `layer_demand_MiB`
-(the mechanical floor), `cache_budget_MiB` (where the loop settled), `cache_cuts` (how often the
-device pushed back), `cache_resizes`.
-
-A budget sitting exactly on `token_demand_MiB` with `cache_cuts` stuck at 1 is the failure above:
-the loop wanted to cut and something floored it.
-
-Reading `cache_budget_MiB` against `token_demand_MiB` is how a budget stops being a guess: a budget
-near the demand holds about one token of routing history and its hits come from inter-token
-correlation only; a budget far above it is either buying real reuse or buying a war, and
-`cache_cuts` says which.
+Reading `cache_hit_pct` against `token_demand_MiB` is how you tell whether a fixed `--cache-mb N` is
+earning its RAM: a budget near or below one token's demand holds no history between tokens and its
+hits are only inter-token correlation; well above it, a high hit rate means real reuse and a low one
+means the working set does not fit — set the cache off and let it stream.
 
 ## `--dense-weights anon`: make the dense weights anonymous
 
-The governor above manages the *cache*. The other half of the war is the *dense* (non-expert)
+The cache policy above manages the *expert cache*. The other half of the war is the *dense*
+(non-expert)
 weights, whose policy is a single knob `--dense-weights mmap|warm|anon` (`DenseWeightsMode`, owned by
 `core/src/moe/dense_weights.h`). `mmap` leaves them file-backed (the kernel reclaims them by dropping
 the pages, and a later touch demand-faults them 4 KiB at a time — the slow-start baseline); `warm`
@@ -155,25 +140,21 @@ Byte-identity gates: `G6` proves the rebind changes not a single output byte aga
 reference, and `G7` proves the same with O_DIRECT off (the read may bypass the page cache or not; the
 rebound bytes are identical either way).
 
-## Portability
+## Portability of what remains
 
-The sensors are the platform's half, and they are deliberately the least exotic syscalls available:
-`getrusage` and `mincore` exist on every POSIX target, need no permission, and cannot be disabled by
-a vendor kernel the way PSI and `mlock` are here. On a platform that cannot report residency (the
-Windows host build) the sample reads as unmeasured, the loop stays calm, and the budget behaves
-exactly as a static one — which is the right degradation.
-
-An iOS port would replace only the sensor: `os_proc_available_memory()` plus
-`DISPATCH_SOURCE_TYPE_MEMORYPRESSURE`, which unlike `onTrimMemory` fires on both edges. The
-governor and the actuator do not change.
+The one runtime signal left is diagnostic: the dense-residency telemetry (`dense_resident_frac`),
+`mincore` over the dense set — the least exotic syscall available, present on every POSIX target, no
+permission, undisablable by a vendor kernel the way PSI and `mlock` are here. On a platform that
+cannot report it (the Windows host build) it reads unmeasured and nothing downstream depends on it.
+There is no control loop to port anymore — the cache budget is fixed at load — so an iOS port needs
+only the O_DIRECT reader and, if desired, the same `mincore` telemetry.
 
 ## Status
 
-Off by default, and the app exposes it as a switch ("Pressure-aware cache sizing"). It stays off
-until the on-device A/B says otherwise — the same discipline that turned the rewarm pass off after
-it was measured. The tunables (0.90 residency, ×3 faults, ×0.7 cut, 64 MiB growth) are compiled in
-rather than exposed: they are control-loop policy, not per-device facts, and the loop discovers the
-device's concession at runtime regardless.
+The default is cache-off (shared-slot streaming) plus `--dense-weights warm`. `--cache-mb N` and
+`--cache-mb auto` are there for RAM-fitting models; `--dense-weights anon` is the A/B lever whose
+verdict is still owed on both phones. The retired governor is kept in git history (branch line through
+`feat/pressure-cache`) if the analysis ever needs revisiting.
 
 See also: [android-memory.md](android-memory.md) for what reclaims the engine's memory and which
-levers exist, [adaptive-cache.md](adaptive-cache.md) for `--cache-mb auto` and the ceiling.
+levers exist, [adaptive-cache.md](adaptive-cache.md) for `--cache-mb auto`.
