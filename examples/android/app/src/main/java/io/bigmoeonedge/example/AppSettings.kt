@@ -25,6 +25,7 @@ data class AppSettings(
     val warmDense: Boolean = true,      // page-cache the non-expert weights at load (kills >RAM slow-start)
     val prefetchLayers: Int = 0,        // temporal prefetch depth K (0 = off); needs the cache
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
+    val metricsCsv: Boolean = true,     // write the engine's per-token CSV for this session (--csv)
 ) {
     /**
      * Build the argv that OPENS a persistent bmoe-cli session (`--session`): everything fixed for
@@ -35,8 +36,13 @@ data class AppSettings(
      * When [mmap] is set, expert streaming is turned off entirely: the CLI omits --moe-stream and
      * every streaming knob (cache / lanes / O_DIRECT / overlap), so llama.cpp loads the whole model
      * via mmap through the page cache — the baseline the streaming modes compare to.
+     *
+     * @param csvPath where the engine should write its per-token metrics CSV, or null to not ask
+     *   for one. One file per SESSION, not per turn: the engine appends every turn's rows to it and
+     *   marks each with a `turn` column, which is the only way to read the two-turn shape this
+     *   engine is judged by (a fast turn, an idle, then the turn that pays for it).
      */
-    fun sessionArgv(cliPath: String, modelPath: String): List<String> {
+    fun sessionArgv(cliPath: String, modelPath: String, csvPath: String? = null): List<String> {
         val a = mutableListOf(
             cliPath,
             "-m", modelPath,
@@ -48,6 +54,9 @@ data class AppSettings(
         // Active-expert (top-k) override is a load-time kv_override, valid with or without
         // streaming — so it lives outside the mmap gate below.
         if (nExpertUsed > 0) a += listOf("--n-expert-used", nExpertUsed.toString())
+        // Outside the mmap gate too: the fault and memory columns are measured whether or not the
+        // streamer is on, and the mmap baseline is exactly what they are compared against.
+        if (metricsCsv && csvPath != null) a += listOf("--csv", csvPath)
         if (!mmap) {
             a += "--moe-stream"
             if (cacheMb == CACHE_AUTO) {
@@ -95,6 +104,7 @@ data class AppSettings(
             .putBoolean("overlap", overlap).putBoolean("warmDense", warmDense)
             .putInt("prefetchLayers", prefetchLayers)
             .putBoolean("thinking", thinking)
+            .putBoolean("metricsCsv", metricsCsv)
             .apply()
     }
 
@@ -103,6 +113,30 @@ data class AppSettings(
         // long prompt plus the largest practical generation. A request that would overflow it is
         // rejected recoverably by the CLI, leaving the session usable.
         const val SESSION_CTX = 4096
+
+        /**
+         * A fresh CSV path for a session about to open, under the app's own external files dir —
+         * no permission needed to write, and `adb pull`-able without root:
+         *
+         *     /sdcard/Android/data/<pkg>/files/metrics/bmoe-<yyyyMMdd-HHmmss>.csv
+         *
+         * Timestamped rather than fixed, because a run you cannot tell apart from the previous one
+         * is not evidence. Returns null if the volume is unavailable, which just means no CSV.
+         */
+        fun newMetricsCsvPath(ctx: Context): String? {
+            val dir = java.io.File(ctx.getExternalFilesDir(null) ?: return null, "metrics")
+            if (!dir.isDirectory && !dir.mkdirs()) return null
+            val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+            return java.io.File(dir, "bmoe-$ts.csv").absolutePath
+        }
+
+        /** The most recent metrics CSV, or null if none was written yet. */
+        fun latestMetricsCsv(ctx: Context): java.io.File? {
+            val root = ctx.getExternalFilesDir(null) ?: return null
+            return java.io.File(root, "metrics")
+                .listFiles { f -> f.name.endsWith(".csv") }
+                ?.maxByOrNull { it.lastModified() }
+        }
 
         // -1 (Auto) sizes the cache to the device's free RAM at runtime (--cache-mb auto).
         //
@@ -147,6 +181,7 @@ data class AppSettings(
                 warmDense = p.getBoolean("warmDense", d.warmDense),
                 prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
                 thinking = p.getBoolean("thinking", d.thinking),
+                metricsCsv = p.getBoolean("metricsCsv", d.metricsCsv),
             )
         }
 

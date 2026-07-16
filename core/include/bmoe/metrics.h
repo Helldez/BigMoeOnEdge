@@ -32,6 +32,32 @@ struct TokenMetrics {
     // is reclaiming the cache mid-run — the pressure --cache-dynamic sizes against. See
     // docs/pressure.md.
     double resident_frac = -1.0;
+    // What those faults actually moved, in MiB (majflt × page size). The same fact as `majflt`, in
+    // the unit the rest of this struct is in: 47447 faults is unreadable, 194 MiB re-faulted in one
+    // token is immediately comparable to `read_bytes` — the reads we chose against the reads the
+    // kernel forced on us. 0 when faults are unmeasured.
+    double majflt_mib = 0.0;
+
+    // ── where memory is, per token (0 when the platform cannot report) ──
+    // The split is the point: the expert cache is anonymous, the model's weights are file-backed,
+    // and they are reclaimed differently — anon is compressed into zram, file pages are just
+    // dropped. rss_anon_mib falling while the budget stays put IS the kernel taking the cache.
+    double rss_mib = 0.0;
+    double rss_anon_mib = 0.0;
+    double rss_file_mib = 0.0;
+    double swap_mib = 0.0;
+    // What the device claims about itself, recorded next to what we measured ourselves — the gap
+    // between mem_available_mib and our own residency is the reason this engine trusts neither.
+    double mem_available_mib = 0.0;
+    double mem_free_mib = 0.0;
+    double swap_free_mib = 0.0;
+
+    // The cache budget as of this token. In the summary it is only the last value; per token it is
+    // the governor's trajectory — when it cut, how far, whether it grew back. Without it a run that
+    // "did not work" cannot be told apart from one that never acted.
+    double cache_budget_mib = 0.0;
+    int turn = 0; // session turn this token belongs to (0 for a one-shot run)
+
     std::string piece; // text of just this token (delta, for inline streaming)
     std::string text;  // full generated text so far (for UI streaming)
 };

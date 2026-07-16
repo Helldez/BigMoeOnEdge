@@ -155,6 +155,16 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     current.thinking,
                 ) { onChange(current.copy(thinking = it)) }
             }
+
+            Section("Diagnostics") {
+                SwitchRow(
+                    "Metrics CSV",
+                    "Write one CSV per session with every token's timings, page faults (count and MiB), " +
+                        "cache budget, and the memory split — anon (the expert cache), file (the model), " +
+                        "swap. Takes effect on the next session; share it from the menu",
+                    current.metricsCsv,
+                ) { onChange(current.copy(metricsCsv = it)) }
+            }
         }
     }
 }

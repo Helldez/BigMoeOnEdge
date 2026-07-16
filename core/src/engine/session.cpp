@@ -104,9 +104,13 @@ struct Session::Impl {
     std::vector<llama_token> kv_tokens;
 
     // Route trace (diagnostics): null unless requested AND streaming is on — there is no routing
-    // to trace otherwise. trace_turn labels each generate()'s rows in a multi-turn session.
+    // to trace otherwise.
     IRouteTraceSink * route_trace = nullptr;
-    int trace_turn = 0;
+
+    // Which generate() this is, 0-based. It labels a trace's rows, and it labels every token's
+    // metrics — a multi-turn CSV is unreadable without it, and the two-turn A/B (a fast turn, an
+    // idle, then the turn that pays for it) is exactly what this engine is measured by.
+    int turn = 0;
 
     // Decode traces (diagnostics): null unless requested. The compute trace needs no streaming —
     // it measures the graph, which a dense mmap run has too; the I/O trace needs the streamer,
@@ -547,10 +551,10 @@ RunResult Session::generate(const GenerateRequest & req,
     // The frame the I/O rows are stamped with at flush; the other traces carry their own.
     int trace_phase = 0, trace_step = 0;
     auto trace_begin = [&](int base_pos, int n_tokens, int phase) {
-        if (im.route_trace) im.hook->begin_trace_batch(base_pos, n_tokens, phase, im.trace_turn);
+        if (im.route_trace) im.hook->begin_trace_batch(base_pos, n_tokens, phase, im.turn);
         // A node is computed once for the whole batch, not per token, so a prefill chunk's graph is
         // attributed to its last position rather than pretending to split across the chunk.
-        if (im.compute_trace) im.hook->begin_compute_batch(base_pos + n_tokens - 1, phase, im.trace_turn);
+        if (im.compute_trace) im.hook->begin_compute_batch(base_pos + n_tokens - 1, phase, im.turn);
         trace_phase = phase;
         trace_step = base_pos + n_tokens - 1;
     };
@@ -571,7 +575,7 @@ RunResult Session::generate(const GenerateRequest & req,
             // so stamp them with the decode they were drained after.
             im.source.take_io_trace_rows(im.io_rows_scratch);
             for (IoTraceRow & r : im.io_rows_scratch) {
-                r.turn = im.trace_turn;
+                r.turn = im.turn;
                 r.phase = trace_phase;
                 r.step = trace_step;
             }
@@ -676,11 +680,31 @@ RunResult Session::generate(const GenerateRequest & req,
         // mmap baseline too — so record it for every token before the moe/no-moe split below.
         m.majflt = f1 - f0;
         m.cpu_ms = (c1 - c0) * 1000.0;
+        m.majflt_mib = (double) m.majflt * (double) pio::fault_bytes() / (1024.0 * 1024.0);
+        m.turn = im.turn;
         gen_majflt += m.majflt;
         gen_cpu_seconds += (c1 - c0);
+
+        // Read the memory picture AFTER the decode, outside the s0..s1 bracket: two /proc reads are
+        // cheap but they are not this token's work, and billing them to wall_ms would corrupt the
+        // very number the reader is here to trust.
+        pio::ProcessMemory pm;
+        if (pio::process_memory(&pm)) {
+            m.rss_mib = pm.rss_bytes / (1024.0 * 1024.0);
+            m.rss_anon_mib = pm.rss_anon_bytes / (1024.0 * 1024.0);
+            m.rss_file_mib = pm.rss_file_bytes / (1024.0 * 1024.0);
+            m.swap_mib = pm.swap_bytes / (1024.0 * 1024.0);
+        }
+        pio::DeviceMemory dm;
+        if (pio::device_memory(&dm)) {
+            m.mem_available_mib = dm.available_bytes / (1024.0 * 1024.0);
+            m.mem_free_mib = dm.free_bytes / (1024.0 * 1024.0);
+            m.swap_free_mib = dm.swap_free_bytes / (1024.0 * 1024.0);
+        }
         if (moe.enabled) {
             IExpertSource::Stats st = im.source.stats();
             m.resident_frac = st.cache_resident_frac;
+            m.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
             m.read_bytes = (uint64_t) ((long long) st.read_bytes - prev_bytes);
             m.io_ms = (st.read_seconds - prev_io_s) * 1000.0;
             m.mgmt_ms = (st.mgmt_seconds - prev_mgmt_s) * 1000.0;
@@ -720,7 +744,7 @@ RunResult Session::generate(const GenerateRequest & req,
         if (sink) sink->on_token(m);
     }
 
-    if (im.route_trace) ++im.trace_turn; // this turn's rows are written; label the next one apart
+    ++im.turn; // this turn is written; label the next one apart
 
     // ── summary ──
     RunSummary & s = res.summary;

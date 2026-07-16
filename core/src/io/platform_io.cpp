@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <ctime>
@@ -119,6 +120,24 @@ uint64_t major_faults() {
 }
 double process_cpu_seconds() {
     return 0.0;
+}
+
+size_t fault_bytes() {
+    return vm_page();
+}
+
+bool process_memory(ProcessMemory * /*out*/) {
+    return false;
+}
+
+bool device_memory(DeviceMemory * out) {
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) return false;
+    out->available_bytes = (uint64_t) ms.ullAvailPhys;
+    out->free_bytes = (uint64_t) ms.ullAvailPhys; // no separate "free vs reclaimable" here
+    out->swap_free_bytes = (uint64_t) ms.ullAvailPageFile;
+    return true;
 }
 
 #else
@@ -231,6 +250,60 @@ double process_cpu_seconds() {
     if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) == 0) return (double) ts.tv_sec + ts.tv_nsec * 1e-9;
 #endif
     return 0.0;
+}
+
+size_t fault_bytes() {
+    // One major fault brings back one page. The kernel can fault a cluster in around a single miss,
+    // so this is the floor of what a fault moved, not an upper bound — it under-reports rather than
+    // inventing, which is the right direction for a number a reader will compare against real reads.
+    return vm_page();
+}
+
+// Scan a "Key: <n> kB" file for the keys we want in one pass, rather than one open per field.
+namespace {
+bool scan_kb_file(const char * path, const char * const * keys, uint64_t * out, int n) {
+    FILE * f = std::fopen(path, "re");
+    if (!f) return false;
+    char line[256];
+    int found = 0;
+    while (found < n && std::fgets(line, sizeof(line), f)) {
+        for (int i = 0; i < n; ++i) {
+            if (out[i]) continue; // already have it
+            const size_t klen = std::strlen(keys[i]);
+            if (std::strncmp(line, keys[i], klen) != 0 || line[klen] != ':') continue;
+            unsigned long long kb = 0;
+            if (std::sscanf(line + klen + 1, " %llu kB", &kb) == 1) {
+                out[i] = (uint64_t) kb * 1024ull;
+                ++found;
+            }
+            break;
+        }
+    }
+    std::fclose(f);
+    return found > 0;
+}
+} // namespace
+
+bool process_memory(ProcessMemory * out) {
+    static const char * const keys[] = {"VmRSS", "RssAnon", "RssFile", "VmSwap", "VmHWM"};
+    uint64_t v[5] = {0, 0, 0, 0, 0};
+    if (!scan_kb_file("/proc/self/status", keys, v, 5)) return false;
+    out->rss_bytes = v[0];
+    out->rss_anon_bytes = v[1];
+    out->rss_file_bytes = v[2];
+    out->swap_bytes = v[3];
+    out->rss_peak_bytes = v[4];
+    return true;
+}
+
+bool device_memory(DeviceMemory * out) {
+    static const char * const keys[] = {"MemAvailable", "MemFree", "SwapFree"};
+    uint64_t v[3] = {0, 0, 0};
+    if (!scan_kb_file("/proc/meminfo", keys, v, 3)) return false;
+    out->available_bytes = v[0];
+    out->free_bytes = v[1];
+    out->swap_free_bytes = v[2];
+    return true;
 }
 
 #endif

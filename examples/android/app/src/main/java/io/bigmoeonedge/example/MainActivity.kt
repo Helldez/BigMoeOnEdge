@@ -94,6 +94,7 @@ fun requestSharedStorageAccess(context: android.content.Context) {
 private fun Root() {
     val context = LocalContext.current
     var showSettings by remember { mutableStateOf(false) }
+    var showMetrics by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(AppSettings.load(context)) }
 
     // Model-scan state lives here, above the settings/main switch, so opening Settings and
@@ -118,6 +119,8 @@ private fun Root() {
             onChange = { settings = it; it.save(context) },
             onBack = { showSettings = false },
         )
+    } else if (showMetrics) {
+        MetricsScreen(onBack = { showMetrics = false })
     } else {
         MainScreen(
             settings = settings,
@@ -127,6 +130,7 @@ private fun Root() {
             onSelectModel = { modelIdx = it },
             onRefresh = { refreshKey++ },
             onOpenSettings = { showSettings = true },
+            onOpenMetrics = { showMetrics = true },
         )
     }
 }
@@ -140,6 +144,7 @@ private fun MainScreen(
     onSelectModel: (Int) -> Unit,
     onRefresh: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenMetrics: () -> Unit,
 ) {
     val context = LocalContext.current
     val ui by RunBus.state.collectAsStateWithLifecycle()
@@ -187,6 +192,7 @@ private fun MainScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("BigMoeOnEdge", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        TextButton(onClick = onOpenMetrics) { Text("Metrics") }
                         TextButton(onClick = onOpenSettings) { Text("Settings") }
                     }
 
@@ -638,7 +644,10 @@ private fun launchPrompt(
     } else {
         // A new session starts with an empty KV and a cleared transcript, so its first turn
         // always clears regardless of [clearKv].
-        val argv = ArrayList(settings.sessionArgv(ModelManager.cliPath(context), model.absolutePath))
+        // One CSV per session: the engine holds it open across every turn, so it is opened here,
+        // where a session is opened, and nowhere else.
+        val csv = if (settings.metricsCsv) AppSettings.newMetricsCsvPath(context) else null
+        val argv = ArrayList(settings.sessionArgv(ModelManager.cliPath(context), model.absolutePath, csv))
         ContextCompat.startForegroundService(
             context,
             Intent(context, RunService::class.java)
