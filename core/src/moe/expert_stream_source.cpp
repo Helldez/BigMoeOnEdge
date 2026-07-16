@@ -677,7 +677,12 @@ void ExpertStreamSource::sample_dense_residency() {
             }
             target -= len;
         }
-        if (const char * a = addr_of(off)) pio::vm_resident_sample(a, page_, &sampled, &resident);
+        // Align the probe DOWN to its page: vm_resident_sample counts only pages fully inside the
+        // range, so a single page's worth handed in at an arbitrary offset would clip to nothing.
+        if (const char * a = addr_of(off)) {
+            const char * pg = (const char *) ((uintptr_t) a & ~(uintptr_t) (page_ - 1));
+            pio::vm_resident_sample(pg, page_, &sampled, &resident);
+        }
     }
     dense_resident_frac_ = sampled ? (double) resident / (double) sampled : -1.0;
 }
