@@ -11,8 +11,11 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 ## Project map
 
 - `core/include/bmoe/` — ports (interfaces) + config. Pure policy, no llama.cpp include.
-- `core/src/io/` — `platform_io`: cross-platform O_DIRECT reads + reserve/commit/evict VM.
-- `core/src/moe/` — `gguf_offsets`, `arch_registry`, `expert_stream_source`, `router_hook`.
+- `core/src/io/` — `platform_io` (cross-platform O_DIRECT reads + reserve/commit/evict VM);
+  `file_reader` (pooled positioned reader, per-consumer O_DIRECT — used by both the expert stream
+  and the dense loader).
+- `core/src/moe/` — `gguf_offsets`, `arch_registry`, `expert_stream_source`, `router_hook`;
+  `dense_weights` (the non-expert weight policy: mmap / warm / anon, plus the residency sensor).
 - `core/src/engine/runtime.cpp` — composition + greedy generation loop.
 - `cli/main.cpp` — `bmoe-cli`; the ONLY place environment variables are read.
 - `third_party/llama.cpp` — stock upstream submodule.
