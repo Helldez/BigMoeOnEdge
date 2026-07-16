@@ -126,6 +126,12 @@ struct Session::Impl {
     // last turn learned about this device is exactly what the next turn needs.
     std::unique_ptr<CacheGovernor> gov;
 
+    // Stated once to a metrics sink, before the first token: the model and configuration every row
+    // it writes was produced under. info_sent guards a session's many generate() calls from
+    // interleaving preambles between turns.
+    RunInfo info;
+    bool info_sent = false;
+
     std::atomic<bool> cancel_requested{false};
 
     ~Impl() {
@@ -397,6 +403,45 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         if (im.io_trace) im.io_trace->on_static(st);
     }
 
+    // What this session IS, for any metrics sink that will describe what it DOES. Built here, where
+    // every fact is resolved: cache_mb in particular is what the streamer settled on, which under
+    // auto-sizing is a number no flag ever mentioned.
+    {
+        RunInfo & ri = im.info;
+        const std::string & p = cfg.model_path;
+        const size_t slash = p.find_last_of("/\\");
+        ri.model = slash == std::string::npos ? p : p.substr(slash + 1);
+        ri.arch = im.arch;
+        ri.n_layer = im.n_layer;
+        ri.n_threads = cfg.n_threads;
+        ri.n_ctx = cfg.n_ctx;
+        ri.moe_stream = cfg.moe.enabled;
+        ri.cache_auto = cfg.moe.cache_auto;
+        ri.cache_ceil_mb = cfg.moe.cache_ceil_mb;
+        ri.cache_dynamic = cfg.moe.cache_dynamic;
+        ri.force_cache = cfg.moe.force_cache;
+        ri.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
+        ri.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
+        ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
+        ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
+        ri.warm_dense = cfg.moe.enabled && cfg.moe.warm_dense;
+        if (cfg.moe.enabled) {
+            const IExpertSource::Stats st = im.source.stats();
+            ri.cache_mb = (int) (st.cache_budget_bytes / (1024ull * 1024ull));
+        }
+        // The EFFECTIVE top-k: an override IS the applied width, otherwise the model's own. Same
+        // resolution the route trace does, and worth a header read — a run whose top-k is unknown
+        // cannot be compared against one whose top-k differs, which is most of the point.
+        ri.n_expert_used = cfg.n_expert_used;
+        if (ri.n_expert_used <= 0 || ri.n_expert == 0) {
+            const GgufModelInfo mi = read_gguf_model_info(cfg.model_path.c_str());
+            if (mi.ok) {
+                ri.n_expert = mi.n_expert;
+                if (ri.n_expert_used <= 0) ri.n_expert_used = mi.n_expert_used;
+            }
+        }
+    }
+
     im.load_seconds = secs(t_load0, clock_t_::now());
     return self;
 }
@@ -407,6 +452,12 @@ RunResult Session::generate(const GenerateRequest & req,
     Impl & im = *impl_;
     const MoeStreamConfig & moe = im.cfg.moe;
     llama_context * ctx = im.ctx.get();
+
+    // Before anything is written about what this run did, say what it was.
+    if (sink && !im.info_sent) {
+        sink->on_run_info(im.info);
+        im.info_sent = true;
+    }
 
     // Fresh cancel latch for this generation; a stale request from a prior aborted call must
     // not carry over. (cancel() sets it; the abort callback reads it.)

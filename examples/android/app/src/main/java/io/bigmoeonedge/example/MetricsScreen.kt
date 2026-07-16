@@ -171,8 +171,33 @@ private fun FileList(
 
 // ── the CSV, parsed once ────────────────────────────────────────────────────────────────────────
 
-/** A parsed CSV: columns by name, plus the engine's per-turn `# summary` trailers. */
-private class Csv(val header: List<String>, val rows: List<List<String>>, val summaries: List<String>) {
+/**
+ * A parsed CSV: columns by name, the engine's `# bmoe_metrics` preamble (what the run WAS), and its
+ * per-turn `# summary` trailers (what each turn DID).
+ */
+private class Csv(
+    val header: List<String>,
+    val rows: List<List<String>>,
+    val summaries: List<String>,
+    val info: Map<String, String>,
+) {
+    /** The run's identity, short enough to sit under a chart line. Empty for a pre-preamble CSV. */
+    fun label(): String {
+        if (info.isEmpty()) return ""
+        val cache = when {
+            info["cache_dynamic"] == "1" -> "cache ${info["cache_mb"]}→dynamic"
+            info["cache_auto"] == "1" -> "cache auto(${info["cache_mb"]})"
+            else -> "cache ${info["cache_mb"]}"
+        }
+        return listOfNotNull(
+            info["model"],
+            info["n_expert_used"]?.let { "top-$it" },
+            if (info["moe_stream"] == "1") cache else "mmap baseline",
+            info["io_threads"]?.let { "$it lanes" },
+            if (info["overlap"] == "1") "overlap" else null,
+            info["prefetch"]?.takeIf { it != "0" }?.let { "prefetch $it" },
+        ).joinToString(" · ")
+    }
     /** This column's values, or null where the column is absent or the cell is not a number. */
     fun column(name: String): List<Float?>? {
         val i = header.indexOf(name).takeIf { it >= 0 } ?: return null
@@ -187,8 +212,14 @@ private class Csv(val header: List<String>, val rows: List<List<String>>, val su
         fun read(f: File): Csv {
             val lines = runCatching { f.readLines() }.getOrElse { emptyList() }
             val header = lines.firstOrNull { !it.startsWith("#") }?.split(",") ?: emptyList()
-            val rows = lines.drop(1).filter { it.isNotBlank() && !it.startsWith("#") }.map { it.split(",") }
-            return Csv(header, rows, lines.filter { it.startsWith("# summary") })
+            val rows = lines.filter { it.isNotBlank() && !it.startsWith("#") }.drop(1).map { it.split(",") }
+            // The preamble's key=value pairs, order-independent, unknown keys kept: same contract
+            // as the `# summary` trailer, so an older or newer engine still parses.
+            val info = lines.filter { it.startsWith("# ") && !it.startsWith("# summary") }
+                .flatMap { it.removePrefix("# ").trim().split(" ") }
+                .mapNotNull { tok -> tok.split("=", limit = 2).takeIf { it.size == 2 } }
+                .associate { it[0] to it[1] }
+            return Csv(header, rows, lines.filter { it.startsWith("# summary") }, info)
         }
     }
 }
@@ -200,6 +231,29 @@ private fun CsvView(file: File, modifier: Modifier) {
     val csv = remember(file) { Csv.read(file) }
     val hscroll = rememberScrollState()
     Column(modifier.fillMaxSize()) {
+        // What the run was, before what it did. A file whose configuration is unknown is a file
+        // whose numbers cannot be compared to anything.
+        if (csv.info.isNotEmpty()) {
+            Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(csv.label(), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        listOfNotNull(
+                            csv.info["arch"]?.let { "arch $it" },
+                            csv.info["n_layer"]?.let { "$it layers" },
+                            csv.info["n_expert"]?.let { "$it experts" },
+                            csv.info["threads"]?.let { "$it threads" },
+                            csv.info["n_ctx"]?.let { "ctx $it" },
+                            if (csv.info["o_direct"] == "1") "O_DIRECT" else null,
+                            if (csv.info["warm_dense"] == "1") "warm dense" else null,
+                            if (csv.info["force_cache"] == "1") "forced" else null,
+                        ).joinToString(" · "),
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+        }
         csv.summaries.forEach { s ->
             Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
                 Text(
@@ -275,10 +329,11 @@ private fun CompareView(fa: File, fb: File, modifier: Modifier) {
 
         val sa = a.column(metric).orEmpty()
         val sb = b.column(metric).orEmpty()
-        LineChart(sa, sb, colorA, colorB, Modifier.fillMaxWidth().height(260.dp))
+        LineChart(sa, sb, colorA, colorB, Modifier.fillMaxWidth().height(240.dp))
 
-        Legend(fa.name, colorA, sa)
-        Legend(fb.name, colorB, sb)
+        Legend(fa.name, a.label(), colorA, sa)
+        Legend(fb.name, b.label(), colorB, sb)
+        Diff(a, b)
         Text(
             "x = token index within the file (turns run end to end). Both series share one y scale, " +
                 "which is the only way the comparison means anything.",
@@ -288,18 +343,47 @@ private fun CompareView(fa: File, fb: File, modifier: Modifier) {
 }
 
 @Composable
-private fun Legend(name: String, color: Color, series: List<Float?>) {
+private fun Legend(name: String, label: String, color: Color, series: List<Float?>) {
     val vals = series.filterNotNull()
-    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Canvas(Modifier.size(14.dp)) { drawRect(color) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Canvas(Modifier.size(12.dp).padding(top = 3.dp)) { drawRect(color) }
         Column {
-            Text(name, fontFamily = FontFamily.Monospace, fontSize = 11.sp, maxLines = 1)
+            // The configuration first, the file name second: which run this is matters more than
+            // what it happens to be called.
+            if (label.isNotEmpty()) Text(label, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+            Text(name, fontFamily = FontFamily.Monospace, fontSize = 10.sp, maxLines = 1,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
                 if (vals.isEmpty()) "no data" else
                     "n=${vals.size}  min=${fmt(vals.min())}  mean=${fmt(vals.average().toFloat())}  max=${fmt(vals.max())}",
                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/**
+ * What actually differs between the two runs' configurations. With two long labels on screen the
+ * eye will not find it, and the one setting that changed is the only reason to read the chart.
+ */
+@Composable
+private fun Diff(a: Csv, b: Csv) {
+    if (a.info.isEmpty() || b.info.isEmpty()) {
+        Text(
+            "One of these files has no run header — it predates it, so what it was configured with " +
+                "is unknown and the comparison is a guess.",
+            fontSize = 11.sp, color = MaterialTheme.colorScheme.error,
+        )
+        return
+    }
+    val keys = (a.info.keys + b.info.keys).filter { a.info[it] != b.info[it] }.sorted()
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
+        Text(
+            if (keys.isEmpty()) "Same configuration in both — whatever differs, the settings do not."
+            else "differs: " + keys.joinToString("   ") { "$it ${a.info[it] ?: "-"}→${b.info[it] ?: "-"}" },
+            fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+            modifier = Modifier.padding(8.dp),
+        )
     }
 }
 

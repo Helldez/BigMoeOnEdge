@@ -8,20 +8,29 @@ namespace {
 
 class CsvMetricsSink final : public IMetricsSink {
 public:
-    explicit CsvMetricsSink(std::FILE * f) : f_(f) {
-        // New columns are appended LAST so existing positional parsers stay valid: stall_ms (0 when
-        // serial), mgmt_ms (cache-management split out of the compute residual), then majflt/cpu_ms
-        // (the fault + CPU-time decomposition of what remains of "compute"), then resident_frac
-        // (how much of the cache the kernel still has; -1 = unmeasured).
-        std::fprintf(f_, "step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,"
-                         "resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,"
-                         "mem_available_mib,mem_free_mib,swap_free_mib\n");
-    }
+    explicit CsvMetricsSink(std::FILE * f) : f_(f) {}
     ~CsvMetricsSink() override {
         if (f_) std::fclose(f_);
     }
 
+    // The `#` preamble, mirroring the route/compute traces: what this run was, before what it did.
+    // Key=value, whitespace-separated, order-independent — new keys are appended freely and older
+    // parsers ignore what they do not know.
+    void on_run_info(const RunInfo & r) override {
+        if (header_) return; // a session sends this once; a second call would interleave a preamble
+        std::fprintf(f_, "# bmoe_metrics v1\n");
+        std::fprintf(f_, "# model=%s arch=%s n_layer=%d n_expert=%d n_expert_used=%d threads=%d n_ctx=%d\n",
+                     r.model.c_str(), r.arch.c_str(), r.n_layer, r.n_expert, r.n_expert_used, r.n_threads, r.n_ctx);
+        std::fprintf(f_,
+                     "# moe_stream=%d cache_mb=%d cache_auto=%d cache_ceil_mb=%d cache_dynamic=%d force_cache=%d "
+                     "io_threads=%d o_direct=%d overlap=%d prefetch=%d warm_dense=%d\n",
+                     r.moe_stream, r.cache_mb, r.cache_auto, r.cache_ceil_mb, r.cache_dynamic, r.force_cache,
+                     r.io_threads, r.o_direct, r.overlap, r.prefetch_layers, r.warm_dense);
+        write_header();
+    }
+
     void on_token(const TokenMetrics & m) override {
+        write_header(); // a caller that never sent RunInfo still gets a readable file
         std::fprintf(f_,
                      "%d,%d,%.3f,%.3f,%.3f,%llu,%.2f,%.3f,%.3f,%llu,%.3f,%.3f,%d,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,"
                      "%.1f,%.1f,%.1f\n",
@@ -52,7 +61,22 @@ public:
     }
 
 private:
+    // Deferred so the preamble can land above it: the column header is only correct once we know
+    // whether anything is going to describe the run first.
+    void write_header() {
+        if (header_) return;
+        header_ = true;
+        // New columns are appended LAST so existing positional parsers stay valid: stall_ms (0 when
+        // serial), mgmt_ms (cache-management split out of the compute residual), then majflt/cpu_ms
+        // (the fault + CPU-time decomposition of what remains of "compute"), then resident_frac
+        // (how much of the cache the kernel still has; -1 = unmeasured), then the memory block.
+        std::fprintf(f_, "step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,"
+                         "resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,"
+                         "mem_available_mib,mem_free_mib,swap_free_mib\n");
+    }
+
     std::FILE * f_ = nullptr;
+    bool header_ = false;
 };
 
 } // namespace

@@ -113,11 +113,42 @@ struct RunSummary {
     long long moe_spec_useful = 0;
 };
 
-// Optional per-token sink (e.g. CSV for benchmarks). The engine calls on_token for each
-// token and on_summary once at the end.
+// What this run IS: the model and the configuration every row below it was produced under.
+//
+// Rows without it are not evidence. Two CSVs put side by side answer "which is faster" only if
+// something says what differed between them — and by the time a file is read, the argv that made
+// it is long gone. The engine states it once, in the file, next to the numbers it explains.
+struct RunInfo {
+    std::string model; // file name, not the full path: the path is the reader's machine, not the run's
+    std::string arch;
+    int n_layer = 0;
+    int n_expert = 0;
+    int n_expert_used = 0; // effective top-k, after any override
+    int n_threads = 0;
+    int n_ctx = 0;
+
+    // The streaming configuration, as resolved (not as typed): cache_mb is what the engine settled
+    // on, which under auto-sizing is a number no flag mentioned.
+    bool moe_stream = false;
+    int cache_mb = 0;
+    bool cache_auto = false;
+    int cache_ceil_mb = 0;
+    bool cache_dynamic = false;
+    bool force_cache = false;
+    int io_threads = 0;
+    bool o_direct = false;
+    bool overlap = false;
+    int prefetch_layers = 0;
+    bool warm_dense = false;
+};
+
+// Optional per-token sink (e.g. CSV for benchmarks). The engine calls on_run_info once before the
+// first token, then on_token for each token and on_summary at the end of every generation.
 class IMetricsSink {
 public:
     virtual ~IMetricsSink() = default;
+    // Default no-op: a sink that only wants numbers is not obliged to care what produced them.
+    virtual void on_run_info(const RunInfo &) {}
     virtual void on_token(const TokenMetrics &) = 0;
     virtual void on_summary(const RunSummary &) = 0;
 };
