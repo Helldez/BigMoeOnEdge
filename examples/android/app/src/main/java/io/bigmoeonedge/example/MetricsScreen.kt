@@ -37,13 +37,17 @@ import kotlin.math.abs
  * feature off and a run with it on, on one axis. Everything here reads columns by NAME, so a CSV
  * from an older build (fewer columns) still plots whatever it does have.
  */
+// What the screen is showing. picked = view one file; correlating = overlay one file's own columns;
+// comparing = two files' same column; glossary = the field reference.
+private enum class View { LIST, FILE, CORRELATE, COMPARE, GLOSSARY }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MetricsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     var picked by remember { mutableStateOf<File?>(null) }
     var selection by remember { mutableStateOf<List<File>>(emptyList()) }
-    var comparing by remember { mutableStateOf(false) }
+    var view by remember { mutableStateOf(View.LIST) }
     var refresh by remember { mutableStateOf(0) }
     val files = remember(refresh) {
         File(context.getExternalFilesDir(null), "metrics")
@@ -52,42 +56,54 @@ fun MetricsScreen(onBack: () -> Unit) {
             ?: emptyList()
     }
 
+    // Back always steps one level toward the list, then out of the screen.
+    fun back() {
+        when (view) {
+            View.CORRELATE -> view = View.FILE
+            View.FILE, View.COMPARE, View.GLOSSARY -> view = View.LIST
+            View.LIST -> onBack()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        when {
-                            comparing -> "Compare"
-                            picked != null -> picked!!.name
-                            else -> "Metrics"
+                        when (view) {
+                            View.COMPARE -> "Compare files"
+                            View.CORRELATE -> "Correlate fields"
+                            View.GLOSSARY -> "What the columns mean"
+                            View.FILE -> picked?.name ?: "Metrics"
+                            View.LIST -> "Metrics"
                         },
                         maxLines = 1,
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        when {
-                            comparing -> comparing = false
-                            picked != null -> picked = null
-                            else -> onBack()
-                        }
-                    }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                    IconButton(onClick = { back() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
                 },
                 actions = {
-                    picked?.let { f -> TextButton(onClick = { shareCsv(context, listOf(f)) }) { Text("Share") } }
+                    if (view == View.FILE) {
+                        TextButton(onClick = { view = View.CORRELATE }) { Text("Correlate") }
+                        picked?.let { f -> TextButton(onClick = { shareCsv(context, listOf(f)) }) { Text("Share") } }
+                    }
+                    if (view == View.LIST || view == View.FILE) {
+                        TextButton(onClick = { view = View.GLOSSARY }) { Text("?") }
+                    }
                 },
             )
         },
         bottomBar = {
-            // Only while picking: two files is what a comparison is.
-            if (!comparing && picked == null && selection.isNotEmpty()) {
+            if (view == View.LIST && selection.isNotEmpty()) {
                 BottomAppBar {
                     Spacer(Modifier.width(12.dp))
                     Text("${selection.size} selected", modifier = Modifier.weight(1f), fontSize = 13.sp)
                     TextButton(onClick = { shareCsv(context, selection) }) { Text("Share") }
                     TextButton(
-                        onClick = { comparing = true },
+                        onClick = { view = View.COMPARE },
                         enabled = selection.size == 2,
                     ) { Text("Compare") }
                     Spacer(Modifier.width(8.dp))
@@ -95,15 +111,17 @@ fun MetricsScreen(onBack: () -> Unit) {
             }
         },
     ) { padding ->
-        val file = picked
-        when {
-            comparing -> CompareView(selection[0], selection[1], Modifier.padding(padding))
-            file != null -> CsvView(file, Modifier.padding(padding))
-            else -> FileList(
+        val m = Modifier.padding(padding)
+        when (view) {
+            View.COMPARE -> CompareView(selection[0], selection[1], m)
+            View.CORRELATE -> picked?.let { CorrelateView(it, m) }
+            View.GLOSSARY -> GlossaryView(m)
+            View.FILE -> picked?.let { CsvView(it, m) }
+            View.LIST -> FileList(
                 files = files,
                 selection = selection,
-                modifier = Modifier.padding(padding),
-                onPick = { picked = it },
+                modifier = m,
+                onPick = { picked = it; view = View.FILE },
                 onToggle = { f ->
                     selection = when {
                         selection.contains(f) -> selection - f
@@ -326,6 +344,7 @@ private fun CompareView(fa: File, fb: File, modifier: Modifier) {
                 }
             }
         }
+        FieldNote(metric)
 
         val sa = a.column(metric).orEmpty()
         val sb = b.column(metric).orEmpty()
@@ -440,5 +459,207 @@ private fun LineChart(a: List<Float?>, b: List<Float?>, colorA: Color, colorB: C
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(fmt(lo), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(fmt(hi), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+// ── the field reference ─────────────────────────────────────────────────────────────────────────
+
+/** "lower is better" / "higher is better" / "depends", coloured, in three characters plus a word. */
+@Composable
+private fun BetterBadge(better: Better) {
+    val (text, color) = when (better) {
+        Better.LOWER -> "↓ lower better" to MaterialTheme.colorScheme.primary
+        Better.HIGHER -> "↑ higher better" to MaterialTheme.colorScheme.primary
+        Better.NEUTRAL -> "– depends" to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Text(text, fontSize = 11.sp, fontWeight = FontWeight.Medium, color = color)
+}
+
+/** The one-line meaning of the currently plotted column, under a chart or a picker. */
+@Composable
+private fun FieldNote(name: String) {
+    val f = MetricFields.of(name) ?: return
+    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(f.short, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            BetterBadge(f.better)
+        }
+        Text(f.measures, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun GlossaryView(modifier: Modifier) {
+    LazyColumn(modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+        item {
+            Text(
+                "Every column the metrics CSV can hold. \"depends\" means neither direction is simply " +
+                    "good — a bigger cache buys hits but risks the reclaim war, and mem_available lies.",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 10.dp),
+            )
+        }
+        items(MetricFields.all) { f ->
+            Column(Modifier.padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(f.name, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    BetterBadge(f.better)
+                }
+                Text(f.short, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Text(f.measures, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            HorizontalDivider()
+        }
+    }
+}
+
+// ── correlate: one file's own columns, normalized, on one axis ──────────────────────────────────
+
+/**
+ * Overlays several of a file's columns after squashing each to 0..1, so their SHAPES can be
+ * compared even though their units cannot. The question it answers is "when this rises, does that
+ * rise too" — e.g. does rss_anon fall exactly as majflt spikes, which says the faults are the cache
+ * being taken and not the model. A Pearson r against the first-picked column puts a number on it.
+ *
+ * Normalization is per-column min..max: it discards magnitude on purpose. A flat line means the
+ * column did not vary, not that it was zero — the legend keeps the real min/max so nothing is lost.
+ */
+@Composable
+private fun CorrelateView(file: File, modifier: Modifier) {
+    val csv = remember(file) { Csv.read(file) }
+    val cols = remember(csv) { csv.plottable() }
+    // Start with the pair this was built to look at, if the file has them.
+    var chosen by remember(cols) {
+        mutableStateOf(cols.filter { it in setOf("majflt_mib", "rss_anon_mib", "cache_budget_mib") }.ifEmpty { cols.take(2) })
+    }
+    var expanded by remember { mutableStateOf(false) }
+
+    val palette = listOf(
+        MaterialTheme.colorScheme.primary,
+        MaterialTheme.colorScheme.error,
+        MaterialTheme.colorScheme.tertiary,
+        MaterialTheme.colorScheme.secondary,
+        MaterialTheme.colorScheme.inversePrimary,
+    )
+
+    Column(modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (cols.isEmpty()) {
+            Text("This file has no numeric columns to correlate.", fontSize = 13.sp)
+            return@Column
+        }
+        if (csv.info.isNotEmpty()) Text(csv.label(), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+
+        Box {
+            OutlinedButton(onClick = { expanded = true }) { Text("Fields (${chosen.size})") }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                cols.forEach { c ->
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                Checkbox(checked = c in chosen, onCheckedChange = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text(c, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                            }
+                        },
+                        // Cap at the palette size: more lines than colours is not a chart, it is a knot.
+                        onClick = {
+                            chosen = if (c in chosen) chosen - c
+                            else if (chosen.size < palette.size) chosen + c else chosen
+                        },
+                    )
+                }
+            }
+        }
+
+        val series = chosen.map { it to (csv.column(it) ?: emptyList()) }
+        MultiLineChart(series.map { it.second }, palette, Modifier.fillMaxWidth().height(240.dp))
+
+        // Pearson r of every series against the first-picked one — the pivot. |r|→1 is tight
+        // correlation, sign says direction, ~0 says the two move independently.
+        val pivot = series.firstOrNull()
+        chosen.forEachIndexed { i, name ->
+            val col = MetricFields.of(name)
+            val vals = series[i].second.filterNotNull()
+            val r = if (pivot != null && i > 0) pearson(pivot.second, series[i].second) else null
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Canvas(Modifier.size(12.dp).padding(top = 3.dp)) { drawRect(palette[i % palette.size]) }
+                Column {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(name, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        if (i == 0) Text("pivot", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        else if (r != null) Text("r=${fmt(r)} ${corrWord(r)}", fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                    }
+                    if (col != null) Text(col.short, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (vals.isNotEmpty()) Text(
+                        "min=${fmt(vals.min())}  max=${fmt(vals.max())}",
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Text(
+            "Each line is squashed to its own 0..1, so only the SHAPES compare — the legend keeps the " +
+                "real range. r is vs the first field (the pivot): near ±1 they move together, near 0 they do not.",
+            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** How to say a correlation out loud, so the number is not the only cue. */
+private fun corrWord(r: Float): String = when {
+    abs(r) >= 0.8f -> if (r > 0) "moves together" else "moves opposite"
+    abs(r) >= 0.4f -> if (r > 0) "loosely together" else "loosely opposite"
+    else -> "unrelated"
+}
+
+/** Pearson correlation over the positions where BOTH series have a value; null if too few. */
+private fun pearson(a: List<Float?>, b: List<Float?>): Float? {
+    val pairs = a.zip(b).mapNotNull { (x, y) -> if (x != null && y != null) x to y else null }
+    if (pairs.size < 3) return null
+    val n = pairs.size
+    val mx = pairs.sumOf { it.first.toDouble() } / n
+    val my = pairs.sumOf { it.second.toDouble() } / n
+    var sxy = 0.0; var sxx = 0.0; var syy = 0.0
+    for ((x, y) in pairs) {
+        val dx = x - mx; val dy = y - my
+        sxy += dx * dy; sxx += dx * dx; syy += dy * dy
+    }
+    if (sxx <= 0.0 || syy <= 0.0) return null // a flat series correlates with nothing
+    return (sxy / kotlin.math.sqrt(sxx * syy)).toFloat()
+}
+
+/**
+ * N series on one axis, each independently normalized to 0..1. Unlike the two-file compare (one
+ * shared scale, because there the magnitudes ARE the comparison), here the magnitudes are unlike by
+ * construction — cache_budget in GiB against resident_frac in [0,1] — so each gets its own scale and
+ * only the shapes are claimed to line up.
+ */
+@Composable
+private fun MultiLineChart(series: List<List<Float?>>, palette: List<Color>, modifier: Modifier) {
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    if (series.all { it.filterNotNull().isEmpty() }) {
+        Box(modifier) { Text("pick at least one field", fontSize = 12.sp) }
+        return
+    }
+    val n = maxOf(series.maxOfOrNull { it.size } ?: 2, 2)
+    // Per-series min/max, computed once: normalization is min..max within each column.
+    val ranges = series.map { s -> s.filterNotNull().let { v -> (v.minOrNull() ?: 0f) to (v.maxOrNull() ?: 1f) } }
+
+    Canvas(modifier) {
+        val w = size.width; val h = size.height
+        listOf(0f, 0.5f, 1f).forEach { t -> drawLine(grid, Offset(0f, h * t), Offset(w, h * t), strokeWidth = 1f) }
+        series.forEachIndexed { si, s ->
+            val (lo, hi) = ranges[si]
+            val span = (hi - lo).takeIf { it > 1e-6f } ?: 1f
+            val path = Path()
+            var started = false
+            s.forEachIndexed { i, v ->
+                if (v == null) return@forEachIndexed
+                val px = w * i / (n - 1).toFloat()
+                val py = h - (v - lo) / span * h
+                if (started) path.lineTo(px, py) else { path.moveTo(px, py); started = true }
+            }
+            if (started) drawPath(path, palette[si % palette.size], style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f))
+        }
     }
 }
