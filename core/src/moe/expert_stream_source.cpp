@@ -34,7 +34,6 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     n_expert_ = n_expert;
     layers_ = std::move(layers);
     n_layer_ = (int) layers_.size();
-    o_direct_ = cfg.o_direct;
     load_all_ = cfg.load_all;
     overlap_ = cfg.overlap;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
@@ -150,71 +149,12 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         clookups_ = 0;
     }
 
-    // Read pool: a private fd + bounce per lane so concurrent preads never contend.
+    // Read pool: the reader owns a private fd + bounce per lane so concurrent preads never contend,
+    // and the O_DIRECT request + its verify/fallback. The dense-weights loader opens its own reader,
+    // so its cache-bypass choice is independent of this one.
     const size_t max_slice = max_full_any / (size_t) n_expert_;
     const size_t bounce_cap = max_slice + 2 * align_;
-
-    pio::fd_t primary = pio::open_read(gguf_path.c_str(), o_direct_);
-    if (!pio::fd_ok(primary) && o_direct_) {
-        o_direct_ = false;
-        primary = pio::open_read(gguf_path.c_str(), false);
-    }
-    if (!pio::fd_ok(primary)) {
-        std::fprintf(stderr, "bmoe: open %s failed\n", gguf_path.c_str());
-        return false;
-    }
-    fsize_ = pio::file_size(primary);
-
-    // Verify O_DIRECT actually returns correct bytes on this storage. On some emulated / FUSE-backed
-    // volumes (e.g. an app-private dir under /storage/emulated) the open SUCCEEDS but direct reads
-    // return garbage, silently corrupting expert weights → nonsense output. Compare one aligned
-    // block read directly against the same block read buffered; on any mismatch, fall back to
-    // buffered I/O for this file. On real filesystems (adb-pushed models, desktop) the two match
-    // and O_DIRECT is kept.
-    if (o_direct_ && fsize_ >= (uint64_t) align_) {
-        uint64_t voff = (fsize_ / 2) & ~(uint64_t) (align_ - 1);
-        if (voff + align_ > fsize_) voff = 0;
-        void * dbuf = pio::alloc_aligned(align_, align_);
-        pio::fd_t vfd = pio::open_read(gguf_path.c_str(), false);
-        if (dbuf && pio::fd_ok(vfd)) {
-            std::vector<char> bbuf(align_);
-            const long long want = (long long) align_;
-            const long long gd = pio::pread_at(primary, dbuf, align_, voff);
-            const long long gb = pio::pread_at(vfd, bbuf.data(), align_, voff);
-            const bool bad = gd != want || gb != want || std::memcmp(dbuf, bbuf.data(), align_) != 0;
-            if (bad) {
-                std::fprintf(stderr, "bmoe: O_DIRECT returns wrong data on this storage — using buffered I/O\n");
-                o_direct_ = false;
-                pio::close_fd(primary);
-                primary = pio::open_read(gguf_path.c_str(), false);
-            }
-        }
-        if (dbuf) pio::aligned_free(dbuf);
-        if (pio::fd_ok(vfd)) pio::close_fd(vfd);
-        if (!pio::fd_ok(primary)) {
-            std::fprintf(stderr, "bmoe: reopen after O_DIRECT check failed\n");
-            return false;
-        }
-    }
-
-    fds_.assign(io_threads_, pio::fd_invalid);
-    fds_buf_.assign(io_threads_, pio::fd_invalid);
-    bounces_.assign(io_threads_, nullptr);
-    bounce_sz_.assign(io_threads_, 0);
-    for (int lane = 0; lane < io_threads_; ++lane) {
-        fds_[lane] = (lane == 0) ? primary : pio::open_read(gguf_path.c_str(), o_direct_);
-        fds_buf_[lane] = o_direct_ ? pio::open_read(gguf_path.c_str(), false) : pio::fd_invalid;
-        if (!pio::fd_ok(fds_[lane])) {
-            std::fprintf(stderr, "bmoe: lane %d open failed\n", lane);
-            return false;
-        }
-        bounces_[lane] = pio::alloc_aligned(align_, bounce_cap);
-        if (!bounces_[lane]) {
-            std::fprintf(stderr, "bmoe: lane %d bounce alloc failed\n", lane);
-            return false;
-        }
-        bounce_sz_[lane] = bounce_cap;
-    }
+    if (!reader_.open(gguf_path, io_threads_, cfg.o_direct, align_, bounce_cap)) return false;
 
     seen_.assign(n_expert_, 0);
     jobs_.reserve((size_t) n_expert_ * MoeRecipe::max_exps);
@@ -264,7 +204,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
             if (r.first > pos) dense_ranges_.push_back({pos, r.first});
             pos = std::max(pos, r.second);
         }
-        if (pos < fsize_) dense_ranges_.push_back({pos, fsize_});
+        if (pos < reader_.file_size()) dense_ranges_.push_back({pos, reader_.file_size()});
     }
 
     // --dense-odirect: read the dense weights into our own anon buffers and rebind their tensors,
@@ -291,7 +231,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         io_pool_.emplace_back(&ExpertStreamSource::io_worker, this, lane);
 
     std::fprintf(stderr, "bmoe: expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB\n", n_expert_,
-                 (int) o_direct_, io_threads_, cache_max_ >> 20);
+                 (int) reader_.direct(), io_threads_, cache_max_ >> 20);
     return true;
 }
 
@@ -340,7 +280,7 @@ void ExpertStreamSource::warm_dense_regions(const std::string & gguf_path) {
         if (r.first > pos) sweep(pos, r.first); // gap before this expert range is dense
         pos = std::max(pos, r.second);
     }
-    if (pos < fsize_) sweep(pos, fsize_); // trailing dense tail (lm_head et al.)
+    if (pos < reader_.file_size()) sweep(pos, reader_.file_size()); // trailing dense tail (lm_head et al.)
 
     pio::aligned_free(buf);
     pio::close_fd(fd);
@@ -424,64 +364,27 @@ bool ExpertStreamSource::read_dense_odirect() {
 }
 
 // ── one aligned slice read on a lane ────────────────────────────────────────────────
+// The bytes come from the reader; this wraps it with the domain the reader must not know about — the
+// per-read I/O trace that attributes a read to its (layer, expert, projection). Latency is timed here
+// so the row carries this read's own cost, not the reader's running total.
 bool ExpertStreamSource::read_slice(int lane, const IoJob & j) {
-    void * const dst = j.dst;
-    const uint64_t off = j.off, nbytes = j.nbytes;
-    if (nbytes == 0) return true;
-    const uint64_t a0 = off & ~(uint64_t) (align_ - 1);
-    const uint64_t a1 = (off + nbytes + align_ - 1) & ~(uint64_t) (align_ - 1);
-    const size_t len = (size_t) (a1 - a0);
-    if (bounce_sz_[lane] < len) {
-        if (bounces_[lane]) pio::aligned_free(bounces_[lane]);
-        bounces_[lane] = pio::alloc_aligned(align_, len);
-        if (!bounces_[lane]) {
-            std::fprintf(stderr, "bmoe: bounce realloc %zu failed\n", len);
-            return false;
-        }
-        bounce_sz_[lane] = len;
-    }
-    char * b = (char *) bounces_[lane];
-    const pio::fd_t fd = fds_[lane];
-    const pio::fd_t fd_buf = fds_buf_[lane];
-    const uint64_t read_end = (fsize_ && a1 > fsize_) ? fsize_ : a1;
-    const uint64_t bulk_end = o_direct_ ? (read_end & ~(uint64_t) (align_ - 1)) : read_end;
-
+    if (j.nbytes == 0) return true;
     const auto t0 = clock_t_::now();
-    for (uint64_t a = a0; a < bulk_end;) {
-        long long got = pio::pread_at(fd, b + (a - a0), (size_t) (bulk_end - a), a);
-        if (got <= 0) {
-            std::fprintf(stderr, "bmoe: pread failed at %llu\n", (unsigned long long) a);
-            return false;
-        }
-        a += (uint64_t) got;
-    }
-    for (uint64_t a = bulk_end; a < read_end;) { // sub-alignment EOF tail via the buffered fd
-        long long got = pio::pread_at(pio::fd_ok(fd_buf) ? fd_buf : fd, b + (a - a0), (size_t) (read_end - a), a);
-        if (got <= 0) {
-            std::fprintf(stderr, "bmoe: tail pread failed at %llu\n", (unsigned long long) a);
-            return false;
-        }
-        a += (uint64_t) got;
-    }
-    const auto t1 = clock_t_::now();
-    const uint64_t lat_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-    io_syscall_ns_.fetch_add((long long) lat_ns);
-    std::memcpy(dst, b + (off - a0), (size_t) nbytes);
-    read_bytes_.fetch_add((long long) (read_end - a0));
+    const long long window = reader_.read(lane, j.dst, j.off, j.nbytes);
+    if (window < 0) return false;
 
-    // The trace records the read as issued, not as accounted: `read_bytes` is the aligned window
-    // actually pulled, which is what the drive was asked for and what the effective bandwidth must
-    // be judged against — `req_bytes` is only what the caller wanted out of it.
     if (io_trace_on_) {
+        const uint64_t lat_ns =
+            (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count();
         IoTraceRow r;
         r.layer = j.layer;
         r.expert = j.expert;
         r.proj = (int8_t) j.proj;
         r.lane = (int8_t) lane;
         r.spec = j.spec;
-        r.offset = off;
-        r.req_bytes = nbytes;
-        r.read_bytes = read_end - a0;
+        r.offset = j.off;
+        r.req_bytes = j.nbytes;
+        r.read_bytes = (uint64_t) window; // the aligned window pulled — what bandwidth is judged against
         r.latency_ns = lat_ns;
         std::lock_guard<std::mutex> lk(io_trace_mtx_);
         io_trace_rows_.push_back(r);
@@ -1298,11 +1201,11 @@ void ExpertStreamSource::enable_overlap_hook() {
 
 IExpertSource::Stats ExpertStreamSource::stats() const {
     Stats s;
-    s.read_bytes = (uint64_t) read_bytes_.load();
+    s.read_bytes = (uint64_t) reader_.read_bytes();
     // Serial: read_ns_ is the wall time the caller was blocked in the read phase. Overlap: the
-    // caller never blocks, so "I/O time" is instead the summed lane-busy time (io_syscall_ns_),
-    // which the runtime reports as lane-busy per token rather than as a slice of wall time.
-    s.read_seconds = (overlap_ ? io_syscall_ns_.load() : read_ns_.load()) / 1e9;
+    // caller never blocks, so "I/O time" is instead the summed lane-busy time (the reader's syscall
+    // ns), which the runtime reports as lane-busy per token rather than as a slice of wall time.
+    s.read_seconds = (overlap_ ? reader_.syscall_ns() : read_ns_.load()) / 1e9;
     s.mgmt_seconds = mgmt_ns_.load() / 1e9;
     s.spec_read_bytes = (uint64_t) spec_read_bytes_.load();
     s.spec_experts = spec_experts_.load();
@@ -1362,10 +1265,6 @@ void ExpertStreamSource::shutdown() {
         lbuf_[p].clear();
         lbuf_sz_[p].clear();
     }
-    for (void * b : bounces_)
-        if (b) pio::aligned_free(b);
-    bounces_.clear();
-    bounce_sz_.clear();
     // --dense-odirect anon buffers. Safe here: the context (whose rebound dense tensors point at
     // these) is torn down after the source, and no decode is in flight — same contract as the slot
     // and LRU buffers freed above.
@@ -1374,12 +1273,7 @@ void ExpertStreamSource::shutdown() {
     dense_bufs_.clear();
     dense_buf_sz_.clear();
     dense_tensors_.clear();
-    for (int lane = 0; lane < (int) fds_.size(); ++lane) {
-        if (pio::fd_ok(fds_[lane])) pio::close_fd(fds_[lane]);
-        if (pio::fd_ok(fds_buf_[lane])) pio::close_fd(fds_buf_[lane]);
-    }
-    fds_.clear();
-    fds_buf_.clear();
+    reader_.close(); // closes the lane fds and frees the bounces
     jobs_.clear();
     layers_.clear();
     active_ = false;

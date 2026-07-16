@@ -19,6 +19,7 @@
 #include "bmoe/decode_trace.h"
 #include "bmoe/recipe.h"
 #include "../io/platform_io.h"
+#include "../io/file_reader.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -195,14 +196,17 @@ private:
     std::vector<IoTraceRow> io_trace_rows_;
 
     bool active_ = false;
-    bool o_direct_ = false;
     bool load_all_ = false;
     bool overlap_ = false;
     bool prefetch_sync_ = false; // test only: drain prefetch reads synchronously (serial mode)
     int n_layer_ = 0;
     int n_expert_ = 0;
-    uint64_t fsize_ = 0;
     size_t align_ = 4096;
+
+    // The positioned reader that owns the fd pool, bounces and O_DIRECT decision. Expert slices are
+    // read through it; the dense-weights loader constructs its own, so their O_DIRECT choices are
+    // independent (see docs/architecture.md). file_size() replaces the old fsize_ member.
+    FileReader reader_;
 
     std::vector<LayerExperts> layers_;
 
@@ -294,10 +298,6 @@ private:
 
     // I/O lane pool
     int io_threads_ = 1;
-    std::vector<pio::fd_t> fds_;
-    std::vector<pio::fd_t> fds_buf_;
-    std::vector<void *> bounces_;
-    std::vector<size_t> bounce_sz_;
     std::vector<std::thread> io_pool_;
     std::vector<IoJob> jobs_;
     std::mutex io_mtx_;
@@ -309,9 +309,7 @@ private:
     std::atomic<bool> io_err_{false};
     uint32_t batch_flag_gen_ = 0; // async_gen_ of the batch in flight; snapshot under io_mtx_ at publish
 
-    std::atomic<long long> read_bytes_{0};
     std::atomic<long long> read_ns_{0};
-    std::atomic<long long> io_syscall_ns_{0};
     std::atomic<long long> mgmt_ns_{0}; // staging-section time: vm commit + evict + LRU bookkeeping
 
     // ── overlap mode: one layer in flight at a time (guaranteed by graph order) ──
