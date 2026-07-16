@@ -66,16 +66,26 @@ the rest of the system.
 
 `auto` is a real LRU cache, so it satisfies the cache requirement of `--prefetch`.
 
+`auto` is also the natural starting point for `--cache-dynamic` and `--cache-gov2`: it makes the
+ceiling itself a measured, device-sized number rather than a hand-set one, which is what those loops
+then treat as a ceiling to shrink under and — for gov2 — to demote away from entirely when even that
+is more than the device concedes. See [pressure.md](pressure.md).
+
 ## Explicit control
 
 Embedders that link the engine can also resize the cache directly with
 `Session::set_cache_budget_mb(int)` — for an app's own memory-pressure callback. It must be called
 between generations (never during a decode); it evicts to the new budget immediately. The Android
 example instead relies on the automatic tracking above, because it runs `bmoe-cli` as a subprocess
-that reads `/proc/meminfo` itself.
+that reads `/proc/meminfo` itself. `Session::set_cache_mode_slots(bool)` is the companion for a hard
+off/on: it flips the cache between the LRU and shared-slot (no-cache) mode, the same lever the gov2
+governor pulls when it demotes.
 
 ## Gate
 
 **S3** proves a runtime resize is byte-safe: it opens a session with a warm cache, drops the budget
 to force a full eviction, and asserts the next generation still matches the resident reference —
-only residency changes, never the produced bytes.
+only residency changes, never the produced bytes. **S4** proves the same for a runtime *mode* switch:
+it flips the cache LRU → shared-slot → LRU across generations (serial and overlap) and asserts every
+generation still matches the resident reference — the byte-identity guarantee the gov2 governor's
+demote/promote rests on.

@@ -127,6 +127,57 @@ session_shrink_gen(const RunConfig & c, int shrink_mib, std::string & out1, std:
     return true;
 }
 
+// Open a Session (cache on), generate, then flip the cache to shared-slot (off) mode and back to
+// the LRU between generations — the governor's runtime demotion/promotion. Each generation must
+// still match the cold resident reference: switching residency policy mid-session changes what is
+// held in memory, never the produced bytes.
+static bool session_modeflip_gen(
+    const RunConfig & c, std::string & out1, std::string & out2, std::string & out3, std::string & err) {
+    SessionConfig sc;
+    sc.model_path = c.model_path;
+    sc.n_threads = c.n_threads;
+    sc.n_ctx = c.n_ctx;
+    sc.n_batch = c.n_ctx;
+    sc.chatml = c.chatml;
+    sc.moe = c.moe;
+
+    std::unique_ptr<Session> s = Session::open(sc, err);
+    if (!s) return false;
+
+    GenerateRequest req;
+    req.prompt = c.prompt;
+    req.n_predict = c.n_predict;
+    req.clear_kv = true;
+
+    RunResult r1 = s->generate(req);
+    if (!r1) {
+        err = r1.error;
+        return false;
+    }
+    if (!s->set_cache_mode_slots(true)) { // demote LRU → shared slots
+        err = "set_cache_mode_slots(true) failed";
+        return false;
+    }
+    RunResult r2 = s->generate(req);
+    if (!r2) {
+        err = r2.error;
+        return false;
+    }
+    if (!s->set_cache_mode_slots(false)) { // promote back to the LRU
+        err = "set_cache_mode_slots(false) failed";
+        return false;
+    }
+    RunResult r3 = s->generate(req);
+    if (!r3) {
+        err = r3.error;
+        return false;
+    }
+    out1 = r1.generated_text;
+    out2 = r2.generated_text;
+    out3 = r3.generated_text;
+    return true;
+}
+
 static int check(const char * name, const std::string & a, const std::string & b) {
     if (a == b) {
         std::printf("[PASS] %s\n", name);
@@ -260,6 +311,17 @@ int main(int argc, char ** argv) {
     fails += check("S3a session generate #1 == resident", s_res, s_sh1);
     fails += check("S3b session generate #2 (after budget shrink) == resident", s_res, s_sh2);
 
+    // S4: the governor's runtime cache-mode switch (LRU → shared slots → LRU). Each generation must
+    // still match the resident reference: a mode flip only changes residency, never the bytes.
+    std::string s_mf1, s_mf2, s_mf3;
+    if (!session_modeflip_gen(sess, s_mf1, s_mf2, s_mf3, err)) {
+        std::fprintf(stderr, "session mode-flip run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("S4a session generate #1 (LRU) == resident", s_res, s_mf1);
+    fails += check("S4b session generate #2 (demoted to slots) == resident", s_res, s_mf2);
+    fails += check("S4c session generate #3 (promoted back to LRU) == resident", s_res, s_mf3);
+
     // ── G5: temporal prefetch must not change bytes ──
     // A forced cache (prefetch needs one) plus a couple of look-ahead layers, exercising the
     // speculative queue, integration and eviction against the plain streamed reference.
@@ -311,6 +373,17 @@ int main(int argc, char ** argv) {
     }
     fails += check("S2a session+overlap generate #1 == resident", s_res, s_og1);
     fails += check("S2b session+overlap generate #2 (warm cache) == resident", s_res, s_og2);
+
+    // S4 under overlap: the mode flip must not race the async reads / ready-flag machinery. This is
+    // the proof that the demotion's drain+quiesce+rebind is safe with the fork hook live.
+    std::string s_omf1, s_omf2, s_omf3;
+    if (!session_modeflip_gen(sess_ov, s_omf1, s_omf2, s_omf3, err)) {
+        std::fprintf(stderr, "session+overlap mode-flip run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("S4d overlap generate #1 (LRU) == resident", s_res, s_omf1);
+    fails += check("S4e overlap generate #2 (demoted to slots) == resident", s_res, s_omf2);
+    fails += check("S4f overlap generate #3 (promoted back to LRU) == resident", s_res, s_omf3);
 #else
     std::printf("[SKIP] S2 (expert-ready hook not built)\n");
 #endif

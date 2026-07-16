@@ -78,6 +78,11 @@ ValidationResult validate(const RunConfig & cfg) {
                         "sizes a cache budget at runtime, and there is no budget to size with the "
                         "cache off.");
         }
+        if (m.cache_gov2 && !cache_on) {
+            return fail("moe.cache_gov2 requires the LRU cache (cache_mb > 0 or cache_auto): the "
+                        "governor can DEMOTE to slot mode at runtime but cannot start there. Use "
+                        "--cache-mb auto --cache-gov2.");
+        }
     }
 
     return r;

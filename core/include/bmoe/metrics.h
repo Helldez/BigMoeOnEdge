@@ -63,6 +63,12 @@ struct TokenMetrics {
     double cache_budget_mib = 0.0;
     int turn = 0; // session turn this token belongs to (0 for a one-shot run)
 
+    // Governor v2 (--cache-gov2) trajectory: state (0 = on/LRU, 1 = off/slots) and the war it last
+    // attributed the pressure to (0 none, 1 cache, 2 dense, 3 anon, 4 foreign). Both 0 otherwise.
+    // A demotion shows as gov_state flipping to 1 and cache_budget_mib dropping to 0.
+    int gov_state = 0;
+    int gov_war = 0;
+
     std::string piece; // text of just this token (delta, for inline streaming)
     std::string text;  // full generated text so far (for UI streaming)
 };
@@ -139,6 +145,7 @@ struct RunInfo {
     bool cache_auto = false;
     int cache_ceil_mb = 0;
     bool cache_dynamic = false;
+    bool cache_gov2 = false;
     bool force_cache = false;
     int io_threads = 0;
     bool o_direct = false;

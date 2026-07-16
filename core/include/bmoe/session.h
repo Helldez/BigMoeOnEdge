@@ -95,6 +95,12 @@ public:
     // when the cache is off. Complements --cache-mb auto's automatic tracking with explicit control.
     void set_cache_budget_mb(int mib);
 
+    // Force the expert cache into shared-slot (off) mode, or back to the LRU. PRECONDITION: no
+    // generate() in flight. The governor drives this itself under --cache-gov2; this is the manual
+    // entry (an app's onTrimMemory, or the mode-flip byte-identity gate). Returns false if the
+    // switch could not be made (e.g. slot allocation failed); a no-op if already in that mode.
+    bool set_cache_mode_slots(bool slots);
+
 private:
     Session();
     struct Impl;

@@ -76,8 +76,12 @@ data class AppSettings(
             // Auto sizing is a live LRU cache, so it satisfies the prefetch cache requirement.
             val cacheOn = cacheMb == CACHE_AUTO || cacheMb > 0
             if (prefetchLayers > 0 && cacheOn) a += listOf("--prefetch", prefetchLayers.toString())
-            // Same requirement: there is no budget to size at runtime with the cache off.
-            if (cacheDynamic && cacheOn) a += "--cache-dynamic"
+            // Same requirement: there is no budget to size at runtime with the cache off. The
+            // "pressure-aware cache" toggle now drives the second-generation governor (--cache-gov2,
+            // which implies --cache-dynamic): it discovers the budget, attributes reclaim to its
+            // cause, and demotes the cache to slot mode on a >RAM model where cutting cannot end the
+            // war — so a hand-set ceiling is no longer needed to keep it sane. See docs/pressure.md.
+            if (cacheDynamic && cacheOn) a += "--cache-gov2"
         }
         return a
     }

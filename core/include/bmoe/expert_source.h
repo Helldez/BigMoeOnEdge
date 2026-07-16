@@ -87,6 +87,9 @@ public:
         // Bytes the widest single layer routes, measured (0 = not yet known). The mechanical floor:
         // the cache must hold the layer being staged.
         uint64_t layer_demand_bytes = 0;
+        // Every expert of every bound layer resident at once: the full expert set. The physical
+        // ceiling on any cache — no budget is ever larger than this, whatever the device concedes.
+        uint64_t total_expert_bytes = 0;
     };
     virtual Stats stats() const = 0;
 };

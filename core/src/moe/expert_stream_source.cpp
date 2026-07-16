@@ -55,8 +55,10 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         }
     }
     size_t max_full_any = 0;
-    for (int p = 0; p < MoeRecipe::max_exps; ++p)
+    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
         max_full_any = std::max(max_full_any, max_full[p]);
+        max_full_[p] = max_full[p]; // kept for a lazy slot allocation on a runtime demotion
+    }
     if (max_full_any == 0) {
         std::fprintf(stderr, "bmoe: no MoE layers were bound\n");
         return false;
@@ -91,6 +93,12 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         }
         cache_target_ = cache_max_;
     }
+
+    // The runtime residency mode, decided AFTER auto-sizing has set the final cache_max_ (with
+    // --cache-mb auto the budget is 0 until the block above computes it, so this must follow it —
+    // deciding it earlier stranded the auto path in slot mode with unallocated slots). The governor
+    // can flip it later (demote LRU → slots, or promote back).
+    slot_mode_ = cache_max_ == 0;
 
     if (cache_max_ == 0) {
         // One shared slot per present projection, reused across layers (one layer computes
@@ -471,7 +479,7 @@ void ExpertStreamSource::io_worker(int lane) {
 // Prefetch: on the eval thread, commit pages and enqueue speculative per-projection reads for the
 // given experts of layer il. LRU-safe (same thread as load_layer); workers only read the bytes.
 void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
-    if (!active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return;
+    if (!active_ || slot_mode_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return;
     const LayerExperts & L = layers_[il];
     bool any = false;
     std::lock_guard<std::mutex> lk(io_mtx_);
@@ -707,7 +715,12 @@ void ExpertStreamSource::account_demand(int il, int n_unique) {
 // Explicit budget change from outside a decode (memory-pressure callback, the governor, or the
 // shrink gate).
 void ExpertStreamSource::set_cache_budget(size_t bytes) {
-    if (cache_max_ == 0) return; // initialised off (shared-slot mode); the LRU buffers do not exist
+    if (slot_mode_) {
+        // No LRU to size in slot mode. Remember the request so a later promotion has a budget to
+        // return to, but evict nothing — nothing is resident here.
+        cache_max_ = std::min(bytes, total_expert_bytes_);
+        return;
+    }
     if (bytes > cache_max_) {
         // Growing evicts nothing, so it needs no quiesce — and must not do one: cancelling the
         // speculative reads in flight on every grow would quietly defeat --prefetch.
@@ -727,6 +740,69 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
     // every resident entry (coldest first) is a valid eviction target.
     while (cresident_ > cache_max_ && ctail_ != -1)
         evict_tail();
+}
+
+// Switch residency policy at a token boundary. PRECONDITION: no decode in flight. This is the
+// governor's OFF/ON lever: on a >RAM model where the LRU can earn no hits and its commit/evict churn
+// feeds the reclaim war, demoting to shared slots removes that churn entirely; promoting back rebinds
+// onto the reserved per-layer buffers when the device concedes the room again.
+bool ExpertStreamSource::set_cache_mode(CacheMode m) {
+    if (!active_) return false;
+    const bool want_slot = m == CacheMode::SharedSlot;
+    if (want_slot == slot_mode_) return true; // already there
+
+    // Drain any in-flight batch (an overlap decode leaves the last layer's surplus reads running)
+    // and quiesce speculation, so no worker is mid-write into either buffer family when we rebind.
+    {
+        std::unique_lock<std::mutex> lk(io_mtx_);
+        io_cv_done_.wait(lk, [&] { return done_cnt_ == batch_njobs_ || io_stop_; });
+    }
+    quiesce_spec();
+
+    if (want_slot) {
+        // Lazily allocate the shared slots on the first demotion and keep them for the session.
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            if (max_full_[p] == 0 || slot_[p]) continue;
+            slot_[p] = pio::alloc_aligned(align_, max_full_[p]);
+            if (!slot_[p]) {
+                std::fprintf(stderr, "bmoe: slot alloc %zu failed on demote — staying in LRU mode\n", max_full_[p]);
+                return false; // leave the mode unchanged rather than half-switched
+            }
+            slot_sz_[p] = max_full_[p];
+        }
+        // Release every resident LRU entry (physical pages back to the OS); the address reservations
+        // stay, so a later promotion can re-commit into them.
+        while (ctail_ != -1)
+            evict_tail();
+        // Rebind every bound layer's expert tensors onto the shared slots.
+        for (LayerExperts & L : layers_) {
+            if (!L.bound) continue;
+            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                if (L.proj[p].tensor) L.proj[p].tensor->data = slot_[p];
+        }
+        // Reset LRU bookkeeping coherently: nothing resident, and the stamps refer to the old epoch.
+        std::fill(cstamp_.begin(), cstamp_.end(), (uint32_t) 0);
+        chead_ = ctail_ = -1;
+        cresident_ = 0;
+        resident_frac_ = -1.0; // there is no LRU to sample while in slot mode
+        slot_mode_ = true;
+    } else {
+        // Promote: rebind onto the per-(layer, projection) reserved buffers. The LRU is already empty
+        // (left so on the demotion, or fresh from init), so there is no bookkeeping to rebuild.
+        for (int il = 0; il < n_layer_; ++il) {
+            LayerExperts & L = layers_[il];
+            if (!L.bound) continue;
+            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                if (L.proj[p].tensor && lbuf_[p][il]) L.proj[p].tensor->data = lbuf_[p][il];
+        }
+        slot_mode_ = false;
+    }
+    ++cache_resizes_;
+    return true;
+}
+
+void ExpertStreamSource::rewarm_dense() {
+    if (active_) warm_dense_regions(gguf_path_);
 }
 
 // ── LRU plumbing ────────────────────────────────────────────────────────────────────
@@ -797,14 +873,14 @@ void ExpertStreamSource::settle_spec() {
     // makes the one inside the load_layer that follows a cheap no-op: nothing left queued, and
     // nothing in flight. The cost is that its time lands outside the mgmt_ns_ window — which is
     // why a traced run is not a benchmark run.
-    if (active_ && cache_max_) quiesce_spec();
+    if (active_ && !slot_mode_) quiesce_spec();
 }
 
 void ExpertStreamSource::query_residency(int il, const int32_t * ids, int n_ids, uint8_t * out) const {
     for (int i = 0; i < n_ids; ++i)
         out[i] = 0;
     if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids) return;
-    if (cache_max_ == 0) return; // shared-slot mode: nothing is kept, so every routing re-reads
+    if (slot_mode_) return; // shared-slot mode: nothing is kept, so every routing re-reads
     for (int i = 0; i < n_ids; ++i) {
         const int e = ids[i];
         if (e < 0 || e >= n_expert_) continue;
@@ -833,7 +909,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
 
     // Integrate / discard any speculative prefetch before this layer's real staging touches the
     // cache. After this returns no spec read is in flight and completed ones are resident hits.
-    if (cache_max_) {
+    if (!slot_mode_) {
         quiesce_spec();
         // Exactly one hand on the budget: with the governor on it owns cache_max_ (from the token
         // loop, where an evicting shrink is safe) and we only sense here; otherwise the legacy
@@ -847,7 +923,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     }
 
     auto stage = [&](int e) -> bool {
-        if (cache_max_ == 0) {
+        if (slot_mode_) {
             for (int p = 0; p < MoeRecipe::max_exps; ++p) {
                 const uint64_t slice = L.proj[p].nb2;
                 if (slice == 0) continue; // absent slot in a fused layout
@@ -900,7 +976,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             // keeps the prompt tail's experts hot across prefill. Reads are scheduled only once
             // (the seen_ guard below), so this is bookkeeping only. In decode (n=1) the top-k ids
             // are distinct, so this branch never runs and behaviour is unchanged.
-            if (cache_max_) {
+            if (!slot_mode_) {
                 const int32_t id = il * n_expert_ + e;
                 lru_unlink(id);
                 lru_push_front(id);
@@ -949,7 +1025,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     }
     read_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
 
-    if (cache_max_) {
+    if (!slot_mode_) {
         const auto te0 = clock_t_::now();
         while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
             evict_tail();
@@ -986,7 +1062,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
 
     // Integrate / discard speculative prefetch before this layer's real staging (the previous
     // batch is already drained above, so this only waits on in-flight spec reads).
-    if (cache_max_) {
+    if (!slot_mode_) {
         quiesce_spec();
         // See the serial path: the governor owns the budget when it is on, and only senses here.
         if (cache_dynamic_) {
@@ -1026,7 +1102,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     std::sort(staged_.begin(), staged_.end());
     account_demand(il, (int) staged_.size());
 
-    if (cache_max_ == 0) {
+    if (slot_mode_) {
         // Cache off: every (projection, expert) is a fresh read into the shared full-size slot
         // at its canonical offset e*slice. Emit projection-major.
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
@@ -1120,7 +1196,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     // 5. Evict cold entries to budget. Safe to run concurrently with this batch's reads: step 1
     //    guaranteed no stale in-flight jobs, and current-gen entries (cstamp_ == cgen_) — the
     //    ones just staged — are never chosen, so eviction only releases pages nobody is reading.
-    if (cache_max_) {
+    if (!slot_mode_) {
         while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
             evict_tail();
     }
@@ -1196,12 +1272,15 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.cache_lookups = clookups_;
     s.cache_resident_bytes = (uint64_t) cresident_;
     s.stall_seconds = stall_ns_.load() / 1e9;
-    s.cache_budget_bytes = (uint64_t) cache_max_;
+    // In slot mode the effective budget is zero (no cache), whatever cache_max_ remembers for a
+    // possible promotion — report it honestly so the telemetry reads the run as cache-off.
+    s.cache_budget_bytes = slot_mode_ ? 0 : (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
     s.cache_resident_frac = resident_frac_;
     s.dense_resident_frac = dense_resident_frac_;
     s.token_demand_bytes = (uint64_t) token_demand_;
     s.layer_demand_bytes = (uint64_t) layer_demand_;
+    s.total_expert_bytes = (uint64_t) total_expert_bytes_;
     return s;
 }
 

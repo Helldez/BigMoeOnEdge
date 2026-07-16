@@ -338,6 +338,9 @@ static void print_usage(const char * argv0) {
         "      --cache-dynamic     treat --cache-mb as a ceiling and find the budget the device\n"
         "                          concedes: shrink when reclaim starts taking the cache, grow back\n"
         "                          when it stops (needs the cache; see docs/pressure.md)\n"
+        "      --cache-gov2        --cache-dynamic plus a hit-rate plateau, fault attribution, and an\n"
+        "                          OFF state (demote the cache to slots on a >RAM model where cutting\n"
+        "                          cannot end the war); default off, promoted per model+device by A/B\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache\n"
         "      --no-warm-dense     skip the load-time sweep that page-caches the non-expert weights\n"
@@ -413,7 +416,10 @@ int main(int argc, char ** argv) {
             cfg.moe.cache_dynamic = true;
         else if (a == "--no-cache-dynamic")
             cfg.moe.cache_dynamic = false;
-        else if (a == "--io-threads")
+        else if (a == "--cache-gov2") {
+            cfg.moe.cache_gov2 = true;
+            cfg.moe.cache_dynamic = true; // gov2 is the dynamic loop plus attribution + an off state
+        } else if (a == "--io-threads")
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
             cfg.moe.o_direct = false;

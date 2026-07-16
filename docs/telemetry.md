@@ -106,7 +106,7 @@ prints just the summary lines.
 ```
 step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,resident_frac,
 dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,
-mem_available_mib,mem_free_mib,swap_free_mib
+mem_available_mib,mem_free_mib,swap_free_mib,gov_state,gov_war
 ```
 
 followed by a `# summary ...` comment line. Intended for the benchmark sweep.
@@ -137,8 +137,9 @@ The trailing block is the memory picture, added so a run can be diagnosed from i
 | `swap_mib` | anonymous memory already lost to zram (`VmSwap`). |
 | `rss_mib` | total resident (`VmRSS`). |
 | `mem_available_mib` / `mem_free_mib` / `swap_free_mib` | what the device claims about itself. `MemAvailable` counts this process's own mmap'd weights as reclaimable, so it over-states headroom — it is recorded next to what we measured ourselves because the gap between them is the story. |
+| `gov_state` / `gov_war` | `--cache-gov2` only, else `0`. `gov_state`: 0 = LRU, 1 = demoted to shared slots (the off state). `gov_war`: what the governor attributed this token's pressure to — 0 none, 1 cache, 2 dense, 3 anon, 4 foreign. A demotion reads as `gov_state` → 1 with `cache_budget_mib` → 0. See [pressure.md](pressure.md). |
 
-All are `0` where the platform cannot report them (the Windows host build reports device memory but not the per-process split).
+All are `0` where the platform cannot report them (the Windows host build reports device memory but not the per-process split). The `# bmoe_metrics` preamble also gains `cache_gov2=<0|1>`.
 
 ## Route trace
 

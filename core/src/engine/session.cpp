@@ -126,6 +126,11 @@ struct Session::Impl {
     // last turn learned about this device is exactly what the next turn needs.
     std::unique_ptr<CacheGovernor> gov;
 
+    // Previous token's VmSwap, to hand the governor a per-token delta (rising swap under a fault
+    // load is the anon/zram war's signature). swap_known_ guards the first token, which has no prior.
+    uint64_t prev_swap_bytes = 0;
+    bool swap_known = false;
+
     // Stated once to a metrics sink, before the first token: the model and configuration every row
     // it writes was produced under. info_sent guards a session's many generate() calls from
     // interleaving preambles between turns.
@@ -160,6 +165,10 @@ int Session::n_ctx() const {
 }
 void Session::set_cache_budget_mb(int mib) {
     impl_->source.set_cache_budget((size_t) std::max(0, mib) * 1024ull * 1024ull);
+}
+bool Session::set_cache_mode_slots(bool slots) {
+    return impl_->source.set_cache_mode(slots ? ExpertStreamSource::CacheMode::SharedSlot
+                                              : ExpertStreamSource::CacheMode::Lru);
 }
 void Session::cancel() {
     impl_->cancel_requested.store(true, std::memory_order_relaxed);
@@ -331,7 +340,8 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // The budget the streamer settled on — an explicit cache_mb, or what auto sized to — is the
         // most the user sanctioned, so it becomes the governor's ceiling and its starting point. The
         // loop only ever asks for less than this, and climbs back toward it when the device allows.
-        const uint64_t configured = im.source.stats().cache_budget_bytes;
+        const IExpertSource::Stats st0 = im.source.stats();
+        const uint64_t configured = st0.cache_budget_bytes;
         if (cfg.moe.cache_dynamic && configured > 0) {
             CacheGovernorParams gp;
             gp.user_cap = (size_t) configured;
@@ -342,6 +352,37 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             // rounder number. Being briefly too small costs hits for a few tokens; being too big
             // costs the war this loop exists to end.
             gp.min_cap = std::min<size_t>(64ull * 1024 * 1024, (size_t) configured);
+
+            if (cfg.moe.cache_gov2) {
+                // The second-generation governor's extra bounds and the entry test. floor_headroom
+                // is the RAM to leave the system; phys_cap is the whole expert set (no cache is ever
+                // larger). Both flow from measured/config values, no model constants.
+                gp.floor_headroom = (size_t) std::max(0, cfg.moe.cache_floor_mb) * 1024ull * 1024ull;
+                gp.phys_cap = (size_t) st0.total_expert_bytes;
+
+                // Entry test: prefill runs before the governor's first tick, so a budget the device
+                // cannot sustain would be filled — and the device knocked over — before any decision.
+                // MemAvailable is the trap here: it counts this process's OWN mmap'd model weights as
+                // reclaimable ("free"), so trusting it makes the auto budget over-ask by roughly the
+                // resident model size, and the huge prefill commit then OOMs (measured: --cache-mb
+                // auto asked 6.6 GiB on an 8 GiB device and segfaulted mid-prefill). So discount the
+                // dense (non-expert) weight bytes — the part MemAvailable double-counts — from the
+                // reserve before clamping. dense = every tensor in the file minus the expert set; it
+                // is an over-estimate of what stays resident (cold embeddings get dropped), which is
+                // the safe direction. KV and compute buffers are anon and already allocated by now,
+                // so MemAvailable already excludes them — only the file-backed lie needs correcting.
+                uint64_t total_tensor_bytes = 0;
+                for (const auto & kv : offs.size_by_name)
+                    total_tensor_bytes += kv.second;
+                const size_t dense_bytes = total_tensor_bytes > st0.total_expert_bytes
+                                               ? (size_t) (total_tensor_bytes - st0.total_expert_bytes)
+                                               : 0;
+                const uint64_t avail = pio::mem_available_bytes();
+                const size_t reserve = gp.floor_headroom + dense_bytes;
+                const size_t entry = entry_budget((size_t) configured, avail, reserve, gp.min_cap);
+                gp.initial = entry;
+                if (entry < (size_t) configured) im.source.set_cache_budget(entry);
+            }
             im.gov = std::make_unique<CacheGovernor>(gp);
         }
 
@@ -419,6 +460,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.cache_auto = cfg.moe.cache_auto;
         ri.cache_ceil_mb = cfg.moe.cache_ceil_mb;
         ri.cache_dynamic = cfg.moe.cache_dynamic;
+        ri.cache_gov2 = cfg.moe.cache_gov2;
         ri.force_cache = cfg.moe.force_cache;
         ri.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
         ri.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
@@ -739,18 +781,23 @@ RunResult Session::generate(const GenerateRequest & req,
         // Read the memory picture AFTER the decode, outside the s0..s1 bracket: two /proc reads are
         // cheap but they are not this token's work, and billing them to wall_ms would corrupt the
         // very number the reader is here to trust.
+        uint64_t swap_bytes_now = 0, mem_avail_now = 0;
+        bool swap_ok = false;
         pio::ProcessMemory pm;
         if (pio::process_memory(&pm)) {
             m.rss_mib = pm.rss_bytes / (1024.0 * 1024.0);
             m.rss_anon_mib = pm.rss_anon_bytes / (1024.0 * 1024.0);
             m.rss_file_mib = pm.rss_file_bytes / (1024.0 * 1024.0);
             m.swap_mib = pm.swap_bytes / (1024.0 * 1024.0);
+            swap_bytes_now = pm.swap_bytes;
+            swap_ok = true;
         }
         pio::DeviceMemory dm;
         if (pio::device_memory(&dm)) {
             m.mem_available_mib = dm.available_bytes / (1024.0 * 1024.0);
             m.mem_free_mib = dm.free_bytes / (1024.0 * 1024.0);
             m.swap_free_mib = dm.swap_free_bytes / (1024.0 * 1024.0);
+            mem_avail_now = dm.available_bytes;
         }
         if (moe.enabled) {
             IExpertSource::Stats st = im.source.stats();
@@ -779,14 +826,42 @@ RunResult Session::generate(const GenerateRequest & req,
 
             // Size the cache to what the device concedes, here and nowhere else: between two decodes
             // nothing is staged for a generation in flight, which is exactly the precondition
-            // set_cache_budget needs to evict the cold tail without a cstamp guard.
+            // set_cache_budget (and a mode switch) needs to act without a decode in flight.
             if (im.gov) {
                 CacheSignals sig;
                 sig.majflt = m.majflt;
                 sig.resident_frac = st.cache_resident_frac;
                 sig.floor = (size_t) st.layer_demand_bytes;
+                if (moe.cache_gov2) {
+                    // The v2 attribution + feasibility signals. Only fed under --cache-gov2 so
+                    // --cache-dynamic alone stays the PR#35 baseline for the A/B.
+                    sig.dense_resident_frac = st.dense_resident_frac;
+                    sig.mem_available = mem_avail_now;
+                    sig.cache_hits = st.cache_hits;
+                    sig.cache_lookups = st.cache_lookups;
+                    // Withhold the demand until the second decode token: the first still carries the
+                    // prefill batch UNION (far larger than one decode token), which reads as infeasible.
+                    if (n_gen >= 2) sig.token_demand = (size_t) st.token_demand_bytes;
+                    if (im.swap_known && swap_ok)
+                        sig.swap_delta = (int64_t) swap_bytes_now - (int64_t) im.prev_swap_bytes;
+                }
                 const CacheGovernor::Decision d = im.gov->on_token(sig);
+                if (moe.cache_gov2) {
+                    // Apply the mode BEFORE the budget: a demotion makes the budget moot, and a
+                    // promotion must switch to LRU before the new budget is set on it.
+                    if (d.mode == CacheGovernor::Mode::slots)
+                        im.source.set_cache_mode(ExpertStreamSource::CacheMode::SharedSlot);
+                    else if (d.mode == CacheGovernor::Mode::lru)
+                        im.source.set_cache_mode(ExpertStreamSource::CacheMode::Lru);
+                    if (d.rewarm_dense) im.source.rewarm_dense();
+                }
                 if (d.changed) im.source.set_cache_budget(d.cap);
+                m.gov_state = (int) im.gov->state();
+                m.gov_war = (int) im.gov->war();
+            }
+            if (swap_ok) {
+                im.prev_swap_bytes = swap_bytes_now;
+                im.swap_known = true;
             }
         } else {
             m.compute_ms = m.wall_ms;

@@ -48,6 +48,15 @@ struct MoeStreamConfig {
     // See docs/pressure.md and bmoe/cache_governor.h.
     bool cache_dynamic = false;
 
+    // The second-generation governor: everything cache_dynamic does, plus a hit-rate plateau that
+    // replaces a hand-set ceiling, attribution of a fault load to its culprit (our cache, the dense
+    // weights, or the anon/zram war), and a real OFF state — when a >RAM model routes more than the
+    // device concedes, cutting the budget cannot end the war (its churn feeds it), so the governor
+    // demotes the cache to slot mode and re-arms it only if the device later frees the room. Implies
+    // cache_dynamic; requires the LRU cache at init (it can REACH the off state at runtime, it cannot
+    // START there). Default off, promoted per model+device by the on-device A/B. See docs/pressure.md.
+    bool cache_gov2 = false;
+
     // Parallel expert-slice read lanes (incl. the calling thread). 1 = serial baseline.
     // Clamped to [1, io_threads_max]. 4 is the measured sweet spot on UFS4 phones.
     int io_threads = 4;

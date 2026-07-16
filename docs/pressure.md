@@ -111,6 +111,11 @@ knowing; it is simply not the same claim as where the cache must stop.
 Per token (`--csv`, `BMOE_PROGRESS`): `resident_frac` — the sampled fraction of the cache still in
 RAM, `-1` when unmeasured (throttled sample, streaming off, or a host that cannot report).
 
+Per token, under `--cache-gov2` also: `dense_resident_frac` (the model's own residency, `-1` when
+unmeasured), and `gov_state` (0 = LRU, 1 = demoted to slots) with `gov_war` (0 none, 1 cache, 2
+dense, 3 anon, 4 foreign) — the classifier's verdict each token. A demotion shows as `gov_state`
+flipping to 1 and `cache_budget_mib` dropping to 0.
+
 Per run (`# summary`, `BMOE_DONE`): `token_demand_MiB` (what one token demands), `layer_demand_MiB`
 (the mechanical floor), `cache_budget_MiB` (where the loop settled), `cache_cuts` (how often the
 device pushed back), `cache_resizes`.
@@ -122,6 +127,64 @@ Reading `cache_budget_MiB` against `token_demand_MiB` is how a budget stops bein
 near the demand holds about one token of routing history and its hits come from inter-token
 correlation only; a budget far above it is either buying real reuse or buying a war, and
 `cache_cuts` says which.
+
+## `--cache-gov2`: attribution, a plateau, and an off state
+
+`--cache-dynamic` cuts when it senses reclaim and grows when it does not. That is the right reflex
+for the case it was built for — the device slowly conceding a Qwen-sized cache — but three device
+runs on 2026-07-16 showed it is not enough on its own. `--cache-gov2` is the same loop plus the parts
+those runs demanded. It implies `--cache-dynamic`; the plain flag stays the A/B baseline.
+
+**The one health signal is `majflt`. Everything else only attributes it.** A fault load is the only
+evidence that pressure is *costing* something; residency and swap say *whose* pages are moving, which
+decides *which lever* to pull — but a residency that dips on cold, never-reused pages is not a
+problem, and cutting the cache is the wrong answer to a fault load that is not the cache's. So the
+governor classifies each token's pressure before it acts:
+
+| War | Signature | Action |
+|---|---|---|
+| cache | `resident_frac` below 0.90 (our anon cache is being taken) | cut ×0.7 |
+| dense | `dense_resident_frac` fell below its own plateau ×0.85 (the model's weights are going) | cut, and re-warm the dense set once |
+| anon | swap climbing under a fault load, while cache *and* dense both hold | cut ×0.5 (hard) |
+| foreign | faults, but cache and dense are demonstrably resident and swap is flat | **do not cut** — absorb it as the new calm |
+
+The foreign case is why `--cache-dynamic` alone over-cuts: measured on the new device, a run held
+`dense_resident_frac` at 1.000 while `majflt` sat in the thousands and `swap_mib` climbed 1.8 → 3.1
+GiB — the kernel was compressing our *anon* memory into zram, not touching the cache. v1 read the
+resident cache as calm, folded the 3000-fault storm into its baseline, and then *grew* mid-war. v2
+attributes it to the anon war, never poisons the baseline (a token any war signal fires on cannot
+teach the "calm" rate), and cuts hard.
+
+**Cutting is not always the answer — sometimes the cache has to turn off.** On a >RAM model one token
+routes more than the device will ever hold (gpt-oss at top-4: `token_demand_MiB` 1815), so the LRU
+earns no hits at any allowed budget *and* pays the commit/evict churn of a token's worth of pages
+every step — churn that is itself a source of the war. Measured: the governor cut that cache all the
+way to 470 MiB and the war did not end (`majflt/tok` stayed 3000–6000); a same-day `--cache-mb 0` run
+of the same model sat at `majflt/tok` ≈ 1. So the governor has a real **off state**: when an anon war
+survives repeated cuts, or a decode-measured `token_demand` exceeds what the device will concede, it
+**demotes** the cache to shared-slot mode (the byte-identical no-cache path, gates S4a–f), where the
+churn disappears. It re-arms — promotes back to the LRU — only after several probes agree the device
+has freed room for a demand-sized cache with margin.
+
+**Growth stops where hits stop.** With no configured ceiling (`--cache-mb auto` sizes the ceiling
+dynamically to `MemAvailable − floor`, itself not a constant), the budget is held by four measured
+bounds: the physical expert-set size, the learned reclaim ceiling, the device's free RAM, and a
+**hit-rate plateau** — the governor samples the hit rate at each grow step and freezes when more
+budget stops buying hits beyond two binomial standard errors. On the old device this is the
+difference between the governed run (1.64 tok/s, cuts once, then calm) and a fixed 4000 MiB run
+(same 1.64 tok/s but a permanent 1582 fault/tok war): the extra 10 points of hit rate bought nothing
+but the war.
+
+**Entry test.** Prefill runs before the governor's first tick, so a budget the device cannot sustain
+is filled — and the war started — before any decision. Measured: `--cache-mb 4000` on gpt-oss had
+`swap_mib` at 1.8 GiB by step 1. So under gov2 the *starting* budget is clamped at load to
+`entry_budget(configured, MemAvailable, floor, min_cap)` and the streamer shrunk to it before the
+first prefill token. `MemAvailable` overstates the room (it counts our own weights as free), so this
+is a clamp, not an authority — the runtime loop still discovers the true concession.
+
+None of this hard-codes a model or a device: `token_demand` and the hit rate are measured, the four
+bounds are measured or configured, and the same machine routes Qwen to a 2.8 GiB cache and gpt-oss to
+the off state on the *same* phone, purely on the numbers.
 
 ## Portability
 
@@ -139,9 +202,12 @@ governor and the actuator do not change.
 
 Off by default, and the app exposes it as a switch ("Pressure-aware cache sizing"). It stays off
 until the on-device A/B says otherwise — the same discipline that turned the rewarm pass off after
-it was measured. The tunables (0.90 residency, ×3 faults, ×0.7 cut, 64 MiB growth) are compiled in
-rather than exposed: they are control-loop policy, not per-device facts, and the loop discovers the
-device's concession at runtime regardless.
+it was measured. `--cache-gov2` (attribution, the plateau, and the off state) is a second, likewise
+default-off switch, promoted per model+device by the A/B: Qwen and Gemma must not regress from their
+~5 tok/s benchmark, and gpt-oss must reach the off state and match a hand-set `--cache-mb 0`. The
+tunables (0.90 residency, ×3 faults, ×0.7 cut, 64 MiB growth, and gov2's ×0.5 anon cut, 0.85 dense
+decline, 3-cut demote) are compiled in rather than exposed: they are control-loop policy, not
+per-device facts, and the loop discovers the device's concession at runtime regardless.
 
 See also: [android-memory.md](android-memory.md) for what reclaims the engine's memory and which
 levers exist, [adaptive-cache.md](adaptive-cache.md) for `--cache-mb auto` and the ceiling.

@@ -86,6 +86,22 @@ public:
     // and exercised by the shrink gate. Clamped up: an explicit raise also lifts the grow ceiling.
     void set_cache_budget(size_t bytes);
 
+    // The cache's residency policy, switchable at a token boundary by the governor's OFF/ON state.
+    enum class CacheMode { Lru, SharedSlot };
+
+    // Switch between the LRU cache and shared-slot (no-cache) mode at runtime. PRECONDITION: no
+    // decode in flight (same contract as set_cache_budget). Drains any in-flight/speculative reads,
+    // rebinds every expert tensor onto the target buffers, and releases the LRU's resident pages on
+    // a demotion (keeping the address reservations for a later promotion). The slots are allocated
+    // lazily on the first demotion and kept for the session. Returns false on an allocation failure
+    // (the mode is left unchanged). A no-op that returns true if already in the requested mode.
+    bool set_cache_mode(CacheMode m);
+    CacheMode cache_mode() const { return slot_mode_ ? CacheMode::SharedSlot : CacheMode::Lru; }
+
+    // Re-run the dense warm-up sweep once (a governor's dense-war response). Best-effort; safe
+    // between tokens. Populates the page cache with the dense weights the kernel just reclaimed.
+    void rewarm_dense();
+
     // ── I/O trace (diagnostics; see bmoe/decode_trace.h) ────────────────────────────
     // When on, every read_slice records one row. Rows are appended under a dedicated leaf mutex
     // (reads happen on N lanes at once), so this costs a lock per read and is off by default.
@@ -185,9 +201,14 @@ private:
 
     std::vector<LayerExperts> layers_;
 
-    // shared-slot mode (cache off): one full-size slot per projection, reused by layers
+    // shared-slot mode (cache off): one full-size slot per projection, reused by layers. Chosen at
+    // init when cache_max_ == 0, and reachable at runtime when the governor demotes (slot_mode_).
+    // max_full_ is the full-tensor byte size per projection, kept so the slots can be allocated
+    // lazily on the first runtime demotion rather than only at init.
     void * slot_[MoeRecipe::max_exps] = {nullptr, nullptr, nullptr};
     size_t slot_sz_[MoeRecipe::max_exps] = {0, 0, 0};
+    size_t max_full_[MoeRecipe::max_exps] = {0, 0, 0};
+    bool slot_mode_ = false; // true = shared-slot (no LRU); the runtime mode, not just the init one
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
     size_t cache_max_ = 0; // live budget in bytes; mutated at runtime when cache_auto_
