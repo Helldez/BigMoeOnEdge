@@ -31,5 +31,19 @@
             android:name=".RunService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- Hands a metrics CSV to another app (Drive, Gmail, Files) as a content:// URI with a
+             one-shot read grant. A file:// URI would be refused outright since Android 7, and the
+             alternative — telling the user to go find the file — is not a feature. Scoped to the
+             app's own external files dir; it exposes nothing else. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
     </application>
 </manifest>
