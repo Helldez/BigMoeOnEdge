@@ -104,7 +104,9 @@ prints just the summary lines.
 `--csv PATH` additionally writes one row per token:
 
 ```
-step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,resident_frac
+step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,resident_frac,
+turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,mem_available_mib,mem_free_mib,
+swap_free_mib
 ```
 
 followed by a `# summary ...` comment line. Intended for the benchmark sweep.
@@ -121,6 +123,21 @@ expert bytes one token routes, measured — where cache hits start, NOT a floor 
 [pressure.md](pressure.md)), `layer_demand_MiB=<f>` (the widest layer's routed bytes: the mechanical
 floor the governor may not cut below) and `cache_cuts=<int>` (times `--cache-dynamic` shrank the budget under reclaim); see the
 `io_ms` note above for how the read-time columns are reinterpreted under overlap.
+
+The trailing block is the memory picture, added so a run can be diagnosed from its own file:
+
+| column | meaning |
+| --- | --- |
+| `turn` | which `generate()` this token belongs to (0 for a one-shot run). A session CSV spans every turn; without this the two-turn shape — a fast turn, an idle, then the turn that pays for it — is unreadable. |
+| `majflt_mib` | what those faults moved: `majflt` x page size. The same fact as the count, in the unit the rest of the row uses — directly comparable to `read_bytes`, i.e. the reads we chose against the reads the kernel forced on us. |
+| `cache_budget_mib` | the expert-cache budget this token ran under. Per token, not just in the summary: it is the governor's trajectory, and without it a loop that cut once and pinned reads exactly like one that never acted. |
+| `rss_anon_mib` | resident anonymous memory — **the expert cache lives here**. Falling while `cache_budget_mib` stays put means the kernel is taking the cache. |
+| `rss_file_mib` | resident file-backed memory — the mmap'd model. Reclaimed by being dropped, not swapped, so it never shows in `swap_mib`. |
+| `swap_mib` | anonymous memory already lost to zram (`VmSwap`). |
+| `rss_mib` | total resident (`VmRSS`). |
+| `mem_available_mib` / `mem_free_mib` / `swap_free_mib` | what the device claims about itself. `MemAvailable` counts this process's own mmap'd weights as reclaimable, so it over-states headroom — it is recorded next to what we measured ourselves because the gap between them is the story. |
+
+All are `0` where the platform cannot report them (the Windows host build reports device memory but not the per-process split).
 
 ## Route trace
 
