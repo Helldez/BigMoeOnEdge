@@ -140,6 +140,10 @@ bool device_memory(DeviceMemory * out) {
     return true;
 }
 
+bool system_reclaim(SystemReclaim * /*out*/) {
+    return false; // no /proc/vmstat equivalent worth wiring for the host gates
+}
+
 #else
 
 const fd_t fd_invalid = -1;
@@ -304,6 +308,37 @@ bool device_memory(DeviceMemory * out) {
     out->free_bytes = v[1];
     out->swap_free_bytes = v[2];
     return true;
+}
+
+bool system_reclaim(SystemReclaim * out) {
+    // /proc/vmstat is "name value\n", value a raw counter (pages for pgscan_*, events for
+    // workingset_*) — not the "Key: n kB" shape of meminfo, so it needs its own tiny parser.
+    FILE * f = std::fopen("/proc/vmstat", "re");
+    if (!f) return false; // a vendor policy may deny it; the caller reports that as unmeasured
+    char line[128];
+    // workingset_refault exists either whole (older kernels) or split into _anon + _file (~5.9+).
+    // Accumulate whatever is present, so one field covers both kernel generations.
+    uint64_t ws = 0;
+    bool any = false;
+    while (std::fgets(line, sizeof(line), f)) {
+        char name[64];
+        unsigned long long val = 0;
+        if (std::sscanf(line, "%63s %llu", name, &val) != 2) continue;
+        if (std::strcmp(name, "pgscan_kswapd") == 0) {
+            out->kswapd_scan_pages = val;
+            any = true;
+        } else if (std::strcmp(name, "pgscan_direct") == 0) {
+            out->direct_scan_pages = val;
+            any = true;
+        } else if (std::strcmp(name, "workingset_refault") == 0 || std::strcmp(name, "workingset_refault_anon") == 0 ||
+                   std::strcmp(name, "workingset_refault_file") == 0) {
+            ws += val;
+            any = true;
+        }
+    }
+    std::fclose(f);
+    out->workingset_refault = ws;
+    return any;
 }
 
 #endif

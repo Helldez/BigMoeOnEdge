@@ -110,4 +110,27 @@ struct DeviceMemory {
 };
 bool device_memory(DeviceMemory * out);
 
+// The earliest warning there is, from /proc/vmstat. These are SYSTEM-wide, not this process's — so
+// they are noisier (another app can move them), but they fire before any per-process signal does:
+// before a page of OURS is chosen, the machine is already scanning to find victims.
+//
+//   * kswapd_scan_pages: pgscan_kswapd, cumulative. Its per-token delta rising means kswapd woke and
+//     is walking the LRU lists looking for pages to reclaim — the war's preconditions exist, but no
+//     victim has been picked yet.
+//   * direct_scan_pages: pgscan_direct, cumulative. Scanning done in DIRECT reclaim — a thread that
+//     wanted memory and had to stop and reclaim it itself. Strictly worse than kswapd: it is a stall,
+//     not a background sweep, and one of the stalling threads may be ours.
+//   * workingset_refault: cumulative refaults of pages that had been reclaimed and were needed again
+//     — the definition of thrash. Rising means it has already started, somewhere in the system.
+//     Kernels since ~5.9 split this into _anon + _file; this sums whichever form is present.
+//
+// Values are page counts; multiply by vm_page() for bytes. False (out untouched) when /proc/vmstat
+// cannot be read — a vendor SELinux policy may deny it, which is itself worth knowing.
+struct SystemReclaim {
+    uint64_t kswapd_scan_pages = 0;
+    uint64_t direct_scan_pages = 0;
+    uint64_t workingset_refault = 0;
+};
+bool system_reclaim(SystemReclaim * out);
+
 } // namespace bmoe::pio

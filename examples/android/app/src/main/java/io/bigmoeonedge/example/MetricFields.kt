@@ -45,6 +45,10 @@ object MetricFields {
         MetricField("mem_available_mib", "device 'available' (it lies)", "what the kernel claims is free — it counts our own mmap'd weights as reclaimable, so it over-states headroom", Better.NEUTRAL),
         MetricField("mem_free_mib", "device free", "truly free RAM, before any reclaim", Better.NEUTRAL),
         MetricField("swap_free_mib", "swap free", "zram space left before the device is truly out of room", Better.NEUTRAL),
+
+        MetricField("kswapd_scan_mib", "kswapd scanning (earliest warning)", "MiB the background reclaimer scanned this token (system-wide, so noisy). Rising = the machine started hunting for pages to reclaim, before any of ours was taken", Better.LOWER),
+        MetricField("direct_scan_mib", "direct reclaim (worse)", "MiB scanned in DIRECT reclaim — a thread that wanted memory had to stop and reclaim it itself. A stall, not a background sweep, and one of them may be ours", Better.LOWER),
+        MetricField("ws_refault_mib", "thrash (system-wide)", "MiB of pages that were reclaimed and then needed again — the definition of thrash. Rising means it has already started somewhere in the system", Better.LOWER),
     )
 
     private val byName = all.associateBy { it.name }

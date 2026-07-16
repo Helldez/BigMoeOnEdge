@@ -33,11 +33,12 @@ public:
         write_header(); // a caller that never sent RunInfo still gets a readable file
         std::fprintf(f_,
                      "%d,%d,%.3f,%.3f,%.3f,%llu,%.2f,%.3f,%.3f,%llu,%.3f,%.3f,%d,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,"
-                     "%.1f,%.1f,%.1f\n",
+                     "%.1f,%.1f,%.1f,%.2f,%.2f,%.2f\n",
                      m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, (unsigned long long) m.read_bytes,
                      m.cache_hit_pct, m.stall_ms, m.mgmt_ms, (unsigned long long) m.majflt, m.cpu_ms, m.resident_frac,
                      m.turn, m.majflt_mib, m.cache_budget_mib, m.rss_mib, m.rss_anon_mib, m.rss_file_mib, m.swap_mib,
-                     m.mem_available_mib, m.mem_free_mib, m.swap_free_mib);
+                     m.mem_available_mib, m.mem_free_mib, m.swap_free_mib, m.kswapd_scan_mib, m.direct_scan_mib,
+                     m.ws_refault_mib);
         std::fflush(f_);
     }
     void on_summary(const RunSummary & s) override {
@@ -72,7 +73,8 @@ private:
         // (how much of the cache the kernel still has; -1 = unmeasured), then the memory block.
         std::fprintf(f_, "step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,"
                          "resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,"
-                         "mem_available_mib,mem_free_mib,swap_free_mib\n");
+                         "mem_available_mib,mem_free_mib,swap_free_mib,kswapd_scan_mib,direct_scan_mib,"
+                         "ws_refault_mib\n");
     }
 
     std::FILE * f_ = nullptr;

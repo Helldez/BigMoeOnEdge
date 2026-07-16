@@ -52,6 +52,15 @@ struct TokenMetrics {
     double mem_free_mib = 0.0;
     double swap_free_mib = 0.0;
 
+    // System-wide reclaim activity this token, from /proc/vmstat (MiB scanned/refaulted = page-count
+    // delta × page size). The EARLIEST warning there is, and the noisiest: system-wide, so another
+    // app moves it too — but kswapd_scan rising means the machine started hunting for victims before
+    // any page of ours was taken, and direct_scan means a thread (maybe ours) had to stop and reclaim
+    // itself. ws_refault rising means thrash already began somewhere. 0 when /proc/vmstat is denied.
+    double kswapd_scan_mib = 0.0;
+    double direct_scan_mib = 0.0;
+    double ws_refault_mib = 0.0;
+
     // The cache budget as of this token. In the summary it is only the last value; per token it is
     // the governor's trajectory — when it cut, how far, whether it grew back. Without it a run that
     // "did not work" cannot be told apart from one that never acted.
