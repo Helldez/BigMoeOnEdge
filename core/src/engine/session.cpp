@@ -324,6 +324,33 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         std::vector<uint64_t> dense_bytes;
         if (route_trace) dense_bytes = dense_bytes_per_layer(offs, layers, im.n_layer);
 
+        // --dense-odirect: hand the streamer the dense (non-expert) model weights to read into anon
+        // buffers. The list is every captured weight leaf that IS a gguf tensor (dropping graph
+        // inputs and KV, which share the leaf shape) and is NOT one of the streamed experts. Built
+        // before init consumes `layers`. Set even when empty is harmless; the streamer no-ops it.
+        if (cfg.moe.dense_odirect) {
+            std::unordered_set<std::string> expert_names;
+            for (const LayerExperts & L : layers) {
+                if (!L.bound) continue;
+                for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                    if (L.proj[p].tensor) expert_names.insert(L.proj[p].tensor->name);
+            }
+            std::vector<DenseTensorRef> dense;
+            for (const auto & kv : im.hook->captured_weights()) {
+                const std::string & name = kv.first;
+                if (expert_names.count(name)) continue;
+                auto off = offs.off_by_name.find(name);
+                auto sz = offs.size_by_name.find(name);
+                if (off == offs.off_by_name.end() || sz == offs.size_by_name.end()) continue; // not a file tensor
+                DenseTensorRef d;
+                d.tensor = kv.second;
+                d.file_off = off->second;
+                d.size = sz->second;
+                dense.push_back(d);
+            }
+            im.source.set_dense_tensors(std::move(dense));
+        }
+
         if (!im.source.init(cfg.model_path, n_expert, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
@@ -425,6 +452,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
         ri.warm_dense = cfg.moe.enabled && cfg.moe.warm_dense;
+        ri.dense_odirect = cfg.moe.enabled && cfg.moe.dense_odirect;
         if (cfg.moe.enabled) {
             const IExpertSource::Stats st = im.source.stats();
             ri.cache_mb = (int) (st.cache_budget_bytes / (1024ull * 1024ull));

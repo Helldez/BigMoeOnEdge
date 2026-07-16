@@ -23,6 +23,7 @@ data class AppSettings(
     val oDirect: Boolean = true,        // bypass the page cache
     val overlap: Boolean = true,        // read the next experts while the current layer computes
     val warmDense: Boolean = true,      // page-cache the non-expert weights at load (kills >RAM slow-start)
+    val denseOdirect: Boolean = false,  // experiment: read dense weights via O_DIRECT into our buffers
     val prefetchLayers: Int = 0,        // temporal prefetch depth K (0 = off); needs the cache
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
     val metricsCsv: Boolean = true,     // write the engine's per-token CSV for this session (--csv)
@@ -73,6 +74,8 @@ data class AppSettings(
             if (overlap) a += "--overlap"
             // Warm-up is on by default in the engine; only surface the opt-out flag.
             if (!warmDense) a += "--no-warm-dense"
+            // Experiment (default off): dense weights via O_DIRECT into our own buffers.
+            if (denseOdirect) a += "--dense-odirect"
             // Auto sizing is a live LRU cache, so it satisfies the prefetch cache requirement.
             val cacheOn = cacheMb == CACHE_AUTO || cacheMb > 0
             if (prefetchLayers > 0 && cacheOn) a += listOf("--prefetch", prefetchLayers.toString())
@@ -90,7 +93,7 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, cacheDynamic, ioThreads, threads, nExpertUsed, oDirect,
-               overlap, warmDense, prefetchLayers)
+               overlap, warmDense, denseOdirect, prefetchLayers)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -102,6 +105,7 @@ data class AppSettings(
             .putInt("nExpertUsed", nExpertUsed)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
             .putBoolean("overlap", overlap).putBoolean("warmDense", warmDense)
+            .putBoolean("denseOdirect", denseOdirect)
             .putInt("prefetchLayers", prefetchLayers)
             .putBoolean("thinking", thinking)
             .putBoolean("metricsCsv", metricsCsv)
@@ -179,6 +183,7 @@ data class AppSettings(
                 oDirect = p.getBoolean("oDirect", d.oDirect),
                 overlap = p.getBoolean("overlap", d.overlap),
                 warmDense = p.getBoolean("warmDense", d.warmDense),
+                denseOdirect = p.getBoolean("denseOdirect", d.denseOdirect),
                 prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
                 thinking = p.getBoolean("thinking", d.thinking),
                 metricsCsv = p.getBoolean("metricsCsv", d.metricsCsv),

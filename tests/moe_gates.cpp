@@ -8,6 +8,8 @@
 //   G1  resident (no streaming)        == streaming, cache off
 //   G2  streaming, cache off           == streaming, small LRU cache (forces evictions)
 //   G3  streaming, selective           == streaming, --load-all (every expert each token)
+//   G6  resident                       == streaming + --dense-odirect (dense weights rebound to
+//                                          O_DIRECT anon buffers — the rebind must be byte-identical)
 //   G4  overlap (async reads + per-expert wait hook) == serial streaming, cache off
 //         a) overlap, cache off              b) overlap, small forced cache
 //         c) overlap, cache off, io_threads=1 (single lane → maximal stalls)
@@ -166,7 +168,16 @@ int main(int argc, char ** argv) {
     streamall.moe.cache_mb = 0;
     streamall.moe.load_all = true;
 
-    std::string s_res, s_s0, s_sc, s_all, err;
+    // streaming, cache off, dense weights read via O_DIRECT into anon buffers and rebound. warm_dense
+    // off so the gate exercises the rebind alone: the rebound bytes must equal the mmap reference.
+    RunConfig dense_od = base(model);
+    dense_od.moe.enabled = true;
+    dense_od.moe.cache_mb = 0;
+    dense_od.moe.io_threads = 4;
+    dense_od.moe.warm_dense = false;
+    dense_od.moe.dense_odirect = true;
+
+    std::string s_res, s_s0, s_sc, s_all, s_dod, err;
     if (!gen(resident, s_res, err)) {
         std::fprintf(stderr, "resident run failed: %s\n", err.c_str());
         return 2;
@@ -183,11 +194,19 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "load-all run failed: %s\n", err.c_str());
         return 2;
     }
+    if (!gen(dense_od, s_dod, err)) {
+        std::fprintf(stderr, "dense-odirect run failed: %s\n", err.c_str());
+        return 2;
+    }
 
     int fails = 0;
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);
     fails += check("G2 streaming(cache off) == streaming(LRU cache)", s_s0, s_sc);
     fails += check("G3 streaming(selective) == streaming(load-all)", s_s0, s_all);
+    // G6: rebinding the dense weights onto O_DIRECT anon buffers must not change a byte — same
+    // bytes, same offsets, so identical output to the mmap-resident reference. This is the
+    // correctness proof for --dense-odirect (the risk is rebinding the wrong tensor).
+    fails += check("G6 dense-odirect(rebind) == resident", s_res, s_dod);
 
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // overlap, cache off

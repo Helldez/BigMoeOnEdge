@@ -39,6 +39,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     overlap_ = cfg.overlap;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
     cache_dynamic_ = cfg.cache_dynamic;
+    dense_odirect_ = cfg.dense_odirect;
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
 
@@ -266,11 +267,20 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         if (pos < fsize_) dense_ranges_.push_back({pos, fsize_});
     }
 
+    // --dense-odirect: read the dense weights into our own anon buffers and rebind their tensors,
+    // once, on lane 0 while it is still the caller's thread and no worker is running. Must precede
+    // warm_dense (which becomes pointless — the dense is no longer mmap'd) and the workers.
+    if (dense_odirect_ && !dense_tensors_.empty() && !read_dense_odirect()) {
+        std::fprintf(stderr, "bmoe: --dense-odirect read failed\n");
+        return false;
+    }
+
     // Warm the dense (non-expert) regions into the page cache before the first token, so the early
     // decodes do not fault them in one scattered 4 KiB page at a time. Independent of the cache
     // budget: it only pre-faults the mmap-resident pages, it neither pins nor reserves them. Runs on
-    // the caller's thread (the workers are not started yet).
-    if (cfg.warm_dense) warm_dense_regions(gguf_path);
+    // the caller's thread (the workers are not started yet). Skipped under --dense-odirect: those
+    // weights are our anon buffers now, not the mmap this would warm.
+    if (cfg.warm_dense && !dense_odirect_) warm_dense_regions(gguf_path);
 
     active_ = true;
     // Serial: lane 0 is the calling thread (it drains inline), workers own lanes 1..N-1.
@@ -337,6 +347,38 @@ void ExpertStreamSource::warm_dense_regions(const std::string & gguf_path) {
     const double s = std::chrono::duration<double>(clock_t_::now() - t0).count();
     std::fprintf(stderr, "bmoe: dense warm-up — %llu MiB in %.1f s%s\n", (unsigned long long) (warmed >> 20), s,
                  ok ? "" : " (partial)");
+}
+
+// ── --dense-odirect: read each dense tensor whole into an anon buffer and rebind onto it ──
+bool ExpertStreamSource::read_dense_odirect() {
+    // Chunked so read_slice's per-lane bounce stays bounded (a dense tensor can be hundreds of MiB);
+    // each chunk re-reads at most one partial page at its boundary, which is harmless. Lane 0 only —
+    // this runs before the workers start, so there is no contention on the bounce or fd.
+    const uint64_t chunk = 8ull << 20;
+    uint64_t total = 0;
+    dense_bufs_.reserve(dense_tensors_.size());
+    for (const DenseTensorRef & d : dense_tensors_) {
+        if (!d.tensor || d.size == 0) continue;
+        void * buf = pio::alloc_aligned(align_, (size_t) d.size);
+        if (!buf) {
+            std::fprintf(stderr, "bmoe: dense buffer alloc %llu failed\n", (unsigned long long) d.size);
+            return false;
+        }
+        dense_bufs_.push_back(buf); // tracked for shutdown even if a chunk read below fails
+        for (uint64_t done = 0; done < d.size;) {
+            IoJob j;
+            j.dst = (char *) buf + done;
+            j.off = d.file_off + done;
+            j.nbytes = std::min<uint64_t>(chunk, d.size - done);
+            if (!read_slice(0, j)) return false;
+            done += j.nbytes;
+        }
+        d.tensor->data = buf; // rebind the model weight onto its private anon copy
+        total += d.size;
+    }
+    std::fprintf(stderr, "bmoe: --dense-odirect — %llu MiB of dense weights in %zu anon buffers\n",
+                 (unsigned long long) (total >> 20), dense_bufs_.size());
+    return true;
 }
 
 // ── one aligned slice read on a lane ────────────────────────────────────────────────
@@ -636,6 +678,9 @@ void ExpertStreamSource::sample_residency() {
 // calls, and only every residency_probe_every load. Shares probe_tick_ with sample_residency, so it
 // fires on the same throttle without a second counter.
 void ExpertStreamSource::sample_dense_residency() {
+    // Under --dense-odirect the dense weights are our anon buffers, not the mmap this samples, so the
+    // mmap residency it would report is meaningless — leave dense_resident_frac_ at its sentinel.
+    if (dense_odirect_) return;
     if (dense_ranges_.empty()) return;
     // Share sample_residency's throttle without a second counter: it has just done the ++, so this
     // fires exactly on the loads where it did, and skips the rest.
@@ -1251,6 +1296,13 @@ void ExpertStreamSource::shutdown() {
         if (b) pio::aligned_free(b);
     bounces_.clear();
     bounce_sz_.clear();
+    // --dense-odirect anon buffers. Safe here: the context (whose rebound dense tensors point at
+    // these) is torn down after the source, and no decode is in flight — same contract as the slot
+    // and LRU buffers freed above.
+    for (void * b : dense_bufs_)
+        if (b) pio::aligned_free(b);
+    dense_bufs_.clear();
+    dense_tensors_.clear();
     for (int lane = 0; lane < (int) fds_.size(); ++lane) {
         if (pio::fd_ok(fds_[lane])) pio::close_fd(fds_[lane]);
         if (pio::fd_ok(fds_buf_[lane])) pio::close_fd(fds_buf_[lane]);

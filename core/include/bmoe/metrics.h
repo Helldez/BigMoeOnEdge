@@ -145,6 +145,7 @@ struct RunInfo {
     bool overlap = false;
     int prefetch_layers = 0;
     bool warm_dense = false;
+    bool dense_odirect = false;
 };
 
 // Optional per-token sink (e.g. CSV for benchmarks). The engine calls on_run_info once before the
