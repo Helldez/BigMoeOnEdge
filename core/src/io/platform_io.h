@@ -49,6 +49,15 @@ bool vm_commit(void * p, size_t sz);
 void vm_evict(void * p, size_t sz);
 void vm_release(void * p, size_t sz);
 
+// Drop the resident pages of a FILE-BACKED mapping (the model's mmap) so a later touch refaults them
+// from the file. Distinct from vm_evict, which decommits ANONYMOUS reserved-cache pages: this is for
+// the clean, read-only weight mapping — MADV_DONTNEED discards the resident copy without writing
+// anything back. Used after --dense-odirect copies a dense tensor into its own anon buffer and
+// rebinds onto it, to hand the now-unreferenced mmap pages back instead of leaving them double-
+// resident until reclaim. A no-op where the platform cannot (Windows host: a file view is not
+// VirtualFree-able, and the host build never streams). The range must be page-aligned by the caller.
+void vm_drop_file_pages(void * p, size_t sz);
+
 // How many of a committed range's pages the kernel still has in RAM. Counts only the pages fully
 // inside [p, p+sz) — the same clipping vm_evict's callers apply — and ADDS to *sampled/*resident,
 // so several ranges can be summed into one fraction (the caller zeroes them first).

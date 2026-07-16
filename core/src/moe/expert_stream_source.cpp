@@ -357,6 +357,7 @@ bool ExpertStreamSource::read_dense_odirect() {
     const uint64_t chunk = 8ull << 20;
     uint64_t total = 0;
     dense_bufs_.reserve(dense_tensors_.size());
+    dense_buf_sz_.reserve(dense_tensors_.size());
     for (const DenseTensorRef & d : dense_tensors_) {
         if (!d.tensor || d.size == 0) continue;
         void * buf = pio::alloc_aligned(align_, (size_t) d.size);
@@ -365,6 +366,7 @@ bool ExpertStreamSource::read_dense_odirect() {
             return false;
         }
         dense_bufs_.push_back(buf); // tracked for shutdown even if a chunk read below fails
+        dense_buf_sz_.push_back((size_t) d.size); // paired size, for the anon-residency sample
         for (uint64_t done = 0; done < d.size;) {
             IoJob j;
             j.dst = (char *) buf + done;
@@ -378,6 +380,46 @@ bool ExpertStreamSource::read_dense_odirect() {
     }
     std::fprintf(stderr, "bmoe: --dense-odirect — %llu MiB of dense weights in %zu anon buffers\n",
                  (unsigned long long) (total >> 20), dense_bufs_.size());
+
+    // Hand the mmap copies back. The capture warm-up decode faulted these dense pages in mmap-
+    // resident, and we have just read them again into anon buffers and rebound every tensor onto
+    // those — so the file-backed pages are now referenced by nobody. Left alone they sit resident
+    // until reclaim, doubling the dense footprint at the worst moment (right before prefill, when the
+    // governor's entry test reads MemAvailable). Drop them explicitly instead: a clean read-only
+    // mapping, so MADV_DONTNEED loses no data and nothing will refault the range. Best-effort — it
+    // needs /proc/self/maps to turn a file offset into an address; where that is unreadable (or the
+    // host build) the pages simply stay, which only forfeits the saving.
+    std::vector<pio::MappedRegion> vmas;
+    const size_t slash = gguf_path_.find_last_of("/\\");
+    const std::string base = slash == std::string::npos ? gguf_path_ : gguf_path_.substr(slash + 1);
+    if (pio::file_mapped_regions(base.c_str(), vmas) && !vmas.empty()) {
+        const size_t pg = pio::vm_page();
+        auto addr_of = [&](uint64_t off) -> char * {
+            for (const auto & v : vmas) {
+                const uint64_t span = (uint64_t) (v.end - v.start);
+                if (off >= v.file_offset && off < v.file_offset + span) return (char *) v.start + (off - v.file_offset);
+            }
+            return nullptr;
+        };
+        uint64_t dropped = 0;
+        for (const DenseTensorRef & d : dense_tensors_) {
+            if (!d.tensor || d.size == 0) continue;
+            char * a = addr_of(d.file_off);
+            if (!a) continue;
+            // Align INWARD to whole pages (round the start up, the end down), so a page shared with an
+            // adjacent tensor that stays mmap-resident — an expert slice, or the next dense tensor — is
+            // never dropped out from under it. Same clipping the residency sampler applies.
+            uintptr_t a0 = ((uintptr_t) a + pg - 1) & ~(uintptr_t) (pg - 1);
+            uintptr_t a1 = ((uintptr_t) a + d.size) & ~(uintptr_t) (pg - 1);
+            if (a1 > a0) {
+                pio::vm_drop_file_pages((void *) a0, (size_t) (a1 - a0));
+                dropped += a1 - a0;
+            }
+        }
+        if (dropped)
+            std::fprintf(stderr, "bmoe: --dense-odirect — dropped %llu MiB of now-unused mmap pages\n",
+                         (unsigned long long) (dropped >> 20));
+    }
     return true;
 }
 
@@ -678,9 +720,37 @@ void ExpertStreamSource::sample_residency() {
 // calls, and only every residency_probe_every load. Shares probe_tick_ with sample_residency, so it
 // fires on the same throttle without a second counter.
 void ExpertStreamSource::sample_dense_residency() {
-    // Under --dense-odirect the dense weights are our anon buffers, not the mmap this samples, so the
-    // mmap residency it would report is meaningless — leave dense_resident_frac_ at its sentinel.
-    if (dense_odirect_) return;
+    // Under --dense-odirect the dense weights are our own anon buffers, not the mmap the block below
+    // samples. But anon memory is reclaimed too (to zram), and mincore reports resident anon pages
+    // exactly as it does file pages — so sample the buffers directly and dense_resident_frac keeps its
+    // meaning ("how much of the dense set the kernel still has in RAM") instead of reading unmeasured.
+    if (dense_odirect_) {
+        if (dense_bufs_.empty()) return;
+        // Share sample_residency's throttle: it has just done the ++ this load, so fire on the same
+        // loads and skip the rest, without a second counter.
+        if (probe_tick_ % residency_probe_every != 0) return;
+        uint64_t total = 0;
+        for (size_t sz : dense_buf_sz_)
+            total += sz;
+        if (total == 0) return;
+        size_t sampled = 0, resident = 0;
+        for (int k = 0; k < dense_sample_pages; ++k) {
+            // Stratified: the k-th of dense_sample_pages evenly spaced points across the summed buffer
+            // bytes, one page each — the same shape as the mmap path, so the two modes are comparable.
+            uint64_t target = (total * (uint64_t) k) / (uint64_t) dense_sample_pages;
+            for (size_t i = 0; i < dense_bufs_.size(); ++i) {
+                if (target < dense_buf_sz_[i]) {
+                    const char * a = (const char *) dense_bufs_[i] + target;
+                    const char * pg = (const char *) ((uintptr_t) a & ~(uintptr_t) (page_ - 1));
+                    pio::vm_resident_sample(pg, page_, &sampled, &resident);
+                    break;
+                }
+                target -= dense_buf_sz_[i];
+            }
+        }
+        dense_resident_frac_ = sampled ? (double) resident / (double) sampled : -1.0;
+        return;
+    }
     if (dense_ranges_.empty()) return;
     // Share sample_residency's throttle without a second counter: it has just done the ++, so this
     // fires exactly on the loads where it did, and skips the rest.
@@ -1302,6 +1372,7 @@ void ExpertStreamSource::shutdown() {
     for (void * b : dense_bufs_)
         if (b) pio::aligned_free(b);
     dense_bufs_.clear();
+    dense_buf_sz_.clear();
     dense_tensors_.clear();
     for (int lane = 0; lane < (int) fds_.size(); ++lane) {
         if (pio::fd_ok(fds_[lane])) pio::close_fd(fds_[lane]);

@@ -236,6 +236,7 @@ private:
     bool dense_odirect_ = false; // --dense-odirect: read dense weights via O_DIRECT into our buffers
     std::vector<DenseTensorRef> dense_tensors_; // set before init; read+rebound when dense_odirect_
     std::vector<void *> dense_bufs_;            // the anon buffers backing them; freed in shutdown()
+    std::vector<size_t> dense_buf_sz_;          // dense_bufs_[i]'s byte size, for the anon-residency sample
     double resident_frac_ = -1.0;               // last sampled cache residency; -1 = never measured
     double dense_resident_frac_ = -1.0; // last sampled dense-weight residency; -1 = never measured
 

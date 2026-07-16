@@ -98,6 +98,10 @@ void vm_evict(void * p, size_t sz) {
 void vm_release(void * p, size_t /*sz*/) {
     if (p) VirtualFree(p, 0, MEM_RELEASE);
 }
+void vm_drop_file_pages(void * /*p*/, size_t /*sz*/) {
+    // File-backed views cannot be decommitted (MEM_DECOMMIT is only valid for VirtualAlloc'd pages),
+    // and the host build never mmaps the model for streaming — so there is nothing to drop.
+}
 
 // Unmeasured on the host build, like the fault counters below and for the same reason: the gates
 // prove byte-identity, they do not size a cache against a phone's reclaim. QueryWorkingSetEx could
@@ -193,6 +197,12 @@ void vm_evict(void * p, size_t sz) {
 }
 void vm_release(void * p, size_t sz) {
     if (p) munmap(p, sz);
+}
+void vm_drop_file_pages(void * p, size_t sz) {
+    // MADV_DONTNEED on the model's clean, read-only MAP_PRIVATE mapping drops the resident pages; the
+    // next access refaults them from the file. The tensor was rebound onto its anon copy, so nothing
+    // touches this range again — the drop just reclaims the double residency, it does not lose data.
+    if (sz) madvise(p, sz, MADV_DONTNEED);
 }
 
 bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * resident) {

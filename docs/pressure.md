@@ -138,10 +138,21 @@ sees in the warm-up graph, and the runtime pairs the non-expert ones with their 
 (`ExpertStreamSource::read_dense_odirect`). It is a strict A/B lever, and the analysis says its
 upside is narrow — Q4 weights are close to incompressible, so on a model whose dense set already fits
 resident, moving it flash→zram frees nothing and is a wash. Where it can pay is a model actively
-losing its dense set to reclaim. With the flag on, `warm_dense` is skipped (the dense is no longer
-the mmap it would warm) and the dense-residency sensor is inert (it samples the now-unused mmap), so
-`dense_resident_frac` reads unmeasured. Byte-identity gate: `G6` in `tests/moe_gates.cpp` proves the
-rebind changes not a single output byte against the mmap-resident reference.
+losing its dense set to reclaim.
+
+Two details keep the A/B honest rather than measuring load-time artefacts. First, the capture warm-up
+decode faults the dense pages in *mmap-resident* before the read copies them into the anon buffers, so
+for a moment the dense set is resident twice; once every tensor is rebound, `read_dense_odirect` drops
+those now-unreferenced mmap pages with `MADV_DONTNEED` (`pio::vm_drop_file_pages`), so prefill starts
+from the true anonymous-only footprint instead of a doubled peak that the governor's entry test would
+misread. Second, the dense-residency sensor does not go blind: it samples the anon buffers directly
+(`mincore` reports resident anon pages too), so `dense_resident_frac` keeps its meaning under the flag
+— whether zram is holding the dense set — rather than reading unmeasured. `warm_dense` is skipped (the
+dense is no longer the mmap it would warm).
+
+Byte-identity gates: `G6` proves the rebind changes not a single output byte against the mmap-resident
+reference, and `G7` proves the same with O_DIRECT off (the read may bypass the page cache or not; the
+rebound bytes are identical either way).
 
 ## Portability
 
