@@ -29,9 +29,9 @@ submodule bump, not a merge.
 
 Highlights:
 
-- **gpt-oss-120b (Q4_K_M), ~5× device RAM**: 1.3 tok/s at the model's own routing width against
-  0.09 tok/s for the same file loaded the ordinary way, a **14×** difference at matched settings.
-  2.2 tok/s with the one lossy knob on.
+- **gpt-oss-120b (Q4_K_M), ~5× device RAM**: **1.3 tok/s** at the model's own routing width against
+  0.09 tok/s for the same file loaded the ordinary way (mmap), a **14×** difference at matched settings.
+  **2.2 tok/s** with the one lossy knob on (less experts)
 - **Lossless on models past RAM**: Qwen3-30B-A3B (Q4_K_M, 18.5 GB) up to **5.2 tok/s** and
   Gemma-4-26B-A4B (Q4_K_M, 17.0 GB) up to **4.1 tok/s** on the same phone, output identical to the
   resident model.
@@ -45,7 +45,7 @@ Highlights:
   stream through the same code, since the per-expert stride is read from the model file at runtime.
 
 > **About the numbers.** Measured on one device (OnePlus 15R: 12 GB RAM, 11.3 GB usable, UFS 4.x
-> storage) over `adb shell`, 256-token greedy decode. Each number is the best observed for that
+> storage - **...imagine with UFS 5.x...**) over `adb shell`, 256-token greedy decode. Each number is the best observed for that
 > configuration, and rows in a table can come from different benchmark sessions. Phone throughput
 > moves a lot with device state (heat, free memory), so the same command can read lower. Full
 > method and distributions: [docs/benchmarks.md](docs/benchmarks.md).
