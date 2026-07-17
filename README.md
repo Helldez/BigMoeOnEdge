@@ -9,13 +9,15 @@ the moment they're needed. The rest of the model stays on disk. That's what make
 models (Qwen3, Gemma, gpt-oss and most of their relatives) runnable on edge devices whose RAM they
 exceed several times over. The focus today is phones, where memory is tightest.
 
-The flagship case: **gpt-oss-120b**, a ~60 GB model (Q4_K_M), on a mid-range phone with 12 GB of
-RAM. That's about five times more model than memory, so holding it resident is simply impossible.
-It runs anyway, at **1.3 tok/s** with the model's own settings (**2.2 tok/s** with one speed knob),
-and as far as we know it's the first time a 120B model has generated tokens on a phone at all.
+The flagship case: **gpt-oss-120b**, a ~60 GB model (Q4_K_M), on a phone with 12 GB of RAM. That's
+about five times more model than memory, so holding it resident is simply impossible. It runs
+anyway, at **1.3 tok/s** with the model's own settings (**2.2 tok/s** with one speed knob), against
+**0.09 tok/s** for the same file loaded the ordinary way.
 
-**And it's all plain CPU inference.** No GPU, no NPU, no special hardware: four CPU cores of a
-mid-range phone, its flash storage, and nothing else.
+**And it's all plain CPU inference.** No GPU, no NPU, no special hardware: four CPU cores, the
+phone's flash storage, and nothing else. The entire budget is a phone's UFS storage, a fraction of
+the bandwidth a desktop NVMe drive offers, which is exactly why the expert cache, the dense-weight
+policy and the read/compute overlap all have to earn their keep.
 
 Streaming does not change what the model computes: the output is **byte-for-byte identical** to
 running the model fully in RAM. Same weights, same math, just fetched later. There is exactly one
@@ -27,13 +29,20 @@ submodule bump, not a merge.
 
 Highlights:
 
-- **gpt-oss-120b (Q4_K_M), ~5× device RAM**: 1.3 tok/s as shipped, 2.2 tok/s with the speed knob.
-  The same file loaded the ordinary way manages 0.09 tok/s.
+- **gpt-oss-120b (Q4_K_M), ~5× device RAM**: 1.3 tok/s at the model's own routing width against
+  0.09 tok/s for the same file loaded the ordinary way, a **14×** difference at matched settings.
+  2.2 tok/s with the one lossy knob on.
 - **Lossless on models past RAM**: Qwen3-30B-A3B (Q4_K_M, 18.5 GB) up to **5.2 tok/s** and
   Gemma-4-26B-A4B (Q4_K_M, 17.0 GB) up to **4.1 tok/s** on the same phone, output identical to the
   resident model.
-- **Easy to extend**: supporting a new MoE architecture is one line in a registry; nothing about a
-  specific model is hardcoded in the streaming path.
+- **The problem only phones have**: several × past RAM, Android's reclaim keeps taking back the
+  always-used weights mid-generation. `--dense-weights anon` puts them where reclaim can't cheaply
+  take them, and it's worth **3.2×** on gpt-oss-120b on its own. A desktop or Apple-silicon streamer
+  can lean on the OS page cache for tens of GB; a phone under memory pressure concedes almost none.
+- **Easy to extend**: a new MoE architecture is one row in a registry, and nothing about a specific
+  model is hardcoded in the streaming path. Because the engine sits *on* stock llama.cpp instead of
+  replacing it, quantization formats, tokenizers and chat templates come for free: MXFP4 and Q4_K_M
+  stream through the same code, since the per-expert stride is read from the model file at runtime.
 
 > **About the numbers.** Measured on one device (OnePlus 15R: 12 GB RAM, 11.3 GB usable, UFS 4.x
 > storage) over `adb shell`, 256-token greedy decode. Each number is the best observed for that
@@ -42,8 +51,11 @@ Highlights:
 > method and distributions: [docs/benchmarks.md](docs/benchmarks.md).
 
 > Prior art, credited: this is an engineering package of ideas from AirLLM, Apple's *LLM in a
-> flash*, FlexGen, PowerInfer and EdgeMoE, not a novel technique. See
-> [docs/limitations.md](docs/limitations.md).
+> flash*, FlexGen, PowerInfer and EdgeMoE, not a novel technique. The closest recent work is
+> [flash-moe](https://github.com/danveloper/flash-moe): a purpose-built Metal engine that streams a
+> 397B MoE from SSD on Apple Silicon, and on an iPhone through a community fork. BigMoeOnEdge takes
+> the other side of that problem: CPU-only, on Android, on stock llama.cpp, across architectures.
+> See [docs/limitations.md](docs/limitations.md).
 
 ## Features
 
