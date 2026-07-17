@@ -67,8 +67,8 @@ public:
         uint64_t spec_read_bytes = 0;      // bytes read speculatively by prefetch (subset of read_bytes)
         long long spec_experts = 0;        // experts fully prefetched
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
-        uint64_t cache_budget_bytes = 0;   // current cache budget (moves under --cache-mb auto)
-        long long cache_resizes = 0;       // times the budget changed at runtime (auto + explicit)
+        uint64_t cache_budget_bytes = 0;   // cache budget in force; fixed for the run once init sizes it
+        long long cache_resizes = 0;       // explicit set_cache_budget_mb() calls that moved the budget
 
         // ── residency telemetry (diagnostic) ──
         // Sampled fraction of the DENSE weights still in RAM, or -1 when not measured yet. Under the

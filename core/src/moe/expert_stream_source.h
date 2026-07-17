@@ -90,7 +90,7 @@ public:
     // Explicitly set the cache budget in bytes and evict down to it immediately (clamped to the
     // full expert-set size). PRECONDITION: no decode in flight — the caller must not be inside a
     // load_layer/generate. Intended for an app's memory-pressure callback (Android onTrimMemory)
-    // and exercised by the shrink gate. Clamped up: an explicit raise also lifts the grow ceiling.
+    // and exercised by the shrink gate. This is the only thing that moves the budget after init.
     void set_cache_budget(size_t bytes);
 
     // ── I/O trace (diagnostics; see bmoe/decode_trace.h) ────────────────────────────
@@ -182,21 +182,15 @@ private:
 
     // shared-slot mode (cache off): one full-size slot per projection, reused by layers
     void * slot_[MoeRecipe::max_exps] = {nullptr, nullptr, nullptr};
-    size_t slot_sz_[MoeRecipe::max_exps] = {0, 0, 0};
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
-    size_t cache_max_ = 0; // live budget in bytes; mutated at runtime when cache_auto_
+    size_t cache_max_ = 0; // live budget in bytes; only an explicit set_cache_budget() moves it
     size_t page_ = 4096;
 
-    // Auto sizing (cache_auto): the budget is derived once from device memory at init and then fixed
-    // for the run. cache_floor_ is the RAM to leave free; total_expert_bytes_ caps it; cache_target_
-    // is the ceiling an explicit set_cache_budget() raise may climb back to (e.g. an app relaxing an
-    // onTrimMemory shrink).
-    bool cache_auto_ = false;
-    size_t cache_floor_ = 0;
-    size_t cache_target_ = 0;
+    // Every expert of every bound layer resident: the ceiling any budget is clamped to, and (under
+    // cache_auto) the cap the init-time sizing starts from. Auto sizing derives cache_max_ once at
+    // init and keeps nothing else: its floor and ceiling are locals there, not state.
     size_t total_expert_bytes_ = 0;
-    size_t cache_hard_cap_ = 0; // upper bound on the auto budget (ceiling ∧ full expert-set size)
     long long cache_resizes_ = 0;
 
     // The dense (non-expert) weights: their residency policy (mmap / warm / anon) and the buffers it
@@ -207,16 +201,18 @@ private:
     std::vector<DenseTensorRef> dense_tensors_; // pending, set before init; moved into dense_
     DenseWeights dense_;
 
-    // Two measured demands, and the difference between them decides the whole policy.
+    // Two measured demands. Both are pure telemetry now that the governor is gone — nothing here
+    // sizes the cache — but they are what any future sizing policy would have to reason about, and
+    // they explain a run's hit rate after the fact.
     //
     // token_demand_: the bytes routed between two visits to the same layer — one token's working
     // set. Below it the cache stops holding anything BETWEEN tokens, so its hit rate collapses to
-    // inter-token correlation only. Informative (it says where hits start), never a floor: measured
-    // on gpt-oss it is 1815 MiB, more than the device concedes — which is why cache-off is the
-    // ceiling there. Reported as telemetry.
+    // inter-token correlation only. It says where hits start, and it is not something a device has
+    // to concede: measured on gpt-oss it is 1815 MiB, more than the phone gives up — which is why
+    // cache-off is the ceiling there.
     //
-    // layer_demand_: the largest single layer's routed bytes. THIS is the floor, because it is
-    // mechanical — the cache has to hold the layer it is staging right now.
+    // layer_demand_: the largest single layer's routed bytes — the mechanical minimum, since the
+    // cache has to hold the layer it is staging right now.
     size_t demand_accum_ = 0;
     size_t token_demand_ = 0;
     size_t layer_demand_accum_ = 0;

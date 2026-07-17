@@ -148,10 +148,6 @@ void DenseWeights::warm() {
                  ok ? "" : " (partial)");
 }
 
-void DenseWeights::rewarm() {
-    if (mode_ == DenseWeightsMode::Warmed) warm();
-}
-
 // ── residency sensor ─────────────────────────────────────────────────────────────────
 void DenseWeights::sample_residency(size_t page) {
     if (mode_ == DenseWeightsMode::Anonymous)
@@ -203,7 +199,8 @@ void DenseWeights::sample_mmap(size_t page) {
     auto addr_of = [&](uint64_t off) -> const char * {
         for (const auto & v : vmas_) {
             const uint64_t span = (uint64_t) (v.end - v.start);
-            if (off >= v.file_offset && off < v.file_offset + span) return (const char *) v.start + (off - v.file_offset);
+            if (off >= v.file_offset && off < v.file_offset + span)
+                return (const char *) v.start + (off - v.file_offset);
         }
         return nullptr;
     };

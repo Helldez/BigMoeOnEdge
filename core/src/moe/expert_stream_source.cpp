@@ -61,34 +61,33 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         return false;
     }
 
-    // Adaptive budget: size the cache to the device now that the full expert-set size is known.
+    // Auto budget: size the cache to the device once, now that the full expert-set size is known.
     // (validate() guarantees cache_mb == 0 here, so this is the sole source of cache_max_ when auto.)
+    // One shot — the floor and the cap decide the budget here and are not kept: nothing re-sizes it
+    // afterwards except an explicit set_cache_budget().
     if (cfg.cache_auto) {
-        cache_auto_ = true;
-        cache_floor_ = (size_t) std::max(0, cfg.cache_floor_mb) * 1024ull * 1024ull;
-        // Hard cap: the whole expert set, further capped by the user's ceiling when set. Every auto
-        // budget (init and runtime grow-back) stays at or below this.
+        const size_t floor = (size_t) std::max(0, cfg.cache_floor_mb) * 1024ull * 1024ull; // RAM to leave free
+        // Hard cap: the whole expert set, further capped by the user's ceiling when set.
         const size_t ceil = (size_t) std::max(0, cfg.cache_ceil_mb) * 1024ull * 1024ull;
-        cache_hard_cap_ = ceil > 0 ? std::min(ceil, total_expert_bytes_) : total_expert_bytes_;
+        const size_t hard_cap = ceil > 0 ? std::min(ceil, total_expert_bytes_) : total_expert_bytes_;
         const size_t min_budget =
-            std::min<size_t>((size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull, cache_hard_cap_);
+            std::min<size_t>((size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull, hard_cap);
         const uint64_t avail = pio::mem_available_bytes();
         if (avail == 0) {
             cache_max_ = min_budget;
             std::fprintf(stderr, "bmoe: cache auto — available memory unknown, using the %zu MiB floor\n",
                          min_budget / (1024 * 1024));
         } else {
-            size_t budget = avail > cache_floor_ ? (size_t) (avail - cache_floor_) : 0;
+            size_t budget = avail > floor ? (size_t) (avail - floor) : 0;
             budget = std::max(budget, min_budget);
-            budget = std::min(budget, cache_hard_cap_);
+            budget = std::min(budget, hard_cap);
             cache_max_ = budget;
             std::fprintf(stderr,
                          "bmoe: cache auto — %llu MiB available, leaving %zu MiB free → %zu MiB budget"
                          " (cap %zu MiB)\n",
-                         (unsigned long long) (avail / (1024 * 1024)), cache_floor_ / (1024 * 1024),
-                         cache_max_ / (1024 * 1024), cache_hard_cap_ / (1024 * 1024));
+                         (unsigned long long) (avail / (1024 * 1024)), floor / (1024 * 1024),
+                         cache_max_ / (1024 * 1024), hard_cap / (1024 * 1024));
         }
-        cache_target_ = cache_max_;
     }
 
     if (cache_max_ == 0) {
@@ -102,7 +101,6 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
                 std::fprintf(stderr, "bmoe: slot alloc %zu failed\n", max_full[p]);
                 return false;
             }
-            slot_sz_[p] = max_full[p];
         }
         for (LayerExperts & L : layers_) {
             if (!L.bound) continue;
@@ -452,15 +450,14 @@ void ExpertStreamSource::maybe_sample_dense() {
     mgmt_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
 }
 
-// Explicit budget change from outside a decode (memory-pressure callback, the governor, or the
-// shrink gate).
+// Explicit budget change from outside a decode (an app's memory-pressure callback, or the shrink
+// gate). The only thing that moves the budget after init.
 void ExpertStreamSource::set_cache_budget(size_t bytes) {
     if (cache_max_ == 0) return; // initialised off (shared-slot mode); the LRU buffers do not exist
     if (bytes > cache_max_) {
         // Growing evicts nothing, so it needs no quiesce — and must not do one: cancelling the
         // speculative reads in flight on every grow would quietly defeat --prefetch.
         cache_max_ = std::min(bytes, total_expert_bytes_);
-        cache_target_ = std::max(cache_target_, cache_max_); // an explicit raise lifts the grow ceiling
         ++cache_resizes_;
         return;
     }

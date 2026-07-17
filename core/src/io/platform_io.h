@@ -87,8 +87,8 @@ struct MappedRegion {
 // or if the file cannot be read — the caller reports that as unmeasured, never as "nothing resident".
 bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out);
 
-// Physical memory currently allocatable without paging, in bytes. 0 = unknown. Used to size the
-// expert cache to the device (--cache-mb auto) and to shrink it under memory pressure at runtime.
+// Physical memory currently allocatable without paging, in bytes. 0 = unknown. Read once at init to
+// size the expert cache to the device (--cache-mb auto); the budget is fixed for the run thereafter.
 uint64_t mem_available_bytes();
 
 // Process-wide compute-decomposition counters, cumulative since process start; the caller deltas
@@ -121,7 +121,6 @@ struct ProcessMemory {
     uint64_t rss_anon_bytes = 0; // RssAnon: our cache lives here
     uint64_t rss_file_bytes = 0; // RssFile: the mmap'd model
     uint64_t swap_bytes = 0;     // VmSwap: anon we have already lost to zram
-    uint64_t rss_peak_bytes = 0; // VmHWM
 };
 // False when the platform cannot report (Windows host), leaving `out` untouched.
 bool process_memory(ProcessMemory * out);

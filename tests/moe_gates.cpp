@@ -21,12 +21,14 @@
 // G4 is compiled only when the fork's expert-ready hook is present (BMOE_HAVE_EXPERT_READY_HOOK).
 //
 //   S1  two sequential Session generates (warm cache) == one-shot resident, per prompt
-//   S2  same, under overlap
+//   S3  same, with an explicit budget shrink between the two generates (full eviction pass)
+//   S2  same as S1, under overlap
 //   G5  streaming + temporal prefetch == streaming (prefetch changes latency, not bytes)
 //         a) serial + cache + prefetch   b) overlap + cache + prefetch
 //
 // S1/S2 guard the session refactor: the expert LRU cache now survives across generate() calls,
 // so a second prompt starts warm. That must change only latency, never the produced bytes.
+// S3 guards set_cache_budget_mb: evicting a warm cache mid-session must cost only re-reads.
 // G5 guards temporal prefetch: speculatively reading the next layers' experts must only warm the
 // cache — the routed slices a token actually consumes, and thus its output, are unchanged.
 #include "bmoe/config.h"
@@ -281,9 +283,10 @@ int main(int argc, char ** argv) {
     fails += check("S1a session generate #1 == resident", s_res, s_g1);
     fails += check("S1b session generate #2 (warm cache) == resident", s_res, s_g2);
 
-    // S3: shrinking the cache budget at runtime (adaptive sizing / memory-pressure callback) evicts
-    // warm entries mid-session; the next generation must rebuild them from flash byte-for-byte. Reuse
-    // the small forced cache, then drop it to ~0 MiB between generates to force a full eviction pass.
+    // S3: an explicit runtime budget change (set_cache_budget_mb, as an app's memory-pressure callback
+    // makes it) evicts warm entries mid-session; the next generation must rebuild them from flash
+    // byte-for-byte. Reuse the small forced cache, then drop it to ~0 MiB between generates to force a
+    // full eviction pass.
     std::string s_sh1, s_sh2;
     if (!session_shrink_gen(sess, /*shrink_mib=*/0, s_sh1, s_sh2, err)) {
         std::fprintf(stderr, "session shrink run failed: %s\n", err.c_str());
