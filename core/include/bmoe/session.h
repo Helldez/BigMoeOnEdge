@@ -43,6 +43,12 @@ struct SessionConfig {
     MoeStreamConfig moe;
 };
 
+// The RunConfig → SessionConfig mapping, in one place. Both entry points that open a session from a
+// RunConfig — run() and the CLI's interactive loop — need it, and they used to spell it out field by
+// field. Two copies of a mapping is one copy too many: adding a field to RunConfig must not depend on
+// remembering to touch both. n_batch = n_ctx so any prompt that fits the context prefills in one batch.
+SessionConfig session_config_from(const RunConfig & cfg);
+
 // Per-prompt request. clear_kv=true (the default) makes each prompt independent while the
 // expert cache stays warm; clear_kv=false continues the KV cache for multi-turn chat.
 struct GenerateRequest {

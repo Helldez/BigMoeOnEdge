@@ -66,6 +66,23 @@ static std::string json_escape(const std::string & s) {
     return o;
 }
 
+// One token's line-protocol output: the optional BMOE_LOAD, then BMOE_PROGRESS (docs/telemetry.md).
+// Both emitters — the one-shot --progress run and the interactive session, which is a superset of it
+// — must produce a byte-identical line, since the Android app parses one parser's worth of protocol.
+// Keeping the format string in one place is what makes that true rather than merely intended.
+static void emit_progress_line(const TokenMetrics & m) {
+    if (m.read_bytes || m.io_ms > 0.0)
+        std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
+    std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
+                "\"compute_ms\":%.1f,\"mgmt_ms\":%.1f,\"stall_ms\":%.1f,\"read_mb\":%.2f,"
+                "\"cache_hit_pct\":%.1f,\"majflt\":%llu,\"cpu_ms\":%.1f,\"dense_resident_frac\":%.3f,"
+                "\"text\":\"%s\"}\n",
+                m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.mgmt_ms, m.stall_ms,
+                m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, (unsigned long long) m.majflt, m.cpu_ms,
+                m.dense_resident_frac, json_escape(m.text).c_str());
+    std::fflush(stdout);
+}
+
 // ── minimal flat-JSON reading for the --session request protocol ──
 // The session request objects are flat (string/int/bool fields only), so a tiny hand-rolled
 // extractor keeps the CLI dependency-free, mirroring the hand-written JSON it already emits.
@@ -177,14 +194,7 @@ struct SessionCmd {
 // one JSON request per line from stdin and emitting the BMOE_* line protocol on stdout. See
 // docs/telemetry.md. Returns the process exit code.
 static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTraceSink * route_trace) {
-    SessionConfig sc;
-    sc.model_path = cfg.model_path;
-    sc.n_threads = cfg.n_threads;
-    sc.n_ctx = cfg.n_ctx;
-    sc.n_batch = cfg.n_ctx; // one-batch prefill for any prompt that fits the context
-    sc.chatml = cfg.chatml;
-    sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
-    sc.moe = cfg.moe;
+    const SessionConfig sc = session_config_from(cfg);
 
     std::string error;
     std::unique_ptr<Session> session = Session::open(sc, error, route_trace);
@@ -255,26 +265,13 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
         std::printf("BMOE_BEGIN {\"id\":%d}\n", cmd.id);
         std::fflush(stdout);
 
-        auto on_token = [&](const TokenMetrics & m) {
-            if (m.read_bytes || m.io_ms > 0.0)
-                std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
-            std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
-                        "\"compute_ms\":%.1f,\"mgmt_ms\":%.1f,\"stall_ms\":%.1f,\"read_mb\":%.2f,"
-                        "\"cache_hit_pct\":%.1f,\"majflt\":%llu,\"cpu_ms\":%.1f,\"dense_resident_frac\":%.3f,"
-                        "\"text\":\"%s\"}\n",
-                        m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.mgmt_ms, m.stall_ms,
-                        m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, (unsigned long long) m.majflt, m.cpu_ms,
-                        m.dense_resident_frac, json_escape(m.text).c_str());
-            std::fflush(stdout);
-        };
-
         GenerateRequest req;
         req.prompt = cmd.prompt;
         req.n_predict = cmd.n_predict;
         req.think = cmd.think;
         req.clear_kv = cmd.clear_kv;
 
-        RunResult r = session->generate(req, on_token, sink);
+        RunResult r = session->generate(req, emit_progress_line, sink);
         if (!r) {
             // A bad request (empty prompt, context overflow) leaves the session usable; a decode
             // failure means the context is compromised, so end the loop.
@@ -524,16 +521,7 @@ int main(int argc, char ** argv) {
 
     auto on_token = [&](const TokenMetrics & m) {
         if (cfg.progress) {
-            if (m.read_bytes || m.io_ms > 0.0)
-                std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
-            std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
-                        "\"compute_ms\":%.1f,\"mgmt_ms\":%.1f,\"stall_ms\":%.1f,\"read_mb\":%.2f,"
-                        "\"cache_hit_pct\":%.1f,\"majflt\":%llu,\"cpu_ms\":%.1f,\"dense_resident_frac\":%.3f,"
-                        "\"text\":\"%s\"}\n",
-                        m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.mgmt_ms, m.stall_ms,
-                        m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, (unsigned long long) m.majflt, m.cpu_ms,
-                        m.dense_resident_frac, json_escape(m.text).c_str());
-            std::fflush(stdout);
+            emit_progress_line(m);
         } else {
             std::fwrite(m.piece.data(), 1, m.piece.size(), stdout);
             std::fflush(stdout);
