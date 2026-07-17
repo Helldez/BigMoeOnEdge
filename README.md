@@ -14,11 +14,10 @@ about five times more model than memory, so holding it resident is simply imposs
 anyway, at **1.3 tok/s** with the model's own settings (**2.2 tok/s** with one speed knob), against
 **0.09 tok/s** for the same file loaded the ordinary way (mmap).
 
-| gpt-oss-120b — ~60 GB, ~5× RAM | Qwen3-30B-A3B — 18.5 GB | Gemma-4-26B-A4B — 17.0 GB |
-|:---:|:---:|:---:|
-| https://github.com/user-attachments/assets/9e3701c8-e646-4248-9698-4fb8055fa658 | https://github.com/user-attachments/assets/4955559f-7a8a-43a5-8d12-85fae242b4d4 | https://github.com/user-attachments/assets/b7d50f27-5275-4163-9e34-35196163ac30 |
+https://github.com/user-attachments/assets/f899b93f-c7c4-4ce9-9fb0-5ed1bae13761
 
-<p align="center"><em>Recorded in the demo app on the OnePlus 15R — real time, not sped up.</em></p>
+<p align="center"><em>Left to right: gpt-oss-120b (~60 GB), Qwen3-30B-A3B (18.5 GB), Gemma-4-26B-A4B (17 GB) —
+recorded in the demo app on the OnePlus 15R, real time, not sped up.</em></p>
 
 **And it's all plain CPU inference.** No GPU, no NPU, no special hardware: four CPU cores, the
 phone's flash storage, and nothing else. The entire budget is a phone's UFS storage, a fraction of
