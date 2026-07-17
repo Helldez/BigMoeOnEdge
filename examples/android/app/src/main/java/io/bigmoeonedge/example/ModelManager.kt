@@ -36,19 +36,23 @@ object ModelManager {
      */
     fun internalModelsDir(ctx: Context): File = File(ctx.filesDir, "models").apply { mkdirs() }
 
+    // Order is precedence, not taste: allGguf keeps the first file of a given name, and the same
+    // gguf really does sit in two places at once (adb-pushed to /data/local/tmp *and* downloaded
+    // to /sdcard/Download). Real filesystems come first, because O_DIRECT works there and the
+    // emulated dirs force the engine back onto buffered I/O. Reading the slow copy of a model
+    // that is also present on the fast one is a silent, unexplained loss of throughput.
     private fun scanDirs(ctx: Context): List<File> = buildList {
         add(internalModelsDir(ctx))
+        if (BuildConfig.SHARED_STORAGE && TMP_MODEL_DIR.isDirectory) add(TMP_MODEL_DIR)
         appModelsDir(ctx)?.let { add(it) }
         if (BuildConfig.SHARED_STORAGE) {
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)?.let { add(it) }
-            if (TMP_MODEL_DIR.isDirectory) add(TMP_MODEL_DIR)
         }
     }
 
     // Deduped by filename, not by path: the same gguf often exists in two scanned dirs (imported
-    // and adb-pushed). The first hit wins, so scanDirs order is a precedence list — the internal
-    // dir (O_DIRECT works) before the emulated external dirs. It also lets the model catalog
-    // recognize its own entries by name, wherever they landed.
+    // and adb-pushed). The first hit wins — see scanDirs for the precedence. It also lets the
+    // model catalog recognize its own entries by name, wherever they landed.
     private fun allGguf(ctx: Context): List<File> =
         scanDirs(ctx)
             .flatMap { it.listFiles { f -> f.isFile && f.name.endsWith(".gguf") }?.toList() ?: emptyList() }
