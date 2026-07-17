@@ -1,25 +1,31 @@
 # BigMoeOnEdge
 
-**Run Mixture-of-Experts language models that are larger than a device's RAM, at usable
-speed, by streaming only the experts each token actually routes to** — losslessly, and
-without forking llama.cpp.
+**Run Mixture-of-Experts language models far larger than a device's RAM, at usable speed, by
+streaming only the experts each token routes to** — output byte-for-byte identical to the full
+model in RAM, built on stock llama.cpp without a fork.
 
-The idea is simple. A MoE layer holds many experts, but each token only uses a few of them —
-for Qwen3-30B-A3B, 8 out of 128 per layer, about 6% of the expert weights. So instead of holding
-the whole model in RAM, BigMoeOnEdge keeps the small, always-used parts in memory and reads just
-the experts a token needs from flash storage, right when it needs them. That lets an **18.5 GB
-model run on an 11 GB phone**, with output identical to running the full model in RAM.
+The idea is simple. A MoE layer holds many experts, but each token uses only a few — for
+Qwen3-30B-A3B, 8 of 128 per layer, about 6% of the expert weights. So instead of holding the whole
+model in RAM, BigMoeOnEdge keeps the small, always-used parts resident and reads just the experts a
+token needs from flash, right when it needs them. That lets an **18.5 GB model run on an 11 GB
+phone**, identical to running it fully resident.
 
-The target is mobile: phones are where memory is tight and this trade — trading some speed for a
-much smaller memory footprint — is worth making.
+And it does not stop there. The same trick puts **OpenAI's gpt-oss-120b — a 120-billion-parameter,
+58 GB model — on that same 11 GB phone**: **5.2× the device's RAM**, physically impossible to hold
+resident, generating coherent tokens **7.7× faster than a plain mmap load**. To our knowledge, the
+first 120B model ever to run on a phone — from a project built by one person, on a stock submodule.
+
+The target is mobile: phones are where memory is tight, and this trade — a little speed for a much
+smaller memory footprint — is where it pays off.
 
 - **Measured** on a OnePlus 15R (11.3 GB RAM, UFS 4.x): Qwen3-30B-A3B-Q4_K_M runs at up to
   **5.01 tok/s** streamed, against **2.00 tok/s** for a plain mmap load of the same model;
   Gemma-4-26B-A4B up to **4.99 tok/s** vs **0.36 tok/s** for mmap. See [Benchmarks](#benchmarks)
   for the full method, the config behind each number, and the lossless streaming-only figures.
-- **Scales to a 58 GB model on the same phone.** OpenAI **gpt-oss-120b** (58.46 GB, 5.2× device RAM
-  — impossible to hold resident) streams and generates on the 11.3 GB OnePlus, **7.7× faster than a
-  plain mmap** load at top-k 2 — to our knowledge the first 120B model to run on a phone. See
+- **The flagship: gpt-oss-120b on a phone.** 58.46 GB, 128 experts at top-4, 5.2× the OnePlus 15R's
+  RAM — a resident load is physically impossible, yet it streams and generates. Top-k is the dominant
+  lever here (each expert is large, so it is compute-bound): **0.687 tok/s at k=2**, 7.7× a plain
+  mmap. The full matrix, the quality note, and the method are in
   [Benchmarks](#gpt-oss-120b--a-58-gb-model-on-the-phone-52-ram).
 - **Built on llama.cpp, not a fork.** All the streaming runs through llama.cpp's public API,
   against the stock upstream code — so keeping up with llama.cpp is just a submodule bump. The one
