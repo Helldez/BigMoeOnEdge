@@ -9,8 +9,8 @@ import android.content.Context
  */
 enum class DenseWeights(val flag: String, val label: String, val blurb: String) {
     MMAP("mmap", "Mmap (baseline)", "Leave the dense weights mmap'd; the kernel faults them in. Slow first tokens on a >RAM model — the A/B baseline."),
-    WARM("warm", "Warm at load", "Page-cache the dense weights once at load, so the first tokens don't fault them in 4 KiB at a time. The default."),
-    ANON("anon", "Anon (O_DIRECT)", "Read the dense weights via O_DIRECT into our own buffers so a reclaim swaps to zram (fast) instead of a slow flash refault. Costs a private copy; A/B lever."),
+    WARM("warm", "Warm at load", "Page-cache the dense weights once at load, so the first tokens don't fault them in 4 KiB at a time. Best when the model fits in RAM."),
+    ANON("anon", "Anon (O_DIRECT)", "Read the dense weights via O_DIRECT into our own buffers so a reclaim swaps to zram (fast) instead of a slow flash refault. Costs a private copy. The default — it wins on >RAM models."),
 }
 
 /**
@@ -30,7 +30,7 @@ data class AppSettings(
     val nPredict: Int = DEFAULT_N_PREDICT,
     val oDirect: Boolean = true,        // bypass the page cache
     val overlap: Boolean = true,        // read the next experts while the current layer computes
-    val denseWeights: DenseWeights = DenseWeights.WARM, // dense (non-expert) weight residency policy
+    val denseWeights: DenseWeights = DenseWeights.ANON, // dense (non-expert) weight residency policy
     val prefetchLayers: Int = 0,        // temporal prefetch depth K (0 = off); needs the cache
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
     val metricsCsv: Boolean = true,     // write the engine's per-token CSV for this session (--csv)
@@ -195,7 +195,8 @@ data class AppSettings(
                         // Migrate the old two-boolean prefs from a pre-harmonization install.
                         p.getBoolean("denseOdirect", false) -> DenseWeights.ANON
                         !p.getBoolean("warmDense", true) -> DenseWeights.MMAP
-                        else -> DenseWeights.WARM
+                        // No prior choice: the field default is the one source of truth.
+                        else -> d.denseWeights
                     }
                 },
                 prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
