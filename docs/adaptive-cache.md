@@ -19,7 +19,9 @@ the device and keeps it there as free memory moves.
   for them as random 4 KiB faults. On a model far larger than RAM this is the difference between a
   fast first token and a ~20-token slow-start ramp: measured on gpt-oss-120b, the first-five-token
   wall average drops ~20× (see [benchmarks.md](benchmarks.md)). On models whose dense set is small it
-  is a harmless no-op. On by default; `--no-warm-dense` disables the sweep for A/B runs.
+  is a harmless no-op. On by default (`--dense-weights warm`); `--dense-weights mmap` disables the
+  sweep for A/B runs, and `--dense-weights anon` replaces it with an O_DIRECT read into anonymous
+  buffers, which is the better answer once the model is well past RAM.
   The warm-up is deliberately kept *out* of the budget: it only pre-faults the mmap-resident pages,
   it does not pin or reserve them, so the expert-cache budget above is unchanged and its hit rate is
   identical with and without it. (An alternative that folds the dense bytes into the floor —
@@ -27,14 +29,14 @@ the device and keeps it there as free memory moves.
   cache-sensitive model it lowers the budget and the hit rate, e.g. Gemma budget 4000→2909 MiB, hit
   83%→73%, trading throughput for OOM headroom that the warm-up already avoids needing. See
   [bench-data/2026-07-14-warmup/](bench-data/2026-07-14-warmup/).)
-- **During generation**, on the eval thread inside each layer's cache-management window, a throttled
-  re-probe (about every 128 layer loads, ≈2–3 tokens — one `/proc` read) tracks free RAM: if it dips
-  under the floor the budget shrinks by the shortfall and the normal eviction pass drains the cache
-  to it; when memory recovers the budget grows back toward the init size, with hysteresis so it does
-  not oscillate. The `moe-cache:` summary reports the live budget and how many times it changed:
+- **During generation, nothing resizes it.** `auto` is one shot at load, not a control loop: the
+  budget chosen at init is held for the whole run. A runtime governor that tracked free RAM and
+  shrank the budget under pressure did exist and was **retired** — it was measured a net loss on
+  the models it was built for (see [pressure.md](pressure.md)). The `moe-cache:` summary reports the
+  budget and what actually stayed resident:
 
   ```
-  moe-cache: 74.9% hit, resident 3812.4 MiB, budget 4000 MiB (auto, resized 2×)
+  moe-cache: 77.1% hit, resident 4000.0 MiB
   ```
 
 Because expert reads use O_DIRECT they never enter the page cache, so the only large pinned
@@ -63,7 +65,8 @@ the rest of the system.
 |---|---|
 | `--cache-mb auto` | size the cache to the device instead of a fixed MiB (mutually exclusive with a numeric `--cache-mb`) |
 | `--cache-floor-mb N` | RAM to leave free for the rest of the system when auto-sizing (default 1536) |
-| `--no-warm-dense` | skip the load-time sweep that page-caches the non-expert weights |
+| `--cache-ceil-mb N` | upper bound on the auto-sized budget (0 = no cap). Use it — uncapped `auto` over-asks |
+| `--dense-weights mmap\|warm\|anon` | the dense (non-expert) weight policy. `warm` (default) is the load-time page-cache sweep described above; `mmap` skips it; `anon` reads the dense set via O_DIRECT into anonymous buffers instead, which is the right answer well past RAM — see [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md). `--no-warm-dense` and `--dense-odirect` are deprecated aliases for `mmap` and `anon` |
 
 `auto` is a real LRU cache, so it satisfies the cache requirement of `--prefetch`.
 

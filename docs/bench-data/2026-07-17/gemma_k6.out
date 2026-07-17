@@ -1,0 +1,24 @@
+Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field<|channel>thought
+
+History of Computing.
+Origins, key milestones, key people, future directions.
+Long, detailed essay.
+
+    A chronological approach is most logical for a history essay.
+    *   *Introduction:* Define computing, its significance, and the thesis (it's a journey from mechanical tools to quantum leaps).
+    *   *Phase 1: Pre-Electronic/Mechanical Era:* Abacus, Pascaline, Babbage, Lovelace.
+    *   *Phase 2: The Birth of Electronic Computing (WWII Era):* Turing, ENIAC, Von Neumann architecture.
+    *   *Phase 3: The Transistor & Integrated Circuit Revolution:* Silicon Valley, miniaturization, Moore's Law.
+    *   *Phase 4: The Personal Computer & Internet Revolution:* Microprocessors, Apple/Microsoft, the World Wide Web.
+    *   *Phase 5: The Modern Era (Mobile, Cloud, AI):* Smartphones, Big Data, Deep Learning.
+    *   *Phase 6: Future Directions:* Quantum computing, Neuromorphic computing, Bio-computing, Ethical implications.
+    *   *Conclusion:* Summary and final thought on the human element.
+
+        *   Hook
+
+generation: 256 tokens, 0.264 s/token (3.792 tok/s)
+compute: 80.4% CPU occupancy (0.8478 cpu-s/token over 4 threads), 1003.71 major faults/token
+prefill: 42 tokens, 16.056 s (2.6 tok/s) | model load 27.322 s | TTFT 43.378 s
+moe-stream: read 25127.0 MiB (98.15 MiB/token), decode 0.264 s/token (compute 0.200 + cache mgmt 0.014 + flash I/O 0.133 s/token, 739 MiB/s)
+moe-cache: 82.8% hit, resident 3997.0 MiB
+moe-overlap: stall 0.050 s/token (flash reads overlapped with FFN compute)

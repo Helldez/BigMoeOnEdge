@@ -156,10 +156,10 @@ Reading these:
 > **Honest caveat on the gpt-oss absolute numbers.** These two runs were captured at the end
 > of a long benchmarking session, on a thermally-degraded and memory-dirty device: Thermal
 > Status 2 (moderate throttle), CPU pinned at ~1.9 GHz, and ~2.4 GB of zram still in use at
-> idle. Their **means (0.163 / 0.134 tok/s) are well below the clean best-cases in
-> [benchmarks.md](benchmarks.md) (0.687 / 0.383)** and should not be read as throughput
-> figures. They are included only to show the warm-up *shape*; a clean headline number needs
-> a cool, freshly-booted device.
+> idle. Their **means (0.163 / 0.134 tok/s) are far below the current numbers in
+> [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md) (2.191 tok/s at k=2)** and should not be read as
+> throughput figures. They are included only to show the warm-up *shape*; a clean headline number
+> needs a cool, freshly-booted device.
 
 ## The fix — dense warm-up
 
@@ -170,9 +170,16 @@ file's non-expert byte ranges (the complement of the expert tensor offsets) righ
 initialises, before the first token. Sequential flash bandwidth turns thousands of scattered major
 faults into a single ~1 s read, paid once inside `load_seconds` instead of inside `compute_ms`.
 
-It is on by default (`--no-warm-dense` to disable) and touches neither the expert cache nor the
-budget, so the streaming path is byte-for-byte unchanged — `cache_hit%` is identical step-for-step
-with and without it.
+It is on by default (`--dense-weights warm`; `--dense-weights mmap` disables it) and touches neither
+the expert cache nor the budget, so the streaming path is byte-for-byte unchanged — `cache_hit%` is
+identical step-for-step with and without it.
+
+> **Superseded well past RAM.** The warm sweep front-loads the dense pages into the *page cache*,
+> which fixes the cold head but not what follows: at 5.2× RAM the kernel reclaims those pages
+> mid-decode and they refault for the rest of the run. `--dense-weights anon` reads the same bytes
+> into anonymous buffers instead, so they survive — major faults per token drop from the hundreds to
+> 6–10. On a model that far past RAM, prefer `anon` over `warm`; see
+> [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md).
 
 Re-measured on the same device, warm-up on vs. the old lazy-fault binary
 ([`bench-data/2026-07-14-warmup/`](bench-data/2026-07-14-warmup/)):

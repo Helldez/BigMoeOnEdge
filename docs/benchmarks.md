@@ -12,7 +12,11 @@ For the far end of the ratio — a 58 GB model at 5.2× device RAM — see
 
 - Streaming a >RAM MoE model is **stable and usable**: ~1.6–1.7 tok/s with no cache, and up
   to **3.98 tok/s (Qwen) / 2.78 tok/s (Gemma)** with the best viable cache plus intra-layer
-  I/O–compute overlap — on an 11 GB phone holding an 18.5 GB (Qwen) or 17.0 GB (Gemma) model.
+  I/O–compute overlap — on an 11 GB phone holding an 18.5 GB (Qwen) or 17.0 GB (Gemma) model,
+  in the 2026-07-12 matrix below. Later sessions on a cooler device read higher on the same
+  levers (**5.23 tok/s** Qwen with a capped-auto cache, **5.01 / 4.99 tok/s** at k=6); the spread
+  between those sessions is device state, not code, which is why each table is compared only
+  against its own baseline.
 - **Expert-cache size is the dominant lever.** Larger cache raises the hit rate and collapses
   flash read per token (Qwen 480 MiB at cache 2000 → 225 MiB at cache 4000, hit 53 % → 76 %;
   Gemma 366 MiB at cache 2000, hit 58 %). Qwen nearly doubles from cache 2000 → 4000; Gemma
@@ -210,9 +214,12 @@ the 1.5 s/tok of lane reads cannot be hidden behind ~0.19 s of compute.
 `kv_override` on the arch-prefixed `expert_used_count` metadata — no fork, no patch. Fewer
 active experts cut both per-token compute *and* the streamed flash reads, at a quality cost
 (it changes the output). This is a **matched A/B**: default vs `k=6`, same session, same
-`--cache-mb 4000 --io-threads 4` config, same 45 s cooldown, thermally comparable (CPU peak
-within ~1–2 °C between the two rows), so the delta is the override's alone — not a warm-vs-cold
-artefact. (These rows are measured fresh on a cool device, so their *default* mean is higher
+`--cache-mb 4000 --io-threads 4` config, back-to-back, and — the part that makes it usable —
+**thermally comparable**, with the CPU peak within ~1–2 °C between the two rows, so the delta is
+the override's alone and not a warm-vs-cold artefact. (A later attempt to re-measure this pair on a
+device that had *not* returned to baseline inverted the result outright; see
+[Dense-weight policy](#dense-weight-policy---dense-weights). Verify the thermal match before
+trusting any top-k pair.) (These rows are measured fresh on a cool device, so their *default* mean is higher
 than the 2026-07-11 matrix above, which is why the pair is compared to its own baseline, not
 to that table.)
 
@@ -265,6 +272,37 @@ scripts/bench-run.sh 256 <model.gguf> <out.csv> <out.metrics> \
 Raw per-token CSVs, `.metrics`, and generated text for both the default and k=6 runs are in
 `.bench-k6/` (git-ignored), measured 2026-07-13.
 
+## Dense-weight policy (`--dense-weights`)
+
+The tables above stream the *experts* from flash but leave the **non-expert** weights (embeddings,
+attention, norms, lm_head) mmap-resident in the page cache. `--dense-weights anon` instead reads
+them via O_DIRECT into the engine's own anonymous buffers and rebinds the tensors onto them, so a
+reclaim sends them to zram rather than dropping them to be re-read from flash.
+
+**How much it is worth depends entirely on the model-to-RAM ratio**, and the two families here sit
+on the easy side of it:
+
+| Model | × device RAM | majflt/token (`anon`) | tok/s (`anon`, cache 4000, lane 4, overlap, default k) |
+|---|---:|---:|---:|
+| Qwen3-30B-A3B | 1.64× | 149 | 4.667 |
+| Gemma-4-26B-A4B | 1.51× | 1894 | 2.734 |
+| gpt-oss-120b | **5.2×** | **6–10** | see [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md) |
+
+Qwen's 4.667 tok/s does **not** beat its all-time best (5.23 tok/s, capped-auto cache, no
+dense-anon), and that is the expected result rather than a disappointment: at 1.64× RAM there is
+enough headroom to hold the dense set, so there is little refault pressure for the policy to
+remove. The lever is decisive only well past RAM — on gpt-oss at 5.2× RAM it is worth **3.2×** and
+drops majflt/token by two orders of magnitude. Use `warm` (the default) near RAM; reach for `anon`
+when `majflt/token` is in the hundreds.
+
+> **The Qwen and Gemma cells from that session are order-contaminated and no top-k claim is drawn
+> from them.** They ran with a 45 s cooldown that does not return this device to baseline, and
+> throughput tracked execution order: `qwen_k6` read 36.8 % less flash than `qwen_kdef` (correct)
+> yet its **compute rose** 0.126 → 0.175 s/tok, which is impossible for the same kernels and is in
+> fact fault time (majflt/token 149 → 1189). It inverted the Turbo top-k result above to −10.7 %.
+> The Turbo table stands; these rows do not replace it. Details and the per-cell entry states:
+> [`bench-data/2026-07-17/NOTES.md`](bench-data/2026-07-17/NOTES.md).
+
 ## Device pressure — not just tokens
 
 Tokens/s is only half the story. Under `mmap`-only the model is faulted in through the
@@ -280,8 +318,9 @@ cache**, so the rest of the system keeps its working set.
 before and at peak. All are read over adb **without root** (`dumpsys battery`,
 `/sys/class/thermal/thermal_zone*/temp`, `/proc/meminfo`). Kernel **PSI**
 (`/proc/pressure/*`) — the cleanest stall metric — returns *Permission denied* without root,
-so it is not recorded. Runs are cooled to a common baseline (45 s between configs) so
-sustained-decode throttling does not confound the comparison.
+so it is not recorded. Runs are brought to a common baseline between configs so sustained-decode
+throttling does not confound the comparison — a fixed sleep is **not** sufficient for that; see
+[benchmark-method.md](benchmark-method.md#cool-on-a-condition-not-a-timer--and-log-the-entry-state).
 
 **Qwen — device pressure**
 

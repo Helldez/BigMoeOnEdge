@@ -1,0 +1,17 @@
+Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field<think>
+Okay, I need to write a long, detailed essay about the history of computing, covering its origins, key milestones, the people involved, and future directions. Let me start by breaking down the structure. 
+
+First, the introduction should set the stage, maybe mention how computing has evolved from ancient tools to modern AI. Then, the origins: maybe start with early counting devices like the abacus. Then move to mechanical computers, like Charles Babbage's Analytical Engine. Then the 20th century with the invention of the first electronic computers, like ENIAC. 
+
+Key milestones: The development of programming languages, the invention of the transistor, the rise of personal computers, the internet, and the advent of AI. People involved: Babbage, Ada Lovelace, Turing, von Neumann, maybe others like Grace Hopper, John McCarthy, etc.
+
+Future directions: Quantum computing, AI ethics, neural networks, maybe the impact of computing on society. 
+
+Wait, I need to make sure I cover each part thoroughly. Let me think about the timeline. Ancient times: abacus, maybe the Antikythera mechanism. Then the 17th-18th centuries with Pascal and Leibniz. Babbage in
+
+generation: 256 tokens, 0.214 s/token (4.667 tok/s)
+compute: 68.0% CPU occupancy (0.5830 cpu-s/token over 4 threads), 149.08 major faults/token
+prefill: 34 tokens, 7.567 s (4.5 tok/s) | model load 23.108 s | TTFT 30.675 s
+moe-stream: read 55709.3 MiB (217.61 MiB/token), decode 0.214 s/token (compute 0.126 + cache mgmt 0.027 + flash I/O 0.303 s/token, 717 MiB/s)
+moe-cache: 77.1% hit, resident 4000.0 MiB
+moe-overlap: stall 0.062 s/token (flash reads overlapped with FFN compute)

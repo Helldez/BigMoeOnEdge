@@ -1,0 +1,28 @@
+Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field**The History of Computing: From Primitive Counting Tools to the Quantum Age**  
+*An extensive, chronological essay that traces the origins, key milestones, major personalities — and looks ahead to the future directions of the discipline.*  
+
+---
+
+## Table of Contents  
+
+1. **Introduction** – Why the story of computing matters  
+2. **Pre‑Electronic Foundations (≈ 3000 BC – 1600 AD)**  
+   - Early counting devices  
+   - Mechanical automata and the birth of algorithmic thought  
+3. **The Birth of Modern Computing (1600 – 1945)**  
+   - The analytical engine and the first programmers  
+   - Early electromechanical calculators  
+   - World‑War‑II code‑breaking and the first electronic computers  
+4. **The First Generation of Electronic Computers (1945 – 1959)**  
+   - ENIAC, EDVAC, and the stored‑program concept  
+   - Pioneering computer scientists and engineers  
+5. **The Second Generation – Transistors and High‑Level Languages (1959 – 1969)**  
+   - From vacuum tubes to transistors  
+   - The rise of programming languages (FORTRAN, COBOL, LISP)  
+
+
+generation: 256 tokens, 1.407 s/token (0.711 tok/s)
+compute: 67.7% CPU occupancy (3.8075 cpu-s/token over 4 threads), 7.07 major faults/token
+prefill: 96 tokens, 27.335 s (3.5 tok/s) | model load 59.924 s | TTFT 87.259 s
+moe-stream: read 465163.3 MiB (1817.04 MiB/token), decode 1.407 s/token (compute 0.948 + cache mgmt 0.001 + flash I/O 2.279 s/token, 797 MiB/s)
+moe-overlap: stall 0.457 s/token (flash reads overlapped with FFN compute)

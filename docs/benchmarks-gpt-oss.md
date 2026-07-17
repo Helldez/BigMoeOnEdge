@@ -2,9 +2,13 @@
 
 The same engine streams **OpenAI gpt-oss-120b** — a 58.46 GB MoE — on the same 11.3 GB phone.
 That is **5.2× device RAM**: the model cannot be held resident by any means, and to our knowledge
-this is the first time a 120B / 58 GB model has generated tokens on a phone at all. The run below
-is an exploratory sweep (top-k × read-lanes × prefetch), not the polished 256-token matrix used for
-Qwen/Gemma in [benchmarks.md](benchmarks.md) — read the two caveats before the numbers.
+this is the first time a 120B / 58 GB model has generated tokens on a phone at all.
+
+This is also the model where the engine's newest lever pays the most. Sending the **dense
+(non-expert) weights through O_DIRECT** instead of leaving them in the page cache
+(`--dense-weights anon`) takes gpt-oss from **0.687 tok/s to 2.191 tok/s** — a **3.2×** — and the
+mechanism is visible in the telemetry rather than inferred. See [Why the dense policy is the
+whole story here](#why-the-dense-policy-is-the-whole-story-here).
 
 ## Environment
 
@@ -14,113 +18,153 @@ Qwen/Gemma in [benchmarks.md](benchmarks.md) — read the two caveats before the
 | Model | `gpt-oss-120b-Q4_K_M.gguf` — 58.46 GB, 36 layers, 128 experts, **top-4** default, MXFP4 expert weights |
 | Device path | `/data/local/tmp/shardllm/` — the real `/data` partition, **required** for working O_DIRECT (`/sdcard` is FUSE and silently falls back to buffered) |
 | Fraction of RAM | ≈**5.2×** (58.46 GB / 11.3 GB) — resident load is impossible, so there is no in-RAM baseline, only `mmap` page-cache thrash |
-| Engine | `bmoe-cli` built from `feat/harmony-nothink-final-channel` @ `4d12b75` (arm64, NDK r26, `armv8.2-a+dotprod+fp16`) |
-| Fixed config | `--cache-mb auto --cache-ceil-mb 3000` (auto-sized, capped 3000 MiB), O_DIRECT on, `--overlap` on, `-t 4`, `--no-think` |
-| Swept | top-k ∈ {2, 3, 4}, read-lanes ∈ {4, 8}, prefetch ∈ {off, 4} — 12 cells, plus a 2-cell `mmap` baseline |
-| Probe | `-n 24`, prompt *"What is 17 times 23? Then name the capital of Australia."* (a short, checkable probe — see Quality) |
+| Decoding | greedy — deterministic, so two cells at the same top-k do identical work and read identical bytes |
 
-`--no-think` matters here. gpt-oss uses the harmony format, whose template **always** opens an
-`analysis` (chain-of-thought) channel — so a normal run spends its whole budget reasoning before it
-answers. `--no-think` now primes the `final` channel directly (see the engine fix on this branch), so
-the model answers immediately with no analysis tokens. That is what makes a 24-token probe meaningful
-— but it also removes the model's scratch space, which the Quality section below shows has a cost.
+## Current numbers (256-token steady state)
 
-## Two caveats (both narrow the numbers, honestly)
+Measured 2026-07-17 on `main` @ `1419af3`. Every row: `--moe-stream --overlap --dense-weights anon
+-t 4 --no-think`, 256 tokens, one fixed prompt, over `adb shell`. `compute` and `flash read/token`
+come from the engine's `moe-stream:` line, `cache hit` from `moe-cache:`, `majflt/token` from its
+`compute:` line.
 
-1. **Short probe, not steady state.** These are **24-token** runs, not the 256-token runs used for
-   Qwen/Gemma. The expert cache is still warming — hit rate sits at **13–21 %** (vs 76 % for Qwen at
-   256 tokens), so flash-read/token is high and the absolute tok/s is a **floor**: a warm, longer run
-   would read less and decode faster.
-2. **The k=4 rows were interrupted.** The phone was physically unplugged several times during the
-   k=4 cells; model-load and TTFT balloon there (k4 · io8 · pf0: load 90 s, TTFT 120 s). That row's
-   decode is **not trustworthy** — its compute drops to 2.042 s/tok against 3.869 s/tok for the *same*
-   k=4 at 4 lanes, but compute is lane-independent, so the gap is device state (cooler / less contended
-   after the interruption), not a lane effect. It is marked † and excluded from every conclusion. Read
-   k=4 from the **io4 · pf0** row (4.489 s/tok).
+| top-k | expert cache | lanes | tok/s | s/token | compute (s/tok) | stall (s/tok) | flash read/token | cache hit | majflt/token |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **2** | **2000 MiB** | **8** | **2.191** | 0.456 | 0.156 | 0.217 | 590.3 MiB | 32.0 % | 10 |
+| 2 | off | 4 | 1.790 | 0.559 | 0.242 | 0.316 | 908.5 MiB | — | 6 |
+| 4 (default) | 2000 MiB | 8 | 1.300 | 0.769 | 0.288 | 0.298 | 1292.4 MiB | 27.1 % | — |
+| 4 (default) | 2000 MiB | 4 | 0.998 | 1.002 | 0.436 | 0.400 | 1292.4 MiB | 27.1 % | 314 |
+| 4 (default) | off | 4 | 0.711 | 1.407 | 0.948 | 0.457 | 1817.0 MiB | — | 7 |
 
-## Results
+**These cells were not all measured from the same device state, and the differences matter.** The
+phone does not return to baseline between 58 GB runs (see [Method — cooldown](#method)); each
+cell's entry state was logged, and the honest reading is:
 
-s/token and tok/s are the engine's `generation:` line; `compute` and `flash read/token` are from its
-`moe-stream:` line; `cache hit` from `moe-cache:`. `--overlap` is on, so `flash I/O` runs concurrently
-with compute and the **stall** (residual flash wait not hidden behind compute) is the honest I/O cost —
-it stays ~0.2–0.3 s/tok throughout, i.e. overlap hides almost all of the flash read.
+- The **k=2 / cache 2000 / lane 8** row — the headline — entered at `scaling_max_freq` **1.55 GHz**
+  against the 2.27 GHz the cache-off rows enjoyed. It is a **throttled floor**: at equal clock it
+  would read higher, not lower.
+- **The lane 4 vs lane 8 pair is confounded and no lane recommendation is drawn from it here.** The
+  lane-4 cell entered with its CPU at 52.9 °C and peaked at 93.8 °C; the lane-8 cell entered at
+  44.4 °C and peaked at 70.2 °C. (Battery temperature suggested the opposite ordering — it lags
+  behind the SoC and is the wrong sensor for this.) The two read *identical* bytes (1292.4
+  MiB/token) at an identical 27.1 % hit, as greedy decode requires, so the gap is entirely
+  execution-side — but thermal state, not lane count, is the uncontrolled variable. A cold re-run
+  is owed.
 
-| top-k | lanes | prefetch | tok/s | s/token | compute (s/tok) | flash read/token | cache hit |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| **2** | **4** | **off** | **0.687** | **1.455** | 1.159 | 535.75 MiB | 20.4 % |
-| 2 | 4 | 4 | 0.532 | 1.878 | 1.529 | 640.91 MiB | 21.2 % |
-| 2 | 8 | off | 0.620 | 1.613 | 1.310 | 535.75 MiB | 20.4 % |
-| 2 | 8 | 4 | 0.516 | 1.937 | 1.647 | 640.91 MiB | 21.2 % |
-| **3** | **4** | **off** | **0.391** | **2.556** | 2.118 | 925.74 MiB | 16.9 % |
-| 3 | 4 | 4 | 0.304 | 3.293 | 2.854 | 1100.68 MiB | 18.1 % |
-| 3 | 8 | off | 0.279 | 3.581 | 3.074 | 925.74 MiB | 16.9 % |
-| 3 | 8 | 4 | 0.295 | 3.394 | 2.924 | 1100.68 MiB | 18.1 % |
-| **4** | **4** | **off** | **0.223** | **4.489** | 3.869 | 1402.75 MiB | 13.4 % |
-| 4 | 4 | 4 | 0.188 | 5.327 | 4.701 | 1619.72 MiB | 14.7 % |
-| 4 | 8 | off † | *0.383* | *2.613* | *2.042* | 1402.75 MiB | 13.4 % |
-| 4 | 8 | 4 | 0.213 | 4.704 | 4.045 | 1623.57 MiB | 14.7 % |
-| mmap | — | — | 0.089 | 11.240 | — | 0 (page cache) | — |
-| mmap (k=4) | — | — | 0.075 | 13.337 | — | 0 (page cache) | — |
+Raw CSVs, `.metrics`, generated text and the drivers: [`bench-data/2026-07-17/`](bench-data/2026-07-17/).
 
-† Interrupted run — see caveat 2. Excluded from conclusions.
+**In the demo app**, the headline config (cache 2000, 8 lanes, O_DIRECT for both dense and experts,
+k=2) reports **1.91 tok/s** — ~13 % below the 2.191 above. That is the expected protocol gap (short
+turns, co-resident UI, live device state), not an app defect; see the README's
+[What to expect in the app](../README.md#what-to-expect-in-the-app).
 
-## Reading the numbers
+## Why the dense policy is the whole story here
 
-- **Streaming vs `mmap`: 3–8×.** k=2 streams at 1.455 s/tok against **11.240 s/tok** for a plain
-  `mmap` load of the same file — **7.7× faster**; k=4 is 4.489 vs 13.337 — **3.0×**. `mmap`-ing 58 GB
-  onto 11 GB of RAM thrashes the page cache on *every* token (10–13 s each); the bounded 3 GB O_DIRECT
-  cache replaces that with reads the engine controls, and leaves the rest of RAM for the system.
-- **top-k is the dominant lever — it cuts compute *and* I/O.** Both scale almost linearly with k:
-  compute 1.16 → 2.12 → 3.87 s/tok and flash-read 536 → 926 → 1403 MiB/tok across k = 2 → 3 → 4 (4
-  lanes). k=2 is ~**3× faster** than k=4. This is the same knob as Qwen/Gemma's Turbo top-k, but it
-  matters far more here because gpt-oss is heavily compute-bound.
-- **Compute-bound, hard.** Even at these low hit rates the *compute* share dominates at k ≥ 3 (k=4:
-  3.87 s of the 4.49 s decode), because each gpt-oss expert is large (d_ff 2880 — several × a Qwen
-  expert), so top-4 is a lot of MAC per token. Overlap already hides almost all flash wait (stall
-  ~0.2–0.3 s/tok), so the remaining cost is kernels, not the seam — exactly as on Qwen at a warm cache.
-- **prefetch=4 always regresses.** Every `pf 4` row is slower than its `pf off` sibling. Prefetch
-  reads 20–25 % *more* per token speculatively (k=2: 640.91 vs 535.75 MiB/tok) but only **12–15 %** of
-  those experts are ever used — on a compute-bound model that wasted flash bandwidth buys nothing and
-  costs cache churn. Leave prefetch off for gpt-oss.
-- **Lanes 4 vs 8: 4 wins where it's trustworthy.** At k=2 io4 beats io8 (1.455 vs 1.613) — with the
-  flash wait already overlapped, extra lanes only add contention. The k=4 lane comparison is confounded
-  (caveat 2), so no lane claim is made there.
-- **A 24-token probe is mostly warm-up.** Unlike Qwen/Gemma, gpt-oss at 5.2× RAM warms up *inside*
-  compute: the first tokens fault the mmap-resident, non-expert working set in from flash (`compute_ms`
-  ~18 s), settling to sub-second once hot. The mean over 24 tokens is therefore a floor dominated by that
-  cold head, and the steady tail is several × faster. This memory-residency warm-up — distinct from the
-  gentle, I/O-bound cache warm-up on Qwen/Gemma — is analysed token-by-token in
-  [warmup-analysis.md](warmup-analysis.md).
+Expert streaming was never the problem on gpt-oss. **The dense weights were.**
+
+The engine streams experts through O_DIRECT into a bounded cache, so the 58 GB expert bank never
+lands in RAM. But the *non-expert* weights — embeddings, attention, norms, lm_head — are
+mmap-resident by default, held in the page cache. At 1.6× RAM there is room for them. At **5.2×
+RAM there is not**: the kernel reclaims them mid-decode, and every token faults them back in from
+flash, one 4 KiB page at a time. That fault storm is not visible as I/O in the engine's own
+accounting — the kernel services it inside the compute call — so it shows up as *compute*, and it
+is why gpt-oss looked hopelessly compute-bound.
+
+`--dense-weights anon` reads those weights via O_DIRECT into the engine's own anonymous buffers and
+rebinds the tensors onto them. They are no longer file-backed, so a reclaim sends them to zram
+rather than dropping them to be re-read from flash. The measurement:
+
+| dense policy | majflt/token (gpt-oss) |
+|---|---:|
+| page-cached (`warm`, previous default) | 314 – 1894 |
+| **O_DIRECT anon** | **6 – 10** |
+
+Two orders of magnitude. And the consequence lands where the theory says it should — in the
+compute column: **0.948 → 0.156 s/tok** across the old and new best configs. The kernels never
+changed; the fault service inside them went away.
+
+This also **overturns the previous cache-off recommendation for this model.** With the dense set in
+the page cache, an expert cache competed with it for the same scarce RAM, so a bounded cache lost
+to no cache at all and `cache-off` was the ceiling (see [pressure.md](pressure.md)). With the dense
+set out of the page cache that competition is gone, and a **2000 MiB cache beats cache-off**: 0.998
+vs 0.711 tok/s at the same lane count — while running at 1.9 GHz against the cache-off cell's
+2.27 GHz and entering with a hotter CPU. It wins carrying both handicaps.
+
+On budget choice: 2000 MiB is the smallest value that clears both constraints — above
+`cache_min_mb` (1500, below which `validate()` rejects the budget) and above the **measured 1815
+MiB/token** working set at k=4. A budget under one token's working set evicts what it just read and
+returns a 0 % hit; that is the pathological band, and it is rejected rather than offered.
+
+## top-k is still the dominant lever
+
+Each gpt-oss expert is large (d_ff 2880 — several × a Qwen expert), so halving the routing width
+halves both the MAC count and the streamed bytes:
+
+| top-k | tok/s (cache 2000, lane 8) | flash read/token | token working set |
+|---:|---:|---:|---:|
+| 4 (default) | 1.300 | 1292.4 MiB | 1815 MiB |
+| **2** | **2.191** | 590.3 MiB (−54.3 %) | 908 MiB |
+
+**+68.5 %** for k=2 — and the k=2 cell was the throttled one (1.55 GHz vs 1.9 GHz), so the real
+margin is wider. The flash cut (−54.3 %) tracks the routing cut, as it must.
+
+## vs `mmap`
+
+A plain `mmap` load of the same file, measured 2026-07-14, decodes at **11.24 s/token** (k=2) and
+**13.34 s/token** (k=4): faulting 58 GB through an 11 GB page cache thrashes on every token. Against
+the current best (0.456 s/token) that is **~25×**. Treat the ratio as indicative rather than a
+matched A/B — the mmap rows are 24-token probes from an older build, kept because re-measuring a
+13 s/token baseline for 256 tokens costs an hour of device time to reconfirm a number nobody
+should use.
 
 ## Quality — the cost of dropping reasoning
 
-Because these runs use `--no-think` (forced `final` channel, **no** chain-of-thought), the model
-answers with no scratch work — and decode is greedy/deterministic, so the answer depends only on k
-(identical under streaming and `mmap`):
+All rows use `--no-think`. gpt-oss uses the harmony format, whose template **always** opens an
+`analysis` (chain-of-thought) channel; a plain run spends its whole budget reasoning before it
+answers, so a throughput probe would be timing analysis tokens. `--no-think` primes the `final`
+channel directly and the model answers immediately.
 
-| top-k | `17 × 23 =` | capital |
+That is a **latency mode, not a free lunch** — it removes the model's scratch space. Measured on
+`17 × 23` (greedy, so the answer depends only on k; identical under streaming and `mmap`):
+
+| top-k | `17 × 23 =` | capital of Australia |
 |---:|---|---|
 | 2 | **391** ✅ | Canberra ✅ |
 | 3 | **391** ✅ | Canberra ✅ |
 | 4 (default) | **387** ❌ | Canberra ✅ |
 
-The model's *default* top-4 gets the arithmetic **wrong** (387) while the narrower k=2/k=3 get it
-**right** (391). This is not "smaller k is smarter" — it is that **without the analysis channel there
-is no scratch space to compute 17 × 23**, so the answer is a one-shot guess whose correctness is
-prompt- and k-specific. Takeaway: `--no-think` (forced-final) is a **latency/throughput mode** — use
-it for direct-answer UX and for benchmarking decode speed; for arithmetic or any multi-step task, drop
-`--no-think` and let gpt-oss spend analysis tokens. The capital is correct at every k.
+The *default* top-4 gets the arithmetic **wrong** while the narrower k=2/3 get it right. This is not
+"smaller k is smarter" — without the analysis channel there is no scratch space to compute 17 × 23,
+so the answer is a one-shot guess whose correctness is prompt- and k-specific. Use `--no-think` for
+direct-answer UX and for benchmarking decode speed; for arithmetic or any multi-step task, drop it
+and let gpt-oss spend analysis tokens. On the long-essay prompt used for the throughput rows above,
+both k=2 and k=4 stayed coherent and well-structured — one prompt, not a quality benchmark.
+
+## Method
+
+Same protocol as [benchmarks.md](benchmarks.md): 256 tokens, one fixed prompt, greedy, `--csv` for
+per-token metrics, `-t 4`. Two gpt-oss-specific requirements:
+
+- **Read from the real `/data` partition.** `/sdcard` is FUSE; O_DIRECT silently falls back to
+  buffered there, which quietly deletes the thing being measured.
+- **Cool on a condition, not a timer.** A 58 GB run leaves the device hot and its free RAM
+  depressed for *minutes*; a fixed sleep between cells benchmarks the run order. Gate each cell on
+  CPU temperature and free RAM coming back under a threshold, log the entry state
+  (`scaling_max_freq`, CPU temp, `MemAvailable`) with the result, and treat any cell that missed
+  the gate as a floor. See [benchmark-method.md](benchmark-method.md).
 
 ## Provenance
 
-Measured 2026-07-14 with `bmoe-cli` @ `4d12b75` (branch `feat/harmony-nothink-final-channel`). The
-summary log for all 14 cells and the two `mmap` per-token CSVs are committed under
-[`bench-data/2026-07-14/`](bench-data/2026-07-14/); the streaming cells were run without `--csv` (this
-sweep captured only the `moe-stream:` / `moe-cache:` summary lines), so there are no per-token CSVs for
-them — a follow-up warm 256-token run with `--csv` and a compute-thread sweep (`-t 4/6/8`) is the next
-step. Drivers: [`scripts/gptoss-matrix.sh`](../scripts/gptoss-matrix.sh) (the 12-cell streaming sweep)
-and [`scripts/gptoss-mmap.sh`](../scripts/gptoss-mmap.sh) (the 2-cell mmap baseline), prompt and flags
-baked in. The model was merged from its two HF shards with `llama-gguf-split --merge` before use.
+Current numbers measured 2026-07-17 on `main` @ `1419af3`, arm64 (NDK r29,
+`armv8.2-a+dotprod+fp16`); data and drivers in [`bench-data/2026-07-17/`](bench-data/2026-07-17/),
+with per-cell confounds recorded in its `NOTES.md`.
+
+The **superseded** exploratory sweep (2026-07-14, `bmoe-cli` @ `4d12b75`, 24-token probes at
+`--cache-mb auto --cache-ceil-mb 3000` with the dense weights page-cached — best **0.687 tok/s**)
+and the two `mmap` baselines live in [`bench-data/2026-07-14/`](bench-data/2026-07-14/). That sweep
+also concluded `prefetch=4` always regresses on this model (it reads 20–25 % more per token
+speculatively and only 12–15 % of it is used); nothing since has challenged that, and prefetch stays
+off here. Its lane-4-beats-lane-8 finding is **not** carried forward — it was measured in a regime
+(24-token probes, dense weights page-cached) that no longer describes how this model runs.
 
 | Model | Device path | Size |
 |---|---|---|

@@ -40,10 +40,13 @@ Vary one axis at a time:
 | threads (-t) | 2, 4, 8 | U-shape, 4 optimal, 8 regresses |
 | overlap | off, on | net gain **only over a warm cache** (hides residual flash wait behind compute); a net loss on a cold cache-0 stream, where I/O dwarfs compute |
 | n-expert-used | default, 6 | fewer active experts cut compute + I/O ~linearly (8→6 ≈ −25%), changes the output |
+| dense-weights | warm, anon | decisive well past RAM, near-neutral near it: on gpt-oss (5.2× RAM) `anon` drops majflt/token from the hundreds to **6–10** and compute with it; on Qwen (1.64× RAM) there is little dense-fault pressure to remove. Watch `majflt/token`, not just tok/s |
 
 When sweeping `--n-expert-used`, run it as a **matched A/B against the model's own default**
-in the same session (same config, same cooldown) rather than against an older table — a
-cool-vs-warm device shifts the baseline enough to swamp the effect. Greedy decode makes the
+in the same session (same config, both cells entering from the same *measured* device state —
+see [Cool on a condition](#cool-on-a-condition-not-a-timer--and-log-the-entry-state)) rather than
+against an older table — a cool-vs-warm device shifts the baseline enough to swamp the effect, and
+has been measured inverting it outright. Greedy decode makes the
 output diverge once routing narrows, so inspect the generated text for quality alongside tok/s;
 it is a speed/quality trade-off, not a free speedup. See the Turbo top-k section in
 [benchmarks.md](benchmarks.md) for a measured pair.
@@ -54,22 +57,66 @@ gpt-oss uses the harmony chat format, whose template **always** opens an `analys
 (chain-of-thought) channel before the answer — a plain run spends its whole `-n` budget
 reasoning, so a short probe never reaches the answer and per-token timing is measuring
 analysis tokens. Pass **`--no-think`**: on harmony models the engine primes the `final`
-channel directly, so the model answers immediately with no analysis tokens. That is what
-makes a short (24-token) throughput probe meaningful on gpt-oss.
+channel directly, so the model answers immediately with no analysis tokens. Without it a
+throughput run is timing chain-of-thought.
 
-Two things to keep honest when reporting gpt-oss numbers:
+Three things to keep honest when reporting gpt-oss numbers:
 
 - **`--no-think` is a speed mode, not a free lunch.** Forcing the `final` channel removes
   the model's scratch space, so reasoning-dependent tasks degrade — on `17 × 23` the default
   top-4 answers *wrong* while k=2/3 answer right (greedy, so it depends only on k). Always
   inspect the generated text; report speed and correctness separately.
-- **A 24-token probe is not steady state.** The expert cache is still warming (hit rate
-  10–20 % vs ~76 % at 256 tokens on Qwen), so flash-read/token is high and tok/s is a floor.
-  For a headline number, run the 256-token protocol with `--csv` once the model of interest
-  is settled.
+- **Use the 256-token protocol, not a short probe.** A 24-token run leaves the expert cache
+  warming (hit 10–20 % vs 27–32 % at 256 tokens here) *and* is dominated by the cold head, so it
+  is a floor rather than a result. The 2026-07-14 sweep in
+  [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md) was 24-token probes and reads ~3× low against
+  the current steady-state rows for that reason (among others).
+- **Set `--dense-weights anon`.** This is the single biggest lever on a model this far past RAM,
+  and *not* setting it silently changes what you are measuring: with the dense weights left in the
+  page cache the kernel reclaims them mid-decode and the refault cost is billed to `compute`, so
+  the model looks compute-bound when it is actually fault-bound. `majflt/token` (on the engine's
+  `compute:` line) tells you which regime you are in — hundreds means the dense set is thrashing,
+  single digits means it is not.
 
 gpt-oss must be read from the real `/data` partition (e.g. `/data/local/tmp/...`), not
 `/sdcard` — the latter is FUSE and O_DIRECT silently falls back to buffered there.
+
+### Cool on a condition, not a timer — and log the entry state
+
+**This is the rule that most often decides whether a matrix means anything.** A fixed sleep
+between cells does *not* return the device to baseline, so throughput tracks execution order and
+the matrix silently measures the order instead of the config. Measured 2026-07-17 over a 6-cell
+matrix with a 45 s cooldown (the value this page used to prescribe): the free-RAM floor and the
+major-fault rate degraded monotonically with position — run 1 entered at a 1.61 GB floor and 149
+majflt/token, run 3 at a 0.63 GB floor, 1894 majflt/token and 88.8 °C. It inverted a
+well-established result (Turbo top-k measured −10.7 % where it reproducibly gives +24 %) purely
+because the k=6 cell ran second. The cause is reclaim hysteresis: the kernel takes memory away in
+seconds and returns it over minutes (see [android-memory.md](android-memory.md)).
+
+So:
+
+- **Gate each cell on a measured condition** — CPU temperature and `MemAvailable` back under a
+  threshold — with a bounded give-up that is *recorded* when it fires. `bench-data/2026-07-17/driver-lanes.sh`
+  is a working example.
+- **Read the CPU sensor, not the battery.** Battery temperature lags behind the SoC by minutes and
+  will rank two cells backwards: in the 2026-07-17 lane pair, battery said cell A entered 2.7 °C
+  *cooler* while the CPU said it entered 8.5 °C *hotter* and peaked at 93.8 °C. The CPU sensor is
+  the one that governs compute throttling.
+- **Log the entry state next to every number** (`scaling_max_freq`, CPU temp, `MemAvailable`), so a
+  contaminated cell is visible in the data instead of being discovered later — or worse, published.
+- **Prefer a cold, idle, unplugged-then-reattached device.** On USB power this phone idles around
+  38 °C and will not reach a 36 °C gate at all.
+- On a >>RAM model (gpt-oss at 5.2× RAM) budget **minutes**, not seconds: a 58 GB run leaves the
+  device hot and its free RAM depressed long after the process exits.
+
+**Two tells that a cell is contaminated rather than informative:**
+
+1. **`compute` s/token rises as top-k falls.** Physically impossible — fewer active experts cannot
+   make the same kernels slower. It is fault-service time landing inside the compute bucket.
+2. **majflt/token jumps an order of magnitude** between cells that should do comparable work.
+
+Re-run such a cell; do not publish it. And sanity-check any matrix by **reversing the run order** —
+cells that move were measuring device state.
 
 ### Caveats
 
@@ -89,17 +136,23 @@ the whole model through the page cache and evicts other apps, so the device goes
 streaming with a bounded cache + O_DIRECT bypasses the page cache and keeps the system
 responsive. Record a pressure indicator next to tok/s. Accessible over adb **without root**:
 
-- **Temperature** — `dumpsys battery` (`temperature` in deci-°C, `PhoneTemp`) and
-  `/sys/class/thermal/thermal_zone*/temp` with matching `.../type` (CPU `cpu-*`, GPU
-  `gpuss-*`, skin zones are readable by the shell user).
+- **Temperature** — `/sys/class/thermal/thermal_zone*/temp` with matching `.../type` (CPU
+  `cpu-*`, GPU `gpuss-*`, skin zones are readable by the shell user). `dumpsys battery`
+  (`temperature`, deci-°C) is easy to read but **lags the SoC by minutes** — record it if you
+  like, decide with the CPU zone.
 - **Free-RAM floor** — `/proc/meminfo` `MemAvailable`, sampled before / mid-run / after;
   its collapse under mmap *is* the pressure signal.
-- **Throttling state** — `dumpsys thermalservice`.
+- **Major faults** — `majflt/token` on the engine's own `compute:` line. This is the one that
+  distinguishes "the kernels are slow" from "the dense weights are refaulting"; nothing else
+  separates those two, because the kernel bills the refault to the compute call.
+- **Throttling state** — `dumpsys thermalservice`, plus `scaling_max_freq` (see
+  [Caveats](#caveats)).
 
 Kernel **PSI** (`/proc/pressure/{memory,io,cpu}`) is the cleanest stall metric but returns
-*Permission denied* without root on this device. Protocol: cool to a common baseline
-between configs so sustained-decode throttling doesn't confound the comparison, then
-produce a *tok/s vs. thermal rise and free-RAM floor* table alongside the throughput one.
+*Permission denied* without root on this device. Protocol: bring every config to a common
+baseline *by measurement* (see [Cool on a condition](#cool-on-a-condition-not-a-timer--and-log-the-entry-state))
+so sustained-decode throttling doesn't confound the comparison, then produce a *tok/s vs. thermal
+rise and free-RAM floor* table alongside the throughput one.
 
 ## Host (correctness + a sanity number)
 

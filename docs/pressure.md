@@ -2,15 +2,27 @@
 
 **History note.** This document described a runtime *governor* — `--cache-dynamic` / `--cache-gov2` —
 that watched the engine's own pages and resized the expert cache token by token to chase the budget
-the device would concede. On-device measurement retired it: for the >RAM models this engine exists
-for, **cache-off is the ceiling**, and the governor thrashed (gpt-oss: 0.156 tok/s governed vs 0.517
-cache-off) because a budget the device cannot concede starts a reclaim war whose churn the loop itself
-feeds. The governor, `--cache-dynamic`, and the runtime sensors are gone. The analysis below is why —
-and it is the reason the current, deliberately simple policy is what it is:
+the device would concede. On-device measurement retired it: the governor thrashed (gpt-oss: 0.156
+tok/s governed vs 0.517 cache-off) because a budget the device cannot concede starts a reclaim war
+whose churn the loop itself feeds. The governor, `--cache-dynamic`, and the runtime sensors are gone.
+The analysis below is why — and it is the reason the current, deliberately simple policy is what it
+is:
 
-- **cache-off (shared-slot) is the default**, and the recommendation for anything >RAM.
+- **cache-off (shared-slot) is the default**, and the safe answer whenever the dense weights are
+  page-cached.
 - **`--cache-mb N`** is a fixed-budget LRU that keeps the hottest experts resident. It pays where the
-  working set fits without forcing reclaim (53–82% hit on RAM-fitting Qwen/Gemma), and nowhere else.
+  working set fits without forcing reclaim (53–82% hit on RAM-fitting Qwen/Gemma).
+
+> **Updated 2026-07-17 — "cache-off is the ceiling past RAM" was true *of a configuration*, not of
+> the model.** That conclusion was measured with the dense weights left in the page cache, where an
+> expert cache and the dense set fight over the same scarce RAM and the cache loses. Take the dense
+> set out of the page cache (`--dense-weights anon`) and the fight is gone: on gpt-oss-120b a
+> **2000 MiB cache now beats cache-off**, 0.998 vs 0.711 tok/s at the same lane count — and it won
+> while clocked at 1.9 GHz against the cache-off cell's 2.27 GHz. The war described below is real;
+> the way to win it turned out to be removing the *other* claimant on RAM, not shrinking the ask to
+> zero. Sizing still matters: the budget must clear one token's working set (1815 MiB at k=4 there),
+> which is why 2000 MiB works and 1000 MiB is rejected. See
+> [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md).
 - **`--cache-mb auto`** sizes that budget once from device RAM at load, then leaves it fixed — a
   convenience, not a runtime loop. `--cache-ceil-mb` / `--cache-floor-mb` bound it.
 - The **dense weights** get their own policy (`--dense-weights`, below), which is where the measured
@@ -105,8 +117,14 @@ RAM (the live signal now that the cache-residency governor sensor is gone).
 
 Reading `cache_hit_pct` against `token_demand_MiB` is how you tell whether a fixed `--cache-mb N` is
 earning its RAM: a budget near or below one token's demand holds no history between tokens and its
-hits are only inter-token correlation; well above it, a high hit rate means real reuse and a low one
-means the working set does not fit — set the cache off and let it stream.
+hits are only inter-token correlation; well above it, a high hit rate means real reuse.
+
+A *low* hit rate on a budget above one token's demand does not automatically mean "turn the cache
+off" — check `majflt/token` first. If it is in the hundreds, what you are seeing is the **dense** set
+refaulting, and the fix is `--dense-weights anon`, not a smaller expert cache: on gpt-oss a 2000 MiB
+budget returns only 27–32 % yet still beats cache-off once the dense weights are out of the page
+cache. Turn the cache off when the budget is unaffordable *after* that — i.e. when free RAM collapses
+and majflt stays high with the dense set already anonymous.
 
 ## `--dense-weights anon`: make the dense weights anonymous
 

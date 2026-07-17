@@ -1,0 +1,21 @@
+=============== gpt_c2000_l8_k2 ===============
+ENTRY STATE: batt=420 dC, memavail=6837980 kB, freq=1555200
+print_info: n_expert              = 128
+print_info: n_expert_used         = 2
+print_info: n_expert_groups       = 0
+bmoe: expert streaming ON  n_expert=128 o_direct=1 io_threads=8 cache=2000 MiB
+generation: 256 tokens, 0.456 s/token (2.191 tok/s)
+prefill: 96 tokens, 35.567 s (2.7 tok/s) | model load 67.900 s | TTFT 103.467 s
+moe-stream: read 151128.4 MiB (590.35 MiB/token), decode 0.456 s/token (compute 0.156 + cache mgmt 0.084 + flash I/O 1.118 s/token, 528 MiB/s)
+moe-cache: 32.0% hit, resident 1991.9 MiB
+moe-overlap: stall 0.217 s/token (flash reads overlapped with FFN compute)
+peak_rss_kb=7008188
+mem_avail_before_kb=6836980
+mem_avail_floor_kb=2786240
+mem_avail_after_kb=6857464
+batt_temp_before_dC=420
+batt_temp_max_dC=423
+batt_temp_after_dC=423
+cpu_temp_before_mC=46700
+cpu_temp_max_mC=63700
+=============== DONE ===============

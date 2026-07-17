@@ -1,0 +1,19 @@
+Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field<think>
+Okay, I need to write a long, detailed essay about the history of computing, covering its origins, key milestones, the people involved, and future directions. Let me start by breaking down the structure. 
+
+First, the introduction should set the stage, maybe mention how computing has evolved from ancient tools to modern AI. Then, the origins: maybe start with the abacus, then move to early mechanical devices like the Antikythera mechanism. Then the 17th and 18th centuries with Pascal and Leibniz. 
+
+Next, the 19th century: Babbage and Lovelace. Then the 20th century: World Wars, Turing, ENIAC, transistors, integrated circuits, personal computers. Then the internet, software, and the digital age. 
+
+For the people, I need to highlight key figures like Babbage, Lovelace, Turing, von Neumann, Jobs, Gates, etc. 
+
+Future directions: quantum computing, AI, ethics, sustainability, maybe space exploration. 
+
+Wait, I should check if I'm missing any key milestones. Maybe the development of programming languages, the rise of the internet in the 90s, the dot-com boom, mobile computing
+
+generation: 256 tokens, 0.240 s/token (4.168 tok/s)
+compute: 72.8% CPU occupancy (0.6986 cpu-s/token over 4 threads), 1188.73 major faults/token
+prefill: 34 tokens, 7.374 s (4.6 tok/s) | model load 25.538 s | TTFT 32.912 s
+moe-stream: read 35205.0 MiB (137.52 MiB/token), decode 0.240 s/token (compute 0.175 + cache mgmt 0.020 + flash I/O 0.196 s/token, 702 MiB/s)
+moe-cache: 80.0% hit, resident 3998.6 MiB
+moe-overlap: stall 0.044 s/token (flash reads overlapped with FFN compute)

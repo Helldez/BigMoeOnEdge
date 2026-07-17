@@ -1,0 +1,41 @@
+=============== gpt_c2000_l4 ===============
+ENTRY STATE: batt=380 dC, memavail=7117868 kB, freq=1900800, waited=0s
+print_info: n_expert              = 128
+print_info: n_expert_used         = 4
+print_info: n_expert_groups       = 0
+bmoe: expert streaming ON  n_expert=128 o_direct=1 io_threads=4 cache=2000 MiB
+generation: 256 tokens, 1.002 s/token (0.998 tok/s)
+prefill: 96 tokens, 56.675 s (1.7 tok/s) | model load 60.341 s | TTFT 117.016 s
+moe-stream: read 330851.6 MiB (1292.39 MiB/token), decode 1.002 s/token (compute 0.436 + cache mgmt 0.166 + flash I/O 1.745 s/token, 741 MiB/s)
+moe-cache: 27.1% hit, resident 1991.9 MiB
+moe-overlap: stall 0.400 s/token (flash reads overlapped with FFN compute)
+peak_rss_kb=6758816
+mem_avail_before_kb=7117300
+mem_avail_floor_kb=2399496
+mem_avail_after_kb=6422036
+batt_temp_before_dC=380
+batt_temp_max_dC=401
+batt_temp_after_dC=401
+cpu_temp_before_mC=52900
+cpu_temp_max_mC=93800
+=============== gpt_c2000_l8 ===============
+ENTRY STATE: batt=407 dC, memavail=6455532 kB, freq=1900800, waited=180s
+print_info: n_expert              = 128
+print_info: n_expert_used         = 4
+print_info: n_expert_groups       = 0
+bmoe: expert streaming ON  n_expert=128 o_direct=1 io_threads=8 cache=2000 MiB
+generation: 256 tokens, 0.769 s/token (1.300 tok/s)
+prefill: 96 tokens, 20.672 s (4.6 tok/s) | model load 66.752 s | TTFT 87.425 s
+moe-stream: read 330851.6 MiB (1292.39 MiB/token), decode 0.769 s/token (compute 0.288 + cache mgmt 0.183 + flash I/O 2.702 s/token, 478 MiB/s)
+moe-cache: 27.1% hit, resident 1991.9 MiB
+moe-overlap: stall 0.298 s/token (flash reads overlapped with FFN compute)
+peak_rss_kb=6715992
+mem_avail_before_kb=6455012
+mem_avail_floor_kb=2587628
+mem_avail_after_kb=6674844
+batt_temp_before_dC=407
+batt_temp_max_dC=417
+batt_temp_after_dC=417
+cpu_temp_before_mC=44400
+cpu_temp_max_mC=70200
+=============== DONE ===============

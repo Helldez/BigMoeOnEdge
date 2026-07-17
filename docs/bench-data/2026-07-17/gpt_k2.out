@@ -1,0 +1,20 @@
+Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field**The History of Computing: From Early Tools to the Edge of a New Era**  
+
+*Word count: ~5 500 words*  
+
+---
+
+## 1. Introduction  
+
+Computing is now so woven into daily life that we often forget it was once a set of abstract ideas, mechanical curiosities, and massive room‑sized machines.  The story of computing is a story of **human imagination meeting the limits of physical technology**.  It is also a story of **incremental problem‑solving**—from tally sticks used to record grain counts in ancient Mesopotamia to today’s neural‑network accelerators that help a single chip “understand” speech and vision.  
+
+In this essay I will trace the evolution of computing from its earliest precursors to the present moment when quantum and bio‑computing promise to reshape the discipline again.  The narrative is organized into chronological “acts,” each highlighting:
+
+* **Key inventions or concepts** – the “hardware” (abaci, gears, vacuum tubes, transistors, integrated circuits, photonic/quantum devices) and the “software” (algorithms, programming languages, operating systems).  
+* **People and institutions** – the mathematicians, engineers, and entrepreneurs whose insights turned
+
+generation: 256 tokens, 0.559 s/token (1.790 tok/s)
+compute: 44.9% CPU occupancy (1.0034 cpu-s/token over 4 threads), 6.00 major faults/token
+prefill: 96 tokens, 53.020 s (1.8 tok/s) | model load 64.237 s | TTFT 117.258 s
+moe-stream: read 232581.1 MiB (908.52 MiB/token), decode 0.559 s/token (compute 0.242 + cache mgmt 0.001 + flash I/O 1.250 s/token, 727 MiB/s)
+moe-overlap: stall 0.316 s/token (flash reads overlapped with FFN compute)
