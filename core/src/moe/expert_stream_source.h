@@ -152,6 +152,16 @@ private:
     static void c_expert_ready(const ggml_tensor * src0, int expert, void * user_data);
     void on_expert_ready(const ggml_tensor * src0, int expert);
 
+    // One expert's cache accounting for the layer being staged: the lookup, the hit/miss decision,
+    // and the residency bookkeeping that follows. Both load paths need exactly this and used to spell
+    // it out separately — what a hit means, what a miss commits, how the LRU order is kept — so a fix
+    // to any of it had to be made twice or not at all. What they do NOT share is how they schedule the
+    // reads (serial emits expert-major and blocks; overlap emits projection-major and publishes), so
+    // that stays with each caller. `hit` tells the caller whether this expert still needs reads.
+    // Returns false only if committing the pages failed; the caller decides how fatal that is.
+    // LRU mode only (cache_max_ > 0) — the shared-slot path has no entries to account for.
+    bool touch_entry(int il, int e, bool & hit);
+
     // LRU helpers (active only when cache_max_ > 0)
     void lru_unlink(int32_t id);
     void lru_push_front(int32_t id);

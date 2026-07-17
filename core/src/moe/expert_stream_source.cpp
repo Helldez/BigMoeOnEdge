@@ -564,6 +564,46 @@ uint64_t ExpertStreamSource::expert_bytes(int il) const {
     return (uint64_t) entry_bytes(il);
 }
 
+// The cache accounting both load paths share. See the header for why this is the part that is shared
+// and the job emission is not. Eval-thread only, like every other LRU mutation.
+bool ExpertStreamSource::touch_entry(int il, int e, bool & hit) {
+    const int32_t id = il * n_expert_ + e;
+    clookups_++;
+    cstamp_[id] = cgen_;
+    if (cvalid_[id]) {
+        chits_++;
+        if (cspec_[id]) { // this hit was served by a speculative prefetch — count it useful once
+            spec_useful_.fetch_add(1);
+            cspec_[id] = 0;
+        }
+        lru_unlink(id);
+        lru_push_front(id);
+        hit = true;
+        return true;
+    }
+    // Miss: commit the pages the caller's reads will fill, then enter the expert as resident. The
+    // entry is valid from here on because the caller is contracted to schedule those reads before
+    // anything can consume the slices — the barrier that makes this safe is the eval-callback's.
+    const LayerExperts & L = layers_[il];
+    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        const uint64_t slice = L.proj[p].nb2;
+        if (slice == 0) continue; // absent slot in a fused layout
+        char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
+        uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
+        uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
+        if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) {
+            std::fprintf(stderr, "bmoe: commit failed\n");
+            return false;
+        }
+    }
+    cvalid_[id] = 1;
+    cspec_[id] = 0; // a real read, not speculative
+    cresident_ += entry_bytes(il);
+    lru_push_front(id);
+    hit = false;
+    return true;
+}
+
 // ── load: stage routed experts, read the batch, evict cold entries to budget ────────
 bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return false;
@@ -591,36 +631,18 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             }
             return true;
         }
-        const int32_t id = il * n_expert_ + e;
-        clookups_++;
-        cstamp_[id] = cgen_;
-        if (cvalid_[id]) {
-            chits_++;
-            if (cspec_[id]) { // this hit was served by a speculative prefetch — count it useful once
-                spec_useful_.fetch_add(1);
-                cspec_[id] = 0;
-            }
-            lru_unlink(id);
-            lru_push_front(id);
-            return true;
-        }
+        bool hit = false;
+        if (!touch_entry(il, e, hit)) return false;
+        if (hit) return true;
+        // A miss: emit this expert's reads, expert-major. The drain below waits on them all, so the
+        // order only has to be complete, not clever — unlike the overlap path, where it feeds a
+        // kernel that is already blocking.
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue; // absent slot in a fused layout
-            char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-            uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
-            uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
-            if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) {
-                std::fprintf(stderr, "bmoe: commit failed\n");
-                return false;
-            }
-            jobs_.push_back(
-                {dst, L.proj[p].file_off + (uint64_t) e * slice, slice, -1, e, (int16_t) il, (int8_t) p, 0});
+            jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
+                             slice, -1, e, (int16_t) il, (int8_t) p, 0});
         }
-        cvalid_[id] = 1;
-        cspec_[id] = 0; // a real read, not speculative
-        cresident_ += entry_bytes(il);
-        lru_push_front(id);
         return true;
     };
 
@@ -772,37 +794,17 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
         // commit the pages and remember it). Then emit the misses' jobs projection-major.
         seen_.assign(seen_.size(), 0); // reuse as a per-staged miss marker keyed by expert
         for (int e : staged_) {
-            const int32_t id = il * n_expert_ + e;
-            clookups_++;
-            cstamp_[id] = cgen_;
-            if (cvalid_[id]) {
-                chits_++;
-                if (cspec_[id]) {
-                    spec_useful_.fetch_add(1);
-                    cspec_[id] = 0;
-                }
-                lru_unlink(id);
-                lru_push_front(id);
+            bool hit = false;
+            if (!touch_entry(il, e, hit)) {
+                // Nothing waits on a flag we will never publish: abort the graph instead.
+                fatal_.store(true, std::memory_order_release);
+                return false;
+            }
+            if (hit) { // resolved without a read — release every projection's waiter now
                 for (int p = 0; p < MoeRecipe::max_exps; ++p)
                     if (L.proj[p].nb2) mark_ready(p, e);
                 continue;
             }
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-                const uint64_t slice = L.proj[p].nb2;
-                if (slice == 0) continue;
-                char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-                uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
-                uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
-                if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) {
-                    std::fprintf(stderr, "bmoe: commit failed\n");
-                    fatal_.store(true, std::memory_order_release);
-                    return false;
-                }
-            }
-            cvalid_[id] = 1;
-            cspec_[id] = 0; // a real read, not speculative
-            cresident_ += entry_bytes(il);
-            lru_push_front(id);
             seen_[e] = 1; // this expert missed → its projections need reads
         }
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
