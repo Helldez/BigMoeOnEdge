@@ -1,67 +1,67 @@
 # BigMoeOnEdge
 
-**Run Mixture-of-Experts models far bigger than your phone's RAM.**
+**Run Mixture-of-Experts models far bigger than your edge device's RAM.**
 
 A Mixture-of-Experts (MoE) model is made of many small "experts", and each generated token only
 uses a few of them. BigMoeOnEdge takes that literally: it keeps the small always-needed parts of
 the model at hand and reads just the experts each token asks for, directly from flash storage, at
 the moment they're needed. The rest of the model stays on disk. That's what makes large open MoE
-models — Qwen3, Gemma, gpt-oss and most of their relatives — runnable on a phone whose RAM they
-exceed several times over.
+models (Qwen3, Gemma, gpt-oss and most of their relatives) runnable on edge devices whose RAM they
+exceed several times over. The focus today is phones, where memory is tightest.
 
 The flagship case: **gpt-oss-120b**, a ~60 GB model (Q4_K_M), on a mid-range phone with 12 GB of
-RAM — about five times more model than memory, so holding it resident is simply impossible. It
-runs anyway, at **1.3 tok/s** with the model's own settings (**2.2 tok/s** with one speed knob),
+RAM. That's about five times more model than memory, so holding it resident is simply impossible.
+It runs anyway, at **1.3 tok/s** with the model's own settings (**2.2 tok/s** with one speed knob),
 and as far as we know it's the first time a 120B model has generated tokens on a phone at all.
 
+**And it's all plain CPU inference.** No GPU, no NPU, no special hardware: four CPU cores of a
+mid-range phone, its flash storage, and nothing else.
+
 Streaming does not change what the model computes: the output is **byte-for-byte identical** to
-running the model fully in RAM — same weights, same math, just fetched later. There is exactly one
+running the model fully in RAM. Same weights, same math, just fetched later. There is exactly one
 optional lossy setting, and it's always labelled as such.
 
 Everything runs on **stock llama.cpp**. Upstream stays untouched, tracked as a plain submodule, and
-the streaming works through its public API — so following new llama.cpp releases is a routine
+the streaming works through its public API, so following new llama.cpp releases is a routine
 submodule bump, not a merge.
 
 Highlights:
 
-- **gpt-oss-120b (Q4_K_M), ~5× device RAM** — 1.3 tok/s as shipped, 2.2 tok/s with the speed knob.
+- **gpt-oss-120b (Q4_K_M), ~5× device RAM**: 1.3 tok/s as shipped, 2.2 tok/s with the speed knob.
   The same file loaded the ordinary way manages 0.09 tok/s.
-- **Lossless on models past RAM** — Qwen3-30B-A3B (Q4_K_M, 18.5 GB) up to **5.2 tok/s** and
+- **Lossless on models past RAM**: Qwen3-30B-A3B (Q4_K_M, 18.5 GB) up to **5.2 tok/s** and
   Gemma-4-26B-A4B (Q4_K_M, 17.0 GB) up to **4.1 tok/s** on the same phone, output identical to the
   resident model.
-- **Easy to extend** — supporting a new MoE architecture is one line in a registry; nothing about a
+- **Easy to extend**: supporting a new MoE architecture is one line in a registry; nothing about a
   specific model is hardcoded in the streaming path.
 
-The target is mobile: phones are where memory is tight, and trading a little speed for a much
-smaller memory footprint is exactly the deal that makes sense there.
-
-> **About the numbers.** Measured on one device (OnePlus 15R — 12 GB RAM, 11.3 GB usable, UFS 4.x
+> **About the numbers.** Measured on one device (OnePlus 15R: 12 GB RAM, 11.3 GB usable, UFS 4.x
 > storage) over `adb shell`, 256-token greedy decode. Each number is the best observed for that
 > configuration, and rows in a table can come from different benchmark sessions. Phone throughput
 > moves a lot with device state (heat, free memory), so the same command can read lower. Full
 > method and distributions: [docs/benchmarks.md](docs/benchmarks.md).
 
 > Prior art, credited: this is an engineering package of ideas from AirLLM, Apple's *LLM in a
-> flash*, FlexGen, PowerInfer and EdgeMoE — not a novel technique. See
+> flash*, FlexGen, PowerInfer and EdgeMoE, not a novel technique. See
 > [docs/limitations.md](docs/limitations.md).
 
 ## Features
 
-- **Expert streaming** (`--moe-stream`) — reads only the experts each token routes to, straight
+- **Expert streaming** (`--moe-stream`): reads only the experts each token routes to, straight
   from flash.
-- **Expert cache** (`--cache-mb N|auto`) — keeps the most-used experts in RAM, sized by hand or to
+- **Expert cache** (`--cache-mb N|auto`): keeps the most-used experts in RAM, sized by hand or to
   the device; the biggest lever when the model's working set fits.
-- **Direct flash reads** (`--io-threads N`) — parallel read lanes that bypass the OS page cache.
-- **Dense-weight policy** (`--dense-weights mmap|warm|anon`) — how the always-used (non-expert)
+- **Direct flash reads** (`--io-threads N`): parallel read lanes that bypass the OS page cache.
+- **Dense-weight policy** (`--dense-weights mmap|warm|anon`): how the always-used (non-expert)
   weights are held in memory. The decisive setting for models far past RAM: on gpt-oss-120b it's
   worth **3.2×** on its own.
-- **I/O–compute overlap** (`--overlap`) — hides flash latency behind compute. Byte-identical;
+- **I/O–compute overlap** (`--overlap`): hides flash latency behind compute. Byte-identical;
   needs a small optional add-on to llama.cpp (see [docs/seam.md](docs/seam.md)).
-- **Turbo top-k** (`--n-expert-used N`) — the one lossy knob: fewer experts per token, ~+22–24%
+- **Turbo top-k** (`--n-expert-used N`): the one lossy knob. Fewer experts per token, ~+22–24%
   speed, output quality is yours to judge.
-- **Multi-turn sessions and live telemetry** — the model stays loaded across chat turns, and every
+- **Multi-turn sessions and live telemetry**: the model stays loaded across chat turns, and every
   run can emit a per-token breakdown of where the time went.
-- **Android demo app** ([`examples/android`](examples/android)) — a chat app with a live telemetry
+- **Android demo app** ([`examples/android`](examples/android)): a chat app with a live telemetry
   panel and every knob above exposed in Settings.
 
 ## Supported models
@@ -73,22 +73,22 @@ smaller memory footprint is exactly the deal that makes sense there.
 | `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | Fused expert layout, handled by its registry row |
 | `gpt-oss` | OpenAI gpt-oss-20b / 120b | Purely routed; MXFP4 weights stream unchanged |
 
-Adding an architecture is one row in the registry — expert counts and layouts are discovered from
+Adding an architecture is one row in the registry; expert counts and layouts are discovered from
 the model file at runtime. Procedure: [docs/adding-a-model.md](docs/adding-a-model.md).
 `bmoe-cli --list-archs` prints the compiled-in set.
 
 ## Benchmarks
 
 All figures are measured, not modelled. Device and protocol are in the note above; all models are
-Q4_K_M. **How to read the tables** — each row is one configuration of the same model on the same
-phone:
+Q4_K_M. **How to read the tables**: each row is one configuration of the same model on the same
+phone.
 
-- **Configuration** — the streaming settings used. *mmap baseline* is the same file loaded the
+- **Configuration**: the streaming settings used. *mmap baseline* is the same file loaded the
   ordinary way (no streaming), which is what the streamed rows are compared against. *k* is the
   number of experts used per token where it differs from the model's default.
-- **tok/s** — generation speed; higher is better.
-- **Flash/token** — data read from storage per generated token; lower means the cache is working.
-- **Cache hit** — share of expert reads served from RAM instead of flash.
+- **tok/s**: generation speed; higher is better.
+- **Flash/token**: data read from storage per generated token; lower means the cache is working.
+- **Cache hit**: share of expert reads served from RAM instead of flash.
 
 Bold marks the best configuration for that model.
 
@@ -105,8 +105,8 @@ Bold marks the best configuration for that model.
 All streamed rows use `--overlap --dense-weights anon --no-think`. The setting that unlocked this
 model is `--dense-weights anon`: this far past RAM the phone keeps reclaiming the always-used
 weights mid-generation, and moving them out of the page cache was worth **3.2×** by itself. Note
-`--no-think` disables the model's reasoning and costs quality at k=4; the full matrix and quality
-notes are in [docs/benchmarks-gpt-oss.md](docs/benchmarks-gpt-oss.md).
+that `--no-think` disables the model's reasoning and costs quality at k=4; the full matrix and
+quality notes are in [docs/benchmarks-gpt-oss.md](docs/benchmarks-gpt-oss.md).
 
 ### Qwen3-30B-A3B (Q4_K_M) — 18.5 GB
 
@@ -154,9 +154,9 @@ your own task before relying on it.
 
 ### What to expect in the app
 
-The tables above are a benchmark protocol over `adb`, not a chat session. The demo app lands close
-— the best gpt-oss config reads **1.9 tok/s** in the app against 2.2 over adb, ~13% below — and
-the gap is the protocol (short chat replies never fully warm the cache), not the app. The app's
+The tables above are a benchmark protocol over `adb`, not a chat session. The demo app lands close:
+the best gpt-oss config reads **1.9 tok/s** in the app against 2.2 over adb, about 13% below. The
+gap is the protocol (short chat replies never fully warm the cache), not the app. The app's
 telemetry panel reports the same fields as the CLI, so you can see it directly. Analysis:
 [docs/warmup-analysis.md](docs/warmup-analysis.md).
 
@@ -204,20 +204,20 @@ A prebuilt debug APK is attached to each
 
 The model loads file-backed, and the engine hooks llama.cpp's public evaluation callback. When a
 layer picks its experts for the current token, the engine fetches exactly those slices from flash
-just in time for the matmul — optionally caching the hottest ones and overlapping reads with
+just in time for the matmul, optionally caching the hottest ones and overlapping reads with
 compute. No llama.cpp sources are modified. Design and the exact API contract:
 [docs/architecture.md](docs/architecture.md), [docs/seam.md](docs/seam.md).
 
 ## Documentation
 
-[docs/](docs/README.md) is indexed by what you're trying to do — understand the design, extend it,
+[docs/](docs/README.md) is indexed by what you're trying to do: understand the design, extend it,
 or reproduce the measurements. Most-wanted entry points:
 
-- [docs/architecture.md](docs/architecture.md) — the layer map and the llama.cpp relationship.
-- [docs/adding-a-model.md](docs/adding-a-model.md) — supporting a new MoE architecture.
-- [docs/benchmarks.md](docs/benchmarks.md) — measured results and
+- [docs/architecture.md](docs/architecture.md): the layer map and the llama.cpp relationship.
+- [docs/adding-a-model.md](docs/adding-a-model.md): supporting a new MoE architecture.
+- [docs/benchmarks.md](docs/benchmarks.md): measured results and
   [how they were produced](docs/benchmark-method.md).
-- [docs/android-memory.md](docs/android-memory.md) — what reclaims the engine's memory on a phone.
+- [docs/android-memory.md](docs/android-memory.md): what reclaims the engine's memory on a phone.
 
 ## License
 
