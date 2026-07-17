@@ -48,6 +48,19 @@ llama_token argmax(const float * logits, int n_vocab) {
     return best;
 }
 
+// The names of the expert weight tensors the streamer rebinds. "Dense" is defined by subtraction —
+// everything the model has that is NOT one of these — so both consumers below start by asking this
+// same question, and used to answer it with their own copy of the same triple loop.
+std::unordered_set<std::string> expert_tensor_names(const std::vector<LayerExperts> & layers) {
+    std::unordered_set<std::string> names;
+    for (const LayerExperts & L : layers) {
+        if (!L.bound) continue;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            if (L.proj[p].tensor) names.insert(L.proj[p].tensor->name);
+    }
+    return names;
+}
+
 // Each layer's bytes that the streamer does NOT manage: everything under blk.<il>. except the
 // expert weight tensors it rebinds — attention, norms, the router, and any per-expert scale left
 // mmap-resident. This is what the layer costs to page in, and it is a static property of the
@@ -55,12 +68,7 @@ llama_token argmax(const float * logits, int n_vocab) {
 // static block instead of pretending to measure it per step.
 std::vector<uint64_t>
 dense_bytes_per_layer(const GgufOffsets & offs, const std::vector<LayerExperts> & layers, int n_layer) {
-    std::unordered_set<std::string> streamed;
-    for (const LayerExperts & L : layers) {
-        if (!L.bound) continue;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p)
-            if (L.proj[p].tensor) streamed.insert(L.proj[p].tensor->name);
-    }
+    const std::unordered_set<std::string> streamed = expert_tensor_names(layers);
     std::vector<uint64_t> out((size_t) std::max(0, n_layer), 0);
     for (const auto & kv : offs.size_by_name) {
         int il = -1;
@@ -337,12 +345,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // experts. Built before init consumes `layers`. Only this mode needs them; the others ignore
         // an empty list.
         if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous) {
-            std::unordered_set<std::string> expert_names;
-            for (const LayerExperts & L : layers) {
-                if (!L.bound) continue;
-                for (int p = 0; p < MoeRecipe::max_exps; ++p)
-                    if (L.proj[p].tensor) expert_names.insert(L.proj[p].tensor->name);
-            }
+            const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
             std::vector<DenseTensorRef> dense;
             for (const auto & kv : im.hook->captured_weights()) {
                 const std::string & name = kv.first;
