@@ -12,10 +12,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -223,7 +226,7 @@ private fun MainScreen(
                     // Bring a model onto the device without adb: the built-in catalog, an arbitrary
                     // URL, or a local file. All land in the app models dir; on completion we
                     // re-scan so the model appears above.
-                    AddModelSection(models = models, onModelReady = onRefresh)
+                    AddModelSection(models = models, scanning = scanning, onModelReady = onRefresh)
 
                     OutlinedTextField(
                         value = prompt,
@@ -372,13 +375,19 @@ private fun configSummary(s: AppSettings): String {
  * [models] is the current scan result: it is what tells a catalog entry it is already on device.
  */
 @Composable
-private fun AddModelSection(models: List<File>, onModelReady: () -> Unit) {
+private fun AddModelSection(models: List<File>, scanning: Boolean, onModelReady: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     var url by rememberSaveable { mutableStateOf("") }
     var expanded by rememberSaveable { mutableStateOf(false) }
     var showInstall by rememberSaveable { mutableStateOf<String?>(null) }
+    // Null until the first scan finishes: on a first run the card opens itself, on a device that
+    // already has a model it stays out of the way. Deciding before the scan lands would flash the
+    // whole catalog open on every launch.
+    var open by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(scanning) { if (!scanning && open == null) open = models.isEmpty() }
+    val isOpen = open == true
     // filename -> DownloadManager id. Seeded from DownloadManager rather than remembered, so a
     // transfer started before the app was killed is picked back up instead of running unseen.
     var downloads by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
@@ -442,35 +451,51 @@ private fun AddModelSection(models: List<File>, onModelReady: () -> Unit) {
 
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Get a model", fontWeight = FontWeight.SemiBold)
-
-            ModelCatalog.entries.forEach { e ->
-                CatalogRow(
-                    entry = e,
-                    status = ModelCatalog.statusOf(e, present, downloads.keys),
-                    progress = progress[e.fileName],
-                    installShown = showInstall == e.fileName,
-                    onToggleInstall = { showInstall = if (showInstall == e.fileName) null else e.fileName },
-                    onDownload = {
-                        error = null
-                        ModelDownloader.enqueue(context, e.url ?: "", e.fileName, e.approxBytes)
-                            .onSuccess { reseed() }
-                            .onFailure { error = it.message ?: "download failed to start" }
-                    },
-                    onCancel = {
-                        downloads[e.fileName]?.let { ModelDownloader.cancel(context, it, e.fileName) }
-                        reseed()
-                    },
-                )
-            }
-
-            HorizontalDivider()
-
+            // Collapsible: once a model is on the device this card is just in the way, but it has
+            // to stay reachable to add a second one.
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Other model", fontSize = 14.sp, modifier = Modifier.weight(1f))
-                TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide" else "Show") }
+                Column(Modifier.weight(1f)) {
+                    Text("Get a model", fontWeight = FontWeight.SemiBold)
+                    if (!isOpen && downloads.isNotEmpty()) {
+                        Text(
+                            "${downloads.size} downloading…",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                TextButton(onClick = { open = !isOpen }) { Text(if (isOpen) "Close" else "Open") }
             }
-            if (expanded) {
+
+            if (isOpen) {
+                ModelCatalog.entries.forEach { e ->
+                    CatalogRow(
+                        entry = e,
+                        status = ModelCatalog.statusOf(e, present, downloads.keys),
+                        progress = progress[e.fileName],
+                        installShown = showInstall == e.fileName,
+                        onToggleInstall = { showInstall = if (showInstall == e.fileName) null else e.fileName },
+                        onDownload = {
+                            error = null
+                            ModelDownloader.enqueue(context, e.url ?: "", e.fileName, e.approxBytes)
+                                .onSuccess { reseed() }
+                                .onFailure { error = it.message ?: "download failed to start" }
+                        },
+                        onCancel = {
+                            downloads[e.fileName]?.let { ModelDownloader.cancel(context, it, e.fileName) }
+                            reseed()
+                        },
+                    )
+                }
+
+                HorizontalDivider()
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Other model", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide" else "Show") }
+                }
+            }
+            if (isOpen && expanded) {
                 Text(
                     "Any MoE gguf works — paste a direct link, or pick a file already on the device.",
                     fontSize = 12.sp,
@@ -502,10 +527,13 @@ private fun AddModelSection(models: List<File>, onModelReady: () -> Unit) {
                 // A pasted URL has no catalog row to show its progress in.
                 progress.filterKeys { k -> ModelCatalog.entries.none { it.fileName == k } }
                     .forEach { (name, p) ->
-                        DownloadProgress(p) {
-                            ModelDownloader.cancel(context, p.id, name)
-                            reseed()
-                        }
+                        DownloadProgress(
+                            p,
+                            onCancel = {
+                                ModelDownloader.cancel(context, p.id, name)
+                                reseed()
+                            },
+                        )
                     }
             }
 
@@ -534,61 +562,96 @@ private fun CatalogRow(
     onDownload: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        // Name and action share a line; the blurb gets the full card width on its own line. Next
+        // to a button there is not enough room left for a sentence, and it wraps to a stack of
+        // one-word lines.
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(entry.title, fontSize = 14.sp)
-                Text(
-                    "${ModelCatalog.sizeLabel(entry)} · ${entry.blurb}",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text(
+                entry.title,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
             when (status) {
                 ModelCatalog.Status.AVAILABLE ->
-                    Button(onClick = onDownload) { Text("Download") }
+                    Button(onClick = onDownload, contentPadding = PaddingValues(horizontal = 16.dp)) {
+                        Text("Download", maxLines = 1, softWrap = false)
+                    }
                 ModelCatalog.Status.DOWNLOADING ->
-                    TextButton(onClick = onCancel) { Text("Cancel") }
+                    TextButton(onClick = onCancel) { Text("Cancel", maxLines = 1, softWrap = false) }
                 ModelCatalog.Status.ON_DEVICE ->
                     Text(
                         "On device",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 12.dp),
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 ModelCatalog.Status.MANUAL_ONLY ->
-                    TextButton(onClick = onToggleInstall) { Text(if (installShown) "Hide" else "How to") }
+                    TextButton(onClick = onToggleInstall) {
+                        Text(if (installShown) "Hide" else "How to", maxLines = 1, softWrap = false)
+                    }
             }
         }
-        if (progress != null) DownloadProgress(progress, onCancel = null)
+        Text(
+            "${entry.quant} · ${ModelCatalog.sizeLabel(entry)} · ${entry.blurb}",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (progress != null) DownloadProgress(progress, onCancel = null, showName = false)
         if (installShown) {
             entry.install?.let {
+                // Commands must stay copy-pasteable, so they scroll sideways rather than wrap:
+                // a wrapped shell line is a broken shell line.
                 SelectionContainer {
-                    Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text(
+                        it,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        softWrap = false,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(vertical = 4.dp),
+                    )
                 }
             }
         }
     }
 }
 
-/** Progress line + bar for one download. [onCancel] null when the row already offers Cancel. */
+/**
+ * Progress line + bar for one download. [onCancel] null when the row already offers Cancel;
+ * [showName] false inside a catalog row, where the title is already on the line above.
+ */
 @Composable
-private fun DownloadProgress(p: ModelDownloader.Progress, onCancel: (() -> Unit)?) {
+private fun DownloadProgress(
+    p: ModelDownloader.Progress,
+    onCancel: (() -> Unit)?,
+    showName: Boolean = true,
+) {
     val pct = if (p.totalBytes > 0) {
         (p.downloadedBytes.toFloat() / p.totalBytes).coerceIn(0f, 1f)
     } else {
         null
     }
+    val prefix = if (showName) "${p.name} — " else ""
     Text(
         when {
-            p.state == ModelDownloader.State.PAUSED -> "${p.name} — ${p.reason ?: "paused"}"
-            pct != null -> String.format(
-                Locale.US, "%s — %d%% (%d/%d MiB)",
-                p.name, (pct * 100).toInt(), p.downloadedBytes shr 20, p.totalBytes shr 20,
+            p.state == ModelDownloader.State.PAUSED -> prefix + (p.reason ?: "paused")
+            pct != null -> prefix + String.format(
+                Locale.US, "%d%% (%d/%d MiB)",
+                (pct * 100).toInt(), p.downloadedBytes shr 20, p.totalBytes shr 20,
             )
-            else -> "Downloading ${p.name}…"
+            else -> if (showName) "Downloading ${p.name}…" else "Starting…"
         },
         fontSize = 12.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
     )
     if (pct != null) {
         LinearProgressIndicator(progress = { pct }, modifier = Modifier.fillMaxWidth())

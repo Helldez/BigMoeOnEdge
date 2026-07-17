@@ -20,10 +20,11 @@ object ModelCatalog {
      */
     data class Entry(
         val title: String,
+        val quant: String,
         val fileName: String,
         val approxBytes: Long,
         val url: String?,
-        /** One line under the title. */
+        /** Why you would pick this one. Kept short enough to sit on one line. */
         val blurb: String,
         /** Manual install steps, shown on demand. Non-null exactly when [url] is null. */
         val install: String? = null,
@@ -47,30 +48,33 @@ object ModelCatalog {
 
     val entries: List<Entry> = listOf(
         Entry(
-            title = "Qwen3-30B-A3B (Q4_K_M)",
+            title = "Qwen3-30B-A3B",
+            quant = "Q4_K_M",
             fileName = "Qwen3-30B-A3B-Q4_K_M.gguf",
             approxBytes = 18_556_686_912L,
             url = "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/" +
                 "Qwen3-30B-A3B-Q4_K_M.gguf?download=true",
-            blurb = "The reference model for this engine's published numbers. 3B active of 30B.",
+            blurb = "3B active of 30B. The published numbers use this one.",
         ),
         Entry(
-            title = "Gemma-4-26B-A4B-it (Q4_K_M)",
+            title = "Gemma-4-26B-A4B-it",
+            quant = "Q4_K_M",
             fileName = "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
             approxBytes = 17_035_038_112L,
             url = "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/resolve/main/" +
                 "google_gemma-4-26B-A4B-it-Q4_K_M.gguf?download=true",
-            blurb = "Smaller expert working set — the gentler first model to try. 4B active of 26B.",
+            blurb = "4B active of 26B. Smaller experts — the gentlest start.",
         ),
         Entry(
-            title = "gpt-oss-120b (Q4_K_M)",
+            title = "gpt-oss-120b",
+            quant = "Q4_K_M",
             fileName = "gpt-oss-120b-Q4_K_M.gguf",
             approxBytes = 62_768_723_552L,
             // Not downloadable in-app: Hugging Face ships this quant as two shards (the 50 GB
             // per-file limit), and expert streaming reads tensors by byte offset from one file.
             // Merging on the phone would need ~120 GB of free space, so it is a PC step.
             url = null,
-            blurb = "The >RAM case: 117B total, 5B active. Needs a merge on a PC first.",
+            blurb = "5B active of 117B. The >RAM case — merge it on a PC.",
             install = "Hugging Face ships this quant as two shards, and expert streaming needs a\n" +
                 "single file. Merging on the phone would need ~120 GB free, so merge on a PC:\n" +
                 "\n" +
