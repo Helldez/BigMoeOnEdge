@@ -5,11 +5,23 @@
 
 namespace bmoe {
 
+// n_ctx is passed through untouched so the gates run at exactly the context they specify.
+SessionConfig session_config_from(const RunConfig & cfg) {
+    SessionConfig sc;
+    sc.model_path = cfg.model_path;
+    sc.n_threads = cfg.n_threads;
+    sc.n_ctx = cfg.n_ctx;
+    sc.n_batch = cfg.n_ctx; // one-batch prefill for any prompt that fits the context
+    sc.chatml = cfg.chatml;
+    sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
+    sc.moe = cfg.moe;
+    return sc;
+}
+
 // run() is the one-shot convenience: open a Session, generate once, close. The engine's real
 // state (model, context, warm expert cache) lives in Session (session.cpp); keeping run() as a
 // thin wrapper means the byte-identity gates exercise the exact same open/generate machinery an
-// interactive session uses. n_batch = n_ctx so the whole prompt still prefills in one batch, and
-// n_ctx is passed through untouched so the gates run at exactly the context they specify.
+// interactive session uses.
 RunResult run(const RunConfig & cfg,
               const std::function<void(const TokenMetrics &)> & on_token,
               IMetricsSink * sink,
@@ -23,14 +35,7 @@ RunResult run(const RunConfig & cfg,
         return r;
     }
 
-    SessionConfig sc;
-    sc.model_path = cfg.model_path;
-    sc.n_threads = cfg.n_threads;
-    sc.n_ctx = cfg.n_ctx;
-    sc.n_batch = cfg.n_ctx; // one-batch prefill for any prompt that fits the context
-    sc.chatml = cfg.chatml;
-    sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
-    sc.moe = cfg.moe;
+    const SessionConfig sc = session_config_from(cfg);
 
     std::string error;
     std::unique_ptr<Session> session = Session::open(sc, error, route_trace, compute_trace, io_trace);

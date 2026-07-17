@@ -179,6 +179,21 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
     const auto t_load0 = clock_t_::now();
 
+    // The gguf header answers three separate questions below — the arch-prefixed key for a top-k
+    // override, the route trace's effective top-k, and the run info's top-k/expert count — and each
+    // used to reopen and reparse the file for its own answer. Read it at most once, lazily: the
+    // callers are conditional (a run with no override and no trace asks nothing), so an eager read
+    // would be work the common path never needs.
+    GgufModelInfo gguf_info;
+    bool gguf_info_read = false;
+    auto gguf = [&]() -> const GgufModelInfo & {
+        if (!gguf_info_read) {
+            gguf_info = read_gguf_model_info(cfg.model_path.c_str());
+            gguf_info_read = true;
+        }
+        return gguf_info;
+    };
+
     // Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
     // q4_K buffer would break the rebind), experts on CPU.
     llama_model_params mparams = llama_model_default_params();
@@ -195,7 +210,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     llama_model_kv_override kv_overrides[2];
     std::memset(kv_overrides, 0, sizeof(kv_overrides)); // second entry stays the key[0]==0 terminator
     if (cfg.n_expert_used > 0) {
-        GgufModelInfo info = read_gguf_model_info(cfg.model_path.c_str());
+        const GgufModelInfo & info = gguf();
         if (!info.ok) return fail("cannot read gguf metadata: " + cfg.model_path);
         if (info.arch.empty()) return fail("gguf has no general.architecture; cannot set n_expert_used");
         if (info.n_expert <= 0)
@@ -360,7 +375,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             // The effective top-k: an override IS the applied width, otherwise the model's own.
             st.n_expert_used = cfg.n_expert_used;
             if (st.n_expert_used <= 0) {
-                GgufModelInfo info = read_gguf_model_info(cfg.model_path.c_str());
+                const GgufModelInfo & info = gguf();
                 st.n_expert_used = info.ok ? info.n_expert_used : 0;
             }
             st.dense_bytes_per_layer = std::move(dense_bytes);
@@ -427,7 +442,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
         // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
-        ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap      ? "mmap"
+        ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"
                            : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"
                                                                                   : "warm";
         if (cfg.moe.enabled) {
@@ -439,7 +454,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // cannot be compared against one whose top-k differs, which is most of the point.
         ri.n_expert_used = cfg.n_expert_used;
         if (ri.n_expert_used <= 0 || ri.n_expert == 0) {
-            const GgufModelInfo mi = read_gguf_model_info(cfg.model_path.c_str());
+            const GgufModelInfo & mi = gguf();
             if (mi.ok) {
                 ri.n_expert = mi.n_expert;
                 if (ri.n_expert_used <= 0) ri.n_expert_used = mi.n_expert_used;
