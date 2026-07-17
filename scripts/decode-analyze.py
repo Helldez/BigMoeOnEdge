@@ -12,27 +12,12 @@ A traced run is not a benchmark run: isolating every node forbids ggml the opera
 would normally do, and the I/O rows take a lock per read. Read the proportions, not the absolutes.
 """
 import argparse
-import csv
+import os
 import sys
 from collections import defaultdict
 
-
-def read_trace(path):
-    """Split the `#` preamble from the rows. Mirrors scripts/route-analyze.py's reader."""
-    meta, rows = {}, []
-    with open(path, newline="", encoding="utf-8") as f:
-        lines = f.readlines()
-    body = []
-    for ln in lines:
-        if ln.startswith("#"):
-            for tok in ln.lstrip("# ").rstrip().split():
-                if "=" in tok:
-                    k, v = tok.split("=", 1)
-                    meta[k] = v
-        else:
-            body.append(ln)
-    rows = list(csv.DictReader(body))
-    return meta, rows
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from trace_io import read_preamble_csv as read_trace
 
 
 def fmt_ms(ns):
