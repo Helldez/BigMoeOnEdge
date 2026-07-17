@@ -7,7 +7,6 @@ data class Telemetry(
     var step: Int = 0,
     var steps: Int = 0,
     var wallMs: Double = 0.0,
-    var ioMs: Double = 0.0,
     var computeMs: Double = 0.0,
     // Cache-management time this token — the third wall-additive term. wall = compute + flash-wait +
     // mgmt exactly (the engine defines compute as that residual), so the panel can show a breakdown
@@ -20,26 +19,21 @@ data class Telemetry(
     // means a throttled/preempted core. 0 when the platform can't measure them.
     var majflt: Double = 0.0,
     var cpuMs: Double = 0.0,
-    // Fraction of the DENSE (non-expert) weights still in RAM at the last sample (-1 = unmeasured).
-    // Diagnostic: under 'anon' it says whether zram is holding them, under mmap/warm whether the
-    // kernel is dropping the model.
-    var denseResidentFrac: Double = -1.0,
     var text: String = "",
     // Aggregate decode rate over the whole run, parsed from the final summary line; -1 until
     // generation finishes. The per-token [tokensPerSecond] is instantaneous (last token only),
     // so the UI shows this average once it is available.
     var avgTokensPerSecond: Double = -1.0,
     // Per-token AVERAGES over the whole run, from the final summary — shown at the end instead of
-    // the last token's instantaneous [computeMs]/[ioMs]. -1 until generation finishes.
+    // the last token's instantaneous [computeMs]. -1 until generation finishes.
     var avgComputeMs: Double = -1.0,
-    var avgIoMs: Double = -1.0,
     var avgMgmtMs: Double = -1.0,
     // End-of-run figures from the final summary (BMOE_DONE); -1 / 0 until generation finishes.
     var prefillTps: Double = -1.0,      // prompt prefill rate (tok/s)
     var ttftS: Double = -1.0,           // time-to-first-token = model load + prompt prefill (s)
     var readMib: Double = -1.0,         // total flash streamed this generation (MiB)
     var cacheResidentMib: Double = -1.0, // expert cache resident size (MiB)
-    var cacheBudgetMib: Double = -1.0,  // current (possibly auto-adapting) cache budget (MiB)
+    var cacheBudgetMib: Double = -1.0,  // expert cache budget (MiB); fixed for the run
     // Run averages of the compute decomposition, from the final summary (BMOE_DONE); -1 until done.
     var avgMajfltPerTok: Double = -1.0, // major page faults per token over the run
     var avgCpuSPerTok: Double = -1.0,   // CPU-seconds per token (summed across threads) over the run
@@ -74,13 +68,11 @@ class TelemetryParser {
             current.step = o.optInt("step")
             current.steps = o.optInt("steps")
             current.wallMs = o.optDouble("wall_ms")
-            current.ioMs = o.optDouble("io_ms")
             current.computeMs = o.optDouble("compute_ms")
             current.mgmtMs = o.optDouble("mgmt_ms", 0.0)
             current.cacheHitPct = o.optDouble("cache_hit_pct", -1.0)
             current.majflt = o.optDouble("majflt", 0.0)
             current.cpuMs = o.optDouble("cpu_ms", 0.0)
-            current.denseResidentFrac = o.optDouble("dense_resident_frac", -1.0)
             current.text = o.optString("text")
         }.isSuccess
     }

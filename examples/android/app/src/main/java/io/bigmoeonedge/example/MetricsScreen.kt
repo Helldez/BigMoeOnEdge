@@ -1,6 +1,5 @@
 package io.bigmoeonedge.example
 
-import android.content.Intent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -17,12 +16,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.FileProvider
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -33,10 +33,12 @@ import kotlin.math.abs
  * Reads back the per-token CSVs the engine wrote (`--csv`, see [AppSettings]): view one, share one,
  * or plot one column of two against each other.
  *
- * The compare view is the point. A claim like "the cache budget now falls under pressure" is not
- * settled by a number in a summary — it is settled by seeing the same column from a run with the
- * feature off and a run with it on, on one axis. Everything here reads columns by NAME, so a CSV
- * from an older build (fewer columns) still plots whatever it does have.
+ * The compare view is the point. A claim like "this setting cuts the fault storm" is not settled by
+ * a number in a summary — it is settled by seeing the same column from a run with the feature off
+ * and a run with it on, on one axis.
+ *
+ * This file is the views. Reading and parsing the CSVs, naming a run, the chart arithmetic and the
+ * share intent live in [MetricsCsv.kt] — nothing here touches a file.
  */
 // What the screen is showing. picked = view one file; correlating = overlay one file's own columns;
 // comparing = two files' same column; glossary = the field reference.
@@ -136,19 +138,6 @@ fun MetricsScreen(onBack: () -> Unit) {
     }
 }
 
-/** Hand the files to another app as content:// URIs (see the FileProvider in the manifest). */
-private fun shareCsv(context: android.content.Context, files: List<File>) {
-    val uris = ArrayList(files.map {
-        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it)
-    })
-    val intent = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply {
-        type = "text/csv"
-        if (uris.size == 1) putExtra(Intent.EXTRA_STREAM, uris[0]) else putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    runCatching { context.startActivity(Intent.createChooser(intent, "Share metrics").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-}
-
 @Composable
 private fun FileList(
     files: List<File>,
@@ -197,77 +186,6 @@ private fun FileList(
                 modifier = Modifier.clickable(onClick = { onPick(f) }),
             )
             HorizontalDivider()
-        }
-    }
-}
-
-/**
- * A short human name for a run: the model's initial and each turn's tok/s, e.g. "Q · 1.45→0.75 t/s"
- * for a two-turn Qwen session. Reads only the file's `#` lines. Empty when the file has no header
- * (a pre-preamble CSV), so the caller falls back to the filename.
- */
-private fun runTitle(file: File): String {
-    val lines = runCatching { file.readLines() }.getOrElse { return "" }
-    val model = lines.firstOrNull { it.startsWith("# model=") }
-        ?.substringAfter("model=", "")?.substringBefore(" ").orEmpty()
-    if (model.isEmpty()) return ""
-    val initial = model.first().uppercaseChar()
-    val tps = lines.filter { it.startsWith("# summary") }
-        .mapNotNull { Regex("""tok/s=([0-9.]+)""").find(it)?.groupValues?.get(1)?.toFloatOrNull() }
-    val tpsStr = if (tps.isEmpty()) "" else tps.joinToString("→") { fmt(it) } + " t/s"
-    return listOf(initial.toString(), tpsStr).filter { it.isNotEmpty() }.joinToString(" · ")
-}
-
-// ── the CSV, parsed once ────────────────────────────────────────────────────────────────────────
-
-/**
- * A parsed CSV: columns by name, the engine's `# bmoe_metrics` preamble (what the run WAS), and its
- * per-turn `# summary` trailers (what each turn DID).
- */
-private class Csv(
-    val header: List<String>,
-    val rows: List<List<String>>,
-    val summaries: List<String>,
-    val info: Map<String, String>,
-) {
-    /** The run's identity, short enough to sit under a chart line. Empty for a pre-preamble CSV. */
-    fun label(): String {
-        if (info.isEmpty()) return ""
-        val cache = when {
-            info["cache_auto"] == "1" -> "cache auto(${info["cache_mb"]})"
-            else -> "cache ${info["cache_mb"]}"
-        }
-        return listOfNotNull(
-            info["model"],
-            info["n_expert_used"]?.let { "top-$it" },
-            if (info["moe_stream"] == "1") cache else "mmap baseline",
-            info["io_threads"]?.let { "$it lanes" },
-            if (info["overlap"] == "1") "overlap" else null,
-            info["prefetch"]?.takeIf { it != "0" }?.let { "prefetch $it" },
-        ).joinToString(" · ")
-    }
-    /** This column's values, or null where the column is absent or the cell is not a number. */
-    fun column(name: String): List<Float?>? {
-        val i = header.indexOf(name).takeIf { it >= 0 } ?: return null
-        return rows.map { it.getOrNull(i)?.toFloatOrNull() }
-    }
-
-    /** Columns worth plotting: numeric, and not an axis or a label. */
-    fun plottable(): List<String> =
-        header.filter { it !in setOf("step", "steps", "turn") && column(it)?.any { v -> v != null } == true }
-
-    companion object {
-        fun read(f: File): Csv {
-            val lines = runCatching { f.readLines() }.getOrElse { emptyList() }
-            val header = lines.firstOrNull { !it.startsWith("#") }?.split(",") ?: emptyList()
-            val rows = lines.filter { it.isNotBlank() && !it.startsWith("#") }.drop(1).map { it.split(",") }
-            // The preamble's key=value pairs, order-independent, unknown keys kept: same contract
-            // as the `# summary` trailer, so an older or newer engine still parses.
-            val info = lines.filter { it.startsWith("# ") && !it.startsWith("# summary") }
-                .flatMap { it.removePrefix("# ").trim().split(" ") }
-                .mapNotNull { tok -> tok.split("=", limit = 2).takeIf { it.size == 2 } }
-                .associate { it[0] to it[1] }
-            return Csv(header, rows, lines.filter { it.startsWith("# summary") }, info)
         }
     }
 }
@@ -348,9 +266,11 @@ private fun CompareView(fa: File, fb: File, modifier: Modifier) {
     val b = remember(fb) { Csv.read(fb) }
     // Only columns both files actually have: plotting a series against a blank is not a comparison.
     val metrics = remember(a, b) { a.plottable().filter { it in b.plottable() } }
-    // Default to the column this whole feature was built to look at, if it is there.
+    // Open on a column that actually moves. This used to default to cache_budget_mib, back when a
+    // governor made it move under pressure; the budget is fixed for a run now, so that default
+    // opened the view on a flat line. The hit rate is what a config change shows up in first.
     var metric by remember(metrics) {
-        mutableStateOf(metrics.firstOrNull { it == "cache_budget_mib" } ?: metrics.firstOrNull() ?: "")
+        mutableStateOf(metrics.firstOrNull { it == "cache_hit_pct" } ?: metrics.firstOrNull() ?: "")
     }
     var expanded by remember { mutableStateOf(false) }
 
@@ -393,7 +313,7 @@ private fun CompareView(fa: File, fb: File, modifier: Modifier) {
             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         // The full configuration of each run, changed settings highlighted — not just the diff, so a
-        // setting that stayed the same (was warm-dense on in both?) is still there to read.
+        // setting that stayed the same (was dense=warm in both?) is still there to read.
         Text("Configuration", fontSize = 13.sp, fontWeight = FontWeight.Bold)
         FullConfig(a, colorA, changed)
         FullConfig(b, colorB, changed)
@@ -488,10 +408,25 @@ private fun FullConfig(csv: Csv, accent: Color, changed: Set<String>) {
     }
 }
 
-private fun fmt(v: Float): String = when {
-    abs(v) >= 1000f -> String.format(Locale.US, "%.0f", v)
-    abs(v) >= 10f -> String.format(Locale.US, "%.1f", v)
-    else -> String.format(Locale.US, "%.2f", v)
+/**
+ * One series as a stroked path, mapped into the y range [lo]..[hi] over [n] x slots.
+ *
+ * Where that range comes from is the entire difference between the two charts here — one shared
+ * range for the two-file compare, a per-series range for the correlate overlay — so it stays with
+ * the caller. What they share is this: a null is a gap, and a gap is never bridged, because a line
+ * interpolated across missing data is a lie about data that isn't there.
+ */
+private fun DrawScope.drawSeries(values: List<Float?>, n: Int, lo: Float, hi: Float, color: Color) {
+    val span = (hi - lo).takeIf { it > 1e-6f } ?: 1f
+    val path = Path()
+    var started = false
+    values.forEachIndexed { i, v ->
+        if (v == null) return@forEachIndexed
+        val px = size.width * i / (n - 1).toFloat()
+        val py = size.height - (v - lo) / span * size.height
+        if (started) path.lineTo(px, py) else { path.moveTo(px, py); started = true }
+    }
+    if (started) drawPath(path, color, style = Stroke(width = 3f))
 }
 
 /**
@@ -513,30 +448,14 @@ private fun LineChart(a: List<Float?>, b: List<Float?>, colorA: Color, colorB: C
     val n = maxOf(a.size, b.size, 2)
 
     Canvas(modifier) {
-        val w = size.width
-        val h = size.height
-        fun x(i: Int) = w * i / (n - 1).toFloat()
-        fun y(v: Float) = h - (v - lo) / (hi - lo) * h
-
         // Three gridlines: enough to read a level off, few enough not to be a cage.
         listOf(0f, 0.5f, 1f).forEach { t ->
-            val yy = h * t
-            drawLine(grid, Offset(0f, yy), Offset(w, yy), strokeWidth = 1f)
+            val yy = size.height * t
+            drawLine(grid, Offset(0f, yy), Offset(size.width, yy), strokeWidth = 1f)
         }
-
-        fun draw(series: List<Float?>, color: Color) {
-            val path = Path()
-            var started = false
-            series.forEachIndexed { i, v ->
-                if (v == null) return@forEachIndexed // a gap is a gap: do not bridge it with a lie
-                val px = x(i)
-                val py = y(v)
-                if (started) path.lineTo(px, py) else { path.moveTo(px, py); started = true }
-            }
-            if (started) drawPath(path, color, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f))
-        }
-        draw(a, colorA)
-        draw(b, colorB)
+        // One range for both — that shared scale IS the comparison.
+        drawSeries(a, n, lo, hi, colorA)
+        drawSeries(b, n, lo, hi, colorB)
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(fmt(lo), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -610,9 +529,15 @@ private fun GlossaryView(modifier: Modifier) {
 private fun CorrelateView(file: File, modifier: Modifier) {
     val csv = remember(file) { Csv.read(file) }
     val cols = remember(csv) { csv.plottable() }
-    // Start with the pair this was built to look at, if the file has them.
+    // Start on the memory war: what the kernel took back (rss_anon_mib), what that cost in re-reads
+    // (majflt_mib), and how much of the dense set survived (dense_resident_frac) — which is what
+    // tells "the faults are the model" apart from "the faults are the cache". The third used to be
+    // cache_budget_mib, back when a governor moved it under pressure; it is fixed for the run now,
+    // so it opened this view on a flat line.
     var chosen by remember(cols) {
-        mutableStateOf(cols.filter { it in setOf("majflt_mib", "rss_anon_mib", "cache_budget_mib") }.ifEmpty { cols.take(2) })
+        mutableStateOf(
+            cols.filter { it in setOf("majflt_mib", "rss_anon_mib", "dense_resident_frac") }.ifEmpty { cols.take(2) }
+        )
     }
     var expanded by remember { mutableStateOf(false) }
 
@@ -701,22 +626,6 @@ private fun corrWord(r: Float): String = when {
     else -> "unrelated"
 }
 
-/** Pearson correlation over the positions where BOTH series have a value; null if too few. */
-private fun pearson(a: List<Float?>, b: List<Float?>): Float? {
-    val pairs = a.zip(b).mapNotNull { (x, y) -> if (x != null && y != null) x to y else null }
-    if (pairs.size < 3) return null
-    val n = pairs.size
-    val mx = pairs.sumOf { it.first.toDouble() } / n
-    val my = pairs.sumOf { it.second.toDouble() } / n
-    var sxy = 0.0; var sxx = 0.0; var syy = 0.0
-    for ((x, y) in pairs) {
-        val dx = x - mx; val dy = y - my
-        sxy += dx * dy; sxx += dx * dx; syy += dy * dy
-    }
-    if (sxx <= 0.0 || syy <= 0.0) return null // a flat series correlates with nothing
-    return (sxy / kotlin.math.sqrt(sxx * syy)).toFloat()
-}
-
 /**
  * N series on one axis, each independently normalized to 0..1. Unlike the two-file compare (one
  * shared scale, because there the magnitudes ARE the comparison), here the magnitudes are unlike by
@@ -738,17 +647,9 @@ private fun MultiLineChart(series: List<List<Float?>>, palette: List<Color>, mod
         val w = size.width; val h = size.height
         listOf(0f, 0.5f, 1f).forEach { t -> drawLine(grid, Offset(0f, h * t), Offset(w, h * t), strokeWidth = 1f) }
         series.forEachIndexed { si, s ->
+            // Each series on its own range: only the shapes are being claimed to line up.
             val (lo, hi) = ranges[si]
-            val span = (hi - lo).takeIf { it > 1e-6f } ?: 1f
-            val path = Path()
-            var started = false
-            s.forEachIndexed { i, v ->
-                if (v == null) return@forEachIndexed
-                val px = w * i / (n - 1).toFloat()
-                val py = h - (v - lo) / span * h
-                if (started) path.lineTo(px, py) else { path.moveTo(px, py); started = true }
-            }
-            if (started) drawPath(path, palette[si % palette.size], style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f))
+            drawSeries(s, n, lo, hi, palette[si % palette.size])
         }
     }
 }

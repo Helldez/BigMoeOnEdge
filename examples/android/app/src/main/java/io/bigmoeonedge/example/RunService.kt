@@ -234,7 +234,6 @@ class RunService : Service() {
             val nPrompt = o.optInt("n_prompt", -1)
             val nPast = o.optInt("n_past", -1)
             val avgComputeMs = o.optDouble("compute_s_tok", -0.001) * 1000.0
-            val avgIoMs = o.optDouble("io_s_tok", -0.001) * 1000.0
             val avgMgmtMs = o.optDouble("mgmt_s_tok", -0.001) * 1000.0
             val prefillTps = o.optDouble("prefill_tps", -1.0)
             val loadS = o.optDouble("load_s", -1.0)
@@ -270,7 +269,7 @@ class RunService : Service() {
                 if (cancelled) append(" · cancelled")
             }
             val tel = telemetry.current.copy(
-                avgTokensPerSecond = tokS, avgComputeMs = avgComputeMs, avgIoMs = avgIoMs,
+                avgTokensPerSecond = tokS, avgComputeMs = avgComputeMs,
                 avgMgmtMs = avgMgmtMs,
                 prefillTps = prefillTps, ttftS = ttft, readMib = readMib,
                 cacheResidentMib = cacheResidentMib, cacheBudgetMib = cacheBudgetMib,
@@ -365,7 +364,7 @@ class RunService : Service() {
 
     private fun reqFrom(intent: Intent): Req = Req(
         prompt = intent.getStringExtra(EXTRA_PROMPT) ?: "",
-        nPredict = intent.getIntExtra(EXTRA_NPREDICT, 48),
+        nPredict = intent.getIntExtra(EXTRA_NPREDICT, AppSettings.DEFAULT_N_PREDICT),
         think = intent.getBooleanExtra(EXTRA_THINK, false),
         clearKv = intent.getBooleanExtra(EXTRA_CLEAR_KV, true),
     )
