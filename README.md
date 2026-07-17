@@ -39,14 +39,20 @@ much smaller memory footprint — is worth making.
 - **Expert-selective streaming** (`--moe-stream`) — reads only the routed experts per token from
   flash. Loads `use_mmap=true`, repack off, and rebinds each expert tensor onto a streaming
   buffer in the native gguf layout. Fails fast if the model is not MoE.
-- **LRU expert cache with an auto budget and ceiling** (`--cache-mb N|auto`, `--cache-ceil-mb`) —
-  a fixed MiB budget, or one sized to the device and re-checked during generation so it tracks
-  available memory. The single biggest throughput lever; see
-  [docs/adaptive-cache.md](docs/adaptive-cache.md).
+- **LRU expert cache with a fixed or auto budget** (`--cache-mb N|auto`, `--cache-ceil-mb`) — a
+  fixed MiB budget, or one sized to the device once at load. It keeps the hottest experts resident
+  and is the biggest lever on a model whose working set fits (53–82% hit on RAM-fitting Qwen/Gemma);
+  on a >RAM model that routes more than the device concedes, **cache-off is the ceiling** — see
+  [docs/pressure.md](docs/pressure.md). Default off (shared-slot streaming).
 - **Direct-from-flash reads, O_DIRECT** (`--io-threads 1..8`, `--no-odirect`) — each expert slice
   is read straight into the engine's own buffer, bypassing the page cache that would otherwise hold
   a second copy of weights the engine already caches. Several read lanes run in parallel (4 is the
   UFS 4.x sweet spot), with a buffered fallback where O_DIRECT misbehaves.
+- **Dense-weight policy** (`--dense-weights mmap|warm|anon`) — how the non-expert weights (embeddings,
+  attention, norms, lm_head) are kept resident: left mmap'd, page-cached once at load (`warm`, the
+  default, which kills the >RAM first-token fault storm), or read via O_DIRECT into anon buffers and
+  rebound (`anon`, so a reclaim hits zram not flash). The dense loader has its own reader, so its
+  O_DIRECT choice is independent of the expert stream's.
 - **Intra-layer I/O–compute overlap** (`--overlap`) — pipelines each layer's async expert reads
   with its FFN compute, hiding flash latency behind the matmul; byte-identical to the serial path.
   Top throughput lever over a warm cache. Requires the fork submodule.
@@ -153,11 +159,13 @@ It is a deliberate speed-for-quality trade you opt into, and you should judge th
 task before shipping it. The speed gain tracks the cut: 6 of 8 experts reads ≈¼ less from flash
 (−26.8%), which is where most of the +24% comes from.
 
-### Adaptive cache budget (`--cache-mb auto`)
+### Auto-sized cache budget (`--cache-mb auto`)
 
-Sizing the budget to the device and capping it (`--cache-ceil-mb`) matches or beats a hand-tuned
-fixed budget: on Qwen, adaptive-**capped** at 4000 MiB + 4 lanes + overlap is the current winning
-recipe (**5.23 tok/s**, 76% hit); uncapped auto over-allocates (4675 MiB) and regresses. Details:
+Sizing the budget to the device once at load and capping it (`--cache-ceil-mb`) matches or beats a
+hand-tuned fixed budget where the cache fits: on Qwen, auto-**capped** at 4000 MiB + 4 lanes + overlap
+is the winning recipe (**5.23 tok/s**, 76% hit); uncapped auto over-allocates (4675 MiB) and regresses.
+The budget is fixed for the run — an earlier runtime governor that resized it under memory pressure was
+measured to be a net loss on >RAM models and retired ([docs/pressure.md](docs/pressure.md)). Details:
 [docs/adaptive-cache.md](docs/adaptive-cache.md).
 
 ### gpt-oss-120b — a 58 GB model on the phone (5.2× RAM)
@@ -218,10 +226,10 @@ cd build && ctest --output-on-failure
 
 A multi-turn chat app with a live telemetry panel is in [`examples/android`](examples/android).
 Build the CLI for arm64 with `scripts/build-android.ps1`, then build the APK and push a model.
-Settings expose every streaming knob — expert cache with an auto-ceiling, I/O lanes, O_DIRECT,
-overlap, the active-experts/top-k knob, a reasoning toggle, and an mmap-baseline switch that turns
-streaming off so you can compare modes on the same device — each with a one-line note on whether it
-actually helps tok/s. Defaults are the measured winning recipe (auto cache capped, 4 lanes, overlap
+Settings expose every streaming knob — expert cache (fixed or auto-with-ceiling), I/O lanes, O_DIRECT,
+the dense-weights policy (mmap/warm/anon), overlap, the active-experts/top-k knob, a reasoning toggle,
+and an mmap-baseline switch that turns streaming off so you can compare modes on the same device —
+each with a one-line note on whether it actually helps tok/s. Defaults are the measured winning recipe (auto cache capped, 4 lanes, overlap
 on). The conversation keeps the KV between turns and prefills only each new turn; **New chat**
 starts over.
 
