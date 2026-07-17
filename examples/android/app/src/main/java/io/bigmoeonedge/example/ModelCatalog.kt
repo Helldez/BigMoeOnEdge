@@ -92,8 +92,15 @@ object ModelCatalog {
         ),
     )
 
-    /** Human-readable size for the row label. Decimal GB, matching how the models are listed. */
-    fun sizeLabel(e: Entry): String = String.format(java.util.Locale.US, "~%.1f GB", e.approxBytes.toDouble() / GB)
+    /**
+     * How this app writes a size: decimal GB, one decimal, the same unit the model repositories
+     * quote. Everything user-facing goes through here — quoting a model as 17.0 GB and then
+     * refusing it for "15 GiB" reads as a bug even though both are true.
+     */
+    fun gbLabel(bytes: Long): String = String.format(java.util.Locale.US, "%.1f GB", bytes.toDouble() / GB)
+
+    /** Size for the row label. */
+    fun sizeLabel(e: Entry): String = "~" + gbLabel(e.approxBytes)
 
     /**
      * Status of one entry. [present] is the scanned model list (any scan dir counts, so a merged

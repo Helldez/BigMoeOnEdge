@@ -395,6 +395,9 @@ private fun AddModelSection(models: List<File>, scanning: Boolean, onModelReady:
     var importStatus by remember { mutableStateOf<String?>(null) }
     var importFrac by remember { mutableStateOf(-1f) }
     var error by remember { mutableStateOf<String?>(null) }
+    // A catalog failure belongs to the row whose button was tapped: filename -> message. Reported
+    // at the bottom of the card it would surface under a different heading entirely.
+    var rowError by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val present = remember(models) { models.map { it.name }.toSet() }
     val reseed = { downloads = ModelDownloader.activeDownloads(context) }
@@ -474,12 +477,16 @@ private fun AddModelSection(models: List<File>, scanning: Boolean, onModelReady:
                         status = ModelCatalog.statusOf(e, present, downloads.keys),
                         progress = progress[e.fileName],
                         installShown = showInstall == e.fileName,
+                        error = rowError?.takeIf { it.first == e.fileName }?.second,
                         onToggleInstall = { showInstall = if (showInstall == e.fileName) null else e.fileName },
                         onDownload = {
                             error = null
+                            rowError = null
                             ModelDownloader.enqueue(context, e.url ?: "", e.fileName, e.approxBytes)
                                 .onSuccess { reseed() }
-                                .onFailure { error = it.message ?: "download failed to start" }
+                                .onFailure {
+                                    rowError = e.fileName to (it.message ?: "download failed to start")
+                                }
                         },
                         onCancel = {
                             downloads[e.fileName]?.let { ModelDownloader.cancel(context, it, e.fileName) }
@@ -558,6 +565,7 @@ private fun CatalogRow(
     status: ModelCatalog.Status,
     progress: ModelDownloader.Progress?,
     installShown: Boolean,
+    error: String?,
     onToggleInstall: () -> Unit,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
@@ -602,6 +610,9 @@ private fun CatalogRow(
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (error != null) {
+            Text(error, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+        }
         if (progress != null) DownloadProgress(progress, onCancel = null, showName = false)
         if (installShown) {
             entry.install?.let {

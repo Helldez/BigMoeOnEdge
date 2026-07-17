@@ -53,8 +53,8 @@ object ModelDownloader {
         val dir = ModelManager.appModelsDir(ctx) ?: error("no writable app storage")
         if (expectedBytes > 0 && expectedBytes > dir.usableSpace) {
             error(
-                "not enough free space: needs ${expectedBytes shr 30} GiB, " +
-                    "${dir.usableSpace shr 30} GiB free"
+                "needs ${ModelCatalog.gbLabel(expectedBytes)}, " +
+                    "only ${ModelCatalog.gbLabel(dir.usableSpace)} free"
             )
         }
 
