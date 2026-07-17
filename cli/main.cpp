@@ -341,6 +341,7 @@ static void print_usage(const char * argv0) {
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache\n"
         "      --no-warm-dense     skip the load-time sweep that page-caches the non-expert weights\n"
+        "      --dense-odirect     read the dense weights via O_DIRECT into our buffers (experiment)\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -419,6 +420,8 @@ int main(int argc, char ** argv) {
             cfg.moe.o_direct = false;
         else if (a == "--no-warm-dense")
             cfg.moe.warm_dense = false;
+        else if (a == "--dense-odirect")
+            cfg.moe.dense_odirect = true;
         else if (a == "--load-all")
             cfg.moe.load_all = true;
         else if (a == "--force-cache")

@@ -110,6 +110,11 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     "Page-cache the non-expert weights at load. Removes the slow first tokens on models larger than RAM",
                     current.warmDense, enabled = stream,
                 ) { onChange(current.copy(warmDense = it)) }
+                SwitchRow(
+                    "Dense via O_DIRECT",
+                    "Experiment: read the dense weights into our own buffers (anon) so a reclaim swaps to zram (fast) instead of a slow flash refault. A/B vs off",
+                    current.denseOdirect, enabled = stream,
+                ) { onChange(current.copy(denseOdirect = it)) }
                 IntSetting(
                     "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
                     format = { if (it == 0) "off" else "$it" },

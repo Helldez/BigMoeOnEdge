@@ -40,6 +40,15 @@ struct ExpertTensorRef {
     uint64_t nb2 = 0;               // bytes per expert (== tensor->nb[2])
 };
 
+// One dense (non-expert) weight tensor to read once via O_DIRECT and rebind onto our own
+// anonymous buffer, for the --dense-odirect experiment. Unlike an expert slice, a dense tensor is
+// read whole and contiguous: `size` bytes from `file_off`, matching its gguf on-disk layout.
+struct DenseTensorRef {
+    ggml_tensor * tensor = nullptr; // persistent weight tensor whose ->data we rebind
+    uint64_t file_off = 0;          // absolute file offset of the tensor's data
+    uint64_t size = 0;              // its data size in bytes (== ggml_nbytes)
+};
+
 // The expert weight tensors of one MoE layer, one per recipe suffix slot. The split
 // layout fills all three ({gate, up, down}); a fused-gate_up layout fills two and leaves
 // the tail slot empty (tensor == nullptr). Unbound layers (dense, or non-MoE) stay false.
@@ -61,6 +70,12 @@ public:
     // Returns false on any allocation/open failure or an inconsistent tensor.
     bool
     init(const std::string & gguf_path, int n_expert, std::vector<LayerExperts> layers, const MoeStreamConfig & cfg);
+
+    // Supply the dense (non-expert) weight tensors to read via O_DIRECT and rebind, for the
+    // --dense-odirect experiment. Call BEFORE init (which does the read); a no-op unless
+    // cfg.dense_odirect is set. The runtime builds the list from the captured weight leaves and the
+    // gguf offsets. See docs/pressure.md.
+    void set_dense_tensors(std::vector<DenseTensorRef> dense) { dense_tensors_ = std::move(dense); }
 
     // IExpertSource
     bool load_layer(int il, const int32_t * ids, int n_ids) override;
@@ -133,6 +148,12 @@ private:
     // dense tensors do not demand-fault 4 KiB at a time inside the first decodes. Best-effort:
     // a read failure only leaves the corresponding pages cold.
     void warm_dense_regions(const std::string & gguf_path);
+
+    // Experiment (--dense-odirect): read every dense tensor once via O_DIRECT into an aligned anon
+    // buffer and rebind its ->data onto it, so the dense weights are anonymous (a reclaim swaps
+    // them to zram instead of dropping them to a 4 KiB flash refault). Done once in init, on lane 0,
+    // before the workers start; the buffers are freed in shutdown(). Returns false on any failure.
+    bool read_dense_odirect();
 
     // Adaptive sizing (cache_auto): re-probe device memory (throttled) and nudge cache_max_ so it
     // tracks free RAM. Eval-thread only, called in the mgmt section of load_layer; the eviction
@@ -212,7 +233,11 @@ private:
     static constexpr int residency_sample_entries = 16;    // coldest entries read per probe
     static constexpr int dense_sample_pages = 256;         // stratified probe points over the dense weights
     bool cache_dynamic_ = false;
-    double resident_frac_ = -1.0;       // last sampled cache residency; -1 = never measured
+    bool dense_odirect_ = false; // --dense-odirect: read dense weights via O_DIRECT into our buffers
+    std::vector<DenseTensorRef> dense_tensors_; // set before init; read+rebound when dense_odirect_
+    std::vector<void *> dense_bufs_;            // the anon buffers backing them; freed in shutdown()
+    std::vector<size_t> dense_buf_sz_;          // dense_bufs_[i]'s byte size, for the anon-residency sample
+    double resident_frac_ = -1.0;               // last sampled cache residency; -1 = never measured
     double dense_resident_frac_ = -1.0; // last sampled dense-weight residency; -1 = never measured
 
     // The dense weights' byte ranges in the file (complement of the expert ranges), and the mmap VMAs

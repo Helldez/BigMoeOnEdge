@@ -78,6 +78,12 @@ struct MoeStreamConfig {
     // moves that cost into load_seconds at sequential-read bandwidth. Off for A/B measurements.
     bool warm_dense = true;
 
+    // Experiment (default off, in-app toggle): read the dense (non-expert) weights once via O_DIRECT
+    // into our own buffers and rebind their tensors onto them, instead of leaving them mmap'd. Makes
+    // the dense anonymous, so a reclaim swaps it to zram (fast refault) rather than dropping it to a
+    // slow 4 KiB flash refault — at the cost of holding it as (incompressible-Q4) anon. A/B only.
+    bool dense_odirect = false;
+
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
     // overlap compute) but makes speculative integration deterministic, so the byte-identity

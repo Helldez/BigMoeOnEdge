@@ -28,6 +28,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -50,6 +52,13 @@ public:
     // by the runtime from the gguf; here only .tensor is set.
     const std::vector<LayerExperts> & captured() const { return captured_; }
     std::vector<LayerExperts> & captured() { return captured_; }
+
+    // After capture, the non-expert weight LEAVES seen in the graph, keyed by tensor name. These
+    // are the persistent model weights the streamer leaves mmap-resident (embeddings, attention,
+    // norms, lm_head); the --dense-odirect experiment rebinds them onto O_DIRECT buffers. The map
+    // also holds graph inputs and KV tensors (same op-NONE leaf shape); the runtime filters it
+    // against the gguf tensor set, which those do not belong to. Only .tensor is meaningful here.
+    const std::unordered_map<std::string, ggml_tensor *> & captured_weights() const { return captured_weights_; }
 
     void set_source(IExpertSource * src) { source_ = src; } // non-null → stream mode
 
@@ -113,7 +122,8 @@ private:
     bool capturing_ = false;
     IExpertSource * source_ = nullptr; // non-null → stream mode
     std::vector<LayerExperts> captured_;
-    std::vector<int32_t> gathered_; // reused scratch for stream-mode id gather
+    std::unordered_map<std::string, ggml_tensor *> captured_weights_; // non-expert weight leaves (see captured_weights)
+    std::vector<int32_t> gathered_;                                   // reused scratch for stream-mode id gather
 
     // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
     // during prefill). Empty when prefetch is off or a layer has not been seen yet.

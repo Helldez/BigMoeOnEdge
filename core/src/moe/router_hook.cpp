@@ -77,6 +77,7 @@ void RouterHook::begin_capture() {
     capturing_ = true;
     for (auto & L : captured_)
         L = LayerExperts{};
+    captured_weights_.clear();
 }
 void RouterHook::end_capture() {
     capturing_ = false;
@@ -212,12 +213,20 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 if (!src || src->name[0] == '\0') continue;
                 int il = -1;
                 const int p = match_expert(src->name, recipe_, il);
-                if (p < 0 || il < 0 || il >= n_layer_) continue;
-                if (src->ne[2] <= 0) continue; // expert dim is dim-2
-                LayerExperts & L = captured_[il];
-                L.bound = true;
-                L.proj[p].tensor = src;
-                L.proj[p].nb2 = (uint64_t) src->nb[2];
+                if (p >= 0) {
+                    // An expert-named tensor: streamed, never a dense-rebind candidate.
+                    if (il >= 0 && il < n_layer_ && src->ne[2] > 0) { // expert dim is dim-2
+                        LayerExperts & L = captured_[il];
+                        L.bound = true;
+                        L.proj[p].tensor = src;
+                        L.proj[p].nb2 = (uint64_t) src->nb[2];
+                    }
+                    continue;
+                }
+                // A weight LEAF (op NONE, named) that is not an expert: the persistent dense weights
+                // --dense-odirect may rebind. Graph inputs and KV tensors share this shape but are
+                // filtered out downstream by the gguf tensor set, so recording them here is harmless.
+                if (src->op == GGML_OP_NONE) captured_weights_[src->name] = src;
             }
         }
         return false; // capture never isolates a node

@@ -23,9 +23,9 @@ public:
                      r.model.c_str(), r.arch.c_str(), r.n_layer, r.n_expert, r.n_expert_used, r.n_threads, r.n_ctx);
         std::fprintf(f_,
                      "# moe_stream=%d cache_mb=%d cache_auto=%d cache_ceil_mb=%d cache_dynamic=%d force_cache=%d "
-                     "io_threads=%d o_direct=%d overlap=%d prefetch=%d warm_dense=%d\n",
+                     "io_threads=%d o_direct=%d overlap=%d prefetch=%d warm_dense=%d dense_odirect=%d\n",
                      r.moe_stream, r.cache_mb, r.cache_auto, r.cache_ceil_mb, r.cache_dynamic, r.force_cache,
-                     r.io_threads, r.o_direct, r.overlap, r.prefetch_layers, r.warm_dense);
+                     r.io_threads, r.o_direct, r.overlap, r.prefetch_layers, r.warm_dense, r.dense_odirect);
         write_header();
     }
 
