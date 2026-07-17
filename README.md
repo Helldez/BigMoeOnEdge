@@ -12,7 +12,7 @@ exceed several times over. The focus today is phones, where memory is tightest.
 The flagship case: **gpt-oss-120b**, a ~60 GB model (Q4_K_M), on a phone with 12 GB of RAM. That's
 about five times more model than memory, so holding it resident is simply impossible. It runs
 anyway, at **1.3 tok/s** with the model's own settings (**2.2 tok/s** with one speed knob), against
-**0.09 tok/s** for the same file loaded the ordinary way.
+**0.09 tok/s** for the same file loaded the ordinary way (mmap).
 
 **And it's all plain CPU inference.** No GPU, no NPU, no special hardware: four CPU cores, the
 phone's flash storage, and nothing else. The entire budget is a phone's UFS storage, a fraction of
