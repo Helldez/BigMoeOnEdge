@@ -135,11 +135,6 @@ private:
     void quiesce_spec();
     void release_entry_pages(int32_t id);
 
-    // One sequential buffered sweep over the file's non-expert byte ranges (header, embeddings,
-    // attention, norms, lm_head) to populate the kernel page cache at load time, so the mmap'd
-    // dense tensors do not demand-fault 4 KiB at a time inside the first decodes. The dense-weights
-    // policy (warm sweep, anonymous rebind, and the residency sensor) lives in DenseWeights (dense_).
-
     // Accumulate one token's routed working set. Eval-thread only, called per layer load.
     void account_demand(int il, int n_unique);
 

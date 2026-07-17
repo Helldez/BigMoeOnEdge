@@ -55,7 +55,7 @@ public:
 
     // After capture, the non-expert weight LEAVES seen in the graph, keyed by tensor name. These
     // are the persistent model weights the streamer leaves mmap-resident (embeddings, attention,
-    // norms, lm_head); the --dense-odirect experiment rebinds them onto O_DIRECT buffers. The map
+    // norms, lm_head); the --dense-weights anon policy rebinds them onto O_DIRECT buffers. The map
     // also holds graph inputs and KV tensors (same op-NONE leaf shape); the runtime filters it
     // against the gguf tensor set, which those do not belong to. Only .tensor is meaningful here.
     const std::unordered_map<std::string, ggml_tensor *> & captured_weights() const { return captured_weights_; }

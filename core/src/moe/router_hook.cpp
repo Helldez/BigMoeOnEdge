@@ -224,7 +224,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                     continue;
                 }
                 // A weight LEAF (op NONE, named) that is not an expert: the persistent dense weights
-                // --dense-odirect may rebind. Graph inputs and KV tensors share this shape but are
+                // --dense-weights anon may rebind. Graph inputs and KV tensors share this shape but are
                 // filtered out downstream by the gguf tensor set, so recording them here is harmless.
                 if (src->op == GGML_OP_NONE) captured_weights_[src->name] = src;
             }

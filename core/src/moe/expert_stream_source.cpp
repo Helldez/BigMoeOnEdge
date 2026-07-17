@@ -111,8 +111,8 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         // LRU cache: one reserved (address-only) buffer per (layer, projection). Physical
         // pages appear on the first miss and are released on eviction. mul_mat_id needs
         // each expert at its canonical offset e*nb2 inside tensor->data, so the buffers
-        // live at fixed per-layer addresses; lazy commit keeps that affordable.
-        page_ = pio::vm_page();
+        // live at fixed per-layer addresses; lazy commit keeps that affordable. (page_ is already
+        // set above: the dense-residency probe needs it in every cache mode, not just this one.)
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             lbuf_[p].assign(n_layer_, nullptr);
             lbuf_sz_[p].assign(n_layer_, 0);
