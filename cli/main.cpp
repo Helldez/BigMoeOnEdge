@@ -299,8 +299,7 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
-                    s.majflt_per_token, s.cpu_s_per_token, s.token_demand_mib,
-                    json_escape(r.generated_text).c_str());
+                    s.majflt_per_token, s.cpu_s_per_token, s.token_demand_mib, json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
 
@@ -576,9 +575,11 @@ int main(int argc, char ** argv) {
                     s.moe_compute_s_per_token, s.moe_mgmt_s_per_token, s.moe_io_s_per_token,
                     s.moe_io_seconds > 0 ? s.moe_read_mib / s.moe_io_seconds : 0.0);
         if (s.cache_hit_pct >= 0.0) {
+            // The budget is worth printing only when the engine chose it: with an explicit --cache-mb
+            // the reader already knows the number they passed.
             if (cfg.moe.cache_auto)
-                std::printf("moe-cache: %.1f%% hit, resident %.1f MiB, budget %.0f MiB (auto, resized %lld×)\n",
-                            s.cache_hit_pct, s.cache_resident_mib, s.cache_budget_mib, s.cache_resizes);
+                std::printf("moe-cache: %.1f%% hit, resident %.1f MiB, budget %.0f MiB (auto)\n", s.cache_hit_pct,
+                            s.cache_resident_mib, s.cache_budget_mib);
             else
                 std::printf("moe-cache: %.1f%% hit, resident %.1f MiB\n", s.cache_hit_pct, s.cache_resident_mib);
         }

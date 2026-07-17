@@ -299,14 +299,13 @@ bool scan_kb_file(const char * path, const char * const * keys, uint64_t * out, 
 } // namespace
 
 bool process_memory(ProcessMemory * out) {
-    static const char * const keys[] = {"VmRSS", "RssAnon", "RssFile", "VmSwap", "VmHWM"};
-    uint64_t v[5] = {0, 0, 0, 0, 0};
-    if (!scan_kb_file("/proc/self/status", keys, v, 5)) return false;
+    static const char * const keys[] = {"VmRSS", "RssAnon", "RssFile", "VmSwap"};
+    uint64_t v[4] = {0, 0, 0, 0};
+    if (!scan_kb_file("/proc/self/status", keys, v, 4)) return false;
     out->rss_bytes = v[0];
     out->rss_anon_bytes = v[1];
     out->rss_file_bytes = v[2];
     out->swap_bytes = v[3];
-    out->rss_peak_bytes = v[4];
     return true;
 }
 

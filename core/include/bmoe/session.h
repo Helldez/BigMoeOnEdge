@@ -92,7 +92,7 @@ public:
 
     // Set the expert-cache budget in MiB and evict down to it now. PRECONDITION: no generate() in
     // flight — call it between generations (e.g. from an app's memory-pressure callback). A no-op
-    // when the cache is off. Complements --cache-mb auto's automatic tracking with explicit control.
+    // when the cache is off. The only way the budget moves after init sizes it.
     void set_cache_budget_mb(int mib);
 
 private:

@@ -31,10 +31,10 @@ struct MoeStreamConfig {
     // so validate() rejects the 1..cache_min_mb-1 band unless force_cache is set.
     int cache_mb = 0;
 
-    // Size the cache from the device instead of a fixed cache_mb: at init the budget is set to
-    // (available RAM − cache_floor_mb), clamped to [cache_min_mb, total expert bytes], and it is
-    // re-checked during generation so it shrinks if free memory falls under the floor (and grows
-    // back within the floor's headroom). Keeps the phone responsive without a hand-tuned number.
+    // Size the cache from the device instead of a fixed cache_mb: once at init the budget is set to
+    // (available RAM − cache_floor_mb), clamped to [cache_min_mb, total expert bytes], and then held
+    // for the whole run. One shot, not a control loop — it spares the caller a hand-tuned number on a
+    // device whose free RAM it cannot know in advance; it does not chase memory pressure afterwards.
     // Mutually exclusive with an explicit cache_mb > 0. See docs/adaptive-cache.md.
     bool cache_auto = false;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing

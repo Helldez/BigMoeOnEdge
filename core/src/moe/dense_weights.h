@@ -64,10 +64,6 @@ public:
     void sample_residency(size_t page);
     double resident_frac() const { return resident_frac_; }
 
-    // Re-run the warm sweep (a best-effort response to the dense set being reclaimed). A no-op unless
-    // the mode is Warmed — Mmap never warmed, Anonymous has no mmap left to warm.
-    void rewarm();
-
     void shutdown();
 
     static constexpr int sample_pages = 256; // stratified probe points across the dense bytes
