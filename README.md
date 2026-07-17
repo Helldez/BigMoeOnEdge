@@ -1,17 +1,18 @@
 # BigMoeOnEdge
 
-**A 120-billion-parameter model, generating tokens on a phone.**
+**Run Mixture-of-Experts models far bigger than your phone's RAM.**
 
-`gpt-oss-120b` is a 58.46 GB model. The phone in these benchmarks — a OnePlus 15R — has 11.3 GB of
-RAM. That's 5.2× more model than memory, so holding it resident is simply impossible. It runs
-anyway, at **1.300 tok/s** with the model's own settings (**2.191 tok/s** with one speed knob), and
-as far as we know it's the first time a 120B model has generated tokens on a phone at all.
+A Mixture-of-Experts (MoE) model is made of many small "experts", and each generated token only
+uses a few of them. BigMoeOnEdge takes that literally: it keeps the small always-needed parts of
+the model at hand and reads just the experts each token asks for, directly from flash storage, at
+the moment they're needed. The rest of the model stays on disk. That's what makes large open MoE
+models — Qwen3, Gemma, gpt-oss and most of their relatives — runnable on a phone whose RAM they
+exceed several times over.
 
-The idea is straightforward. A Mixture-of-Experts (MoE) model is made of many small "experts", and
-each generated token only uses a few of them — gpt-oss activates 4 of its 128 per layer.
-BigMoeOnEdge takes that literally: it keeps the small always-needed parts of the model at hand and
-reads just the experts each token asks for, directly from flash storage, at the moment they're
-needed. The rest of the model stays on disk.
+The flagship case: **gpt-oss-120b**, a ~60 GB model (Q4_K_M), on a mid-range phone with 12 GB of
+RAM — about five times more model than memory, so holding it resident is simply impossible. It
+runs anyway, at **1.3 tok/s** with the model's own settings (**2.2 tok/s** with one speed knob),
+and as far as we know it's the first time a 120B model has generated tokens on a phone at all.
 
 Streaming does not change what the model computes: the output is **byte-for-byte identical** to
 running the model fully in RAM — same weights, same math, just fetched later. There is exactly one
@@ -23,20 +24,22 @@ submodule bump, not a merge.
 
 Highlights:
 
-- **gpt-oss-120b, 5.2× device RAM** — 1.300 tok/s as shipped, 2.191 tok/s with the speed knob. The
-  same file loaded the ordinary way manages 0.089 tok/s.
-- **Lossless on models past RAM** — Qwen3-30B-A3B (18.5 GB) up to **5.23 tok/s** and Gemma-4-26B-A4B
-  (17.0 GB) up to **4.09 tok/s** on the same 11 GB phone, output identical to the resident model.
+- **gpt-oss-120b (Q4_K_M), ~5× device RAM** — 1.3 tok/s as shipped, 2.2 tok/s with the speed knob.
+  The same file loaded the ordinary way manages 0.09 tok/s.
+- **Lossless on models past RAM** — Qwen3-30B-A3B (Q4_K_M, 18.5 GB) up to **5.2 tok/s** and
+  Gemma-4-26B-A4B (Q4_K_M, 17.0 GB) up to **4.1 tok/s** on the same phone, output identical to the
+  resident model.
 - **Easy to extend** — supporting a new MoE architecture is one line in a registry; nothing about a
   specific model is hardcoded in the streaming path.
 
 The target is mobile: phones are where memory is tight, and trading a little speed for a much
 smaller memory footprint is exactly the deal that makes sense there.
 
-> **About the numbers.** Measured on one device (OnePlus 15R, 11.3 GB RAM, UFS 4.x storage) over
-> `adb shell`, 256-token greedy decode, quoted as the best observed for that configuration. Phone
-> throughput moves a lot with device state (heat, free memory), so the same command can read lower.
-> Full method and distributions: [docs/benchmarks.md](docs/benchmarks.md).
+> **About the numbers.** Measured on one device (OnePlus 15R — 12 GB RAM, 11.3 GB usable, UFS 4.x
+> storage) over `adb shell`, 256-token greedy decode. Each number is the best observed for that
+> configuration, and rows in a table can come from different benchmark sessions. Phone throughput
+> moves a lot with device state (heat, free memory), so the same command can read lower. Full
+> method and distributions: [docs/benchmarks.md](docs/benchmarks.md).
 
 > Prior art, credited: this is an engineering package of ideas from AirLLM, Apple's *LLM in a
 > flash*, FlexGen, PowerInfer and EdgeMoE — not a novel technique. See
@@ -89,15 +92,15 @@ phone:
 
 Bold marks the best configuration for that model.
 
-### gpt-oss-120b — 58 GB on an 11 GB phone (5.2× RAM)
+### gpt-oss-120b (Q4_K_M) — ~60 GB on a 12 GB phone
 
 | Configuration | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|
-| **streamed, k=2, cache 2000 MiB, 8 lanes** | **2.191** | 590 MiB | 32% |
-| streamed, k=2, no cache, 4 lanes | 1.790 | 909 MiB | — |
-| streamed, default k=4, cache 2000 MiB, 8 lanes | 1.300 | 1292 MiB | 27% |
-| streamed, default k=4, no cache, 4 lanes | 0.711 | 1817 MiB | — |
-| mmap baseline (no streaming) | 0.089 | — | — |
+| **streamed, k=2, cache 2000 MiB, 8 lanes** | **2.2** | 590 MiB | 32% |
+| streamed, k=2, no cache, 4 lanes | 1.8 | 909 MiB | — |
+| streamed, default k=4, cache 2000 MiB, 8 lanes | 1.3 | 1292 MiB | 27% |
+| streamed, default k=4, no cache, 4 lanes | 0.7 | 1817 MiB | — |
+| mmap baseline (no streaming) | 0.09 | — | — |
 
 All streamed rows use `--overlap --dense-weights anon --no-think`. The setting that unlocked this
 model is `--dense-weights anon`: this far past RAM the phone keeps reclaiming the always-used
@@ -105,44 +108,45 @@ weights mid-generation, and moving them out of the page cache was worth **3.2×*
 `--no-think` disables the model's reasoning and costs quality at k=4; the full matrix and quality
 notes are in [docs/benchmarks-gpt-oss.md](docs/benchmarks-gpt-oss.md).
 
-### Qwen3-30B-A3B — 18.5 GB (1.64× RAM)
+### Qwen3-30B-A3B (Q4_K_M) — 18.5 GB
 
 | Configuration | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|
-| mmap baseline (no streaming) | 2.00 (unstable) | — | — |
-| streamed, no cache, 4 lanes | 1.71 | 1051 MiB | — |
-| streamed, cache 2000 MiB, 4 lanes | 2.37 | 480 MiB | 53% |
-| streamed, cache 4000 MiB, 4 lanes | 3.47 | 225 MiB | 76% |
-| **streamed, cache 4000 MiB, 4 lanes, overlap** | **3.98** | 225 MiB | 76% |
+| mmap baseline (no streaming) | 2.0 (unstable) | — | — |
+| streamed, no cache, 4 lanes | 1.7 | 1051 MiB | — |
+| streamed, cache 2000 MiB, 4 lanes | 2.4 | 480 MiB | 53% |
+| streamed, cache 4000 MiB, 4 lanes | 4.0 | 225 MiB | 76% |
+| **streamed, auto cache (capped 4000 MiB), 4 lanes, overlap** | **5.2** | 225 MiB | 76% |
 
-Cache size is the dominant lever here. The best recipe measured is the auto-sized cache capped at
-4000 MiB plus overlap: **5.23 tok/s** at 76% hit ([docs/adaptive-cache.md](docs/adaptive-cache.md)).
-The mmap baseline averages ~2 tok/s but swings wildly token to token and evicts other apps.
+Cache size is the dominant lever here, and the auto-sized cache with a ceiling
+([docs/adaptive-cache.md](docs/adaptive-cache.md)) is the winning recipe. The mmap baseline
+averages ~2 tok/s but swings wildly token to token and evicts other apps.
 
-### Gemma-4-26B-A4B — 17.0 GB (1.51× RAM)
+### Gemma-4-26B-A4B (Q4_K_M) — 17.0 GB
 
 | Configuration | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|
-| mmap baseline (no streaming) | 0.36 | — | — |
-| streamed, no cache, 4 lanes | 1.61 | 904 MiB | — |
-| streamed, cache 2000 MiB, 4 lanes | 2.24 | 366 MiB | 58% |
-| **streamed, cache 2000 MiB, 4 lanes, overlap** | **2.78** | 365 MiB | 58% |
+| mmap baseline (no streaming) | 0.4 | — | — |
+| streamed, no cache, 4 lanes | 1.6 | 904 MiB | — |
+| streamed, cache 2000 MiB, 4 lanes | 2.2 | 366 MiB | 58% |
+| streamed, cache 2000 MiB, 4 lanes, overlap | 2.8 | 365 MiB | 58% |
+| **streamed, cache 4000 MiB, 4 lanes** | **4.1** | 144 MiB | 82% |
 
-Gemma keeps more of itself permanently resident, so a larger cache is not dependable on this
-device; 2000 MiB + overlap is its solid setting.
+Gemma keeps more of itself permanently resident, so the 4000 MiB cache fits only when enough RAM is
+free at launch; cache 2000 + overlap is the dependable everyday setting on this device.
 
 ### Turbo top-k — the one lossy option
 
 Every model ships a routing width (how many experts each token uses; Qwen3 uses 8). Forcing it
-lower cuts both compute and flash reads. Same table format, A/B against the model's own width in
-the same session:
+lower cuts both compute and flash reads. A/B against the model's own width, same session,
+back-to-back:
 
 | Configuration | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|
-| Qwen3-30B, default (8 experts) | 4.03 | 225 MiB | 76% |
-| **Qwen3-30B, 6 experts** | **5.01** (+24%) | 165 MiB | 77% |
-| Gemma-4-26B, default (8 experts) | 4.09 | 144 MiB | 82% |
-| **Gemma-4-26B, 6 experts** | **4.99** (+22%) | 98 MiB | 83% |
+| Qwen3-30B, default (8 experts) | 4.0 | 225 MiB | 76% |
+| **Qwen3-30B, 6 experts** | **5.0** (+24%) | 165 MiB | 77% |
+| Gemma-4-26B, default | 4.1 | 144 MiB | 82% |
+| **Gemma-4-26B, 6 experts** | **5.0** (+22%) | 98 MiB | 83% |
 
 Everything else in this README changes *how* weights are fetched, never the math. This knob changes
 *what* the model computes: output differs from the full model and quality can degrade. Judge it on
@@ -151,7 +155,7 @@ your own task before relying on it.
 ### What to expect in the app
 
 The tables above are a benchmark protocol over `adb`, not a chat session. The demo app lands close
-— the best gpt-oss config reads **1.91 tok/s** in the app against 2.191 over adb, ~13% below — and
+— the best gpt-oss config reads **1.9 tok/s** in the app against 2.2 over adb, ~13% below — and
 the gap is the protocol (short chat replies never fully warm the cache), not the app. The app's
 telemetry panel reports the same fields as the CLI, so you can see it directly. Analysis:
 [docs/warmup-analysis.md](docs/warmup-analysis.md).
@@ -159,7 +163,7 @@ telemetry panel reports the same fields as the CLI, so you can see it directly. 
 ### Desktop
 
 The same trick works on desktop where a model exceeds RAM (quick check: Qwen3-30B on a 14.8 GiB
-Windows PC streamed at 2.58 tok/s), but mobile is the target and desktop isn't tuned. If the model
+Windows PC streamed at 2.6 tok/s), but mobile is the target and desktop isn't tuned. If the model
 fits in RAM, just run it resident.
 
 ## Quickstart (host)
