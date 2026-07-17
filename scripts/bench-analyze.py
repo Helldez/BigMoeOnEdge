@@ -8,13 +8,16 @@
 #   mean = aggregate n_tokens / total_seconds ; min/max = slowest/fastest single token.
 import os, sys, statistics
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from trace_io import percentile as pct, read_kv_file as read_metrics
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BENCH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, ".bench")
 ORDER = ["mmap", "stream", "c2000_l2", "c2000_l4", "c4000_l2", "c4000_l4",
          "stream_ov", "c2000_l4_ov", "c4000_l4_ov",
          "c4000_l4_pf1", "c4000_l4_pf2", "c4000_l4_pf4",
-         # 2026-07-13 rework matrix: fixed reference, adaptive cache (± cap), speculative gating.
-         "base_ov", "auto_ov", "autocap_ov", "sg_ov"]
+         # Fixed reference vs the engine sizing the cache itself (± a cap).
+         "base_ov", "auto_ov", "autocap_ov"]
 LABEL = {
     "mmap": "solo mmap (no streaming)",
     "stream": "streaming O_DIRECT, cache 0, lane 4",
@@ -29,25 +32,9 @@ LABEL = {
     "c4000_l4_pf2": "streaming + cache 4000 MiB, lane 4, prefetch 2",
     "c4000_l4_pf4": "streaming + cache 4000 MiB, lane 4, prefetch 4",
     "base_ov": "fixed cache + overlap (reference)",
-    "auto_ov": "adaptive cache (--cache-mb auto) + overlap",
-    "autocap_ov": "adaptive cache, capped + overlap",
-    "sg_ov": "fixed cache + overlap + speculative gating",
+    "auto_ov": "auto-sized cache (--cache-mb auto) + overlap",
+    "autocap_ov": "auto-sized cache, capped + overlap",
 }
-
-def pct(v, q):
-    if not v:
-        return 0.0
-    i = q * (len(v) - 1); lo = int(i); hi = min(lo + 1, len(v) - 1)
-    return v[lo] + (v[hi] - v[lo]) * (i - lo)
-
-def read_metrics(path):
-    d = {}
-    if os.path.exists(path):
-        for line in open(path):
-            if "=" in line:
-                k, v = line.strip().split("=", 1)
-                d[k] = v
-    return d
 
 def num(d, k):
     try:
@@ -105,8 +92,8 @@ def analyze(csv_path):
         "mgmt_ms_tok": (statistics.mean(mgmts) if mgmts else None),
         "prefill_tps": g("prefill_tps"), "load_s": g("load_s"),
         "prefill_s": g("prefill_s"), "ttft": g("load_s") + g("prefill_s"),
-        # 2026-07-13 rework metrics (0 / absent on older CSVs that predate them).
-        "cache_budget_MiB": g("cache_budget_MiB"), "cache_resizes": g("cache_resizes"),
+        # 0 / absent on older CSVs that predate these columns.
+        "cache_budget_MiB": g("cache_budget_MiB"),
         "cache_resident_MiB": g("cache_resident_MiB"),
         "spec_read_MiB_tok": (g("spec_read_MiB") / n) if n else 0.0,
         "spec_useful_pct": (100.0 * g("spec_useful") / g("spec_experts")) if g("spec_experts") else 0.0,
@@ -149,22 +136,25 @@ for model, pretty in (("qwen", "Qwen3-30B-A3B-Q4_K_M (18.5 GB, 128 experts, top-
         print(f"{LABEL[key]:36s} {r['peak_rss_gb']:6.2f}GB {r['mem_floor_gb']:7.2f}GB {r['cpu0']:5.1f}C {r['cpu_max']:6.1f}C {r['batt_max']:7.1f}C")
         md.append(f"| {LABEL[key]} | {r['peak_rss_gb']:.2f} GB | {r['mem_floor_gb']:.2f} GB | {r['cpu0']:.1f} °C | {r['cpu_max']:.1f} °C | {r['batt_max']:.1f} °C |")
 
-    # Third table: adaptive-cache and temporal-prefetch specifics — only for configs that exercise
+    # Third table: cache sizing and temporal-prefetch specifics — only for configs that exercise
     # them (a fixed non-prefetch run has cache_budget==resident and no speculative reads, so it is
     # uninformative).
-    adaptive = [(k, r) for k, r in rows if r and (r["cache_budget_MiB"] > 0 or r["spec_read_MiB_tok"] > 0)]
-    if adaptive:
-        print(f"\n===== {model.upper()} — adaptive cache / temporal prefetch =====")
-        md.append(f"\n**Adaptive cache & temporal prefetch** (budget & resizes under `--cache-mb auto`; "
-                  f"speculative read volume and useful-hit rate under `--prefetch`):\n")
-        md.append("| Config | cache budget | resizes | resident | prefetch useful | prefetch read/token |")
-        md.append("|---|---:|---:|---:|---:|---:|")
-        for key, r in adaptive:
+    #
+    # No `resizes` column: it once tracked a governor moving the budget mid-run, and that governor is
+    # gone — `--cache-mb auto` sizes the budget once at init and holds it, so the count is 0 for every
+    # run bmoe-cli produces. A column that is structurally always 0 reads as a finding, not a blank.
+    sized = [(k, r) for k, r in rows if r and (r["cache_budget_MiB"] > 0 or r["spec_read_MiB_tok"] > 0)]
+    if sized:
+        print(f"\n===== {model.upper()} — cache sizing / temporal prefetch =====")
+        md.append(f"\n**Cache sizing & temporal prefetch** (the budget `--cache-mb auto` chose at init and what "
+                  f"stayed resident under it; speculative read volume and useful-hit rate under `--prefetch`):\n")
+        md.append("| Config | cache budget | resident | prefetch useful | prefetch read/token |")
+        md.append("|---|---:|---:|---:|---:|")
+        for key, r in sized:
             budget = f"{r['cache_budget_MiB']:.0f} MiB" if r["cache_budget_MiB"] > 0 else "—"
-            resiz = f"{r['cache_resizes']:.0f}" if r["cache_budget_MiB"] > 0 else "—"
             useful = f"{r['spec_useful_pct']:.0f}%" if r["spec_read_MiB_tok"] > 0 else "—"
             sread = f"{r['spec_read_MiB_tok']:.0f} MiB" if r["spec_read_MiB_tok"] > 0 else "—"
-            md.append(f"| {LABEL[key]} | {budget} | {resiz} | {r['cache_resident_MiB']:.0f} MiB | {useful} | {sread} |")
+            md.append(f"| {LABEL[key]} | {budget} | {r['cache_resident_MiB']:.0f} MiB | {useful} | {sread} |")
 
 out = os.path.join(BENCH, "summary.md")
 open(out, "w", encoding="utf-8").write("\n".join(md) + "\n")

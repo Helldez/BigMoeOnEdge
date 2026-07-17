@@ -4,10 +4,13 @@
 # in/out of the page cache on demand. This is the >RAM baseline the streaming modes beat.
 # top-k override still applies (it is a load-time kv_override, valid without streaming).
 # Appends to the same log as the streaming matrix. k=4 then k=2, per request.
-M=/data/local/tmp/shardllm/gpt-oss-120b-Q4_K_M.gguf
+#
+# Overridable from the environment, and M/OUT must match the streaming matrix run this is the
+# baseline for: OUT is appended to, not replaced.
+M=${M:-/data/local/tmp/shardllm/gpt-oss-120b-Q4_K_M.gguf}
 P="What is 17 times 23? Then name the capital of Australia."
-OUT=/data/local/tmp/gptoss-matrix.out
-COOLDOWN=20
+OUT=${OUT:-/data/local/tmp/gptoss-matrix.out}
+COOLDOWN=${COOLDOWN:-20}
 cd /data/local/tmp || exit 1
 for K in 4 2; do
   TAG="mmap_k${K}"

@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-# Summarise the PR2/PR3 device A/B: parse each run's .log (throughput + cache + the new
-# prefetch/spec-gate lines) and .metrics (device pressure) into one markdown table per model.
+# ARCHIVED — kept for the provenance of the published PR2/PR3 A/B tables, not for reuse.
+#
+# Summarises that A/B: each run's .log (throughput + cache + prefetch/spec-gate lines) and .metrics
+# (device pressure) into one markdown table per model. Its `sg` / `sg_pf2` configs and the
+# `moe-spec-gate:` recall line no longer exist — the CLI does not accept the flag and the engine does
+# not emit the metric — so those rows can only come out empty against a current build.
+#
+# It stays because the tables it produced are published; deleting it would leave those numbers with
+# no visible derivation. For live analysis use bench-analyze.py.
 import os, re, sys, statistics
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -2,9 +2,13 @@
 # Warm-up-only validation: dense warm-up ON, dense reservation OFF (default binary now).
 # One run per model at the higher k tested before, same recipes as the full battery.
 # Confirms the gpt-oss startup win survives and gemma/qwen show no budget-driven regression.
-GPTOSS=/data/local/tmp/shardllm/gpt-oss-120b-Q4_K_M.gguf
-QWEN=/sdcard/Download/Qwen3-30B-A3B-Q4_K_M.gguf
-GEMMA=/sdcard/Download/google_gemma-4-26B-A4B-it-Q4_K_M.gguf
+#
+# Model paths default to where they sit on the test device; override any of them from the
+# environment to bench a different copy, e.g.
+#   GPTOSS=/sdcard/Download/other.gguf sh bench-warmonly.sh
+GPTOSS=${GPTOSS:-/data/local/tmp/shardllm/gpt-oss-120b-Q4_K_M.gguf}
+QWEN=${QWEN:-/sdcard/Download/Qwen3-30B-A3B-Q4_K_M.gguf}
+GEMMA=${GEMMA:-/sdcard/Download/google_gemma-4-26B-A4B-it-Q4_K_M.gguf}
 PSHORT="What is 17 times 23? Then name the capital of Australia."
 PLONG="Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field"
 cd /data/local/tmp || exit 1

@@ -1,8 +1,16 @@
-# On-device benchmark matrix for the 2026-07-13 rework: adaptive cache (--cache-mb auto, ± ceiling)
-# and the reworked speculative gating, against a fixed-cache overlap reference. Mirrors
-# bench-matrix.ps1 (same bench-run.sh, same .csv/.metrics/.log outputs, same tag naming so
-# bench-analyze.py picks them up) but with today's four configs per model. Qwen uses a 4000 MiB
-# reference/ceiling, Gemma a 2000 MiB one (4000 OOMs on this device).
+# ARCHIVED — kept for the provenance of docs/bench-data/2026-07-13, not for reuse.
+#
+# This drove the 2026-07-13 matrix: auto-sized cache (--cache-mb auto, ± ceiling) and the reworked
+# speculative gating, against a fixed-cache overlap reference. Both of those features are gone from
+# the engine as shipped — spec-gating was removed, and the adaptive governor that made `auto` a live
+# control loop was retired (`auto` now sizes once at init). Its `--spec-gate` cells will not run.
+#
+# It stays because the tables it produced are published; deleting it would leave those numbers with
+# no visible derivation. For a live matrix use bench-matrix.ps1, which shares bench-lib.ps1.
+#
+# Mirrors bench-matrix.ps1's outputs (same bench-run.sh, same .csv/.metrics/.log, same tag naming so
+# bench-analyze.py picks them up). Qwen used a 4000 MiB reference/ceiling, Gemma a 2000 MiB one
+# (4000 OOMs on this device).
 param(
   [string]$OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) ".bench"),
   [int]$NPred = 256,

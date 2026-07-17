@@ -18,8 +18,12 @@
 #   python scripts/route-analyze.py trace.csv --view hot --top 12
 import argparse
 import math
+import os
 import sys
 from collections import defaultdict
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from trace_io import kv_tokens
 
 PHASES = {"prefill": 0, "decode": 1}
 RESIDENCY = {0: "miss", 1: "hit", 2: "prefetch"}
@@ -70,7 +74,7 @@ class Trace:
                 self.rows.append((int(p[2]), int(p[3]), int(p[4]), int(p[5]), w, int(p[7]), int(p[8])))
 
     def _preamble(self, line):
-        kv = dict(tok.split("=", 1) for tok in line[1:].split() if "=" in tok)
+        kv = kv_tokens(line)
         if "model" in kv:
             self.model = kv["model"]
             self.arch = kv.get("arch", "?")
