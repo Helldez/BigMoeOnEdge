@@ -27,7 +27,7 @@ data class AppSettings(
     val ioThreads: Int = 4,             // parallel expert-read lanes
     val threads: Int = 4,               // compute threads (-t)
     val nExpertUsed: Int = 0,           // top-k override (0 = model default); lower = faster, changes output
-    val nPredict: Int = 48,
+    val nPredict: Int = DEFAULT_N_PREDICT,
     val oDirect: Boolean = true,        // bypass the page cache
     val overlap: Boolean = true,        // read the next experts while the current layer computes
     val denseWeights: DenseWeights = DenseWeights.WARM, // dense (non-expert) weight residency policy
@@ -119,6 +119,11 @@ data class AppSettings(
         // long prompt plus the largest practical generation. A request that would overflow it is
         // rejected recoverably by the CLI, leaving the session usable.
         const val SESSION_CTX = 4096
+
+        // Tokens to generate per turn, when nothing says otherwise. The service falls back to this
+        // for a request that arrives without one, so the default lives here rather than in two
+        // places free to disagree.
+        const val DEFAULT_N_PREDICT = 48
 
         /**
          * A fresh CSV path for a session about to open, under the app's own external files dir —
