@@ -12,7 +12,7 @@ import java.io.File
  *
  *   always      the app-specific external files dir — no permission needed. The in-app URL
  *               downloader and the file picker both land models here.
- *   dev only    the public Downloads folder and /data/local/tmp/shardllm, for models adb-pushed
+ *   dev only    the public Downloads folder and /data/local/tmp/bmoe, for models adb-pushed
  *               to the device. These need all-files access, which only the dev flavor requests.
  *
  * Only MoE models are listed: this engine streams experts, so dense models are filtered out by
@@ -23,7 +23,7 @@ object ModelManager {
     // still be adb-pushed to /data/local/tmp (same physical partition, no duplicate needed) and
     // read in place: the path is world-traversable and the file world-readable, so the app's
     // untrusted_app domain can open it.
-    private val TMP_MODEL_DIR = File("/data/local/tmp/shardllm")
+    private val TMP_MODEL_DIR = File("/data/local/tmp/bmoe")
 
     /** The app-specific external files dir — the download target, readable with no permission. */
     fun appModelsDir(ctx: Context): File? = ctx.getExternalFilesDir(null)

@@ -6,7 +6,7 @@
 #
 # Model path, output log and cooldown default to the test device's setup; override from the
 # environment, e.g.  M=/sdcard/Download/other.gguf COOLDOWN=60 sh gptoss-matrix.sh
-M=${M:-/data/local/tmp/shardllm/gpt-oss-120b-Q4_K_M.gguf}
+M=${M:-/data/local/tmp/bmoe/gpt-oss-120b-Q4_K_M.gguf}
 P="What is 17 times 23? Then name the capital of Australia."
 OUT=${OUT:-/data/local/tmp/gptoss-matrix.out}
 COOLDOWN=${COOLDOWN:-20}

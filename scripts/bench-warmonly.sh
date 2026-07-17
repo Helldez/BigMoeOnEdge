@@ -6,7 +6,7 @@
 # Model paths default to where they sit on the test device; override any of them from the
 # environment to bench a different copy, e.g.
 #   GPTOSS=/sdcard/Download/other.gguf sh bench-warmonly.sh
-GPTOSS=${GPTOSS:-/data/local/tmp/shardllm/gpt-oss-120b-Q4_K_M.gguf}
+GPTOSS=${GPTOSS:-/data/local/tmp/bmoe/gpt-oss-120b-Q4_K_M.gguf}
 QWEN=${QWEN:-/sdcard/Download/Qwen3-30B-A3B-Q4_K_M.gguf}
 GEMMA=${GEMMA:-/sdcard/Download/google_gemma-4-26B-A4B-it-Q4_K_M.gguf}
 PSHORT="What is 17 times 23? Then name the capital of Australia."
