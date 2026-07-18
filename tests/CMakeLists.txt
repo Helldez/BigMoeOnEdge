@@ -15,6 +15,12 @@ target_compile_definitions(bmoe_chat_parse_test PRIVATE
     BMOE_QWEN3_TEMPLATE_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/templates/Qwen3.5-4B.jinja")
 add_test(NAME chat_parse COMMAND bmoe_chat_parse_test)
 
+# validate() unit tests (issue #51 + the pre-existing rules). Pure config, no model — runs
+# unconditionally, and makes good on config.h's "unit-tested" claim.
+add_executable(bmoe_config_test config_test.cpp)
+target_link_libraries(bmoe_config_test PRIVATE bmoe_core)
+add_test(NAME config_validate COMMAND bmoe_config_test)
+
 find_program(PYTHON3 NAMES python3 python)
 
 if(PYTHON3)

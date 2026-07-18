@@ -104,6 +104,10 @@ struct Session::Impl {
     common_chat_templates_ptr chat_tmpls;
     bool backend_inited = false;
 
+    // Sampling chain, built once at open() only when sampling is requested (temp > 0); null on the
+    // greedy default, where the decode loop stays on the argmax fast path. See open()/generate().
+    llama_sampler * smpl = nullptr;
+
     // Multi-turn chat state (chat mode only). chat_history is the running conversation the
     // template is re-rendered over each turn; kv_tokens mirrors the tokens currently decoded
     // into the context's KV (seq 0), in order, so the next turn can reuse the common prefix
@@ -140,6 +144,7 @@ struct Session::Impl {
         // buffers back the rebound expert tensors), then the context (its eval callback points
         // at the hook), then the hook, then unmap the model, then release the backend.
         source.shutdown();
+        if (smpl) llama_sampler_free(smpl); // independent of ctx/model; free before them
         ctx.reset();
         hook.reset();
         model.reset();
@@ -284,6 +289,19 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (!ctx) return fail("failed to create context");
     im.ctx.reset(ctx);
     llama_set_n_threads(ctx, cfg.n_threads, cfg.n_threads);
+
+    // Opt-in sampling. temp <= 0 leaves smpl null and the decode loop on argmax — the deterministic
+    // default the byte-identity gates rely on. temp > 0 builds the standard chain, using only the
+    // public llama_sampler_* API (hard rule 1): common_sampler lives in the non-stable common layer.
+    static_assert(SamplingConfig{}.seed == LLAMA_DEFAULT_SEED,
+                  "SamplingConfig::seed default must mirror LLAMA_DEFAULT_SEED");
+    if (cfg.sampling.temp > 0.0f) {
+        im.smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+        llama_sampler_chain_add(im.smpl, llama_sampler_init_top_k(cfg.sampling.top_k));
+        llama_sampler_chain_add(im.smpl, llama_sampler_init_top_p(cfg.sampling.top_p, /*min_keep*/ 1));
+        llama_sampler_chain_add(im.smpl, llama_sampler_init_temp(cfg.sampling.temp));
+        llama_sampler_chain_add(im.smpl, llama_sampler_init_dist(cfg.sampling.seed));
+    }
 
     // One abort callback for the session's whole life, checking two independent predicates:
     // an explicit cancel() request (any mode) and a fatal streaming I/O error (overlap only).
@@ -500,6 +518,10 @@ RunResult Session::generate(const GenerateRequest & req,
         llama_memory_clear(llama_get_memory(ctx), true);
         im.chat_history.clear();
         im.kv_tokens.clear();
+        // A new chat resets the sampler RNG, so a fixed seed reproduces the same transcript from a
+        // fresh conversation. A continued turn (clear_kv=false) keeps the stream going, matching the
+        // KV it decodes against.
+        if (im.smpl) llama_sampler_reset(im.smpl);
     }
 
     // Format the prompt. With chat on, render the model's OWN chat template (real Jinja) over the
@@ -714,7 +736,10 @@ RunResult Session::generate(const GenerateRequest & req,
     double gen_cpu_seconds = 0.0;
 
     for (int t = 0; t < req.n_predict; ++t) {
-        llama_token tok = argmax(logits, im.n_vocab);
+        // Greedy stays argmax (byte-identical to the resident reference the gates check); with a
+        // sampling chain, draw from the context's last-position logits, which llama_sampler_sample
+        // reads at index -1 — the same logits argmax would have read.
+        llama_token tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
         if (llama_vocab_is_eog(im.vocab, tok)) break;
 
         char piece[256];
