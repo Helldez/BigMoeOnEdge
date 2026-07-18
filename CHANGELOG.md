@@ -7,6 +7,17 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Android: in-app model downloads now land on O_DIRECT-capable internal storage.** The catalog and
+  paste-URL downloads used the system `DownloadManager`, which can only write to the app's external
+  files dir — an emulated/FUSE volume where `O_DIRECT` silently returns wrong data, so the engine
+  fell back to buffered I/O for every downloaded model (measured on device: `o_direct=0`, the exact
+  loss the streaming design exists to avoid). `DownloadManager` cannot target internal storage by
+  design, so it is replaced by `DownloadWorker`: a foreground WorkManager `CoroutineWorker` that
+  streams the gguf over HTTP straight into `filesDir/models` (real f2fs, where `O_DIRECT` works — the
+  same dir the file picker imports to). It resumes an interrupted `.part` with a `Range` request
+  (following Hugging Face's resolve → CDN redirect manually so the header survives) and renames on
+  completion, and it needs free space equal to the model size — no temporary second copy. This is the
+  mechanism Google's own AI Edge Gallery uses. Fixes #67.
 - **Decode traces** (`--compute-trace PATH`, `--io-trace PATH`): returning `true` for every node from
   the eval callback forces ggml to isolate and synchronise each one, so the wall delta between
   callbacks is that node's real compute and the major-fault delta attributes a >RAM stall to the node
