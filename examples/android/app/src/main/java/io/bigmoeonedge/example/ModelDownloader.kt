@@ -140,7 +140,9 @@ object ModelDownloader {
 
     /** Cancel a download and delete its leftover .part file. */
     fun cancel(ctx: Context, name: String) {
-        WorkManager.getInstance(ctx).cancelUniqueWork(name)
+        // Block until the cancellation is persisted, so a caller's immediate activeDownloads()
+        // reseed sees the work as finished instead of racing it back in as still-active.
+        WorkManager.getInstance(ctx).cancelUniqueWork(name).result.get()
         File(ModelManager.internalModelsDir(ctx), name + DownloadWorker.PART_SUFFIX).delete()
     }
 }

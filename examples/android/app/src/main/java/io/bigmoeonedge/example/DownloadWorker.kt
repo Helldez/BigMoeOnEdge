@@ -75,17 +75,9 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
      */
     private suspend fun transfer(url: String, part: File, onProgress: (Long, Long) -> Unit): Long {
         var from = if (part.isFile) part.length() else 0L
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            instanceFollowRedirects = true
-            connectTimeout = 30_000
-            readTimeout = 30_000
-            // Defeat gzip: a re-encoded body would make the byte offsets in a Range resume wrong.
-            setRequestProperty("Accept-Encoding", "identity")
-            if (from > 0) setRequestProperty("Range", "bytes=$from-")
-        }
+        val conn = openWithRange(url, from)
         try {
-            val code = conn.responseCode
-            when (code) {
+            when (val code = conn.responseCode) {
                 HttpURLConnection.HTTP_PARTIAL -> { /* 206: server honored the resume */ }
                 HttpURLConnection.HTTP_OK -> from = 0L // 200: no resume, start the .part over
                 416 -> return part.length() // range not satisfiable: .part is already the whole file
@@ -122,6 +114,36 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             return total
         } finally {
             conn.disconnect()
+        }
+    }
+
+    /**
+     * Open [startUrl] following redirects MANUALLY, re-applying the Range and identity-encoding
+     * headers on every hop. HttpURLConnection's automatic redirect (instanceFollowRedirects) drops
+     * request headers across a cross-host 3xx — which is exactly Hugging Face's resolve → CDN
+     * redirect — so a resume would silently lose its Range header, get a 200, and restart from zero.
+     */
+    private fun openWithRange(startUrl: String, from: Long): HttpURLConnection {
+        var url = startUrl
+        var hops = 0
+        while (true) {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                connectTimeout = 30_000
+                readTimeout = 30_000
+                // Defeat gzip: a re-encoded body would make the byte offsets in a Range resume wrong.
+                setRequestProperty("Accept-Encoding", "identity")
+                if (from > 0) setRequestProperty("Range", "bytes=$from-")
+            }
+            when (conn.responseCode) {
+                301, 302, 303, 307, 308 -> {
+                    val loc = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (loc.isNullOrBlank() || ++hops > 5) throw java.io.IOException("too many redirects")
+                    url = URL(URL(url), loc).toString() // resolve a possibly-relative Location
+                }
+                else -> return conn
+            }
         }
     }
 
