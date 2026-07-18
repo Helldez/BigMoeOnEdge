@@ -6,6 +6,15 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **Android: release APKs are signed with a stable key.** Sideload builds were debug-signed, and a
+  debug key is generated per machine, so every published APK had a different signature — Android then
+  refuses to update in place (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`) and forces an uninstall, which
+  wipes the models in `filesDir`. Release builds now use a stable keystore (kept out of the repo via
+  `keystore.properties`, gitignored), so an update installs over the previous release. The one-time
+  move from the old debug-signed install to the stable key still needs a single uninstall; updates
+  after that install cleanly. The distributed artifact is now `app-dev-release.apk`.
+
 ### Added
 - **Android: in-app model downloads now land on O_DIRECT-capable internal storage.** The catalog and
   paste-URL downloads used the system `DownloadManager`, which can only write to the app's external

@@ -21,16 +21,37 @@ def gitSha = {
     }
 }()
 
+// Release signing. The secrets live in keystore.properties (gitignored) next to gradlew; the
+// keystore is a stable key kept off the repo. A release APK signed with it installs over the
+// previous release without an uninstall — a debug-signed one forces a reinstall (per-machine
+// debug key) and wipes downloaded models. When the properties file is absent (fresh clone, CI),
+// the release build falls back to debug signing so it still builds; only a machine holding the
+// keystore produces a distributable, stably-signed APK.
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) keystoreProps.load(new FileInputStream(keystorePropsFile))
+
 android {
     namespace 'io.bigmoeonedge.example'
     compileSdk 34
+
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            release {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
 
     defaultConfig {
         applicationId 'io.bigmoeonedge.example'
         minSdk 29
         targetSdk 34
-        versionCode 14
-        versionName '0.9.0'
+        versionCode 15
+        versionName '0.9.1'
         buildConfigField 'String', 'GIT_SHA', "\"${gitSha}\""
         ndk {
             // The engine ships as prebuilt arm64 binaries staged by build-android.ps1.
@@ -73,6 +94,8 @@ android {
     buildTypes {
         release {
             minifyEnabled false
+            // Stable release key when available; otherwise Gradle leaves the default (debug) signing.
+            if (keystorePropsFile.exists()) signingConfig signingConfigs.release
         }
     }
     compileOptions {

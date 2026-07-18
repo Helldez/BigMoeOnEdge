@@ -43,3 +43,8 @@ Thumbs.db
 __pycache__/
 *.pyc
 .venv/
+
+# Android release signing — secrets, never commit (repo is written to be opened)
+*.jks
+*.keystore
+keystore.properties
