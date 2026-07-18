@@ -25,6 +25,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -150,6 +151,7 @@ private fun MainScreen(
     onOpenMetrics: () -> Unit,
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
     val ui by RunBus.state.collectAsStateWithLifecycle()
 
     var prompt by rememberSaveable { mutableStateOf("Explain what a mixture-of-experts model is, in two sentences.") }
@@ -185,7 +187,9 @@ private fun MainScreen(
         if (followTail && total > 1) runCatching { listState.scrollToItem(total - 1, Int.MAX_VALUE) }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    // adjustResize handles the legacy path; imePadding covers edge-to-edge (Android 15+), where the
+    // window no longer shrinks for the keyboard. Without it the streaming answer draws behind the IME.
+    Box(Modifier.fillMaxSize().imePadding()) {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -244,6 +248,9 @@ private fun MainScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
                             onClick = {
+                                // Drop focus so the soft keyboard retracts: the answer streams into the
+                                // space it was covering, and there is otherwise no in-app way to dismiss it.
+                                focusManager.clearFocus()
                                 if (models.isNotEmpty()) {
                                     // First message of a conversation clears the KV; a follow-up continues it.
                                     launchPrompt(context, models[modelIdx.coerceIn(0, models.size - 1)],
