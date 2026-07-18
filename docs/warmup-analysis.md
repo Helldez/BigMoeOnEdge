@@ -170,9 +170,10 @@ file's non-expert byte ranges (the complement of the expert tensor offsets) righ
 initialises, before the first token. Sequential flash bandwidth turns thousands of scattered major
 faults into a single ~1 s read, paid once inside `load_seconds` instead of inside `compute_ms`.
 
-It is on by default (`--dense-weights warm`; `--dense-weights mmap` disables it) and touches neither
-the expert cache nor the budget, so the streaming path is byte-for-byte unchanged — `cache_hit%` is
-identical step-for-step with and without it.
+It is the `--dense-weights warm` policy (`--dense-weights mmap` disables it; `anon`, the default,
+replaces it with an O_DIRECT read into anon buffers) and touches neither the expert cache nor the
+budget, so the streaming path is byte-for-byte unchanged — `cache_hit%` is identical step-for-step
+with and without it.
 
 > **Superseded well past RAM.** The warm sweep front-loads the dense pages into the *page cache*,
 > which fixes the cold head but not what follows: at 5.2× RAM the kernel reclaims those pages

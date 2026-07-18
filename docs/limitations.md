@@ -26,8 +26,9 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   GPU). Decode is flash-I/O-bound anyway, so this is rarely the bottleneck.
 - **Shared experts stay resident.** Architectures with an always-on shared expert (e.g.
   `gemma4`) stream the routed experts but keep the shared expert — and any dense layers —
-  mmap-resident, so the streamed fraction (and the memory saving) is smaller than for a
-  purely routed model like `qwen3moe`.
+  resident (in the page cache, or in the engine's own buffers under `--dense-weights anon`),
+  so the streamed fraction (and the memory saving) is smaller than for a purely routed model
+  like `qwen3moe`.
 - **Repack must stay off.** Loading uses `use_extra_bufts=false`; you cannot combine
   streaming with weight repacking.
 - **Windows throughput.** The cache's reserve-then-commit-per-slice path is heavier on

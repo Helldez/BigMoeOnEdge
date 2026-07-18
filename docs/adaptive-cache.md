@@ -19,9 +19,10 @@ the device and keeps it there as free memory moves.
   for them as random 4 KiB faults. On a model far larger than RAM this is the difference between a
   fast first token and a ~20-token slow-start ramp: measured on gpt-oss-120b, the first-five-token
   wall average drops ~20× (see [benchmarks.md](benchmarks.md)). On models whose dense set is small it
-  is a harmless no-op. On by default (`--dense-weights warm`); `--dense-weights mmap` disables the
-  sweep for A/B runs, and `--dense-weights anon` replaces it with an O_DIRECT read into anonymous
-  buffers, which is the better answer once the model is well past RAM.
+  is a harmless no-op. This sweep is the `--dense-weights warm` policy; `--dense-weights mmap`
+  disables it for A/B runs, and `--dense-weights anon` (the default) replaces it with an O_DIRECT
+  read into anonymous buffers, which is the better answer once the model is well past RAM — the
+  case the engine targets.
   The warm-up is deliberately kept *out* of the budget: it only pre-faults the mmap-resident pages,
   it does not pin or reserve them, so the expert-cache budget above is unchanged and its hit rate is
   identical with and without it. (An alternative that folds the dense bytes into the floor —
@@ -66,7 +67,7 @@ the rest of the system.
 | `--cache-mb auto` | size the cache to the device instead of a fixed MiB (mutually exclusive with a numeric `--cache-mb`) |
 | `--cache-floor-mb N` | RAM to leave free for the rest of the system when auto-sizing (default 1536) |
 | `--cache-ceil-mb N` | upper bound on the auto-sized budget (0 = no cap). Use it — uncapped `auto` over-asks |
-| `--dense-weights mmap\|warm\|anon` | the dense (non-expert) weight policy. `warm` (default) is the load-time page-cache sweep described above; `mmap` skips it; `anon` reads the dense set via O_DIRECT into anonymous buffers instead, which is the right answer well past RAM — see [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md). `--no-warm-dense` and `--dense-odirect` are deprecated aliases for `mmap` and `anon` |
+| `--dense-weights mmap\|warm\|anon` | the dense (non-expert) weight policy. `warm` is the load-time page-cache sweep described above; `mmap` skips it; `anon` (default) reads the dense set via O_DIRECT into anonymous buffers instead, which is the right answer well past RAM — see [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md). `--no-warm-dense` and `--dense-odirect` are deprecated aliases for `mmap` and `anon` |
 
 `auto` is a real LRU cache, so it satisfies the cache requirement of `--prefetch`.
 

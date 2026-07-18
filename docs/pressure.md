@@ -133,7 +133,7 @@ The cache policy above manages the *expert cache*. The other half of the war is 
 weights, whose policy is a single knob `--dense-weights mmap|warm|anon` (`DenseWeightsMode`, owned by
 `core/src/moe/dense_weights.h`). `mmap` leaves them file-backed (the kernel reclaims them by dropping
 the pages, and a later touch demand-faults them 4 KiB at a time — the slow-start baseline); `warm`
-(the default) page-caches them once at load; `anon` reads each dense tensor once via O_DIRECT into an
+page-caches them once at load; `anon` (the default) reads each dense tensor once via O_DIRECT into an
 aligned anonymous buffer and rebinds the tensor onto it. A reclaim of anonymous memory swaps to zram
 rather than dropping to flash, so a refault is a fast zram decompress instead of a scattered flash
 read. (`--dense-odirect` and `--no-warm-dense` remain as deprecated aliases for `anon` and `mmap`.)
@@ -170,10 +170,12 @@ only the O_DIRECT reader and, if desired, the same `mincore` telemetry.
 
 ## Status
 
-The default is cache-off (shared-slot streaming) plus `--dense-weights warm`. `--cache-mb N` and
-`--cache-mb auto` are there for RAM-fitting models; `--dense-weights anon` is the A/B lever whose
-verdict is still owed on both phones. The retired governor is kept in git history (branch line through
-`feat/pressure-cache`) if the analysis ever needs revisiting.
+The default is cache-off (shared-slot streaming) plus `--dense-weights anon` — the policy that wins
+on the >RAM models the engine targets (3.2× on gpt-oss, see
+[benchmarks-gpt-oss.md](benchmarks-gpt-oss.md)). `--cache-mb N` and `--cache-mb auto` are there for
+RAM-fitting models, where `--dense-weights warm` (or `mmap`) is the lighter choice. The retired
+governor is kept in git history (branch line through `feat/pressure-cache`) if the analysis ever
+needs revisiting.
 
 See also: [android-memory.md](android-memory.md) for what reclaims the engine's memory and which
 levers exist, [adaptive-cache.md](adaptive-cache.md) for `--cache-mb auto`.

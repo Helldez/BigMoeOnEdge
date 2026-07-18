@@ -292,8 +292,9 @@ Qwen's 4.667 tok/s does **not** beat its all-time best (5.23 tok/s, capped-auto 
 dense-anon), and that is the expected result rather than a disappointment: at 1.64× RAM there is
 enough headroom to hold the dense set, so there is little refault pressure for the policy to
 remove. The lever is decisive only well past RAM — on gpt-oss at 5.2× RAM it is worth **3.2×** and
-drops majflt/token by two orders of magnitude. Use `warm` (the default) near RAM; reach for `anon`
-when `majflt/token` is in the hundreds.
+drops majflt/token by two orders of magnitude. `anon` is the default; use `warm` instead near RAM
+(a RAM-fitting model has no dense-fault pressure for `anon` to remove), and reach for `anon` whenever
+`majflt/token` is in the hundreds.
 
 > **The Qwen and Gemma cells from that session are order-contaminated and no top-k claim is drawn
 > from them.** They ran with a 45 s cooldown that does not return this device to baseline, and

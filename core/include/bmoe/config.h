@@ -70,12 +70,14 @@ struct MoeStreamConfig {
     //   Mmap      leave them mmap'd; the kernel serves and reclaims them (a >RAM model then demand-
     //             faults them 4 KiB at a time inside the first decodes — the slow-start this exists
     //             to address). The A/B baseline.
-    //   Warmed    (default) leave them mmap'd, but page-cache them once at load with a sequential
-    //             sweep, so the first decodes do not fault them in. Moves the cost into load_seconds.
-    //   Anonymous read them once via O_DIRECT into our own anon buffers and rebind the tensors, so a
-    //             reclaim swaps them to zram (fast) instead of dropping them to a 4 KiB flash refault.
-    //             The measured win on a model actively losing its dense set to reclaim.
-    DenseWeightsMode dense_weights = DenseWeightsMode::Warmed;
+    //   Warmed    leave them mmap'd, but page-cache them once at load with a sequential sweep, so the
+    //             first decodes do not fault them in. Moves the cost into load_seconds. Best when the
+    //             model fits in RAM.
+    //   Anonymous (default) read them once via O_DIRECT into our own anon buffers and rebind the
+    //             tensors, so a reclaim swaps them to zram (fast) instead of dropping them to a 4 KiB
+    //             flash refault. The measured win on a model actively losing its dense set to reclaim,
+    //             and the policy the Android app ships by default — the CLI matches it here.
+    DenseWeightsMode dense_weights = DenseWeightsMode::Anonymous;
 
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer

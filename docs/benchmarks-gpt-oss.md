@@ -63,7 +63,7 @@ Expert streaming was never the problem on gpt-oss. **The dense weights were.**
 
 The engine streams experts through O_DIRECT into a bounded cache, so the 58 GB expert bank never
 lands in RAM. But the *non-expert* weights — embeddings, attention, norms, lm_head — are
-mmap-resident by default, held in the page cache. At 1.6× RAM there is room for them. At **5.2×
+mmap-resident under the `mmap`/`warm` policies, held in the page cache. At 1.6× RAM there is room for them. At **5.2×
 RAM there is not**: the kernel reclaims them mid-decode, and every token faults them back in from
 flash, one 4 KiB page at a time. That fault storm is not visible as I/O in the engine's own
 accounting — the kernel services it inside the compute call — so it shows up as *compute*, and it
