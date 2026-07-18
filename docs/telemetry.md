@@ -26,6 +26,12 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   mgmt_ms` in serial, `wall_ms − stall_ms − mgmt_ms` under overlap. When that residual is the
   number in question, `--compute-trace` measures it directly instead (see [Decode
   traces](#decode-traces)) — at a cost that makes it a diagnostic, not telemetry.
+  `compute_ms` is **clamped at 0**: the subtraction can go slightly negative under overlap (where
+  `stall_ms` is a per-thread mean, not a critical path), and a negative compute would be nonsense.
+  That clamp means the wall-additive identity is not exact in the pathological case — a consumer
+  that recovers the flash-wait term as `wall_ms − compute_ms − mgmt_ms` gets `wall_ms − mgmt_ms`
+  when the clamp fires, over-attributing to flash. Read the wall-additive flash term straight from
+  `io_ms` (serial) / `stall_ms` (overlap) instead of inverting the residual.
   In serial mode `io_ms` is the wall time blocked on reads (a subset of `wall_ms`). Under
   `--overlap` its meaning changes: it is the **sum of per-lane busy time**, so it can exceed
   `wall_ms` because lanes read in parallel with compute. Use `stall_ms` for the wall time
