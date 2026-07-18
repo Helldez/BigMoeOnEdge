@@ -14,6 +14,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.n_batch = cfg.n_ctx; // one-batch prefill for any prompt that fits the context
     sc.chatml = cfg.chatml;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
+    sc.sampling = cfg.sampling;           // greedy by default; opt-in stochastic decoding
     sc.moe = cfg.moe;
     return sc;
 }

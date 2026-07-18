@@ -9,9 +9,21 @@
 // without the native backend.
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace bmoe {
+
+// Token sampling. temp <= 0 (the default) selects greedy argmax — the deterministic path the
+// byte-identity gates depend on, and today's behaviour for any caller that sets nothing. temp > 0
+// builds the standard chain top_k -> top_p -> temp -> dist. Opt-in by construction: sampling never
+// perturbs a run that did not ask for it, so the gates stay meaningful.
+struct SamplingConfig {
+    float temp = 0.0f;           // <= 0: greedy (argmax). > 0: stochastic sampling.
+    int top_k = 40;              // 0 disables the top-k stage (llama.cpp convention)
+    float top_p = 0.95f;         // nucleus cutoff, in (0, 1]
+    uint32_t seed = 0xFFFFFFFFu; // == LLAMA_DEFAULT_SEED (random per run); static_assert'd in session.cpp
+};
 
 // How the dense (non-expert) model weights are kept resident. See MoeStreamConfig::dense_weights and
 // core/src/moe/dense_weights.h. Ordered cheapest-effort first.
@@ -115,6 +127,7 @@ struct RunConfig {
     // expert_used_count metadata key; must stay in [1, n_expert]. Independent of streaming.
     int n_expert_used = 0;
 
+    SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
 };
 

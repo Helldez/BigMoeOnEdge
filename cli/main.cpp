@@ -326,6 +326,13 @@ static void print_usage(const char * argv0) {
         "      --n-expert-used N   override active MoE experts per token (top-k); lower = faster\n"
         "                          but changes the output (quality). 0 = model default\n"
         "\n"
+        "  Sampling (default: greedy/argmax, deterministic):\n"
+        "      --temp F            sampling temperature; <= 0 keeps greedy (default 0). > 0 enables\n"
+        "                          the chain top-k -> top-p -> temp -> dist\n"
+        "      --top-k N           top-k cutoff when sampling (0 disables the stage; default 40)\n"
+        "      --top-p F           nucleus cutoff in (0,1] when sampling (default 0.95)\n"
+        "      --seed N            RNG seed for sampling (default: random per run)\n"
+        "\n"
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
         "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
@@ -377,6 +384,14 @@ int main(int argc, char ** argv) {
             cfg.n_ctx = std::atoi(next("-c"));
         else if (a == "--n-expert-used")
             cfg.n_expert_used = std::atoi(next("--n-expert-used"));
+        else if (a == "--temp")
+            cfg.sampling.temp = (float) std::atof(next("--temp"));
+        else if (a == "--top-k")
+            cfg.sampling.top_k = std::atoi(next("--top-k"));
+        else if (a == "--top-p")
+            cfg.sampling.top_p = (float) std::atof(next("--top-p"));
+        else if (a == "--seed")
+            cfg.sampling.seed = (uint32_t) std::strtoul(next("--seed"), nullptr, 10);
         else if (a == "--chatml")
             cfg.chatml = true;
         else if (a == "--no-think")

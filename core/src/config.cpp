@@ -31,6 +31,18 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("n_expert_used must be >= 0 (0 = model default)");
     }
 
+    // Sampling ranges are enforced only when sampling is actually on (temp > 0). With temp <= 0
+    // the engine takes the argmax path and the other knobs are inert, so a caller that leaves them
+    // at any value still describes a valid greedy run — today's default stays valid untouched.
+    if (cfg.sampling.temp > 0.0f) {
+        if (cfg.sampling.top_k < 0) {
+            return fail("sampling.top_k must be >= 0 (0 disables the top-k stage)");
+        }
+        if (cfg.sampling.top_p <= 0.0f || cfg.sampling.top_p > 1.0f) {
+            return fail("sampling.top_p must be in (0, 1]");
+        }
+    }
+
     // overlap is meaningless without streaming (it gates the streamer's own reads). The
     // hook-availability check is deferred to run(): validate() stays pure (no native).
     if (cfg.moe.overlap && !cfg.moe.enabled) {

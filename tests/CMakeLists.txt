@@ -6,6 +6,12 @@
 add_executable(bmoe_moe_gates moe_gates.cpp)
 target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
 
+# validate() unit tests (issue #51 + the pre-existing rules). Pure config, no model — runs
+# unconditionally, and makes good on config.h's "unit-tested" claim.
+add_executable(bmoe_config_test config_test.cpp)
+target_link_libraries(bmoe_config_test PRIVATE bmoe_core)
+add_test(NAME config_validate COMMAND bmoe_config_test)
+
 find_program(PYTHON3 NAMES python3 python)
 
 if(PYTHON3)
