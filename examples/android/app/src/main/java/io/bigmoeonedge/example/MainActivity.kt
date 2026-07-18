@@ -226,7 +226,12 @@ private fun MainScreen(
                     // Bring a model onto the device without adb: the built-in catalog, an arbitrary
                     // URL, or a local file. All land in the app models dir; on completion we
                     // re-scan so the model appears above.
-                    AddModelSection(models = models, scanning = scanning, onModelReady = onRefresh)
+                    AddModelSection(
+                        models = models,
+                        scanning = scanning,
+                        loadedSig = ui.sessionSig,
+                        onModelReady = onRefresh,
+                    )
 
                     OutlinedTextField(
                         value = prompt,
@@ -375,9 +380,17 @@ private fun configSummary(s: AppSettings): String {
  * [models] is the current scan result: it is what tells a catalog entry it is already on device.
  */
 @Composable
-private fun AddModelSection(models: List<File>, scanning: Boolean, onModelReady: () -> Unit) {
+private fun AddModelSection(
+    models: List<File>,
+    scanning: Boolean,
+    loadedSig: String?,
+    onModelReady: () -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // A model whose delete is being confirmed: its filename, or null when no dialog is up.
+    var deleteTarget by remember { mutableStateOf<String?>(null) }
 
     var url by rememberSaveable { mutableStateOf("") }
     var expanded by rememberSaveable { mutableStateOf(false) }
@@ -492,7 +505,33 @@ private fun AddModelSection(models: List<File>, scanning: Boolean, onModelReady:
                             downloads[e.fileName]?.let { ModelDownloader.cancel(context, it, e.fileName) }
                             reseed()
                         },
+                        onDelete = { deleteTarget = e.fileName },
                     )
+                }
+
+                // On-device models the catalog does not list — imported via the URL field or the
+                // file picker below. They have no catalog row of their own, only a picker entry, so
+                // this is the one place to remove them.
+                val extraModels = models.filter { m -> ModelCatalog.entries.none { it.fileName == m.name } }
+                if (extraModels.isNotEmpty()) {
+                    HorizontalDivider()
+                    Text("Imported models", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    extraModels.forEach { f ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(f.name, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    ModelCatalog.gbLabel(f.length()),
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(
+                                onClick = { deleteTarget = f.name },
+                                contentPadding = PaddingValues(horizontal = 12.dp),
+                            ) { Text("Delete", maxLines = 1, softWrap = false) }
+                        }
+                    }
                 }
 
                 HorizontalDivider()
@@ -556,6 +595,82 @@ private fun AddModelSection(models: List<File>, scanning: Boolean, onModelReady:
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
         }
     }
+
+    deleteTarget?.let { fname ->
+        val copies = remember(fname, models) { ModelManager.copiesOf(context, fname) }
+        // The loaded session pins its gguf via mmap; deleting it out from under a live engine is the
+        // failure mode to forbid. sessionSignature starts with the model's path, so match on that.
+        val isLoaded = copies.any { loadedSig != null && loadedSig.startsWith(it.absolutePath + "|") }
+        DeleteModelDialog(
+            fileName = fname,
+            copies = copies,
+            isLoaded = isLoaded,
+            onDismiss = { deleteTarget = null },
+            onConfirm = {
+                val toDelete = copies.filter { ModelManager.isAppDeletable(it) }
+                scope.launch {
+                    withContext(Dispatchers.IO) { toDelete.forEach { runCatching { it.delete() } } }
+                    deleteTarget = null
+                    onModelReady() // rescan: the catalog status and the picker both refresh
+                }
+            },
+        )
+    }
+}
+
+/**
+ * Confirm deleting every app-deletable copy of a model. Lists each copy with its size, flags copies
+ * the app cannot remove (adb-pushed, shell-owned) and the loaded-model guard, and only enables the
+ * delete when there is something to delete and the model is not in use.
+ */
+@Composable
+private fun DeleteModelDialog(
+    fileName: String,
+    copies: List<File>,
+    isLoaded: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val deletable = copies.filter { ModelManager.isAppDeletable(it) }
+    val blocked = copies.filterNot { ModelManager.isAppDeletable(it) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete $fileName?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (isLoaded) {
+                    Text(
+                        "This model is loaded. Start a new chat (or switch models) before deleting it.",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 13.sp,
+                    )
+                }
+                deletable.forEach { f ->
+                    Text("${f.absolutePath}  ·  ${ModelCatalog.gbLabel(f.length())}", fontSize = 12.sp)
+                }
+                blocked.forEach { f ->
+                    Text(
+                        "${f.absolutePath} — adb-pushed; remove with: adb shell rm ${f.absolutePath}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (deletable.isEmpty() && !isLoaded) {
+                    Text(
+                        "Nothing here the app can delete.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, enabled = !isLoaded && deletable.isNotEmpty()) {
+                Text("Delete")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** One catalog model: what it is, how big, and the single action its current state allows. */
@@ -569,6 +684,7 @@ private fun CatalogRow(
     onToggleInstall: () -> Unit,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         // Name and action share a line; the blurb gets the full card width on its own line. Next
@@ -591,7 +707,7 @@ private fun CatalogRow(
                     }
                 ModelCatalog.Status.DOWNLOADING ->
                     TextButton(onClick = onCancel) { Text("Cancel", maxLines = 1, softWrap = false) }
-                ModelCatalog.Status.ON_DEVICE ->
+                ModelCatalog.Status.ON_DEVICE -> {
                     Text(
                         "On device",
                         fontSize = 13.sp,
@@ -599,6 +715,10 @@ private fun CatalogRow(
                         softWrap = false,
                         color = MaterialTheme.colorScheme.primary,
                     )
+                    TextButton(onClick = onDelete, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                        Text("Delete", maxLines = 1, softWrap = false)
+                    }
+                }
                 ModelCatalog.Status.MANUAL_ONLY ->
                     TextButton(onClick = onToggleInstall) {
                         Text(if (installShown) "Hide" else "How to", maxLines = 1, softWrap = false)

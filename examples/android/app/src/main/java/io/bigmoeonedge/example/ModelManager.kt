@@ -62,6 +62,22 @@ object ModelManager {
     /** List MoE models only. Blocking header reads — call off the main thread. */
     fun listMoeModels(ctx: Context): List<File> = allGguf(ctx).filter { GgufHeader.isMoe(it) }
 
+    /**
+     * Every on-disk copy of [fileName] across the scanned dirs. listMoeModels dedups by name and
+     * shows only the first, but the same gguf can sit in two places at once (adb-pushed to
+     * /data/local/tmp AND downloaded to the app dir); a delete has to see them all, or it silently
+     * orphans the copy it is not using. Blocking stat — call off the main thread.
+     */
+    fun copiesOf(ctx: Context, fileName: String): List<File> =
+        scanDirs(ctx).map { File(it, fileName) }.filter { it.isFile }
+
+    /**
+     * Can the app delete this file? /data/local/tmp/bmoe is shell-owned (adb-pushed models): the
+     * app can read it but its untrusted_app domain cannot unlink it. Everything else the app itself
+     * wrote (download / import) and can remove.
+     */
+    fun isAppDeletable(f: File): Boolean = !f.absolutePath.startsWith(TMP_MODEL_DIR.absolutePath)
+
     /** Absolute path of libbmoe-cli.so inside the app's nativeLibraryDir. */
     fun cliPath(ctx: Context): String =
         File(ctx.applicationInfo.nativeLibraryDir, "libbmoe-cli.so").absolutePath
