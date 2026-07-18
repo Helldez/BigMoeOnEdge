@@ -45,7 +45,7 @@ android {
     //         src/dev/AndroidManifest.xml.
     //   play  Play-Store-compliant. No broad storage permission: models arrive only through
     //         the in-app URL downloader or the system file picker (SAF), both writing to the
-    //         app-specific external files dir, which needs no permission.
+    //         app-internal models dir (filesDir), which needs no permission.
     // SHARED_STORAGE gates the storage-permission code paths; no model names or URLs are
     // ever hardcoded — the scanned directories are the only difference.
     flavorDimensions += 'distribution'
@@ -96,6 +96,9 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.activity:activity-compose:1.9.2'
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.5'
+    // In-app model downloader: a foreground CoroutineWorker that survives process death and
+    // resumes multi-GB transfers (see DownloadWorker). Brings kotlinx-coroutines-android too.
+    implementation 'androidx.work:work-runtime-ktx:2.9.1'
 
     def composeBom = platform('androidx.compose:compose-bom:2024.09.02')
     implementation composeBom

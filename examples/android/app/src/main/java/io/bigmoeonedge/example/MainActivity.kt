@@ -408,9 +408,9 @@ private fun AddModelSection(
     var open by rememberSaveable { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(scanning) { if (!scanning && open == null) open = models.isEmpty() }
     val isOpen = open == true
-    // filename -> DownloadManager id. Seeded from DownloadManager rather than remembered, so a
-    // transfer started before the app was killed is picked back up instead of running unseen.
-    var downloads by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    // filename -> download id (also the filename). Seeded from WorkManager rather than remembered,
+    // so a transfer started before the app was killed is picked back up instead of running unseen.
+    var downloads by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var progress by remember { mutableStateOf<Map<String, ModelDownloader.Progress>>(emptyMap()) }
     var importStatus by remember { mutableStateOf<String?>(null) }
     var importFrac by remember { mutableStateOf(-1f) }
@@ -509,7 +509,7 @@ private fun AddModelSection(
                                 }
                         },
                         onCancel = {
-                            downloads[e.fileName]?.let { ModelDownloader.cancel(context, it, e.fileName) }
+                            ModelDownloader.cancel(context, e.fileName)
                             reseed()
                         },
                         onDelete = { deleteTarget = e.fileName },
@@ -583,7 +583,7 @@ private fun AddModelSection(
                         DownloadProgress(
                             p,
                             onCancel = {
-                                ModelDownloader.cancel(context, p.id, name)
+                                ModelDownloader.cancel(context, name)
                                 reseed()
                             },
                         )
