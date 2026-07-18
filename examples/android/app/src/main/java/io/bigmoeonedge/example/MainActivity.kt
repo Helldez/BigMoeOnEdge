@@ -303,7 +303,7 @@ private fun MainScreen(
                         }
                     }
 
-                    TelemetryCard(ui, settings.threads)
+                    TelemetryCard(ui, settings.threads, settings.overlap, settings.ioThreads)
                 }
             }
 
@@ -673,7 +673,7 @@ private fun DownloadProgress(
 }
 
 @Composable
-private fun TelemetryCard(ui: UiState, threads: Int) {
+private fun TelemetryCard(ui: UiState, threads: Int, overlap: Boolean, ioThreads: Int) {
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             if (ui.error != null) {
@@ -707,17 +707,26 @@ private fun TelemetryCard(ui: UiState, threads: Int) {
                 // Once done, show the per-token AVERAGE split; while generating, the live last token.
                 val useAvg = done && t.avgComputeMs >= 0
                 val suffix = if (useAvg) " avg" else ""
-                // The wall-additive breakdown: by the engine's own definition compute = wall − flash-wait
-                // − mgmt, so these three SUM to the token's wall time. That makes tok/s = 1000 / wall
-                // directly readable off the bars, instead of asking the user to reconcile a compute
-                // residual with a parallel (overlapped) flash-I/O figure that isn't a wall component.
-                val compute = if (useAvg) t.avgComputeMs else t.computeMs
+                // The wall-additive breakdown: compute + flash-wait + mgmt SUM to the token's wall time,
+                // so tok/s = 1000 / wall is readable straight off the bars.
                 val mgmt = if (useAvg) t.avgMgmtMs.coerceAtLeast(0.0) else t.mgmtMs
                 val wall = if (useAvg) (if (t.avgTokensPerSecond > 0) 1000.0 / t.avgTokensPerSecond else 0.0)
                            else t.wallMs
-                // Flash wait = wall not spent computing or bookkeeping: the read time overlap couldn't
-                // hide (a stall under --overlap, the whole blocking read in serial mode).
-                val flashWait = (wall - compute - mgmt).coerceAtLeast(0.0)
+                // Flash wait is the MEASURED wall-additive read term — stall_ms under overlap (the wall
+                // time compute sat idle), io_ms in serial (the blocking read) — and compute is the
+                // leftover. Deriving it this way keeps the clamp on compute (a near-0 compute is honest)
+                // instead of the old wall−compute−mgmt, which silently dumped a clamped-to-0 compute into
+                // "flash wait". The end-of-run average has no per-mode io/stall to read, so it keeps the
+                // residual form.
+                val flashWait: Double
+                val compute: Double
+                if (useAvg) {
+                    compute = t.avgComputeMs
+                    flashWait = (wall - compute - mgmt).coerceAtLeast(0.0)
+                } else {
+                    flashWait = if (overlap) t.stallMs else t.ioMs
+                    compute = (wall - flashWait - mgmt).coerceAtLeast(0.0)
+                }
                 val total = if (wall > 0.0) wall else (compute + flashWait + mgmt)
 
                 // Headline: token time and its inverse, so no mental arithmetic to get tok/s.
@@ -730,16 +739,19 @@ private fun TelemetryCard(ui: UiState, threads: Int) {
                 MeterRow("cache mgmt$suffix", mgmt, total, MaterialTheme.colorScheme.secondary)
 
                 // Diagnostic line: WHY compute is what it is, plus cache hit. CPU occupancy = CPU-time ÷
-                // (wall × threads); near 100% is genuinely compute-bound, well below means a throttled/
-                // preempted core (a frequency cap, a co-resident process). Major faults/token > 0 means
-                // dense weights re-faulted from flash inside the decode. Both 0 ⇒ engine couldn't measure.
+                // (wall × busy threads); near 100% is genuinely compute-bound, well below means a
+                // throttled/preempted core (a frequency cap, a co-resident process). The CPU numerator is
+                // whole-process, so under overlap the I/O lanes count too — the denominator must include
+                // them, or occupancy reads above 100%. Major faults/token > 0 means dense weights
+                // re-faulted from flash inside the decode. Both 0 ⇒ engine couldn't measure.
+                val busyThreads = threads + if (overlap) ioThreads else 0
                 val useAvgCpu = useAvg && t.avgCpuSPerTok >= 0
                 val cpuSTok = if (useAvgCpu) t.avgCpuSPerTok else t.cpuMs / 1000.0
                 val faults = if (useAvgCpu) t.avgMajfltPerTok else t.majflt
                 val hit = if (t.cacheHitPct >= 0) String.format(Locale.US, "hit %.0f%%", t.cacheHitPct) else "hit —"
                 val diag = buildString {
-                    if (cpuSTok > 0.0 && wall > 0.0 && threads > 0) {
-                        append(String.format(Locale.US, "CPU %.0f%% busy", cpuSTok / (wall / 1000.0 * threads) * 100.0))
+                    if (cpuSTok > 0.0 && wall > 0.0 && busyThreads > 0) {
+                        append(String.format(Locale.US, "CPU %.0f%% busy", cpuSTok / (wall / 1000.0 * busyThreads) * 100.0))
                         if (faults >= 0.0) append(String.format(Locale.US, "  ·  %.0f faults/tok", faults))
                         append("  ·  ")
                     }

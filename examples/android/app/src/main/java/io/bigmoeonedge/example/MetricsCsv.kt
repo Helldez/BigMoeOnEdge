@@ -45,10 +45,19 @@ internal class Csv(
         ).joinToString(" · ")
     }
 
-    /** This column's values, or null where the column is absent or the cell is not a number. */
+    /**
+     * This column's values, or null where the column is absent, the cell is not a number, or the
+     * cell is a documented "not sampled" sentinel. `cache_hit_pct` and `dense_resident_frac` write
+     * -1 when the engine had nothing to report (before the first sample, streaming off, /proc
+     * unreadable); that is missing data, not a measurement. Mapping it to null — rather than
+     * dropping the row — keeps every column index-aligned, so the compare view's min/mean/max and
+     * pearson() (which pairs by position) stop counting -1 as a real value. Genuine -1s in other
+     * columns are left untouched.
+     */
     fun column(name: String): List<Float?>? {
         val i = header.indexOf(name).takeIf { it >= 0 } ?: return null
-        return rows.map { it.getOrNull(i)?.toFloatOrNull() }
+        val sentinel = name in NOT_SAMPLED_MINUS_ONE
+        return rows.map { row -> row.getOrNull(i)?.toFloatOrNull()?.takeUnless { sentinel && it == -1f } }
     }
 
     /** Columns worth plotting: numeric, and not an axis or a label. */
@@ -56,6 +65,9 @@ internal class Csv(
         header.filter { it !in setOf("step", "steps", "turn") && column(it)?.any { v -> v != null } == true }
 
     companion object {
+        // Columns where -1 means "not sampled", not a value. See column().
+        private val NOT_SAMPLED_MINUS_ONE = setOf("cache_hit_pct", "dense_resident_frac")
+
         fun read(f: File): Csv {
             val lines = runCatching { f.readLines() }.getOrElse { emptyList() }
             val header = lines.firstOrNull { !it.startsWith("#") }?.split(",") ?: emptyList()

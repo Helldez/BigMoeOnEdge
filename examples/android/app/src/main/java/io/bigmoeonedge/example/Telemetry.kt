@@ -8,6 +8,12 @@ data class Telemetry(
     var steps: Int = 0,
     var wallMs: Double = 0.0,
     var computeMs: Double = 0.0,
+    // The measured, wall-additive flash term: io_ms in serial (the blocking read), stall_ms under
+    // overlap (the wall time compute sat idle on a read). The panel shows the one that matches the
+    // run's mode as "flash wait" instead of inverting the clamped compute residual, which mislabels
+    // the token when compute_ms was clamped to 0.
+    var ioMs: Double = 0.0,
+    var stallMs: Double = 0.0,
     // Cache-management time this token — the third wall-additive term. wall = compute + flash-wait +
     // mgmt exactly (the engine defines compute as that residual), so the panel can show a breakdown
     // that sums to the token time and makes tok/s = 1000/wall self-evident.
@@ -69,6 +75,8 @@ class TelemetryParser {
             current.steps = o.optInt("steps")
             current.wallMs = o.optDouble("wall_ms")
             current.computeMs = o.optDouble("compute_ms")
+            current.ioMs = o.optDouble("io_ms", 0.0)
+            current.stallMs = o.optDouble("stall_ms", 0.0)
             current.mgmtMs = o.optDouble("mgmt_ms", 0.0)
             current.cacheHitPct = o.optDouble("cache_hit_pct", -1.0)
             current.majflt = o.optDouble("majflt", 0.0)

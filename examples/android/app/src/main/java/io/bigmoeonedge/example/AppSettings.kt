@@ -9,7 +9,7 @@ import android.content.Context
  */
 enum class DenseWeights(val flag: String, val label: String, val blurb: String) {
     MMAP("mmap", "Mmap (baseline)", "Leave the dense weights mmap'd; the kernel faults them in. Slow first tokens on a >RAM model — the A/B baseline."),
-    WARM("warm", "Warm at load", "Page-cache the dense weights once at load, so the first tokens don't fault them in 4 KiB at a time. Best when the model fits in RAM."),
+    WARM("warm", "Warm at load", "Page-cache the dense weights once at load, so the first tokens don't fault them in a page at a time. Best when the model fits in RAM."),
     ANON("anon", "Anon (O_DIRECT)", "Read the dense weights via O_DIRECT into our own buffers so a reclaim swaps to zram (fast) instead of a slow flash refault. Costs a private copy. The default — it wins on >RAM models."),
 }
 
