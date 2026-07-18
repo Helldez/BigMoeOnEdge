@@ -1,25 +1,36 @@
 package io.bigmoeonedge.example
 
-import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
- * Downloads a gguf by URL into the app-specific external files dir using the system
- * [DownloadManager]. That destination needs no storage permission, and DownloadManager keeps
- * going across process death and resumes on reconnect — the right fit for multi-GB models.
+ * Starts and tracks model downloads. The transfer itself runs in [DownloadWorker] (an in-app
+ * HTTP download into the O_DIRECT-capable internal storage — see that class for why the system
+ * DownloadManager can't be used here); this object is the thin facade the UI drives.
  *
- * The file is written as `<name>.gguf.part` and renamed to `<name>.gguf` only on success, so a
- * half-finished download is never listed as a runnable model.
+ * A download is identified by its filename, which is also its unique-work name: enqueuing the
+ * same model twice is a no-op, and an in-flight transfer is re-discoverable after process death
+ * because WorkManager persists it.
  */
 object ModelDownloader {
-    private const val PART_SUFFIX = ".part"
+    private const val NAME_TAG_PREFIX = "name:"
 
     enum class State { PENDING, RUNNING, PAUSED, SUCCESS, FAILED }
 
     data class Progress(
-        val id: Long,
+        val id: String, // the unique-work name == the filename
         val name: String,
         val downloadedBytes: Long,
         val totalBytes: Long, // -1 when the server didn't send a length
@@ -28,29 +39,28 @@ object ModelDownloader {
     )
 
     /**
-     * Start a download. Returns the DownloadManager id, or an error if the URL doesn't name a
-     * .gguf file or the model cannot fit. No model names or hosts are assumed — for a pasted URL
-     * the filename comes from the URL itself.
+     * Start a download. Returns the unique-work id (the filename), or an error if the URL doesn't
+     * name a .gguf file or the model cannot fit. No model names or hosts are assumed — for a pasted
+     * URL the filename comes from the URL itself.
      *
-     * [fileName] overrides that for catalog downloads, where the on-disk name is known upfront
-     * and must not depend on redirects or query strings. [expectedBytes] (when > 0) is checked
-     * against free space before enqueuing: DownloadManager would fail with
-     * ERROR_INSUFFICIENT_SPACE anyway, but only after the user waited for it to try.
+     * [fileName] overrides that for catalog downloads, where the on-disk name is known upfront and
+     * must not depend on redirects or query strings. [expectedBytes] (when > 0) is checked against
+     * free space before enqueuing so the user isn't left waiting for a transfer that can't fit.
      */
     fun enqueue(
         ctx: Context,
         rawUrl: String,
         fileName: String? = null,
         expectedBytes: Long = -1L,
-    ): Result<Long> = runCatching {
+    ): Result<String> = runCatching {
         val url = rawUrl.trim()
         val uri = Uri.parse(url)
         require(uri.scheme == "http" || uri.scheme == "https") { "URL must be http(s)" }
 
-        val name = fileName ?: fileNameFromUrl(uri)
+        val name = fileName ?: DownloadWorker.fileNameFromUrl(uri)
         require(name.endsWith(".gguf")) { "URL must point to a .gguf file" }
 
-        val dir = ModelManager.appModelsDir(ctx) ?: error("no writable app storage")
+        val dir = ModelManager.internalModelsDir(ctx)
         if (expectedBytes > 0 && expectedBytes > dir.usableSpace) {
             error(
                 "needs ${ModelCatalog.gbLabel(expectedBytes)}, " +
@@ -58,114 +68,81 @@ object ModelDownloader {
             )
         }
 
-        val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val req = DownloadManager.Request(uri)
-            .setTitle(name)
-            .setDescription("BigMoeOnEdge model")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setAllowedOverMetered(true)
-            .setAllowedOverRoaming(false)
-            // App-specific external files dir → no permission required, and the same directory
-            // ModelManager scans. Written as .part so the scanner ignores it until complete.
-            .setDestinationInExternalFilesDir(ctx, null, name + PART_SUFFIX)
-        dm.enqueue(req)
+        val req = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .setInputData(
+                workDataOf(
+                    DownloadWorker.KEY_URL to url,
+                    DownloadWorker.KEY_NAME to name,
+                    DownloadWorker.KEY_EXPECTED to expectedBytes,
+                )
+            )
+            .addTag(DownloadWorker.TAG)
+            .addTag(NAME_TAG_PREFIX + name)
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+            .build()
+        // Block until the work is persisted so the caller's immediate activeDownloads() reseed
+        // sees it (a fast local DB write) — otherwise the row wouldn't show as downloading.
+        WorkManager.getInstance(ctx).enqueueUniqueWork(name, ExistingWorkPolicy.KEEP, req).result.get()
+        name
     }
 
-    /** Current status of a download, or null if the id is unknown or the provider refused. */
-    fun query(ctx: Context, id: Long): Progress? = runCatching {
-        val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        dm.query(DownloadManager.Query().setFilterById(id)).use { c ->
-            if (c == null || !c.moveToFirst()) return@runCatching null
-            val status = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-            val soFar = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-            val total = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-            val title = c.getString(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TITLE)) ?: "model.gguf"
-            val reasonCode = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
-            val state = when (status) {
-                DownloadManager.STATUS_PENDING -> State.PENDING
-                DownloadManager.STATUS_RUNNING -> State.RUNNING
-                DownloadManager.STATUS_PAUSED -> State.PAUSED
-                DownloadManager.STATUS_SUCCESSFUL -> State.SUCCESS
-                else -> State.FAILED
+    /** Current status of a download, or null if it is unknown, cancelled, or already cleared. */
+    suspend fun query(ctx: Context, name: String): Progress? = withContext(Dispatchers.IO) {
+        runCatching {
+            val info = WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(name).get().lastOrNull()
+                ?: return@runCatching null
+            when (info.state) {
+                WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED ->
+                    Progress(name, name, 0, -1, State.PENDING)
+                WorkInfo.State.RUNNING -> Progress(
+                    name, name,
+                    info.progress.getLong(DownloadWorker.KEY_DONE, 0),
+                    info.progress.getLong(DownloadWorker.KEY_TOTAL, -1),
+                    State.RUNNING,
+                )
+                WorkInfo.State.SUCCEEDED -> Progress(name, name, 0, 0, State.SUCCESS)
+                WorkInfo.State.FAILED -> Progress(
+                    name, name, 0, -1, State.FAILED,
+                    info.outputData.getString(DownloadWorker.KEY_ERROR) ?: "download failed",
+                )
+                WorkInfo.State.CANCELLED -> null // user cancelled: no error to surface
             }
-            val reason = when (state) {
-                State.FAILED -> failureReason(reasonCode)
-                State.PAUSED -> pauseReason(reasonCode)
-                else -> null
-            }
-            Progress(id, title, soFar, total, state, reason)
-        }
-    }.getOrNull()
+        }.getOrNull()
+    }
 
     /**
-     * Model downloads this app still has in flight, as filename -> DownloadManager id.
-     *
-     * DownloadManager outlives the app process, so a download started before the app was killed
-     * is still running when the user comes back. The UI seeds itself from this instead of losing
-     * track of a multi-GB transfer. Only our own downloads are visible to this query.
-     *
-     * Never throws: this only restores convenience state, and the download provider is a system
-     * component that can refuse the query. An empty map costs the user a progress bar; letting
-     * the exception out would cost them the whole screen.
+     * Model downloads still in flight, as filename -> id (both the filename). WorkManager persists
+     * work across process death, so a download started before the app was killed is picked back up
+     * here instead of running unseen. Never throws — an empty map costs a progress bar, not the
+     * whole screen.
      */
-    fun activeDownloads(ctx: Context): Map<String, Long> = runCatching {
-        val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val q = DownloadManager.Query().setFilterByStatus(
-            DownloadManager.STATUS_PENDING or DownloadManager.STATUS_RUNNING or DownloadManager.STATUS_PAUSED
-        )
-        val out = mutableMapOf<String, Long>()
-        dm.query(q)?.use { c ->
-            while (c.moveToNext()) {
-                val title = c.getString(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TITLE)) ?: continue
-                val id = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_ID))
-                if (title.endsWith(".gguf")) out.putIfAbsent(title, id)
-            }
-        }
-        out as Map<String, Long>
+    fun activeDownloads(ctx: Context): Map<String, String> = runCatching {
+        WorkManager.getInstance(ctx).getWorkInfosByTag(DownloadWorker.TAG).get()
+            .filter { !it.state.isFinished }
+            .mapNotNull { info -> info.tags.firstOrNull { it.startsWith(NAME_TAG_PREFIX) }?.removePrefix(NAME_TAG_PREFIX) }
+            .associateWith { it }
     }.getOrDefault(emptyMap())
 
     /**
-     * Finish a successful download: rename `<name>.gguf.part` to `<name>.gguf` in the app models
-     * dir and return the final file, or null if the part file is missing. Idempotent — if the
-     * final file already exists it is returned as-is.
+     * Finish a successful download by renaming `<name>.gguf.part` to `<name>.gguf`. The worker
+     * already does this on success, so this is an idempotent safety net: if the final file exists
+     * it is returned as-is; otherwise a leftover .part is renamed.
      */
     fun finalizeDownload(ctx: Context, name: String): File? {
-        val dir = ModelManager.appModelsDir(ctx) ?: return null
+        val dir = ModelManager.internalModelsDir(ctx)
         val finalFile = File(dir, name)
         if (finalFile.isFile) return finalFile
-        val part = File(dir, name + PART_SUFFIX)
+        val part = File(dir, name + DownloadWorker.PART_SUFFIX)
         if (!part.isFile) return null
         return if (part.renameTo(finalFile)) finalFile else null
     }
 
-    /** Remove a download from DownloadManager and delete any leftover .part file. */
-    fun cancel(ctx: Context, id: Long, name: String) {
-        val dm = ctx.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        dm.remove(id)
-        ModelManager.appModelsDir(ctx)?.let { File(it, name + PART_SUFFIX).delete() }
-    }
-
-    // Last path segment, query stripped, sanitized to a bare filename (no separators).
-    private fun fileNameFromUrl(uri: Uri): String {
-        val seg = uri.lastPathSegment?.substringAfterLast('/') ?: ""
-        val cleaned = seg.substringBefore('?').filter { it.isLetterOrDigit() || it in "._-" }
-        require(cleaned.isNotEmpty()) { "cannot derive a filename from the URL" }
-        return cleaned
-    }
-
-    private fun failureReason(code: Int): String = when (code) {
-        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "not enough free space"
-        DownloadManager.ERROR_HTTP_DATA_ERROR -> "network data error"
-        DownloadManager.ERROR_UNHANDLED_HTTP_CODE -> "server returned an unexpected status"
-        DownloadManager.ERROR_FILE_ERROR -> "file error writing the download"
-        DownloadManager.ERROR_CANNOT_RESUME -> "download could not resume"
-        else -> "download failed (code $code)"
-    }
-
-    private fun pauseReason(code: Int): String = when (code) {
-        DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "waiting for network"
-        DownloadManager.PAUSED_WAITING_TO_RETRY -> "waiting to retry"
-        DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "queued for Wi-Fi"
-        else -> "paused"
+    /** Cancel a download and delete its leftover .part file. */
+    fun cancel(ctx: Context, name: String) {
+        // Block until the cancellation is persisted, so a caller's immediate activeDownloads()
+        // reseed sees the work as finished instead of racing it back in as still-active.
+        WorkManager.getInstance(ctx).cancelUniqueWork(name).result.get()
+        File(ModelManager.internalModelsDir(ctx), name + DownloadWorker.PART_SUFFIX).delete()
     }
 }

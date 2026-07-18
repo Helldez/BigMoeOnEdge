@@ -10,8 +10,10 @@ import java.io.File
  *
  * Which directories are scanned depends on the distribution flavor (BuildConfig.SHARED_STORAGE):
  *
- *   always      the app-specific external files dir — no permission needed. The in-app URL
- *               downloader and the file picker both land models here.
+ *   always      the app-internal models dir (filesDir) — no permission needed, on a real
+ *               filesystem where O_DIRECT works. The in-app URL downloader and the file picker
+ *               both land models here. The app-specific external files dir is also scanned so
+ *               models downloaded by older builds keep working.
  *   dev only    the public Downloads folder and /data/local/tmp/bmoe, for models adb-pushed
  *               to the device. These need all-files access, which only the dev flavor requests.
  *
@@ -25,7 +27,11 @@ object ModelManager {
     // untrusted_app domain can open it.
     private val TMP_MODEL_DIR = File("/data/local/tmp/bmoe")
 
-    /** The app-specific external files dir — the download target, readable with no permission. */
+    /**
+     * The app-specific external files dir — still scanned so models downloaded by older builds
+     * (which wrote here, on FUSE) keep working, but no longer a download target: O_DIRECT is
+     * silently unusable on this emulated storage, forcing the engine onto buffered I/O.
+     */
     fun appModelsDir(ctx: Context): File? = ctx.getExternalFilesDir(null)
 
     /**

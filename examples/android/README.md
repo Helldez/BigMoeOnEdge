@@ -44,10 +44,16 @@ check). Nothing below needs a storage permission except the last option.
 
 1. **Built-in catalog** (both flavors) — the "Get a model" card offers the models this engine
    is measured on, each a single tap: **Qwen3-30B-A3B-Q4_K_M** (~18.5 GB, the reference model)
-   and **Gemma-4-26B-A4B-it-Q4_K_M** (~17 GB). Downloads run in the background, survive the app
-   being killed, and appear in the picker when done.
+   and **Gemma-4-26B-A4B-it-Q4_K_M** (~17 GB). Downloads run in a foreground worker, survive the
+   app being killed, resume an interrupted transfer instead of restarting, and appear in the
+   picker when done.
 2. **Any other model** — under **Other model**, paste a direct gguf URL (e.g. a Hugging Face
    `…/resolve/main/model.gguf` link), or pick a `.gguf` already on the device to import it.
+
+   In-app downloads and picker imports both land in the app's internal storage (`filesDir`, a
+   real f2fs/ext4 volume), so the streamed expert reads use O_DIRECT at full speed. Only models
+   read from the emulated external dirs (adb-pushed to `/sdcard/Download`) fall back to buffered
+   I/O. A download needs free space equal to the model size — no temporary second copy.
 3. **adb push** (dev flavor only — needs all-files access, which the dev build requests):
 
    ```bash

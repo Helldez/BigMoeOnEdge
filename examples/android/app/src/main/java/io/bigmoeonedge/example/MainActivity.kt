@@ -408,9 +408,9 @@ private fun AddModelSection(
     var open by rememberSaveable { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(scanning) { if (!scanning && open == null) open = models.isEmpty() }
     val isOpen = open == true
-    // filename -> DownloadManager id. Seeded from DownloadManager rather than remembered, so a
-    // transfer started before the app was killed is picked back up instead of running unseen.
-    var downloads by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    // filename -> download id (also the filename). Seeded from WorkManager rather than remembered,
+    // so a transfer started before the app was killed is picked back up instead of running unseen.
+    var downloads by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var progress by remember { mutableStateOf<Map<String, ModelDownloader.Progress>>(emptyMap()) }
     var importStatus by remember { mutableStateOf<String?>(null) }
     var importFrac by remember { mutableStateOf(-1f) }
@@ -443,7 +443,10 @@ private fun AddModelSection(
     // Poll the in-flight downloads; finalize each (.part → .gguf) as it lands and re-scan. The
     // effect restarts whenever the set changes, which is also how it stops.
     LaunchedEffect(downloads) {
-        if (downloads.isEmpty()) return@LaunchedEffect
+        if (downloads.isEmpty()) {
+            progress = emptyMap() // clear the last bar once nothing is in flight
+            return@LaunchedEffect
+        }
         while (true) {
             val finished = mutableSetOf<String>()
             val live = mutableMapOf<String, ModelDownloader.Progress>()
@@ -509,7 +512,7 @@ private fun AddModelSection(
                                 }
                         },
                         onCancel = {
-                            downloads[e.fileName]?.let { ModelDownloader.cancel(context, it, e.fileName) }
+                            ModelDownloader.cancel(context, e.fileName)
                             reseed()
                         },
                         onDelete = { deleteTarget = e.fileName },
@@ -583,7 +586,7 @@ private fun AddModelSection(
                         DownloadProgress(
                             p,
                             onCancel = {
-                                ModelDownloader.cancel(context, p.id, name)
+                                ModelDownloader.cancel(context, name)
                                 reseed()
                             },
                         )
@@ -777,15 +780,20 @@ private fun DownloadProgress(
     } else {
         null
     }
-    val prefix = if (showName) "${p.name} — " else ""
+    // Name and numbers go on separate lines: a long filename must never ellipsize away the MiB
+    // counter, which is the part the user actually watches.
+    if (showName) {
+        Text(p.name, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
     Text(
         when {
-            p.state == ModelDownloader.State.PAUSED -> prefix + (p.reason ?: "paused")
-            pct != null -> prefix + String.format(
-                Locale.US, "%d%% (%d/%d MiB)",
+            p.state == ModelDownloader.State.PAUSED -> p.reason ?: "paused"
+            pct != null -> String.format(
+                Locale.US, "%d%% (%d / %d MiB)",
                 (pct * 100).toInt(), p.downloadedBytes shr 20, p.totalBytes shr 20,
             )
-            else -> if (showName) "Downloading ${p.name}…" else "Starting…"
+            p.downloadedBytes > 0 -> String.format(Locale.US, "%d MiB", p.downloadedBytes shr 20)
+            else -> "Starting…"
         },
         fontSize = 12.sp,
         maxLines = 1,

@@ -1,18 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Fetching a model is the only thing this app does over the network: DownloadManager needs
-         INTERNET both to run a download and to report on one. Inference is entirely on-device —
-         nothing about a prompt or an answer leaves the phone. -->
+    <!-- Fetching a model is the only thing this app does over the network: the in-app download
+         worker needs INTERNET. Inference is entirely on-device — nothing about a prompt or an
+         answer leaves the phone. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- No broad storage permission here: models arrive through the in-app URL downloader or
-         the system file picker, both writing to the app-specific external files dir. The dev
-         flavor overlay (src/dev/AndroidManifest.xml) adds all-files access to also read
-         adb-pushed models in place. -->
+         the system file picker, both writing to the app-internal models dir (filesDir, a real
+         filesystem where O_DIRECT works). The dev flavor overlay (src/dev/AndroidManifest.xml)
+         adds all-files access to also read adb-pushed models in place. -->
 
     <application
         android:allowBackup="false"
@@ -36,6 +37,15 @@
             android:name=".RunService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- WorkManager runs DownloadWorker's foreground transfer through its own
+             SystemForegroundService, which it declares without a foregroundServiceType. On API 34+
+             the type passed to startForeground (dataSync) must be a subset of the type on the
+             <service> element, so merge it in here — without this the download crashes with
+             "foregroundServiceType 0x1 is not a subset of 0x0". -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
         <!-- Hands a metrics CSV to another app (Drive, Gmail, Files) as a content:// URI with a
              one-shot read grant. A file:// URI would be refused outright since Android 7, and the
              alternative — telling the user to go find the file — is not a feature. Scoped to the
