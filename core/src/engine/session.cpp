@@ -2,6 +2,7 @@
 #include "bmoe/recipe.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
+#include "chat_parse.h"
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
@@ -522,10 +523,13 @@ RunResult Session::generate(const GenerateRequest & req,
             inputs.add_generation_prompt = true;
             inputs.use_jinja = true;
             inputs.enable_thinking = req.think;
+            // AUTO is what bakes reasoning-stripping into the generated parser grammar. It is set
+            // here, before apply — the field defaults to NONE, which produces a content-only
+            // grammar that leaves <think> markers in the answer no matter how the parse is wired.
+            inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt;
-            parse_params = common_chat_parser_params(cp);
-            parse_params.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+            parse_params = detail::build_parse_params(cp);
 
             // gpt-oss / harmony ignores enable_thinking: its template always opens an
             // <|channel|>analysis turn (only the "Reasoning:" effort level is tunable), so a
@@ -577,7 +581,8 @@ RunResult Session::generate(const GenerateRequest & req,
         if (forced_final) return raw;
         try {
             return common_chat_parse(raw, partial, parse_params).content;
-        } catch (const std::exception &) {
+        } catch (const std::exception & e) {
+            detail::warn_parse_failed_once(e.what());
             return raw;
         }
     };
@@ -858,7 +863,8 @@ RunResult Session::generate(const GenerateRequest & req,
         } else {
             try {
                 assistant = common_chat_parse(gen, /*is_partial*/ false, parse_params);
-            } catch (const std::exception &) {
+            } catch (const std::exception & e) {
+                detail::warn_parse_failed_once(e.what());
                 assistant.content = gen;
             }
         }

@@ -6,6 +6,15 @@
 add_executable(bmoe_moe_gates moe_gates.cpp)
 target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
 
+# Reasoning-parser wiring regression (issue #49). Needs no model — it drives the extracted
+# bmoe::detail::build_parse_params directly — so it runs unconditionally, unlike the gates below.
+add_executable(bmoe_chat_parse_test chat_parse_test.cpp)
+target_link_libraries(bmoe_chat_parse_test PRIVATE bmoe_core)
+target_include_directories(bmoe_chat_parse_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
+target_compile_definitions(bmoe_chat_parse_test PRIVATE
+    BMOE_QWEN3_TEMPLATE_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/templates/Qwen3.5-4B.jinja")
+add_test(NAME chat_parse COMMAND bmoe_chat_parse_test)
+
 find_program(PYTHON3 NAMES python3 python)
 
 if(PYTHON3)
