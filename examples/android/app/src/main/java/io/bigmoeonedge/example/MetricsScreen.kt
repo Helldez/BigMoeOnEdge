@@ -1,6 +1,7 @@
 package io.bigmoeonedge.example
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -190,37 +191,47 @@ private fun FileList(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CsvView(file: File, modifier: Modifier) {
     // One row per token — thousands at worst, ~112 bytes each — so the whole file fits in memory
     // and there is nothing to gain from streaming it.
     val csv = remember(file) { Csv.read(file) }
+    // One horizontal scroll shared by the header and every row, so the columns stay aligned. Each
+    // scrollable Row observes and mutates this one state, so dragging any of them moves them all.
     val hscroll = rememberScrollState()
-    Column(modifier.fillMaxSize()) {
+    // The whole view is one vertical scroller. The config card, the per-turn summaries and the
+    // caption are lazy items, NOT a fixed block above the list — a fixed block grows one summary
+    // card per turn and eventually pushes the last token rows off-screen with nothing able to
+    // reach them (#53). As items they scroll away with the content; the column header stays put via
+    // stickyHeader.
+    LazyColumn(modifier.fillMaxSize()) {
         // What the run was, before what it did. A file whose configuration is unknown is a file
         // whose numbers cannot be compared to anything.
         if (csv.info.isNotEmpty()) {
-            Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(csv.label(), fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                    Text(
-                        listOfNotNull(
-                            csv.info["arch"]?.let { "arch $it" },
-                            csv.info["n_layer"]?.let { "$it layers" },
-                            csv.info["n_expert"]?.let { "$it experts" },
-                            csv.info["threads"]?.let { "$it threads" },
-                            csv.info["n_ctx"]?.let { "ctx $it" },
-                            if (csv.info["o_direct"] == "1") "O_DIRECT" else null,
-                            csv.info["dense_weights"]?.takeIf { csv.info["moe_stream"] == "1" }?.let { "dense=$it" },
-                            if (csv.info["force_cache"] == "1") "forced" else null,
-                        ).joinToString(" · "),
-                        fontSize = 11.sp,
-                    )
+            item {
+                Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(csv.label(), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            listOfNotNull(
+                                csv.info["arch"]?.let { "arch $it" },
+                                csv.info["n_layer"]?.let { "$it layers" },
+                                csv.info["n_expert"]?.let { "$it experts" },
+                                csv.info["threads"]?.let { "$it threads" },
+                                csv.info["n_ctx"]?.let { "ctx $it" },
+                                if (csv.info["o_direct"] == "1") "O_DIRECT" else null,
+                                csv.info["dense_weights"]?.takeIf { csv.info["moe_stream"] == "1" }?.let { "dense=$it" },
+                                if (csv.info["force_cache"] == "1") "forced" else null,
+                            ).joinToString(" · "),
+                            fontSize = 11.sp,
+                        )
+                    }
                 }
+                Spacer(Modifier.height(4.dp))
             }
-            Spacer(Modifier.height(4.dp))
         }
-        csv.summaries.forEach { s ->
+        items(csv.summaries) { s ->
             Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
                 Text(
                     s.removePrefix("# summary ").replace(" ", "   "),
@@ -230,18 +241,28 @@ private fun CsvView(file: File, modifier: Modifier) {
             }
             Spacer(Modifier.height(4.dp))
         }
-        Text(
-            "${csv.rows.size} tokens · ${csv.header.size} columns · scroll sideways for all of them",
-            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-        )
-        // One horizontal scroll shared by the header and every row, so the columns stay aligned.
-        Column(Modifier.horizontalScroll(hscroll)) {
-            Row(Modifier.padding(horizontal = 8.dp)) { csv.header.forEach { h -> Cell(h, bold = true) } }
-            HorizontalDivider()
-            LazyColumn(Modifier.fillMaxWidth()) {
-                items(csv.rows) { r -> Row(Modifier.padding(horizontal = 8.dp)) { r.forEach { v -> Cell(v) } } }
+        item {
+            Text(
+                "${csv.rows.size} tokens · ${csv.header.size} columns · scroll sideways for all of them",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+        // The column header pins to the top of the list as the rows scroll under it. Wrapped in an
+        // opaque Surface so the token rows do not show through it, and carrying the shared hscroll
+        // so it slides sideways in lockstep with the rows.
+        stickyHeader {
+            Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    Row(Modifier.horizontalScroll(hscroll).padding(horizontal = 8.dp)) {
+                        csv.header.forEach { h -> Cell(h, bold = true) }
+                    }
+                    HorizontalDivider()
+                }
             }
+        }
+        items(csv.rows) { r ->
+            Row(Modifier.horizontalScroll(hscroll).padding(horizontal = 8.dp)) { r.forEach { v -> Cell(v) } }
         }
     }
 }
