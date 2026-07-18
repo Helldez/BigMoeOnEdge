@@ -595,17 +595,24 @@ RunResult Session::generate(const GenerateRequest & req,
                     "); open the session with a larger n_ctx");
 
     // The text to surface: with chat on, parse the raw output so a reasoning model's internal
-    // thinking is hidden and only the answer is shown. Generation always uses the raw tokens.
-    auto shown_text = [&](const std::string & raw, bool partial) -> std::string {
-        if (!chat_on) return raw;
+    // thinking is separated from the answer. The answer is shown inline; the reasoning is handed to
+    // the UI as a distinct thinking block rather than dropped, so a Thinking-on run does not sit on a
+    // blank screen while the model reasons. Generation always uses the raw tokens.
+    struct ShownView {
+        std::string content;   // the answer, reasoning stripped
+        std::string reasoning; // the thinking span, empty unless the parser split one out
+    };
+    auto shown_view = [&](const std::string & raw, bool partial) -> ShownView {
+        if (!chat_on) return {raw, ""};
         // Forced-final (harmony no-think) output isn't wrapped in a <|start|>assistant turn, so the
         // structured parser has nothing to strip — the raw stream already IS the final answer.
-        if (forced_final) return raw;
+        if (forced_final) return {raw, ""};
         try {
-            return common_chat_parse(raw, partial, parse_params).content;
+            common_chat_msg msg = common_chat_parse(raw, partial, parse_params);
+            return {msg.content, msg.reasoning_content};
         } catch (const std::exception & e) {
             detail::warn_parse_failed_once(e.what());
-            return raw;
+            return {raw, ""};
         }
     };
 
@@ -779,7 +786,11 @@ RunResult Session::generate(const GenerateRequest & req,
         m.steps = req.n_predict;
         m.wall_ms = wall * 1000.0;
         m.piece = delta;
-        m.text = shown_text(gen, /*partial*/ true);
+        {
+            ShownView sv = shown_view(gen, /*partial*/ true);
+            m.text = std::move(sv.content);
+            m.reasoning = std::move(sv.reasoning);
+        }
         // Fault/CPU decomposition is independent of streaming — dense-weight faults show up in the
         // mmap baseline too — so record it for every token before the moe/no-moe split below.
         m.majflt = f1 - f0;
@@ -872,7 +883,11 @@ RunResult Session::generate(const GenerateRequest & req,
     }
     if (sink) sink->on_summary(s);
 
-    res.generated_text = shown_text(gen, /*partial*/ false);
+    {
+        ShownView sv = shown_view(gen, /*partial*/ false);
+        res.generated_text = std::move(sv.content);
+        res.reasoning_text = std::move(sv.reasoning);
+    }
 
     if (res.cancelled) {
         // Undo the whole turn (KV, fed tokens, and the pushed user message) so the conversation

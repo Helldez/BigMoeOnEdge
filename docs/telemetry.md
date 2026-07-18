@@ -12,7 +12,7 @@ BMOE_LOAD {"mb":<float>,"ms":<float>}
 BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
                "compute_ms":<float>,"mgmt_ms":<float>,"stall_ms":<float>,"read_mb":<float>,
                "cache_hit_pct":<float>,"majflt":<int>,"cpu_ms":<float>,"dense_resident_frac":<float>,
-               "text":"<string>"}
+               "reasoning":"<string>","text":"<string>"}
 ```
 
 - `BMOE_LOAD` appears only when experts were read this token; `mb` is the flash bytes read,
@@ -64,7 +64,12 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   `mincore`, throttled). Under `--dense-weights anon` it samples our own buffers (is zram holding
   them?); under mmap/warm the model's mmap (is the kernel dropping it?). A diagnostic read alongside
   `majflt` — nothing acts on it. `-1` when unmeasured.
-- `text` is the full generated text so far, JSON-escaped (for streaming into a UI).
+- `text` is the full generated **answer** so far, JSON-escaped (for streaming into a UI), with any
+  reasoning span stripped out.
+- `reasoning` is the thinking span so far, JSON-escaped, when a reasoning model's chat template
+  separated it from the answer. Empty with chat off, on a non-reasoning model, or when thinking was
+  disabled (`think=false`). It is display-only and kept apart from `text` so a UI can render it as a
+  distinct thinking block rather than inline in the answer.
 
 ## End-of-run lines
 
@@ -254,7 +259,7 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
             "stall_s_tok":<float>,"mgmt_s_tok":<float>,"majflt_tok":<float>,"cpu_s_tok":<float>,
-            "token_demand_mib":<float>,"text":"<string>"}
+            "token_demand_mib":<float>,"reasoning":"<string>","text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
 
@@ -266,7 +271,8 @@ context is. `prefill_tps` is the prompt prefill rate; `compute_s_tok`/`io_s_tok`
 AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not just the last token).
 `cache_resident_mib`/`cache_budget_mib` track the fixed cache, `read_mib` is the
 total flash streamed this generation, and `stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and
-cache-management cost. `BMOE_ERROR` with `fatal:false` is a rejected
+cache-management cost. `text` is the final answer and `reasoning` the final thinking span (empty
+unless the model reasoned), same split as the per-token lines. `BMOE_ERROR` with `fatal:false` is a rejected
 request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
 `fatal:true` means the process is ending.
 

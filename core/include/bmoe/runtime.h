@@ -25,6 +25,10 @@ struct RunResult {
     bool cancelled = false; // generation was interrupted by Session::cancel() (ok stays true)
     std::string error;
     std::string generated_text;
+    // The reasoning span, when a thinking model's chat template separated it from the answer.
+    // Empty otherwise (chat off, non-reasoning model, harmony no-think). Display-only; the answer
+    // in generated_text already has it stripped. See TokenMetrics::reasoning.
+    std::string reasoning_text;
     RunSummary summary;
     explicit operator bool() const { return ok; }
 };

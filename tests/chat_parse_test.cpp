@@ -137,16 +137,20 @@ int main() {
     expect_true("empty-arena ctor does not strip reasoning (the #49 bug)", !unloaded_stripped);
 
     // Partial parse (the streaming path): mid-reasoning, before "</think>", the answer is not yet
-    // available and no reasoning must leak into the shown content.
+    // available and no reasoning must leak into the shown content — but the reasoning span itself
+    // MUST be exposed so a UI can stream it into a thinking block instead of sitting blank while
+    // the model reasons (issue #70). That is what session.cpp's shown_view surfaces per token.
     bool partial_threw = false;
-    std::string partial_content;
+    common_chat_msg partial;
     try {
-        partial_content = common_chat_parse("I'm\nthink", /*is_partial=*/true, good).content;
+        partial = common_chat_parse("I'm\nthink", /*is_partial=*/true, good);
     } catch (const std::exception &) {
         partial_threw = true;
     }
     expect_true("partial parse mid-reasoning does not throw", !partial_threw);
-    expect_true("partial parse leaks no reasoning into content", partial_content.empty());
+    expect_true("partial parse leaks no reasoning into content", partial.content.empty());
+    expect_true("partial parse exposes the reasoning span for a live thinking block",
+                !partial.reasoning_content.empty());
 
     if (failures == 0) {
         std::printf("all chat-parse checks passed\n");

@@ -59,7 +59,12 @@ struct TokenMetrics {
     int turn = 0; // session turn this token belongs to (0 for a one-shot run)
 
     std::string piece; // text of just this token (delta, for inline streaming)
-    std::string text;  // full generated text so far (for UI streaming)
+    std::string text;  // full generated answer so far, reasoning stripped (for UI streaming)
+    // The reasoning span so far, when the model is thinking and the chat parser separated it from
+    // the answer. Empty with chat off, on a non-reasoning model, or on the harmony no-think path.
+    // Display-only, and kept apart from `text` on purpose: the UI shows it as a distinct thinking
+    // block rather than letting it leak into the answer. See docs/telemetry.md.
+    std::string reasoning;
 };
 
 struct RunSummary {
