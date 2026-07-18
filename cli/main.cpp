@@ -324,6 +324,13 @@ static void print_usage(const char * argv0) {
         "      --route-trace PATH  diagnostics: write the per-step per-layer MoE routing trace\n"
         "                          (which experts each layer routed, their weight, cache state).\n"
         "                          Needs --moe-stream; costs speed — not for benchmark runs\n"
+        "      --compute-trace PATH\n"
+        "                          diagnostics: isolate and time EVERY graph node (per-op detail,\n"
+        "                          major faults per node). Serializes the graph — proportions only\n"
+        "      --compute-trace-layers PATH\n"
+        "                          same trace at layer granularity: one barrier per layer, so\n"
+        "                          coalescing and the expert prefetch survive and the numbers stay\n"
+        "                          close to an untraced run. Rows aggregate per layer (op LAYER)\n"
         "      --n-expert-used N   override active MoE experts per token (top-k); lower = faster\n"
         "                          but changes the output (quality). 0 = model default\n"
         "\n"
@@ -407,7 +414,10 @@ int main(int argc, char ** argv) {
             route_trace_path = next("--route-trace");
         else if (a == "--compute-trace")
             compute_trace_path = next("--compute-trace");
-        else if (a == "--io-trace")
+        else if (a == "--compute-trace-layers") {
+            compute_trace_path = next("--compute-trace-layers");
+            cfg.compute_trace_layers = true;
+        } else if (a == "--io-trace")
             io_trace_path = next("--io-trace");
         else if (a == "--moe-stream")
             cfg.moe.enabled = true;

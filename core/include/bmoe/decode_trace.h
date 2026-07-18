@@ -20,6 +20,15 @@
 // Both are diagnostics, not telemetry, and both perturb what they measure — isolating nodes
 // forbids ggml the operator coalescing it would otherwise do, and the I/O rows take a lock on the
 // read path. A traced run is NOT a benchmark run: read the proportions, not the absolutes.
+//
+//   Layer granularity — the compute trace can instead isolate only the FIRST node of each layer
+//   (RunConfig::compute_trace_layers). ~n_layer barriers per token instead of ~3000 preserves
+//   operator coalescing and, crucially, the async expert prefetch: the io lanes keep streaming
+//   across a boundary, so the numbers stay close to an untraced run. Rows carry op "LAYER" and
+//   aggregate everything since the previous boundary: name "blk.<il>" is layer il's segment,
+//   "pre" is the embedding lookup before layer 0, and "post" (emitted when the batch closes) is
+//   the last layer's tail plus the final norm and LM head — per-op detail inside a segment is
+//   what this mode trades away.
 #pragma once
 
 #include <cstdint>

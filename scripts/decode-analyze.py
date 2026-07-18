@@ -35,11 +35,53 @@ def decode_only(rows):
     return d if d else rows
 
 
+def cmd_compute_layers(meta, rows):
+    """Layer-granularity trace (--compute-trace-layers): one row per layer segment.
+
+    Cheap enough that absolutes are meaningful, at the cost of per-op detail. "pre" is the
+    embedding lookup, "post" the last layer's tail plus the final norm and LM head.
+    """
+    steps = sorted({int(r["step"]) for r in rows})
+    n_steps = len(steps)
+    total = sum(int(r["wall_ns"]) for r in rows)
+    faults = sum(int(r["majflt"]) for r in rows)
+
+    print(f"model={meta.get('model','?')} arch={meta.get('arch','?')} "
+          f"n_layer={meta.get('n_layer','?')} threads={meta.get('n_threads','?')}")
+    print(f"decode steps={n_steps}  layer granularity  "
+          f"measured compute={fmt_ms(total/max(1,n_steps))} ms/token  majflt={faults/max(1,n_steps):.0f}/token")
+    print("\nNOTE: one barrier per layer - coalescing and the expert prefetch survive, so these\n"
+          "      numbers sit close to an untraced run. No per-op detail inside a segment.\n")
+
+    by_seg = defaultdict(lambda: [0, 0])  # ns, majflt
+    for r in rows:
+        e = by_seg[r["name"]]
+        e[0] += int(r["wall_ns"])
+        e[1] += int(r["majflt"])
+
+    def seg_key(name):
+        if name == "pre":
+            return (-1,)
+        if name == "post":
+            return (1 << 30,)
+        return (int(name.split(".")[1]),) if name.startswith("blk.") else (1 << 29,)
+
+    mx = max(v[0] for v in by_seg.values()) or 1
+    print(f"{'segment':<10}{'ms/token':>10}{'share':>8}  {'majflt/tok':>10}")
+    for name in sorted(by_seg, key=seg_key):
+        ns, mf = by_seg[name]
+        print(f"{name:<10}{fmt_ms(ns/max(1,n_steps))}{ns/total*100 if total else 0:7.1f}%  "
+              f"{mf/max(1,n_steps):10.1f}  {bar(ns/mx)}")
+
+
 def cmd_compute(args):
     meta, rows = read_trace(args.path)
     rows = decode_only(rows)
     if not rows:
         sys.exit("no rows")
+    if all(r["op"] == "LAYER" for r in rows):
+        cmd_compute_layers(meta, rows)
+        return
     steps = sorted({int(r["step"]) for r in rows})
     n_steps = len(steps)
     total = sum(int(r["wall_ns"]) for r in rows)

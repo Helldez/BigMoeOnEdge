@@ -166,8 +166,9 @@ static int node_layer(const char * name) {
     return std::atoi(dash + 1);
 }
 
-void RouterHook::set_compute_trace(bool on) {
+void RouterHook::set_compute_trace(bool on, bool per_layer) {
     ctrace_on_ = on;
+    ctrace_layers_ = per_layer;
     compute_rows_.clear();
 }
 
@@ -176,10 +177,40 @@ void RouterHook::begin_compute_batch(int step, int phase, int turn) {
     ctrace_phase_ = phase;
     ctrace_turn_ = turn;
     ctrace_seq_ = 0;
+    ctrace_ask_layer_ = -1;
+    ctrace_obs_layer_ = -1;
     // The first node of the graph is charged from here, so the mark must be taken as close to
     // llama_decode as the caller can manage — anything between them lands on node 0.
     ctrace_mark_ = std::chrono::steady_clock::now();
     ctrace_faults_ = pio::major_faults();
+}
+
+// Layer granularity: emit the closing row for the segment `interval_layer`, charged the wall
+// and faults since the previous boundary. Shared by the observe path and end_compute_batch.
+void RouterHook::ctrace_close_segment(int interval_layer, const char * tail_name) {
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t faults = pio::major_faults();
+    ComputeTraceRow r;
+    r.turn = ctrace_turn_;
+    r.phase = ctrace_phase_;
+    r.step = ctrace_step_;
+    r.seq = ctrace_seq_++;
+    r.layer = interval_layer;
+    r.op = "LAYER";
+    r.name = tail_name ? tail_name : (interval_layer < 0 ? "pre" : "blk." + std::to_string(interval_layer));
+    r.wall_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(now - ctrace_mark_).count();
+    r.majflt = faults - ctrace_faults_;
+    compute_rows_.push_back(std::move(r));
+    ctrace_mark_ = now;
+    ctrace_faults_ = faults;
+}
+
+void RouterHook::end_compute_batch() {
+    // Node granularity has no dangling interval: the last node was itself isolated and observed.
+    // The tail row absorbs whatever ran between the last boundary and this call — keep the call
+    // adjacent to llama_decode's return or the decode epilogue is billed to the LM head.
+    if (!ctrace_on_ || !ctrace_layers_) return;
+    ctrace_close_segment(-1, "post");
 }
 
 bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
@@ -188,21 +219,32 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // boundary as possible and the streamer's own work (load_layer, the residency query) lands
     // inside the routing node's interval where it belongs — that IS what routing costs here.
     if (ctrace_on_ && !ask) {
-        const auto now = std::chrono::steady_clock::now();
-        const uint64_t faults = pio::major_faults();
-        ComputeTraceRow r;
-        r.turn = ctrace_turn_;
-        r.phase = ctrace_phase_;
-        r.step = ctrace_step_;
-        r.seq = ctrace_seq_++;
-        r.layer = node_layer(t->name);
-        r.op = ggml_op_name(t->op);
-        r.name = t->name;
-        r.wall_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(now - ctrace_mark_).count();
-        r.majflt = faults - ctrace_faults_;
-        compute_rows_.push_back(std::move(r));
-        ctrace_mark_ = now;
-        ctrace_faults_ = faults;
+        if (ctrace_layers_) {
+            // Only isolated nodes reach this branch: layer boundaries, plus the routing nodes the
+            // streamer isolates anyway (a barrier that exists untraced too, so it is free to use).
+            // The interval since the previous boundary belongs to the segment we are LEAVING —
+            // attributing it to this node's layer would misfile nearly a whole layer, since a
+            // boundary node is the first node of the next one.
+            ctrace_close_segment(ctrace_obs_layer_, nullptr);
+            const int nl = node_layer(t->name);
+            if (nl >= 0) ctrace_obs_layer_ = nl; // layerless nodes (reshapes, views) don't move the cursor
+        } else {
+            const auto now = std::chrono::steady_clock::now();
+            const uint64_t faults = pio::major_faults();
+            ComputeTraceRow r;
+            r.turn = ctrace_turn_;
+            r.phase = ctrace_phase_;
+            r.step = ctrace_step_;
+            r.seq = ctrace_seq_++;
+            r.layer = node_layer(t->name);
+            r.op = ggml_op_name(t->op);
+            r.name = t->name;
+            r.wall_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(now - ctrace_mark_).count();
+            r.majflt = faults - ctrace_faults_;
+            compute_rows_.push_back(std::move(r));
+            ctrace_mark_ = now;
+            ctrace_faults_ = faults;
+        }
     }
 
     // ── capture: harvest expert weight tensors from every node's sources ──
@@ -238,8 +280,26 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // Only a traced run asks for the weight nodes: each extra ask is another barrier.
     int wl = -1;
     const bool is_weights = trace_on_ && match_weights(t->name, wl);
-    // The compute trace wants every node isolated; the streamer only wants the routing ones.
-    if (ask) return ctrace_on_ || is_topk || is_weights;
+    // The compute trace wants every node isolated — or, at layer granularity, only the first
+    // node of each layer: the cursor advances on the ask stream (every node passes through
+    // here), so one isolation request per layer transition. Layerless names (embeddings, the
+    // head, mid-layer reshapes) never move the cursor, so they cannot fake a boundary. The
+    // streamer only wants the routing ones.
+    if (ask) {
+        bool ctrace_iso = false;
+        if (ctrace_on_) {
+            if (!ctrace_layers_) {
+                ctrace_iso = true;
+            } else {
+                const int nl = node_layer(t->name);
+                if (nl >= 0 && nl != ctrace_ask_layer_) {
+                    ctrace_iso = true;
+                    ctrace_ask_layer_ = nl;
+                }
+            }
+        }
+        return ctrace_iso || is_topk || is_weights;
+    }
 
     // Weights follow their layer's topk, so the pending record is already open; keep the last
     // one offered (match_weights explains why) and let the flush read it.

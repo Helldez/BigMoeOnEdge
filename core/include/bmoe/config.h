@@ -127,6 +127,13 @@ struct RunConfig {
     // expert_used_count metadata key; must stay in [1, n_expert]. Independent of streaming.
     int n_expert_used = 0;
 
+    // Compute-trace granularity. false (default): a barrier per graph node — exact per-op
+    // attribution, but it serializes the graph against the expert stream and distorts the run.
+    // true: a barrier only at layer boundaries, cheap enough that the traced numbers stay close
+    // to an untraced run. Only meaningful when a compute-trace sink is attached; see
+    // bmoe/decode_trace.h for what the layer-mode rows contain.
+    bool compute_trace_layers = false;
+
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
 };

@@ -311,6 +311,23 @@ suffix (`-1` = belongs to no layer: embeddings, the output head, masks). `op` an
 which node is attention vs dense FFN vs expert matmul is naming policy that varies by
 architecture, so the engine reports what the graph said and the analysis script classifies.
 
+### `--compute-trace-layers` — one row per layer segment
+
+The per-node trace's barrier count is also its distortion: ~3000 barriers per token serialize the
+graph against the expert stream, so on a model that streams heavily the trace mostly measures its
+own serialization. Layer granularity isolates only the **first node of each layer** — ~`n_layer`
+barriers per token — which preserves operator coalescing and, crucially, the async expert
+prefetch: the io lanes keep reading across a boundary, so the traced numbers sit close to an
+untraced run and can be compared across models. The trade is per-op detail: a row aggregates
+everything since the previous boundary.
+
+Rows share the per-node schema with `op` fixed to `LAYER`. `name` says which segment: `blk.<il>`
+is layer il's, `pre` is the embedding lookup before layer 0, and `post` — emitted when the batch
+closes — is the last layer's tail plus the final norm and LM head. The routing nodes the streamer
+isolates anyway also close a segment (a barrier that exists untraced too, so it costs nothing
+extra); those rows carry the same `blk.<il>` name and simply sum into their layer.
+`scripts/decode-analyze.py compute` detects the granularity and prints the per-segment table.
+
 ### `--io-trace` — one row per flash read
 
 Needs `--moe-stream` (no engine-issued reads without it). Records every `pread` the streamer

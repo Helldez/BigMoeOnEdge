@@ -437,7 +437,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         st.overlap = cfg.moe.enabled && cfg.moe.overlap;
         if (compute_trace) {
             im.compute_trace = compute_trace;
-            im.hook->set_compute_trace(true);
+            im.hook->set_compute_trace(true, cfg.compute_trace_layers);
             compute_trace->on_static(st);
         }
         if (im.io_trace) im.io_trace->on_static(st);
@@ -667,6 +667,10 @@ RunResult Session::generate(const GenerateRequest & req,
         trace_step = base_pos + n_tokens - 1;
     };
     auto trace_flush = [&]() {
+        // Close the compute trace's dangling interval FIRST: at layer granularity the "post" row
+        // is charged the wall since the last boundary, and everything trace_flush does before the
+        // close would be billed to the LM head.
+        if (im.compute_trace) im.hook->end_compute_batch();
         if (im.route_trace) {
             im.hook->end_trace_batch();
             std::vector<RouteTraceRow> & rows = im.hook->trace_rows();
