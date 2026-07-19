@@ -141,7 +141,7 @@ struct RunInfo {
     bool o_direct = false;
     bool overlap = false;
     int prefetch_layers = 0;
-    std::string dense_weights = "warm"; // dense (non-expert) policy: "mmap" | "warm" | "anon"
+    std::string dense_weights = "anon"; // dense (non-expert) policy: "mmap" | "warm" | "anon"
 };
 
 // Optional per-token sink (e.g. CSV for benchmarks). The engine calls on_run_info once before the

@@ -432,7 +432,7 @@ private fun configSummary(s: AppSettings): String {
 
 /**
  * "Get a model" card: one-tap downloads of the models this engine is measured on ([ModelCatalog]),
- * plus the escape hatches — any gguf URL (DownloadManager) or a file the user already has (SAF
+ * plus the escape hatches — any gguf URL (WorkManager) or a file the user already has (SAF
  * picker). Everything lands in the app models dir with no permission; [onModelReady] triggers a
  * re-scan so the new model shows up in the picker above.
  *
