@@ -18,11 +18,12 @@ enum class DenseWeights(val flag: String, val label: String, val blurb: String) 
  * flags; the Settings screen edits them and [toArgv] builds the command line.
  */
 data class AppSettings(
-    // Conservative, device-agnostic defaults: an auto-sized expert cache capped at 3000 MiB,
-    // streaming with overlap, 4 compute + 4 read lanes, model's own top-k. No device- or
+    // Predictable, device-agnostic defaults: a fixed 2000 MiB expert cache (reproducible across
+    // runs, unlike Auto which sizes to whatever RAM happens to be free — issue #71), streaming
+    // with overlap, 4 compute + 4 read lanes, model's own top-k. No device- or
     // benchmark-specific tuning — the knobs below let the user tune for their own hardware.
     val mmap: Boolean = false,          // baseline: no streaming — llama.cpp mmap loads the whole model
-    val cacheMb: Int = CACHE_AUTO,      // LRU expert cache budget; Auto / 0 / 500..6000 (see CACHE_CHOICES)
+    val cacheMb: Int = 2000,            // LRU expert cache budget; Auto / 0 / 500..6000 (see CACHE_CHOICES)
     val cacheCeilMb: Int = 3000,        // with cacheMb=Auto: upper bound on the auto budget (0 = no cap)
     val ioThreads: Int = 4,             // parallel expert-read lanes
     val threads: Int = 4,               // compute threads (-t)
@@ -122,8 +123,9 @@ data class AppSettings(
 
         // Tokens to generate per turn, when nothing says otherwise. The service falls back to this
         // for a request that arrives without one, so the default lives here rather than in two
-        // places free to disagree.
-        const val DEFAULT_N_PREDICT = 48
+        // places free to disagree. 128 matches the CLI default (issue #71): shorter budgets
+        // truncate most answers mid-sentence, which reads as broken rather than slow.
+        const val DEFAULT_N_PREDICT = 128
 
         /**
          * A fresh CSV path for a session about to open, under the app's own external files dir —

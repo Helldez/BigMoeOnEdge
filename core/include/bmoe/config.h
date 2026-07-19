@@ -107,7 +107,7 @@ struct MoeStreamConfig {
 struct RunConfig {
     std::string model_path;
     std::string prompt = "The capital of Japan is";
-    int n_predict = 32;
+    int n_predict = 128;
     int n_threads = 4;
     int n_ctx = 2048;
     bool chatml = false;   // wrap the prompt in the model family's chat turn (arch-aware)
