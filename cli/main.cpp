@@ -185,7 +185,7 @@ struct SessionCmd {
     enum Kind { kGenerate, kClose } kind;
     std::string prompt;
     int id = 0;
-    int n_predict = 32;
+    int n_predict = 128;
     bool think = true;
     bool clear_kv = true;
 };
@@ -313,7 +313,7 @@ static void print_usage(const char * argv0) {
         "\n"
         "  -m, --model PATH        gguf model (required)\n"
         "  -p, --prompt STR        prompt text\n"
-        "  -n, --n-predict N       tokens to generate (default 32)\n"
+        "  -n, --n-predict N       tokens to generate (default 128)\n"
         "  -t, --threads N         compute threads (default 4)\n"
         "  -c, --ctx-size N        context size (default 2048)\n"
         "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
