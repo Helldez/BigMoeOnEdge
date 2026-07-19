@@ -14,6 +14,12 @@ Semantic Versioning.
   governor. The dense anon set is stated to sit outside the cache budget.
 - This changelog is versioned again: every release from 0.1.1 to 0.11.0 now has its own dated
   section instead of accumulating under `[Unreleased]`.
+- Stale references corrected in the Android example: the catalog's `DOWNLOADING` status and the
+  add-model section still named the system DownloadManager, retired when in-app downloads moved to
+  WorkManager, and `MANUAL_ONLY` pointed at an `Entry.notes` field that is named `install`.
+- `RunInfo::dense_weights` no longer advertises a `"warm"` default the engine stopped defaulting to;
+  it now reads `"anon"`, matching `RunConfig`. The member is always overwritten in `Session::open()`,
+  so no emitted telemetry changes.
 
 ## [0.11.0] - 2026-07-19
 

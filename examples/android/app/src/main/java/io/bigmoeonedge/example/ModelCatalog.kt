@@ -34,13 +34,13 @@ object ModelCatalog {
         /** Already on the device — nothing to do. */
         ON_DEVICE,
 
-        /** A DownloadManager job for this file is in flight. */
+        /** A WorkManager download job for this file is in flight. */
         DOWNLOADING,
 
         /** Downloadable, not present yet. */
         AVAILABLE,
 
-        /** Listed for reference; [Entry.notes] carries the manual install recipe. */
+        /** Listed for reference; [Entry.install] carries the manual install recipe. */
         MANUAL_ONLY,
     }
 
