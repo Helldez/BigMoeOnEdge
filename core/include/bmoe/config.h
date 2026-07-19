@@ -47,7 +47,7 @@ struct MoeStreamConfig {
     // (available RAM − cache_floor_mb), clamped to [cache_min_mb, total expert bytes], and then held
     // for the whole run. One shot, not a control loop — it spares the caller a hand-tuned number on a
     // device whose free RAM it cannot know in advance; it does not chase memory pressure afterwards.
-    // Mutually exclusive with an explicit cache_mb > 0. See docs/adaptive-cache.md.
+    // Mutually exclusive with an explicit cache_mb > 0. See docs/cache-sizing.md.
     bool cache_auto = false;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing
     int cache_ceil_mb = 0;     // upper bound on the auto budget in MiB (0 = cap only at the full

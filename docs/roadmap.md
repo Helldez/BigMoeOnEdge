@@ -45,7 +45,7 @@ binds, above.
 
 The cache is capacity-bound, not policy-bound (reuse is broad, not skewed), so the simplest win is
 more budget — which `--cache-mb auto` now takes automatically, capped by `--cache-ceil-mb`
-([adaptive-cache.md](adaptive-cache.md)). Admission policies and a persistent cross-run cache
+([cache-sizing.md](cache-sizing.md)). Admission policies and a persistent cross-run cache
 remain unexplored.
 
 ## Not on this list

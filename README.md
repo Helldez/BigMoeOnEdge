@@ -165,7 +165,7 @@ worth a further ~16% by routing to six experts instead of eight. The lossless be
 | streamed, k=6, cache 4000 MiB, 4 lanes | 5.0 | 165 MiB | 77% |
 
 Cache size is the dominant lever here, and the auto-sized cache with a ceiling
-([docs/adaptive-cache.md](docs/adaptive-cache.md)) is the winning recipe. The mmap baseline
+([docs/cache-sizing.md](docs/cache-sizing.md)) is the winning recipe. The mmap baseline
 averages ~2 tok/s but swings wildly token to token and evicts other apps. Turbo top-k (k=6) trades
 a little quality for a further +24% over the model's own width.
 

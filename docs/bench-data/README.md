@@ -14,6 +14,6 @@ maintained docs for current guidance; read these to check where a number came fr
 | `2026-07-12-pr23/` | temporal prefetch + speculative gating | **Speculative gating no longer exists** — it was removed to restore the modular seam. The `--spec-gate` rows and the advice about it describe a flag the CLI no longer accepts. |
 | `2026-07-13/` | adaptive cache budget | Source of the capped-auto recipe numbers. |
 | `2026-07-14/` | per-token warm-up | Feeds `warmup-analysis.md`. |
-| `2026-07-14-warmup/` | dense warm-up A/B | Feeds `adaptive-cache.md` and `warmup-analysis.md`. |
+| `2026-07-14-warmup/` | dense warm-up A/B | Feeds `cache-sizing.md` and `warmup-analysis.md`. |
 | `2026-07-15-route-trace/` | first `--route-trace` capture (Qwen / Gemma / gpt-oss) | Routing data, not throughput: every run had the trace **on**, so its `tok/s` are not comparable with `benchmarks.md` and must not feed those tables. |
 | `2026-07-17/` | all-O_DIRECT dense weights (`--dense-weights anon`) | Source of the gpt-oss steady-state numbers. **Several cells are contaminated by run order** (a fixed cooldown does not reach baseline) — `NOTES.md` marks exactly which, and which claims survive. Do not read a top-k or lane claim out of it. |

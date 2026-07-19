@@ -50,7 +50,7 @@ on Gemma it lowered the budget and the hit rate, costing throughput:
 
 The warm-up pre-faults the same pages *without* touching the budget, so it keeps the full hit rate
 everywhere. That made the budget reservation redundant, and it was dropped in favour of the warm-up
-alone. See [../../adaptive-cache.md](../../adaptive-cache.md).
+alone. See [../../cache-sizing.md](../../cache-sizing.md).
 
 ## Note on thermal
 

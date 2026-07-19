@@ -1,4 +1,4 @@
-# Adaptive cache sizing
+# Expert cache sizing
 
 The expert cache budget (`--cache-mb`) is the dominant throughput lever, but the right value is
 device- and model-specific: too small and the hit rate collapses; too large and the pinned cache

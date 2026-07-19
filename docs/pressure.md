@@ -178,4 +178,4 @@ governor is kept in git history (branch line through `feat/pressure-cache`) if t
 needs revisiting.
 
 See also: [android-memory.md](android-memory.md) for what reclaims the engine's memory and which
-levers exist, [adaptive-cache.md](adaptive-cache.md) for `--cache-mb auto`.
+levers exist, [cache-sizing.md](cache-sizing.md) for `--cache-mb auto`.
