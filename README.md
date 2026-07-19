@@ -6,7 +6,7 @@ A Mixture-of-Experts (MoE) model is made of many small "experts", and each gener
 uses a few of them. BigMoeOnEdge takes that literally: it keeps the small always-needed parts of
 the model at hand and reads just the experts each token asks for, directly from flash storage, at
 the moment they're needed. The rest of the model stays on disk. That's what makes large open MoE
-models (Qwen3, Gemma, gpt-oss and most of their relatives) runnable on edge devices whose RAM they
+models (Qwen3, Qwen3.6, Gemma, gpt-oss and most of their relatives) runnable on edge devices whose RAM they
 exceed several times over. The focus today is phones, where memory is tightest.
 
 The flagship case: **gpt-oss-120b**, a ~60 GB model (Q4_K_M), on a phone with 12 GB of RAM. That's
@@ -37,9 +37,9 @@ Highlights:
 - **gpt-oss-120b (Q4_K_M), ~5× device RAM**: **1.3 tok/s** at the model's own routing width against
   0.09 tok/s for the same file loaded the ordinary way (mmap), a **14×** difference at matched settings.
   **2.2 tok/s** with the one lossy knob on (fewer experts).
-- **Lossless on models past RAM**: Qwen3-30B-A3B (Q4_K_M, 18.5 GB) up to **5.2 tok/s** and
-  Gemma-4-26B-A4B (Q4_K_M, 17.0 GB) up to **4.1 tok/s** on the same phone, output identical to the
-  resident model.
+- **Lossless on models past RAM**: Qwen3-30B-A3B (Q4_K_M, 18.5 GB) up to **5.2 tok/s**,
+  Qwen3.6-35B-A3B (Q4_K_M, 22.3 GB) up to **5.0 tok/s** and Gemma-4-26B-A4B (Q4_K_M, 17.0 GB) up to
+  **4.1 tok/s** on the same phone, output identical to the resident model.
 - **The problem only phones have**: several × past RAM, Android's reclaim keeps taking back the
   always-used weights mid-generation. `--dense-weights anon` puts them where reclaim can't cheaply
   take them, and it's worth **3.2×** on gpt-oss-120b on its own. A desktop or Apple-silicon streamer
@@ -103,7 +103,8 @@ phone.
 
 - **Configuration**: the streaming settings used. *mmap baseline* is the same file loaded the
   ordinary way (no streaming), which is what the streamed rows are compared against. *k* is the
-  number of experts used per token where it differs from the model's default.
+  number of experts routed per token: each table shows the model's default width and, where
+  measured, a reduced *k* (the one lossy setting).
 - **tok/s**: generation speed; higher is better.
 - **Flash/token**: data read from storage per generated token; lower means the cache is working.
 - **Cache hit**: share of expert reads served from RAM instead of flash.
@@ -126,20 +127,6 @@ weights mid-generation, and moving them out of the page cache was worth **3.2×*
 that `--no-think` disables the model's reasoning and costs quality at k=4; the full matrix and
 quality notes are in [docs/benchmarks-gpt-oss.md](docs/benchmarks-gpt-oss.md).
 
-### Qwen3-30B-A3B (Q4_K_M) — 18.5 GB
-
-| Configuration | tok/s | Flash/token | Cache hit |
-|---|---:|---:|---:|
-| mmap baseline (no streaming) | 2.0 (unstable) | — | — |
-| streamed, no cache, 4 lanes | 1.7 | 1051 MiB | — |
-| streamed, cache 2000 MiB, 4 lanes | 2.4 | 480 MiB | 53% |
-| streamed, cache 4000 MiB, 4 lanes | 4.0 | 225 MiB | 76% |
-| **streamed, auto cache (capped 4000 MiB), 4 lanes, overlap** | **5.2** | 225 MiB | 76% |
-
-Cache size is the dominant lever here, and the auto-sized cache with a ceiling
-([docs/adaptive-cache.md](docs/adaptive-cache.md)) is the winning recipe. The mmap baseline
-averages ~2 tok/s but swings wildly token to token and evicts other apps.
-
 ### Qwen3.6-35B-A3B (Q4_K_M) — 22.3 GB
 
 A hybrid attention/SSM MoE (256 experts, top-8, 41 blocks): most layers are linear attention
@@ -150,13 +137,13 @@ dense weights kept out of the page cache (`--dense-weights anon`) runs it stably
 | Configuration | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|
 | mmap baseline (no streaming) | 0.1 (unstable) | — | — |
-| streamed, cache 2000 MiB, 4 lanes, overlap | 4.3 | 206 MiB | 56% |
-| streamed, cache 3000 MiB, 4 lanes, overlap | 5.0 | 144 MiB | 65% |
-| streamed, cache 2000 MiB, *k=6*, 4 lanes, overlap | 5.4 | 137 MiB | 60% |
-| **streamed, cache 3000 MiB, *k=6*, 4 lanes, overlap** | **5.8** | 91 MiB | 68% |
+| streamed, default k=8, cache 2000 MiB, 4 lanes, overlap | 4.3 | 206 MiB | 56% |
+| streamed, default k=8, cache 3000 MiB, 4 lanes, overlap | 5.0 | 144 MiB | 65% |
+| streamed, k=6, cache 2000 MiB, 4 lanes, overlap | 5.4 | 137 MiB | 60% |
+| **streamed, k=6, cache 3000 MiB, 4 lanes, overlap** | **5.8** | 91 MiB | 68% |
 
 All streamed rows use `--overlap --dense-weights anon`. A larger cache is the main lossless lever
-(cache 3000 is worth +16% over 2000); the *k=6* rows are the one lossy option (turbo top-k, below),
+(cache 3000 is worth +16% over 2000); the k=6 rows are the one lossy option (turbo top-k, below),
 worth a further ~16% by routing to six experts instead of eight. The lossless best here is cache
 3000 at the model's own width, **5.0 tok/s** — output byte-identical to the resident model.
 
@@ -164,31 +151,44 @@ worth a further ~16% by routing to six experts instead of eight. The lossless be
 > 256-token best-of protocol — treat them as indicative, and not strictly comparable to the other
 > models until re-measured under the full protocol.
 
+### Qwen3-30B-A3B (Q4_K_M) — 18.5 GB
+
+| Configuration | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|
+| mmap baseline (no streaming) | 2.0 (unstable) | — | — |
+| streamed, default k=8, no cache, 4 lanes | 1.7 | 1051 MiB | — |
+| streamed, default k=8, cache 2000 MiB, 4 lanes | 2.4 | 480 MiB | 53% |
+| streamed, default k=8, cache 4000 MiB, 4 lanes | 4.0 | 225 MiB | 76% |
+| **streamed, default k=8, auto cache (capped 4000 MiB), 4 lanes, overlap** | **5.2** | 225 MiB | 76% |
+| streamed, k=6, cache 4000 MiB, 4 lanes | 5.0 | 165 MiB | 77% |
+
+Cache size is the dominant lever here, and the auto-sized cache with a ceiling
+([docs/adaptive-cache.md](docs/adaptive-cache.md)) is the winning recipe. The mmap baseline
+averages ~2 tok/s but swings wildly token to token and evicts other apps. Turbo top-k (k=6) trades
+a little quality for a further +24% over the model's own width.
+
 ### Gemma-4-26B-A4B (Q4_K_M) — 17.0 GB
 
 | Configuration | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|
 | mmap baseline (no streaming) | 0.4 | — | — |
-| streamed, no cache, 4 lanes | 1.6 | 904 MiB | — |
-| streamed, cache 2000 MiB, 4 lanes | 2.2 | 366 MiB | 58% |
-| streamed, cache 2000 MiB, 4 lanes, overlap | 2.8 | 365 MiB | 58% |
-| **streamed, cache 4000 MiB, 4 lanes** | **4.1** | 144 MiB | 82% |
+| streamed, default k=8, no cache, 4 lanes | 1.6 | 904 MiB | — |
+| streamed, default k=8, cache 2000 MiB, 4 lanes | 2.2 | 366 MiB | 58% |
+| streamed, default k=8, cache 2000 MiB, 4 lanes, overlap | 2.8 | 365 MiB | 58% |
+| streamed, default k=8, cache 4000 MiB, 4 lanes | 4.1 | 144 MiB | 82% |
+| **streamed, k=6, cache 4000 MiB, 4 lanes** | **5.0** | 98 MiB | 83% |
 
 Gemma keeps more of itself permanently resident, so the 4000 MiB cache fits only when enough RAM is
-free at launch; cache 2000 + overlap is the dependable everyday setting on this device.
+free at launch; cache 2000 + overlap is the dependable everyday setting on this device. Turbo top-k
+(k=6) is the fastest here (+22%) but changes the output.
 
 ### Turbo top-k — the one lossy option
 
-Every model ships a routing width (how many experts each token uses; Qwen3 uses 8). Forcing it
-lower cuts both compute and flash reads. A/B against the model's own width, same session,
-back-to-back:
-
-| Configuration | tok/s | Flash/token | Cache hit |
-|---|---:|---:|---:|
-| Qwen3-30B, default (8 experts) | 4.0 | 225 MiB | 76% |
-| **Qwen3-30B, 6 experts** | **5.0** (+24%) | 165 MiB | 77% |
-| Gemma-4-26B, default | 4.1 | 144 MiB | 82% |
-| **Gemma-4-26B, 6 experts** | **5.0** (+22%) | 98 MiB | 83% |
+Every model here ships a routing width — the number of experts each token uses (8 for the Qwen and
+Gemma models, 4 for gpt-oss). Forcing it lower with `--n-expert-used` cuts both compute and flash
+reads; the `k=6` rows folded into the tables above are that knob, measured A/B against each model's
+own width. It is worth **+22–24%** on the Qwen and Gemma models, and takes gpt-oss from 1.3 to
+**2.2 tok/s** (k=2).
 
 Everything else in this README changes *how* weights are fetched, never the math. This knob changes
 *what* the model computes: output differs from the full model and quality can degrade. Judge it on
