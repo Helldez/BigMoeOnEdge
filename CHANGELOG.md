@@ -6,6 +6,8 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-07-19
+
 ### Changed
 - **Internal cleanup, no behaviour change.** The per-token metrics block moved out of the middle of
   `Session::generate()` into a `GenTally` that owns the streaming cursors and run totals (the
