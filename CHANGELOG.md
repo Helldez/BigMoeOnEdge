@@ -22,6 +22,13 @@ Semantic Versioning.
   after that install cleanly. The distributed artifact is now `app-dev-release.apk`.
 
 ### Added
+- **Qwen3.6-35B-A3B support** (arch `qwen35moe`). A hybrid attention/SSM MoE (256 experts, top-8,
+  41 blocks) whose routed experts stream through the existing `qwen3moe` path unchanged — no engine
+  change, one registry row. Added to the in-app one-tap download catalog. At ~2× device RAM it needs
+  streaming: mmap baseline 0.1 tok/s (fault storm) vs **5.0 tok/s** streamed at the model's own
+  width (cache 3000 MiB, byte-identical output), or **5.8 tok/s** with turbo top-k (`k=6`, lossy).
+  Measured on the OnePlus 15R (indicative 96-token run, not yet the full 256-token protocol); see
+  the README benchmarks section.
 - **Layer-granularity compute trace** (`--compute-trace-layers PATH`). The per-node trace
   (`--compute-trace`) pays ~3000 barriers per token, which serializes the graph against the expert
   stream — on a model that streams heavily it mostly measures its own serialization (Qwen3-30B:
