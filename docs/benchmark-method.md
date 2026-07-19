@@ -16,13 +16,20 @@ the device-pressure axis — peak RSS, `MemAvailable` floor, CPU/battery tempera
 table from the CSVs + `.metrics`). Use a fixed prompt and a fixed `-n` (≥256 tokens, so the
 expert cache reaches steady state) across every config.
 
+Push the model to a real filesystem. The app's external files dir under
+`/storage/emulated` is FUSE-backed, where an `O_DIRECT` open succeeds but reads can return
+wrong data — the engine detects this and falls back to buffered I/O, so a model staged there
+does not measure the O_DIRECT path the rest of this method assumes. `/sdcard/Download` and
+`/data/local/tmp` are real filesystems; check the `o_direct=1` field in the run's telemetry
+before trusting a number.
+
 ```bash
 # push the model
-adb push Qwen3-30B-A3B-Q4_K_M.gguf /sdcard/Android/data/io.bigmoeonedge.example/files/
+adb push Qwen3-30B-A3B-Q4_K_M.gguf /sdcard/Download/
 
 # or, running the CLI directly over adb shell (binary staged by build-android.ps1):
 bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf --moe-stream \
-  --cache-mb 4000 --io-threads 4 -t 4 -n 48 --progress \
+  --cache-mb 4000 --io-threads 4 -t 4 -n 256 --progress \
   --csv /sdcard/.../sweep-4000.csv -p "Explain mixture-of-experts routing."
 ```
 

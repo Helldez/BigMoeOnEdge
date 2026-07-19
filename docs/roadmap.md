@@ -23,15 +23,19 @@ at 5.2× RAM), and the cold-cache warm-up on every model.
 
 ## Warm-up
 
-Dense weights are warmed into the page cache at load, which removes the >RAM fault storm. The
-expert cache still fills from cold, so the first tokens pay for it and no warm-up flag can change
-that ([warmup-analysis.md](warmup-analysis.md)). Worth exploring: preloading experts by routing
-frequency rather than by arrival, and a cross-run persistent cache so a second session starts warm.
+Dense weights default to `--dense-weights anon` — read once through O_DIRECT into anonymous
+memory, which is what actually removes the >RAM fault storm; the page-cache `warm` policy holds
+only near RAM, since past it the kernel reclaims the warmed pages back out from under the run
+([warmup-analysis.md](warmup-analysis.md)). The expert cache still fills from cold, so the first
+tokens pay for it and no warm-up flag can change that. Worth exploring: preloading experts by
+routing frequency rather than by arrival, and a cross-run persistent cache so a second session
+starts warm.
 
 ## More architectures
 
-`qwen3moe`, `gemma4` (merged `ffn_gate_up_exps` plus shared experts) and OpenAI `gpt-oss` (MXFP4,
-purely routed) are supported; other `build_moe_ffn` models are one recipe row each. The remaining
+`qwen3moe`, `qwen2moe`, `qwen35moe` (the hybrid attention/SSM family, e.g. Qwen3.6-35B-A3B),
+`gemma4` (merged `ffn_gate_up_exps` plus shared experts) and OpenAI `gpt-oss` (MXFP4, purely
+routed) are supported; other `build_moe_ffn` models are one recipe row each. The remaining
 frontier is architectures whose routing node is not the shared `ffn_moe_topk` — custom gating,
 which the capture/stream hook would need to learn. See [adding-a-model.md](adding-a-model.md).
 

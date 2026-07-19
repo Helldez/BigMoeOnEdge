@@ -72,8 +72,8 @@ the signal the kernel uses to decide whether your memory deserves to stay.
 
 | model | file | cache | hit | tok/s | what the kernel concludes |
 |---|---|---|---|---|---|
-| Qwen3-30B-A3B | 17.3 GB | 4000 MiB | **77.1%** | 4.57 | touched twice → active → protected |
-| Gemma-4-26B-A4B | 15.9 GB | 4000 MiB | **82.9%** | 4.76 | same |
+| Qwen3-30B-A3B | 18.5 GB | 4000 MiB | **77.1%** | 4.57 | touched twice → active → protected |
+| Gemma-4-26B-A4B | 17.0 GB | 4000 MiB | **82.9%** | 4.76 | same |
 | gpt-oss-120b | 58.5 GB | 3000 MiB | **13.4%** | 1.15 | touched once → inactive → swapped |
 
 And the hit rate is geometry, not tuning:

@@ -209,7 +209,7 @@ data above).
   set at load, collapsing Regime 2's first-token stall ~20× (gpt-oss-120b: ~18 s → ~1 s). The points
   below describe the *un-warmed* dynamics the fix addresses.
 - **Streaming bounds memory correctly regardless of model size.** Experts always stream via
-  O_DIRECT into the fixed cache; the 62 GB model never loads into RAM. What is *not* bounded
+  O_DIRECT into the fixed cache; the 58.5 GB model never loads into RAM. What is *not* bounded
   by streaming is the mmap-resident, non-expert working set — and that is what thrashes once
   the model-to-RAM ratio leaves no free RAM to hold it.
 - **Warm-up cost scales with the model/RAM ratio.** Near RAM it is a gentle, I/O-bound climb
