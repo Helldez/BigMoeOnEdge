@@ -48,6 +48,13 @@ prefix diverges at the last answer and up to one answer's worth of tokens is re-
 with thinking **off** (the app default) the re-fed suffix is just the new user turn plus a few
 wrapper tokens.
 
+**Reasoning is returned, not discarded.** On a thinking model the Session parses the reasoning span
+out of the raw stream and carries it in its own field (`TokenMetrics`/`RunResult::reasoning`, and
+`reasoning` on `BMOE_PROGRESS`/`BMOE_DONE`) rather than dropping it. The answer text stays free of
+it either way, so the byte-identity gates are unaffected; a caller that wants to show the thinking
+reads the separate field. The parser wiring lives in `core/src/engine/chat_parse.cpp`
+(see [seam.md](seam.md)).
+
 ## Cancel
 
 `Session::cancel()` is thread-safe and interrupts an in-flight `generate()` at the next decode

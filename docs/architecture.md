@@ -20,9 +20,13 @@ core/
     runtime.h       run() entry point
   src/
     io/         platform_io — O_DIRECT reads + reserve/commit/evict VM, cross-platform
+                file_reader — pooled positioned reader, per-consumer O_DIRECT
     moe/        gguf_offsets, arch_registry, expert_stream_source, router_hook
-    engine/     runtime — composition + the greedy generation loop
-    metrics/    csv_metrics_sink
+                dense_weights — non-expert weight policy + the residency sensor
+    engine/     session — composition + the generation loop (open/generate/close)
+                runtime — the one-shot run() wrapper over a Session
+                chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
+    metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates

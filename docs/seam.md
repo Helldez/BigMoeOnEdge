@@ -80,16 +80,20 @@ point is public, not a divergence we intend to maintain.
 
 ## The chat glue: llama.cpp `common` (not the streaming seam)
 
-Separate from the two streaming hooks above, `runtime.cpp` links llama.cpp's `common`
+Separate from the two streaming hooks above, `session.cpp` links llama.cpp's `common`
 library for one thing: rendering the model's own chat template and parsing reasoning output.
 `common_chat_templates_init` / `common_chat_templates_apply` run the real Jinja template the
 gguf ships (so Gemma's channel format, Qwen ChatML, etc. all format correctly, driven by the
-model rather than hardcoded), and `common_chat_parse` (reasoning_format AUTO) extracts a
-reasoning model's thinking so only the final answer is shown.
+model rather than hardcoded), and `common_chat_parse` extracts a reasoning model's thinking so
+it can be reported apart from the answer. The parser-params wiring lives in its own translation
+unit, `chat_parse.cpp` — the PEG parser arena has to be loaded explicitly or `common_chat_parse`
+throws on the first token, which is how issue #49 stayed invisible; keeping it separate makes
+that seam unit-testable without a model.
 
 Unlike the public-C-API streaming seam, `common` is **not a stable API** — it can change
 between upstream versions. So a submodule bump may require updating this chat glue in
-`runtime.cpp`; the build and gates catch a break at compile time rather than at runtime. This
+`session.cpp` / `chat_parse.cpp`; the build and gates catch a break at compile time rather than
+at runtime (`tests/chat_parse_test.cpp` covers the parser wiring directly). This
 trade-off is deliberate and is also noted at the link site in the root `CMakeLists.txt`. The
 gates themselves run with the template off (raw prompt), so they stay deterministic and are
 unaffected by this dependency.
