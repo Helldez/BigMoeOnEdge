@@ -30,6 +30,11 @@ data class UiState(
     val ioMode: String? = null,     // effective read mode reported by the engine (direct / buffered)
     val cpuTempC: Double? = null,   // SoC/CPU temperature (°C), sampled while generating (battery fallback)
     val sessionSig: String? = null, // signature of the loaded session (AppSettings.sessionSignature)
+    // How the loaded model honours the Thinking switch, reported by the engine at load:
+    // "template" (its chat template obeys), "forced_final"/"sampler" (the engine enforces it), or
+    // "none" — the model ignores the request and there is no way to make it stop. Null until a
+    // session is up. See docs/telemetry.md and issue #82.
+    val thinkCtl: String? = null,
     val transcript: List<ChatTurn> = emptyList(), // committed turns; the in-flight answer is `answer`
     val streaming: Boolean = true,  // is the loaded session using the MoE streamer (vs mmap baseline)?
 ) {

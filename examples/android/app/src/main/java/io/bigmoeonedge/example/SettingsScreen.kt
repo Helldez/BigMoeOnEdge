@@ -15,10 +15,19 @@ import androidx.compose.ui.unit.sp
 /**
  * Groups every tunable the engine exposes. Changes are applied to [current] live and
  * persisted by the caller. The layout mirrors the CLI flags one-to-one.
+ *
+ * [thinkCtl] is the engine's verdict on whether the Thinking switch can be honoured by the
+ * loaded model (UiState.thinkCtl); null when no session is loaded, in which case the switch is
+ * described in general terms because the answer is model-dependent.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack: () -> Unit) {
+fun SettingsScreen(
+    current: AppSettings,
+    onChange: (AppSettings) -> Unit,
+    onBack: () -> Unit,
+    thinkCtl: String? = null,
+) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -149,11 +158,21 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
             }
 
             Section("Prompt") {
+                // Whether "off" is obeyed is the model's call, not ours: a chat template that never
+                // reads the request renders the same prompt either way. The engine probes that at
+                // load and reports it, so the switch can say what it will actually do (issue #82).
+                val thinkingNote = when (thinkCtl) {
+                    "none" ->
+                        " This model ignores the request and offers no way to stop it, so it will " +
+                            "reason anyway — its reasoning still shows separately from the answer."
+                    "sampler", "forced_final" -> " The engine enforces this for the loaded model."
+                    else -> " No effect on models that don't reason."
+                }
                 SwitchRow(
                     "Thinking",
                     "Let a reasoning model think before answering; its reasoning shows in a " +
-                        "collapsible block above the reply. Off tells the model to skip thinking. " +
-                        "No effect on models that don't reason.",
+                        "collapsible block above the reply. Off tells the model to skip thinking." +
+                        thinkingNote,
                     current.thinking,
                 ) { onChange(current.copy(thinking = it)) }
             }

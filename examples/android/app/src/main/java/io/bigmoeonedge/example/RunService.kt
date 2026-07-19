@@ -184,7 +184,7 @@ class RunService : Service() {
                 releaseWake()
                 procWriter = null
                 proc = null
-                if (!shuttingDown) RunBus.update { if (it.state != EngineState.ERROR) it.copy(state = EngineState.IDLE, sessionSig = null) else it.copy(sessionSig = null) }
+                if (!shuttingDown) RunBus.update { if (it.state != EngineState.ERROR) it.copy(state = EngineState.IDLE, sessionSig = null, thinkCtl = null) else it.copy(sessionSig = null, thinkCtl = null) }
                 main.post {
                     stopForegroundCompat()
                     stopSelf()
@@ -199,7 +199,12 @@ class RunService : Service() {
         val t = line.trim()
         when {
             t.startsWith("BMOE_READY ") -> {
-                RunBus.setState(EngineState.READY)
+                // The engine reports here whether the Thinking switch can actually be honoured for
+                // this model; the Settings screen says so rather than offering a dead control (#82).
+                val ctl = runCatching {
+                    JSONObject(t.removePrefix("BMOE_READY ")).optString("think_ctl").ifEmpty { null }
+                }.getOrNull()
+                RunBus.update { it.copy(state = EngineState.READY, thinkCtl = ctl) }
                 main.post { notify("Model ready") }
                 pending?.let { p -> pending = null; sendGenerate(p) } ?: scheduleIdleUnload()
             }

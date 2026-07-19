@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -117,11 +119,16 @@ private fun Root() {
         scanning = false
     }
 
+    // Only this one field of the session state, so Root does not recompose on every token.
+    val thinkCtl by remember { RunBus.state.map { it.thinkCtl }.distinctUntilChanged() }
+        .collectAsStateWithLifecycle(null)
+
     if (showSettings) {
         SettingsScreen(
             current = settings,
             onChange = { settings = it; it.save(context) },
             onBack = { showSettings = false },
+            thinkCtl = thinkCtl,
         )
     } else if (showMetrics) {
         MetricsScreen(onBack = { showMetrics = false })

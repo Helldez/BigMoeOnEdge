@@ -86,6 +86,19 @@ llama-gguf-split --merge gpt-oss-120b-Q4_K_M-00001-of-00002.gguf gpt-oss-120b-Q4
 adb push gpt-oss-120b-Q4_K_M.gguf /data/local/tmp/bmoe/   # or import it with the file picker
 ```
 
+## Settings
+
+The Settings screen mirrors the CLI flags one-to-one (streaming, cache, I/O lanes, threads,
+top-k, metrics CSV). One control is worth calling out because its effect is model-dependent:
+
+**Thinking.** Off asks a reasoning model to answer without reasoning first. Whether that is obeyed
+is the model's decision, not the app's — the request reaches the model as a chat-template variable,
+and plenty of templates never read it. The engine settles the question at load and reports it, so
+the switch says what it will actually do for the model you loaded: honoured by the template,
+enforced by the engine (either by priming the answer channel, as gpt-oss needs, or by closing the
+reasoning block while decoding, as LFM2.5 needs), or — for a model that offers no way to stop —
+stated plainly as ignored. See `think_ctl` in `../../docs/telemetry.md`.
+
 ## Expected numbers
 
 On a phone with UFS 4.x storage and ~12 GB RAM, streaming Qwen3-30B-A3B-Q4_K_M with the

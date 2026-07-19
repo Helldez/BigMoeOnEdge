@@ -33,7 +33,10 @@ data class AppSettings(
     val overlap: Boolean = true,        // read the next experts while the current layer computes
     val denseWeights: DenseWeights = DenseWeights.ANON, // dense (non-expert) weight residency policy
     val prefetchLayers: Int = 0,        // temporal prefetch depth K (0 = off); needs the cache
-    val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
+    // Reasoning. Per-prompt, so it rides the generate request's "think" field rather than argv.
+    // Whether "off" is obeyed depends on the model; the engine reports which mechanism applies as
+    // think_ctl in BMOE_READY (UiState.thinkCtl) and Settings says so. See issue #82.
+    val thinking: Boolean = false,
     val metricsCsv: Boolean = true,     // write the engine's per-token CSV for this session (--csv)
 ) {
     /**
