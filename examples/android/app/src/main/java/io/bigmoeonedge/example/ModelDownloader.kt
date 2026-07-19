@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -114,8 +115,11 @@ object ModelDownloader {
      * fire a spurious re-scan for a model the startup scan has already found.
      */
     fun events(ctx: Context): Flow<Event> = flow {
-        val settled = mutableSetOf<String>() // terminal work already accounted for
-        var primed = false                   // has the first (catch-up) emission been processed?
+        // Terminal work already accounted for, keyed by work id rather than filename: WorkManager
+        // re-emits a finished row on every update, but re-downloading the same model (deleted, then
+        // fetched again) is NEW work with a new id and must still report its own completion.
+        val settled = mutableSetOf<UUID>()
+        var primed = false // has the first (catch-up) emission been processed?
         WorkManager.getInstance(ctx).getWorkInfosByTagFlow(DownloadWorker.TAG).collect { infos ->
             val live = mutableMapOf<String, Progress>()
             val outcomes = mutableListOf<Event>()
@@ -131,17 +135,17 @@ object ModelDownloader {
                         info.progress.getLong(DownloadWorker.KEY_TOTAL, -1),
                         State.RUNNING,
                     )
-                    WorkInfo.State.SUCCEEDED -> if (settled.add(name)) {
+                    WorkInfo.State.SUCCEEDED -> if (settled.add(info.id)) {
                         withContext(Dispatchers.IO) { finalizeDownload(ctx, name) }
                         if (primed) outcomes += Event.Completed(name)
                     }
-                    WorkInfo.State.FAILED -> if (settled.add(name) && primed) {
+                    WorkInfo.State.FAILED -> if (settled.add(info.id) && primed) {
                         outcomes += Event.Failed(
                             name,
                             info.outputData.getString(DownloadWorker.KEY_ERROR) ?: "download failed",
                         )
                     }
-                    WorkInfo.State.CANCELLED -> settled.add(name) // user cancelled: no error to surface
+                    WorkInfo.State.CANCELLED -> settled.add(info.id) // user cancelled: no error to surface
                 }
             }
             primed = true
