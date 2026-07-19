@@ -112,8 +112,10 @@ class RunService : Service() {
         RunBus.update {
             // ioMode is re-sniffed from the new session's stderr, so clear it: it describes the
             // session being replaced, and the sniffer's first-writer-wins guard would keep it.
+            // thinkControl is a property of the model being loaded, so it goes the same way — the
+            // incoming session reports its own at BMOE_READY.
             it.copy(state = EngineState.LOADING, error = null, sessionSig = sig, answer = "", summary = "",
-                transcript = emptyList(), streaming = streaming, ioMode = null)
+                transcript = emptyList(), streaming = streaming, ioMode = null, thinkControl = null)
         }
 
         thread(name = "bmoe-session") { runSession(argv, model, myEpoch, dying) }
@@ -199,7 +201,8 @@ class RunService : Service() {
         val t = line.trim()
         when {
             t.startsWith("BMOE_READY ") -> {
-                RunBus.setState(EngineState.READY)
+                val ctl = Regex(""""think_ctl":"([a-z_]+)"""").find(t)?.groupValues?.get(1)
+                RunBus.update { it.copy(state = EngineState.READY, thinkControl = ctl) }
                 main.post { notify("Model ready") }
                 pending?.let { p -> pending = null; sendGenerate(p) } ?: scheduleIdleUnload()
             }

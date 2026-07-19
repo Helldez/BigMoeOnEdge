@@ -203,8 +203,11 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
         std::fflush(stdout);
         return 1;
     }
-    std::printf("BMOE_READY {\"load_s\":%.3f,\"arch\":\"%s\",\"n_ctx\":%d}\n", session->load_seconds(),
-                json_escape(session->arch()).c_str(), session->n_ctx());
+    // think_ctl states, once, whether this model can honour a think=false request at all, so a UI
+    // can disable its Thinking control instead of leaving one that silently does nothing (#82).
+    std::printf("BMOE_READY {\"load_s\":%.3f,\"arch\":\"%s\",\"n_ctx\":%d,\"think_ctl\":\"%s\"}\n",
+                session->load_seconds(), json_escape(session->arch()).c_str(), session->n_ctx(),
+                bmoe::think_control_name(session->think_control()));
     std::fflush(stdout);
 
     std::mutex mtx;

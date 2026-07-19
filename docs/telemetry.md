@@ -251,7 +251,8 @@ user message, the engine re-renders the whole history and reuses the KV prefix (
 Responses (stdout):
 
 ```
-BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>}          # once, after the model loads
+BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>,
+            "think_ctl":"template|prefill|none"}                        # once, after the model loads
 BMOE_BEGIN {"id":<int>}                                                # a generation started
 BMOE_LOAD / BMOE_PROGRESS ...                                          # per token, as above
 BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
@@ -262,6 +263,16 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "token_demand_mib":<float>,"reasoning":"<string>","text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
+
+`BMOE_READY`'s `think_ctl` states how a `"think":false` request can be honoured on the model that
+was just loaded, so a UI need not offer a control that does nothing. It is decided by rendering the
+model's own chat template, not from a list of model names:
+
+| value | meaning | what the UI should do |
+|---|---|---|
+| `template` | the chat template reads `enable_thinking` (Qwen3 and most reasoning models) | offer the toggle |
+| `prefill` | it does not, so the engine closes the reasoning span in the prompt instead (LFM2.5, gpt-oss) | offer the toggle |
+| `none` | neither is available — the model reasons on every turn | show the control disabled, and say why |
 
 `BMOE_DONE` carries the end-of-generation summary (the one-shot mode's `generation:` /
 `moe-stream:` text lines are not emitted in session mode). `n_prompt` is the tokens actually

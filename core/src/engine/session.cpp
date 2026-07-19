@@ -3,6 +3,7 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "chat_parse.h"
+#include "thinking_control.h"
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
@@ -190,6 +191,9 @@ struct Session::Impl {
     int n_layer = 0;
     bool chat_on = false;
     common_chat_templates_ptr chat_tmpls;
+    // How a think=false request can be honoured on this model; probed once at open(). Template
+    // (the fail-open default) means the flag alone does the job and generate() adds nothing.
+    ThinkControl think_ctl = ThinkControl::Template;
     bool backend_inited = false;
 
     // Sampling chain, built once at open() only when sampling is requested (temp > 0); null on the
@@ -251,6 +255,9 @@ const std::string & Session::arch() const {
 }
 int Session::n_ctx() const {
     return impl_->cfg.n_ctx;
+}
+ThinkControl Session::think_control() const {
+    return impl_->think_ctl;
 }
 void Session::set_cache_budget_mb(int mib) {
     impl_->source.set_cache_budget((size_t) std::max(0, mib) * 1024ull * 1024ull);
@@ -352,6 +359,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         try {
             im.chat_tmpls = common_chat_templates_init(model, "");
             im.chat_on = true;
+            // Which "thinking off" mechanism this template supports is a property of the model, so
+            // it is settled once here rather than re-derived on every turn.
+            im.think_ctl = detail::probe_think_control(im.chat_tmpls.get());
         } catch (const std::exception & e) {
             std::fprintf(stderr, "bmoe: chat template unavailable (%s); using raw prompts\n", e.what());
             im.chat_on = false;
@@ -617,8 +627,8 @@ RunResult Session::generate(const GenerateRequest & req,
     // reasoning is stripped from the shown answer. req.think drives enable_thinking, per prompt.
     std::string prompt = req.prompt;
     bool chat_on = im.chat_on;
-    bool history_pushed = false; // did we append this turn's user message to chat_history?
-    bool forced_final = false;   // harmony no-think: primed the final channel, so skip reasoning parse
+    bool history_pushed = false;   // did we append this turn's user message to chat_history?
+    bool prefilled_answer = false; // closed the reasoning span in the prompt, so skip reasoning parse
     common_chat_parser_params parse_params;
     if (chat_on) {
         try {
@@ -637,27 +647,23 @@ RunResult Session::generate(const GenerateRequest & req,
             // here, before apply — the field defaults to NONE, which produces a content-only
             // grammar that leaves <think> markers in the answer no matter how the parse is wired.
             inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+
+            // Many templates never read enable_thinking (LFM2.5 among them): the flag reaches the
+            // jinja context, is discarded, and the model reasons anyway — the setting silently does
+            // nothing. For those, close the reasoning span in the prompt instead, so the model
+            // resumes at the first token of its answer with the reasoning already behind it.
+            //
+            // The span is rendered by llama.cpp's own handler for this template, so no marker for
+            // any family — harmony's primed final channel included — is spelled out here. Which
+            // models need this was measured at open(), not assumed. See thinking_control.h.
+            if (!req.think && im.think_ctl == ThinkControl::Prefill) {
+                detail::add_no_think_prefill(inputs);
+                prefilled_answer = true;
+            }
+
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt;
             parse_params = detail::build_parse_params(cp);
-
-            // gpt-oss / harmony ignores enable_thinking: its template always opens an
-            // <|channel|>analysis turn (only the "Reasoning:" effort level is tunable), so a
-            // reasoning model burns the whole budget on chain-of-thought before the answer.
-            // When the caller disabled thinking, prime the final channel directly so the model
-            // answers with no analysis tokens. Harmony's generation prompt ends "<|start|>assistant";
-            // that suffix is unique to it (Qwen/Gemma use different markers), so keying on it
-            // leaves every other family's --no-think behaviour untouched.
-            if (!req.think) {
-                size_t last = prompt.find_last_not_of(" \t\r\n");
-                std::string trimmed = (last == std::string::npos) ? prompt : prompt.substr(0, last + 1);
-                static const std::string kHarmonyAsst = "<|start|>assistant";
-                if (trimmed.size() >= kHarmonyAsst.size() &&
-                    trimmed.compare(trimmed.size() - kHarmonyAsst.size(), kHarmonyAsst.size(), kHarmonyAsst) == 0) {
-                    prompt = trimmed + "<|channel|>final<|message|>";
-                    forced_final = true;
-                }
-            }
         } catch (const std::exception & e) {
             std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
             if (history_pushed) {
@@ -692,9 +698,12 @@ RunResult Session::generate(const GenerateRequest & req,
     };
     auto shown_view = [&](const std::string & raw, bool partial) -> ShownView {
         if (!chat_on) return {raw, ""};
-        // Forced-final (harmony no-think) output isn't wrapped in a <|start|>assistant turn, so the
-        // structured parser has nothing to strip — the raw stream already IS the final answer.
-        if (forced_final) return {raw, ""};
+        // A prefilled turn resumes mid-answer: the reasoning span and the turn header the parser
+        // anchors on are already in the prompt, not in the stream, so there is nothing to strip —
+        // the raw stream already IS the answer. (If a model reasons anyway despite the closed span,
+        // that reasoning surfaces verbatim rather than being cut out here. Hiding it would only
+        // disguise a model this mechanism does not work on; the honest report is ThinkControl::None.)
+        if (prefilled_answer) return {raw, ""};
         try {
             common_chat_msg msg = common_chat_parse(raw, partial, parse_params);
             return {msg.content, msg.reasoning_content};
@@ -937,8 +946,10 @@ RunResult Session::generate(const GenerateRequest & req,
         // Commit the assistant turn to the running conversation. Parsing separates a thinking
         // model's reasoning from the answer; the next turn re-renders history from these messages.
         common_chat_msg assistant;
-        if (forced_final) {
-            // No <|start|>assistant wrapper to parse; the raw generation is the answer verbatim.
+        if (prefilled_answer) {
+            // Prefilled turn: no turn header in the stream to parse; the generation is the answer
+            // verbatim. It is committed without the prefill, so history holds a normal assistant
+            // message and the next turn re-renders cleanly whatever this turn's think setting was.
             assistant.content = gen;
         } else {
             try {

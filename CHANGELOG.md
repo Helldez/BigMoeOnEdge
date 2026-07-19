@@ -6,7 +6,24 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **Thinking off no longer silently does nothing** (#82). Turning Thinking off set the template
+  variable `enable_thinking` and stopped there — but that variable is only a *request* to the
+  model's chat template, and many templates never read it. LFM2.5's is one: the rendered prompt came
+  out byte-identical either way, the model reasoned on, and nothing reported that the setting had
+  been dropped. The engine now renders the template at load to find out which case a model is in,
+  and where the flag is inert it closes the reasoning span in the prompt instead, using llama.cpp's
+  own continuation hook so the markers for each family come from upstream's per-template handler
+  rather than from this engine. Models that support neither are reported as such
+  (`think_ctl` on `BMOE_READY`, see `docs/telemetry.md`) and the app shows the Thinking switch
+  disabled with the reason, instead of leaving a control that does nothing.
+
 ### Changed
+- **The harmony/gpt-oss marker strings are gone from the decode path.** Priming gpt-oss to answer
+  without reasoning used to be a literal `<|start|>assistant` suffix test and a literal
+  `<|channel|>final<|message|>` appended in `session.cpp`. It is now the same generic mechanism as
+  every other family, so the engine names no model's markers and a submodule bump that changes them
+  needs no engine change.
 - **README front page reworked around the result.** A copyable result banner under the title, an
   autoplay hero GIF of gpt-oss-120b generating on-device (real time, cut from the existing demo
   footage), and a "Try it on your phone" quickstart that starts from the release APK and the

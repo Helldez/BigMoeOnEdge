@@ -90,10 +90,21 @@ unit, `chat_parse.cpp` — the PEG parser arena has to be loaded explicitly or `
 throws on the first token, which is how issue #49 stayed invisible; keeping it separate makes
 that seam unit-testable without a model.
 
+A second translation unit, `thinking_control.cpp`, crosses the same boundary for "thinking off".
+`enable_thinking` is only a *request* to the template, and many templates never read it, so the
+engine renders the template to find out (three renders at open, no model names involved) and, where
+the flag is inert, asks for a **continuation** instead: the `continue_final_message` field of
+`common_chat_templates_inputs`, plus a synthetic trailing assistant message, makes llama.cpp's own
+per-template handler emit that family's "reasoning is over" span into the prompt. This is why no `<think>` or
+harmony channel marker appears anywhere in `core/` — the markers stay upstream, where a submodule
+bump keeps them current. `tests/think_control_test.cpp` pins the behaviour against the vendored
+templates, again with no model.
+
 Unlike the public-C-API streaming seam, `common` is **not a stable API** — it can change
 between upstream versions. So a submodule bump may require updating this chat glue in
-`session.cpp` / `chat_parse.cpp`; the build and gates catch a break at compile time rather than
-at runtime (`tests/chat_parse_test.cpp` covers the parser wiring directly). This
+`session.cpp` / `chat_parse.cpp` / `thinking_control.cpp`; the build and gates catch a break at
+compile time rather than at runtime (`tests/chat_parse_test.cpp` and
+`tests/think_control_test.cpp` cover these seams directly). This
 trade-off is deliberate and is also noted at the link site in the root `CMakeLists.txt`. The
 gates themselves run with the template off (raw prompt), so they stay deterministic and are
 unaffected by this dependency.

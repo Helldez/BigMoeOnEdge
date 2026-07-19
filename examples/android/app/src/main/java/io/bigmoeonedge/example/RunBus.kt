@@ -30,6 +30,11 @@ data class UiState(
     val ioMode: String? = null,     // effective read mode reported by the engine (direct / buffered)
     val cpuTempC: Double? = null,   // SoC/CPU temperature (°C), sampled while generating (battery fallback)
     val sessionSig: String? = null, // signature of the loaded session (AppSettings.sessionSignature)
+    // How the loaded model can honour "Thinking off", reported once at BMOE_READY: "template" (its
+    // chat template reads the flag), "prefill" (it does not, so the engine closes the reasoning span
+    // in the prompt), or "none" (neither — the model always reasons, and the switch is hidden rather
+    // than left there doing nothing). Null until a session reports it. See docs/telemetry.md.
+    val thinkControl: String? = null,
     val transcript: List<ChatTurn> = emptyList(), // committed turns; the in-flight answer is `answer`
     val streaming: Boolean = true,  // is the loaded session using the MoE streamer (vs mmap baseline)?
 ) {
