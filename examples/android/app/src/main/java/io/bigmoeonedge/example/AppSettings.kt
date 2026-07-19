@@ -151,7 +151,7 @@ data class AppSettings(
                 ?.maxByOrNull { it.lastModified() }
         }
 
-        // -1 (Auto) sizes the cache to the device's free RAM at runtime (--cache-mb auto).
+        // -1 (Auto) sizes the cache to the device's free RAM once at load (--cache-mb auto).
         //
         // 500 and 1000 are below the engine's cache_min_mb floor, so picking them makes [sessionArgv]
         // add --force-cache. The floor exists because a cache smaller than one token's routed working

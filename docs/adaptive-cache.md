@@ -5,7 +5,7 @@ device- and model-specific: too small and the hit rate collapses; too large and 
 plus the mmap-resident model push `MemAvailable` to zero and the Android low-memory-killer takes
 the process (this is exactly why Gemma cannot use a 4000 MiB cache on an 11 GB phone — see
 [benchmarks.md](benchmarks.md)). `--cache-mb auto` removes the guess: the engine sizes the cache to
-the device and keeps it there as free memory moves.
+the device once at load and holds that budget for the whole run.
 
 ## What it does
 
@@ -76,8 +76,8 @@ the rest of the system.
 Embedders that link the engine can also resize the cache directly with
 `Session::set_cache_budget_mb(int)` — for an app's own memory-pressure callback. It must be called
 between generations (never during a decode); it evicts to the new budget immediately. The Android
-example instead relies on the automatic tracking above, because it runs `bmoe-cli` as a subprocess
-that reads `/proc/meminfo` itself.
+example does not use it: it runs `bmoe-cli` as a subprocess, so its "Auto" cache setting simply
+passes `--cache-mb auto` and the load-time sizing above applies.
 
 ## Gate
 
