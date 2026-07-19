@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.13.0] - 2026-07-19
 
 ### Fixed
 - **Thinking off no longer silently does nothing** (#82). Turning Thinking off set the template
