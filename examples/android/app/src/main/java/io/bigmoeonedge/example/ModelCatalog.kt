@@ -57,6 +57,15 @@ object ModelCatalog {
             blurb = "3B active of 30B. The published numbers use this one.",
         ),
         Entry(
+            title = "Qwen3.6-35B-A3B",
+            quant = "Q4_K_M",
+            fileName = "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",
+            approxBytes = 22_285_080_192L,
+            url = "https://huggingface.co/bartowski/Qwen_Qwen3.6-35B-A3B-GGUF/resolve/main/" +
+                "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf?download=true",
+            blurb = "3B active of 35B. Hybrid attention/SSM, comfortably past RAM.",
+        ),
+        Entry(
             title = "Gemma-4-26B-A4B-it",
             quant = "Q4_K_M",
             fileName = "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",

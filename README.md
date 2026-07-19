@@ -86,6 +86,7 @@ Highlights:
 | Architecture | Reference models | Notes |
 |---|---|---|
 | `qwen3moe` | Qwen3-30B-A3B and siblings | Shipped default, validated below |
+| `qwen35moe` | Qwen3.6-35B-A3B and siblings | Hybrid attention/SSM stack; routed experts stream unchanged |
 | `qwen2moe` | Qwen2 MoE family | Same layout as qwen3moe |
 | `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | Fused expert layout, handled by its registry row |
 | `gpt-oss` | OpenAI gpt-oss-20b / 120b | Purely routed; MXFP4 weights stream unchanged |
@@ -138,6 +139,30 @@ quality notes are in [docs/benchmarks-gpt-oss.md](docs/benchmarks-gpt-oss.md).
 Cache size is the dominant lever here, and the auto-sized cache with a ceiling
 ([docs/adaptive-cache.md](docs/adaptive-cache.md)) is the winning recipe. The mmap baseline
 averages ~2 tok/s but swings wildly token to token and evicts other apps.
+
+### Qwen3.6-35B-A3B (Q4_K_M) — 22.3 GB
+
+A hybrid attention/SSM MoE (256 experts, top-8, 41 blocks): most layers are linear attention
+(Gated Delta Net) rather than full attention, and the routed experts stream exactly like a plain
+`qwen3moe`. At ~2× device RAM the mmap baseline collapses into a fault storm; streaming with the
+dense weights kept out of the page cache (`--dense-weights anon`) runs it stably.
+
+| Configuration | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|
+| mmap baseline (no streaming) | 0.1 (unstable) | — | — |
+| streamed, cache 2000 MiB, 4 lanes, overlap | 4.3 | 206 MiB | 56% |
+| streamed, cache 3000 MiB, 4 lanes, overlap | 5.0 | 144 MiB | 65% |
+| streamed, cache 2000 MiB, *k=6*, 4 lanes, overlap | 5.4 | 137 MiB | 60% |
+| **streamed, cache 3000 MiB, *k=6*, 4 lanes, overlap** | **5.8** | 91 MiB | 68% |
+
+All streamed rows use `--overlap --dense-weights anon`. A larger cache is the main lossless lever
+(cache 3000 is worth +16% over 2000); the *k=6* rows are the one lossy option (turbo top-k, below),
+worth a further ~16% by routing to six experts instead of eight. The lossless best here is cache
+3000 at the model's own width, **5.0 tok/s** — output byte-identical to the resident model.
+
+> Unlike the tables above, these Qwen3.6 figures are a single 96-token run rather than the
+> 256-token best-of protocol — treat them as indicative, and not strictly comparable to the other
+> models until re-measured under the full protocol.
 
 ### Gemma-4-26B-A4B (Q4_K_M) — 17.0 GB
 
