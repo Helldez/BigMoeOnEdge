@@ -152,6 +152,22 @@ llama_sampler * make_think_budget_sampler(const llama_vocab * vocab, const commo
     return smpl;
 }
 
+size_t reasoning_prefix_offset(const std::string & raw, const std::string & start_tag) {
+    if (start_tag.empty()) {
+        return 0;
+    }
+    size_t i = 0;
+    while (i < raw.size() && std::isspace((unsigned char) raw[i])) {
+        ++i;
+    }
+    // Only when the whitespace is what stands between the parser and the opening tag; leading
+    // whitespace in an ordinary answer must be left exactly as the model wrote it.
+    if (i > 0 && raw.compare(i, start_tag.size(), start_tag) == 0) {
+        return i;
+    }
+    return 0;
+}
+
 bool think_forced_token(llama_sampler * smpl,
                         const float * logits,
                         int n_vocab,

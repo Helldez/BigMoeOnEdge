@@ -635,6 +635,9 @@ RunResult Session::generate(const GenerateRequest & req,
     bool history_pushed = false; // did we append this turn's user message to chat_history?
     bool forced_final = false;   // harmony no-think: primed the final channel, so skip reasoning parse
     common_chat_parser_params parse_params;
+    // This turn's reasoning opener, when the model declares one. Only used to keep whitespace the
+    // model emits ahead of the block from defeating the parser — see reasoning_prefix_offset.
+    std::string think_start_tag;
     // Decode-time enforcement of the thinking request, armed below only for the models that need
     // it. Per-turn (it is bound to this turn's rendered tags and generation prompt) and scoped so
     // every early return — cancel, decode failure, template fallback — frees it.
@@ -659,6 +662,7 @@ RunResult Session::generate(const GenerateRequest & req,
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt;
             parse_params = detail::build_parse_params(cp);
+            think_start_tag = cp.thinking_start_tag;
 
             // gpt-oss / harmony ignores enable_thinking: its template always opens an
             // <|channel|>analysis turn (only the "Reasoning:" effort level is tunable), so a
@@ -727,7 +731,11 @@ RunResult Session::generate(const GenerateRequest & req,
         // structured parser has nothing to strip — the raw stream already IS the final answer.
         if (forced_final) return {raw, ""};
         try {
-            common_chat_msg msg = common_chat_parse(raw, partial, parse_params);
+            // Whitespace ahead of the opening tag would otherwise leave the whole reasoning block
+            // sitting in the answer as literal <think></think> markers (the parser's reasoning rule
+            // is anchored and optional, so it just does not match and the parse still succeeds).
+            const size_t skip = detail::reasoning_prefix_offset(raw, think_start_tag);
+            common_chat_msg msg = common_chat_parse(skip ? raw.substr(skip) : raw, partial, parse_params);
             return {msg.content, msg.reasoning_content};
         } catch (const std::exception & e) {
             detail::warn_parse_failed_once(e.what());

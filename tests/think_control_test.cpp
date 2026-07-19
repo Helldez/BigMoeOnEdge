@@ -13,6 +13,8 @@
 
 #include "thinking_control.h"
 
+#include "chat_parse.h"
+
 #include "chat.h"
 #include "common.h"
 
@@ -141,6 +143,60 @@ int main() {
     // Fail open on the defensive path: with nothing to probe, assume the template honours the
     // flag. Claiming "your switch does nothing" on a guess is worse than staying quiet.
     expect_ctl("null templates fail open", bmoe::detail::probe_think_control(nullptr, nullptr), ThinkControl::Template);
+
+    // The block the enforcement actually produces must parse. Forcing the close the instant the
+    // model opens the block yields an EMPTY reasoning span, which is a different shape from the
+    // one the parser sees in normal use — if it does not match, the markers leak into the answer
+    // verbatim and the user reads "<think></think>" instead of a clean reply.
+    {
+        const common_chat_params cp = apply(BMOE_LFM25_TEMPLATE_PATH, false);
+        common_chat_parser_params pp = bmoe::detail::build_parse_params(cp);
+        // Whitespace before the opening tag is the shape that bites: the parser's reasoning rule is
+        // anchored right after the generation prompt and is optional, so one leading space makes it
+        // silently not match and the markers land in the answer. That is what reasoning_prefix_offset
+        // exists to absorb, so parse through it exactly as session.cpp does.
+        for (const char * raw : {"<think></think>Hello", "<think>\n</think>Hello", "<think> </think>Hello",
+                                 "\n<think></think>Hello", " <think></think>Hello", "  \n<think> </think>Hello"}) {
+            const std::string s = raw;
+            const size_t skip = bmoe::detail::reasoning_prefix_offset(s, cp.thinking_start_tag);
+            common_chat_msg m;
+            bool threw = false;
+            try {
+                m = common_chat_parse(skip ? s.substr(skip) : s, /*is_partial=*/false, pp);
+            } catch (const std::exception & e) {
+                threw = true;
+                std::printf("  parse threw on \"%s\": %s\n", raw, e.what());
+            }
+            expect_true("forced-close block parses", !threw);
+            expect_true("forced-close block leaves no markers in the answer", m.content == "Hello");
+        }
+
+        // The trim is surgical: it fires only when whitespace is all that separates the stream from
+        // the opening tag. An answer that legitimately starts with a blank line keeps it.
+        expect_true("ordinary leading whitespace is preserved",
+                    bmoe::detail::reasoning_prefix_offset("\n  Hello", cp.thinking_start_tag) == 0);
+        expect_true("no trim when the block opens the stream",
+                    bmoe::detail::reasoning_prefix_offset("<think></think>Hi", cp.thinking_start_tag) == 0);
+        expect_true("no tag, no trim", bmoe::detail::reasoning_prefix_offset(" <think>x", "") == 0);
+
+        // The streaming path. The app renders the partial parse token by token, so what the user
+        // reads mid-stream is this, not the final message: an opening tag whose block has not
+        // closed yet must not be shown as answer text.
+        for (const char * raw : {"<think>", "<think></think>", "<think></think>Hel"}) {
+            common_chat_msg m;
+            bool threw = false;
+            try {
+                m = common_chat_parse(raw, /*is_partial=*/true, pp);
+            } catch (const std::exception & e) {
+                threw = true;
+                std::printf("  partial parse threw on \"%s\": %s\n", raw, e.what());
+            }
+            std::printf("  partial raw=\"%s\" -> content=\"%s\" reasoning=\"%s\"%s\n", raw, m.content.c_str(),
+                        m.reasoning_content.c_str(), threw ? " (THREW)" : "");
+            expect_true("streamed forced close shows no markers as answer text",
+                        !threw && m.content.find("think>") == std::string::npos);
+        }
+    }
 
     // The wire names are a protocol contract (docs/telemetry.md), not a debug string.
     expect_true("wire names are stable",

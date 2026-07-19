@@ -50,6 +50,16 @@ bool ends_with_harmony_assistant(const std::string & prompt, std::string * trimm
 // the tag is never sampled in that case, so without the replay the budget would never engage.
 llama_sampler * make_think_budget_sampler(const llama_vocab * vocab, const common_chat_params & cp, int32_t budget);
 
+// Drop whitespace that precedes the opening of a reasoning block, returning the offset the
+// parser should start from (0 when there is nothing to trim).
+//
+// A generated PEG parser anchors its reasoning rule immediately after the generation prompt and
+// makes it optional, so a single space or newline emitted before the opening tag stops the rule
+// from matching — and because it is optional, the parse quietly succeeds with the whole block,
+// markers and all, falling through into the answer. Whitespace before a reasoning block is not
+// answer text, so removing it costs nothing and lets the parser see the shape it expects.
+size_t reasoning_prefix_offset(const std::string & raw, const std::string & start_tag);
+
 // When `smpl` is forcing the close of a reasoning block, resolve the token it is pinning and
 // return true; otherwise return false and leave `tok` untouched, so the caller falls through to
 // its normal sampling path. `scratch` is reused across calls to keep the candidate array off
