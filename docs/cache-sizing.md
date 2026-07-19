@@ -40,9 +40,11 @@ the device once at load and holds that budget for the whole run.
   moe-cache: 77.1% hit, resident 4000.0 MiB
   ```
 
-Because expert reads use O_DIRECT they never enter the page cache, so the only large pinned
-allocation the engine controls *is* this budget — shrinking it is what actually hands RAM back to
-the rest of the system.
+Because expert reads use O_DIRECT they never enter the page cache, shrinking this budget is what
+actually hands expert RAM back to the rest of the system. It is not the engine's only large
+allocation, though: under `--dense-weights anon` (the default) the whole dense set also lives in
+anon buffers. That footprint is **not** part of the cache budget and is not subtracted from it —
+see the ordering warning below.
 
 > **The budget is not only a throughput knob — it is what the kernel judges you by.** On Android the
 > LRU promotes a page to the protected list only on a *second* reference, and a cache hit is that
@@ -52,6 +54,14 @@ the rest of the system.
 > the hits are worth. `MemAvailable` also over-states the headroom here, since it counts the page
 > cache holding this model's own dense weights as free. Before trusting `auto` on a model whose
 > expert set dwarfs the budget, read [android-memory.md](android-memory.md).
+
+> **`auto` sizes before the dense weights are allocated.** The budget is chosen in
+> `ExpertStreamSource::init` as soon as the expert-set size is known
+> (`core/src/moe/expert_stream_source.cpp:68`); the dense policy runs later in the same init
+> (`:200`), and under the default `anon` mode it then allocates the entire dense set into anon
+> buffers. So the `MemAvailable` reading `auto` sizes from still counts that RAM as free. On a model
+> with a large dense set the over-ask is roughly the dense size — `--cache-ceil-mb` is the lever that
+> bounds it, which is why the Android example ships a 3000 MiB ceiling by default.
 
 > **`auto` sizes from a signal that lies, so keep it modest.** `auto` reads `MemAvailable`, which
 > reports memory the device will not actually concede (it counts the model's own mmap'd weights as
