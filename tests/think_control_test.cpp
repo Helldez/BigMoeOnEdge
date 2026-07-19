@@ -8,9 +8,11 @@
 // Two things are asserted here, both against REAL templates from the vendored submodule (paths
 // injected by CMake), with no model:
 //
-//   1. probe_think_control tells the three regimes apart — a template that honours the flag, one
-//      that ignores it but whose handler can have the reasoning span closed for it, and (by
-//      construction) one where neither works.
+//   1. probe_think_control tells the regimes apart — a template that honours the flag; one that
+//      ignores it but whose reasoning is structural, so the turn can start past it; and one whose
+//      model owns its reasoning span and cannot be asked to skip it. Including the case that is
+//      easy to get wrong: a model whose FAMILY declares reasoning tags but which never reasons
+//      itself, and so must not be reported uncontrollable.
 //   2. the prefill produces a prompt whose reasoning span is already CLOSED. This is the assertion
 //      that matters: an opened-and-not-closed span is the opposite request, and it is exactly what
 //      asking for an AUTO continuation would silently produce.
@@ -37,7 +39,8 @@
 #include <sstream>
 #include <string>
 
-#if !defined(BMOE_TMPL_QWEN3) || !defined(BMOE_TMPL_LFM25) || !defined(BMOE_TMPL_GPTOSS)
+#if !defined(BMOE_TMPL_QWEN3) || !defined(BMOE_TMPL_LFM25) || !defined(BMOE_TMPL_GPTOSS) ||                            \
+    !defined(BMOE_TMPL_LFM2) || !defined(BMOE_TMPL_LFM25_INSTRUCT) || !defined(BMOE_TMPL_GEMMA4)
 #error "template paths must be defined by the build"
 #endif
 
@@ -146,13 +149,32 @@ int main() {
                    prefilled != thinking && prefilled.size() > thinking.size());
         }
 
-        // A template with no reasoning of any kind: the flag does nothing and there is no span to
-        // close. The honest answer is None, so a caller can hide the toggle instead of lying.
+        // The non-reasoning members of the same family. Their handler publishes <think>/</think> for
+        // the family as a whole, but these templates never emit it, so the models never reason.
+        // Reporting them uncontrollable would tell the user "this model always reasons" about a model
+        // that never does — and disable a control that was simply moot. They must come out as
+        // Template: the flag is passed, and there is nothing to suppress.
+        for (const char * p : {BMOE_TMPL_LFM2, BMOE_TMPL_LFM25_INSTRUCT}) {
+            auto t = load(p);
+            const std::string name = std::string("non-reasoning lfm variant is not reported uncontrollable: ") + p;
+            expect(name.c_str(), bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::Template);
+        }
+
+        // Gemma 4 reads enable_thinking, so it never reaches the tag test at all — pinned because it
+        // ships in the app catalog and declares a thinking tag of its own.
+        {
+            auto t = load(BMOE_TMPL_GEMMA4);
+            expect("gemma4: template honours enable_thinking",
+                   bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::Template);
+        }
+
+        // A template with no reasoning of any kind. Nothing to suppress, so nothing to report: None
+        // is reserved for models that demonstrably DO reason and cannot be stopped.
         {
             auto t = common_chat_templates_init(
                 nullptr, "{% for m in messages %}{{ m.role }}: {{ m.content }}\n{% endfor %}assistant:");
-            expect("plain template: reports none",
-                   bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::None);
+            expect("plain template: nothing to suppress, so not reported uncontrollable",
+                   bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::Template);
         }
 
         // A probe that could not run is no evidence the flag is inert: fail open to the

@@ -61,9 +61,11 @@ SessionConfig session_config_from(const RunConfig & cfg);
 // regardless and nothing reports that the setting was dropped. Probing says which case a model is
 // in, so a caller can stop offering a control that does nothing.
 enum class ThinkControl {
-    Template, // the template reads enable_thinking — passing the flag is the whole mechanism
-    Prefill,  // it does not; the reasoning span is closed in the prompt before generation instead
-    None,     // neither is available: the model cannot be asked to skip reasoning
+    // Passing the flag is all there is to do — either the template reads it, or the model does not
+    // reason at all and there is nothing to suppress. Both leave the engine with nothing to add.
+    Template,
+    Prefill, // the template ignores it; the turn starts past the reasoning section instead
+    None,    // the model reasons on every turn and cannot be asked not to
 };
 
 // Stable lowercase name ("template", "prefill", "none") for logs and the telemetry protocol.

@@ -67,24 +67,33 @@ ThinkControl probe_think_control(const common_chat_templates * tmpls) {
         const std::string on = apply_probe(tmpls, /*enable_thinking=*/true, /*prefill=*/false).prompt;
         if (on != off) return ThinkControl::Template;
 
+        // Does the model own a reasoning span — a `<think>`-style pair it opens and closes itself?
+        //
+        // Both halves are needed. A declared tag alone proves nothing, because handlers publish the
+        // pair for a whole family: the non-reasoning members (LFM2-8B-A1B, LFM2.5-Instruct) advertise
+        // `<think>` they never emit. Requiring the template to actually USE it is the same test
+        // llama.cpp applies before wiring up reasoning extraction for that family.
+        const std::string src = common_chat_templates_source(tmpls);
+        const bool owns_span =
+            !off_p.thinking_start_tag.empty() && src.find(off_p.thinking_start_tag) != std::string::npos;
+
+        // It does, and the flag is inert: the request cannot be honoured. Closing the span in the
+        // prompt is only a suggestion to a model that opens its own — LFM2.5 reasons straight past a
+        // pre-closed empty one and emits the reasoning untagged into the answer (issue #82), worse
+        // than leaving it alone. Say so instead of making it worse.
+        if (owns_span) return ThinkControl::None;
+
         const std::string prefilled = apply_probe(tmpls, /*enable_thinking=*/false, /*prefill=*/true).prompt;
-        if (prefilled == off) return ThinkControl::None; // nothing reaches this model at all
 
-        // The prefill changes the prompt — but that alone does not mean the model will honour it,
-        // and the difference is visible in whether the model declares reasoning tags.
-        //
-        // Tags declared: reasoning is a span the MODEL opens and closes at will. Handing it one that
-        // is already closed and empty is a suggestion, and a model not trained on that convention
-        // reasons straight past it — measured on LFM2.5-8B-A1B, which ignores the closed span and
-        // reasons into the answer instead (issue #82). Worse than leaving it alone, because the
-        // reasoning arrives untagged. Report it as uncontrollable rather than making it worse.
-        //
-        // No tags declared: reasoning is structural — a channel or section the format itself
-        // separates — so the prefill does not ask the model to skip anything, it places the model
-        // past the reasoning section entirely. That the model cannot ignore (harmony/gpt-oss).
-        if (!off_p.thinking_start_tag.empty() || !off_p.thinking_end_tag.empty()) return ThinkControl::None;
+        // No span of its own, and the prefill lands: reasoning is structural — a channel the format
+        // itself separates — so starting the turn past that section is not something the model can
+        // decline (harmony/gpt-oss).
+        if (prefilled != off && off_p.thinking_start_tag.empty()) return ThinkControl::Prefill;
 
-        return ThinkControl::Prefill;
+        // Nothing indicates this model reasons at all: no span it uses, no reasoning section to start
+        // past. There is nothing to suppress, so pass the flag and add nothing — claiming it "always
+        // reasons" would be a louder lie than the silence this probe exists to end.
+        return ThinkControl::Template;
     } catch (const std::exception & e) {
         std::fprintf(stderr, "bmoe: thinking-control probe failed (%s); assuming the template honours it\n", e.what());
         return ThinkControl::Template;

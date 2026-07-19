@@ -270,16 +270,23 @@ model's own chat template, not from a list of model names:
 
 | value | meaning | what the UI should do |
 |---|---|---|
-| `template` | the chat template reads `enable_thinking` (Qwen3 and most reasoning models) | offer the toggle |
-| `prefill` | it does not, but reasoning is a structural section the prompt can start past (harmony/gpt-oss) | offer the toggle |
+| `template` | passing the flag is all there is to do: either the template reads it (Qwen3, Gemma 4), or the model does not reason and there is nothing to suppress | offer the toggle |
+| `prefill` | the template ignores it, but reasoning is a structural section the turn can start past (harmony/gpt-oss) | offer the toggle |
 | `none` | the model reasons on every turn and cannot be asked not to (LFM2.5) | show the control disabled, and say why |
 
-The `prefill` / `none` split is decided by the reasoning tags the model declares, not by its name.
-A model that declares a `<think>`-style span owns that span: handing it one already closed and empty
-is a suggestion, and a model not trained on the convention reasons past it — measured on LFM2.5,
-which then emits its reasoning *untagged into the answer*, worse than not asking at all. A model
-that declares no tags separates reasoning structurally (a channel), and starting the turn past that
-section is not something it can decline.
+Which one a model gets is decided from data the model supplies, never from its name.
+
+`none` requires positive evidence that the model reasons *and* owns the span it reasons in: it
+declares a `<think>`-style pair **and** its template actually uses it. A span the model opens and
+closes itself is its own, so handing it one already closed and empty is only a suggestion — LFM2.5
+reasons straight past it and emits the reasoning *untagged into the answer*, worse than not asking
+at all. Both halves of the test matter, because handlers publish the tag pair for a whole family:
+the non-reasoning members (LFM2-8B-A1B, LFM2.5-Instruct) advertise a `<think>` they never emit, and
+reporting those uncontrollable would tell the user "this model always reasons" about a model that
+never does.
+
+`prefill` is the opposite shape: no span of the model's own, but the format separates reasoning
+structurally (a channel), and starting the turn past that section is not something it can decline.
 
 `BMOE_DONE` carries the end-of-generation summary (the one-shot mode's `generation:` /
 `moe-stream:` text lines are not emitted in session mode). `n_prompt` is the tokens actually

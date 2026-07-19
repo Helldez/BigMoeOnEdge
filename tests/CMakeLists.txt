@@ -24,7 +24,10 @@ set(_tmpl_dir "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/templates")
 target_compile_definitions(bmoe_think_control_test PRIVATE
     BMOE_TMPL_QWEN3="${_tmpl_dir}/Qwen3.5-4B.jinja"
     BMOE_TMPL_LFM25="${_tmpl_dir}/LFM2.5-8B-A1B.jinja"
-    BMOE_TMPL_GPTOSS="${_tmpl_dir}/openai-gpt-oss-120b.jinja")
+    BMOE_TMPL_GPTOSS="${_tmpl_dir}/openai-gpt-oss-120b.jinja"
+    BMOE_TMPL_LFM2="${_tmpl_dir}/LFM2-8B-A1B.jinja"
+    BMOE_TMPL_LFM25_INSTRUCT="${_tmpl_dir}/LFM2.5-Instruct.jinja"
+    BMOE_TMPL_GEMMA4="${_tmpl_dir}/google-gemma-4-31B-it.jinja")
 add_test(NAME think_control COMMAND bmoe_think_control_test)
 
 # validate() unit tests (issue #51 + the pre-existing rules). Pure config, no model — runs

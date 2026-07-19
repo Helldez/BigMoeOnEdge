@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A non-reasoning model is no longer told it "always reasons."** `think_ctl` reported `none` for
+  any model whose template ignores `enable_thinking` while its handler declares reasoning tags — but
+  handlers publish those tags for a whole *family*, so the non-reasoning members (LFM2-8B-A1B,
+  LFM2.5-Instruct) advertise a `<think>` they never emit. The app disabled their Thinking switch and
+  explained it with a sentence that was simply false. `none` now requires positive evidence that the
+  model reasons: the tag is declared **and** the template actually uses it — the same test llama.cpp
+  applies before wiring up reasoning extraction. Models with nothing to suppress report `template`,
+  which is what they did before any of this existed. Same for a template with no reasoning at all,
+  which used to fall into `none` through a second path.
+
 ## [0.13.0] - 2026-07-19
 
 ### Fixed
