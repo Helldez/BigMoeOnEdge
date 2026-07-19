@@ -30,10 +30,6 @@ phone's flash storage, and nothing else. The entire budget is a phone's UFS stor
 the bandwidth a desktop NVMe drive offers, which is exactly why the expert cache, the dense-weight
 policy and the read/compute overlap all have to earn their keep.
 
-Streaming does not change what the model computes: the output is **byte-for-byte identical** to
-running the model fully in RAM. Same weights, same math, just fetched later. There is exactly one
-optional lossy setting, and it's always labelled as such.
-
 Everything runs on **stock llama.cpp**. Upstream stays untouched, tracked as a plain submodule, and
 the streaming works through its public API, so following new llama.cpp releases is a routine
 submodule bump, not a merge.
