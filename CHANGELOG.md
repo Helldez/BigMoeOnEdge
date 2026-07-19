@@ -6,6 +6,8 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-19
+
 ### Added
 - **Liquid AI LFM2 / LFM2.5 MoE support** (arch `lfm2moe`, e.g. LFM2.5-8B-A1B, LFM2-24B-A2B). A
   hybrid short-convolution/attention stack whose routed experts use the standard split expert
@@ -13,7 +15,9 @@ Semantic Versioning.
   Two structural notes recorded in `docs/limitations.md`: the leading dense blocks name no expert
   tensors and stay resident, and the router's per-expert bias (`ffn_exp_probs_b`) applies before the
   top-k, so the node the engine reads is unaffected. Not added to the in-app download catalog: at
-  ~8B total the model fits in phone RAM, which is not the case the engine exists for.
+  ~8B total the model fits in phone RAM, which is not the case the engine exists for. Validated
+  on-device against LFM2.5-8B-A1B (Q5_K_M): experts stream with O_DIRECT over the discovered bank of
+  32, no engine change needed. Not a benchmarked configuration — the published tables are unchanged.
 
 ## [0.11.1] - 2026-07-19
 
