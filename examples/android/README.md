@@ -28,6 +28,11 @@ research harness and keeps the app a thin driver over the CLI.
    adb install app/build/outputs/apk/dev/debug/app-dev-debug.apk
    ```
 
+   Published sideload builds are release-signed with a stable key instead, so an update installs
+   over the previous one rather than being refused. That needs a `keystore.properties` next to
+   `app/` (gitignored — it points at the keystore and holds its passwords); without it the release
+   build falls back to debug signing.
+
 ## Flavors
 
 Two build flavors differ only in how a model reaches the device:
@@ -43,7 +48,8 @@ The picker lists every MoE `.gguf` it finds (dense models are filtered out by a 
 check). Nothing below needs a storage permission except the last option.
 
 1. **Built-in catalog** (both flavors) — the "Get a model" card offers the models this engine
-   is measured on, each a single tap: **Qwen3-30B-A3B-Q4_K_M** (~18.5 GB, the reference model)
+   is measured on, each a single tap: **Qwen3-30B-A3B-Q4_K_M** (~18.6 GB, the reference model),
+   **Qwen3.6-35B-A3B-Q4_K_M** (~22.3 GB, a hybrid attention/SSM MoE, comfortably past device RAM)
    and **Gemma-4-26B-A4B-it-Q4_K_M** (~17 GB). Downloads run in a foreground worker, survive the
    app being killed, resume an interrupted transfer instead of restarting, and appear in the
    picker when done.
@@ -84,5 +90,7 @@ adb push gpt-oss-120b-Q4_K_M.gguf /data/local/tmp/bmoe/   # or import it with th
 
 On a phone with UFS 4.x storage and ~12 GB RAM, streaming Qwen3-30B-A3B-Q4_K_M with the
 expert cache at 4000 MiB, 4 I/O lanes and 4 compute threads, decode settles around
-**0.55–0.6 s/token (~1.8 tok/s)** — a model ~1.7× the device RAM, lossless. See
-`../../docs/benchmark-method.md` for the full procedure and the cache/thread sweep.
+**0.55–0.6 s/token (~1.8 tok/s)** — a model ~1.7× the device RAM, lossless. That 4000 MiB is a
+sweep point from the benchmark protocol, not the app default: the app ships a fixed 2000 MiB
+expert cache. See `../../docs/benchmark-method.md` for the full procedure and the cache/thread
+sweep.

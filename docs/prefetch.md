@@ -14,8 +14,8 @@ layer's read into a cache hit; a wrong guess only wastes a read. For the very fi
 token, the predictor is the last prompt token's routing, recorded during prefill.
 
 `K` is a depth, not a certainty: recall falls as you look further ahead, so small `K` (1–2)
-captures most of the benefit. Prefetch requires the LRU cache (`--cache-mb > 0`); the speculative
-slices land in the per-layer cache buffers.
+captures most of the benefit. Prefetch requires the LRU cache to be on — either a fixed
+`--cache-mb N` or `--cache-mb auto`; the speculative slices land in the per-layer cache buffers.
 
 ## How it stays correct and out of the way
 

@@ -71,9 +71,9 @@ struct MoeStreamConfig {
     // Temporal prefetch: while a token computes layer l, speculatively read on the idle I/O
     // lanes the experts the PREVIOUS token routed at layers l+1..l+prefetch_layers, betting on
     // the strong temporal locality of routing. A correct guess turns the next layer's read into
-    // a cache hit; a wrong guess only wastes a read. 0 disables it. Needs the LRU cache on
-    // (speculative slices land in the per-layer cache buffers), so validate() rejects it with
-    // cache_mb == 0. See docs/prefetch.md.
+    // a cache hit; a wrong guess only wastes a read. 0 disables it. Needs the LRU cache on —
+    // a fixed cache_mb or cache_auto (speculative slices land in the per-layer cache buffers),
+    // so validate() rejects it when both are off. See docs/prefetch.md.
     int prefetch_layers = 0;
 
     // How the dense (non-expert) weights are treated. The streamer only rebinds experts; the rest —
