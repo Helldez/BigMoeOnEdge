@@ -6,6 +6,15 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **Internal cleanup, no behaviour change.** The per-token metrics block moved out of the middle of
+  `Session::generate()` into a `GenTally` that owns the streaming cursors and run totals (the
+  byte-identity gates pass unchanged). In the Android example, download tracking moved out of the
+  composable: `ModelDownloader.events()` streams progress and outcomes over WorkManager's own flow —
+  finalizing a landed `.part` before reporting it — instead of the UI polling on a timer and
+  re-seeding by hand, and the telemetry panel's compute/flash-wait/CPU-occupancy arithmetic is now a
+  pure `breakdown()` next to the contract it implements.
+
 ### Documentation
 - Benchmark tables standardized across the README and `docs/benchmarks.md` (expert count in-table,
   `k` = `n_expert_used` defined in the key and linked to the Turbo top-k section).
