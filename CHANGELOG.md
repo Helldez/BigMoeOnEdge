@@ -6,6 +6,33 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-19
+
+### Fixed
+- **The Thinking toggle is no longer a silent no-op on models whose chat template ignores it**
+  (issue #82). `--no-think` set the template's `enable_thinking` kwarg and stopped there, which is
+  only a *request*: LFM2.5's template never reads the variable, so it rendered the same prompt
+  either way and the model reasoned regardless, with nothing to tell the user. The request is now
+  enforced where the template cannot veto it — a reasoning-budget sampler closes the block on the
+  first token the model opens it with, driven by the thinking tags the loaded model itself reports.
+  gpt-oss keeps its existing primed-final-channel path (it exposes no tags), and templates that do
+  honour the kwarg are untouched, so nothing that already worked changes.
+
+### Added
+- **`think_ctl` in `BMOE_READY`**: which mechanism will honour a `think:false` request for the
+  loaded model — `template`, `forced_final`, `sampler`, or `none`. Decided by rendering the chat
+  template with thinking on and off and comparing, because llama.cpp's published `supports_thinking`
+  cannot answer it (per-handler it is a hardcoded literal meaning "this model can reason"). Probe
+  failures report `template`, so an unknown template is never wrongly accused. The Android app uses
+  it to describe the Thinking switch honestly instead of offering a control that does nothing.
+- **`--reasoning-budget N`** (and the matching `reasoning_budget` field on generate requests): cap
+  the tokens spent inside one reasoning block; `-1` unlimited (default), `0` closes it immediately.
+  Enforced on logits, so it applies whatever the template supports.
+
+### Notes
+- The byte-identity gates pass unchanged: nothing is armed on the raw-prompt path the gates run, so
+  the decode loop reduces to exactly the line it replaced.
+
 ## [0.12.0] - 2026-07-19
 
 ### Added

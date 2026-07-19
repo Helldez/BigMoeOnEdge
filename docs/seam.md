@@ -90,10 +90,18 @@ unit, `chat_parse.cpp` — the PEG parser arena has to be loaded explicitly or `
 throws on the first token, which is how issue #49 stayed invisible; keeping it separate makes
 that seam unit-testable without a model.
 
+`thinking_control.cpp` sits beside it for the same reason. Asking the template to disable
+reasoning is only a request — a template that never reads `enable_thinking` discards it silently
+(issue #82) — so the engine settles the question by rendering the template both ways and
+comparing, and enforces the request with `common_reasoning_budget_init` when the template will
+not. Both are template-derived, never keyed on a model name, and both are unit-tested against the
+vendored templates with no gguf (`tests/think_control_test.cpp`).
+
 Unlike the public-C-API streaming seam, `common` is **not a stable API** — it can change
 between upstream versions. So a submodule bump may require updating this chat glue in
-`session.cpp` / `chat_parse.cpp`; the build and gates catch a break at compile time rather than
-at runtime (`tests/chat_parse_test.cpp` covers the parser wiring directly). This
+`session.cpp` / `chat_parse.cpp` / `thinking_control.cpp`; the build and gates catch a break at
+compile time rather than at runtime (`tests/chat_parse_test.cpp` and
+`tests/think_control_test.cpp` cover that wiring directly). This
 trade-off is deliberate and is also noted at the link site in the root `CMakeLists.txt`. The
 gates themselves run with the template off (raw prompt), so they stay deterministic and are
 unaffected by this dependency.
