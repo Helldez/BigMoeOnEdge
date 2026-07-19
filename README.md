@@ -102,9 +102,11 @@ Q4_K_M. **How to read the tables**: each row is one configuration of the same mo
 phone.
 
 - **Configuration**: the streaming settings used. *mmap baseline* is the same file loaded the
-  ordinary way (no streaming), which is what the streamed rows are compared against. *k* is the
-  number of experts routed per token: each table shows the model's default width and, where
-  measured, a reduced *k* (the one lossy setting).
+  ordinary way (no streaming), which is what the streamed rows are compared against. *k* is how many
+  experts each token routes to — for us the number of experts, i.e. `n_expert_used` (set with
+  `--n-expert-used`). Each table shows the model's default width and, where measured, a reduced *k*,
+  the one lossy setting — see [Turbo top-k — the one lossy option](#turbo-top-k--the-one-lossy-option)
+  below.
 - **tok/s**: generation speed; higher is better.
 - **Flash/token**: data read from storage per generated token; lower means the cache is working.
 - **Cache hit**: share of expert reads served from RAM instead of flash.
