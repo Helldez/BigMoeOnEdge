@@ -7,6 +7,12 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Changed
+- **Default generation and cache parameters reviewed** (#71). `n_predict` now defaults to **128**
+  on every surface (core `RunConfig`, the CLI session fallback, and the Android app — previously
+  32 / 32 / 48): the old budgets truncated most answers mid-sentence, which reads as broken rather
+  than slow. The app's expert cache defaults to a **fixed 2000 MiB** instead of Auto (ceil 3000):
+  a fixed budget is reproducible across runs, while Auto sizes to whatever RAM happens to be free
+  at load. Auto stays selectable in Settings; existing installs keep their saved preferences.
 - **Android: release APKs are signed with a stable key.** Sideload builds were debug-signed, and a
   debug key is generated per machine, so every published APK had a different signature — Android then
   refuses to update in place (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`) and forces an uninstall, which
@@ -16,6 +22,15 @@ Semantic Versioning.
   after that install cleanly. The distributed artifact is now `app-dev-release.apk`.
 
 ### Added
+- **Layer-granularity compute trace** (`--compute-trace-layers PATH`). The per-node trace
+  (`--compute-trace`) pays ~3000 barriers per token, which serializes the graph against the expert
+  stream — on a model that streams heavily it mostly measures its own serialization (Qwen3-30B:
+  9.4 s/token traced vs 0.39 untraced), so its absolutes cannot be compared across models. Layer
+  granularity isolates only the first node of each layer (~`n_layer` barriers per token), so
+  operator coalescing and the async expert prefetch survive and the traced numbers stay close to
+  an untraced run — cheap enough to compare models head-to-head, per layer, with major faults
+  attributed per segment. `scripts/decode-analyze.py compute` detects the granularity and prints
+  the per-segment table; see docs/telemetry.md.
 - **Android: in-app model downloads now land on O_DIRECT-capable internal storage.** The catalog and
   paste-URL downloads used the system `DownloadManager`, which can only write to the app's external
   files dir — an emulated/FUSE volume where `O_DIRECT` silently returns wrong data, so the engine
