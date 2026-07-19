@@ -42,6 +42,16 @@ Semantic Versioning.
   the floor's own escape hatch (`--force-cache`) and the help text says what they are for.
 
 ### Fixed
+- **A reasoning model's thinking is shown instead of hidden.** Wiring the chat reasoning parser
+  correctly (the prior fix) started stripping the reasoning span from the answer *unconditionally* —
+  even with thinking enabled — so a Thinking-on run sat on a blank answer while the model reasoned and
+  only the final answer ever appeared, reading as a hang on a slow streamed decode. The reasoning was
+  parsed and then discarded. It is now surfaced alongside the answer, kept apart from it end to end:
+  `TokenMetrics`/`RunResult` carry a `reasoning` field, the line protocol adds `reasoning` to
+  `BMOE_PROGRESS`/`BMOE_DONE`, and the Android app renders it as a dimmed, collapsible "Thinking"
+  block above the reply — open while it streams, collapsed once the turn is committed. The answer
+  itself is unchanged (reasoning still stripped from it), so the byte-identity gates are untouched.
+  The Thinking setting description is now model-agnostic. Fixes #70.
 - **Android: a superseded session no longer starves the one replacing it.** Changing the model or
   settings started a new engine while the old process still held its model and expert cache, so the
   replacement sized its cache against a `MemAvailable` still deflated by the dying one — the app was
