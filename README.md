@@ -43,7 +43,7 @@ Highlights:
   Qwen3.6-35B-A3B (Q4_K_M, 22.3 GB) up to **5.0 tok/s** and Gemma-4-26B-A4B (Q4_K_M, 17.0 GB) up to
   **4.1 tok/s** on the same phone, output identical to the resident model.
 - **The problem only phones have**: Android's reclaim keeps taking back the
-  always-used weights mid-generation. `--dense-weights anon` puts them where reclaim can't cheaply
+  always-used weights mid-generation. `--dense-weights anon` feature puts them where reclaim can't cheaply
   take them, and it's worth **3.2×** on gpt-oss-120b on its own.
 - **Easy to extend**: a new MoE architecture is one row in a registry, and nothing about a specific
   model is hardcoded in the streaming path. Because the engine sits *on* stock llama.cpp instead of
