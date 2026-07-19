@@ -53,6 +53,22 @@ struct SessionConfig {
 // remembering to touch both. n_batch = n_ctx so any prompt that fits the context prefills in one batch.
 SessionConfig session_config_from(const RunConfig & cfg);
 
+// How a GenerateRequest::think=false request can be honoured on THIS model. Decided once at
+// open() by rendering the model's own chat template, never from a list of model names.
+//
+// Turning thinking off is a request to the template, and a template is free to ignore it: the
+// flag reaches the jinja context either way, so a model whose template never reads it reasons on
+// regardless and nothing reports that the setting was dropped. Probing says which case a model is
+// in, so a caller can stop offering a control that does nothing.
+enum class ThinkControl {
+    Template, // the template reads enable_thinking — passing the flag is the whole mechanism
+    Prefill,  // it does not; the reasoning span is closed in the prompt before generation instead
+    None,     // neither is available: the model cannot be asked to skip reasoning
+};
+
+// Stable lowercase name ("template", "prefill", "none") for logs and the telemetry protocol.
+const char * think_control_name(ThinkControl c);
+
 // Per-prompt request. clear_kv=true (the default) makes each prompt independent while the
 // expert cache stays warm; clear_kv=false continues the KV cache for multi-turn chat.
 struct GenerateRequest {
@@ -99,6 +115,11 @@ public:
     double load_seconds() const;      // model load + streaming setup, measured once at open()
     const std::string & arch() const; // model architecture ("qwen3moe", "gemma4", …)
     int n_ctx() const;
+
+    // Which thinking-off mechanism this model supports (probed at open()). Report it to the user
+    // rather than leaving a Thinking toggle that silently does nothing. Always Template when chat
+    // mode is off, where no template is rendered and the question does not arise.
+    ThinkControl think_control() const;
 
     // Set the expert-cache budget in MiB and evict down to it now. PRECONDITION: no generate() in
     // flight — call it between generations (e.g. from an app's memory-pressure callback). A no-op

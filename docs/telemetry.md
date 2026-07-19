@@ -251,7 +251,8 @@ user message, the engine re-renders the whole history and reuses the KV prefix (
 Responses (stdout):
 
 ```
-BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>}          # once, after the model loads
+BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>,
+            "think_ctl":"template|prefill|none"}                        # once, after the model loads
 BMOE_BEGIN {"id":<int>}                                                # a generation started
 BMOE_LOAD / BMOE_PROGRESS ...                                          # per token, as above
 BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
@@ -262,6 +263,23 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "token_demand_mib":<float>,"reasoning":"<string>","text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
+
+`BMOE_READY`'s `think_ctl` states how a `"think":false` request can be honoured on the model that
+was just loaded, so a UI need not offer a control that does nothing. It is decided by rendering the
+model's own chat template, not from a list of model names:
+
+| value | meaning | what the UI should do |
+|---|---|---|
+| `template` | the chat template reads `enable_thinking` (Qwen3 and most reasoning models) | offer the toggle |
+| `prefill` | it does not, but reasoning is a structural section the prompt can start past (harmony/gpt-oss) | offer the toggle |
+| `none` | the model reasons on every turn and cannot be asked not to (LFM2.5) | show the control disabled, and say why |
+
+The `prefill` / `none` split is decided by the reasoning tags the model declares, not by its name.
+A model that declares a `<think>`-style span owns that span: handing it one already closed and empty
+is a suggestion, and a model not trained on the convention reasons past it — measured on LFM2.5,
+which then emits its reasoning *untagged into the answer*, worse than not asking at all. A model
+that declares no tags separates reasoning structurally (a channel), and starting the turn past that
+section is not something it can decline.
 
 `BMOE_DONE` carries the end-of-generation summary (the one-shot mode's `generation:` /
 `moe-stream:` text lines are not emitted in session mode). `n_prompt` is the tokens actually

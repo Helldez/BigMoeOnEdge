@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
  * Groups every tunable the engine exposes. Changes are applied to [current] live and
@@ -19,6 +20,12 @@ import androidx.compose.ui.unit.sp
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack: () -> Unit) {
+    // Reported by the loaded session at BMOE_READY. "none" means this model reasons no matter what
+    // it is asked, so the Thinking switch is shown disabled with the reason rather than left there
+    // pretending to work (#82). Null = nothing loaded yet, so nothing is claimed either way.
+    val ui by RunBus.state.collectAsStateWithLifecycle()
+    val thinkingLocked = ui.thinkControl == "none"
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -151,10 +158,18 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
             Section("Prompt") {
                 SwitchRow(
                     "Thinking",
-                    "Let a reasoning model think before answering; its reasoning shows in a " +
-                        "collapsible block above the reply. Off tells the model to skip thinking. " +
-                        "No effect on models that don't reason.",
-                    current.thinking,
+                    if (thinkingLocked)
+                        "This model always reasons — it offers no way to turn thinking off, so the " +
+                            "switch is disabled here instead of being ignored silently. Its reasoning " +
+                            "still shows in a collapsible block above the reply."
+                    else
+                        "Let a reasoning model think before answering; its reasoning shows in a " +
+                            "collapsible block above the reply. Off tells the model to skip thinking. " +
+                            "No effect on models that don't reason.",
+                    // Locked reads ON, not OFF: the model reasons on every turn, and that is what
+                    // the switch should be showing whatever the stored preference says.
+                    checked = current.thinking || thinkingLocked,
+                    enabled = !thinkingLocked,
                 ) { onChange(current.copy(thinking = it)) }
             }
 

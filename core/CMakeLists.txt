@@ -25,6 +25,7 @@ if(BMOE_HAVE_LLAMA)
         src/moe/router_hook.cpp
         src/engine/session.cpp
         src/engine/chat_parse.cpp
+        src/engine/thinking_control.cpp
         src/engine/runtime.cpp
         src/metrics/csv_metrics_sink.cpp
         src/metrics/route_trace_sink.cpp
