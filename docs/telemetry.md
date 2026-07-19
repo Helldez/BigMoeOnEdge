@@ -237,13 +237,17 @@ extends to them naturally.
 Requests (stdin):
 
 ```
-{"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>}
+{"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>,
+ "reasoning_budget":<int>}
 {"cmd":"cancel"}          # interrupt the in-flight generation; the session stays loaded
 {"cmd":"close"}           # end the session (EOF on stdin does the same)
 ```
 
-`prompt` is JSON-escaped (newlines as `\n`); `n_predict`/`think`/`clear_kv` are optional and
-default to the process's flags / `true`. `clear_kv:true` starts a **new chat** (drops the KV and
+`prompt` is JSON-escaped (newlines as `\n`); `n_predict`/`think`/`clear_kv`/`reasoning_budget` are
+optional and default to the process's flags / `true`. `reasoning_budget` caps the tokens the model
+may spend inside one reasoning block (`-1` unlimited, `0` closes it as soon as it opens); it is
+enforced while decoding, so unlike `think` it does not depend on the chat template cooperating.
+`clear_kv:true` starts a **new chat** (drops the KV and
 the engine-held conversation); `clear_kv:false` **continues** the conversation — send only the new
 user message, the engine re-renders the whole history and reuses the KV prefix (see
 [session.md](session.md)). `cancel` may arrive at any time, including mid-generation.
@@ -251,7 +255,8 @@ user message, the engine re-renders the whole history and reuses the KV prefix (
 Responses (stdout):
 
 ```
-BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>}          # once, after the model loads
+BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>,
+            "think_ctl":"template"|"forced_final"|"sampler"|"none"}     # once, after the model loads
 BMOE_BEGIN {"id":<int>}                                                # a generation started
 BMOE_LOAD / BMOE_PROGRESS ...                                          # per token, as above
 BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
@@ -262,6 +267,21 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "token_demand_mib":<float>,"reasoning":"<string>","text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
+
+`think_ctl` reports how a `think:false` request will be honoured for the loaded model, decided at
+load by rendering the chat template both ways and comparing. Setting the template's
+`enable_thinking` kwarg is only a *request*: templates that never read it discard it in silence, so
+a client that assumes otherwise shows a control that does nothing (issue #82). The values:
+
+| value | meaning |
+|---|---|
+| `template` | the template renders differently with thinking off — honoured in the prompt |
+| `forced_final` | harmony/gpt-oss: the engine primes the final channel in the prompt instead |
+| `sampler` | the template ignores the request, but the model's thinking tags let the engine force the block closed while decoding |
+| `none` | the request cannot be honoured: the flag is ignored and no tags are exposed |
+
+Only `none` means the control is decorative — surface that rather than offering it. Probe failures
+report `template` (fail open), so an unknown template is never accused of ignoring the flag.
 
 `BMOE_DONE` carries the end-of-generation summary (the one-shot mode's `generation:` /
 `moe-stream:` text lines are not emitted in session mode). `n_prompt` is the tokens actually

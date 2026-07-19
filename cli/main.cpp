@@ -188,6 +188,7 @@ struct SessionCmd {
     int n_predict = 128;
     bool think = true;
     bool clear_kv = true;
+    int reasoning_budget = -1;
 };
 
 // Interactive session: keep the model loaded and the expert cache warm across prompts, reading
@@ -203,8 +204,11 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
         std::fflush(stdout);
         return 1;
     }
-    std::printf("BMOE_READY {\"load_s\":%.3f,\"arch\":\"%s\",\"n_ctx\":%d}\n", session->load_seconds(),
-                json_escape(session->arch()).c_str(), session->n_ctx());
+    // think_ctl tells the client which mechanism, if any, will honour a "think":false request for
+    // this model, so a UI can stop offering a control the template silently discards (issue #82).
+    std::printf("BMOE_READY {\"load_s\":%.3f,\"arch\":\"%s\",\"n_ctx\":%d,\"think_ctl\":\"%s\"}\n",
+                session->load_seconds(), json_escape(session->arch()).c_str(), session->n_ctx(),
+                think_control_name(session->think_control()));
     std::fflush(stdout);
 
     std::mutex mtx;
@@ -234,6 +238,7 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
                 c.n_predict = json_get_int(line, "n_predict", cfg.n_predict);
                 c.think = json_get_bool(line, "think", cfg.think);
                 c.clear_kv = json_get_bool(line, "clear_kv", true);
+                c.reasoning_budget = json_get_int(line, "reasoning_budget", cfg.reasoning_budget);
             } else {
                 continue;
             }
@@ -270,6 +275,7 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
         req.n_predict = cmd.n_predict;
         req.think = cmd.think;
         req.clear_kv = cmd.clear_kv;
+        req.reasoning_budget = cmd.reasoning_budget;
 
         RunResult r = session->generate(req, emit_progress_line, sink);
         if (!r) {
@@ -317,7 +323,14 @@ static void print_usage(const char * argv0) {
         "  -t, --threads N         compute threads (default 4)\n"
         "  -c, --ctx-size N        context size (default 2048)\n"
         "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
-        "      --no-think          render the chat template with reasoning disabled\n"
+        "      --no-think          suppress reasoning: renders the chat template with thinking\n"
+        "                          disabled, and for templates that ignore that kwarg, closes the\n"
+        "                          reasoning block while decoding instead. --session reports which\n"
+        "                          applies as think_ctl in BMOE_READY\n"
+        "      --reasoning-budget N\n"
+        "                          cap the tokens spent inside one reasoning block (-1 = unlimited,\n"
+        "                          the default; 0 = close it immediately). Enforced on logits, so it\n"
+        "                          works regardless of what the chat template supports\n"
         "      --progress          emit machine telemetry (one JSON line per token)\n"
         "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
         "      --csv PATH          also write per-token metrics as CSV\n"
@@ -404,6 +417,8 @@ int main(int argc, char ** argv) {
             cfg.chatml = true;
         else if (a == "--no-think")
             cfg.think = false;
+        else if (a == "--reasoning-budget")
+            cfg.reasoning_budget = std::atoi(next("--reasoning-budget"));
         else if (a == "--progress")
             cfg.progress = true;
         else if (a == "--session")
