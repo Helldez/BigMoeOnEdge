@@ -49,6 +49,94 @@ llama_token argmax(const float * logits, int n_vocab) {
     return best;
 }
 
+// The generation phase's running measurement state, and the one place a generated token's cost is
+// written down. The cursors hold the source's absolute totals as of the previous token — its stats
+// are cumulative across a warm session, so every per-token flash figure is a delta against these —
+// and the totals are what the summary averages over n_gen. Grouped into one object so the per-token
+// metrics block can be a method instead of ten more locals threaded through generate().
+struct GenTally {
+    // Fixed for the run; kept here so record() needs only the token's own measurements.
+    bool overlap = false;
+    int n_threads = 1;
+
+    long long prev_bytes = 0;
+    double prev_io_s = 0.0;
+    double prev_mgmt_s = 0.0;
+    double prev_stall_s = 0.0;
+
+    uint64_t read_bytes = 0;
+    double io_seconds = 0.0;
+    double mgmt_seconds = 0.0;
+    double stall_seconds = 0.0;
+    uint64_t majflt = 0;
+    double cpu_seconds = 0.0;
+
+    // Fill in everything a generated token is measured by — its wall/fault/CPU decomposition, the
+    // memory picture, and (when streaming) the flash figures taken as deltas against the cursors
+    // above — then advance those cursors and the run totals. The token's TEXT stays with the
+    // caller: what a token says depends on chat state, what it cost does not.
+    //
+    // `wall` is the decode's wall time in seconds and `faults`/`cpu_s` the deltas measured around
+    // that same decode; `st` is the expert source's stats, or null when streaming is off.
+    void
+    record(TokenMetrics & m, double wall, uint64_t faults, double cpu_s, int turn, const IExpertSource::Stats * st) {
+        m.wall_ms = wall * 1000.0;
+        // Fault/CPU decomposition is independent of streaming — dense-weight faults show up in the
+        // mmap baseline too — so record it for every token before the moe/no-moe split below.
+        m.majflt = faults;
+        m.cpu_ms = cpu_s * 1000.0;
+        m.majflt_mib = (double) m.majflt * (double) pio::fault_bytes() / (1024.0 * 1024.0);
+        m.turn = turn;
+        majflt += m.majflt;
+        cpu_seconds += cpu_s;
+
+        // Read the memory picture AFTER the decode, outside the caller's timing bracket: two /proc
+        // reads are cheap but they are not this token's work, and billing them to wall_ms would
+        // corrupt the very number the reader is here to trust.
+        pio::ProcessMemory pm;
+        if (pio::process_memory(&pm)) {
+            m.rss_mib = pm.rss_bytes / (1024.0 * 1024.0);
+            m.rss_anon_mib = pm.rss_anon_bytes / (1024.0 * 1024.0);
+            m.rss_file_mib = pm.rss_file_bytes / (1024.0 * 1024.0);
+            m.swap_mib = pm.swap_bytes / (1024.0 * 1024.0);
+        }
+        pio::DeviceMemory dm;
+        if (pio::device_memory(&dm)) {
+            m.mem_available_mib = dm.available_bytes / (1024.0 * 1024.0);
+            m.mem_free_mib = dm.free_bytes / (1024.0 * 1024.0);
+            m.swap_free_mib = dm.swap_free_bytes / (1024.0 * 1024.0);
+        }
+        if (!st) {
+            m.compute_ms = m.wall_ms;
+            m.cache_hit_pct = -1.0;
+            return;
+        }
+
+        m.dense_resident_frac = st->dense_resident_frac;
+        m.cache_budget_mib = st->cache_budget_bytes / (1024.0 * 1024.0);
+        m.read_bytes = (uint64_t) ((long long) st->read_bytes - prev_bytes);
+        m.io_ms = (st->read_seconds - prev_io_s) * 1000.0;
+        m.mgmt_ms = (st->mgmt_seconds - prev_mgmt_s) * 1000.0;
+        if (overlap) {
+            m.stall_ms = (st->stall_seconds - prev_stall_s) * 1000.0 / n_threads;
+            m.compute_ms = m.wall_ms - m.stall_ms - m.mgmt_ms;
+        } else {
+            m.compute_ms = m.wall_ms - m.io_ms - m.mgmt_ms;
+        }
+        if (m.compute_ms < 0) m.compute_ms = 0;
+        m.cache_hit_pct = st->cache_lookups > 0 ? 100.0 * st->cache_hits / st->cache_lookups : -1.0;
+
+        prev_bytes = (long long) st->read_bytes;
+        prev_io_s = st->read_seconds;
+        prev_mgmt_s = st->mgmt_seconds;
+        prev_stall_s = st->stall_seconds;
+        read_bytes += m.read_bytes;
+        io_seconds += m.io_ms / 1000.0;
+        mgmt_seconds += m.mgmt_ms / 1000.0;
+        stall_seconds += m.stall_ms / 1000.0;
+    }
+};
+
 // The names of the expert weight tensors the streamer rebinds. "Dense" is defined by subtraction —
 // everything the model has that is NOT one of these — so both consumers below start by asking this
 // same question, and used to answer it with their own copy of the same triple loop.
@@ -731,20 +819,19 @@ RunResult Session::generate(const GenerateRequest & req,
     // from real per-token deltas (prefill routes near the whole bank, so folding it into a
     // per-token average would badly inflate the flash-I/O figure). In a warm session these
     // counters carry the prior prompts' totals; the deltas make each prompt self-relative.
-    long long prev_bytes = moe.enabled ? (long long) im.source.stats().read_bytes : 0;
-    double prev_io_s = moe.enabled ? im.source.stats().read_seconds : 0.0;
-    double prev_mgmt_s = moe.enabled ? im.source.stats().mgmt_seconds : 0.0;
-    double prev_stall_s = moe.enabled ? im.source.stats().stall_seconds : 0.0;
+    GenTally tally;
+    tally.overlap = moe.overlap;
+    tally.n_threads = im.cfg.n_threads;
+    if (moe.enabled) {
+        const IExpertSource::Stats st0 = im.source.stats();
+        tally.prev_bytes = (long long) st0.read_bytes;
+        tally.prev_io_s = st0.read_seconds;
+        tally.prev_mgmt_s = st0.mgmt_seconds;
+        tally.prev_stall_s = st0.stall_seconds;
+    }
     long long prev_spec_bytes = moe.enabled ? (long long) im.source.stats().spec_read_bytes : 0;
     long long prev_spec_experts = moe.enabled ? im.source.stats().spec_experts : 0;
     long long prev_spec_useful = moe.enabled ? im.source.stats().spec_useful : 0;
-
-    uint64_t gen_read_bytes = 0;
-    double gen_io_seconds = 0.0;
-    double gen_mgmt_seconds = 0.0;
-    double gen_stall_seconds = 0.0;
-    uint64_t gen_majflt = 0;
-    double gen_cpu_seconds = 0.0;
 
     for (int t = 0; t < req.n_predict; ++t) {
         // Greedy stays argmax (byte-identical to the resident reference the gates check); with a
@@ -788,65 +875,14 @@ RunResult Session::generate(const GenerateRequest & req,
         TokenMetrics m;
         m.step = n_gen;
         m.steps = req.n_predict;
-        m.wall_ms = wall * 1000.0;
         m.piece = delta;
         {
             ShownView sv = shown_view(gen, /*partial*/ true);
             m.text = std::move(sv.content);
             m.reasoning = std::move(sv.reasoning);
         }
-        // Fault/CPU decomposition is independent of streaming — dense-weight faults show up in the
-        // mmap baseline too — so record it for every token before the moe/no-moe split below.
-        m.majflt = f1 - f0;
-        m.cpu_ms = (c1 - c0) * 1000.0;
-        m.majflt_mib = (double) m.majflt * (double) pio::fault_bytes() / (1024.0 * 1024.0);
-        m.turn = im.turn;
-        gen_majflt += m.majflt;
-        gen_cpu_seconds += (c1 - c0);
-
-        // Read the memory picture AFTER the decode, outside the s0..s1 bracket: two /proc reads are
-        // cheap but they are not this token's work, and billing them to wall_ms would corrupt the
-        // very number the reader is here to trust.
-        pio::ProcessMemory pm;
-        if (pio::process_memory(&pm)) {
-            m.rss_mib = pm.rss_bytes / (1024.0 * 1024.0);
-            m.rss_anon_mib = pm.rss_anon_bytes / (1024.0 * 1024.0);
-            m.rss_file_mib = pm.rss_file_bytes / (1024.0 * 1024.0);
-            m.swap_mib = pm.swap_bytes / (1024.0 * 1024.0);
-        }
-        pio::DeviceMemory dm;
-        if (pio::device_memory(&dm)) {
-            m.mem_available_mib = dm.available_bytes / (1024.0 * 1024.0);
-            m.mem_free_mib = dm.free_bytes / (1024.0 * 1024.0);
-            m.swap_free_mib = dm.swap_free_bytes / (1024.0 * 1024.0);
-        }
-        if (moe.enabled) {
-            IExpertSource::Stats st = im.source.stats();
-            m.dense_resident_frac = st.dense_resident_frac;
-            m.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
-            m.read_bytes = (uint64_t) ((long long) st.read_bytes - prev_bytes);
-            m.io_ms = (st.read_seconds - prev_io_s) * 1000.0;
-            m.mgmt_ms = (st.mgmt_seconds - prev_mgmt_s) * 1000.0;
-            if (moe.overlap) {
-                m.stall_ms = (st.stall_seconds - prev_stall_s) * 1000.0 / im.cfg.n_threads;
-                m.compute_ms = m.wall_ms - m.stall_ms - m.mgmt_ms;
-            } else {
-                m.compute_ms = m.wall_ms - m.io_ms - m.mgmt_ms;
-            }
-            if (m.compute_ms < 0) m.compute_ms = 0;
-            m.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
-            prev_bytes = (long long) st.read_bytes;
-            prev_io_s = st.read_seconds;
-            prev_mgmt_s = st.mgmt_seconds;
-            prev_stall_s = st.stall_seconds;
-            gen_read_bytes += m.read_bytes;
-            gen_io_seconds += m.io_ms / 1000.0;
-            gen_mgmt_seconds += m.mgmt_ms / 1000.0;
-            gen_stall_seconds += m.stall_ms / 1000.0;
-        } else {
-            m.compute_ms = m.wall_ms;
-            m.cache_hit_pct = -1.0;
-        }
+        const IExpertSource::Stats st = moe.enabled ? im.source.stats() : IExpertSource::Stats{};
+        tally.record(m, wall, f1 - f0, c1 - c0, im.turn, moe.enabled ? &st : nullptr);
         if (on_token) on_token(m);
         if (sink) sink->on_token(m);
     }
@@ -863,15 +899,15 @@ RunResult Session::generate(const GenerateRequest & req,
     s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
-    s.majflt_per_token = n_gen ? (double) gen_majflt / n_gen : 0.0;
-    s.cpu_s_per_token = n_gen ? gen_cpu_seconds / n_gen : 0.0;
+    s.majflt_per_token = n_gen ? (double) tally.majflt / n_gen : 0.0;
+    s.cpu_s_per_token = n_gen ? tally.cpu_seconds / n_gen : 0.0;
     if (moe.enabled) {
         IExpertSource::Stats st = im.source.stats();
-        s.moe_read_mib = gen_read_bytes / (1024.0 * 1024.0);
-        s.moe_io_seconds = gen_io_seconds;
-        s.moe_io_s_per_token = n_gen ? gen_io_seconds / n_gen : 0.0;
-        s.moe_mgmt_s_per_token = n_gen ? gen_mgmt_seconds / n_gen : 0.0;
-        s.moe_stall_s_per_token = n_gen ? gen_stall_seconds / n_gen : 0.0;
+        s.moe_read_mib = tally.read_bytes / (1024.0 * 1024.0);
+        s.moe_io_seconds = tally.io_seconds;
+        s.moe_io_s_per_token = n_gen ? tally.io_seconds / n_gen : 0.0;
+        s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
+        s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
         s.moe_compute_s_per_token =
             s.s_per_token - (moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token) - s.moe_mgmt_s_per_token;
         if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
