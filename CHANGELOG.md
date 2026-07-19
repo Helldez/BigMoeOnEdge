@@ -29,6 +29,14 @@ Semantic Versioning.
   the tokens spent inside one reasoning block; `-1` unlimited (default), `0` closes it immediately.
   Enforced on logits, so it applies whatever the template supports.
 
+- **Whitespace before a reasoning block no longer leaves the markers in the answer.** The generated
+  PEG parser anchors its reasoning rule immediately after the generation prompt and makes it
+  optional, so a single leading space or newline stops it matching — and the parse still succeeds,
+  with both markers falling through into the content. Suppressing the block made this visible rather
+  than causing it (an empty block is all markers, with no reasoning text to disguise the leak), so
+  the trim applies to normal reasoning spans too. It fires only when whitespace is all that stands
+  between the stream and the opening tag; an answer that legitimately opens with a blank line keeps it.
+
 ### Notes
 - The byte-identity gates pass unchanged: nothing is armed on the raw-prompt path the gates run, so
   the decode loop reduces to exactly the line it replaced.
