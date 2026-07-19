@@ -110,21 +110,25 @@ int main() {
         }
 
         // LFM2.5 — the model from issue #82. Its template never mentions enable_thinking, so both
-        // renders are identical; the handler does implement the continuation hook, so the span can
-        // be closed in the prompt.
+        // renders are identical. The continuation hook does land (the span below really is closed),
+        // but LFM2.5 declares <think>/</think>, so the closed span is only a suggestion to a model
+        // that owns its own reasoning tags — and measured on-device it reasons straight past it,
+        // untagged, into the answer. Reported as uncontrollable rather than made worse.
         {
             auto t = load(BMOE_TMPL_LFM25);
             expect("lfm2.5: flag is inert in the template", render(t.get(), /*think*/ true, /*prefill*/ false) ==
                                                                 render(t.get(), /*think*/ false, /*prefill*/ false));
-            expect("lfm2.5: probed as prefill",
-                   bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::Prefill);
-            expect_span_closed("lfm2.5: prefilled span is closed", t.get(), "</think>");
+            expect("lfm2.5: probed as none (declares its own reasoning tags)",
+                   bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::None);
+            // The prefill itself is well-formed — this is why "none" is a statement about the
+            // MODEL, not about a mechanism that failed to render.
+            expect_span_closed("lfm2.5: the prefill would close the span correctly", t.get(), "</think>");
         }
 
-        // gpt-oss / harmony. Its template ignores the flag too, and it exposes no thinking tags at
-        // all — a tag-based detector would give up here. Probing the continuation instead sees the
-        // mechanism that does exist: the handler primes the answer channel. This is the case the
-        // engine used to carry as two hardcoded harmony marker strings in the decode path.
+        // gpt-oss / harmony. Its template ignores the flag too, and it declares NO thinking tags:
+        // reasoning is a channel the format separates structurally, so priming past it is not
+        // something the model can decline. This is the case the engine used to carry as two
+        // hardcoded harmony marker strings in the decode path.
         {
             auto t = load(BMOE_TMPL_GPTOSS);
             expect("gpt-oss: probed as prefill",

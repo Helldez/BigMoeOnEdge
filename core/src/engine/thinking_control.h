@@ -38,10 +38,16 @@ void add_no_think_prefill(common_chat_templates_inputs & inputs);
 //      analyzer performs; `common_chat_params::supports_thinking` cannot answer the question,
 //      because per handler it is a hardcoded literal reporting "this model can reason", not
 //      "this template reads the variable".
-//   2. with the prefill applied — if that changes the prompt, the handler implements the
-//      continuation hook and the span can be closed ahead of generation.
-// Neither: the request cannot be honoured on this model, and saying so is better than offering a
-// control that does nothing.
+//   2. with the prefill applied — if that leaves the prompt untouched, nothing reaches this model
+//      and the request cannot be honoured.
+//   3. otherwise the prefill lands, and whether the model must OBEY it is read off the reasoning
+//      tags it declares: a declared span is the model's own to open and close, so a pre-closed
+//      empty one is only a suggestion (LFM2.5 ignores it — see probe_think_control); no declared
+//      span means the format separates reasoning structurally and the prefill places the model
+//      past it, which it cannot ignore.
+//
+// Saying "this model cannot be silenced" is better than offering a control that does nothing — and
+// far better than one that makes the output worse.
 //
 // Fails open to Template (the pre-existing behaviour: pass the flag and let the template decide),
 // because a probe that itself failed is no evidence that the flag is inert.

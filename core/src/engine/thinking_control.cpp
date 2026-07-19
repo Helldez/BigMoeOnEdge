@@ -62,14 +62,29 @@ void add_no_think_prefill(common_chat_templates_inputs & inputs) {
 ThinkControl probe_think_control(const common_chat_templates * tmpls) {
     if (tmpls == nullptr) return ThinkControl::Template;
     try {
-        const std::string off = apply_probe(tmpls, /*enable_thinking=*/false, /*prefill=*/false).prompt;
+        const common_chat_params off_p = apply_probe(tmpls, /*enable_thinking=*/false, /*prefill=*/false);
+        const std::string & off = off_p.prompt;
         const std::string on = apply_probe(tmpls, /*enable_thinking=*/true, /*prefill=*/false).prompt;
         if (on != off) return ThinkControl::Template;
 
         const std::string prefilled = apply_probe(tmpls, /*enable_thinking=*/false, /*prefill=*/true).prompt;
-        if (prefilled != off) return ThinkControl::Prefill;
+        if (prefilled == off) return ThinkControl::None; // nothing reaches this model at all
 
-        return ThinkControl::None;
+        // The prefill changes the prompt — but that alone does not mean the model will honour it,
+        // and the difference is visible in whether the model declares reasoning tags.
+        //
+        // Tags declared: reasoning is a span the MODEL opens and closes at will. Handing it one that
+        // is already closed and empty is a suggestion, and a model not trained on that convention
+        // reasons straight past it — measured on LFM2.5-8B-A1B, which ignores the closed span and
+        // reasons into the answer instead (issue #82). Worse than leaving it alone, because the
+        // reasoning arrives untagged. Report it as uncontrollable rather than making it worse.
+        //
+        // No tags declared: reasoning is structural — a channel or section the format itself
+        // separates — so the prefill does not ask the model to skip anything, it places the model
+        // past the reasoning section entirely. That the model cannot ignore (harmony/gpt-oss).
+        if (!off_p.thinking_start_tag.empty() || !off_p.thinking_end_tag.empty()) return ThinkControl::None;
+
+        return ThinkControl::Prefill;
     } catch (const std::exception & e) {
         std::fprintf(stderr, "bmoe: thinking-control probe failed (%s); assuming the template honours it\n", e.what());
         return ThinkControl::Template;

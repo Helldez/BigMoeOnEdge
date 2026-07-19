@@ -271,8 +271,15 @@ model's own chat template, not from a list of model names:
 | value | meaning | what the UI should do |
 |---|---|---|
 | `template` | the chat template reads `enable_thinking` (Qwen3 and most reasoning models) | offer the toggle |
-| `prefill` | it does not, so the engine closes the reasoning span in the prompt instead (LFM2.5, gpt-oss) | offer the toggle |
-| `none` | neither is available — the model reasons on every turn | show the control disabled, and say why |
+| `prefill` | it does not, but reasoning is a structural section the prompt can start past (harmony/gpt-oss) | offer the toggle |
+| `none` | the model reasons on every turn and cannot be asked not to (LFM2.5) | show the control disabled, and say why |
+
+The `prefill` / `none` split is decided by the reasoning tags the model declares, not by its name.
+A model that declares a `<think>`-style span owns that span: handing it one already closed and empty
+is a suggestion, and a model not trained on the convention reasons past it — measured on LFM2.5,
+which then emits its reasoning *untagged into the answer*, worse than not asking at all. A model
+that declares no tags separates reasoning structurally (a channel), and starting the turn past that
+section is not something it can decline.
 
 `BMOE_DONE` carries the end-of-generation summary (the one-shot mode's `generation:` /
 `moe-stream:` text lines are not emitted in session mode). `n_prompt` is the tokens actually

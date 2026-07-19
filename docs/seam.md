@@ -93,12 +93,17 @@ that seam unit-testable without a model.
 A second translation unit, `thinking_control.cpp`, crosses the same boundary for "thinking off".
 `enable_thinking` is only a *request* to the template, and many templates never read it, so the
 engine renders the template to find out (three renders at open, no model names involved) and, where
-the flag is inert, asks for a **continuation** instead: the `continue_final_message` field of
-`common_chat_templates_inputs`, plus a synthetic trailing assistant message, makes llama.cpp's own
-per-template handler emit that family's "reasoning is over" span into the prompt. This is why no `<think>` or
-harmony channel marker appears anywhere in `core/` — the markers stay upstream, where a submodule
-bump keeps them current. `tests/think_control_test.cpp` pins the behaviour against the vendored
-templates, again with no model.
+the flag is inert *and* reasoning is a structural section of the format, asks for a **continuation**
+instead: the `continue_final_message` field of `common_chat_templates_inputs`, plus a synthetic
+trailing assistant message, makes llama.cpp's own per-template handler emit that family's "reasoning
+is over" span into the prompt. This is why no `<think>` or harmony channel marker appears anywhere in
+`core/` — the markers stay upstream, where a submodule bump keeps them current.
+
+Whether the continuation is *binding* is read off `common_chat_params::thinking_start_tag`/
+`thinking_end_tag`: a model that declares a reasoning span owns it, so a pre-closed empty one is a
+suggestion it can decline (LFM2.5 does), while a model that declares none separates reasoning
+structurally and cannot. Both facts come from the loaded model, never from its name.
+`tests/think_control_test.cpp` pins all of it against the vendored templates, again with no model.
 
 Unlike the public-C-API streaming seam, `common` is **not a stable API** — it can change
 between upstream versions. So a submodule bump may require updating this chat glue in

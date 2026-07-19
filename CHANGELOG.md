@@ -11,12 +11,14 @@ Semantic Versioning.
   variable `enable_thinking` and stopped there — but that variable is only a *request* to the
   model's chat template, and many templates never read it. LFM2.5's is one: the rendered prompt came
   out byte-identical either way, the model reasoned on, and nothing reported that the setting had
-  been dropped. The engine now renders the template at load to find out which case a model is in,
-  and where the flag is inert it closes the reasoning span in the prompt instead, using llama.cpp's
-  own continuation hook so the markers for each family come from upstream's per-template handler
-  rather than from this engine. Models that support neither are reported as such
-  (`think_ctl` on `BMOE_READY`, see `docs/telemetry.md`) and the app shows the Thinking switch
-  disabled with the reason, instead of leaving a control that does nothing.
+  been dropped. The engine now renders the template at load and reports what it found as `think_ctl`
+  on `BMOE_READY` (see `docs/telemetry.md`). Where the flag is inert but reasoning is a *structural*
+  section of the format, the turn now starts past that section, built by llama.cpp's own
+  continuation hook so every family's markers come from upstream rather than from this engine.
+  Where the model owns its reasoning span and simply cannot be asked to skip it — LFM2.5 — that is
+  reported instead of papered over, and the app shows the Thinking switch disabled with the reason.
+  Measured, not assumed: handing LFM2.5 a pre-closed empty reasoning span makes it reason *untagged
+  into the answer*, worse than leaving the setting alone, so the engine does not do it.
 
 ### Changed
 - **The harmony/gpt-oss marker strings are gone from the decode path.** Priming gpt-oss to answer
