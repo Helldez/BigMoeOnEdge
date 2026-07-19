@@ -37,6 +37,14 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
    the streaming path.
 5. **Gates must pass before merge.** `bmoe_moe_gates` proves streamed == resident. If you
    touch the streamer, the seam, or bump the submodule, run them.
+6. **Docs and changelog ship with the change.** Every PR updates `CHANGELOG.md` and the docs
+   it invalidates, in the same PR — never as a later sweep. A release gets its own dated
+   `## [X.Y.Z] - YYYY-MM-DD` section; nothing accumulates under `[Unreleased]`. Check in
+   particular: the README benchmark tables and model list, the `docs/architecture.md` layer
+   map, `docs/seam.md` when the llama.cpp boundary moves, `docs/telemetry.md` when CSV
+   columns or the `BMOE_*` protocol change, `docs/roadmap.md` when a listed future item
+   ships, and `examples/android/README.md` when the catalog, settings or build flow change.
+   Docs that name a file the code no longer has are worse than no docs.
 
 ## Build and test
 
