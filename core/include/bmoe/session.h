@@ -53,6 +53,21 @@ struct SessionConfig {
 // remembering to touch both. n_batch = n_ctx so any prompt that fits the context prefills in one batch.
 SessionConfig session_config_from(const RunConfig & cfg);
 
+// How a "no thinking" request can actually be honoured for the loaded model. Setting the
+// template's enable_thinking kwarg is only a request; templates that never read it discard it
+// silently (issue #82). Decided once at open() by observing the template, never by model name.
+enum class ThinkControl {
+    Template,    // the template renders differently with thinking off — honoured at the source
+    ForcedFinal, // harmony/gpt-oss shape: the final channel is primed in the prompt instead
+    Sampler,     // the template ignores the flag, but the model's thinking tags let the engine
+                 // force the block closed while decoding
+    None,        // the flag is ignored and no tags are exposed: the request cannot be honoured
+};
+
+// Stable wire/display name for a control mode: "template" | "forced_final" | "sampler" | "none".
+// Part of the CLI's line protocol (docs/telemetry.md), so these strings are a contract.
+const char * think_control_name(ThinkControl c);
+
 // Per-prompt request. clear_kv=true (the default) makes each prompt independent while the
 // expert cache stays warm; clear_kv=false continues the KV cache for multi-turn chat.
 struct GenerateRequest {
@@ -60,6 +75,10 @@ struct GenerateRequest {
     int n_predict = 32;
     bool think = true;
     bool clear_kv = true;
+    // Cap on the tokens the model may spend inside one reasoning block; -1 leaves it
+    // unlimited. Enforced while decoding, so it applies even to templates that ignore
+    // `think`. Only meaningful with chatml. See RunConfig::reasoning_budget.
+    int reasoning_budget = -1;
 };
 
 class Session {
@@ -99,6 +118,11 @@ public:
     double load_seconds() const;      // model load + streaming setup, measured once at open()
     const std::string & arch() const; // model architecture ("qwen3moe", "gemma4", …)
     int n_ctx() const;
+
+    // Which mechanism honours GenerateRequest::think for this model. Callers surface it so a
+    // user is told when the control is real; None means the request cannot be honoured at all.
+    // Template when chat is off — the raw-prompt path has no template to disagree with.
+    ThinkControl think_control() const;
 
     // Set the expert-cache budget in MiB and evict down to it now. PRECONDITION: no generate() in
     // flight — call it between generations (e.g. from an app's memory-pressure callback). A no-op

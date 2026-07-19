@@ -3,6 +3,7 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "chat_parse.h"
+#include "thinking_control.h"
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
@@ -192,6 +193,13 @@ struct Session::Impl {
     common_chat_templates_ptr chat_tmpls;
     bool backend_inited = false;
 
+    // How a "thinking off" request can be honoured for this model, probed once from the template
+    // at open() (issue #82). Template is the fail-open answer, and the only one the raw-prompt
+    // path can give. Candidate scratch for the forced close, reused to keep it off the per-token
+    // allocation path; only touched on the few steps that actually force.
+    ThinkControl think_ctl = ThinkControl::Template;
+    std::vector<llama_token_data> think_scratch;
+
     // Sampling chain, built once at open() only when sampling is requested (temp > 0); null on the
     // greedy default, where the decode loop stays on the argmax fast path. See open()/generate().
     llama_sampler * smpl = nullptr;
@@ -251,6 +259,9 @@ const std::string & Session::arch() const {
 }
 int Session::n_ctx() const {
     return impl_->cfg.n_ctx;
+}
+ThinkControl Session::think_control() const {
+    return impl_->think_ctl;
 }
 void Session::set_cache_budget_mb(int mib) {
     impl_->source.set_cache_budget((size_t) std::max(0, mib) * 1024ull * 1024ull);
@@ -352,6 +363,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         try {
             im.chat_tmpls = common_chat_templates_init(model, "");
             im.chat_on = true;
+            // Ask the template, once, whether it actually reads enable_thinking — two renders,
+            // amortised over the session. Everything downstream keys on the answer instead of
+            // assuming the kwarg lands (issue #82).
+            im.think_ctl = detail::probe_think_control(im.chat_tmpls.get(), im.vocab);
         } catch (const std::exception & e) {
             std::fprintf(stderr, "bmoe: chat template unavailable (%s); using raw prompts\n", e.what());
             im.chat_on = false;
@@ -620,6 +635,10 @@ RunResult Session::generate(const GenerateRequest & req,
     bool history_pushed = false; // did we append this turn's user message to chat_history?
     bool forced_final = false;   // harmony no-think: primed the final channel, so skip reasoning parse
     common_chat_parser_params parse_params;
+    // Decode-time enforcement of the thinking request, armed below only for the models that need
+    // it. Per-turn (it is bound to this turn's rendered tags and generation prompt) and scoped so
+    // every early return — cancel, decode failure, template fallback — frees it.
+    std::unique_ptr<llama_sampler, void (*)(llama_sampler *)> think_smpl{nullptr, llama_sampler_free};
     if (chat_on) {
         try {
             common_chat_msg user_msg;
@@ -649,14 +668,25 @@ RunResult Session::generate(const GenerateRequest & req,
             // that suffix is unique to it (Qwen/Gemma use different markers), so keying on it
             // leaves every other family's --no-think behaviour untouched.
             if (!req.think) {
-                size_t last = prompt.find_last_not_of(" \t\r\n");
-                std::string trimmed = (last == std::string::npos) ? prompt : prompt.substr(0, last + 1);
-                static const std::string kHarmonyAsst = "<|start|>assistant";
-                if (trimmed.size() >= kHarmonyAsst.size() &&
-                    trimmed.compare(trimmed.size() - kHarmonyAsst.size(), kHarmonyAsst.size(), kHarmonyAsst) == 0) {
+                std::string trimmed;
+                if (detail::ends_with_harmony_assistant(prompt, &trimmed)) {
                     prompt = trimmed + "<|channel|>final<|message|>";
                     forced_final = true;
                 }
+            }
+
+            // Enforcement for the templates that discard enable_thinking outright (issue #82).
+            // The kwarg is only a request; a template that never reads it renders the same
+            // prompt either way and the model reasons on. A reasoning budget is enforced on
+            // logits instead, so it needs no cooperation from the template. It engages only
+            // where the probe found no other mechanism — Template models suppress at the source
+            // and harmony is already handled above, so neither is touched.
+            int budget = req.reasoning_budget; // -1 = unlimited
+            if (!req.think && im.think_ctl == ThinkControl::Sampler) {
+                budget = 0; // close the block the moment the model opens it
+            }
+            if (budget >= 0 && !forced_final) {
+                think_smpl.reset(detail::make_think_budget_sampler(im.vocab, cp, budget));
             }
         } catch (const std::exception & e) {
             std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
@@ -665,6 +695,7 @@ RunResult Session::generate(const GenerateRequest & req,
                 history_pushed = false;
             }
             chat_on = false;
+            think_smpl.reset(); // the raw-prompt fallback has no rendered tags to enforce against
         }
     }
 
@@ -834,10 +865,25 @@ RunResult Session::generate(const GenerateRequest & req,
     long long prev_spec_useful = moe.enabled ? im.source.stats().spec_useful : 0;
 
     for (int t = 0; t < req.n_predict; ++t) {
+        // A reasoning budget, when armed, overrides the choice only on the handful of steps that
+        // force the block closed; every other step falls through untouched. Outside those steps
+        // the sampler is a passthrough, so skipping it entirely (rather than applying it and
+        // relying on it to do nothing) keeps the normal path bit-for-bit what it was — which is
+        // what the byte-identity gates check. They render no template, so nothing is ever armed
+        // there and this reduces to the line it replaced.
+        //
         // Greedy stays argmax (byte-identical to the resident reference the gates check); with a
         // sampling chain, draw from the context's last-position logits, which llama_sampler_sample
         // reads at index -1 — the same logits argmax would have read.
-        llama_token tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
+        llama_token tok;
+        if (!think_smpl || !detail::think_forced_token(think_smpl.get(), logits, im.n_vocab, im.think_scratch, tok)) {
+            tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
+        }
+        // Every generated token drives the budget's state machine: it is how the opening tag is
+        // spotted, the allowance counted down, and the forced close walked to completion. A forced
+        // token is not fed back into the sampling chain — its stages are stateless bar the dist
+        // RNG, which simply does not advance on a step whose outcome was never in question.
+        if (think_smpl) llama_sampler_accept(think_smpl.get(), tok);
         if (llama_vocab_is_eog(im.vocab, tok)) break;
 
         char piece[256];

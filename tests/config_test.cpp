@@ -77,6 +77,23 @@ int main() {
         c.n_expert_used = -1;
         expect_fail("n_expert_used must be >= 0", c);
     }
+    // reasoning_budget: -1 is the "unlimited" sentinel and 0 ("close the block at once") is a
+    // real request, so only values below the sentinel are nonsense.
+    {
+        RunConfig c = ok_base();
+        c.reasoning_budget = -2;
+        expect_fail("reasoning_budget below the unlimited sentinel", c);
+    }
+    {
+        RunConfig c = ok_base();
+        c.reasoning_budget = 0;
+        expect_ok("reasoning_budget 0 suppresses reasoning", c);
+    }
+    {
+        RunConfig c = ok_base();
+        c.reasoning_budget = 512;
+        expect_ok("reasoning_budget caps reasoning", c);
+    }
 
     // Streaming rules.
     {

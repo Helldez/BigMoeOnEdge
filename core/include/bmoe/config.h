@@ -118,7 +118,17 @@ struct RunConfig {
     // its thinking channel when true. Off suppresses reasoning at the source rather than
     // relying on the display-time parser, which cannot strip a format it does not know.
     // Only meaningful with chatml; the raw-prompt path ignores it.
+    //
+    // Whether it is obeyed is the template's choice: Qwen3-style templates read the kwarg,
+    // LFM2.5 never does. When the template ignores it the engine enforces the request while
+    // decoding instead (see reasoning_budget and Session::think_control).
     bool think = true;
+
+    // Cap on the tokens the model may spend inside a single reasoning block. -1 (the default)
+    // leaves it unlimited; 0 closes the block as soon as the model opens it; N allows N tokens
+    // and then forces the close. Enforced on logits during decoding, so unlike `think` it does
+    // not depend on the template cooperating. Only meaningful with chatml.
+    int reasoning_budget = -1;
 
     // Override the number of active MoE experts per token (top-k routing). 0 = use the
     // model's own <arch>.expert_used_count from the gguf. A lower value cuts per-token

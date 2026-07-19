@@ -51,6 +51,7 @@ RunResult run(const RunConfig & cfg,
     req.prompt = cfg.prompt;
     req.n_predict = cfg.n_predict;
     req.think = cfg.think;
+    req.reasoning_budget = cfg.reasoning_budget;
     req.clear_kv = true;
 
     return session->generate(req, on_token, sink);
