@@ -2,6 +2,9 @@
 
 **Run Mixture-of-Experts models far bigger than your edge device's RAM.**
 
+> **The result: a ~60 GB model on a 12 GB phone — 1.3 tok/s lossless, byte-identical to running
+> from RAM, 2.2 tok/s with one speed knob. CPU-only, on stock llama.cpp.**
+
 A Mixture-of-Experts (MoE) model is made of many small "experts", and each generated token only
 uses a few of them. BigMoeOnEdge takes that literally: it keeps the small always-needed parts of
 the model at hand and reads just the experts each token asks for, directly from flash storage, at
@@ -13,6 +16,9 @@ The flagship case: **gpt-oss-120b**, a ~60 GB model (Q4_K_M), on a phone with 12
 about five times more model than memory, so holding it resident is simply impossible. It runs
 anyway, at **1.3 tok/s** with the model's own settings (**2.2 tok/s** with one speed knob), against
 **0.09 tok/s** for the same file loaded the ordinary way (mmap).
+
+<p align="center"><img src="docs/assets/hero.gif" width="380" alt="gpt-oss-120b (~60 GB) generating on a 12 GB phone, with live tok/s and telemetry"></p>
+<p align="center"><em>gpt-oss-120b (~60 GB) on a 12 GB phone — real time, not sped up. Full three-model demo below.</em></p>
 
 https://github.com/user-attachments/assets/f899b93f-c7c4-4ce9-9fb0-5ed1bae13761
 
@@ -26,7 +32,21 @@ policy and the read/compute overlap all have to earn their keep.
 
 Streaming does not change what the model computes: the output is **byte-for-byte identical** to
 running the model fully in RAM. Same weights, same math, just fetched later. There is exactly one
-optional lossy setting, and it's always labelled as such.
+optional lossy setting, and it's always labelled as such. That claim is not asserted, it's gated:
+the `moe_gates` tests decode the same model streamed and fully resident and compare the outputs
+byte for byte, and they must pass before anything merges. A run on this commit:
+
+```text
+$ ctest --output-on-failure
+1/6 Test #1: chat_parse .......................   Passed    0.34 sec
+2/6 Test #2: config_validate ..................   Passed    0.08 sec
+3/6 Test #3: moe_make_tiny_model_qwen3moe .....   Passed    0.46 sec
+4/6 Test #4: moe_gates_qwen3moe ...............   Passed    3.68 sec
+5/6 Test #5: moe_make_tiny_model_gemma4 .......   Passed    0.40 sec
+6/6 Test #6: moe_gates_gemma4 .................   Passed    1.91 sec
+
+100% tests passed, 0 tests failed out of 6
+```
 
 Everything runs on **stock llama.cpp**. Upstream stays untouched, tracked as a plain submodule, and
 the streaming works through its public API, so following new llama.cpp releases is a routine
@@ -61,6 +81,19 @@ Highlights:
 > 397B MoE from SSD on Apple Silicon, and on an iPhone through a community fork. BigMoeOnEdge takes
 > the other side of that problem: CPU-only, on Android, on stock llama.cpp, across architectures.
 > See [docs/limitations.md](docs/limitations.md).
+
+## Try it on your phone
+
+No build needed. Install the APK from the
+[latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest), open the **Get a
+model** card, and tap one of the catalog entries — Qwen3-30B-A3B (~18.6 GB), Qwen3.6-35B-A3B
+(~22.3 GB) or Gemma-4-26B-A4B (~17 GB), each past most phones' RAM. When the download finishes,
+pick the model and chat; the telemetry panel shows tok/s and the compute-vs-flash split live,
+and every streaming knob below is in Settings.
+
+The flagship gpt-oss-120b ships from Hugging Face as two shards, so it needs a one-time merge
+and a manual copy to the device: steps in the
+[Android example README](examples/android/README.md#gpt-oss-120b).
 
 ## Features
 

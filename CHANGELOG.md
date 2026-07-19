@@ -6,6 +6,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **README front page reworked around the result.** A copyable result banner under the title, an
+  autoplay hero GIF of gpt-oss-120b generating on-device (real time, cut from the existing demo
+  footage), a "Try it on your phone" quickstart that starts from the release APK and the in-app
+  catalog instead of a source build, and the byte-identity gate run shown next to the lossless
+  claim. No numbers changed.
+
 ## [0.12.0] - 2026-07-19
 
 ### Added
