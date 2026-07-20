@@ -1,0 +1,21 @@
+model   google_gemma-4-26B-A4B-it-Q4_K_M.gguf
+shape   30 layers (30 MoE), 128 experts, top-6, 4.14 MiB/expert
+batches 3870 (30 prefill + 3840 decode)
+T       676 MiB touched per token cycle (all layers x top-k, worst case)
+
+budget      belady       lru       lfu    random     layer  layerlfu
+(MiB)         hit%      hit%      hit%      hit%      hit%      hit%
+250           29.3       0.0      18.4       2.5      36.0      36.0
+500           48.2       0.0      30.5      12.5      36.0      36.0
+750           58.1      35.4      39.0      22.2      37.5      38.8
+1000          65.7      36.1      45.8      30.8      43.0      47.7
+1500          74.9      51.1      56.4      43.3      55.0      59.8
+2000          80.6      62.2      64.1      52.8      63.9      67.6
+2500          85.1      67.8      70.3      60.0      69.9      73.7
+3000          88.6      73.1      75.5      66.6      74.8      78.1
+4000          92.9      81.9      83.4      75.9      82.2      84.3
+6000          96.4      93.3      93.6      88.2      92.3      92.9
+8000          96.4      96.2      96.2      94.9      95.5      95.6
+
+(decode-only hit%; C=T boundary is where a budget stops holding one token cycle)
+wrote docs/bench-data/2026-07-20-cache-replay/gemma-curve.csv
