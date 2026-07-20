@@ -24,6 +24,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 
@@ -374,8 +375,13 @@ int main(int argc, char ** argv) {
     std::string io_trace_path;
     bool session_mode = false;
 
+    // Which flags the user actually typed. The env overrides below consult this rather than
+    // comparing against the default, so passing a flag its default value still wins.
+    std::set<std::string> seen;
+
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
+        seen.insert(a);
         auto next = [&](const char * what) -> const char * {
             if (i + 1 >= argc) {
                 std::fprintf(stderr, "missing value for %s\n", what);
@@ -482,13 +488,16 @@ int main(int argc, char ** argv) {
         }
     }
 
-    // Env overrides (flag wins: only apply when the flag left the default).
-    if (cfg.moe.cache_mb == 0 && !cfg.moe.cache_auto) cfg.moe.cache_mb = env_int("BMOE_CACHE_MB", 0);
-    if (cfg.moe.io_threads == 4) cfg.moe.io_threads = env_int("BMOE_IO_THREADS", 4);
-    if (!cfg.progress) cfg.progress = env_int("BMOE_PROGRESS", 0) != 0;
-    if (!cfg.moe.overlap) cfg.moe.overlap = env_int("BMOE_OVERLAP", 0) != 0;
-    if (cfg.moe.prefetch_layers == 0) cfg.moe.prefetch_layers = env_int("BMOE_PREFETCH", 0);
-    if (cfg.n_expert_used == 0) cfg.n_expert_used = env_int("BMOE_N_EXPERT_USED", 0);
+    // Env overrides (flag wins: only apply when the flag was not passed). Asking whether the flag
+    // was typed, not whether its value still equals the default, is what makes an explicit
+    // --cache-mb 0 (cache off) or --io-threads 4 stick. The defaults below match config.h, so an
+    // unset variable leaves the field alone.
+    if (!seen.count("--cache-mb")) cfg.moe.cache_mb = env_int("BMOE_CACHE_MB", 0);
+    if (!seen.count("--io-threads")) cfg.moe.io_threads = env_int("BMOE_IO_THREADS", 4);
+    if (!seen.count("--progress")) cfg.progress = env_int("BMOE_PROGRESS", 0) != 0;
+    if (!seen.count("--overlap")) cfg.moe.overlap = env_int("BMOE_OVERLAP", 0) != 0;
+    if (!seen.count("--prefetch")) cfg.moe.prefetch_layers = env_int("BMOE_PREFETCH", 0);
+    if (!seen.count("--n-expert-used")) cfg.n_expert_used = env_int("BMOE_N_EXPERT_USED", 0);
 
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);

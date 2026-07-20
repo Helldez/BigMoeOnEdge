@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.13.2] - 2026-07-20
+
+### Fixed
+- **An explicitly passed flag now really does beat the environment variable.** `bmoe-cli` documents
+  that a flag always wins over the matching `BMOE_*` override, but it decided "was this flag passed?"
+  by asking whether the field still held its default. So `--cache-mb 0` (cache deliberately off),
+  `--io-threads 4`, `--prefetch 0` and `--n-expert-used 0` were indistinguishable from an untouched
+  config and got overridden anyway — the app passes two of those explicitly. The CLI now records
+  which flags were typed and consults that, so passing a flag its default value is still a choice
+  the engine honours. Values arriving from the environment are validated exactly as before.
+
+### Removed
+- **The app's unused gguf architecture probe.** `GgufHeader.arch()` was written "to pick the right
+  chat turn format" and never called: `--chatml` already renders the model's *own* template, so the
+  format is chosen by the gguf, not by a name the app reads. Wiring it up would have reintroduced
+  the model-name list the engine's own design note rules out; it and its two private helpers are
+  gone. MoE detection (`isMoe`), the one entry point in use, is untouched.
+
 ## [0.13.1] - 2026-07-19
 
 ### Fixed

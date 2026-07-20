@@ -57,7 +57,10 @@ data class AppSettings(
             "-m", modelPath,
             "-t", threads.toString(),
             "-c", SESSION_CTX.toString(),
-            "--chatml", // apply the model family's chat turn (gemma / chatml)
+            // Render the model's OWN chat template, whichever family it belongs to; the flag name
+            // is historical (ChatML is only llama.cpp's fallback when a gguf ships no template).
+            // Nothing here selects a format, so it is correct for every model in the catalog.
+            "--chatml",
             "--session",
         )
         // Active-expert (top-k) override is a load-time kv_override, valid with or without
