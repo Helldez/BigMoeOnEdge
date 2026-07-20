@@ -23,6 +23,8 @@ core/
                 file_reader — pooled positioned reader, per-consumer O_DIRECT
     moe/        gguf_offsets, arch_registry, expert_stream_source, router_hook
                 dense_weights — non-expert weight policy + the residency sensor
+                expert_sidecar — contiguous per-expert sidecar file: offline builder +
+                index loader (one read per routed expert instead of one per projection)
     engine/     session — composition + the generation loop (open/generate/close)
                 runtime — the one-shot run() wrapper over a Session
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)

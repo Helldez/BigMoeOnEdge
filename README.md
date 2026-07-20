@@ -88,6 +88,11 @@ and a manual copy to the device: steps in the
   worth **3.2×** on its own.
 - **I/O–compute overlap** (`--overlap`): hides flash latency behind compute. Byte-identical;
   needs a small optional add-on to llama.cpp (see [docs/seam.md](docs/seam.md)).
+- **Expert sidecar** (`--build-sidecar`, then `--expert-sidecar auto`): a one-shot re-ordering of
+  the expert bytes into a separate file so each routed expert costs one contiguous flash read
+  instead of one per projection. Same weights, byte-identical output, **+16% decode** measured
+  ([evidence](docs/bench-data/2026-07-20-sidecar/findings.md)); costs disk roughly the size of
+  the model's expert tensors.
 - **Turbo top-k** (`--n-expert-used N`): the one lossy knob. Fewer experts per token, ~+22–24%
   speed, output quality is yours to judge.
 - **Multi-turn sessions and live telemetry**: the model stays loaded across chat turns, and every

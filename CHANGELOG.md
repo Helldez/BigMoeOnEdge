@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.14.0] - 2026-07-20
+
+Engine + CLI only; the Android app does not yet build or use sidecars (versionCode unchanged).
+
+### Added
+- **Contiguous per-expert sidecar** (`<model>.experts.bmoe`): an offline byte re-ordering of the
+  gguf's expert tensors so one routed expert costs ONE contiguous read instead of one per
+  projection. Same weights, same quantization, same output — gates G8a–e prove byte-identity
+  across cache off / LRU / overlap / prefetch on both expert layouts, and a tampered or
+  mismatched sidecar is refused at init (identity = source size + expert-map hash), never
+  silently ignored. Measured on device (LFM2.5-8B-A1B, interleaved A/B/A/B):
+  **+15.7% decode tok/s**, entirely from io_ms (−14%) —
+  [bench-data/2026-07-20-sidecar/findings.md](docs/bench-data/2026-07-20-sidecar/findings.md).
+  - `bmoe-cli --build-sidecar` builds it next to the model (one-shot, recipe-driven discovery,
+    no model-specific constants); `--expert-sidecar PATH|auto` streams experts from it.
+  - Library API `bmoe/expert_sidecar.h` (builder + index loader), for the app to call
+    post-download later.
+  - `FileReader::read_scatter`: one aligned O_DIRECT window distributed to N destinations.
+- **`bmoe-iobench --scatter N`**: split every logical read into N preads at independent offsets —
+  the microbench that justified the sidecar (scattered sub-MiB reads plateau ~10% under the
+  flash ceiling and cost ~35% at the engine's ~2 effective lanes; contiguous windows reach it).
+
 ## [0.13.3] - 2026-07-20
 
 Diagnostics only — no engine, CLI or app behaviour changes, so the Android version is unchanged.

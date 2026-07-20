@@ -28,11 +28,15 @@ What follows from that:
   a layer's routed experts would have to land on consecutive ids. Measured over the committed
   route traces they do so **0.6 % of the time on gpt-oss and ~4 % on Qwen/Gemma**; an ideal
   coalescer removes 4 % of the read *count* and zero bytes.
-- **Expert-contiguous gguf layout** (offline repack storing a layer's experts contiguously, and/or
-  grouping projections per expert) is the item that survives — but its value is no longer
-  "coalescing", since scatter is cheap here. Re-justify it before building: on storage where
-  large sequential reads beat scattered ones it still pays, and it is the prerequisite that would
-  make coalescing meaningful.
+- **Expert-contiguous layout — re-justified, built, measured (2026-07-20).** The re-justification
+  the previous revision demanded came back positive: `bmoe-iobench --scatter` shows the "flat
+  above 256 KiB" result held only at saturating lane counts — at the engine's real ~2 effective
+  lanes, 3 scattered ~300 KiB preads per expert cost ~35% of bandwidth vs one contiguous window
+  (1355 vs 1826 MiB/s), and scattered reads plateau ~10% under the ceiling even at 16 lanes.
+  Shipped as the **contiguous per-expert sidecar** (`--build-sidecar` / `--expert-sidecar`, a
+  separate file — the gguf is untouched, no repack): **+15.7% decode tok/s** on device, all of it
+  io_ms ([bench-data/2026-07-20-sidecar/findings.md](bench-data/2026-07-20-sidecar/findings.md)).
+  Owed: the Qwen3-30B k=8 A/B (pure I/O-bound, predicted larger) and app-side wiring.
 - The remaining gap between the engine's effective rate and the drive's is **duty cycle, not
   bandwidth**, and is not yet honestly sized: the ceiling itself falls by a third once the device
   is hot, so engine and microbench must be measured interleaved at matched entry state. Owed.
