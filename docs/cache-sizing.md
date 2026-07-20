@@ -1,11 +1,45 @@
 # Expert cache sizing
 
 The expert cache budget (`--cache-mb`) is the dominant throughput lever, but the right value is
-device- and model-specific: too small and the hit rate collapses; too large and the pinned cache
+device- and model-specific: too small and the hit rate collapses **to exactly zero — see the
+cliff below, it does not degrade gracefully**; too large and the pinned cache
 plus the mmap-resident model push `MemAvailable` to zero and the Android low-memory-killer takes
 the process (this is exactly why Gemma cannot use a 4000 MiB cache on an 11 GB phone — see
 [benchmarks.md](benchmarks.md)). `--cache-mb auto` removes the guess: the engine sizes the cache to
 the device once at load and holds that budget for the whole run.
+
+## The cliff: below one token cycle the hit rate is 0 %, not "low"
+
+Global LRU drops the least *recently* used entry. The model visits its layers in a fixed cycle
+0..N-1, so the least recently used entry is also the **soonest to be needed again**. While the
+budget holds a whole token cycle the cold end is genuinely stale history and this never shows.
+Once it does not, the cache evicts precisely what it is about to read, and the hit rate does not
+taper — it goes to **exactly 0.0 %**.
+
+Measured on device (2026-07-20): gpt-oss-120b at top-4 has a `token_demand_MiB` of 1815, and a
+**1500 MiB** budget returns 0.0 % hit while reading 1817.05 MiB/token — *identical to running with
+no cache at all* (1817.0) — and still spends 0.233 s/token, 24 % of the token, managing it, on top
+of holding 1500 MiB of RAM. Dropping the budget 2000 → 1500 does not cost a quarter of the hit
+rate; it costs all of it.
+
+Two traps worth knowing:
+
+- **1500 is a legal value.** It is exactly `cache_min_mb`; no `--force-cache` is needed. Today's
+  only protection is that this floor happens to sit above the cycle for the shipped models at
+  their default top-k. Raise `--n-expert-used` and the cycle moves above the floor (gpt-oss: 908
+  MiB at k=2, 1815 at k=4) and the protection silently stops holding.
+- **The existing floor is a different quantity.** `layer_demand_MiB` (the widest single layer, 50.4
+  on that run) is the mechanical minimum; the cliff is at `token_demand_MiB` (1815). They are
+  roughly `n_layer` apart. Both are already printed in the `# summary` line; nothing sizes from them.
+
+So when a budget is being chosen by hand, check it against `token_demand_MiB` from a previous run
+of the same model *and top-k*, not against `cache_min_mb`. Below the cycle, `--cache-mb 0` is
+strictly better than a cache: same reads, none of the RAM, none of the management cost.
+
+Fixing this by changing the eviction policy was tried and rejected — a per-layer partition is
+immune to the cliff by construction but costs ~30 % throughput
+([bench-data/2026-07-20-cache-replay/layer-lfu-verdict.md](bench-data/2026-07-20-cache-replay/layer-lfu-verdict.md)).
+The cheap fix is a guard: the worst-case cycle is computable at init from model shape alone.
 
 ## What it does
 

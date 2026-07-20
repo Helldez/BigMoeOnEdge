@@ -4,6 +4,19 @@ The expert LRU cache is filled reactively: a layer's experts are read only once 
 selected them. That leaves the read on the critical path — the first tokens of a generation miss
 often and stall on flash (see [benchmarks.md](benchmarks.md)). Temporal prefetch reads ahead.
 
+> **Measured, 2026-07-20 — the bet below does not pay on gpt-oss, and the premise is weaker than
+> stated.** Routing's temporal locality is not "strong": over the committed route traces the
+> previous token's top-k predicts the next token's **38.0 % on Qwen, 35.7 % on Gemma, 17.9 % on
+> gpt-oss** — and a *static* list of the run's hottest experts does as well or better (37.6 /
+> 39.6 / 26.7 %). The signal is popularity, not recency. On gpt-oss `--prefetch 1` was measured a
+> **2× slowdown** (828-895 ms/token against a 414 ms baseline) with no hit-rate gain: at top-2 a
+> one-layer read-ahead speculates ~908 MiB/token against 587 MiB/token of real demand, which a
+> 1-in-6 hit rate cannot pay for. Prefetch stays off by default. It has not been re-measured on
+> the top-6 models, where the predictor is twice as accurate and the wasted-read ratio smaller —
+> that is the open question, not the mechanism.
+> See [bench-data/2026-07-20-cache-replay/iobench-ceiling.md](bench-data/2026-07-20-cache-replay/iobench-ceiling.md)
+> and [bench-data/2026-07-15-route-trace/findings.md](bench-data/2026-07-15-route-trace/findings.md).
+
 ## The bet
 
 MoE routing has strong temporal locality: the experts a token selects at layer *l* overlap
