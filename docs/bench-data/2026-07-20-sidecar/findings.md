@@ -1,41 +1,46 @@
-# Contiguous per-expert sidecar — on-device A/B (2026-07-20)
+# Contiguous per-expert sidecar — measured NEGATIVE at engine level (2026-07-20)
 
-**Question.** Does re-ordering the expert bytes into one contiguous entry per (layer, expert)
-— one read per routed expert instead of one per projection — raise decode throughput on the
-reference device, at identical weights and quantization?
+**Verdict: refuted for the shipping configurations. PR #90 closed unmerged; the implementation
+survives at tag `expert-sidecar-refuted` if a future storage stack changes the trade.**
 
-**Method.** `bmoe-cli` on LFM2.5-8B-A1B-Q5_K_M (arch `lfm2moe`, 24 MoE layers, 32 experts,
-top-4), model and sidecar both on `/sdcard/Download` (O_DIRECT verified working there).
-Serial streaming, `--cache-mb 0 --io-threads 4 -t 4 -n 96`, dense weights anon. Cells
-interleaved A/B/A/B; each cell starts only once `scaling_max_freq` is back within 90% of max
-and thermal status is 0 (condition, not a timer — the first cooldown legitimately waited out
-a 2.0 GHz vendor cap). Raw per-token CSVs and the run log are in this directory.
+The sidecar re-orders the gguf's expert bytes into one contiguous entry per (layer, expert), so
+a routed expert costs one O_DIRECT read instead of one per projection. The microbench premise is
+TRUE; the engine-level conclusion drawn from it was false. Three interleaved A/B/A/B rounds
+(condition-gated cooldown, raw CSVs + logs in this directory):
 
-**Result.**
+| round | model / config | gguf | sidecar | delta |
+|---|---|---|---|---|
+| 1 | LFM2.5-8B, serial, cache 0, io4 | 2.529 tok/s | 2.927 | **+15.7%** |
+| 2 | LFM2.5-8B, overlap, cache 3000, io4 | 13.25 | 10.63 | **−20%** |
+| 3 | Qwen3-30B k8, overlap, cache auto/4000, io4 (README config) | 4.55 (clean pair) | 3.52 | **−23%** |
 
-| cell | layout  | decode tok/s | mean wall ms | mean io ms |
-|------|---------|--------------|--------------|------------|
-| a1   | gguf    | 2.528        | 396.6        | 327.6      |
-| b1   | sidecar | 2.901        | 345.2        | 282.0      |
-| a2   | gguf    | 2.530        | 393.7        | 327.3      |
-| b2   | sidecar | 2.952        | 338.8        | 282.7      |
+Round 3 carries thermal drift (a1 5.85 → a2 4.55 across the run; b1 started under a 2.27 GHz
+vendor cap) but the ordering is unambiguous: every sidecar cell lost to every adjacent gguf cell.
 
-Sidecar **+15.7% decode tok/s** (2.529 → 2.927 mean), reproducible to ~2% across the
-interleaved repeats, with the sidecar cells running *later* (thermally disadvantaged).
-The attribution is exactly the designed one: io_ms fell 14% while compute was unchanged —
-the win is read bandwidth, not a side effect.
+## Why the microbench won and the engine lost
 
-**Why it works (microbench).** `bmoe-iobench --scatter` on the same device: at the Qwen-class
-slice size (3 × ~300 KiB per expert), scattered reads plateau at ~1815 MiB/s even at 16
-lanes, while the same bytes as one contiguous window reach ~1980; at the engine's real ~2
-effective lanes the gap is 1355 vs 1826 MiB/s (+35%). Sub-MiB scattered reads are NOT free —
-the earlier "flat above 256 KiB" result was measured at saturating lane counts and does not
-transfer to the engine's operating point.
+- `bmoe-iobench --scatter` (this directory's justification, still valid as a *drive* fact):
+  at 3×~300 KiB scattered pieces the flash plateaus ~1815 MiB/s even at 16 lanes; the same
+  bytes contiguous reach ~1980 at 4 lanes, 1826 at 2. Contiguity genuinely buys bandwidth.
+- But the engine's overlap path consumes **projection-major** (mul_mat_id: all gates, then ups,
+  then downs) and emits its reads in that order so the kernel unblocks early. The sidecar can
+  only deliver **expert-major whole entries**: an expert's readiness flips when its full ~0.9 MB
+  entry lands (~2.6 ms) instead of when its first ~0.3 MB slice does (~1 ms). Latency-to-first-
+  projection triples, the compute pipeline stalls, and 3× fewer jobs under-fill the lanes when
+  misses are few. Bandwidth won; pipeline lost; pipeline is what tok/s is made of.
+- Round 1 (serial + cache off) is the one regime with no pipeline to starve — a barrier waits
+  for the whole batch anyway — which is why it showed +16% and why it was the wrong regime to
+  extrapolate from. Consistently, in rounds 2-3 the sidecar cells' *prefill* (batched, union
+  demand, bandwidth-bound) was equal or better; decode is where it loses.
 
-**Correctness.** Gates G8a–e: byte-identity streamed == resident with the sidecar across
-cache off / LRU / overlap / prefetch on both expert layouts (split and fused), plus refusal
-of a tampered sidecar. The sidecar carries the source gguf's size and an expert-map hash;
-a mismatch is a hard init error, never a silent fallback.
+## What stays true
 
-**Owed.** The same A/B on Qwen3-30B-A3B k=8 (pure I/O-bound: io/wall ≈ 2.0), where the
-microbench predicts a larger gain; and the app-side wiring (build post-download + toggle).
+- Gates G8a–e (byte-identity in every mode on both layouts, tamper refusal) all pass — the
+  implementation is correct, just not faster where it matters.
+- The scatter numbers refine `iobench-ceiling.md`: "flat above 256 KiB" holds only at
+  saturating lane counts. Sub-MiB scattered reads DO cost bandwidth at low effective lanes.
+- A hybrid (per-layer choice: entry reads when misses are many, per-projection when few) was
+  considered and NOT built: round 3 is the miss-heavy regime and still lost, so the hybrid's
+  best case is parity with today plus complexity. Do not rebuild without new evidence — e.g.
+  a projection-major sidecar variant would fix the consumption-order mismatch but reintroduces
+  scattered sub-entry reads, i.e. the thing the sidecar exists to remove.
