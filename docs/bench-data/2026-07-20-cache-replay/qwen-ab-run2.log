@@ -1,0 +1,17 @@
+=============== lfu_b ===============
+ENTRY: batt=365 dC lvl=85
+3% cpu=41700 mC mem=6219656 kB freq=2188800
+EXIT:  batt=368 dC lvl=84
+3% cpu=60200 mC freq=1900800
+generation: 256 tokens, 0.249 s/token (4.016 tok/s)
+moe-stream: read 50316.8 MiB (196.55 MiB/token), decode 0.249 s/token (compute 0.156 + cache mgmt 0.036 + flash I/O 0.264 s/token, 744 MiB/s)
+moe-cache: 72.8% hit, resident 2928.7 MiB
+=============== lru_b ===============
+ENTRY: batt=372 dC lvl=84
+3% cpu=44800 mC mem=6495672 kB freq=1900800
+EXIT:  batt=377 dC lvl=83
+3% cpu=59400 mC freq=1900800
+generation: 256 tokens, 0.197 s/token (5.072 tok/s)
+moe-stream: read 54139.1 MiB (211.48 MiB/token), decode 0.197 s/token (compute 0.110 + cache mgmt 0.028 + flash I/O 0.269 s/token, 785 MiB/s)
+moe-cache: 70.8% hit, resident 2998.7 MiB
+=============== DONE ===============
