@@ -88,6 +88,30 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
 
 long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) {
     if (nbytes == 0) return 0;
+    char * interior = nullptr;
+    const long long window = fill_window(lane, off, nbytes, &interior);
+    if (window < 0) return -1;
+    std::memcpy(dst, interior, (size_t) nbytes);
+    return window;
+}
+
+long long FileReader::read_scatter(int lane, uint64_t off, const Span * spans, int n_spans) {
+    uint64_t total = 0;
+    for (int i = 0; i < n_spans; ++i)
+        total += spans[i].nbytes;
+    if (total == 0) return 0;
+    char * interior = nullptr;
+    const long long window = fill_window(lane, off, total, &interior);
+    if (window < 0) return -1;
+    for (int i = 0; i < n_spans; ++i) {
+        if (spans[i].nbytes == 0) continue;
+        std::memcpy(spans[i].dst, interior, (size_t) spans[i].nbytes);
+        interior += spans[i].nbytes;
+    }
+    return window;
+}
+
+long long FileReader::fill_window(int lane, uint64_t off, uint64_t nbytes, char ** interior) {
     const uint64_t a0 = off & ~(uint64_t) (align_ - 1);
     const uint64_t a1 = (off + nbytes + align_ - 1) & ~(uint64_t) (align_ - 1);
     const size_t len = (size_t) (a1 - a0);
@@ -125,7 +149,7 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
     }
     const auto t1 = clock_t_::now();
     syscall_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
-    std::memcpy(dst, b + (off - a0), (size_t) nbytes);
+    *interior = b + (off - a0);
     const long long window = (long long) (read_end - a0);
     read_bytes_.fetch_add(window);
     return window; // the aligned window pulled — what the effective bandwidth is judged against

@@ -58,6 +58,15 @@ struct MoeStreamConfig {
     // Clamped to [1, io_threads_max]. 4 is the measured sweet spot on UFS4 phones.
     int io_threads = 4;
 
+    // Contiguous per-expert sidecar file (built offline from the gguf; see
+    // bmoe/expert_sidecar.h). When set, routed experts are read from it in one
+    // contiguous window each instead of one read per projection — same bytes, same weights,
+    // measured-faster layout. The sidecar carries the identity of the gguf it was built
+    // from; a mismatch is refused at init (hard error, not a silent fallback — a bench with
+    // a stale sidecar must not quietly measure the layout it was asked to replace).
+    // Empty = off (read from the gguf, today's behaviour).
+    std::string sidecar_path;
+
     bool o_direct = true;     // bypass the page cache (O_DIRECT / FILE_FLAG_NO_BUFFERING)
     bool load_all = false;    // debug/A-B: load ALL experts each token (full-sweep baseline)
     bool force_cache = false; // allow a cache_mb in the pathological band (tests/experiments)

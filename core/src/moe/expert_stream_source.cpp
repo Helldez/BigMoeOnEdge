@@ -1,5 +1,7 @@
 #include "expert_stream_source.h"
 
+#include "bmoe/expert_sidecar.h"
+
 #include "ggml.h"
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
 #include "ggml-cpu.h" // ggml_cpu_set_expert_ready_hook (fork-only)
@@ -153,6 +155,13 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     const size_t bounce_cap = max_slice + 2 * align_;
     if (!reader_.open(gguf_path, io_threads_, cfg.o_direct, align_, bounce_cap)) return false;
 
+    // Contiguous per-expert sidecar: identity-checked against the layers just bound, then given
+    // its own reader (own fds + bounces sized for whole entries). A mismatch is a hard init
+    // failure — falling back silently would let a run measure the layout it was asked to replace.
+    if (!cfg.sidecar_path.empty()) {
+        if (!init_sidecar(cfg.sidecar_path, cfg.o_direct)) return false;
+    }
+
     seen_.assign(n_expert_, 0);
     jobs_.reserve((size_t) n_expert_ * MoeRecipe::max_exps);
     batch_gen_ = 0;
@@ -216,6 +225,61 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     return true;
 }
 
+// ── sidecar init: validate identity, build the per-layer entry map, open the reader ─────
+bool ExpertStreamSource::init_sidecar(const std::string & sidecar_path, bool o_direct) {
+    const SidecarIndex idx = load_sidecar_index(sidecar_path);
+    if (!idx.ok) {
+        std::fprintf(stderr, "bmoe: sidecar %s: %s\n", sidecar_path.c_str(), idx.error.c_str());
+        return false;
+    }
+    if ((int) idx.n_expert != n_expert_ || idx.source_size != reader_.file_size()) {
+        std::fprintf(stderr, "bmoe: sidecar was built from a different model (n_expert %u vs %d, size %llu vs %llu)\n",
+                     idx.n_expert, n_expert_, (unsigned long long) idx.source_size,
+                     (unsigned long long) reader_.file_size());
+        return false;
+    }
+    // Recompute the expert-map hash from the layers actually bound and demand equality: same
+    // layers, same slots, same per-expert strides. This is what makes a stale sidecar (model
+    // re-quantized in place, registry recipe changed) impossible to consume.
+    std::vector<SidecarLayer> bound;
+    for (int il = 0; il < n_layer_; ++il) {
+        const LayerExperts & L = layers_[il];
+        if (!L.bound) continue;
+        SidecarLayer r;
+        r.il = (uint32_t) il;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            r.proj_bytes[p] = L.proj[p].nb2;
+        bound.push_back(r);
+    }
+    if (bound.size() != idx.layers.size() || expert_map_hash((uint32_t) n_expert_, bound) != idx.source_hash) {
+        std::fprintf(stderr, "bmoe: sidecar expert map does not match this model — rebuild it\n");
+        return false;
+    }
+
+    sc_base_.assign((size_t) n_layer_, 0);
+    sc_stride_.assign((size_t) n_layer_, 0);
+    uint64_t max_stride = 0;
+    for (size_t i = 0; i < idx.layers.size(); ++i) {
+        // The hash proved the two lists name the same layers in the same order; index by il.
+        const SidecarLayer & L = idx.layers[i];
+        if (L.il != bound[i].il || (int) L.il >= n_layer_) {
+            std::fprintf(stderr, "bmoe: sidecar layer table order mismatch\n");
+            return false;
+        }
+        sc_base_[L.il] = L.base_off;
+        sc_stride_[L.il] = L.entry_stride;
+        max_stride = std::max(max_stride, L.entry_stride);
+    }
+    if (!sidecar_reader_.open(sidecar_path, io_threads_, o_direct, align_, (size_t) max_stride + 2 * align_)) {
+        std::fprintf(stderr, "bmoe: sidecar open failed\n");
+        return false;
+    }
+    sidecar_on_ = true;
+    std::fprintf(stderr, "bmoe: expert sidecar ON  (%s, o_direct=%d)\n", sidecar_path.c_str(),
+                 (int) sidecar_reader_.direct());
+    return true;
+}
+
 // ── one aligned slice read on a lane ────────────────────────────────────────────────
 // The bytes come from the reader; this wraps it with the domain the reader must not know about — the
 // per-read I/O trace that attributes a read to its (layer, expert, projection). Latency is timed here
@@ -223,7 +287,24 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
 bool ExpertStreamSource::read_slice(int lane, const IoJob & j) {
     if (j.nbytes == 0) return true;
     const auto t0 = clock_t_::now();
-    const long long window = reader_.read(lane, j.dst, j.off, j.nbytes);
+    long long window;
+    if (j.proj < 0) {
+        // Sidecar entry job: one contiguous window carries every projection of this expert, in
+        // recipe slot order; scatter it into the per-projection destinations of the current cache
+        // mode. The spans are derived here, not carried in the job, so the job stays one pointer.
+        FileReader::Span spans[MoeRecipe::max_exps];
+        int ns = 0;
+        const LayerExperts & L = layers_[j.layer];
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            const uint64_t slice = L.proj[p].nb2;
+            if (slice == 0) continue;
+            char * base = cache_max_ == 0 ? (char *) slot_[p] : (char *) lbuf_[p][j.layer];
+            spans[ns++] = {base + (uint64_t) j.expert * slice, slice};
+        }
+        window = sidecar_reader_.read_scatter(lane, j.off, spans, ns);
+    } else {
+        window = reader_.read(lane, j.dst, j.off, j.nbytes);
+    }
     if (window < 0) return false;
 
     if (io_trace_on_) {
@@ -273,8 +354,17 @@ void ExpertStreamSource::io_drain(int lane, uint64_t my_gen) {
         // Overlap: publish this expert's readiness (batch_flag_gen_ is the async_gen_ of the
         // in-flight batch, fixed until it fully drains) and wake any compute thread blocked on
         // it. Notify even on failure so a straggler wakes and observes fatal_ instead of hanging.
+        // A sidecar entry job (proj < 0, flag carries the expert id) resolves EVERY projection of
+        // its expert in one read, so it flips all of that expert's per-projection flags at once.
         if (j.flag >= 0) {
-            ready_[(size_t) j.flag].gen.store(batch_flag_gen_, std::memory_order_release);
+            if (j.proj < 0) {
+                for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                    if (layers_[j.layer].proj[p].nb2)
+                        ready_[(size_t) p * (size_t) n_expert_ + (size_t) j.flag].gen.store(batch_flag_gen_,
+                                                                                            std::memory_order_release);
+            } else {
+                ready_[(size_t) j.flag].gen.store(batch_flag_gen_, std::memory_order_release);
+            }
             {
                 std::lock_guard<std::mutex> lk(ready_mtx_);
                 ready_cv_.notify_all();
@@ -320,6 +410,8 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
         if (e < 0 || e >= n_expert_) continue;
         const int32_t id = il * n_expert_ + e;
         if (cvalid_[id] || spec_remaining_[id] != 0) continue; // already resident or already queued
+        // Pages are committed per projection either way (the destinations don't move); what the
+        // sidecar changes is the job count: one entry read instead of one read per projection.
         int njobs = 0;
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             const uint64_t slice = L.proj[p].nb2;
@@ -328,9 +420,16 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
             uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
             uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
             if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) return; // low on memory — stop quietly
-            spec_jobs_.push_back(
-                {dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, e, (int16_t) il, (int8_t) p, 1});
-            ++njobs;
+            if (!sidecar_on_) {
+                spec_jobs_.push_back(
+                    {dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, e, (int16_t) il, (int8_t) p, 1});
+                ++njobs;
+            }
+        }
+        if (sidecar_on_) {
+            spec_jobs_.push_back({nullptr, sc_base_[il] + (uint64_t) e * sc_stride_[il], entry_bytes(il), id, e,
+                                  (int16_t) il, (int8_t) -1, 1});
+            njobs = 1;
         }
         if (njobs == 0) continue;
         spec_remaining_[id] = njobs;
@@ -621,14 +720,27 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     // budget is fixed for the run (auto sizes it once at init), so there is nothing to resize here.
     if (cache_max_) quiesce_spec();
 
+    // With the sidecar on, an expert's reads collapse to ONE entry job (proj == -1, dst derived in
+    // read_slice); otherwise one job per present projection. Shared by the hit/miss and cache-off
+    // branches below, which decide WHETHER to read — this is only HOW.
+    auto emit_expert = [&](int e) {
+        if (sidecar_on_) {
+            jobs_.push_back({nullptr, sc_base_[il] + (uint64_t) e * sc_stride_[il], entry_bytes(il), -1, e,
+                             (int16_t) il, (int8_t) -1, 0});
+            return;
+        }
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            const uint64_t slice = L.proj[p].nb2;
+            if (slice == 0) continue; // absent slot in a fused layout
+            char * dst = (cache_max_ == 0 ? (char *) slot_[p] : (char *) lbuf_[p][il]) + (uint64_t) e * slice;
+            jobs_.push_back(
+                {dst, L.proj[p].file_off + (uint64_t) e * slice, slice, -1, e, (int16_t) il, (int8_t) p, 0});
+        }
+    };
+
     auto stage = [&](int e) -> bool {
         if (cache_max_ == 0) {
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-                const uint64_t slice = L.proj[p].nb2;
-                if (slice == 0) continue; // absent slot in a fused layout
-                jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
-                                 slice, -1, e, (int16_t) il, (int8_t) p, 0});
-            }
+            emit_expert(e);
             return true;
         }
         bool hit = false;
@@ -637,12 +749,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
         // A miss: emit this expert's reads, expert-major. The drain below waits on them all, so the
         // order only has to be complete, not clever — unlike the overlap path, where it feeds a
         // kernel that is already blocking.
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-            const uint64_t slice = L.proj[p].nb2;
-            if (slice == 0) continue; // absent slot in a fused layout
-            jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
-                             slice, -1, e, (int16_t) il, (int8_t) p, 0});
-        }
+        emit_expert(e);
         return true;
     };
 
@@ -777,16 +884,31 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     account_demand(il, (int) staged_.size());
     maybe_sample_dense();
 
+    // Sidecar: one entry job per expert, flag = expert id (io_drain flips every projection's
+    // readiness at once). Expert-major IS the kernel's consumption order granularity here — a
+    // whole expert becomes ready atomically, so the projection-major refinement below has no
+    // sidecar equivalent and none is needed.
+    auto emit_entry = [&](int e) {
+        jobs_.push_back({nullptr, sc_base_[il] + (uint64_t) e * sc_stride_[il], entry_bytes(il), e, e, (int16_t) il,
+                         (int8_t) -1, 0});
+    };
+
     if (cache_max_ == 0) {
         // Cache off: every (projection, expert) is a fresh read into the shared full-size slot
         // at its canonical offset e*slice. Emit projection-major.
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-            const uint64_t slice = L.proj[p].nb2;
-            if (slice == 0) continue; // absent slot in a fused layout
-            for (int e : staged_) {
-                const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
-                jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
-                                 slice, flag, e, (int16_t) il, (int8_t) p, 0});
+        if (sidecar_on_) {
+            for (int e : staged_)
+                emit_entry(e);
+        } else {
+            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                const uint64_t slice = L.proj[p].nb2;
+                if (slice == 0) continue; // absent slot in a fused layout
+                for (int e : staged_) {
+                    const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
+                    jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice,
+                                     L.proj[p].file_off + (uint64_t) e * slice, slice, flag, e, (int16_t) il,
+                                     (int8_t) p, 0});
+                }
             }
         }
     } else {
@@ -807,15 +929,22 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             }
             seen_[e] = 1; // this expert missed → its projections need reads
         }
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-            const uint64_t slice = L.proj[p].nb2;
-            if (slice == 0) continue;
+        if (sidecar_on_) {
             for (int e : staged_) {
                 if (!seen_[e]) continue; // cache hit, already marked ready
-                const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
-                jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice,
-                                 L.proj[p].file_off + (uint64_t) e * slice, slice, flag, e, (int16_t) il, (int8_t) p,
-                                 0});
+                emit_entry(e);
+            }
+        } else {
+            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                const uint64_t slice = L.proj[p].nb2;
+                if (slice == 0) continue;
+                for (int e : staged_) {
+                    if (!seen_[e]) continue; // cache hit, already marked ready
+                    const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
+                    jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice,
+                                     L.proj[p].file_off + (uint64_t) e * slice, slice, flag, e, (int16_t) il,
+                                     (int8_t) p, 0});
+                }
             }
         }
 
@@ -914,11 +1043,13 @@ void ExpertStreamSource::enable_overlap_hook() {
 
 IExpertSource::Stats ExpertStreamSource::stats() const {
     Stats s;
-    s.read_bytes = (uint64_t) reader_.read_bytes();
+    // With the sidecar on the expert bytes flow through its reader while reader_ still serves
+    // nothing expert-side; summing both keeps the accounting correct in every mode.
+    s.read_bytes = (uint64_t) (reader_.read_bytes() + sidecar_reader_.read_bytes());
     // Serial: read_ns_ is the wall time the caller was blocked in the read phase. Overlap: the
     // caller never blocks, so "I/O time" is instead the summed lane-busy time (the reader's syscall
     // ns), which the runtime reports as lane-busy per token rather than as a slice of wall time.
-    s.read_seconds = (overlap_ ? reader_.syscall_ns() : read_ns_.load()) / 1e9;
+    s.read_seconds = (overlap_ ? reader_.syscall_ns() + sidecar_reader_.syscall_ns() : read_ns_.load()) / 1e9;
     s.mgmt_seconds = mgmt_ns_.load() / 1e9;
     s.spec_read_bytes = (uint64_t) spec_read_bytes_.load();
     s.spec_experts = spec_experts_.load();
@@ -983,6 +1114,10 @@ void ExpertStreamSource::shutdown() {
     dense_.shutdown();
     dense_tensors_.clear();
     reader_.close(); // closes the lane fds and frees the bounces
+    sidecar_reader_.close();
+    sidecar_on_ = false;
+    sc_base_.clear();
+    sc_stride_.clear();
     jobs_.clear();
     layers_.clear();
     active_ = false;

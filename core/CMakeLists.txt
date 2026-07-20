@@ -21,6 +21,7 @@ if(BMOE_HAVE_LLAMA)
         src/io/file_reader.cpp
         src/moe/dense_weights.cpp
         src/moe/gguf_offsets.cpp
+        src/moe/expert_sidecar.cpp
         src/moe/expert_stream_source.cpp
         src/moe/router_hook.cpp
         src/engine/session.cpp

@@ -183,6 +183,17 @@ private:
     // independent (see docs/architecture.md). file_size() replaces the old fsize_ member.
     FileReader reader_;
 
+    // Contiguous per-expert sidecar (see expert_sidecar.h). When on, expert reads go through
+    // sidecar_reader_ as ONE scatter-read per (layer, expert) — job proj == -1 — instead of one
+    // read per projection through reader_. Cache accounting, eviction and readiness are untouched:
+    // only where the bytes come from and how many preads they cost changes. sc_base_/sc_stride_
+    // are indexed by layer id (0 stride = layer absent from the sidecar, which init rejects for
+    // any bound layer, so the read path never has to re-check).
+    bool sidecar_on_ = false;
+    FileReader sidecar_reader_;
+    std::vector<uint64_t> sc_base_, sc_stride_;
+    bool init_sidecar(const std::string & sidecar_path, bool o_direct);
+
     std::vector<LayerExperts> layers_;
 
     // shared-slot mode (cache off): one full-size slot per projection, reused by layers

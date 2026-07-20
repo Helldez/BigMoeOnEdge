@@ -48,6 +48,11 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.moe.overlap && !cfg.moe.enabled) {
         return fail("moe.overlap requires moe.enabled");
     }
+    // Same rationale: the sidecar replaces the streamer's expert reads, which do not
+    // happen without streaming. Its existence/identity checks need I/O → deferred to init.
+    if (!cfg.moe.sidecar_path.empty() && !cfg.moe.enabled) {
+        return fail("moe.sidecar_path requires moe.enabled");
+    }
 
     if (cfg.moe.enabled) {
         const MoeStreamConfig & m = cfg.moe;

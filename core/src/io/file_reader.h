@@ -46,11 +46,28 @@ public:
     // error. A zero-length read is a no-op returning 0. The lane's bounce grows if a read needs more.
     long long read(int lane, void * dst, uint64_t off, uint64_t nbytes);
 
+    // One destination piece of a scatter read: `nbytes` consecutive source bytes land at `dst`.
+    struct Span {
+        void * dst;
+        uint64_t nbytes;
+    };
+
+    // Read the CONTIGUOUS source range starting at `off` (sum of span lengths) in one aligned
+    // window, then distribute it across the spans in order. This is what makes a contiguous
+    // per-expert layout consumable: one device read, N tensor destinations. Zero-length spans are
+    // skipped. Same return contract and thread-safety as read().
+    long long read_scatter(int lane, uint64_t off, const Span * spans, int n_spans);
+
     // Aggregate accounting since open, summed across lanes.
     long long read_bytes() const { return read_bytes_.load(std::memory_order_relaxed); }
     long long syscall_ns() const { return syscall_ns_.load(std::memory_order_relaxed); }
 
 private:
+    // Pull the aligned window covering [off, off+nbytes) into the lane's bounce; on success
+    // *interior points at the first requested byte inside it. Returns the window size or -1.
+    // The shared mechanics of read() and read_scatter(), which differ only in the copy-out.
+    long long fill_window(int lane, uint64_t off, uint64_t nbytes, char ** interior);
+
     std::vector<pio::fd_t> fds_;     // primary (maybe O_DIRECT) per lane
     std::vector<pio::fd_t> fds_buf_; // buffered fallback per lane, for the sub-alignment EOF tail
     std::vector<void *> bounces_;

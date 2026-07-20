@@ -31,13 +31,18 @@
 // S3 guards set_cache_budget_mb: evicting a warm cache mid-session must cost only re-reads.
 // G5 guards temporal prefetch: speculatively reading the next layers' experts must only warm the
 // cache — the routed slices a token actually consumes, and thus its output, are unchanged.
+//   G8  contiguous per-expert sidecar == streaming from the gguf (same bytes, different file)
+//         a) serial cache off   b) serial LRU cache   c) overlap   d) prefetch(sync)
+//         e) a TAMPERED sidecar must fail init — never silently produce output
 #include "bmoe/config.h"
+#include "bmoe/expert_sidecar.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
 
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <vector>
 
 using namespace bmoe;
 
@@ -323,6 +328,88 @@ int main(int argc, char ** argv) {
 #else
     std::printf("[SKIP] G5b (expert-ready hook not built)\n");
 #endif
+
+    // ── G8: the contiguous per-expert sidecar serves the same bytes as the gguf ──
+    // Build it fresh from the tiny model, then re-run the main modes reading experts from it.
+    // Identity across cache off / LRU / overlap / prefetch proves the scatter-read lands every
+    // projection at its canonical offset in every staging path.
+    const std::string sc_path = sidecar_path_for(model);
+    std::string sc_err;
+    if (!build_expert_sidecar(model, sc_path, sc_err)) {
+        std::fprintf(stderr, "sidecar build failed: %s\n", sc_err.c_str());
+        return 2;
+    }
+
+    RunConfig sc0 = stream0; // serial, cache off
+    sc0.moe.sidecar_path = sc_path;
+    RunConfig scc = streamc; // serial, small forced LRU cache (evictions + re-reads)
+    scc.moe.sidecar_path = sc_path;
+    std::string s_sc0, s_scc;
+    if (!gen(sc0, s_sc0, err)) {
+        std::fprintf(stderr, "sidecar(cache off) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    if (!gen(scc, s_scc, err)) {
+        std::fprintf(stderr, "sidecar(LRU cache) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G8a sidecar(cache off) == streaming(cache off)", s_s0, s_sc0);
+    fails += check("G8b sidecar(LRU cache) == streaming(cache off)", s_s0, s_scc);
+
+#ifdef BMOE_HAVE_EXPERT_READY_HOOK
+    RunConfig sc_ov = sc0;
+    sc_ov.moe.overlap = true;
+    std::string s_sc_ov;
+    if (!gen(sc_ov, s_sc_ov, err)) {
+        std::fprintf(stderr, "sidecar overlap run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G8c sidecar(overlap) == streaming(cache off)", s_s0, s_sc_ov);
+#else
+    std::printf("[SKIP] G8c (expert-ready hook not built)\n");
+#endif
+
+    RunConfig sc_pf = pf; // prefetch with deterministic (synchronous) speculative integration
+    sc_pf.moe.prefetch_sync = true;
+    sc_pf.moe.sidecar_path = sc_path;
+    std::string s_sc_pf;
+    if (!gen(sc_pf, s_sc_pf, err)) {
+        std::fprintf(stderr, "sidecar prefetch(sync) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G8d sidecar(prefetch sync) == streaming(cache off)", s_s0, s_sc_pf);
+
+    // G8e: corrupt the stored expert-map hash; init must REFUSE the sidecar (hard failure), not
+    // fall back or stream garbage. The tamper flips one byte of source_hash (header offset 32).
+    {
+        const std::string bad_path = sc_path + ".tampered";
+        std::FILE * in = std::fopen(sc_path.c_str(), "rb");
+        std::FILE * out = in ? std::fopen(bad_path.c_str(), "wb") : nullptr;
+        if (!in || !out) {
+            std::fprintf(stderr, "tamper copy failed\n");
+            return 2;
+        }
+        std::vector<char> buf(1 << 20);
+        size_t got;
+        while ((got = std::fread(buf.data(), 1, buf.size(), in)) > 0)
+            std::fwrite(buf.data(), 1, got, out);
+        std::fclose(in);
+        std::fseek(out, 32, SEEK_SET);
+        const char x = (char) 0xA5;
+        std::fwrite(&x, 1, 1, out);
+        std::fclose(out);
+
+        RunConfig bad = sc0;
+        bad.moe.sidecar_path = bad_path;
+        std::string s_bad;
+        if (gen(bad, s_bad, err)) {
+            std::printf("[FAIL] G8e tampered sidecar was accepted\n");
+            ++fails;
+        } else {
+            std::printf("[PASS] G8e tampered sidecar refused (%s)\n", err.c_str());
+        }
+        std::remove(bad_path.c_str());
+    }
 
     // G5c forces speculative reads to complete synchronously, so the integrate-then-hit path (a
     // prefetched expert becoming resident and a later routing hitting it) is deterministically

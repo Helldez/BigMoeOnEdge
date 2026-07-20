@@ -8,6 +8,7 @@
 // Environment variables are read ONLY here, as overrides for the matching flags, so the
 // engine stays env-free. The flag always wins over the env value.
 #include "bmoe/config.h"
+#include "bmoe/expert_sidecar.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
 #include "bmoe/recipe.h"
@@ -360,6 +361,13 @@ static void print_usage(const char * argv0) {
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
         "      --prefetch K        temporally prefetch the next K layers' experts (needs the cache)\n"
+        "      --build-sidecar     build the contiguous per-expert sidecar (<model>.experts.bmoe)\n"
+        "                          next to the model and exit. One-shot; needs free disk about the\n"
+        "                          size of the model's expert tensors\n"
+        "      --expert-sidecar P  read experts from sidecar P ('auto' = <model>.experts.bmoe):\n"
+        "                          one contiguous read per routed expert instead of one per\n"
+        "                          projection — same bytes, measured-faster layout. Refuses a\n"
+        "                          sidecar built from a different gguf\n"
         "      --list-archs        print supported MoE architectures and exit\n"
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
@@ -369,6 +377,7 @@ static void print_usage(const char * argv0) {
 
 int main(int argc, char ** argv) {
     RunConfig cfg;
+    bool build_sidecar = false;
     std::string csv_path;
     std::string route_trace_path;
     std::string compute_trace_path;
@@ -473,6 +482,11 @@ int main(int argc, char ** argv) {
             cfg.moe.prefetch_layers = std::atoi(next("--prefetch"));
         else if (a == "--prefetch-sync") // debug: complete speculative reads synchronously
             cfg.moe.prefetch_sync = true;
+        else if (a == "--build-sidecar")
+            build_sidecar = true;
+        else if (a == "--expert-sidecar")
+            cfg.moe.sidecar_path = next("--expert-sidecar"); // 'auto' resolved after the loop
+
         else if (a == "--list-archs") {
             std::printf("supported MoE architectures:\n");
             for (int k = 0; k < n_moe_recipes(); ++k)
@@ -502,6 +516,29 @@ int main(int argc, char ** argv) {
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);
         return 1;
+    }
+
+    if (cfg.moe.sidecar_path == "auto") cfg.moe.sidecar_path = sidecar_path_for(cfg.model_path);
+
+    if (build_sidecar) {
+        const std::string out = cfg.moe.sidecar_path.empty() ? sidecar_path_for(cfg.model_path) : cfg.moe.sidecar_path;
+        std::string err;
+        std::fprintf(stderr, "building expert sidecar: %s\n", out.c_str());
+        const bool ok = build_expert_sidecar(cfg.model_path, out, err, [](uint64_t done, uint64_t total) {
+            static int last = -1;
+            const int pct = total ? (int) (done * 100 / total) : 0;
+            if (pct != last) {
+                std::fprintf(stderr, "\r%3d%%", pct);
+                last = pct;
+            }
+        });
+        std::fprintf(stderr, "\n");
+        if (!ok) {
+            std::fprintf(stderr, "sidecar build failed: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "done\n");
+        return 0;
     }
 
     ValidationResult vr = validate(cfg);
