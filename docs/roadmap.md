@@ -60,11 +60,11 @@ Whether a smarter eviction policy could raise throughput is **answered, and the 
 Offline replay of the route traces through Bélády, LRU, LFU, random and a per-layer partition
 (`scripts/route-replay.py`, validated against the recorded hit rates to the decimal) shows the
 offline optimum is 11-23 points above LRU, but **no online policy recovers more than ~5**. The
-best candidate, a per-layer budget partition with frequency eviction, was implemented on the
-branch `feat/expert-cache-layer-lfu` and measured: it delivers the predicted hit-rate gain
+best candidate, a per-layer budget partition with frequency eviction, was implemented under the
+tag `experiment/layer-lfu` and measured: it delivers the predicted hit-rate gain
 (+2.0 points, −7 % flash reads) and is **~30 % slower**, because a hard per-layer cap removes the
 cache's ability to self-balance and the resulting `MADV_DONTNEED` churn gets paid for by the
-kernel reclaiming the dense weights (majflt/token 6 → 2370). It was left on the branch rather
+kernel reclaiming the dense weights (majflt/token 6 → 2370). It is preserved under that tag rather
 than merged — a measured regression does not belong in the engine.
 
 The transferable lesson: a hit-rate curve is not a throughput argument. Any future policy has to

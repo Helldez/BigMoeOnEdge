@@ -4,10 +4,10 @@ A per-layer budget partition with least-frequently-used eviction inside a layer,
 offline replay put it 3.5-5 points of hit rate above global LRU at shipped budgets on top-6
 models. On device it delivers that hit rate and is **~30 % slower**.
 
-> **The implementation is not in `main`.** It lives on the branch
-> [`feat/expert-cache-layer-lfu`](https://github.com/Helldez/BigMoeOnEdge/tree/feat/expert-cache-layer-lfu)
-> as a `--cache-policy lru|layer-lfu` flag (default `lru`), byte-identity gated, and was left
-> there rather than merged: a measured regression does not belong in the engine, but the numbers
+> **The implementation is not in `main`.** It is preserved under the tag
+> [`experiment/layer-lfu`](https://github.com/Helldez/BigMoeOnEdge/tree/experiment/layer-lfu)
+> as a `--cache-policy lru|layer-lfu` flag (default `lru`), byte-identity gated (G8, G4d), and was
+> deliberately not merged: a measured regression does not belong in the engine, but the numbers
 > below are worth keeping. Read this as a closed experiment, not as an available option.
 
 ## The A/B
@@ -58,7 +58,7 @@ major fault. The cache buys 2 points of expert hit rate and hands back the dense
 ## Conclusion
 
 **Do not ship layer-lfu as a throughput feature.** The engine keeps global LRU, which is what
-every published measurement was taken against; the implementation stays on its branch.
+every published measurement was taken against; the implementation is preserved under that tag.
 
 The lesson generalises: the replay models *which* entries a policy keeps, and it models that
 correctly, but it cannot model *what keeping them costs*. A hit rate is not a proxy for
