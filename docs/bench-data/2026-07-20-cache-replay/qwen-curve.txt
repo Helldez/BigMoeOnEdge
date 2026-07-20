@@ -1,0 +1,21 @@
+model   Qwen3-30B-A3B-Q4_K_M.gguf
+shape   48 layers (48 MoE), 128 experts, top-6, 2.92 MiB/expert
+batches 6192 (48 prefill + 6144 decode)
+T       785 MiB touched per token cycle (all layers x top-k, worst case)
+
+budget      belady       lru       lfu    random     layer  layerlfu
+(MiB)         hit%      hit%      hit%      hit%      hit%      hit%
+250           27.5       0.0      17.1       1.5      38.3      38.3
+500           45.3       0.0      26.6       9.8      38.3      38.3
+750           55.4       0.0      34.1      18.9      38.3      38.3
+1000          62.7      37.7      40.2      26.7      42.3      45.1
+1500          72.7      47.0      50.3      39.3      50.5      55.2
+2000          79.4      56.5      58.6      49.1      59.4      63.3
+2500          84.1      65.1      65.5      56.9      65.4      68.9
+3000          87.8      70.6      71.3      63.6      71.1      74.2
+4000          92.7      80.3      80.8      74.0      79.7      81.7
+6000          96.6      92.1      92.0      86.6      90.3      91.0
+8000          97.1      96.0      96.0      93.1      95.0      95.2
+
+(decode-only hit%; C=T boundary is where a budget stops holding one token cycle)
+wrote docs/bench-data/2026-07-20-cache-replay/qwen-curve.csv
