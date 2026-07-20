@@ -33,6 +33,27 @@ enum class DenseWeightsMode {
     Anonymous, // read via O_DIRECT into our own anon buffers and rebind (swaps to zram, not flash)
 };
 
+// How the expert cache chooses what to drop when it is full.
+//
+// Lru is one global recency list over every (layer, expert). It has a structural weakness: the
+// layer cycle 0..N-1 is deterministic, so the least recently used entry is also the SOONEST to be
+// needed again. While the budget holds a whole token cycle the cold end is genuinely stale history
+// and this never shows; once it does not, the cache evicts precisely what it is about to read and
+// the hit rate goes to zero rather than degrading (measured: exactly 0.0 % on gpt-oss at a legal
+// 1500 MiB budget with a 1815 MiB cycle).
+//
+// LayerLfu gives each expert-bearing layer an equal slice of the budget and evicts, within a layer,
+// the least FREQUENTLY used entry. The partition removes the cliff by construction — staging layer
+// il can only ever evict layer il's own entries, never the layer ahead of it — and frequency is the
+// signal the routing actually carries: predicting the next token's experts from the previous token's
+// (recency) is 17.9 % accurate on gpt-oss, while the run's hottest list (frequency) is 26.7 %.
+// Offline replay of the captured routes puts it 3.5-5 points of hit rate above Lru at shipped
+// budgets on top-6 models, and level with it on top-2. See docs/cache-policy.md.
+enum class CachePolicy {
+    Lru,      // one global recency list (the long-standing behaviour, and the default)
+    LayerLfu, // per-layer budget partition, frequency-ordered eviction inside a layer
+};
+
 // MoE expert-selective streaming knobs.
 struct MoeStreamConfig {
     bool enabled = false; // turn streaming on; init fails fast if the model is not MoE
@@ -49,6 +70,9 @@ struct MoeStreamConfig {
     // device whose free RAM it cannot know in advance; it does not chase memory pressure afterwards.
     // Mutually exclusive with an explicit cache_mb > 0. See docs/cache-sizing.md.
     bool cache_auto = false;
+    // Eviction policy for whatever budget the above settles on. Opt-in: Lru is what every
+    // measurement to date was taken against, so a run that does not ask keeps that behaviour.
+    CachePolicy cache_policy = CachePolicy::Lru;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing
     int cache_ceil_mb = 0;     // upper bound on the auto budget in MiB (0 = cap only at the full
                                // expert-set size); useful to keep the cache from taking all the

@@ -348,6 +348,9 @@ static void print_usage(const char * argv0) {
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
         "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
+        "      --cache-policy P    expert-cache eviction: lru (default) | layer-lfu\n"
+        "                          (layer-lfu = per-layer budget share, least-frequently-used inside\n"
+        "                          a layer; immune to the sub-cycle collapse global LRU suffers)\n"
         "      --cache-floor-mb N  with --cache-mb auto: RAM to leave free (default 1536)\n"
         "      --cache-ceil-mb N   with --cache-mb auto: upper bound on the budget (0 = no cap)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
@@ -436,6 +439,16 @@ int main(int argc, char ** argv) {
                 cfg.moe.cache_auto = true;
             else
                 cfg.moe.cache_mb = std::atoi(v.c_str());
+        } else if (a == "--cache-policy") {
+            const std::string p = next("--cache-policy");
+            if (p == "lru")
+                cfg.moe.cache_policy = bmoe::CachePolicy::Lru;
+            else if (p == "layer-lfu")
+                cfg.moe.cache_policy = bmoe::CachePolicy::LayerLfu;
+            else {
+                std::fprintf(stderr, "bmoe: --cache-policy expects lru|layer-lfu, got '%s'\n", p.c_str());
+                return 2;
+            }
         } else if (a == "--cache-floor-mb")
             cfg.moe.cache_floor_mb = std::atoi(next("--cache-floor-mb"));
         else if (a == "--cache-ceil-mb")

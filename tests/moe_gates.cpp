@@ -166,6 +166,18 @@ int main(int argc, char ** argv) {
     streamc.moe.force_cache = true;
     streamc.moe.io_threads = 4;
 
+    // streaming, same small cache but partitioned per layer with frequency eviction. A policy only
+    // decides WHICH resident expert to drop, never what a layer computes with, so its output must be
+    // byte-identical to every other cache configuration. The tiny model's budget is deliberately in
+    // the pathological band: that is where the two policies diverge most in what they keep, which is
+    // exactly where an accounting bug (a layer's bytes drifting from its entries) would surface.
+    RunConfig streamlfu = base(model);
+    streamlfu.moe.enabled = true;
+    streamlfu.moe.cache_mb = 2;
+    streamlfu.moe.force_cache = true;
+    streamlfu.moe.io_threads = 4;
+    streamlfu.moe.cache_policy = CachePolicy::LayerLfu;
+
     // streaming, load-all baseline
     RunConfig streamall = base(model);
     streamall.moe.enabled = true;
@@ -186,7 +198,7 @@ int main(int argc, char ** argv) {
     RunConfig dense_od_buf = dense_od;
     dense_od_buf.moe.o_direct = false;
 
-    std::string s_res, s_s0, s_sc, s_all, s_dod, s_dodb, err;
+    std::string s_res, s_s0, s_sc, s_lfu, s_all, s_dod, s_dodb, err;
     if (!gen(resident, s_res, err)) {
         std::fprintf(stderr, "resident run failed: %s\n", err.c_str());
         return 2;
@@ -197,6 +209,10 @@ int main(int argc, char ** argv) {
     }
     if (!gen(streamc, s_sc, err)) {
         std::fprintf(stderr, "streamc run failed: %s\n", err.c_str());
+        return 2;
+    }
+    if (!gen(streamlfu, s_lfu, err)) {
+        std::fprintf(stderr, "layer-lfu run failed: %s\n", err.c_str());
         return 2;
     }
     if (!gen(streamall, s_all, err)) {
@@ -216,6 +232,8 @@ int main(int argc, char ** argv) {
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);
     fails += check("G2 streaming(cache off) == streaming(LRU cache)", s_s0, s_sc);
     fails += check("G3 streaming(selective) == streaming(load-all)", s_s0, s_all);
+    // G8: the eviction policy is invisible to the output. It only reorders what stays resident.
+    fails += check("G8 streaming(layer-lfu cache) == streaming(LRU cache)", s_sc, s_lfu);
     // G6: rebinding the dense weights onto O_DIRECT anon buffers must not change a byte — same
     // bytes, same offsets, so identical output to the mmap-resident reference. This is the
     // correctness proof for --dense-odirect (the risk is rebinding the wrong tensor).
@@ -246,9 +264,19 @@ int main(int argc, char ** argv) {
     ov1.moe.io_threads = 1;
     ov1.moe.overlap = true;
 
-    std::string s_ov0, s_ovc, s_ov1;
+    // overlap + layer-lfu: the partitioned eviction runs concurrently with this batch's in-flight
+    // reads, so it is the configuration where picking a victim by scanning (rather than off the LRU
+    // tail) could most plausibly release a page a lane is still filling.
+    RunConfig ovlfu = ovc;
+    ovlfu.moe.cache_policy = CachePolicy::LayerLfu;
+
+    std::string s_ov0, s_ovc, s_ov1, s_ovlfu;
     if (!gen(ov0, s_ov0, err)) {
         std::fprintf(stderr, "overlap(cache off) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    if (!gen(ovlfu, s_ovlfu, err)) {
+        std::fprintf(stderr, "overlap(layer-lfu) run failed: %s\n", err.c_str());
         return 2;
     }
     if (!gen(ovc, s_ovc, err)) {
@@ -262,6 +290,7 @@ int main(int argc, char ** argv) {
     fails += check("G4a overlap(cache off) == streaming(cache off)", s_s0, s_ov0);
     fails += check("G4b overlap(LRU cache) == streaming(cache off)", s_s0, s_ovc);
     fails += check("G4c overlap(io_threads=1) == streaming(cache off)", s_s0, s_ov1);
+    fails += check("G4d overlap(layer-lfu cache) == streaming(cache off)", s_s0, s_ovlfu);
 #else
     std::printf("[SKIP] G4 (expert-ready hook not built)\n");
 #endif

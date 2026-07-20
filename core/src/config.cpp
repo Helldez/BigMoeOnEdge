@@ -64,6 +64,12 @@ ValidationResult validate(const RunConfig & cfg) {
                         "slower than no cache. Use 0 to disable the cache, a value >= " +
                         std::to_string(MoeStreamConfig::cache_min_mb) + ", or set force_cache to override.");
         }
+        // A partitioned policy needs a budget to partition. With the cache off there are no entries
+        // to evict at all (experts go through the shared slots), so the request could only mislead.
+        if (m.cache_policy == CachePolicy::LayerLfu && m.cache_mb == 0 && !m.cache_auto) {
+            return fail("moe.cache_policy=layer-lfu requires the expert cache to be on "
+                        "(cache_mb > 0 or cache_auto)");
+        }
         if (m.prefetch_layers < 0 || m.prefetch_layers > MoeStreamConfig::prefetch_layers_max) {
             return fail("moe.prefetch_layers must be in [0, " + std::to_string(MoeStreamConfig::prefetch_layers_max) +
                         "]");

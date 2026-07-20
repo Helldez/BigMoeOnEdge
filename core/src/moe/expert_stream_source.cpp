@@ -38,6 +38,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     overlap_ = cfg.overlap;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
+    policy_ = cfg.cache_policy;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
     page_ = pio::vm_page(); // the real OS page size, for the dense-residency probe in any cache mode
 
@@ -138,12 +139,36 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         cprev_.assign(n_entry, -1);
         cnext_.assign(n_entry, -1);
         cspec_.assign(n_entry, 0);
+        cfreq_.assign(n_entry, 0);
+        clayer_bytes_.assign((size_t) n_layer_, 0);
         spec_remaining_.assign(n_entry, 0);
         chead_ = ctail_ = -1;
         cresident_ = 0;
         cgen_ = 0;
         chits_ = 0;
         clookups_ = 0;
+
+        // Split the budget across the layers that actually hold experts — dense layers never stage,
+        // so giving them a share would strand it. One share is fixed here for the same reason the
+        // budget is: nothing resizes mid-run.
+        int n_bound = 0;
+        size_t widest_entry = 0;
+        for (int il = 0; il < n_layer_; ++il) {
+            if (!layers_[il].bound) continue;
+            ++n_bound;
+            widest_entry = std::max(widest_entry, entry_bytes(il));
+        }
+        layer_share_ = n_bound > 0 ? cache_max_ / (size_t) n_bound : 0;
+        if (policy_ == CachePolicy::LayerLfu && layer_share_ < widest_entry) {
+            // A share below one expert would evict every entry the moment the next one lands, so the
+            // partition would degenerate into cache-off with bookkeeping. Say so rather than run it.
+            std::fprintf(stderr,
+                         "bmoe: cache-policy layer-lfu needs at least one expert per layer "
+                         "(%d layers x %zu MiB = %zu MiB); budget is %zu MiB, falling back to lru\n",
+                         n_bound, widest_entry >> 20, ((size_t) n_bound * widest_entry) >> 20,
+                         cache_max_ >> 20);
+            policy_ = CachePolicy::Lru;
+        }
     }
 
     // Read pool: the reader owns a private fd + bounce per lane so concurrent preads never contend,
@@ -411,6 +436,7 @@ void ExpertStreamSource::quiesce_spec() {
         cspec_[id] = 1;  // speculative until a real lookup hits it (then counted useful)
         cstamp_[id] = 0; // not used this generation → evictable if the budget is tight
         cresident_ += entry_bytes(id / n_expert_);
+        clayer_bytes_[(size_t) (id / n_expert_)] += entry_bytes(id / n_expert_);
         lru_push_back(id); // cold end: a mispredicted expert is reclaimed before any demanded one
         spec_experts_.fetch_add(1);
     }
@@ -468,8 +494,15 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
     // runtime zero would route into buffers that do not exist. This shrinks toward, never to, zero.
     cache_max_ = std::max<size_t>(1, bytes);
     ++cache_resizes_;
+    if (layer_share_ > 0) { // keep the partition proportional to a budget that moved under it
+        int n_bound = 0;
+        for (int il = 0; il < n_layer_; ++il)
+            if (layers_[il].bound) ++n_bound;
+        layer_share_ = n_bound > 0 ? cache_max_ / (size_t) n_bound : 0;
+    }
     // No cstamp guard: with no decode in flight, nothing is staged for the current generation, so
-    // every resident entry (coldest first) is a valid eviction target.
+    // every resident entry (coldest first) is a valid eviction target. Recency order is the right
+    // one here even under LayerLfu: this is a whole-cache shrink, not a layer overflowing its share.
     while (cresident_ > cache_max_ && ctail_ != -1)
         evict_tail();
 }
@@ -527,13 +560,46 @@ void ExpertStreamSource::release_entry_pages(int32_t id) {
         if (a1 > a0) pio::vm_evict((void *) a0, (size_t) (a1 - a0));
     }
 }
-void ExpertStreamSource::evict_tail() {
-    const int32_t id = ctail_;
+void ExpertStreamSource::drop_entry(int32_t id) {
+    const int il = id / n_expert_;
+    const size_t b = entry_bytes(il);
     release_entry_pages(id);
     cvalid_[id] = 0;
     cspec_[id] = 0;
-    cresident_ -= entry_bytes(id / n_expert_);
+    cresident_ -= b;
+    clayer_bytes_[(size_t) il] -= b;
     lru_unlink(id);
+}
+void ExpertStreamSource::evict_tail() {
+    drop_entry(ctail_);
+}
+
+// Bring one layer back inside its share. The victim is the lowest-frequency resident entry of THIS
+// layer that the current batch did not stage — so the eviction can never touch the layer ahead,
+// which is the whole reason the partition exists. Ties go to the older entry (lower cstamp_), which
+// makes a cold layer shed its stalest expert first instead of whichever slot happens to be scanned
+// first. A frequency of 0 is impossible for a resident entry (residency implies a lookup), so no
+// special case for never-used entries is needed.
+void ExpertStreamSource::evict_layer_lfu(int il) {
+    const size_t bytes = entry_bytes(il);
+    if (bytes == 0) return;
+    const int32_t base = il * n_expert_;
+    while (clayer_bytes_[(size_t) il] > layer_share_) {
+        int32_t victim = -1;
+        uint32_t best_freq = 0;
+        uint32_t best_stamp = 0;
+        for (int e = 0; e < n_expert_; ++e) {
+            const int32_t id = base + e;
+            if (!cvalid_[id] || cstamp_[id] == cgen_) continue; // absent, or staged by this batch
+            if (victim == -1 || cfreq_[id] < best_freq || (cfreq_[id] == best_freq && cstamp_[id] < best_stamp)) {
+                victim = id;
+                best_freq = cfreq_[id];
+                best_stamp = cstamp_[id];
+            }
+        }
+        if (victim == -1) return; // everything resident here belongs to the batch in flight
+        drop_entry(victim);
+    }
 }
 
 // ── route-trace support: describe what a routing costs, without changing it ─────────
@@ -570,6 +636,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit) {
     const int32_t id = il * n_expert_ + e;
     clookups_++;
     cstamp_[id] = cgen_;
+    if (cfreq_[id] != UINT32_MAX) cfreq_[id]++; // saturating: a 4-billion-lookup entry stays hottest
     if (cvalid_[id]) {
         chits_++;
         if (cspec_[id]) { // this hit was served by a speculative prefetch — count it useful once
@@ -599,6 +666,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit) {
     cvalid_[id] = 1;
     cspec_[id] = 0; // a real read, not speculative
     cresident_ += entry_bytes(il);
+    clayer_bytes_[(size_t) il] += entry_bytes(il);
     lru_push_front(id);
     hit = false;
     return true;
@@ -709,8 +777,11 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
 
     if (cache_max_) {
         const auto te0 = clock_t_::now();
-        while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
-            evict_tail();
+        if (policy_ == CachePolicy::LayerLfu)
+            evict_layer_lfu(il); // only this layer's share, only this layer's entries
+        else
+            while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
+                evict_tail();
         mgmt_ns_.fetch_add(
             (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - te0).count());
     }
@@ -852,8 +923,11 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     //    guaranteed no stale in-flight jobs, and current-gen entries (cstamp_ == cgen_) — the
     //    ones just staged — are never chosen, so eviction only releases pages nobody is reading.
     if (cache_max_) {
-        while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
-            evict_tail();
+        if (policy_ == CachePolicy::LayerLfu)
+            evict_layer_lfu(il); // only this layer's share, only this layer's entries
+        else
+            while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
+                evict_tail();
     }
     mgmt_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - tm0).count());
     return true;
@@ -929,6 +1003,7 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.stall_seconds = stall_ns_.load() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
+    s.cache_policy = policy_;
     s.dense_resident_frac = dense_.resident_frac();
     s.token_demand_bytes = (uint64_t) token_demand_;
     s.layer_demand_bytes = (uint64_t) layer_demand_;

@@ -164,6 +164,18 @@ private:
     size_t entry_bytes(int il) const;
     void evict_tail();
 
+    // Drop `id` from the cache: release its pages and undo its residency accounting. evict_tail()
+    // is this plus "the victim is the LRU tail"; the partitioned policy picks its victim differently
+    // but unwinds identically, so the unwinding lives here.
+    void drop_entry(int32_t id);
+
+    // CachePolicy::LayerLfu eviction: bring layer `il` back under its share of the budget by
+    // dropping its own least-frequently-used entries. Entries staged by the current batch are
+    // protected the same way evict_tail() protects them (cstamp_ == cgen_), so a layer can never
+    // evict what it is in the middle of reading. Scans the layer's expert slots to find each
+    // victim — n_expert comparisons, against the MiB of I/O a miss costs, is not worth an index.
+    void evict_layer_lfu(int il);
+
     // I/O trace buffer. Its own leaf mutex, never held across a read: the lanes append
     // concurrently, and the eval thread swaps the buffer out between decodes.
     bool io_trace_on_ = false;
@@ -233,6 +245,17 @@ private:
     uint32_t cgen_ = 0;
     size_t cresident_ = 0;
     long long chits_ = 0, clookups_ = 0;
+
+    // ── CachePolicy::LayerLfu state ──
+    // cfreq_ counts lookups per entry and is maintained under BOTH policies: it costs one increment
+    // on a path that is already touching the entry, and it keeps the two policies' bookkeeping
+    // identical so a run can be compared against an Lru run without a second code path.
+    // clayer_bytes_ is the per-layer residency the partition is enforced against; layer_share_ is
+    // each expert-bearing layer's equal slice of cache_max_, fixed at init like the budget itself.
+    CachePolicy policy_ = CachePolicy::Lru;
+    std::vector<uint32_t> cfreq_;
+    std::vector<size_t> clayer_bytes_;
+    size_t layer_share_ = 0;
 
     // ── speculative prefetch queue (all fields guarded by io_mtx_) ──
     // prefetch() (eval thread) commits pages and enqueues per-projection reads tagged with the

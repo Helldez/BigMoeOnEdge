@@ -568,6 +568,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         if (cfg.moe.enabled) {
             const IExpertSource::Stats st = im.source.stats();
             ri.cache_mb = (int) (st.cache_budget_bytes / (1024ull * 1024ull));
+            ri.cache_policy = st.cache_policy == CachePolicy::LayerLfu ? "layer-lfu" : "lru";
         }
         // The EFFECTIVE top-k: an override IS the applied width, otherwise the model's own. Same
         // resolution the route trace does, and worth a header read — a run whose top-k is unknown

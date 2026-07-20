@@ -11,6 +11,8 @@
 // implementation of this interface.
 #pragma once
 
+#include "config.h" // CachePolicy, reported back in Stats
+
 #include <cstdint>
 
 namespace bmoe {
@@ -69,6 +71,9 @@ public:
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
         uint64_t cache_budget_bytes = 0;   // cache budget in force; fixed for the run once init sizes it
         long long cache_resizes = 0;       // explicit set_cache_budget_mb() calls that moved the budget
+        // Eviction policy actually in force. Reported rather than echoed from config because a
+        // layer-lfu request degrades to lru when the budget cannot give every layer one expert.
+        CachePolicy cache_policy = CachePolicy::Lru;
 
         // ── residency telemetry (diagnostic) ──
         // Sampled fraction of the DENSE weights still in RAM, or -1 when not measured yet. Under the
