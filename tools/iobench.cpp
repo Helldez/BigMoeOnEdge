@@ -20,8 +20,15 @@
 // while ggml's compute threads spin. If per-lane bandwidth falls once the CPU is busy, the lanes are
 // starved of scheduler time and the bottleneck is contention, not the flash.
 //
+// `--scatter N` splits every logical read into N preads of slice/N bytes at independent random
+// offsets — the same total bytes, delivered as N small windows instead of one contiguous one. This
+// is the expert-layout question: today one routed expert costs one pread per projection at offsets
+// an expert-stride apart (scatter ~3), while a contiguous per-expert sidecar would serve the same
+// bytes in a single window (scatter 1). If bandwidth at scatter 1 is not materially above scatter
+// 3 for the same slice, the sidecar has no prize and must not be built.
+//
 //   bmoe-iobench --model M.gguf [--lanes 1,2,4,8,16] [--slice-kb 4096] [--seconds 5] [--buffered]
-//                [--compute-load N]
+//                [--compute-load N] [--scatter N]
 #include "file_reader.h"
 #include "platform_io.h"
 
@@ -57,19 +64,25 @@ struct LaneResult {
     long long busy_ns = 0;
 };
 
-// One lane: random-offset reads of `slice` bytes until the deadline. Offsets are block-aligned and
-// kept a slice away from EOF so every read is a full window (the sub-alignment tail would otherwise
-// take FileReader's buffered fallback and quietly measure the page cache instead of the drive).
+// One lane: random-offset logical reads of `slice` bytes until the deadline, each issued as
+// `scatter` preads of slice/scatter bytes at independent offsets (see the header comment). Offsets
+// are block-aligned and kept a slice away from EOF so every read is a full window (the
+// sub-alignment tail would otherwise take FileReader's buffered fallback and quietly measure the
+// page cache instead of the drive).
 void lane_worker(bmoe::FileReader * r,
                  int lane,
                  size_t slice,
+                 int scatter,
                  size_t align,
                  uint64_t fsize,
                  clock_t_::time_point deadline,
                  LaneResult * out) {
-    void * dst = bmoe::pio::alloc_aligned(align, slice);
+    // Equal-total-bytes split, each piece its own aligned window — otherwise scatter rows would
+    // compare different traffic volumes, not different layouts.
+    const size_t piece = ((slice / (size_t) scatter) + align - 1) & ~(align - 1);
+    void * dst = bmoe::pio::alloc_aligned(align, piece);
     if (!dst) return;
-    const uint64_t span = (fsize > slice * 2) ? (fsize - slice * 2) : 0;
+    const uint64_t span = (fsize > piece * 2) ? (fsize - piece * 2) : 0;
     if (span == 0) {
         bmoe::pio::aligned_free(dst);
         return;
@@ -77,14 +90,20 @@ void lane_worker(bmoe::FileReader * r,
     Lcg rng((uint64_t) lane + 1);
     LaneResult acc;
     while (clock_t_::now() < deadline) {
-        const uint64_t off = (rng.next() % span) & ~(uint64_t) (align - 1);
-        const auto t0 = clock_t_::now();
-        const long long got = r->read(lane, dst, off, slice);
-        const auto t1 = clock_t_::now();
-        if (got < 0) break;
-        acc.window_bytes += got;
-        acc.reads++;
-        acc.busy_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+        for (int s = 0; s < scatter; ++s) {
+            const uint64_t off = (rng.next() % span) & ~(uint64_t) (align - 1);
+            const auto t0 = clock_t_::now();
+            const long long got = r->read(lane, dst, off, piece);
+            const auto t1 = clock_t_::now();
+            if (got < 0) {
+                bmoe::pio::aligned_free(dst);
+                *out = acc;
+                return;
+            }
+            acc.window_bytes += got;
+            acc.reads++;
+            acc.busy_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+        }
     }
     bmoe::pio::aligned_free(dst);
     *out = acc;
@@ -108,8 +127,14 @@ void load_worker(clock_t_::time_point deadline, std::atomic<bool> * stop) {
 // One row of the sweep: open a reader with `lanes` lanes, run them all for `seconds`, report the
 // aggregate. The reader is opened and closed per row so each row pays its own warm-up and no lane
 // inherits another row's fd state.
-bool run_row(
-    const std::string & path, int lanes, size_t slice, bool direct, double seconds, int load, double * mibs_out) {
+bool run_row(const std::string & path,
+             int lanes,
+             size_t slice,
+             int scatter,
+             bool direct,
+             double seconds,
+             int load,
+             double * mibs_out) {
     bmoe::FileReader r;
     // Ask the OS rather than assuming 4096: alignment is exactly the variable this tool exists to
     // characterise, so a device with a 16 KiB page must be measured at its own page size, not ours.
@@ -132,7 +157,7 @@ bool run_row(
         loaders.emplace_back(load_worker, deadline, &stop);
 
     for (int i = 0; i < lanes; ++i)
-        th.emplace_back(lane_worker, &r, i, slice, align, r.file_size(), deadline, &res[(size_t) i]);
+        th.emplace_back(lane_worker, &r, i, slice, scatter, align, r.file_size(), deadline, &res[(size_t) i]);
     for (auto & t : th)
         t.join();
     const double wall_s = std::chrono::duration<double>(clock_t_::now() - t0).count();
@@ -162,7 +187,9 @@ bool run_row(
 void usage(const char * a0) {
     std::fprintf(stderr,
                  "usage: %s --model PATH [--lanes 1,2,4,8,16] [--slice-kb N] [--seconds S] [--buffered]\n"
-                 "  --slice-kb      KiB per read, default 4096 (= 4 MiB, a typical expert slice)\n"
+                 "  --slice-kb      KiB per logical read, default 4096 (= 4 MiB, a typical expert slice)\n"
+                 "  --scatter       preads per logical read (default 1): N splits the slice into N\n"
+                 "                  equal pieces at independent offsets — same bytes, scattered layout\n"
                  "  --buffered      drop O_DIRECT, to see what the page cache contributes\n"
                  "  --compute-load  N CPU-burning threads alongside the lanes (default 0), to read\n"
                  "                  under the contention the streamer actually faces\n",
@@ -175,6 +202,7 @@ int main(int argc, char ** argv) {
     std::string model;
     std::string lanes_spec = "1,2,4,8,12,16,24,32";
     size_t slice_kb = 4096;
+    int scatter = 1;
     double seconds = 5.0;
     bool direct = true;
     int load = 0;
@@ -194,6 +222,8 @@ int main(int argc, char ** argv) {
             lanes_spec = next("--lanes");
         else if (a == "--slice-kb")
             slice_kb = (size_t) std::atoll(next("--slice-kb"));
+        else if (a == "--scatter")
+            scatter = std::atoi(next("--scatter"));
         else if (a == "--seconds")
             seconds = std::atof(next("--seconds"));
         else if (a == "--buffered")
@@ -223,9 +253,14 @@ int main(int argc, char ** argv) {
         return 2;
     }
 
+    if (scatter < 1) {
+        std::fprintf(stderr, "--scatter must be >= 1\n");
+        return 2;
+    }
     const size_t slice = slice_kb * 1024;
     std::printf("model     %s\n", model.c_str());
-    std::printf("read size %zu KiB, %.1f s per row, compute load %d threads\n\n", slice_kb, seconds, load);
+    std::printf("read size %zu KiB x scatter %d, %.1f s per row, compute load %d threads\n\n", slice_kb, scatter,
+                seconds, load);
     std::printf("%6s %12s %10s %9s %11s %10s\n", "lanes", "MiB/s", "lat_ms", "reads", "read_MiB", "mode");
 
     double best = 0.0;
@@ -233,7 +268,7 @@ int main(int argc, char ** argv) {
     for (int L : lanes) {
         if (L < 1) continue;
         double mibs = 0.0;
-        if (!run_row(model, L, slice, direct, seconds, load, &mibs)) return 1;
+        if (!run_row(model, L, slice, scatter, direct, seconds, load, &mibs)) return 1;
         if (mibs > best) {
             best = mibs;
             best_lanes = L;
