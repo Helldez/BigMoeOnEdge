@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.13.4] - 2026-07-20
+
+Diagnostics and a recorded negative result — no engine, CLI or app behaviour changes.
+
+### Added
+- **`bmoe-iobench --scatter N`**: split every logical read into N preads at independent offsets,
+  so two layouts can be compared at equal traffic volume. It showed sub-MiB scattered reads DO
+  lose bandwidth at low lane counts (refining 0.13.3's "flat above 256 KiB", which held only at
+  saturating lanes).
+- **Recorded negative result: the contiguous per-expert sidecar** (one read per routed expert
+  instead of one per projection). Implemented, byte-identity-proven, and measured across three
+  interleaved on-device A/Bs: **+16%** serial with the cache off, **−20%** on LFM2.5 and
+  **−23%** on Qwen3-30B k=8 in the shipping overlap+cache configurations — the overlap kernel
+  consumes projection-major, and whole-entry reads triple the latency to an expert's first
+  slice. Closed unmerged (PR #90, tag `expert-sidecar-refuted`); data and analysis in
+  [docs/bench-data/2026-07-20-sidecar/](docs/bench-data/2026-07-20-sidecar/findings.md).
+
 ## [0.13.3] - 2026-07-20
 
 Diagnostics only — no engine, CLI or app behaviour changes, so the Android version is unchanged.
