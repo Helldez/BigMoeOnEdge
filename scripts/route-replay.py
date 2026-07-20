@@ -142,7 +142,16 @@ class Sim:
         return il * self.n_expert + e
 
     def cost(self, il):
-        return self.ebytes.get(il, 0)
+        # Never default to 0. A layer that costs nothing is admitted for free, never counts against
+        # the budget and is never evicted -- so a missing preamble does not fail, it reports ~100%
+        # hit at every budget. That is a wrong answer wearing the costume of a good one.
+        try:
+            return self.ebytes[il]
+        except KeyError:
+            raise SystemExit(
+                "route-replay: no expert_bytes for layer %d in the trace preamble; "
+                "the replay cannot size the cache. Re-record the trace with a complete preamble." % il
+            )
 
     # -- eviction victims ---------------------------------------------------------------
     def victim(self, protected, il_cur):
@@ -246,7 +255,11 @@ def main():
     ap = argparse.ArgumentParser(description="replay a route trace through cache policies")
     ap.add_argument("trace")
     ap.add_argument("--budgets", default="", help="MiB, comma separated (default: a sweep)")
-    ap.add_argument("--policies", default=",".join(POLICIES))
+    # choices= would reject the comma-joined default, so the list is validated after the split
+    # below. Silently aliasing an unknown name to LRU under its own column header is the one
+    # failure mode this argument must not have.
+    ap.add_argument("--policies", default=",".join(POLICIES),
+                    help="comma separated, from: %s" % ", ".join(POLICIES))
     ap.add_argument("--validate", type=float, default=None,
                     help="budget MiB whose LRU row must reproduce the recorded hit rate")
     ap.add_argument("--turn", type=int, default=None)
@@ -269,6 +282,10 @@ def main():
     print("T       %.0f MiB touched per token cycle (all layers x top-k, worst case)" % (cycle / MIB))
 
     policies = [p for p in args.policies.split(",") if p]
+    unknown = [p for p in policies if p not in POLICIES]
+    if unknown:
+        raise SystemExit("route-replay: unknown policy %s; known: %s"
+                         % (", ".join(unknown), ", ".join(POLICIES)))
     if args.validate is not None:
         sim = run_one(batches, n_prefill, tr, "lru", args.validate)
         print("\nvalidation @ %.0f MiB: LRU replay = %.1f%% cumulative (%.1f%% decode-only)"

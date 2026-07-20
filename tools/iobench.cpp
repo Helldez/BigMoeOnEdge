@@ -60,8 +60,13 @@ struct LaneResult {
 // One lane: random-offset reads of `slice` bytes until the deadline. Offsets are block-aligned and
 // kept a slice away from EOF so every read is a full window (the sub-alignment tail would otherwise
 // take FileReader's buffered fallback and quietly measure the page cache instead of the drive).
-void lane_worker(bmoe::FileReader * r, int lane, size_t slice, size_t align, uint64_t fsize,
-                 clock_t_::time_point deadline, LaneResult * out) {
+void lane_worker(bmoe::FileReader * r,
+                 int lane,
+                 size_t slice,
+                 size_t align,
+                 uint64_t fsize,
+                 clock_t_::time_point deadline,
+                 LaneResult * out) {
     void * dst = bmoe::pio::alloc_aligned(align, slice);
     if (!dst) return;
     const uint64_t span = (fsize > slice * 2) ? (fsize - slice * 2) : 0;
@@ -92,7 +97,8 @@ void load_worker(clock_t_::time_point deadline, std::atomic<bool> * stop) {
     volatile double sink = 0.0;
     double x = 1.000001;
     while (!stop->load(std::memory_order_relaxed) && clock_t_::now() < deadline) {
-        for (int i = 0; i < 4096; ++i) x = x * 1.0000001 + 1e-9;
+        for (int i = 0; i < 4096; ++i)
+            x = x * 1.0000001 + 1e-9;
         sink = sink + x;
         if (x > 1e6) x = 1.000001;
     }
@@ -102,10 +108,12 @@ void load_worker(clock_t_::time_point deadline, std::atomic<bool> * stop) {
 // One row of the sweep: open a reader with `lanes` lanes, run them all for `seconds`, report the
 // aggregate. The reader is opened and closed per row so each row pays its own warm-up and no lane
 // inherits another row's fd state.
-bool run_row(const std::string & path, int lanes, size_t slice, bool direct, double seconds, int load,
-             double * mibs_out) {
+bool run_row(
+    const std::string & path, int lanes, size_t slice, bool direct, double seconds, int load, double * mibs_out) {
     bmoe::FileReader r;
-    const size_t align = 4096;
+    // Ask the OS rather than assuming 4096: alignment is exactly the variable this tool exists to
+    // characterise, so a device with a 16 KiB page must be measured at its own page size, not ours.
+    const size_t align = bmoe::pio::vm_page();
     const size_t bounce_cap = slice + 2 * align; // mirrors what the streamer asks for
     if (!r.open(path, lanes, direct, align, bounce_cap)) {
         std::fprintf(stderr, "open failed (lanes=%d)\n", lanes);
@@ -120,14 +128,17 @@ bool run_row(const std::string & path, int lanes, size_t slice, bool direct, dou
     std::atomic<bool> stop{false};
     std::vector<std::thread> loaders;
     loaders.reserve((size_t) (load > 0 ? load : 0));
-    for (int i = 0; i < load; ++i) loaders.emplace_back(load_worker, deadline, &stop);
+    for (int i = 0; i < load; ++i)
+        loaders.emplace_back(load_worker, deadline, &stop);
 
     for (int i = 0; i < lanes; ++i)
         th.emplace_back(lane_worker, &r, i, slice, align, r.file_size(), deadline, &res[(size_t) i]);
-    for (auto & t : th) t.join();
+    for (auto & t : th)
+        t.join();
     const double wall_s = std::chrono::duration<double>(clock_t_::now() - t0).count();
     stop.store(true); // lanes are done; do not let the load run past the measured window
-    for (auto & t : loaders) t.join();
+    for (auto & t : loaders)
+        t.join();
 
     long long bytes = 0, reads = 0, busy_ns = 0;
     for (const auto & x : res) {
@@ -151,7 +162,7 @@ bool run_row(const std::string & path, int lanes, size_t slice, bool direct, dou
 void usage(const char * a0) {
     std::fprintf(stderr,
                  "usage: %s --model PATH [--lanes 1,2,4,8,16] [--slice-kb N] [--seconds S] [--buffered]\n"
-                 "  --slice-kb      bytes per read, default 4096 (a typical expert projection slice)\n"
+                 "  --slice-kb      KiB per read, default 4096 (= 4 MiB, a typical expert slice)\n"
                  "  --buffered      drop O_DIRECT, to see what the page cache contributes\n"
                  "  --compute-load  N CPU-burning threads alongside the lanes (default 0), to read\n"
                  "                  under the contention the streamer actually faces\n",

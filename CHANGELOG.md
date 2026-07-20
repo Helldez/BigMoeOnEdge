@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.13.3] - 2026-07-20
+
+Diagnostics only — no engine, CLI or app behaviour changes, so the Android version is unchanged.
+Both tools ship measurements that are quoted as evidence in `docs/roadmap.md`, and both had a way
+to produce a confident wrong number rather than an error.
+
+### Fixed
+- **`route-replay.py` no longer reports a fabricated ~100 % hit rate when the trace preamble is
+  incomplete.** `cost()` defaulted a layer with no recorded `expert_bytes` to **zero bytes**: such a
+  layer was admitted for free, never counted against the budget and was never evicted. A trace
+  missing its per-layer preamble therefore did not fail — it printed a full, plausible table in
+  which *every* policy scored the same near-perfect number. Measured on a gate-model trace with the
+  preamble stripped: the old code prints `96.9 %` across all six policies; it now exits with the
+  reason and names the layer. The recorded traces behind the published curves all carry complete
+  preambles, so no result in `docs/` changes.
+- **An unknown `--policies` name is rejected instead of silently running LRU.** A typo (`lur`) fell
+  through every branch of `victim()` to the LRU default and was tabulated under its own column
+  header, so the output claimed to compare a policy that never ran.
+- **`bmoe-iobench` asks the OS for its alignment instead of assuming 4096.** Page size is the very
+  variable this tool exists to characterise; on a device with a 16 KiB page the sweep was measuring
+  the wrong alignment. It now uses `pio::vm_page()`, the same source the engine uses.
+- **`bmoe-iobench --slice-kb` is documented in the unit it actually takes.** The usage text said
+  "bytes per read, default 4096" for a value multiplied by 1024 — every figure the tool printed was
+  open to being read off by a factor of 1024. It is KiB, and the default is 4 MiB.
+
 ## [0.13.2] - 2026-07-20
 
 ### Fixed
