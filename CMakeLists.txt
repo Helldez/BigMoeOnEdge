@@ -28,6 +28,9 @@ endif()
 
 option(BMOE_BUILD_TESTS "Build byte-identity gates and unit tests" ON)
 option(BMOE_BUILD_CLI   "Build the bmoe-cli host tool"              ON)
+# Off by default: diagnostics, not part of the product. They need no llama.cpp, so they can be
+# configured and cross-compiled on their own without building the engine.
+option(BMOE_BUILD_TOOLS "Build standalone diagnostic tools (bmoe-iobench)" OFF)
 
 # --- Optional native dependency: llama.cpp ----------------------------------------
 # The streaming seam uses only the public C API (llama.h). We additionally link llama.cpp's
@@ -57,6 +60,10 @@ endif()
 if(BMOE_BUILD_TESTS AND BMOE_HAVE_LLAMA)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(BMOE_BUILD_TOOLS)
+    add_subdirectory(tools)
 endif()
 
 message(STATUS "BigMoeOnEdge: llama.cpp present = ${BMOE_HAVE_LLAMA}")
