@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.13.5] - 2026-07-21
+
+Diagnostics only — no engine, CLI or app behaviour changes, so the Android version is unchanged.
+
+### Added
+- **`bmoe-membench`**: measures read bandwidth of the allocations the dense weights can live in,
+  comparing an anonymous mapping against a locked `AHardwareBuffer` BLOB. It exists to gate an idea
+  rather than to tune one: dma-buf pages are the only allocation an unprivileged Android app can
+  make that reclaim cannot touch, but gralloc decides per allocation whether a buffer is
+  CPU-cacheable, and an uncached mapping would read at or below the flash bandwidth it is meant to
+  save. `--probe-max` reports the largest usable buffer; `--repeat` interleaves the comparison.
+- **Measured: reclaim-exempt memory is full-speed, and capped at 2047 MiB.** A locked BLOB reads
+  within 0.5% of anonymous memory on both CPU clusters and at 4 threads, and the `CPU_READ_OFTEN`
+  hint makes no difference. Allocation reaches the 4 GiB format cap, but `AHardwareBuffer_lock`
+  fails with `EINVAL` at exactly 2^31 bytes, so larger working sets must be split across buffers.
+  The bandwidth gate passes; **whether pinning the dense weights helps remains unmeasured**, and
+  reclaim-exempt memory does not create memory. Data in
+  [docs/bench-data/2026-07-21-pinned-memory/](docs/bench-data/2026-07-21-pinned-memory/findings.md);
+  the lever table in `docs/android-memory.md` now carries the dma-buf row it was missing.
+
+### Fixed
+- `bmoe-membench --probe-max` initially probed allocation only and reported ~2× the usable size,
+  because the lock that turns a BLOB into a CPU pointer fails long before allocation does. It now
+  locks every candidate. Same class of defect as 0.13.3's: a diagnostic returning a confident
+  wrong number rather than an error.
+
 ## [0.13.4] - 2026-07-20
 
 Diagnostics and a recorded negative result — no engine, CLI or app behaviour changes.

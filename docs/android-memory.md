@@ -143,6 +143,7 @@ steal file cache — we evict our own dense weights when we allocate too fast.
 | Memory Advice API | **deprecated**; only warns, never keeps anything resident |
 | `MAP_POPULATE` | prefaults, does **not** pin. Load speed only |
 | **`MADV_COLD` / `MADV_PAGEOUT`** (5.4+) | **the one real lever** — unprivileged. Can't stop reclaim, but *chooses its victims*: volunteer your own cold tail so kswapd finds cheap targets and you cut direct-reclaim stalls |
+| **dma-buf via `AHardwareBuffer`** | **open, and the only allocation here that reclaim cannot touch** — those pages stay pinned because a device may DMA from them at any time, and no capability is needed. Reads at full anonymous-memory speed (measured 1.00×, [2026-07-21](bench-data/2026-07-21-pinned-memory/findings.md)). Capped at **2047 MiB per buffer**: `AHardwareBuffer_lock` fails with `EINVAL` at 2^31 bytes even though allocation reaches the 4 GiB format cap. **Untested against real pressure** — see below |
 
 **lmkd never reclaims — it only kills — and here it is silent by design.** It early-returns while
 `SwapFree >= swap_free_low_percentage` (10%) of total; we sit at 70–79%. **The 12 GB swap is exactly
@@ -156,6 +157,34 @@ to raise it. **Android has no equivalent of either.** No on-device runtime surve
 MediaPipe/LiteRT, ONNX Runtime, ExecuTorch) pins weights on Android or publishes a "stay under X% of
 RAM" rule; llama.cpp's `--mlock` fails here for the reason above, and ExecuTorch explicitly maps
 Android to `NoMlock`.
+
+## The dma-buf exception, and what it does not solve
+
+Everything above is about memory the kernel is *allowed* to take. There is one allocation it is not:
+a **dma-buf**, whose pages are pinned for the lifetime of the buffer because a device may DMA from
+them at any moment. An app reaches one through `AHardwareBuffer` with format `BLOB` — no capability,
+no root, and it sidesteps `RLIMIT_MEMLOCK` entirely, since it is not `mlock` at all.
+
+Measured properties on the test device ([data](bench-data/2026-07-21-pinned-memory/findings.md)):
+
+| property | value |
+|---|---|
+| read bandwidth vs anonymous memory | **1.00×** — 30.4 GiB/s and 45.2 GiB/s on the two clusters, 59.0 at 4 threads, all matching anon within 0.5% |
+| `CPU_READ_OFTEN` vs `CPU_READ_RARELY` | no difference; the hint does not have to be coaxed |
+| max usable size | **2047 MiB per buffer** — `AHardwareBuffer_lock` returns `EINVAL` at 2^31 bytes, a signed-32-bit boundary, though allocation reaches the 4 GiB format cap |
+| allocation cost | ~7–11 GiB/s, i.e. a few hundred ms once, at load |
+
+That the bandwidth is ordinary is the load-bearing result, because it was the plausible way for the
+idea to be dead on arrival: gralloc chooses per allocation whether a buffer is CPU-cacheable, and an
+uncached mapping would read at or below flash bandwidth — making pinned weights slower than
+refaulting them.
+
+**None of that is an argument that pinning the dense weights helps.** Reclaim-exempt memory does not
+create memory: under a >RAM model, RAM the dense weights no longer yield has to come from the expert
+cache or from the page cache feeding the streaming path. That is the same trade that refuted the
+bulk restore (below) and the per-layer LFU cap. And these measurements never put the device under
+the pressure a >RAM decode creates, so "the kernel cannot reclaim it" remains an inference from how
+dma-buf works rather than something observed here. The lever is **open, and unproven**.
 
 ## Why restoring reclaimed pages cannot win
 

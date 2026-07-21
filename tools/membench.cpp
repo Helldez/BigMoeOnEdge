@@ -26,6 +26,12 @@
 // the ratio between the two rows is the whole result. An absolute number alone would be worthless,
 // since it would fold in the device's clocks and thermal state.
 //
+// One warning learned from the first run of this tool: on a big.LITTLE phone the result is dominated
+// by WHICH CORE the scheduler picked, not by the allocator. The two clusters here read at 30 and
+// 45 GB/s, so an un-pinned anon-then-ahwb pass produced a confident 0.67x that was pure placement and
+// inverted when the modes were swapped. Interleave with `--repeat`, and pin with `taskset <mask>`
+// before believing any difference smaller than the gap between clusters.
+//
 // Secondary output: `--probe-max` reports the largest BLOB the driver will actually hand over. No
 // limit is documented — the NDK only says allocation may fail on driver constraints — and the dense
 // working set is multiple GiB, so "does it even fit" has to be measured too. Note the format's own
@@ -238,13 +244,15 @@ void free_ahwb() {
     g_ahwb = nullptr;
 }
 
-// Largest BLOB the driver will actually allocate: double until it refuses, then binary-search the
-// gap. Allocation only — no lock, no touch — so this reports what the allocator promises, which is
-// an upper bound on what is usable. It is deliberately separate from the bandwidth rows: a size that
-// allocates but is unusably slow is not a size that helps.
+// Largest BLOB that is actually USABLE: allocation alone is not the ceiling that matters, because
+// the buffer is worthless until `AHardwareBuffer_lock` hands back a CPU pointer — and the two limits
+// are not the same. On the device this was written for, allocation succeeds to the 4 GiB format cap
+// while lock refuses anything at or above 2 GiB with EINVAL, a signed-32-bit boundary inside the
+// lock path. Probing allocation only would therefore report double the size the caller can use, so
+// the probe locks every candidate and reports both ceilings.
 void probe_max() {
     const uint64_t cap = 0xFFFFFFFFULL; // 32-bit BLOB width
-    auto can_alloc = [](uint64_t bytes) -> bool {
+    auto try_size = [](uint64_t bytes, bool with_lock) -> bool {
         if (bytes > 0xFFFFFFFFULL) return false;
         AHardwareBuffer_Desc d{};
         d.width = (uint32_t) bytes;
@@ -254,11 +262,18 @@ void probe_max() {
         d.usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
         AHardwareBuffer * b = nullptr;
         if (AHardwareBuffer_allocate(&d, &b) != 0 || !b) return false;
+        bool ok = true;
+        if (with_lock) {
+            void * p = nullptr;
+            ok = (AHardwareBuffer_lock(b, d.usage, -1, nullptr, &p) == 0 && p != nullptr);
+            if (ok) AHardwareBuffer_unlock(b, nullptr);
+        }
         AHardwareBuffer_release(b);
-        return true;
+        return ok;
     };
+    auto can_alloc = [&](uint64_t bytes) { return try_size(bytes, true); };
 
-    std::printf("probing the largest allocatable BLOB (32-bit width caps this at 4096 MiB)\n");
+    std::printf("probing the largest lockable BLOB (32-bit width caps this at 4096 MiB)\n");
     uint64_t good = 0, bad = 0;
     for (uint64_t mib = 64; mib * 1024 * 1024 <= cap; mib *= 2) {
         const uint64_t bytes = mib * 1024 * 1024;
@@ -273,18 +288,33 @@ void probe_max() {
         }
     }
     if (bad == 0) {
-        std::printf("  every probed size allocated; ceiling is the 4 GiB format cap, not the driver\n\n");
-        return;
+        // Doubling stops at 2048 MiB because 4096 MiB does not fit the 32-bit width. Claiming the
+        // format cap without trying it would be asserting the very thing being probed, so ask for
+        // the largest representable BLOB explicitly.
+        if (can_alloc(cap)) {
+            std::printf("  %6llu MiB  ok\n", (unsigned long long) (cap / (1024 * 1024)));
+            std::printf("  the largest representable BLOB locked; the ceiling is the 32-bit format\n"
+                        "  cap, not the driver\n\n");
+            return;
+        }
+        std::printf("  %6llu MiB  FAILED\n", (unsigned long long) (cap / (1024 * 1024)));
+        good = 2048ULL * 1024 * 1024;
+        bad = cap;
     }
-    // 16 MiB is fine enough: the decision this informs is "does several GiB fit", not the exact byte.
-    while (bad - good > 16ULL * 1024 * 1024) {
+    // Refine to 1 MiB. Coarser would be enough to answer "do several GiB fit", but a ceiling that
+    // lands exactly on a power of two is evidence about *why* it is there — a driver running out of
+    // memory stops at an arbitrary size, an integer type stops at 2^31 — and that changes whether
+    // chunking around it is safe.
+    while (bad - good > 1024ULL * 1024) {
         const uint64_t mid = good + (bad - good) / 2;
         if (can_alloc(mid))
             good = mid;
         else
             bad = mid;
     }
-    std::printf("  max allocatable ~%llu MiB\n\n", (unsigned long long) (good / (1024 * 1024)));
+    std::printf("  max lockable ~%llu MiB (allocation alone reaches %s)\n", (unsigned long long) (good / (1024 * 1024)),
+                try_size(cap, false) ? "the 4096 MiB format cap" : "no further");
+    std::printf("  larger working sets must be split across several buffers\n\n");
 }
 #endif // BMOE_HAVE_AHWB
 
@@ -293,7 +323,11 @@ void usage(const char * a0) {
                  "usage: %s [--mib N] [--modes anon,ahwb] [--seconds S] [--threads N]\n"
                  "  --mib       buffer size, default 512 (must exceed the last-level cache, or the\n"
                  "              read loop measures cache instead of DRAM)\n"
-                 "  --modes     comma list of anon,ahwb (default both; ahwb is Android-only)\n"
+                 "  --modes     comma list of anon,ahwb, run IN THE ORDER GIVEN (default both;\n"
+                 "              ahwb is Android-only)\n"
+                 "  --repeat    N interleaved rounds of the mode list, default 1. Use it: core\n"
+                 "              placement moves this number more than the allocator does, so a\n"
+                 "              single round can rank two placements and call it a result.\n"
                  "  --threads   readers running concurrently, default 1. Single-thread separates\n"
                  "              cached from uncached most clearly; the multi-thread row is the one\n"
                  "              comparable to a matmul, which reads from every compute thread.\n"
@@ -310,6 +344,7 @@ int main(int argc, char ** argv) {
     std::string modes = "anon,ahwb";
     double seconds = 3.0;
     int threads = 1;
+    int repeat = 1;
     bool read_often = true;
     bool probe = false;
 
@@ -330,6 +365,8 @@ int main(int argc, char ** argv) {
             seconds = std::atof(next("--seconds"));
         else if (a == "--threads")
             threads = std::atoi(next("--threads"));
+        else if (a == "--repeat")
+            repeat = std::atoi(next("--repeat"));
         else if (a == "--usage")
             read_often = std::string(next("--usage")) != "rarely";
         else if (a == "--probe-max")
@@ -339,7 +376,7 @@ int main(int argc, char ** argv) {
             return 2;
         }
     }
-    if (mib == 0 || threads < 1) {
+    if (mib == 0 || threads < 1 || repeat < 1) {
         usage(argv[0]);
         return 2;
     }
@@ -355,42 +392,68 @@ int main(int argc, char ** argv) {
     }
 
     const size_t bytes = mib * 1024 * 1024;
-    std::printf("buffer %zu MiB, %.1f s per mode, %d reader thread(s), cpu-read hint '%s'\n\n", mib, seconds, threads,
-                read_often ? "often" : "rarely");
-    std::printf("%-8s %12s %12s %10s %8s  %s\n", "mode", "best_MiB/s", "mean_MiB/s", "alloc_ms", "passes", "note");
-
-    double anon_best = 0.0, ahwb_best = 0.0;
-    const bool want_anon = modes.find("anon") != std::string::npos;
-    const bool want_ahwb = modes.find("ahwb") != std::string::npos;
-
-    if (want_anon) {
-        Alloc a = alloc_anon(bytes);
-        if (!a.base) {
-            std::printf("%-8s %12s %12s %10.1f %8s  %s\n", "anon", "-", "-", a.alloc_ms, "-", "allocation failed");
-        } else {
-            const BwResult r = measure(a.base, bytes, seconds, threads);
-            anon_best = r.best_mibs;
-            std::printf("%-8s %12.1f %12.1f %10.1f %8d  %s\n", "anon", r.best_mibs, r.mean_mibs, a.alloc_ms, r.passes,
-                        "reclaimable baseline");
-            free_anon(a.base, bytes);
+    std::vector<std::string> order;
+    for (size_t p = 0; p < modes.size();) {
+        const size_t c = modes.find(',', p);
+        std::string tok = modes.substr(p, c == std::string::npos ? std::string::npos : c - p);
+        if (tok == "anon" || tok == "ahwb")
+            order.push_back(tok);
+        else if (!tok.empty()) {
+            std::fprintf(stderr, "unknown mode '%s'\n", tok.c_str());
+            return 2;
         }
+        if (c == std::string::npos) break;
+        p = c + 1;
+    }
+    if (order.empty()) {
+        usage(argv[0]);
+        return 2;
     }
 
-    if (want_ahwb) {
+    std::printf("buffer %zu MiB, %.1f s per mode, %d reader thread(s), %d repeat(s), cpu-read hint '%s'\n\n", mib,
+                seconds, threads, repeat, read_often ? "often" : "rarely");
+    std::printf("%4s %-8s %12s %12s %10s %8s  %s\n", "rep", "mode", "best_MiB/s", "mean_MiB/s", "alloc_ms", "passes",
+                "note");
+
+    double anon_best = 0.0, ahwb_best = 0.0;
+    // Modes run in the order given and are re-run `repeat` times, so an A/B can be interleaved
+    // within one invocation. That is not a convenience: bandwidth here is dominated by which core
+    // the scheduler picked, so a single anon-then-ahwb pass compares two placements as readily as
+    // two allocators. Interleave, and pin with `taskset` when the numbers still disagree.
+    for (int rep = 1; rep <= repeat; ++rep) {
+        for (const std::string & m : order) {
+            if (m == "anon") {
+                Alloc a = alloc_anon(bytes);
+                if (!a.base) {
+                    std::printf("%4d %-8s %12s %12s %10.1f %8s  %s\n", rep, "anon", "-", "-", a.alloc_ms, "-",
+                                "allocation failed");
+                    continue;
+                }
+                const BwResult r = measure(a.base, bytes, seconds, threads);
+                anon_best = std::max(anon_best, r.best_mibs);
+                std::printf("%4d %-8s %12.1f %12.1f %10.1f %8d  %s\n", rep, "anon", r.best_mibs, r.mean_mibs,
+                            a.alloc_ms, r.passes, "reclaimable baseline");
+                free_anon(a.base, bytes);
+            } else {
 #if BMOE_HAVE_AHWB
-        Alloc a = alloc_ahwb(bytes, read_often);
-        if (!a.base) {
-            std::printf("%-8s %12s %12s %10.1f %8s  %s\n", "ahwb", "-", "-", a.alloc_ms, "-", a.note.c_str());
-        } else {
-            const BwResult r = measure(a.base, bytes, seconds, threads);
-            ahwb_best = r.best_mibs;
-            std::printf("%-8s %12.1f %12.1f %10.1f %8d  %s\n", "ahwb", r.best_mibs, r.mean_mibs, a.alloc_ms, r.passes,
-                        "pinned dma-buf");
-            free_ahwb();
-        }
+                Alloc a = alloc_ahwb(bytes, read_often);
+                if (!a.base) {
+                    std::printf("%4d %-8s %12s %12s %10.1f %8s  %s\n", rep, "ahwb", "-", "-", a.alloc_ms, "-",
+                                a.note.c_str());
+                    continue;
+                }
+                const BwResult r = measure(a.base, bytes, seconds, threads);
+                ahwb_best = std::max(ahwb_best, r.best_mibs);
+                std::printf("%4d %-8s %12.1f %12.1f %10.1f %8d  %s\n", rep, "ahwb", r.best_mibs, r.mean_mibs,
+                            a.alloc_ms, r.passes, "pinned dma-buf");
+                free_ahwb();
 #else
-        std::printf("%-8s %12s %12s %10s %8s  %s\n", "ahwb", "-", "-", "-", "-", "not an Android build");
+                std::printf("%4d %-8s %12s %12s %10s %8s  %s\n", rep, "ahwb", "-", "-", "-", "-",
+                            "not an Android build");
 #endif
+            }
+            std::fflush(stdout);
+        }
     }
 
     if (anon_best > 0.0 && ahwb_best > 0.0) {

@@ -1,0 +1,112 @@
+bmoe-membench, Android arm64 (NDK 29, API 29), test device: 8 cores in two clusters
+(policy0 = cpu0-5, cpuinfo_max 3321600 kHz, vendor-capped to 2265600 during the run;
+ policy6 = cpu6-7, cpuinfo_max 3801600 kHz, vendor-capped to 1862400 during the run).
+11.4 GB RAM. Thermal Status 0 before and after every run; scaling_max_freq unchanged
+across the session, so no clock drift confound.
+
+App force-stopped, no stray bmoe processes, before the first run:
+  MemTotal 11366276 kB  MemFree 381300 kB  MemAvailable 3857500 kB  SwapFree 8980756 kB
+
+
+=== 1. First run, UNPINNED — the misleading one, kept as the methodology lesson ===
+
+$ bmoe-membench --mib 512 --seconds 3 --threads 1
+mode       best_MiB/s   mean_MiB/s   alloc_ms   passes  note
+anon          45410.4      45000.0        0.0      264  reclaimable baseline
+ahwb          30373.7      28425.6      131.9      167  pinned dma-buf
+ahwb / anon = 0.67x
+
+Swapping the order inverts the result, which is what exposes it as core placement:
+
+$ bmoe-membench --mib 512 --seconds 3 --threads 1 --modes ahwb   (then --modes anon)
+round 1:  ahwb 44966.9    anon 30098.0
+round 2:  ahwb 30377.4    anon 45404.3
+
+Every reading is either ~45400 or ~30400 regardless of mode: the two values are the two
+CPU clusters, not the two allocators.
+
+
+=== 2. Pinned single-thread, interleaved x3 — the real comparison ===
+
+$ taskset 04 bmoe-membench --mib 512 --seconds 2 --threads 1 --modes <one mode>
+   (cpu2, policy0)
+  r1  ahwb          30392.2      28554.5       55.6      112
+  r1  anon          30422.6      28645.9        0.0      112
+  r2  ahwb          30398.6      28384.7       60.7      111
+  r2  anon          30393.8      27572.0        0.0      108
+  r3  ahwb          30309.6      28668.5       57.2      113
+  r3  anon          30437.7      28636.9        0.0      112
+
+$ taskset 40 bmoe-membench --mib 512 --seconds 2 --threads 1 --modes <one mode>
+   (cpu6, policy6)
+  r1  ahwb          45065.3      44715.8       56.8      175
+  r1  anon          45219.1      44867.3        0.0      176
+  r2  ahwb          45174.6      44821.0       56.3      176
+  r2  anon          45183.3      44812.3        0.0      176
+  r3  ahwb          45175.9      44797.4       58.3      175
+  r3  anon          45277.6      44959.4        0.0      176
+
+
+=== 3. Cacheability hint: 'rarely' vs 'often' — no difference ===
+
+$ taskset 40 bmoe-membench --mib 512 --seconds 2 --threads 1 --repeat 2 --usage rarely --modes ahwb,anon
+ rep mode       best_MiB/s   mean_MiB/s   alloc_ms   passes
+   1 ahwb          45261.8      44933.6       55.4      176
+   1 anon          45214.3      44898.0        0.0      176
+   2 ahwb          45214.1      44946.1       35.9      176
+   2 anon          45265.3      44934.6        0.0      176
+ahwb / anon = 1.00x
+
+
+=== 4. Multi-threaded, all cores — the matmul-representative row ===
+
+$ bmoe-membench --mib 1024 --seconds 2 --threads 4 --repeat 2 --modes ahwb,anon
+ rep mode       best_MiB/s   mean_MiB/s   alloc_ms   passes
+   1 ahwb          59015.7      58438.0      150.3      115
+   1 anon          58902.1      58461.2        0.0      115
+   2 ahwb          58960.3      58324.7       91.0      114
+   2 anon          59023.9      58424.8        0.0      115
+ahwb / anon = 1.00x
+
+
+=== 5. Size ceiling ===
+
+Allocation-only probe (the first, incomplete version of --probe-max) reached the format cap:
+  64 / 128 / 256 / 512 / 1024 / 2048 / 4095 MiB  -- all allocate
+
+But lock fails where allocate succeeds:
+
+$ taskset 40 bmoe-membench --mib 2048 --seconds 2 --threads 1 --repeat 2 --modes ahwb,anon
+   1 ahwb                -            -      153.7        -  AHardwareBuffer_lock failed (rc=-22)
+   1 anon          45049.8      44441.5        0.0       44
+   2 ahwb                -            -      374.5        -  AHardwareBuffer_lock failed (rc=-22)
+   2 anon          45000.0      44424.2        0.0       44
+
+Manual sweep of the lock boundary (1 s rows, cpu6):
+    768 MiB : ahwb 45102.5   alloc  72.2 ms
+   1024 MiB : ahwb 45116.9   alloc  96.9 ms
+   1280 MiB : ahwb 45026.4   alloc 160.5 ms
+   1536 MiB : ahwb 45008.7   alloc 197.5 ms
+   1792 MiB : ahwb 44889.1   alloc 222.2 ms
+   2047 MiB : ahwb 45068.0   alloc 218.7 ms   <- last size that locks
+   2048 MiB : lock fails, EINVAL                <- 2^31 bytes
+
+$ bmoe-membench --probe-max          (corrected: locks every candidate)
+probing the largest lockable BLOB (32-bit width caps this at 4096 MiB)
+      64 MiB  ok
+     128 MiB  ok
+     256 MiB  ok
+     512 MiB  ok
+    1024 MiB  ok
+    2048 MiB  FAILED
+  max lockable ~2047 MiB (allocation alone reaches the 4096 MiB format cap)
+  larger working sets must be split across several buffers
+
+
+=== Host reference (x86-64 laptop, dual-channel DDR4) — sanity check that the read
+    kernel reaches DRAM speed and is not measuring cache ===
+
+$ bmoe-membench --mib 512 --seconds 2 --threads 1
+anon          16077.7      12796.4        0.0       50
+$ bmoe-membench --mib 512 --seconds 2 --threads 4
+anon          36289.7      33315.1        0.0      131

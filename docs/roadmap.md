@@ -57,6 +57,18 @@ committed route traces, predicting a token's experts from the run's hottest list
 of the time on gpt-oss against 17.9 % for the previous token's routing. But note what the same
 session found about *spending* memory work to exploit it — see the expert-cache theme below.
 
+Keeping the dense weights resident once they are in has no lever in
+[android-memory.md](android-memory.md) — except one, found on 2026-07-21: a **dma-buf allocated
+through `AHardwareBuffer`** is exempt from reclaim by construction and needs no privilege. Its
+bandwidth gate passes cleanly (1.00× against anonymous memory; usable in 2047 MiB units, an
+`AHardwareBuffer_lock` boundary at 2^31 bytes —
+[bench-data/2026-07-21-pinned-memory/](bench-data/2026-07-21-pinned-memory/findings.md)). What is
+**not** established is that pinning helps: reclaim-exempt memory does not create memory, so under a
+>RAM model the RAM the dense weights stop yielding comes out of the expert cache or the page cache
+feeding the stream — the trade that already refuted the bulk restore and the per-layer LFU cap. The
+open question is a `--dense-weights ahwb` mode measured in-app against `anon`, with
+`dense_resident_frac` and majflt/token read next to tok/s.
+
 ## Expert cache policy — closed, negatively
 
 Whether a smarter eviction policy could raise throughput is **answered, and the answer is no**
