@@ -80,10 +80,14 @@ private:
     std::string basename_;
     size_t align_ = 4096;
 
-    // Anonymous: our own reader, the tensors we read, the buffers backing them (paired with sizes).
+    // Anonymous/Pinned: our own reader, the tensors we read, and the buffers backing them. `bases_`
+    // is what the sensor probes and is filled by both modes; `bufs_` and `pinned_` are the two
+    // release lists, exactly one of which is populated for a given run.
     FileReader reader_;
     std::vector<DenseTensorRef> tensors_;
+    std::vector<void *> bases_;
     std::vector<void *> bufs_;
+    std::vector<pio::PinnedAlloc> pinned_;
     std::vector<size_t> buf_sz_;
 
     // Mmap/Warmed: the dense byte ranges and the mmap VMAs that back them, resolved once from

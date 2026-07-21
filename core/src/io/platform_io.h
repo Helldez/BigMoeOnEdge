@@ -42,6 +42,32 @@ uint64_t file_size(fd_t fd);
 void * alloc_aligned(size_t align, size_t sz);
 void aligned_free(void * p);
 
+// A reclaim-exempt allocation: memory the kernel may not take back under pressure.
+//
+// On Android this is a dma-buf, obtained as an AHardwareBuffer of format BLOB and locked for CPU
+// access. Its pages are pinned for the buffer's lifetime because a device may DMA from them at any
+// moment, which makes it the ONLY allocation an unprivileged app can make that reclaim cannot touch:
+// `mlock` is capped at 64 KiB by the vendor, the cgroup protections are v2-only, and MADV_COLD merely
+// redirects reclaim. See docs/android-memory.md.
+//
+// Measured properties (docs/bench-data/2026-07-21-pinned-memory/): reads at the same speed as
+// ordinary anonymous memory — the failure mode that would have made this useless, an uncached
+// mapping, does not occur — and costs a few hundred ms per GiB to allocate. Do not assume the
+// bandwidth result holds on every gralloc; it is one device's.
+//
+// `pinned_max_bytes()` is the largest single allocation that will succeed: 0 where the platform has
+// no such allocation at all (host builds), and on Android the LOCK boundary rather than the
+// allocation one — AHardwareBuffer_lock fails with EINVAL at 2^31 bytes even though allocation
+// reaches the 4 GiB format cap, so a larger working set must be split across several buffers.
+struct PinnedAlloc {
+    void * base = nullptr;   // CPU-readable pointer, or null if the allocation failed
+    void * handle = nullptr; // opaque platform handle, released by pinned_free
+    size_t size = 0;
+};
+size_t pinned_max_bytes();
+bool pinned_alloc(size_t sz, PinnedAlloc * out);
+void pinned_free(PinnedAlloc * a);
+
 // Reserved (address-only) region; physical pages appear on commit, vanish on evict.
 size_t vm_page();
 void * vm_reserve(size_t sz);

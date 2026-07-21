@@ -65,9 +65,13 @@ bandwidth gate passes cleanly (1.00× against anonymous memory; usable in 2047 M
 [bench-data/2026-07-21-pinned-memory/](bench-data/2026-07-21-pinned-memory/findings.md)). What is
 **not** established is that pinning helps: reclaim-exempt memory does not create memory, so under a
 >RAM model the RAM the dense weights stop yielding comes out of the expert cache or the page cache
-feeding the stream — the trade that already refuted the bulk restore and the per-layer LFU cap. The
-open question is a `--dense-weights ahwb` mode measured in-app against `anon`, with
-`dense_resident_frac` and majflt/token read next to tok/s.
+feeding the stream — the trade that already refuted the bulk restore and the per-layer LFU cap.
+
+`--dense-weights ahwb` now implements it (an in-app setting, default off), and the byte-identity
+gates pass — but **the A/B that decides it is owed**, and must be run in the app rather than over
+adb: single-shot adb runs never idle, and this whole class of bug lives in the reclaim the app's
+engine suffers while it sits. Read `dense_resident_frac` and majflt/token next to tok/s; under this
+mode a residency below 1.0 falsifies the premise outright.
 
 ## Expert cache policy — closed, negatively
 

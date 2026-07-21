@@ -186,6 +186,14 @@ bulk restore (below) and the per-layer LFU cap. And these measurements never put
 the pressure a >RAM decode creates, so "the kernel cannot reclaim it" remains an inference from how
 dma-buf works rather than something observed here. The lever is **open, and unproven**.
 
+`--dense-weights ahwb` exists to settle that. It is `anon` with one substitution — the buffer comes
+from `pio::pinned_alloc` instead of the heap — so an A/B against `anon` moves a single variable, and
+it refuses to start where the platform has no such allocation rather than falling back, which would
+let the comparison quietly become a mode against itself. `dense_resident_frac` keeps working under
+it (mincore does report on the dma-buf mapping), and under this mode the fraction IS the experiment:
+anything below 1.0 falsifies reclaim-exemption. Default off; **do not turn it on because the theory
+is good.**
+
 ## Why restoring reclaimed pages cannot win
 
 `MADV_WILLNEED` on anon does swap them back in — but `read_swap_cache_async` puts them on the

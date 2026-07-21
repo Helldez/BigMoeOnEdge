@@ -461,7 +461,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // (dropping graph inputs and KV, which share the leaf shape) and is NOT one of the streamed
         // experts. Built before init consumes `layers`. Only this mode needs them; the others ignore
         // an empty list.
-        if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous) {
+        if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous || cfg.moe.dense_weights == DenseWeightsMode::Pinned) {
             const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
             std::vector<DenseTensorRef> dense;
             for (const auto & kv : im.hook->captured_weights()) {
@@ -564,6 +564,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
         ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"
                            : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"
+                           : cfg.moe.dense_weights == DenseWeightsMode::Pinned    ? "ahwb"
                                                                                   : "warm";
         if (cfg.moe.enabled) {
             const IExpertSource::Stats st = im.source.stats();

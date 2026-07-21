@@ -352,10 +352,13 @@ static void print_usage(const char * argv0) {
         "      --cache-ceil-mb N   with --cache-mb auto: upper bound on the budget (0 = no cap)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache for expert reads\n"
-        "      --dense-weights M   dense (non-expert) weight policy: mmap | warm | anon (default)\n"
+        "      --dense-weights M   dense (non-expert) weight policy: mmap | warm | anon (default) | ahwb\n"
         "                          (warm = page-cache them at load, best when the model fits in RAM;\n"
         "                          anon = read via O_DIRECT into our own buffers and rebind, so a\n"
-        "                          reclaim hits zram not flash — the win on >RAM models)\n"
+        "                          reclaim hits zram not flash — the win on >RAM models;\n"
+        "                          ahwb = as anon, but into dma-buf memory the kernel may not reclaim\n"
+        "                          at all. Android-only, EXPERIMENTAL: pinning does not create memory,\n"
+        "                          so what it stops yielding is taken from the expert cache instead)\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -452,8 +455,10 @@ int main(int argc, char ** argv) {
                 cfg.moe.dense_weights = bmoe::DenseWeightsMode::Warmed;
             else if (m == "anon")
                 cfg.moe.dense_weights = bmoe::DenseWeightsMode::Anonymous;
+            else if (m == "ahwb")
+                cfg.moe.dense_weights = bmoe::DenseWeightsMode::Pinned;
             else {
-                std::fprintf(stderr, "bmoe: --dense-weights expects mmap|warm|anon, got '%s'\n", m.c_str());
+                std::fprintf(stderr, "bmoe: --dense-weights expects mmap|warm|anon|ahwb, got '%s'\n", m.c_str());
                 return 2;
             }
         }

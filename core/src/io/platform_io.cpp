@@ -23,6 +23,9 @@
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
 #endif
+#if defined(__ANDROID__)
+#include <android/hardware_buffer.h> // reclaim-exempt allocation; see pinned_alloc
+#endif
 #endif
 
 namespace bmoe::pio {
@@ -348,6 +351,67 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
     std::fclose(f);
     return any;
 }
+
+#endif
+
+// ── Reclaim-exempt allocation ────────────────────────────────────────────────────────────
+// Shared across platforms because only Android has one: everywhere else this reports "unsupported"
+// and callers fall back to an ordinary allocation. Declared in the header with the measured
+// properties and the reason the ceiling is a lock boundary rather than an allocation one.
+#if defined(__ANDROID__)
+
+size_t pinned_max_bytes() {
+    // The lock path uses a signed 32-bit type: AHardwareBuffer_lock returns EINVAL at exactly 2^31
+    // bytes while 2^31 - 1 succeeds, even though allocation reaches the 32-bit width cap of 4 GiB.
+    // Probing this at runtime would cost a multi-GiB allocation at startup to learn a constant, so
+    // it is stated here and verified by `bmoe-membench --probe-max` instead.
+    return 0x7FFFFFFFu;
+}
+
+bool pinned_alloc(size_t sz, PinnedAlloc * out) {
+    if (!out || sz == 0 || sz > pinned_max_bytes()) return false;
+    AHardwareBuffer_Desc d{};
+    d.width = (uint32_t) sz; // BLOB: width IS the byte count, and height must be 1
+    d.height = 1;
+    d.layers = 1;
+    d.format = AHARDWAREBUFFER_FORMAT_BLOB;
+    // CPU_READ_OFTEN asks gralloc for a cacheable mapping. Measured: the hint makes no difference
+    // here (CPU_READ_RARELY reads identically), but asking for what we actually do is still right —
+    // another gralloc may honour it.
+    d.usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+
+    AHardwareBuffer * buf = nullptr;
+    if (AHardwareBuffer_allocate(&d, &buf) != 0 || !buf) return false;
+    void * p = nullptr;
+    if (AHardwareBuffer_lock(buf, d.usage, -1, nullptr, &p) != 0 || !p) {
+        AHardwareBuffer_release(buf);
+        return false;
+    }
+    out->base = p;
+    out->handle = buf;
+    out->size = sz;
+    return true;
+}
+
+void pinned_free(PinnedAlloc * a) {
+    if (!a || !a->handle) return;
+    AHardwareBuffer * buf = (AHardwareBuffer *) a->handle;
+    AHardwareBuffer_unlock(buf, nullptr);
+    AHardwareBuffer_release(buf);
+    a->base = nullptr;
+    a->handle = nullptr;
+    a->size = 0;
+}
+
+#else
+
+size_t pinned_max_bytes() {
+    return 0;
+}
+bool pinned_alloc(size_t, PinnedAlloc *) {
+    return false;
+}
+void pinned_free(PinnedAlloc *) {}
 
 #endif
 

@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.14.0] - 2026-07-21
+
+### Added
+- **`--dense-weights ahwb`**: keep the dense weights in memory Android is not allowed to reclaim.
+  The buffer comes from a locked `AHardwareBuffer` BLOB (a dma-buf, pinned for its lifetime because
+  a device may DMA from it) instead of the heap; everything else is `anon`'s path unchanged, so an
+  A/B between the two moves exactly one variable. Exposed as `pio::pinned_alloc` and as a
+  **Dense weights → Pinned (experimental)** setting in the example app, **default off**.
+  Android-only: on any other platform the mode refuses to start rather than silently falling back,
+  which would let a comparison become a mode against itself.
+- `dense_resident_frac` works under the new mode (mincore does report on a dma-buf mapping), where
+  it doubles as the falsification test: pinned pages that drop below 1.0 disprove the premise.
+
+### Notes
+- **The A/B that decides whether this helps is owed**, and this mode should not be turned on
+  because the reasoning is good. Reclaim-exempt memory does not create memory: under a >RAM model
+  the RAM the dense weights stop yielding is taken from the expert cache or from the page cache
+  feeding the stream — the trade that already refuted the bulk restore (#28) and the per-layer LFU
+  cap, both of which delivered their predicted local gain and lost throughput. Bandwidth and size
+  are settled ([0.13.5]); usefulness is not.
+
 ## [0.13.5] - 2026-07-21
 
 Diagnostics only — no engine, CLI or app behaviour changes, so the Android version is unchanged.
