@@ -40,8 +40,13 @@ bool DenseWeights::init(DenseWeightsMode mode,
     const size_t slash = path_.find_last_of("/\\");
     basename_ = slash == std::string::npos ? path_ : path_.substr(slash + 1);
 
-    if (mode_ == DenseWeightsMode::Anonymous) {
+    if (mode_ == DenseWeightsMode::Anonymous || mode_ == DenseWeightsMode::Pinned) {
         if (tensors_.empty()) return true; // nothing captured to rebind — behave as Mmap
+        if (mode_ == DenseWeightsMode::Pinned && pio::pinned_max_bytes() == 0) {
+            std::fprintf(stderr, "bmoe: --dense-weights ahwb needs reclaim-exempt memory, which this "
+                                 "platform does not provide (Android only)\n");
+            return false;
+        }
         // A single-lane reader with a bounce large enough for our chunk; O_DIRECT independent of the
         // expert stream. Sized to the largest tensor is unnecessary — we read in bounded chunks.
         const size_t chunk = 8ull << 20;
@@ -54,31 +59,56 @@ bool DenseWeights::init(DenseWeightsMode mode,
     return true;
 }
 
-// ── Anonymous: read each dense tensor whole into an anon buffer and rebind onto it ──
+// ── Anonymous / Pinned: read each dense tensor whole into our own buffer and rebind onto it ──
+//
+// The two modes differ ONLY in where the buffer comes from: ordinary anonymous memory, which the
+// kernel may reclaim to zram, or a dma-buf it may not touch at all. Everything else — the O_DIRECT
+// read, the rebind, handing back the now-unreferenced mmap pages — is identical, which is what makes
+// the A/B between them a single-variable experiment rather than two code paths being compared.
+//
+// Pinned allocates PER TENSOR, so the 2047 MiB ceiling on a single dma-buf is not a constraint in
+// practice: the largest dense tensor here is an embedding or lm_head, far below it. A tensor that
+// did exceed it fails the run rather than quietly taking an anon buffer, because a silent mix would
+// make the comparison meaningless in exactly the direction that flatters the feature.
 bool DenseWeights::read_anonymous(size_t align) {
+    const bool pinned = mode_ == DenseWeightsMode::Pinned;
     const uint64_t chunk = 8ull << 20;
     uint64_t total = 0;
     bufs_.reserve(tensors_.size());
     buf_sz_.reserve(tensors_.size());
+    if (pinned) pinned_.reserve(tensors_.size());
     for (const DenseTensorRef & d : tensors_) {
         if (!d.tensor || d.size == 0) continue;
-        void * buf = pio::alloc_aligned(align, (size_t) d.size);
-        if (!buf) {
-            std::fprintf(stderr, "bmoe: dense buffer alloc %llu failed\n", (unsigned long long) d.size);
-            return false;
+        void * buf = nullptr;
+        if (pinned) {
+            pio::PinnedAlloc pa;
+            if (!pio::pinned_alloc((size_t) d.size, &pa)) {
+                std::fprintf(stderr, "bmoe: pinned dense buffer %llu MiB failed (ceiling %llu MiB)\n",
+                             (unsigned long long) (d.size >> 20), (unsigned long long) (pio::pinned_max_bytes() >> 20));
+                return false;
+            }
+            pinned_.push_back(pa); // tracked for shutdown even if a chunk read below fails
+            buf = pa.base;
+        } else {
+            buf = pio::alloc_aligned(align, (size_t) d.size);
+            if (!buf) {
+                std::fprintf(stderr, "bmoe: dense buffer alloc %llu failed\n", (unsigned long long) d.size);
+                return false;
+            }
+            bufs_.push_back(buf); // tracked for shutdown even if a chunk read below fails
         }
-        bufs_.push_back(buf); // tracked for shutdown even if a chunk read below fails
+        bases_.push_back(buf); // what the sensor probes, whichever allocator produced it
         buf_sz_.push_back((size_t) d.size);
         for (uint64_t done = 0; done < d.size;) {
             const uint64_t n = std::min<uint64_t>(chunk, d.size - done);
             if (reader_.read(0, (char *) buf + done, d.file_off + done, n) < 0) return false;
             done += n;
         }
-        d.tensor->data = buf; // rebind the model weight onto its private anon copy
+        d.tensor->data = buf; // rebind the model weight onto its private copy
         total += d.size;
     }
-    std::fprintf(stderr, "bmoe: dense-weights=anon — %llu MiB in %zu anon buffers\n",
-                 (unsigned long long) (total >> 20), bufs_.size());
+    std::fprintf(stderr, "bmoe: dense-weights=%s — %llu MiB in %zu %s buffers\n", pinned ? "ahwb" : "anon",
+                 (unsigned long long) (total >> 20), buf_sz_.size(), pinned ? "pinned" : "anon");
     return true;
 }
 
@@ -113,8 +143,8 @@ void DenseWeights::drop_mmap_copies(size_t page) {
         }
     }
     if (dropped)
-        std::fprintf(stderr, "bmoe: dense-weights=anon — dropped %llu MiB of now-unused mmap pages\n",
-                     (unsigned long long) (dropped >> 20));
+        std::fprintf(stderr, "bmoe: dense-weights=%s — dropped %llu MiB of now-unused mmap pages\n",
+                     mode_ == DenseWeightsMode::Pinned ? "ahwb" : "anon", (unsigned long long) (dropped >> 20));
 }
 
 // ── Warmed: one sequential buffered sweep over the dense ranges to populate the page cache ──
@@ -150,16 +180,20 @@ void DenseWeights::warm() {
 
 // ── residency sensor ─────────────────────────────────────────────────────────────────
 void DenseWeights::sample_residency(size_t page) {
-    if (mode_ == DenseWeightsMode::Anonymous)
+    if (mode_ == DenseWeightsMode::Anonymous || mode_ == DenseWeightsMode::Pinned)
         sample_anon(page);
     else
         sample_mmap(page);
 }
 
-// Anonymous: mincore the anon buffers directly. Anon memory is reclaimed to zram, and mincore reports
-// resident anon pages just as it does file pages, so resident_frac keeps its meaning under the flag.
+// Anonymous/Pinned: mincore our own buffers directly. Anon memory is reclaimed to zram, and mincore
+// reports resident anon pages just as it does file pages, so resident_frac keeps its meaning under
+// the flag. Under Pinned the fraction is the EXPERIMENT rather than a diagnostic: dma-buf pages are
+// supposed to be reclaim-exempt, so anything below 1.0 falsifies the premise. Should mincore not
+// report on a dma-buf mapping at all, vm_resident_sample leaves the counters alone and the fraction
+// stays -1 — unmeasured, which must not be read as "nothing is resident".
 void DenseWeights::sample_anon(size_t page) {
-    if (bufs_.empty()) return;
+    if (bases_.empty()) return;
     uint64_t total = 0;
     for (size_t sz : buf_sz_)
         total += sz;
@@ -167,9 +201,9 @@ void DenseWeights::sample_anon(size_t page) {
     size_t sampled = 0, resident = 0;
     for (int k = 0; k < sample_pages; ++k) {
         uint64_t target = (total * (uint64_t) k) / (uint64_t) sample_pages;
-        for (size_t i = 0; i < bufs_.size(); ++i) {
+        for (size_t i = 0; i < bases_.size(); ++i) {
             if (target < buf_sz_[i]) {
-                const char * a = (const char *) bufs_[i] + target;
+                const char * a = (const char *) bases_[i] + target;
                 const char * pg = (const char *) ((uintptr_t) a & ~(uintptr_t) (page - 1));
                 pio::vm_resident_sample(pg, page, &sampled, &resident);
                 break;
@@ -230,7 +264,11 @@ void DenseWeights::sample_mmap(size_t page) {
 void DenseWeights::shutdown() {
     for (void * b : bufs_)
         if (b) pio::aligned_free(b);
+    for (pio::PinnedAlloc & p : pinned_)
+        pio::pinned_free(&p);
     bufs_.clear();
+    pinned_.clear();
+    bases_.clear();
     buf_sz_.clear();
     tensors_.clear();
     reader_.close();

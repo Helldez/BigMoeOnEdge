@@ -31,6 +31,9 @@ enum class DenseWeightsMode {
     Mmap,      // leave mmap'd, no help (the A/B baseline)
     Warmed,    // mmap'd, but page-cached once at load
     Anonymous, // read via O_DIRECT into our own anon buffers and rebind (swaps to zram, not flash)
+    Pinned,    // as Anonymous, but into reclaim-exempt dma-buf memory the kernel may not take back.
+               // Android-only (pio::pinned_alloc); init fails where unsupported rather than falling
+               // back, so an A/B against Anonymous can never silently compare a mode to itself.
 };
 
 // MoE expert-selective streaming knobs.

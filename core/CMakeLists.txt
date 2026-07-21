@@ -39,6 +39,12 @@ if(BMOE_HAVE_LLAMA)
     find_package(Threads REQUIRED)
     target_link_libraries(bmoe_core PUBLIC Threads::Threads)
 
+    if(ANDROID)
+        # libandroid carries AHardwareBuffer_*, the reclaim-exempt allocation behind
+        # `--dense-weights ahwb` (pio::pinned_alloc). No other platform has an equivalent.
+        target_link_libraries(bmoe_core PUBLIC android)
+    endif()
+
     # Intra-layer I/O–compute overlap needs the fork's expert-ready hook in ggml-cpu.h. Detect
     # it by inspecting the submodule header rather than the git remote, so any tree carrying the
     # hook (a rebase, a different fork) enables the feature. PUBLIC so cli/ and tests/ see it.

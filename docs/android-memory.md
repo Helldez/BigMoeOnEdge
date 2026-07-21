@@ -143,7 +143,7 @@ steal file cache — we evict our own dense weights when we allocate too fast.
 | Memory Advice API | **deprecated**; only warns, never keeps anything resident |
 | `MAP_POPULATE` | prefaults, does **not** pin. Load speed only |
 | **`MADV_COLD` / `MADV_PAGEOUT`** (5.4+) | **the one real lever** — unprivileged. Can't stop reclaim, but *chooses its victims*: volunteer your own cold tail so kswapd finds cheap targets and you cut direct-reclaim stalls |
-| **dma-buf via `AHardwareBuffer`** | **open, and the only allocation here that reclaim cannot touch** — those pages stay pinned because a device may DMA from them at any time, and no capability is needed. Reads at full anonymous-memory speed (measured 1.00×, [2026-07-21](bench-data/2026-07-21-pinned-memory/findings.md)). Capped at **2047 MiB per buffer**: `AHardwareBuffer_lock` fails with `EINVAL` at 2^31 bytes even though allocation reaches the 4 GiB format cap. **Untested against real pressure** — see below |
+| **dma-buf via `AHardwareBuffer`** | **the one lever that works** — those pages stay pinned because a device may DMA from them at any time, and no capability is needed. Full anonymous-memory read speed, and **+17.9% decode** with the dense weights in it ([2026-07-21](bench-data/2026-07-21-pinned-dense-ab/findings.md)). Capped at **2047 MiB per buffer**: `AHardwareBuffer_lock` fails with `EINVAL` at 2^31 bytes even though allocation reaches the 4 GiB format cap. Shipped as `--dense-weights ahwb`, default off — see below |
 
 **lmkd never reclaims — it only kills — and here it is silent by design.** It early-returns while
 `SwapFree >= swap_free_low_percentage` (10%) of total; we sit at 70–79%. **The 12 GB swap is exactly
@@ -169,6 +169,7 @@ Measured properties on the test device ([data](bench-data/2026-07-21-pinned-memo
 
 | property | value |
 |---|---|
+| throughput vs `anon`, long generation | **+17.9%** (see below) |
 | read bandwidth vs anonymous memory | **1.00×** — 30.4 GiB/s and 45.2 GiB/s on the two clusters, 59.0 at 4 threads, all matching anon within 0.5% |
 | `CPU_READ_OFTEN` vs `CPU_READ_RARELY` | no difference; the hint does not have to be coaxed |
 | max usable size | **2047 MiB per buffer** — `AHardwareBuffer_lock` returns `EINVAL` at 2^31 bytes, a signed-32-bit boundary, though allocation reaches the 4 GiB format cap |
@@ -179,12 +180,41 @@ idea to be dead on arrival: gralloc chooses per allocation whether a buffer is C
 uncached mapping would read at or below flash bandwidth — making pinned weights slower than
 refaulting them.
 
-**None of that is an argument that pinning the dense weights helps.** Reclaim-exempt memory does not
-create memory: under a >RAM model, RAM the dense weights no longer yield has to come from the expert
-cache or from the page cache feeding the streaming path. That is the same trade that refuted the
-bulk restore (below) and the per-layer LFU cap. And these measurements never put the device under
-the pressure a >RAM decode creates, so "the kernel cannot reclaim it" remains an inference from how
-dma-buf works rather than something observed here. The lever is **open, and unproven**.
+`--dense-weights ahwb` puts the dense weights there. It is `anon` with one substitution — the buffer
+comes from `pio::pinned_alloc` instead of the heap — so an A/B against `anon` moves a single
+variable, and it refuses to start where the platform has no such allocation rather than falling
+back, which would let the comparison quietly become a mode against itself.
+
+**Measured, in-app, on a long generation** ([2026-07-21](bench-data/2026-07-21-pinned-dense-ab/findings.md)):
+
+| | `anon` | `ahwb` |
+|---|---|---|
+| decode tok/s | 2.588 | **3.053 (+17.9%, CIs disjoint)** |
+| `dense_resident_frac` | 0.848 | **1.000** |
+| majflt / token | 265 | 257 — *equal* |
+| `compute_ms` | 298 | **241** |
+| `io_ms`, `stall_ms`, cache hit % | \- | *all unchanged* |
+| swap | 562 MiB | 294 MiB |
+
+Reclaim-exemption holds: 1.000 exactly, minimum included, in every pinned run.
+
+**But the win is not the one that was predicted, and the correction matters more than the win.**
+Major faults are *equal*. `anon` already keeps the dense weights off the flash — what it does not
+prevent is the kernel taking ~15% of them into **zram**. A page reclaimed to zram is not a major
+fault when touched again; it is a minor fault plus a decompression. That cost appears in no I/O
+counter and no fault counter, so it lands in `compute_ms` — which is a residual, not a measurement
+of arithmetic. Hence the entire delta showing up there while everything else stays flat.
+
+So: **`anon` protects the dense weights from flash; `ahwb` also protects them from zram**, and the
+premium `anon` was quietly paying is worth ~18%. The feared trade — pinned memory starving the
+expert cache — does not appear at this size: the dense set (~1.6 GiB) is small next to a 3000 MiB
+cache budget, and the hit rate is identical to the decimal.
+
+Two caveats that keep this **default off**: in the decisive pair `ahwb` ran first and an order
+effect cannot be excluded (the reversed pair is owed), and it is one device, one model, one config.
+
+The general lesson outlives the flag: `compute_ms` has been absorbing zram decompression all along,
+so any earlier conclusion of the form *"this regime is compute-bound"* deserves re-examination.
 
 ## Why restoring reclaimed pages cannot win
 

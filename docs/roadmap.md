@@ -63,11 +63,23 @@ through `AHardwareBuffer`** is exempt from reclaim by construction and needs no 
 bandwidth gate passes cleanly (1.00× against anonymous memory; usable in 2047 MiB units, an
 `AHardwareBuffer_lock` boundary at 2^31 bytes —
 [bench-data/2026-07-21-pinned-memory/](bench-data/2026-07-21-pinned-memory/findings.md)). What is
-**not** established is that pinning helps: reclaim-exempt memory does not create memory, so under a
->RAM model the RAM the dense weights stop yielding comes out of the expert cache or the page cache
-feeding the stream — the trade that already refuted the bulk restore and the per-layer LFU cap. The
-open question is a `--dense-weights ahwb` mode measured in-app against `anon`, with
-`dense_resident_frac` and majflt/token read next to tok/s.
+`--dense-weights ahwb` implements it, and the in-app A/B came back **positive: +17.9% on a long
+generation, confidence intervals disjoint**, with `dense_resident_frac` pinned at exactly 1.000
+([bench-data/2026-07-21-pinned-dense-ab/](bench-data/2026-07-21-pinned-dense-ab/findings.md)).
+
+The mechanism is not the predicted one, and that correction is the more valuable half. Major faults
+are *equal* between the modes: `anon` already keeps the dense weights off the flash. What it does
+not prevent is the kernel taking ~15% of them into **zram**, where a later touch is a minor fault
+plus a decompression — a cost that appears in no I/O or fault counter and lands in `compute_ms`.
+So **`compute_ms` has been absorbing swap-in all along**, and any earlier "this regime is
+compute-bound" conclusion deserves re-examination. Making that cost visible (minor faults, swap-in
+time) is worth more than the next few percent of throughput.
+
+Still open: the reversed-order pair (`ahwb` ran first in the decisive pair), and anything beyond one
+device / model / config — hence default off. **Not** worth extending to the expert cache without
+sizing the prize first: under `ahwb` only ~294 MiB of a 3000 MiB budget sits in zram, so the prize
+is a fraction of the dense one while the cost — 3 GiB of rigid, LMK-accounted memory, and the loss
+of the reserve/commit/evict elasticity the cache is built on — is far higher.
 
 ## Expert cache policy — closed, negatively
 
