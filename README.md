@@ -87,9 +87,12 @@ and a manual copy to the device: steps in the
 - **Expert cache** (`--cache-mb N|auto`): keeps the most-used experts in RAM, sized by hand or to
   the device; the biggest lever when the model's working set fits.
 - **Direct flash reads** (`--io-threads N`): parallel read lanes that bypass the OS page cache.
-- **Dense-weight policy** (`--dense-weights mmap|warm|anon`): how the always-used (non-expert)
+- **Dense-weight policy** (`--dense-weights mmap|warm|anon|ahwb`): how the always-used (non-expert)
   weights are held in memory. The decisive setting for models far past RAM: on gpt-oss-120b it's
-  worth **3.2×** on its own.
+  worth **3.2×** on its own. `ahwb` goes further on Android — dma-buf memory the kernel cannot
+  reclaim *even to zram*, measured at **+17.9%** over `anon` on a long generation
+  ([data](docs/bench-data/2026-07-21-pinned-dense-ab/findings.md)); off by default, measured on one
+  device.
 - **I/O–compute overlap** (`--overlap`): hides flash latency behind compute. Byte-identical;
   needs a small optional add-on to llama.cpp (see [docs/seam.md](docs/seam.md)).
 - **Turbo top-k** (`--n-expert-used N`): the one lossy knob. Fewer experts per token, ~+22–24%

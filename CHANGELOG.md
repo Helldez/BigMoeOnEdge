@@ -7,23 +7,41 @@ Semantic Versioning.
 ## [0.14.0] - 2026-07-21
 
 ### Added
-- **`--dense-weights ahwb`**: keep the dense weights in memory Android is not allowed to reclaim.
-  The buffer comes from a locked `AHardwareBuffer` BLOB (a dma-buf, pinned for its lifetime because
-  a device may DMA from it) instead of the heap; everything else is `anon`'s path unchanged, so an
-  A/B between the two moves exactly one variable. Exposed as `pio::pinned_alloc` and as a
-  **Dense weights → Pinned (experimental)** setting in the example app, **default off**.
+- **`--dense-weights ahwb` — the dense weights in memory Android is not allowed to reclaim, measured
+  at +17.9% decode.** The buffer comes from a locked `AHardwareBuffer` BLOB (a dma-buf, pinned for
+  its lifetime because a device may DMA from it) instead of the heap; everything else is `anon`'s
+  path unchanged, so the A/B between them moves exactly one variable. Exposed as
+  `pio::pinned_alloc` and as a **Dense weights → Pinned** setting in the example app.
   Android-only: on any other platform the mode refuses to start rather than silently falling back,
   which would let a comparison become a mode against itself.
 - `dense_resident_frac` works under the new mode (mincore does report on a dma-buf mapping), where
-  it doubles as the falsification test: pinned pages that drop below 1.0 disprove the premise.
+  it doubles as the falsification test — and it reports exactly **1.000, minimum included**, in
+  every pinned run. Reclaim-exemption is now measured, not inferred.
+
+### Measured
+- In-app, Qwen3.6-35B-A3B-Q4_K_M, k=8, cache 3000, 1354-token generation, same session and binary:
+  **2.588 → 3.053 tok/s (+17.9%), bootstrap intervals disjoint**. Data in
+  [docs/bench-data/2026-07-21-pinned-dense-ab/](docs/bench-data/2026-07-21-pinned-dense-ab/findings.md).
+- **The mechanism is not the predicted one.** Major faults are *equal* between the modes (265 vs
+  257): `anon` already keeps the dense weights off the flash. What it does not prevent is the kernel
+  taking ~15% of them into **zram**, where a later touch costs a minor fault plus a decompression —
+  a cost that shows up in no I/O counter and no fault counter, and therefore lands in `compute_ms`.
+  The whole delta appears there (298 → 241 ms) while `io_ms`, `stall_ms` and cache hit rate are
+  unchanged to within 1%, and swap falls 562 → 294 MiB. **`anon` protects from flash; `ahwb` also
+  protects from zram.**
+- The feared trade did not occur: the expert cache is untouched (hit rate identical to the decimal),
+  because the dense set (~1.6 GiB) is small next to a 3000 MiB cache budget.
 
 ### Notes
-- **The A/B that decides whether this helps is owed**, and this mode should not be turned on
-  because the reasoning is good. Reclaim-exempt memory does not create memory: under a >RAM model
-  the RAM the dense weights stop yielding is taken from the expert cache or from the page cache
-  feeding the stream — the trade that already refuted the bulk restore (#28) and the per-layer LFU
-  cap, both of which delivered their predicted local gain and lost throughput. Bandwidth and size
-  are settled ([0.13.5]); usefulness is not.
+- **Default stays `anon`.** In the decisive pair `ahwb` ran first and an order effect cannot be
+  excluded — the reversed pair is owed — and this is one device, one model, one config.
+- Short turns cannot see this: three 67–74 token pairs were all inconclusive (per-token CV 33–71%,
+  every interval overlapping). Reclaim is a standing condition that accumulates, so the effect is
+  only resolvable over a conversation-length generation.
+- A cross-day comparison of the same pair read +63.6% and is **not** usable: `anon` alone moved
+  +38.8% between the two days. It is committed so the correction is checkable.
+- Transferable: `compute_ms` is a residual that has been absorbing zram decompression all along, so
+  earlier "compute-bound" conclusions deserve re-examination.
 
 ## [0.13.5] - 2026-07-21
 
