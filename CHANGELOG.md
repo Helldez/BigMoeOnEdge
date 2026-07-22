@@ -51,8 +51,14 @@ Semantic Versioning.
   cannot model the cache changing; at `F = 0.75` it was accurate (37% predicted, 34% measured), at
   `F = 1.0` it understated (66% predicted, **81%** measured). Avoided reads free cache capacity,
   which raises the hit rate, which leaves fewer misses to drop.
-- **Quality remains unmeasured.** No perplexity number and no side-by-side exists for this knob.
-  Throughput is settled; the cost of discarding 14% (at 0.75) or 28% (at 1.0) of routings is not.
+- **Quality: no loss detected.** 15 GSM8K questions (verbatim from the test split) through the same
+  configuration: **12/15 with dropping off, 13/15 at every threshold including 1.0**, where 28% of
+  routings are discarded. Twelve of fifteen answers are identical across all four cells; the
+  variation sits on two questions and flips in both directions rather than worsening with the
+  threshold, and reply length is flat. 13 against 12 is not an improvement — one question is 6.7
+  points here, and 15 questions cannot exclude a regression under ~13 points. It rules out a
+  collapse, not a subtle cost. Harness, per-question replies and grading rule:
+  [docs/bench-data/2026-07-22-drop-quality/](docs/bench-data/2026-07-22-drop-quality/findings.md).
 
 ### Changed
 - With the policy armed, `load_layer()` moves from the topk node to the terminal node of the layer's

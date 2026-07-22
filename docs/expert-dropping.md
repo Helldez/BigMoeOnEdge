@@ -63,8 +63,18 @@ Run order was 1.00, off, 0.50, 0.75, so the two fastest cells are the first and 
 drift would have made the last the worst. Full data, caveats and the run-order argument:
 [bench-data/2026-07-22-drop-cold-experts](bench-data/2026-07-22-drop-cold-experts/findings.md).
 
-**Quality was not measured.** Throughput is settled; whether the output holds up at 14% or 28%
-discarded routings is not, and no perplexity number exists for this knob yet.
+**Quality checked, no loss detected.** 15 GSM8K questions through the same configuration: 12/15
+with dropping off, **13/15 at every threshold including 1.0**, where 28% of routings are discarded.
+Twelve of the fifteen questions give an identical final answer in all four cells; the variation sits
+on two questions and flips in both directions rather than worsening with the threshold. Reply length
+is flat, so the model neither rambles nor truncates. Details, per-question replies and the grading
+rule: [bench-data/2026-07-22-drop-quality](bench-data/2026-07-22-drop-quality/findings.md).
+
+Decoding is greedy, so there is no sampling noise: every difference between cells is *caused* by
+the policy, which is what makes twelve identical answers a real statement. But 13 against 12 is
+**not** an improvement — perturbing a problem the model already got wrong can land either side of
+the right answer, and at 6.7 points per question this sample cannot establish the sign of the
+effect. It rules out a collapse, not a subtle cost.
 
 ## Two properties worth knowing
 
