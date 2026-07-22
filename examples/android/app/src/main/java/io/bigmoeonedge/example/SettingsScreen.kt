@@ -144,6 +144,20 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         "but the output changes — a speed/quality trade-off.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                IntSetting(
+                    "Drop cold experts (% of even share)", AppSettings.DROP_COLD_CHOICES, current.dropColdPct,
+                    format = { if (it == 0) "off" else "$it%" },
+                    // Unlike top-k, this one asks the expert source what is resident, so it only
+                    // exists with the streamer on.
+                    enabled = !current.mmap,
+                ) { onChange(current.copy(dropColdPct = it)) }
+                Text(
+                    "Experimental. Skips an expert only when it is NOT in the cache and the router barely " +
+                        "weighted it, so speed is bought where it costs a flash read instead of everywhere. " +
+                        "Higher = more aggressive. Unlike top-k the output is not reproducible: what gets " +
+                        "dropped depends on what the cache held.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Section("Compute") {

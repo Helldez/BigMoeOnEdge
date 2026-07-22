@@ -21,6 +21,9 @@ Semantic Versioning.
 - Route trace gains a `dropped` column, and the metrics summary `experts_routed` /
   `experts_dropped` — the flag fixes a threshold, not a drop rate, so only these say what a run
   actually traded. New CLI summary line `moe-drop:`.
+- Example app: **Speed / quality → Drop cold experts** (off / 50% / 75% / 100% of the uniform
+  share), disabled in mmap mode since the policy needs an expert source to ask about residency.
+  Off by default — the A/B it exists for has not been run yet.
 - Gates **G8a/G8b**: with a threshold below any producible weight the output stays byte-identical to
   the undropped stream (the deferred load and the learned terminal weight node are transparent), and
   at full strength with the cache off generation still completes without a matmul ever reaching an

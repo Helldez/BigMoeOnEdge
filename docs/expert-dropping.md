@@ -136,4 +136,8 @@ recorded traces, not a benchmark. What is owed before this is recommended anywhe
 - a re-run of the replay against a real traced run with the `dropped` column, to see how far the
   static upper bound overstated the win.
 
-Until then it stays off by default and out of the app's settings.
+Until then it stays **off by default** everywhere. The example app exposes it under
+**Speed / quality → Drop cold experts**, as a percentage of the uniform share (50 / 75 / 100), so
+the A/B can be run where the engine actually ships — through the app, not a pushed CLI binary. It is
+disabled in mmap mode: the policy has to ask the expert source what is resident, and there is no
+expert source without the streamer.
