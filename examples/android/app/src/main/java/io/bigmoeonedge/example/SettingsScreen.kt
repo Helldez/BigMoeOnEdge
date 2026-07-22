@@ -146,21 +146,31 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 )
                 IntSetting(
                     "Drop cold experts (% of even share)", AppSettings.DROP_COLD_CHOICES, current.dropColdPct,
-                    format = { if (it == 0) "off" else "$it%" },
+                    // The rung labels carry the trade, so the blurb below does not have to repeat
+                    // it: which value to pick is the only real question this setting poses.
+                    format = {
+                        when (it) {
+                            0 -> "off"
+                            50 -> "50% — barely bites"
+                            75 -> "75% — recommended"
+                            100 -> "100% — fastest, roughest"
+                            else -> "$it%"
+                        }
+                    },
                     // Unlike top-k, this one asks the expert source what is resident, so it needs
                     // both the streamer and a live cache — the same condition prefetch is under.
                     enabled = !current.mmap &&
                         (current.cacheMb == AppSettings.CACHE_AUTO || current.cacheMb > 0),
                 ) { onChange(current.copy(dropColdPct = it)) }
                 Text(
-                    "Experimental. What slows a token down is reading an expert that is not already in RAM. " +
-                        "This skips such an expert when the router barely wanted it anyway — below the chosen " +
-                        "share of an even split. With 8 active experts an even split is 12.5% each, so 75% " +
-                        "means \"skip it if it carries less than 9.4% of the routing\".\n\n" +
-                        "Experts already in RAM always run, however small their weight: they cost no read. The " +
-                        "strongest expert of each routing is never skipped.\n\n" +
-                        "Higher is faster and rougher. Like Active experts, the reply changes — but unlike it, " +
-                        "not the same way twice: what gets skipped depends on what the cache happened to hold.",
+                    "Reading an expert that is not already in RAM is what slows a token down. This skips " +
+                        "one — but only if the router barely wanted it, below the chosen share of an even " +
+                        "split. With 8 active experts an even split is 12.5%, so 75% skips anything under " +
+                        "9.4%. Experts already in RAM always run; the strongest is never skipped.\n\n" +
+                        "50% barely fires and changes little. 75% measured +55% faster and 100% +84% on one " +
+                        "model, but the top rung discards twice as much of the routing for that extra speed." +
+                        "\n\nThe reply changes, and unlike Active experts not the same way twice: what gets " +
+                        "skipped depends on what the cache happened to hold.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
