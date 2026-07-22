@@ -73,6 +73,21 @@ static void gather_weights(const ggml_tensor * t, int nu, int nt, std::vector<fl
                 *(const float *) ((const char *) t->data + (size_t) j * tok_nb + (size_t) k * slot_nb);
 }
 
+// Where token j's slot k lives inside a weight node — the writable counterpart of gather_weights,
+// and it must read the strides the same way or the drop policy would zero another token's slot.
+static float * weight_at(ggml_tensor * t, int j, int k) {
+    const bool three_d = t->ne[0] == 1;
+    const size_t tok_nb = three_d ? t->nb[2] : t->nb[1];
+    const size_t slot_nb = three_d ? t->nb[1] : t->nb[0];
+    return (float *) ((char *) t->data + (size_t) j * tok_nb + (size_t) k * slot_nb);
+}
+
+// Same, for the selected-expert ids. The node is a VIEW of the full argsort, so the row stride is
+// nb[1] (n_expert * 4), not n_expert_used * 4 — see the gather at the topk node.
+static int32_t * id_at(ggml_tensor * t, int j, int k) {
+    return (int32_t *) ((char *) t->data + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]);
+}
+
 void RouterHook::begin_capture() {
     capturing_ = true;
     for (auto & L : captured_)
@@ -81,6 +96,113 @@ void RouterHook::begin_capture() {
 }
 void RouterHook::end_capture() {
     capturing_ = false;
+}
+
+void RouterHook::set_drop_policy(float frac, bool renorm, bool in_prefill) {
+    drop_frac_ = frac > 0.0f ? frac : 0.0f;
+    drop_renorm_ = renorm;
+    drop_prefill_ = in_prefill;
+    term_node_.assign(n_layer_ > 0 ? n_layer_ : 0, std::string{});
+    drop_ = PendingDrop{};
+    chain_last_.clear();
+    experts_routed_ = experts_dropped_ = 0;
+}
+
+// Is dropping live for the batch being decoded? Needs a source to ask about residency, a non-zero
+// threshold, and — unless armed for prefill — a decode batch: with a cold cache the same threshold
+// discards several times the weight mass for a phase that is not I/O-bound anyway.
+bool RouterHook::drop_armed() const {
+    return drop_frac_ > 0.0f && source_ != nullptr && (batch_phase_ == 1 || drop_prefill_);
+}
+
+// Apply the policy to the layer held in drop_, then load only what survives.
+//
+// `wt` is the terminal node of the weight chain: the weights as the expert matmul will apply them.
+// Both edits happen here, before any node consumes them:
+//   - the dropped slot's weight is zeroed (and, with renorm, the survivors are scaled back up so
+//     the routing keeps the total mass it had);
+//   - the dropped slot's ID is repointed at the routing's top-weighted expert. That second edit is
+//     not cosmetic. An expert we decline to read may sit in a reserved-but-uncommitted slot, and
+//     mul_mat_id would still touch it; pointing the slot at an expert that is certainly resident
+//     makes the kernel read valid memory and multiply it by exactly zero. It costs a duplicate
+//     matmul, which is the right trade on a decode bound by flash rather than arithmetic.
+// The top-weighted expert is never dropped, so a routing always keeps at least one live expert
+// whatever the threshold — the guarantee does not rest on frac <= 1 alone.
+void RouterHook::apply_drop(ggml_tensor * wt) {
+    PendingDrop & D = drop_;
+    const int nu = D.nu, nt = D.nt;
+    gather_weights(wt, nu, nt, drop_w_);
+
+    // Classify against the cache BEFORE anything is loaded; settle landed prefetches first, or an
+    // expert a prefetch correctly guessed would look like a miss and be dropped for nothing.
+    source_->settle_spec();
+    drop_res_.assign(drop_ids_.size(), (uint8_t) 0);
+    source_->query_residency(D.layer, drop_ids_.data(), (int) drop_ids_.size(), drop_res_.data());
+
+    const float thr = drop_frac_ / (float) nu; // frac of the uniform share each of k experts would get
+    const bool tracing = trace_on_ && pending_.layer == D.layer;
+    drop_mask_.assign((size_t) nu * nt, (uint8_t) 0);
+
+    for (int j = 0; j < nt; ++j) {
+        const size_t row = (size_t) j * nu;
+        int best = 0;
+        float total = 0.0f;
+        for (int k = 0; k < nu; ++k) {
+            total += drop_w_[row + k];
+            if (drop_w_[row + k] > drop_w_[row + best]) best = k;
+        }
+        const int32_t best_id = drop_ids_[row + best];
+
+        float kept = 0.0f;
+        int n_dropped = 0;
+        for (int k = 0; k < nu; ++k) {
+            const size_t idx = row + k;
+            const bool drop = k != best && drop_res_[idx] == route_miss && drop_w_[idx] < thr;
+            if (!drop) {
+                kept += drop_w_[idx];
+                continue;
+            }
+            *weight_at(wt, j, k) = 0.0f;
+            *id_at(D.ids, j, k) = best_id;
+            drop_ids_[idx] = best_id;
+            drop_mask_[idx] = 1;
+            ++n_dropped;
+        }
+        experts_routed_ += nu;
+        experts_dropped_ += n_dropped;
+
+        // Restore the routing's total mass. Without this the layer's expert output is scaled down
+        // by whatever was discarded, which perturbs the residual stream in a direction the model
+        // never sees in training — a systematic shrink, unlike the one missing contribution.
+        if (drop_renorm_ && n_dropped > 0 && kept > 0.0f) {
+            const float g = total / kept;
+            for (int k = 0; k < nu; ++k)
+                if (!drop_mask_[row + k]) *weight_at(wt, j, k) *= g;
+        }
+    }
+
+    if (tracing) pending_.dropped = drop_mask_;
+    source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size());
+    D.deferred = false;
+}
+
+// Finish with the layer whose topk we last saw: record which node ended its weight chain, so the
+// next graph can decide there, and make sure nothing was left waiting on a node that never came.
+void RouterHook::close_drop_layer() {
+    PendingDrop & D = drop_;
+    if (D.layer < 0) return;
+    if (D.layer < (int) term_node_.size() && term_node_[D.layer].empty() && !chain_last_.empty())
+        term_node_[D.layer] = chain_last_;
+    if (D.deferred && source_) {
+        // The node we learned as terminal did not appear this time, so the deferral was never
+        // honoured. Load the whole routing now. This is already too late for that layer's matmul —
+        // it ran with whatever the slots held — but leaving the experts unloaded would corrupt the
+        // cache accounting for every token after it, and failing silently would hide a graph whose
+        // shape moved under us.
+        source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size());
+        D.deferred = false;
+    }
+    D.layer = -1;
 }
 
 void RouterHook::set_trace(bool on) {
@@ -143,7 +265,11 @@ void RouterHook::flush_pending() {
             r.expert = P.ids[idx];
             r.weight = have_w ? P.weights[idx] : std::numeric_limits<float>::quiet_NaN();
             r.residency = idx < P.residency.size() ? P.residency[idx] : (uint8_t) 0;
-            if (r.residency == route_miss && charged_.insert(r.expert).second) r.expert_bytes = ebytes;
+            r.dropped = idx < P.dropped.size() ? P.dropped[idx] : (uint8_t) 0;
+            // A dropped routing is never read, so it is neither charged nor allowed to claim the
+            // charge for its expert: if another token of the batch routes the same expert and keeps
+            // it, that routing pays the read.
+            if (!r.dropped && r.residency == route_miss && charged_.insert(r.expert).second) r.expert_bytes = ebytes;
             trace_rows_.push_back(r);
         }
     }
@@ -277,9 +403,12 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // ── stream: the routing nodes get the single-node barrier so we see the selected ids ──
     int il = -1;
     const bool is_topk = std::sscanf(t->name, "ffn_moe_topk-%d", &il) == 1 && il >= 0;
-    // Only a traced run asks for the weight nodes: each extra ask is another barrier.
+    // The weight nodes are asked for by a traced run, and by the drop policy, which decides on the
+    // weights the matmul will actually apply. Each extra ask is another barrier — a handful per MoE
+    // layer, on tensors of a few floats — so neither is on by default.
     int wl = -1;
-    const bool is_weights = trace_on_ && match_weights(t->name, wl);
+    const bool want_weights = trace_on_ || drop_armed();
+    const bool is_weights = want_weights && match_weights(t->name, wl);
     // The compute trace wants every node isolated — or, at layer granularity, only the first
     // node of each layer: the cursor advances on the ask stream (every node passes through
     // here), so one isolation request per layer transition. Layerless names (embeddings, the
@@ -302,15 +431,29 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     }
 
     // Weights follow their layer's topk, so the pending record is already open; keep the last
-    // one offered (match_weights explains why) and let the flush read it.
+    // one offered (match_weights explains why) and let the flush read it. This runs BEFORE the drop
+    // policy edits the same tensor, so the trace records the routing the router produced, not the
+    // one the policy left behind — `dropped` is what says which is which.
     if (is_weights && t->data && t->type == GGML_TYPE_F32 && pending_.layer == wl && pending_.nu > 0)
         gather_weights(t, pending_.nu, pending_.nt, pending_.weights);
+
+    // Learn which node ends this layer's weight chain, and — once known — use it as the point where
+    // the routing is decided: everything the drop policy needs is final here, and nothing has
+    // consumed it yet. The learning pass and the deferral are the same walk, so a layer whose chain
+    // shape the hook has not seen yet simply keeps the undropped behaviour.
+    if (is_weights && t->data && t->type == GGML_TYPE_F32 && drop_.layer == wl) {
+        chain_last_ = t->name;
+        if (drop_.deferred && wl >= 0 && wl < (int) term_node_.size() && term_node_[wl] == t->name) apply_drop(t);
+    }
 
     if (source_ && is_topk && t->data && t->type == GGML_TYPE_I32) {
         // selected_experts is [n_expert_used, n_tokens] but a VIEW of the full argsort
         // [n_expert, n_tokens]: its row stride is nb[1] (= n_expert*4), not
         // n_expert_used*4. Gather respecting the strides — a flat read would grab token
         // 0's sorted tail as token 1's experts, corrupting the KV cache.
+        // The previous layer's weight chain has been fully offered by now.
+        close_drop_layer();
+
         gathered_.clear();
         const int nu = (int) t->ne[0], nt = (int) t->ne[1];
         for (int j = 0; j < nt; ++j)
@@ -325,6 +468,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             pending_.nt = nt;
             pending_.ids = gathered_;
             pending_.weights.clear();
+            pending_.dropped.clear();
             // Classify against the cache BEFORE load_layer makes these experts resident —
             // afterwards everything reads as a hit. Settle landed prefetches first, or an expert
             // a prefetch correctly guessed would be recorded as a miss.
@@ -333,7 +477,20 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             source_->query_residency(il, gathered_.data(), (int) gathered_.size(), pending_.residency.data());
         }
 
-        source_->load_layer(il, gathered_.data(), (int) gathered_.size());
+        // Open the layer for the drop policy. Deferring the load is only safe once this layer's
+        // terminal weight node is known — otherwise there is no callback left to decide in, and the
+        // expert matmul would run against slots nothing loaded. First graph of a run: load here.
+        const bool defer = drop_armed() && il >= 0 && il < (int) term_node_.size() && !term_node_[il].empty();
+        drop_.layer = il;
+        drop_.nu = nu;
+        drop_.nt = nt;
+        drop_.ids = t;
+        drop_.deferred = defer;
+        chain_last_.clear();
+        if (defer)
+            drop_ids_ = gathered_;
+        else
+            source_->load_layer(il, gathered_.data(), (int) gathered_.size());
 
         // Temporal prefetch: hint the next K layers with what the PREVIOUS token routed there,
         // to be read on idle lanes while this layer computes; then record this layer's routing

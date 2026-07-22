@@ -95,8 +95,13 @@ and a manual copy to the device: steps in the
   device.
 - **I/O–compute overlap** (`--overlap`): hides flash latency behind compute. Byte-identical;
   needs a small optional add-on to llama.cpp (see [docs/seam.md](docs/seam.md)).
-- **Turbo top-k** (`--n-expert-used N`): the one lossy knob. Fewer experts per token, ~+22–24%
+- **Turbo top-k** (`--n-expert-used N`): the measured lossy knob. Fewer experts per token, ~+22–24%
   speed, output quality is yours to judge.
+- **Cache-aware expert dropping** (`--drop-cold-experts F`, experimental): skips a routed expert only
+  when it would cost a flash read *and* the router barely weighted it, so quality is spent only where
+  it buys I/O. Replayed against recorded traces it avoids ~3× the reads of turbo top-k at a
+  comparable weight cost — but it is **not yet measured on device** and makes output
+  non-reproducible. Off by default; see [docs/expert-dropping.md](docs/expert-dropping.md).
 - **Multi-turn sessions and live telemetry**: the model stays loaded across chat turns, and every
   run can emit a per-token breakdown of where the time went.
 - **Android demo app** ([`examples/android`](examples/android)): a chat app with a live telemetry
@@ -206,7 +211,7 @@ Gemma keeps more of itself permanently resident, so the 4000 MiB cache fits only
 free at launch; cache 2000 + overlap is the dependable everyday setting on this device. Turbo top-k
 (k=6) is the fastest here (+22%) but changes the output.
 
-### Turbo top-k — the one lossy option
+### Turbo top-k — the measured lossy option
 
 Every model here ships a routing width — the number of experts each token uses (8 for the Qwen and
 Gemma models, 4 for gpt-oss). Forcing it lower with `--n-expert-used` cuts both compute and flash
@@ -214,9 +219,15 @@ reads; the `k=6` rows folded into the tables above are that knob, measured A/B a
 own width. It is worth **+22–24%** on the Qwen and Gemma models, and takes gpt-oss from 1.3 to
 **2.2 tok/s** (k=2).
 
-Everything else in this README changes *how* weights are fetched, never the math. This knob changes
-*what* the model computes: output differs from the full model and quality can degrade. Judge it on
-your own task before relying on it.
+Every benchmarked setting other than this one changes *how* weights are fetched, never the math.
+This knob changes *what* the model computes: output differs from the full model and quality can
+degrade. Judge it on your own task before relying on it.
+
+It also spends quality indiscriminately: the tail of the routing goes whether or not those experts
+were already in RAM, and a resident expert costs no flash read at all.
+[Cache-aware dropping](docs/expert-dropping.md) is the experimental answer to that — same kind of
+trade, but only where it buys I/O. It has no measured rows here yet, which is why the tables above
+are still turbo top-k's.
 
 ### What to expect in the app
 

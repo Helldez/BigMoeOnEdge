@@ -73,6 +73,22 @@ public:
     // has returned. Off by default: asking for the extra nodes costs a barrier per layer.
     void set_trace(bool on);
 
+    // ── cache-aware expert dropping (lossy; see MoeStreamConfig::drop_cold_frac) ──────
+    // `frac` > 0 arms the policy: a routed expert that is a cache MISS and carries less than
+    // frac × (1/n_expert_used) of the routing's weight is discarded — not read, weight zeroed,
+    // its slot pointed at the routing's top-weighted expert so the matmul still reads memory
+    // that is certainly resident. `renorm` rescales the survivors to preserve the routing's
+    // total mass. Off (frac == 0) the hook behaves exactly as before, bit for bit.
+    void set_drop_policy(float frac, bool renorm, bool in_prefill);
+
+    // Which phase the batch being decoded belongs to (0 = prefill, 1 = decode). The drop policy
+    // is decode-only unless armed for prefill, and unlike the traces it must know this on every
+    // run, so it cannot ride on begin_trace_batch.
+    void set_batch_phase(int phase) { batch_phase_ = phase; }
+
+    long long experts_routed() const { return experts_routed_; }
+    long long experts_dropped() const { return experts_dropped_; }
+
     // ── compute trace (diagnostics; see bmoe/decode_trace.h) ────────────────────────
     // When on, the hook asks for EVERY node, which makes ggml compute and synchronize each one
     // alone — so the wall delta between consecutive callbacks is that node's real compute time,
@@ -119,8 +135,12 @@ private:
         std::vector<int32_t> ids;
         std::vector<float> weights;
         std::vector<uint8_t> residency;
+        std::vector<uint8_t> dropped; // set by the drop policy; all zero when it is off
     };
     void flush_pending();
+    bool drop_armed() const;
+    void apply_drop(ggml_tensor * weights);
+    void close_drop_layer();
     void ctrace_close_segment(int interval_layer, const char * tail_name);
 
     // Stored by value, not by reference: the caller often constructs us from a temporary
@@ -139,6 +159,36 @@ private:
     // during prefill). Empty when prefetch is off or a layer has not been seen yet.
     int prefetch_layers_ = 0;
     std::vector<std::vector<int32_t>> prev_ids_;
+
+    // Cache-aware dropping. Inert unless drop_frac_ > 0.
+    //
+    // The decision needs the FINAL router weights, and those are produced several nodes after the
+    // topk that opens the layer — so load_layer() is postponed from the topk node to the terminal
+    // node of the layer's weight chain, and the ids/weights are edited there, before the expert
+    // matmul consumes either. Which node is terminal depends on the model's gating (norm, softmax,
+    // scaled, or none of them), so it is LEARNED from the graph rather than tabulated per
+    // architecture: term_node_[il] fills in on the first graph, and until it does the layer loads
+    // at its topk node undropped, exactly as with the policy off. That costs the first token of a
+    // run its dropping and nothing else.
+    float drop_frac_ = 0.0f;
+    bool drop_renorm_ = true;
+    bool drop_prefill_ = false;
+    int batch_phase_ = 1; // 0 prefill, 1 decode
+    long long experts_routed_ = 0, experts_dropped_ = 0;
+
+    struct PendingDrop {
+        int layer = -1;
+        int nu = 0, nt = 0;
+        ggml_tensor * ids = nullptr; // the topk view, rewritten in place for dropped slots
+        bool deferred = false;       // true when load_layer is waiting for the terminal weight node
+    };
+    PendingDrop drop_;
+    std::vector<std::string> term_node_; // per layer, "" until learned
+    std::string chain_last_;             // last weight node seen for drop_.layer while its chain runs
+    std::vector<int32_t> drop_ids_;      // this layer's routed ids, kept across the deferral
+    std::vector<float> drop_w_;          // scratch: the final weights
+    std::vector<uint8_t> drop_res_;      // scratch: residency of each routed id
+    std::vector<uint8_t> drop_mask_;     // scratch: which slots this layer dropped
 
     // Route trace. All of this is inert unless trace_on_.
     bool trace_on_ = false;

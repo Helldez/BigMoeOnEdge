@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **`--drop-cold-experts F` — cache-aware expert dropping (experimental, off by default).** Skips a
+  routed expert when it is a cache **miss** *and* the router weighted it below `F × (1/top-k)`. An
+  expert already resident costs no flash read, so it always runs however small its weight: quality
+  is spent only where it buys I/O. Replayed over the committed route traces at `F = 1.0`, decode
+  phase, this avoids **66% of flash reads for 9.5% of the router's weight mass**, against 59% / 37%
+  for `--n-expert-used 3` — roughly 3× the reads avoided at a comparable quality cost.
+  `--drop-no-renorm` and `--drop-in-prefill` are the A/B switches.
+  **Not yet measured on device**, and unlike turbo top-k the output is not reproducible: what gets
+  dropped depends on what the cache held. See [docs/expert-dropping.md](docs/expert-dropping.md).
+- `scripts/route-drop-replay.py`: the offline model the numbers above come from, including the
+  static-`k` baseline replayed on the same rows so the two policies are comparable at equal I/O.
+- Route trace gains a `dropped` column, and the metrics summary `experts_routed` /
+  `experts_dropped` — the flag fixes a threshold, not a drop rate, so only these say what a run
+  actually traded. New CLI summary line `moe-drop:`.
+- Gates **G8a/G8b**: with a threshold below any producible weight the output stays byte-identical to
+  the undropped stream (the deferred load and the learned terminal weight node are transparent), and
+  at full strength with the cache off generation still completes without a matmul ever reaching an
+  unloaded expert.
+
+### Changed
+- With the policy armed, `load_layer()` moves from the topk node to the terminal node of the layer's
+  weight chain — the decision needs the final router weights. Which node that is depends on the
+  model's gating, so the hook **learns** it from the graph rather than carrying an architecture
+  table; until it is known a layer loads at its topk node undropped, exactly as before. No behaviour
+  changes when `--drop-cold-experts` is off.
+- README no longer calls turbo top-k "the one lossy knob" — it is now the *measured* one.
+
 ## [0.14.0] - 2026-07-21
 
 ### Added

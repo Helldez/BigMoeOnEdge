@@ -363,6 +363,12 @@ static void print_usage(const char * argv0) {
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
         "      --prefetch K        temporally prefetch the next K layers' experts (needs the cache)\n"
+        "      --drop-cold-experts F  skip a routed expert that is a cache MISS and carries less than\n"
+        "                          F x (1/top-k) of the routing's weight. F in (0, 1]; 1.0 is the\n"
+        "                          uniform share and the useful maximum. LOSSY and cache-dependent:\n"
+        "                          it changes the output, and not reproducibly. Off by default.\n"
+        "      --drop-no-renorm    do not rescale the surviving weights after a drop (A/B)\n"
+        "      --drop-in-prefill   drop during prefill too (off: the cold cache makes it expensive)\n"
         "      --list-archs        print supported MoE architectures and exit\n"
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
@@ -478,6 +484,12 @@ int main(int argc, char ** argv) {
             cfg.moe.prefetch_layers = std::atoi(next("--prefetch"));
         else if (a == "--prefetch-sync") // debug: complete speculative reads synchronously
             cfg.moe.prefetch_sync = true;
+        else if (a == "--drop-cold-experts")
+            cfg.moe.drop_cold_frac = (float) std::atof(next("--drop-cold-experts"));
+        else if (a == "--drop-no-renorm")
+            cfg.moe.drop_renorm = false;
+        else if (a == "--drop-in-prefill")
+            cfg.moe.drop_prefill = true;
         else if (a == "--list-archs") {
             std::printf("supported MoE architectures:\n");
             for (int k = 0; k < n_moe_recipes(); ++k)
@@ -622,6 +634,14 @@ int main(int argc, char ** argv) {
             std::printf("moe-prefetch: %.1f MiB speculative, %lld/%lld experts useful (%.0f%%)\n", s.moe_spec_read_mib,
                         s.moe_spec_useful, s.moe_spec_experts,
                         s.moe_spec_experts > 0 ? 100.0 * s.moe_spec_useful / s.moe_spec_experts : 0.0);
+        // How hard the policy actually bit. The flag sets a threshold, not a drop rate: what gets
+        // discarded depends on what the cache held, so this is the only honest report of the trade
+        // a given run made.
+        if (cfg.moe.drop_cold_frac > 0.0f)
+            std::printf("moe-drop: %lld/%lld routed experts dropped (%.1f%%), threshold %.2f x uniform\n",
+                        s.experts_dropped, s.experts_routed,
+                        s.experts_routed > 0 ? 100.0 * s.experts_dropped / s.experts_routed : 0.0,
+                        (double) cfg.moe.drop_cold_frac);
     }
     return 0;
 }

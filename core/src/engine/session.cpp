@@ -370,6 +370,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
     im.hook = std::make_unique<RouterHook>(recipe ? *recipe : MoeRecipe{}, im.n_layer);
     im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
+    im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
@@ -561,6 +562,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
+        ri.drop_cold_frac = cfg.moe.enabled ? cfg.moe.drop_cold_frac : 0.0f;
         // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
         ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"
                            : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"
@@ -757,6 +759,9 @@ RunResult Session::generate(const GenerateRequest & req,
     // The frame the I/O rows are stamped with at flush; the other traces carry their own.
     int trace_phase = 0, trace_step = 0;
     auto trace_begin = [&](int base_pos, int n_tokens, int phase) {
+        // Not a trace concern, but the same per-decode frame: the drop policy is decode-only
+        // unless armed for prefill, so it has to be told which phase this batch is.
+        im.hook->set_batch_phase(phase);
         if (im.route_trace) im.hook->begin_trace_batch(base_pos, n_tokens, phase, im.turn);
         // A node is computed once for the whole batch, not per token, so a prefill chunk's graph is
         // attributed to its last position rather than pretending to split across the chunk.
@@ -842,6 +847,10 @@ RunResult Session::generate(const GenerateRequest & req,
     long long prev_spec_bytes = moe.enabled ? (long long) im.source.stats().spec_read_bytes : 0;
     long long prev_spec_experts = moe.enabled ? im.source.stats().spec_experts : 0;
     long long prev_spec_useful = moe.enabled ? im.source.stats().spec_useful : 0;
+    // Taken after prefill, so the drop counters describe generation — the phase the policy is armed
+    // for and the one the tok/s number is about.
+    const long long prev_routed = im.hook->experts_routed();
+    const long long prev_dropped = im.hook->experts_dropped();
 
     for (int t = 0; t < req.n_predict; ++t) {
         // Greedy stays argmax (byte-identical to the resident reference the gates check); with a
@@ -931,6 +940,8 @@ RunResult Session::generate(const GenerateRequest & req,
         s.moe_spec_experts = st.spec_experts - prev_spec_experts;
         s.moe_spec_useful = st.spec_useful - prev_spec_useful;
     }
+    s.experts_routed = im.hook->experts_routed() - prev_routed;
+    s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
     if (sink) sink->on_summary(s);
 
     {

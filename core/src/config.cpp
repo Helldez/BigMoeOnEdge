@@ -85,6 +85,11 @@ ValidationResult validate(const RunConfig & cfg) {
                         "speculative reads land in the per-layer cache buffers, which do not exist "
                         "with the cache off.");
         }
+        if (m.drop_cold_frac < 0.0f || m.drop_cold_frac > 1.0f) {
+            return fail("moe.drop_cold_frac must be in [0, 1] (0 = off). Above 1.0 the threshold can "
+                        "exceed the largest weight in a routing, which would discard every expert of a "
+                        "layer; 1.0 is the uniform share 1/n_expert_used and the useful maximum.");
+        }
     }
 
     return r;

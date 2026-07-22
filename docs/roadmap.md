@@ -113,6 +113,19 @@ routed) are supported; other `build_moe_ffn` models are one recipe row each. The
 frontier is architectures whose routing node is not the shared `ffn_moe_topk` — custom gating,
 which the capture/stream hook would need to learn. See [adding-a-model.md](adding-a-model.md).
 
+## Skipping reads the router barely wants — built, unmeasured
+
+`--drop-cold-experts` ([expert-dropping.md](expert-dropping.md)) is the first lever that treats
+quality and I/O as a *joint* budget rather than two separate knobs: an expert already in the cache
+runs however small its weight, and only a routing that would cost a flash read can be dropped. On
+the recorded traces that is worth ~3× the reads of turbo top-k for a comparable weight cost, which
+is the strongest offline case any remaining lever has shown.
+
+What it does **not** have is a device measurement, and the previous entry on this page is the reason
+that matters: `layer-lfu` simulated well and was ~30% slower in reality. The open questions are the
+device A/B against turbo top-k at matched throughput, the quality comparison at that speed, and how
+far the static replay overstated the win once dropping starts changing what the cache holds.
+
 ## Expert quantization on the fly
 
 Storing streamed experts at a lower precision than the resident parts to cut read volume, if it

@@ -143,6 +143,24 @@ int main() {
         expect_ok("out-of-range sampling knobs are inert under greedy", c);
     }
 
+    // Cache-aware expert dropping. The upper bound is not cosmetic: above the uniform share the
+    // threshold can exceed every weight in a routing, and a config that can empty a layer must not
+    // be accepted just because the implementation happens to guard against it too.
+    {
+        RunConfig c = ok_base();
+        c.moe.enabled = true;
+        c.moe.drop_cold_frac = 0.0f;
+        expect_ok("dropping off is the default and valid", c);
+        c.moe.drop_cold_frac = 0.5f;
+        expect_ok("a threshold below the uniform share is valid", c);
+        c.moe.drop_cold_frac = 1.0f;
+        expect_ok("the uniform share itself is valid", c);
+        c.moe.drop_cold_frac = 1.01f;
+        expect_fail("a threshold above the uniform share is rejected", c);
+        c.moe.drop_cold_frac = -0.1f;
+        expect_fail("a negative threshold is rejected", c);
+    }
+
     if (failures == 0) {
         std::printf("all config checks passed\n");
         return 0;

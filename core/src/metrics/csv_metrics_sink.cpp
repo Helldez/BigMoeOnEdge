@@ -23,9 +23,9 @@ public:
                      r.model.c_str(), r.arch.c_str(), r.n_layer, r.n_expert, r.n_expert_used, r.n_threads, r.n_ctx);
         std::fprintf(f_,
                      "# moe_stream=%d cache_mb=%d cache_auto=%d cache_ceil_mb=%d force_cache=%d "
-                     "io_threads=%d o_direct=%d overlap=%d prefetch=%d dense_weights=%s\n",
+                     "io_threads=%d o_direct=%d overlap=%d prefetch=%d dense_weights=%s drop_cold_frac=%.4g\n",
                      r.moe_stream, r.cache_mb, r.cache_auto, r.cache_ceil_mb, r.force_cache, r.io_threads, r.o_direct,
-                     r.overlap, r.prefetch_layers, r.dense_weights.c_str());
+                     r.overlap, r.prefetch_layers, r.dense_weights.c_str(), (double) r.drop_cold_frac);
         write_header();
     }
 
@@ -49,13 +49,14 @@ public:
                      "n_prompt=%d load_s=%.3f prefill_s=%.3f prefill_tps=%.2f stall_s/tok=%.3f mgmt_s/tok=%.3f "
                      "cache_resident_MiB=%.1f cache_budget_MiB=%.1f cache_resizes=%lld "
                      "spec_read_MiB=%.1f spec_experts=%lld spec_useful=%lld "
-                     "majflt/tok=%.2f cpu_s/tok=%.4f token_demand_MiB=%.1f layer_demand_MiB=%.1f\n",
+                     "majflt/tok=%.2f cpu_s/tok=%.4f token_demand_MiB=%.1f layer_demand_MiB=%.1f "
+                     "experts_routed=%lld experts_dropped=%lld\n",
                      s.n_generated, s.s_per_token, s.tokens_per_second, s.moe_read_mib, s.moe_io_seconds,
                      s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct, s.n_prompt, s.load_seconds,
                      s.prefill_seconds, s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0,
                      s.moe_stall_s_per_token, s.moe_mgmt_s_per_token, s.cache_resident_mib, s.cache_budget_mib,
                      s.cache_resizes, s.moe_spec_read_mib, s.moe_spec_experts, s.moe_spec_useful, s.majflt_per_token,
-                     s.cpu_s_per_token, s.token_demand_mib, s.layer_demand_mib);
+                     s.cpu_s_per_token, s.token_demand_mib, s.layer_demand_mib, s.experts_routed, s.experts_dropped);
         std::fflush(f_);
     }
 

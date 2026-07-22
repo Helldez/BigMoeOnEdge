@@ -350,6 +350,46 @@ int main(int argc, char ** argv) {
     std::printf("[SKIP] S2 (expert-ready hook not built)\n");
 #endif
 
+    // G8 — cache-aware expert dropping, plumbing vs policy.
+    //
+    // Arming the policy moves load_layer() from the topk node to the terminal node of the layer's
+    // weight chain, and has the hook learn which node that is. That machinery must be transparent:
+    // with a threshold below any weight the router can produce, nothing is dropped and the output
+    // must stay byte-identical to the undropped stream. This separates "the deferral is correct"
+    // from "the policy is lossy" — only the second is allowed to change bytes, and a regression in
+    // the first would otherwise hide behind the expected difference.
+    RunConfig drop_inert = base(model);
+    drop_inert.moe.enabled = true;
+    drop_inert.moe.cache_mb = 0;
+    drop_inert.moe.io_threads = 4;
+    drop_inert.moe.drop_cold_frac = 1e-6f;
+    std::string s_drop_inert;
+    if (!gen(drop_inert, s_drop_inert, err)) {
+        std::fprintf(stderr, "drop(inert threshold) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G8a drop(threshold below any weight) == streaming(cache off)", s_s0, s_drop_inert);
+
+    // G8b — the same at full strength, where the cache is off so every routing is a miss and the
+    // policy bites as hard as it ever can. There is no reference output to compare against (it is
+    // lossy by design), so the gate is that the engine survives it: a dropped expert's slot is
+    // repointed at one that is certainly resident, so the matmul must never read uncommitted memory
+    // and generation must still complete.
+    RunConfig drop_hard = drop_inert;
+    drop_hard.moe.drop_cold_frac = 1.0f;
+    drop_hard.moe.drop_prefill = true;
+    std::string s_drop_hard;
+    if (!gen(drop_hard, s_drop_hard, err)) {
+        std::fprintf(stderr, "drop(full strength) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    if (s_drop_hard.empty()) {
+        std::printf("[FAIL] G8b drop(full strength) produced no output\n");
+        ++fails;
+    } else {
+        std::printf("[PASS] G8b drop(full strength) generates without touching unloaded experts\n");
+    }
+
     if (fails == 0) std::printf("\nall MoE byte-identity gates passed\n");
     return fails == 0 ? 0 : 1;
 }
