@@ -38,6 +38,12 @@ struct RouteTraceRow {
     float weight = 0.0f;       // final applied routing weight; NaN if the graph exposed none
     uint8_t residency = 0;     // RouteResidency
     uint64_t expert_bytes = 0; // flash bytes this routing reads; 0 unless residency == route_miss
+    // Cache-aware dropping (MoeStreamConfig::drop_cold_frac) discarded this routing: the expert was
+    // a miss weighted below the threshold, so it was never read and its weight was zeroed. `weight`
+    // and `residency` stay as the ROUTER produced them — the trace records the routing that was
+    // chosen, and this flag records what the policy then did with it — but expert_bytes is 0,
+    // because a dropped expert costs no read. Always 0 when dropping is off.
+    uint8_t dropped = 0;
 };
 
 // Run-level facts the rows cannot carry. Emitted once, before any row.

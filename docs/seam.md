@@ -24,9 +24,21 @@ come from the arch's recipe — `ffn_{gate,up,down}_exps` for the split layout, 
 throughout — capture observes, it does not isolate. `ggml_tensor` is a public struct, so
 reading `->name`, `->ne`, `->nb` and writing `->data` is public API surface.
 
-**Stream phase** (real generation). We return true only for `ffn_moe_topk-<il>`. The
+**Stream phase** (real generation). We return true for `ffn_moe_topk-<il>`. The
 non-ask callback then hands us that node with the selected expert ids materialized; we
 gather them (stride-aware) and trigger the slice reads.
+
+Two optional jobs ask for more: the route trace and
+[cache-aware dropping](expert-dropping.md) also want each layer's `ffn_moe_weights*-<il>` chain,
+which is another barrier per node but no new kind of access — same public struct, same read of
+`->data`.
+
+Dropping does go one step further, and it is the only place the engine **writes into** a graph
+tensor's contents rather than repointing `->data` at its own buffer: at the terminal node of the
+weight chain it zeroes a dropped slot's weight and repoints that slot's expert id. Both tensors are
+scratch the graph produced and has not yet consumed, so this alters the values flowing through the
+run — deliberately, that is what the lossy policy *is* — and never llama.cpp's own state, its
+weights, or its control flow. It stays inside the same callback contract; nothing is patched.
 
 ## 2. gguf offsets
 

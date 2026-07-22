@@ -21,7 +21,8 @@ for the idea the project is built on.
 | [telemetry.md](telemetry.md) | The `BMOE_*` line protocol and CSV schema — the integration contract. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
 | [cache-sizing.md](cache-sizing.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
-| [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output. |
+| [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output (with the lossy knobs off). |
+| [expert-dropping.md](expert-dropping.md) | `--drop-cold-experts F`: spending quality only where it buys a flash read, and why it is the one setting whose output is not reproducible. |
 | [android-memory.md](android-memory.md) | What reclaims the engine's memory on a phone, which levers exist (almost none), and why the cache hit rate is what the kernel judges you by. |
 | [pressure.md](pressure.md) | Cache policy under memory pressure: why an unaffordable budget starts a reclaim war, why the adaptive governor was retired, and what the fixed `--cache-mb` / `--dense-weights` levers do. |
 

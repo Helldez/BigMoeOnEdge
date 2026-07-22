@@ -655,8 +655,10 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             // Already staged in this batch: still promote so the LRU order reflects the LAST
             // token that used this expert (ids arrive token-major), not its first touch — this
             // keeps the prompt tail's experts hot across prefill. Reads are scheduled only once
-            // (the seen_ guard below), so this is bookkeeping only. In decode (n=1) the top-k ids
-            // are distinct, so this branch never runs and behaviour is unchanged.
+            // (the seen_ guard below), so this is bookkeeping only. The router's own top-k ids are
+            // distinct, so in decode (n=1) this used to be unreachable — but cache-aware dropping
+            // repoints a dropped slot's id at the routing's top expert, which makes duplicates the
+            // normal case there. Promoting the same entry twice is idempotent, so it stays correct.
             if (cache_max_) {
                 const int32_t id = il * n_expert_ + e;
                 lru_unlink(id);
@@ -822,7 +824,9 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
         // Promote every touched expert in raw id order (token-major) so the LRU order reflects
         // the LAST token that used it, not the sorted/first-touch order staged_ imposes — this
         // keeps the prompt tail's experts hot across prefill. Bookkeeping only; every id staged
-        // above is now valid and linked. In decode (n=1, distinct top-k) this is a no-op reshuffle.
+        // above is now valid and linked. In decode (n=1) this is a no-op reshuffle when the ids are
+        // distinct, and an idempotent re-promote of the same entry when cache-aware dropping has
+        // repointed a slot at the routing's top expert.
         // Skipped in load_all (everything is resident, so LRU order is meaningless).
         if (!load_all_) {
             for (int i = 0; i < n_ids; ++i) {

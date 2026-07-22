@@ -45,8 +45,11 @@ Streaming experts serially needs three things from the inference engine. All thr
 already public in llama.cpp:
 
 1. **A hook at routing time.** `llama_context_params.cb_eval` is called for every graph
-   node. We ask for only the routing nodes (`ffn_moe_topk-<il>`); ggml computes and
+   node. We ask for the routing nodes (`ffn_moe_topk-<il>`); ggml computes and
    synchronizes each alone, then calls us back with the selected expert ids materialized.
+   The route trace and [cache-aware dropping](expert-dropping.md) additionally ask for each
+   layer's `ffn_moe_weights*-<il>` chain — and dropping is the one path that *writes into* a
+   graph tensor's contents rather than only rebinding `->data`. See [seam.md](seam.md).
 2. **The expert tensor pointers.** During a one-token warm-up we scan each graph node's
    sources for tensors named `blk.<il>.ffn_{gate,up,down}_exps.weight` and record the
    live `ggml_tensor*`. We then rebind their `->data`.
@@ -89,4 +92,6 @@ The composition root is `Session` (core/src/engine/session.cpp):
 so the gates and the interactive session share the same code path.
 
 Greedy sampling makes the output a deterministic function of the graph — the property the
-[byte-identity gates](../tests/moe_gates.cpp) assert.
+[byte-identity gates](../tests/moe_gates.cpp) assert. That holds with the lossy knobs off. Under
+[`--drop-cold-experts`](expert-dropping.md) the hook edits routing weights from live cache state,
+which is not in the graph, so output becomes a function of the graph *and* the run's history.

@@ -94,6 +94,35 @@ struct MoeStreamConfig {
     //             and the policy the Android app ships by default — the CLI matches it here.
     DenseWeightsMode dense_weights = DenseWeightsMode::Anonymous;
 
+    // ── cache-aware expert dropping (lossy; opt-in) ──────────────────────────────────
+    // Skip a routed expert when it is a cache MISS *and* the router weighted it below
+    // drop_cold_frac × (1 / n_expert_used) — i.e. below that fraction of the uniform share a
+    // top-k routing would give each expert. 0 (the default) disables it and the engine is
+    // bit-exact as before.
+    //
+    // The asymmetry is the whole idea: an expert already resident costs no flash read, so it
+    // always runs however small its weight. Quality is spent only where it buys I/O. Because
+    // the largest weight in a routing is always >= the uniform share, a frac of 1.0 can never
+    // empty a routing; validate() rejects anything above it, and the implementation additionally pins the
+    // top-weighted expert so no cell is ever left with nothing to compute.
+    //
+    // This changes the output — it is a quality/throughput trade like n_expert_used, not an
+    // optimisation. Unlike n_expert_used it is *state-dependent*: the same prompt can decode
+    // differently depending on what the cache happened to hold, so a run is no longer
+    // reproducible token-for-token. See docs/expert-dropping.md.
+    float drop_cold_frac = 0.0f;
+
+    // Rescale the surviving weights so the routing still sums to what it did before the drop.
+    // Without it the layer's expert output is systematically scaled down by the discarded mass
+    // (~10% at frac 1.0), which perturbs the residual stream more than the missing expert does.
+    bool drop_renorm = true;
+
+    // Apply dropping during prefill too. Off by default and deliberately so: the cache is cold
+    // there, so nearly every expert is a miss and the same threshold discards ~4x the weight
+    // mass it does in decode (measured; see docs/expert-dropping.md). Prefill is also
+    // compute-bound, so there is little to win.
+    bool drop_prefill = false;
+
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
     // overlap compute) but makes speculative integration deterministic, so the byte-identity

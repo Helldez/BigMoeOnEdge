@@ -350,6 +350,85 @@ int main(int argc, char ** argv) {
     std::printf("[SKIP] S2 (expert-ready hook not built)\n");
 #endif
 
+    // G8 — cache-aware expert dropping, plumbing vs policy.
+    //
+    // Arming the policy moves load_layer() from the topk node to the terminal node of the layer's
+    // weight chain, and has the hook learn which node that is. That machinery must be transparent:
+    // with a threshold below any weight the router can produce, nothing is dropped and the output
+    // must stay byte-identical to the undropped stream. This separates "the deferral is correct"
+    // from "the policy is lossy" — only the second is allowed to change bytes, and a regression in
+    // the first would otherwise hide behind the expected difference.
+    // The policy needs a real LRU cache: with the cache off every expert reads as a miss, so it
+    // would degenerate into an unconditional weight cut and the repointing below would never face
+    // the reserved-but-uncommitted slot it exists to avoid. The small forced budget is the same one
+    // G2 uses to provoke evictions, so misses and hits both occur.
+    RunConfig drop_inert = base(model);
+    drop_inert.moe.enabled = true;
+    drop_inert.moe.cache_mb = 2;
+    drop_inert.moe.force_cache = true;
+    drop_inert.moe.io_threads = 4;
+    drop_inert.moe.drop_cold_frac = 1e-6f;
+    std::string s_drop_inert;
+    if (!gen(drop_inert, s_drop_inert, err)) {
+        std::fprintf(stderr, "drop(inert threshold) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G8a drop(threshold below any weight) == streaming(cached, undropped)", s_sc, s_drop_inert);
+    // The identity above only means anything if the policy really was armed and really dropped
+    // nothing. Asserting the count separately turns "a weight happened to fall under the threshold"
+    // from a mysterious byte mismatch into a legible failure.
+    {
+        RunResult r = run(drop_inert);
+        if (!r || r.summary.experts_dropped != 0 || r.summary.experts_routed <= 0) {
+            std::printf("[FAIL] G8a' inert threshold must examine routings and drop none (routed=%lld dropped=%lld)\n",
+                        r.summary.experts_routed, r.summary.experts_dropped);
+            ++fails;
+        } else {
+            std::printf("[PASS] G8a' inert threshold examined %lld routings, dropped none\n", r.summary.experts_routed);
+        }
+    }
+
+    // G8b — the same at full strength, against a cache small enough to be evicting constantly, so
+    // dropped experts really do land on slots the cache has released. There is no reference output
+    // to compare against (it is lossy by design), so the gate is that the engine survives it: a
+    // dropped expert's slot is repointed at one that is certainly resident, so the matmul must never
+    // read reserved-but-uncommitted memory and generation must still complete.
+    RunConfig drop_hard = drop_inert;
+    drop_hard.moe.drop_cold_frac = 1.0f;
+    drop_hard.moe.drop_prefill = true;
+    std::string s_drop_hard;
+    if (!gen(drop_hard, s_drop_hard, err)) {
+        std::fprintf(stderr, "drop(full strength) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    if (s_drop_hard.empty()) {
+        std::printf("[FAIL] G8b drop(full strength) produced no output\n");
+        ++fails;
+    } else {
+        std::printf("[PASS] G8b drop(full strength) generates without touching unloaded experts\n");
+    }
+
+    // G8c — the top-weighted expert is pinned, so a routing can never be emptied. Forcing top-k to
+    // 1 makes every routed expert the top one, and dropping must then be a no-op at ANY threshold:
+    // the output has to match the same k=1 run with the policy off, byte for byte. This also pins
+    // down that the threshold is taken against the EFFECTIVE top-k discovered at runtime — a
+    // hardcoded width would not survive the override.
+    RunConfig k1 = base(model);
+    k1.moe.enabled = true;
+    k1.moe.cache_mb = 2;
+    k1.moe.force_cache = true;
+    k1.moe.io_threads = 4;
+    k1.n_expert_used = 1;
+    RunConfig k1_drop = k1;
+    k1_drop.moe.drop_cold_frac = 1.0f;
+    k1_drop.moe.drop_prefill = true;
+    std::string s_k1, s_k1_drop;
+    if (!gen(k1, s_k1, err) || !gen(k1_drop, s_k1_drop, err)) {
+        std::fprintf(stderr, "top-k=1 drop run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G8c drop(full strength, top-k=1) == top-k=1 undropped (top expert pinned)", s_k1, s_k1_drop);
+
     if (fails == 0) std::printf("\nall MoE byte-identity gates passed\n");
     return fails == 0 ? 0 : 1;
 }

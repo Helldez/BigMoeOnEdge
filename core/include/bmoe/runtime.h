@@ -5,7 +5,8 @@
 // them to the expert source, then greedily generates n_predict tokens — reporting each
 // token to the optional callback/sink and returning a RunSummary. Greedy sampling makes
 // the output a deterministic function of the graph, which is what the byte-identity
-// gates rely on.
+// gates rely on — true of every configuration except MoeStreamConfig::drop_cold_frac, which
+// decides from live cache state and so is reproducible only within a single run.
 #pragma once
 
 #include "bmoe/config.h"

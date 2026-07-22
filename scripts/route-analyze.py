@@ -52,6 +52,7 @@ class Trace:
         self.expert_bytes = {}  # layer -> bytes of one expert
         self.dense_bytes = {}   # layer -> non-streamed bytes
         self.rows = []          # (step, layer, slot, expert, weight, residency, ebytes)
+        self.n_dropped = 0      # routings discarded by --drop-cold-experts (0 unless it was on)
         self._read(path, phase, turn)
 
     def _read(self, path, phase, turn):
@@ -72,6 +73,12 @@ class Trace:
                     continue
                 w = float("nan") if p[6] == "nan" else float(p[6])
                 self.rows.append((int(p[2]), int(p[3]), int(p[4]), int(p[5]), w, int(p[7]), int(p[8])))
+                # `dropped` (appended after expert_bytes) marks a routing cache-aware dropping
+                # discarded: the router asked for it, the engine never read it. Counted, not folded
+                # into the rows, so every figure below keeps meaning "what the ROUTER asked for" —
+                # see docs/expert-dropping.md for why the two diverge.
+                if len(p) > 9 and p[9].strip() not in ("", "0"):
+                    self.n_dropped += 1
 
     def _preamble(self, line):
         kv = kv_tokens(line)
@@ -391,6 +398,13 @@ def main():
     print("arch    %s   n_layer %d   n_expert %d   n_expert_used %d"
           % (tr.arch, tr.n_layer, tr.n_expert, tr.n_expert_used))
     print("phase   %s   rows %d" % (args.phase, len(tr.rows)))
+    if tr.n_dropped:
+        # Say it once, loudly: on such a trace "routed" and "read" are no longer the same set, and
+        # every reuse/working-set figure below describes the router's demand, not flash traffic.
+        print("NOTE    cache-aware dropping was ON: %d of %d routings (%.1f%%) were discarded and "
+              "never read.\n        Figures below are what the ROUTER asked for; use "
+              "scripts/route-drop-replay.py for what it cost."
+              % (tr.n_dropped, len(tr.rows), 100.0 * tr.n_dropped / len(tr.rows)))
 
     names = DEFAULT_VIEWS if args.view == "default" else (
         list(VIEWS) if args.view == "all" else [args.view])

@@ -30,7 +30,10 @@ is:
 
 ## Why a budget cannot be a constant
 
-The expert cache is the one lever that trades RAM for flash reads, so the temptation is to set it as
+The expert cache is the one lever that trades RAM for flash reads (
+[`--drop-cold-experts`](expert-dropping.md) is the other kind of trade — quality for flash reads —
+and the two interact: a squeezed cache raises the miss rate, which raises the drop rate, so memory
+pressure degrades output quality there instead of only throughput). The temptation is to set it as
 large as the device seems to allow. On a phone that is the wrong shape of decision, for three
 reasons that are measured rather than argued:
 
@@ -114,6 +117,11 @@ Per run (`# summary`, `BMOE_DONE`): `token_demand_MiB` (what one token routes �
 not a floor), `layer_demand_MiB` (the mechanical floor), `cache_budget_MiB` (the fixed budget in
 effect), `cache_hit_pct`. Per token, `dense_resident_frac` says whether the dense set is holding in
 RAM (the live signal now that the cache-residency governor sensor is gone).
+
+This sizing procedure assumes dropping is off. With
+[`--drop-cold-experts`](expert-dropping.md) on, dropped routings are misses that never reach the
+cache, so `cache_hit_pct` reads high and `token_demand_MiB` reads low for the same budget — size
+the cache first, then turn dropping on.
 
 Reading `cache_hit_pct` against `token_demand_MiB` is how you tell whether a fixed `--cache-mb N` is
 earning its RAM: a budget near or below one token's demand holds no history between tokens and its
