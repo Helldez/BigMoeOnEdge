@@ -51,6 +51,10 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   can be a large share of the token; at steady state it is near zero. Surfacing it stops the "all
   compute" reading on warm-up tokens where the real cost is cache churn, not matmul.
 - `cache_hit_pct` is the cumulative cache hit rate, or `-1` when no cache is used.
+  **Under [`--drop-cold-experts`](expert-dropping.md) read it with care:** a dropped routing is a
+  miss that is never looked up, so it leaves both sides of the ratio and the reported hit rate
+  rises without the cache having served anything more. Compare runs at the same drop rate, or read
+  `experts_dropped` next to it.
 - `majflt` / `cpu_ms` **decompose the `compute_ms` residual** — the whole point being that "compute"
   above is a catch-all that silently absorbs page faults and scheduler stalls, not just matmul.
   They are measured directly around `llama_decode` (no submodule patch needed): `majflt` is the
@@ -101,6 +105,16 @@ moe-prefetch: <mib> MiB speculative, <useful>/<prefetched> experts useful (<pct>
 `<prefetched>` the experts fully read ahead, and `<useful>` how many of those a later routing
 actually hit. See [prefetch.md](prefetch.md).
 
+With `--drop-cold-experts F` a `moe-drop:` line is added:
+
+```
+moe-drop: <dropped>/<routed> routed experts dropped (<pct>%), threshold <F> x uniform
+```
+
+The flag fixes a *threshold*, not a rate: how much is actually discarded depends on what the cache
+held, so this line — not the flag — is what a run traded. See
+[expert-dropping.md](expert-dropping.md).
+
 Under `--overlap` the `moe-stream:` line additionally reports `stall_s/tok=<s>` — the mean
 wall time per token that compute threads waited for expert reads to complete. It is `0` in
 serial mode (where the read wait is already folded into decode time).
@@ -130,7 +144,10 @@ sampled dense-weight residency, `-1` when unmeasured. All are additive: older CS
 so consumers must read by column NAME (from the header row) and treat any as optional. The `# summary`
 line likewise gains `stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>`, `cpu_s/tok=<s>`,
 `token_demand_MiB=<f>` (the expert bytes one token routes, measured — where cache hits start, NOT a
-floor to defend; see [pressure.md](pressure.md)) and `layer_demand_MiB=<f>` (the widest layer's routed
+floor to defend; see [pressure.md](pressure.md)), `experts_routed=<n>` / `experts_dropped=<n>` (what
+[cache-aware dropping](expert-dropping.md) actually discarded during generation — the flag sets a
+threshold, not a rate, so this is the only record of the trade a run made) and
+`layer_demand_MiB=<f>` (the widest layer's routed
 bytes: the mechanical floor the cache must be able to stage); see the `io_ms` note above for how the
 read-time columns are reinterpreted under overlap.
 
@@ -161,6 +178,10 @@ per routed expert. **A traced run is not a benchmark run** — the numbers in th
 traced run are slower than the real thing, and `mgmt_ms` in particular shifts, because settling
 speculative prefetch moves outside the window that times it.
 
+Columns are **append-only** within `v1`, like the metrics CSV: `dropped` was added after
+`expert_bytes`, so consumers must read by column NAME and treat any column as optional rather than
+indexing by position.
+
 The file is long format: a `#` preamble carrying the run's static facts, then one row per routed
 expert. Conceptually it is a matrix — rows are steps, columns are layers — and a **cell** is the
 `n_expert_used` rows sharing `(turn, phase, step, layer)`.
@@ -169,7 +190,7 @@ expert. Conceptually it is a matrix — rows are steps, columns are layers — a
 # route_trace v1
 # model=<path> arch=<string> n_layer=<int> n_expert=<int> n_expert_used=<int>
 # layer=<int> expert_bytes=<int> dense_bytes=<int>        (one per layer)
-turn,phase,step,layer,slot,expert,weight,residency,expert_bytes
+turn,phase,step,layer,slot,expert,weight,residency,expert_bytes,dropped
 ```
 
 | column | meaning |
@@ -183,6 +204,7 @@ turn,phase,step,layer,slot,expert,weight,residency,expert_bytes
 | `weight` | the final applied routing weight, after whatever softmax/normalise/scale the architecture uses. `nan` when the graph exposed no weight node — "unknown", never `0`. |
 | `residency` | `0` = miss (this routing reads from flash), `1` = hit, `2` = hit on a speculative prefetch's first touch. |
 | `expert_bytes` | flash bytes this routing reads; `0` unless `residency=0`. |
+| `dropped` | `1` when [cache-aware dropping](expert-dropping.md) discarded this routing — a miss weighted below the threshold, never read, weight zeroed. Always `0` with `--drop-cold-experts` off. |
 
 `(turn, phase, step, layer, slot)` is unique. Two asymmetries are deliberate:
 
@@ -195,6 +217,11 @@ turn,phase,step,layer,slot,expert,weight,residency,expert_bytes
   streamed, so there is nothing to measure per step: `dense_bytes` is what a cold layer costs to
   page in, stated once. Per-layer *I/O time* is absent for the same kind of reason — under
   `--overlap` reads complete asynchronously, so any per-layer timing would be fiction.
+- **`weight` and `residency` describe the router; `dropped` describes the policy.** When dropping is
+  on, a discarded routing keeps the weight the router gave it and the residency it faced — the trace
+  records the routing that was *chosen* — while `expert_bytes` falls to `0`, because a dropped
+  expert is never read. Summing `expert_bytes` therefore still measures real flash traffic, and
+  `dropped` is what explains the gap against `residency==0`.
 
 **The last layer has only one prefill step, and that is real.** Before the final layer's FFN,
 llama.cpp gathers only the tokens whose logits were asked for (`inp_out_ids`; see `il == n_layer

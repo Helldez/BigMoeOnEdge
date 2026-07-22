@@ -32,7 +32,11 @@ captures most of the benefit. Prefetch requires the LRU cache to be on — eithe
 
 ## How it stays correct and out of the way
 
-The speculative path never delays real work and never changes output:
+The speculative path never delays real work and never changes output — with the lossy knobs off.
+(Under [`--drop-cold-experts`](expert-dropping.md) residency is an *input* to the routing policy,
+so a correct guess un-drops an expert that would otherwise have been discarded. Prefetch depth
+becomes output-affecting there; everything below still holds for the bytes themselves.)
+
 
 - **Same bytes.** A speculative read is the *identical* read a real miss would issue — same file
   offset, same destination buffer (`lbuf_[p][il] + e*slice`). A prefetched expert is therefore

@@ -26,7 +26,7 @@ public:
             std::fprintf(f_, "# layer=%zu expert_bytes=%llu dense_bytes=%llu\n", il,
                          (unsigned long long) s.expert_bytes_per_layer[il], (unsigned long long) dense);
         }
-        std::fprintf(f_, "turn,phase,step,layer,slot,expert,weight,residency,expert_bytes\n");
+        std::fprintf(f_, "turn,phase,step,layer,slot,expert,weight,residency,expert_bytes,dropped\n");
         std::fflush(f_);
     }
 
@@ -36,12 +36,13 @@ public:
             // A weight the graph never exposed prints as nan, not 0: "unknown" must not read as
             // "the router gave this expert no mass".
             if (std::isnan(r.weight))
-                std::fprintf(f_, "%d,%d,%d,%d,%d,%d,nan,%u,%llu\n", r.turn, r.phase, r.step, r.layer, r.slot,
-                             (int) r.expert, (unsigned) r.residency, (unsigned long long) r.expert_bytes);
+                std::fprintf(f_, "%d,%d,%d,%d,%d,%d,nan,%u,%llu,%u\n", r.turn, r.phase, r.step, r.layer, r.slot,
+                             (int) r.expert, (unsigned) r.residency, (unsigned long long) r.expert_bytes,
+                             (unsigned) r.dropped);
             else
-                std::fprintf(f_, "%d,%d,%d,%d,%d,%d,%.6g,%u,%llu\n", r.turn, r.phase, r.step, r.layer, r.slot,
+                std::fprintf(f_, "%d,%d,%d,%d,%d,%d,%.6g,%u,%llu,%u\n", r.turn, r.phase, r.step, r.layer, r.slot,
                              (int) r.expert, (double) r.weight, (unsigned) r.residency,
-                             (unsigned long long) r.expert_bytes);
+                             (unsigned long long) r.expert_bytes, (unsigned) r.dropped);
         }
         std::fflush(f_); // once per decode, not per row
     }

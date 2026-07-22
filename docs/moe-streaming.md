@@ -32,7 +32,10 @@ Ordering is guaranteed by ggml's eval-callback loop: the node we mark is compute
 buffers until this layer's matmul has synchronized. Correct on any backend.
 
 The result is **lossless**: byte-identical to running with every expert resident, asserted
-by the gates.
+by the gates. That is the streaming path itself; two opt-in knobs deliberately trade output for
+speed on top of it — `--n-expert-used` (fewer experts per token) and
+[`--drop-cold-experts`](expert-dropping.md) (skip an expert that would cost a read and was barely
+weighted). Both are off unless asked for, which is what keeps the sentence above true by default.
 
 ## Residency modes
 

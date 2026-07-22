@@ -108,6 +108,17 @@ struct RunSummary {
     double token_demand_mib = 0.0;
     // The widest layer's routed bytes: the mechanical floor a cache must be able to stage.
     double layer_demand_mib = 0.0;
+    // Both measure what reached the streamer. Under MoeStreamConfig::drop_cold_frac that is what a
+    // token STAGES, not what it routed — a dropped expert is never handed over — so the "floor a
+    // cache must clear" reading stops being mechanical there: the floor shrinks because the cache
+    // was small. Size the cache with dropping off, then turn it on.
+
+    // Cache-aware expert dropping (zero when --drop-cold-experts is off). Routed counts what the
+    // router selected across the generation, dropped how much of it the policy declined to read;
+    // their ratio is the lever's actual bite, which depends on the cache and so cannot be read off
+    // the flag. Both cover generation only — prefill drops nothing unless armed for it.
+    long long experts_routed = 0;
+    long long experts_dropped = 0;
 
     // Temporal prefetch (zero when --prefetch is off): speculative bytes read during generation,
     // experts successfully prefetched, and how many of those a later routing actually used.
@@ -142,6 +153,7 @@ struct RunInfo {
     bool overlap = false;
     int prefetch_layers = 0;
     std::string dense_weights = "anon"; // dense (non-expert) policy: "mmap" | "warm" | "anon"
+    float drop_cold_frac = 0.0f;        // cache-aware expert dropping threshold (0 = off)
 };
 
 // Optional per-token sink (e.g. CSV for benchmarks). The engine calls on_run_info once before the
