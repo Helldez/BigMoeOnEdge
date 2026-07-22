@@ -7,27 +7,35 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
-- **`--drop-cold-experts F` — cache-aware expert dropping (experimental, off by default).** Skips a
+- **`--drop-cold-experts F` — cache-aware expert dropping.** Skips a
   routed expert when it is a cache **miss** *and* the router weighted it below `F × (1/top-k)`. An
   expert already resident costs no flash read, so it always runs however small its weight: quality
   is spent only where it buys I/O. Replayed over the committed route traces at `F = 1.0`, decode
-  phase, this avoids **66% of flash reads for 9.5% of the router's weight mass**, against 59% / 37%
-  for `--n-expert-used 3` — roughly 3× the reads avoided at a comparable quality cost.
-  `--drop-no-renorm` and `--drop-in-prefill` are the A/B switches.
-  **Not yet measured on device**, and unlike turbo top-k the output is not reproducible: what gets
-  dropped depends on what the cache held. See [docs/expert-dropping.md](docs/expert-dropping.md).
+  phase, this avoids **66% of flash reads for 9.5% of the router's weight mass**, where
+  `--n-expert-used 5` avoids 23% for a comparable 10.6% — roughly 3x the reads at the same quality
+  cost. (At equal *reads* instead, `--n-expert-used 3` avoids 59% but discards 37% of the mass.)
+  `--drop-no-renorm` and `--drop-in-prefill` are the A/B switches. Requires the LRU cache:
+  `validate()` rejects it with `--cache-mb 0`, where every expert reads as a miss and the policy
+  would silently degenerate into an unconditional weight cut.
+  Unlike turbo top-k the output is **not reproducible** — what gets dropped depends on what the
+  cache held — so it carries no rows in the README benchmark tables, which are a deterministic
+  protocol. See [docs/expert-dropping.md](docs/expert-dropping.md).
 - `scripts/route-drop-replay.py`: the offline model the numbers above come from, including the
   static-`k` baseline replayed on the same rows so the two policies are comparable at equal I/O.
 - Route trace gains a `dropped` column, and the metrics summary `experts_routed` /
   `experts_dropped` — the flag fixes a threshold, not a drop rate, so only these say what a run
   actually traded. New CLI summary line `moe-drop:`.
 - Example app: **Speed / quality → Drop cold experts** (off / 50% / 75% / 100% of the uniform
-  share), disabled in mmap mode since the policy needs an expert source to ask about residency.
-  Off by default — the A/B it exists for has not been run yet.
-- Gates **G8a/G8b**: with a threshold below any producible weight the output stays byte-identical to
-  the undropped stream (the deferred load and the learned terminal weight node are transparent), and
-  at full strength with the cache off generation still completes without a matmul ever reaching an
-  unloaded expert.
+  share), **defaulting to 75%**, disabled in mmap mode and with the cache off. The default is a
+  product decision taken on the maintainer's device; it is not backed by a benchmark published here,
+  and `docs/expert-dropping.md` says so plainly rather than implying a measured figure. The CLI
+  keeps defaulting to off, since the byte-identity gates need a deterministic default.
+- Gates **G8a/G8a'/G8b/G8c**: a threshold below any producible weight leaves the output
+  byte-identical to the undropped stream (the deferred load and the learned terminal weight node are
+  transparent) and is asserted to have examined routings while dropping none; at full strength
+  against a constantly-evicting cache generation still completes, so no matmul reaches a
+  reserved-but-uncommitted slot; and at `--n-expert-used 1` dropping is a proven no-op, which pins
+  both the top-expert guarantee and the threshold being taken against the *effective* top-k.
 
 ### Changed
 - With the policy armed, `load_layer()` moves from the topk node to the terminal node of the layer's
@@ -36,6 +44,18 @@ Semantic Versioning.
   table; until it is known a layer loads at its topk node undropped, exactly as before. No behaviour
   changes when `--drop-cold-experts` is off.
 - README no longer calls turbo top-k "the one lossy knob" — it is now the *measured* one.
+- Docs that assumed a deterministic engine are scoped: `prefetch.md` ("cannot change output" holds
+  only with the lossy knobs off — under dropping, a correct guess un-drops an expert),
+  `moe-streaming.md`, `architecture.md`, `limitations.md` (new entry for non-reproducibility) and
+  `runtime.h`'s contract.
+- `cache_hit_pct`, `token_demand_MiB` and `layer_demand_MiB` shift meaning under dropping — a
+  dropped routing is a miss that is never looked up, so the hit rate rises without the cache serving
+  more, and the demand figures measure what was *staged* rather than routed. Documented in
+  `telemetry.md`, `pressure.md` (which tells you to size the cache first, dropping off) and
+  `metrics.h`; `benchmark-method.md` gains the axis plus a warning that its reverse-the-run-order
+  check cannot distinguish a moved drop rate from a contaminated cell.
+- `scripts/route-analyze.py` reports when a trace was recorded with dropping on, so its
+  working-set figures are not misread as flash traffic.
 
 ## [0.14.0] - 2026-07-21
 

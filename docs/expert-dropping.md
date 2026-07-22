@@ -5,7 +5,7 @@ weighted it below `F × (1 / top-k)` — that is, below `F` of the uniform share
 selected experts would get if the router split its mass evenly. Off by default.
 
 It is the second lossy knob in the engine, after
-[turbo top-k](../README.md#turbo-top-k--the-one-lossy-option), and it exists because the first one
+[turbo top-k](../README.md#turbo-top-k--the-measured-lossy-option), and it exists because the first one
 spends quality in a place it does not have to.
 
 ## Why cache state belongs in the decision
@@ -30,7 +30,7 @@ threshold at the uniform share (`F = 1.0`):
 | `--n-expert-used 5` | 23% | 10.6% |
 | `--n-expert-used 3` | 59% | 36.8% |
 
-(Qwen3-30B-A3B at k=6; Gemma-4-26B-A4B is within a point on both columns. On gpt-oss-120b at k=2 the
+(Qwen3-30B-A3B at k=6; Gemma-4-26B-A4B is within a point and a half on both columns: 67.4% / 8.2%. On gpt-oss-120b at k=2 the
 policy matches `--n-expert-used 1`'s read saving while discarding 25% of the weight mass instead of
 42%.)
 
@@ -50,6 +50,17 @@ so the real hit pattern drifts from the recorded one. The on-device A/B is what 
 share, so at `F ≤ 1.0` the top expert can never fall below the threshold. `validate()` rejects
 `F > 1.0` for that reason, and the implementation additionally pins the top-weighted expert, so the
 guarantee does not rest on the bound alone.
+
+**It requires the expert cache.** With `--cache-mb 0` every expert reads as a miss, so the policy
+would stop being cache-aware and become an unconditional weight cut — which is what
+`--n-expert-used` already does, without claiming to consult residency. `validate()` rejects the
+combination, the same way it rejects `--prefetch` without a cache.
+
+**It changes what `--prefetch` means.** Speculation is normally output-neutral by construction. Here
+residency is an *input* to the policy, so a correct guess un-drops an expert that would otherwise
+have been discarded: prefetch depth becomes an output-affecting setting. The decision point also
+settles pending speculation a few nodes after it was issued, which shortens the overlap window the
+prefetch exists for — treat the two as interacting, not composable.
 
 **Prefill is excluded by default.** With a cold cache almost every expert is a miss, and the same
 threshold discards ~42% of the weight mass instead of ~9%. Prefill is compute-bound anyway, so there
@@ -105,7 +116,7 @@ The engine reports what the policy actually did, which the flag alone cannot tel
 threshold is fixed, the drop rate is not:
 
 ```
-moe-drop: 1183/2304 routed experts dropped (51.3%), threshold 1.00 x uniform
+moe-drop: <dropped>/<routed> routed experts dropped (<pct>%), threshold <F> x uniform
 ```
 
 The route trace gains a `dropped` column: `weight` and `residency` stay as the **router** produced
@@ -120,24 +131,42 @@ whether the upper bound held. See [telemetry.md](telemetry.md).
 - **G8a** — with a threshold below any weight the router can produce, nothing is dropped and the
   output is **byte-identical** to the undropped stream. This proves the deferral and the learned
   terminal node are transparent, separating "the plumbing is correct" from "the policy is lossy" —
-  a regression in the first would otherwise hide behind the expected difference.
-- **G8b** — at full strength with the cache off, where every routing is a miss and the policy bites
-  as hard as it can, generation still completes. The id repointing means no matmul ever reads an
-  unloaded slot.
+  a regression in the first would otherwise hide behind the expected difference. **G8a'** asserts
+  the count separately (`experts_routed > 0`, `experts_dropped == 0`), so "a weight happened to fall
+  under the threshold" fails legibly instead of as a mysterious byte mismatch.
+- **G8b** — at full strength against a cache small enough to be evicting constantly, so dropped
+  experts really do land on slots the cache has released. Generation still completes: the id
+  repointing means no matmul ever reads reserved-but-uncommitted memory. (The gates deliberately do
+  *not* run this with the cache off — there the shared-slot path has no uncommitted memory, so the
+  safety property the repointing exists for would go untested.)
+- **G8c** — forcing top-k to 1 makes every routed expert the top one, so dropping must be a no-op at
+  any threshold and the output must match the undropped k=1 run byte for byte. This pins both the
+  top-expert guarantee and the fact that the threshold is taken against the **effective** top-k
+  discovered at runtime — a hardcoded width would not survive the override.
 
-## Status
+## Defaults, and where the numbers do and do not come from
 
-Built and gated on the host; **not yet measured on device**. The claims above are a replay of
-recorded traces, not a benchmark. What is owed before this is recommended anywhere:
+The **CLI defaults it off**, and will keep doing so: the byte-identity gates need a deterministic
+default, and an instrument should not quietly change the thing it measures.
 
-- a decode A/B against `--n-expert-used` at matched tok/s, on device;
+The **app ships it at 75%** — under **Speed / quality → Drop cold experts**, with rungs 50 / 75 /
+100 as percentages of the uniform share. It is disabled there in mmap mode and with the cache off,
+the same two conditions `validate()` enforces.
+
+That default is a product decision taken on the maintainer's own device measurement. **It is not
+backed by a published benchmark in this repository**, and the tables in the README deliberately
+carry no rows for it — they are a deterministic protocol and this knob is not deterministic. Nothing
+here should be read as "75% is worth X%"; the honest claim is narrower: the replay above says the
+shape of the trade is favourable, and the default was chosen after checking it on hardware.
+
+What is still owed before this is recommended beyond that:
+
+- a published decode A/B against `--n-expert-used` at matched tok/s, with the device state recorded
+  the way [benchmark-method.md](benchmark-method.md) requires;
 - a quality comparison at that matched speed — the whole thesis is that this knob buys the same
   throughput for less damage, and only a side-by-side can support it;
 - a re-run of the replay against a real traced run with the `dropped` column, to see how far the
   static upper bound overstated the win.
 
-Until then it stays **off by default** everywhere. The example app exposes it under
-**Speed / quality → Drop cold experts**, as a percentage of the uniform share (50 / 75 / 100), so
-the A/B can be run where the engine actually ships — through the app, not a pushed CLI binary. It is
-disabled in mmap mode: the policy has to ask the expert source what is resident, and there is no
-expert source without the streamer.
+The [`layer-lfu` entry in the roadmap](roadmap.md) is the standing reminder for why the third one
+matters: it simulated exactly as predicted and was ~30% slower in reality.

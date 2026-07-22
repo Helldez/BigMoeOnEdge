@@ -51,6 +51,10 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   can be a large share of the token; at steady state it is near zero. Surfacing it stops the "all
   compute" reading on warm-up tokens where the real cost is cache churn, not matmul.
 - `cache_hit_pct` is the cumulative cache hit rate, or `-1` when no cache is used.
+  **Under [`--drop-cold-experts`](expert-dropping.md) read it with care:** a dropped routing is a
+  miss that is never looked up, so it leaves both sides of the ratio and the reported hit rate
+  rises without the cache having served anything more. Compare runs at the same drop rate, or read
+  `experts_dropped` next to it.
 - `majflt` / `cpu_ms` **decompose the `compute_ms` residual** — the whole point being that "compute"
   above is a catch-all that silently absorbs page faults and scheduler stalls, not just matmul.
   They are measured directly around `llama_decode` (no submodule patch needed): `majflt` is the
@@ -100,6 +104,16 @@ moe-prefetch: <mib> MiB speculative, <useful>/<prefetched> experts useful (<pct>
 `<mib>` is the flash read done speculatively this generation (a subset of the total read),
 `<prefetched>` the experts fully read ahead, and `<useful>` how many of those a later routing
 actually hit. See [prefetch.md](prefetch.md).
+
+With `--drop-cold-experts F` a `moe-drop:` line is added:
+
+```
+moe-drop: <dropped>/<routed> routed experts dropped (<pct>%), threshold <F> x uniform
+```
+
+The flag fixes a *threshold*, not a rate: how much is actually discarded depends on what the cache
+held, so this line — not the flag — is what a run traded. See
+[expert-dropping.md](expert-dropping.md).
 
 Under `--overlap` the `moe-stream:` line additionally reports `stall_s/tok=<s>` — the mean
 wall time per token that compute threads waited for expert reads to complete. It is `0` in
@@ -163,6 +177,10 @@ asks the compute graph for extra nodes, which adds a barrier per MoE layer, and 
 per routed expert. **A traced run is not a benchmark run** — the numbers in the `--csv` of a
 traced run are slower than the real thing, and `mgmt_ms` in particular shifts, because settling
 speculative prefetch moves outside the window that times it.
+
+Columns are **append-only** within `v1`, like the metrics CSV: `dropped` was added after
+`expert_bytes`, so consumers must read by column NAME and treat any column as optional rather than
+indexing by position.
 
 The file is long format: a `#` preamble carrying the run's static facts, then one row per routed
 expert. Conceptually it is a matrix — rows are steps, columns are layers — and a **cell** is the

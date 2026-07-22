@@ -108,6 +108,10 @@ struct RunSummary {
     double token_demand_mib = 0.0;
     // The widest layer's routed bytes: the mechanical floor a cache must be able to stage.
     double layer_demand_mib = 0.0;
+    // Both measure what reached the streamer. Under MoeStreamConfig::drop_cold_frac that is what a
+    // token STAGES, not what it routed — a dropped expert is never handed over — so the "floor a
+    // cache must clear" reading stops being mechanical there: the floor shrinks because the cache
+    // was small. Size the cache with dropping off, then turn it on.
 
     // Cache-aware expert dropping (zero when --drop-cold-experts is off). Routed counts what the
     // router selected across the generation, dropped how much of it the policy declined to read;

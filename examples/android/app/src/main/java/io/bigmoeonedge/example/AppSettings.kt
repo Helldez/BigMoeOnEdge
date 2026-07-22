@@ -37,7 +37,7 @@ data class AppSettings(
     // Cache-aware expert dropping, as a PERCENTAGE of the uniform share 1/top-k (0 = off, 100 = the
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
-    val dropColdPct: Int = 0,
+    val dropColdPct: Int = 75,
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
     val metricsCsv: Boolean = true,     // write the engine's per-token CSV for this session (--csv)
 ) {
@@ -93,9 +93,11 @@ data class AppSettings(
             // Auto sizing is a live LRU cache, so it satisfies the prefetch cache requirement.
             val cacheOn = cacheMb == CACHE_AUTO || cacheMb > 0
             if (prefetchLayers > 0 && cacheOn) a += listOf("--prefetch", prefetchLayers.toString())
-            // Cache-aware dropping needs the streamer (it asks the expert source what is resident),
-            // so it lives inside the mmap gate. The engine takes a fraction of the uniform share.
-            if (dropColdPct > 0) a += listOf("--drop-cold-experts", (dropColdPct / 100.0).toString())
+            // Cache-aware dropping needs a live cache to ask about residency — with the cache off
+            // every expert reads as a miss and the engine rejects the combination outright, so the
+            // same cacheOn condition that guards prefetch guards this. The engine takes a fraction
+            // of the uniform share; the setting is stored as a percentage.
+            if (dropColdPct > 0 && cacheOn) a += listOf("--drop-cold-experts", (dropColdPct / 100.0).toString())
         }
         return a
     }

@@ -149,6 +149,10 @@ int main() {
     {
         RunConfig c = ok_base();
         c.moe.enabled = true;
+        c.moe.drop_cold_frac = 0.5f;
+        expect_fail("dropping without a cache is rejected (nothing to be aware of)", c);
+
+        c.moe.cache_mb = MoeStreamConfig::cache_min_mb;
         c.moe.drop_cold_frac = 0.0f;
         expect_ok("dropping off is the default and valid", c);
         c.moe.drop_cold_frac = 0.5f;

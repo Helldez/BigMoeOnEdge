@@ -147,15 +147,20 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 IntSetting(
                     "Drop cold experts (% of even share)", AppSettings.DROP_COLD_CHOICES, current.dropColdPct,
                     format = { if (it == 0) "off" else "$it%" },
-                    // Unlike top-k, this one asks the expert source what is resident, so it only
-                    // exists with the streamer on.
-                    enabled = !current.mmap,
+                    // Unlike top-k, this one asks the expert source what is resident, so it needs
+                    // both the streamer and a live cache — the same condition prefetch is under.
+                    enabled = !current.mmap &&
+                        (current.cacheMb == AppSettings.CACHE_AUTO || current.cacheMb > 0),
                 ) { onChange(current.copy(dropColdPct = it)) }
                 Text(
-                    "Experimental. Skips an expert only when it is NOT in the cache and the router barely " +
-                        "weighted it, so speed is bought where it costs a flash read instead of everywhere. " +
-                        "Higher = more aggressive. Unlike top-k the output is not reproducible: what gets " +
-                        "dropped depends on what the cache held.",
+                    "Experimental. What slows a token down is reading an expert that is not already in RAM. " +
+                        "This skips such an expert when the router barely wanted it anyway — below the chosen " +
+                        "share of an even split. With 8 active experts an even split is 12.5% each, so 75% " +
+                        "means \"skip it if it carries less than 9.4% of the routing\".\n\n" +
+                        "Experts already in RAM always run, however small their weight: they cost no read. The " +
+                        "strongest expert of each routing is never skipped.\n\n" +
+                        "Higher is faster and rougher. Like Active experts, the reply changes — but unlike it, " +
+                        "not the same way twice: what gets skipped depends on what the cache happened to hold.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

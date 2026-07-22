@@ -103,7 +103,7 @@ struct MoeStreamConfig {
     // The asymmetry is the whole idea: an expert already resident costs no flash read, so it
     // always runs however small its weight. Quality is spent only where it buys I/O. Because
     // the largest weight in a routing is always >= the uniform share, a frac of 1.0 can never
-    // empty a routing; validate() caps it there, and the implementation additionally pins the
+    // empty a routing; validate() rejects anything above it, and the implementation additionally pins the
     // top-weighted expert so no cell is ever left with nothing to compute.
     //
     // This changes the output — it is a quality/throughput trade like n_expert_used, not an

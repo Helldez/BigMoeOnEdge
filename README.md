@@ -41,7 +41,7 @@ Highlights:
 
 - **gpt-oss-120b (Q4_K_M), ~5× device RAM**: **1.3 tok/s** at the model's own routing width against
   0.09 tok/s for the same file loaded the ordinary way (mmap), a **14×** difference at matched settings.
-  **2.2 tok/s** with the one lossy knob on (fewer experts).
+  **2.2 tok/s** with the measured lossy knob on (fewer experts).
 - **Lossless on models past RAM**: Qwen3-30B-A3B (Q4_K_M, 18.5 GB) up to **5.2 tok/s**,
   Qwen3.6-35B-A3B (Q4_K_M, 22.3 GB) up to **5.0 tok/s** and Gemma-4-26B-A4B (Q4_K_M, 17.0 GB) up to
   **4.1 tok/s** on the same phone, output identical to the resident model.
@@ -97,11 +97,13 @@ and a manual copy to the device: steps in the
   needs a small optional add-on to llama.cpp (see [docs/seam.md](docs/seam.md)).
 - **Turbo top-k** (`--n-expert-used N`): the measured lossy knob. Fewer experts per token, ~+22–24%
   speed, output quality is yours to judge.
-- **Cache-aware expert dropping** (`--drop-cold-experts F`, experimental): skips a routed expert only
-  when it would cost a flash read *and* the router barely weighted it, so quality is spent only where
-  it buys I/O. Replayed against recorded traces it avoids ~3× the reads of turbo top-k at a
-  comparable weight cost — but it is **not yet measured on device** and makes output
-  non-reproducible. Off by default; see [docs/expert-dropping.md](docs/expert-dropping.md).
+- **Cache-aware expert dropping** (`--drop-cold-experts F`): skips a routed expert only when it would
+  cost a flash read *and* the router barely weighted it, so quality is spent only where it buys I/O.
+  Replayed against recorded traces it avoids ~3× the reads of turbo top-k at a comparable weight
+  cost. It is the one setting whose output is **not reproducible** — what gets skipped depends on
+  what the cache held — so it has no rows in the tables below, which are a deterministic protocol.
+  The app ships it at 75%; the CLI defaults it off. See
+  [docs/expert-dropping.md](docs/expert-dropping.md).
 - **Multi-turn sessions and live telemetry**: the model stays loaded across chat turns, and every
   run can emit a per-token breakdown of where the time went.
 - **Android demo app** ([`examples/android`](examples/android)): a chat app with a live telemetry
@@ -132,7 +134,7 @@ phone.
   ordinary way (no streaming), which is what the streamed rows are compared against. *k* is how many
   experts each token routes to — for us the number of experts, i.e. `n_expert_used` (set with
   `--n-expert-used`). Each table shows the model's default width and, where measured, a reduced *k*,
-  the one lossy setting — see [Turbo top-k — the one lossy option](#turbo-top-k--the-one-lossy-option)
+  the measured lossy setting — see [Turbo top-k — the measured lossy option](#turbo-top-k--the-measured-lossy-option)
   below.
 - **tok/s**: generation speed; higher is better.
 - **Flash/token**: data read from storage per generated token; lower means the cache is working.
@@ -172,7 +174,7 @@ dense weights kept out of the page cache (`--dense-weights anon`) runs it stably
 | **streamed, k=6, cache 3000 MiB, 4 lanes, overlap** | **5.8** | 91 MiB | 68% |
 
 All streamed rows use `--overlap --dense-weights anon`. A larger cache is the main lossless lever
-(cache 3000 is worth +16% over 2000); the k=6 rows are the one lossy option (turbo top-k, below),
+(cache 3000 is worth +16% over 2000); the k=6 rows are the measured lossy option (turbo top-k, below),
 worth a further ~16% by routing to six experts instead of eight. The lossless best here is cache
 3000 at the model's own width, **5.0 tok/s** — output byte-identical to the resident model.
 

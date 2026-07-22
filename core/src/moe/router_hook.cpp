@@ -62,24 +62,21 @@ static bool match_weights(const char * name, int & il_out) {
 // (token j at nb[2], slot k at nb[1]) — except the norm variant, whose callback fires on the
 // pre-reshape 2-D [nu, nt] (token j at nb[1], slot k at nb[0]). ne[0] == 1 tells the two apart.
 // As with the topk ids, these are views: only the strides say where a token's row really starts.
-static void gather_weights(const ggml_tensor * t, int nu, int nt, std::vector<float> & out) {
-    const bool three_d = t->ne[0] == 1;
-    const size_t tok_nb = three_d ? t->nb[2] : t->nb[1];
-    const size_t slot_nb = three_d ? t->nb[1] : t->nb[0];
-    out.assign((size_t) nu * nt, 0.0f);
-    for (int j = 0; j < nt; ++j)
-        for (int k = 0; k < nu; ++k)
-            out[(size_t) j * nu + k] =
-                *(const float *) ((const char *) t->data + (size_t) j * tok_nb + (size_t) k * slot_nb);
-}
-
-// Where token j's slot k lives inside a weight node — the writable counterpart of gather_weights,
-// and it must read the strides the same way or the drop policy would zero another token's slot.
-static float * weight_at(ggml_tensor * t, int j, int k) {
+// Where token j's slot k lives inside a weight node. Single source of truth for the layout: the
+// reader below and the drop policy's writer must agree, or the policy would zero another token's
+// slot. Returns a mutable pointer; the gather takes a const tensor and only reads through it.
+static float * weight_at(const ggml_tensor * t, int j, int k) {
     const bool three_d = t->ne[0] == 1;
     const size_t tok_nb = three_d ? t->nb[2] : t->nb[1];
     const size_t slot_nb = three_d ? t->nb[1] : t->nb[0];
     return (float *) ((char *) t->data + (size_t) j * tok_nb + (size_t) k * slot_nb);
+}
+
+static void gather_weights(const ggml_tensor * t, int nu, int nt, std::vector<float> & out) {
+    out.assign((size_t) nu * nt, 0.0f);
+    for (int j = 0; j < nt; ++j)
+        for (int k = 0; k < nu; ++k)
+            out[(size_t) j * nu + k] = *weight_at(t, j, k);
 }
 
 // Same, for the selected-expert ids. The node is a VIEW of the full argsort, so the row stride is
@@ -168,7 +165,6 @@ void RouterHook::apply_drop(ggml_tensor * wt) {
             drop_mask_[idx] = 1;
             ++n_dropped;
         }
-        experts_routed_ += nu;
         experts_dropped_ += n_dropped;
 
         // Restore the routing's total mass. Without this the layer's expert output is scaled down
@@ -195,11 +191,13 @@ void RouterHook::close_drop_layer() {
         term_node_[D.layer] = chain_last_;
     if (D.deferred && source_) {
         // The node we learned as terminal did not appear this time, so the deferral was never
-        // honoured. Load the whole routing now. This is already too late for that layer's matmul —
-        // it ran with whatever the slots held — but leaving the experts unloaded would corrupt the
-        // cache accounting for every token after it, and failing silently would hide a graph whose
-        // shape moved under us.
+        // honoured and this layer's matmul has already run against slots nothing loaded. Load the
+        // routing now to keep the cache's accounting straight, and — more importantly — FORGET the
+        // terminal node, so the next graph re-learns it and loads at the topk node meanwhile.
+        // Deferring again on the same stale guess would repeat the fault every single token; one
+        // bad layer in one token is recoverable, a standing bet against a graph that moved is not.
         source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size());
+        if (D.layer < (int) term_node_.size()) term_node_[D.layer].clear();
         D.deferred = false;
     }
     D.layer = -1;
@@ -476,6 +474,12 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             pending_.residency.assign(gathered_.size(), (uint8_t) 0);
             source_->query_residency(il, gathered_.data(), (int) gathered_.size(), pending_.residency.data());
         }
+
+        // Count what the ROUTER selected, here rather than inside apply_drop: a layer that is not
+        // deferred yet (the first graph, or a phase the policy is not armed for) still routed these
+        // experts, and a denominator that skipped them would report the drop rate as a fraction of
+        // the wrong thing.
+        if (drop_frac_ > 0.0f) experts_routed_ += (long long) gathered_.size();
 
         // Open the layer for the drop policy. Deferring the load is only safe once this layer's
         // terminal weight node is known — otherwise there is no callback left to decide in, and the

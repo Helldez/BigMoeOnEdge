@@ -47,6 +47,7 @@ Vary one axis at a time:
 | threads (-t) | 2, 4, 8 | U-shape, 4 optimal, 8 regresses |
 | overlap | off, on | net gain **only over a warm cache** (hides residual flash wait behind compute); a net loss on a cold cache-0 stream, where I/O dwarfs compute |
 | n-expert-used | default, 6 | fewer active experts cut compute + I/O ~linearly (8→6 ≈ −25%), changes the output |
+| drop-cold-experts | off, 0.75, 1.0 | the second lossy axis, and the only **non-deterministic** one: what is skipped depends on cache state, so cells are noisier and the drop rate must be reported with the tok/s. Needs the cache on |
 | dense-weights | warm, anon | decisive well past RAM, near-neutral near it: on gpt-oss (5.2× RAM) `anon` drops majflt/token from the hundreds to **6–10** and compute with it; on Qwen (1.64× RAM) there is little dense-fault pressure to remove. Watch `majflt/token`, not just tok/s |
 
 When sweeping `--n-expert-used`, run it as a **matched A/B against the model's own default**
@@ -124,6 +125,16 @@ So:
 
 Re-run such a cell; do not publish it. And sanity-check any matrix by **reversing the run order** —
 cells that move were measuring device state.
+
+**The reversal check does not work under `--drop-cold-experts`.** There a cell can move because the
+*drop rate* moved — the policy reads live cache state, so the same command legitimately discards a
+different number of experts on a different run. That is the feature working, not the device
+contaminating the cell, and the two tells above cannot tell them apart. Always record
+`experts_dropped`/`experts_routed` (or the `moe-drop:` line) next to the tok/s: a dropping cell
+without its drop rate is uninterpretable, because the flag fixes a threshold and not a rate. Note
+also that a dropping run pays the same extra per-MoE-layer barriers a route-traced run does, so an
+A/B against `--n-expert-used` is not overhead-matched — see
+[expert-dropping.md](expert-dropping.md).
 
 ### Caveats
 

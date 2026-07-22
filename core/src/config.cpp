@@ -85,6 +85,12 @@ ValidationResult validate(const RunConfig & cfg) {
                         "speculative reads land in the per-layer cache buffers, which do not exist "
                         "with the cache off.");
         }
+        if (m.drop_cold_frac > 0.0f && !cache_on) {
+            return fail("moe.drop_cold_frac requires the LRU cache (cache_mb > 0 or cache_auto): with the "
+                        "cache off every expert is a miss, so the policy stops being cache-aware and "
+                        "degenerates into an unconditional weight cut — which is what n_expert_used already "
+                        "does, without pretending to consult residency.");
+        }
         if (m.drop_cold_frac < 0.0f || m.drop_cold_frac > 1.0f) {
             return fail("moe.drop_cold_frac must be in [0, 1] (0 = off). Above 1.0 the threshold can "
                         "exceed the largest weight in a routing, which would discard every expert of a "
