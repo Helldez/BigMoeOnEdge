@@ -41,8 +41,30 @@ the policy leaves every one of them alone.
 `F` is a curve, not a switch. At `F = 0.75` the same model trades 4.4% of the weight mass for 37% of
 the reads — still better than `--n-expert-used 5` on **both** axes.
 
-These are replay numbers and an **upper bound**: skipping a read changes what the cache holds later,
-so the real hit pattern drifts from the recorded one. The on-device A/B is what settles it.
+These are replay numbers, and they were an **upper bound** only where dropping is light — see the
+measurement below, where at full strength reality beat the prediction.
+
+## Measured on device
+
+Qwen3.6-35B-A3B (top-k 8 of 256), in-app, cache 3000 MiB, one variable changed:
+
+| `F` | tok/s | flash read | routings dropped |
+|---|---|---|---|
+| off | 2.549 | 248 GiB | 0 |
+| 0.50 | 2.564 | 231 GiB | 2.7% |
+| 0.75 | **3.938** | 163 GiB | 14.2% |
+| 1.00 | **4.702** | 48 GiB | 28.4% |
+
+Per-token bootstrap intervals separate every pair **except off vs 0.50**, which overlaps: at half the
+uniform share the policy finds almost nothing to drop and buys nothing. That is also the useful
+negative control — the machinery costs nothing measurable when it is not firing.
+
+Run order was 1.00, off, 0.50, 0.75, so the two fastest cells are the first and the *last*: thermal
+drift would have made the last the worst. Full data, caveats and the run-order argument:
+[bench-data/2026-07-22-drop-cold-experts](bench-data/2026-07-22-drop-cold-experts/findings.md).
+
+**Quality was not measured.** Throughput is settled; whether the output holds up at 14% or 28%
+discarded routings is not, and no perplexity number exists for this knob yet.
 
 ## Two properties worth knowing
 
@@ -149,14 +171,16 @@ whether the upper bound held. See [telemetry.md](telemetry.md).
 The **CLI defaults it off**, and will keep doing so: the byte-identity gates need a deterministic
 default, and an instrument should not quietly change the thing it measures.
 
-The **app also defaults it off**, and exposes it under **Speed / quality → Drop cold experts**
-with rungs 50 / 75 / 100 as percentages of the uniform share. It is disabled there in mmap mode and
-with the cache off, the same two conditions `validate()` enforces.
+The **app ships it at 75%**, under **Speed / quality → Drop cold experts**, with rungs 50 / 75 /
+100 as percentages of the uniform share. It is disabled there in mmap mode and with the cache off,
+the same two conditions `validate()` enforces.
 
-Turning it on by default is a decision waiting on evidence, not on opinion. **No benchmark for this
-knob is published in this repository**, and the tables in the README deliberately carry no rows for
-it — they are a deterministic protocol and this knob is not deterministic. The replay above argues
-the shape of the trade is favourable; that is an argument, not a measurement.
+75% rather than 100% is the deliberate choice: it is where the measured curve turns, taking the
+larger part of the throughput win (+55%) for half the discarded routings (14% against 28%). With
+quality unquantified, the conservative end of a measured range is the defensible default.
+
+The **CLI keeps defaulting to off**, and should: the byte-identity gates need a deterministic
+default, and an instrument that quietly changes what it measures is not an instrument.
 
 What is still owed before this is recommended beyond that:
 

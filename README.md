@@ -99,11 +99,12 @@ and a manual copy to the device: steps in the
   speed, output quality is yours to judge.
 - **Cache-aware expert dropping** (`--drop-cold-experts F`): skips a routed expert only when it would
   cost a flash read *and* the router barely weighted it, so quality is spent only where it buys I/O.
-  Replayed against recorded traces it avoids ~3× the reads of turbo top-k at a comparable weight
-  cost. It is the one setting whose output is **not reproducible** — what gets skipped depends on
-  what the cache held — so it has no rows in the tables below, which are a deterministic protocol.
-  Off by default everywhere, pending an on-device A/B. See
-  [docs/expert-dropping.md](docs/expert-dropping.md).
+Measured at **+55%** on Qwen3.6-35B-A3B (2.55 → 3.94 tok/s at `F = 0.75`, flash reads down a
+  third; +84% at `F = 1.0`), bootstrap intervals disjoint
+  ([data](docs/bench-data/2026-07-22-drop-cold-experts/findings.md)). It is the one setting whose
+  output is **not reproducible** — what gets skipped depends on what the cache held — so it has no
+  rows in the tables below, which are a deterministic protocol, and its quality cost is not yet
+  quantified. See [docs/expert-dropping.md](docs/expert-dropping.md).
 - **Multi-turn sessions and live telemetry**: the model stays loaded across chat turns, and every
   run can emit a per-token breakdown of where the time went.
 - **Android demo app** ([`examples/android`](examples/android)): a chat app with a live telemetry

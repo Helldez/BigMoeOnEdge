@@ -26,15 +26,33 @@ Semantic Versioning.
   `experts_dropped` — the flag fixes a threshold, not a drop rate, so only these say what a run
   actually traded. New CLI summary line `moe-drop:`.
 - Example app: **Speed / quality → Drop cold experts** (off / 50% / 75% / 100% of the uniform
-  share), **off by default**, disabled in mmap mode and with the cache off. It ships off in the app
-  as well as the CLI: the knob changes model output non-reproducibly, so switching it on by default
-  waits on a published on-device A/B rather than on the replay argument alone.
+  share), **defaulting to 75%**, disabled in mmap mode and with the cache off. 75% rather than 100%
+  takes the larger part of the win for half the discarded routings, which is the defensible choice
+  while the quality cost is unquantified. The CLI keeps defaulting to off — the byte-identity gates
+  need a deterministic default.
 - Gates **G8a/G8a'/G8b/G8c**: a threshold below any producible weight leaves the output
   byte-identical to the undropped stream (the deferred load and the learned terminal weight node are
   transparent) and is asserted to have examined routings while dropping none; at full strength
   against a constantly-evicting cache generation still completes, so no matmul reaches a
   reserved-but-uncommitted slot; and at `--n-expert-used 1` dropping is a proven no-op, which pins
   both the top-expert guarantee and the threshold being taken against the *effective* top-k.
+
+### Measured
+- On device, in-app, Qwen3.6-35B-A3B-Q4_K_M (top-k 8 of 256), cache 3000, one variable changed:
+  **2.549 tok/s off → 3.938 at `F = 0.75` (+55%) → 4.702 at `F = 1.0` (+84%)**, with flash reads
+  falling 248 → 163 → 48 GiB. Per-token bootstrap intervals separate every pair except off vs 0.50,
+  which overlaps — at half the uniform share the policy drops 2.7% of routings and buys nothing,
+  which doubles as the negative control that the machinery is free when it does not fire.
+  Data: [docs/bench-data/2026-07-22-drop-cold-experts/](docs/bench-data/2026-07-22-drop-cold-experts/findings.md).
+- Run order was 1.0, off, 0.5, 0.75, so the two fastest cells are the first and the **last**: thermal
+  drift would have made the last the worst. The mechanism orders by threshold even though the run
+  order does not, which is what run order cannot fake.
+- **The replay was conservative, not optimistic.** It is documented as an upper bound because it
+  cannot model the cache changing; at `F = 0.75` it was accurate (37% predicted, 34% measured), at
+  `F = 1.0` it understated (66% predicted, **81%** measured). Avoided reads free cache capacity,
+  which raises the hit rate, which leaves fewer misses to drop.
+- **Quality remains unmeasured.** No perplexity number and no side-by-side exists for this knob.
+  Throughput is settled; the cost of discarding 14% (at 0.75) or 28% (at 1.0) of routings is not.
 
 ### Changed
 - With the policy armed, `load_layer()` moves from the topk node to the terminal node of the layer's
