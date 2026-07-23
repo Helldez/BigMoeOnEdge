@@ -95,18 +95,9 @@ and a manual copy to the device: steps in the
   device.
 - **I/O–compute overlap** (`--overlap`): hides flash latency behind compute. Byte-identical;
   needs a small optional add-on to llama.cpp (see [docs/seam.md](docs/seam.md)).
-- **Turbo top-k** (`--n-expert-used N`): the measured lossy knob. Fewer experts per token, ~+22–24%
-  speed, output quality is yours to judge.
-- **Cache-aware expert dropping** (`--drop-cold-experts F`): skips a routed expert only when it would
-  cost a flash read *and* the router barely weighted it, so quality is spent only where it buys I/O.
-Measured at **+55%** on Qwen3.6-35B-A3B (2.55 → 3.94 tok/s at `F = 0.75`, flash reads down a
-  third; +84% at `F = 1.0`), bootstrap intervals disjoint
-  ([data](docs/bench-data/2026-07-22-drop-cold-experts/findings.md)). It is the one setting whose
-  output is **not reproducible** — what gets skipped depends on what the cache held — so it has no
-  rows in the tables below, which are a deterministic protocol. A 15-question GSM8K check found no
-  quality loss at any threshold ([data](docs/bench-data/2026-07-22-drop-quality/findings.md)),
-  though that size only rules out a large regression. See
-  [docs/expert-dropping.md](docs/expert-dropping.md).
+- **Speed–quality knobs** (`--n-expert-used N`, `--drop-cold-experts F`): the two settings that
+  trade output quality for speed — one narrows the routing width, the other skips only cold,
+  barely-weighted experts. Both measured: [Trading quality for speed](#trading-quality-for-speed).
 - **Multi-turn sessions and live telemetry**: the model stays loaded across chat turns, and every
   run can emit a per-token breakdown of where the time went.
 - **Android demo app** ([`examples/android`](examples/android)): a chat app with a live telemetry
@@ -137,8 +128,7 @@ phone.
   ordinary way (no streaming), which is what the streamed rows are compared against. *k* is how many
   experts each token routes to — for us the number of experts, i.e. `n_expert_used` (set with
   `--n-expert-used`). Each table shows the model's default width and, where measured, a reduced *k*,
-  the measured lossy setting — see [Turbo top-k — the measured lossy option](#turbo-top-k--the-measured-lossy-option)
-  below.
+  the measured lossy setting — see [Trading quality for speed](#trading-quality-for-speed) below.
 - **tok/s**: generation speed; higher is better.
 - **Flash/token**: data read from storage per generated token; lower means the cache is working.
 - **Cache hit**: share of expert reads served from RAM instead of flash.
@@ -216,23 +206,26 @@ Gemma keeps more of itself permanently resident, so the 4000 MiB cache fits only
 free at launch; cache 2000 + overlap is the dependable everyday setting on this device. Turbo top-k
 (k=6) is the fastest here (+22%) but changes the output.
 
-### Turbo top-k — the measured lossy option
+### Trading quality for speed
 
-Every model here ships a routing width — the number of experts each token uses (8 for the Qwen and
-Gemma models, 4 for gpt-oss). Forcing it lower with `--n-expert-used` cuts both compute and flash
-reads; the `k=6` rows folded into the tables above are that knob, measured A/B against each model's
-own width. It is worth **+22–24%** on the Qwen and Gemma models, and takes gpt-oss from 1.3 to
-**2.2 tok/s** (k=2).
+Every other benchmarked setting changes *how* weights are fetched, never the math. Two knobs change
+*what* the model computes, and both are measured:
 
-Every benchmarked setting other than this one changes *how* weights are fetched, never the math.
-This knob changes *what* the model computes: output differs from the full model and quality can
-degrade. Judge it on your own task before relying on it.
+- **Turbo top-k** (`--n-expert-used N`) forces the routing width below the model's own (8 for the
+  Qwen and Gemma models, 4 for gpt-oss), cutting compute and flash reads together: **+22–24%** on
+  the Qwen and Gemma models, and gpt-oss goes from 1.3 to **2.2 tok/s** at k=2. It is deterministic,
+  which is why its `k=6` rows sit in the tables above — but it spends quality indiscriminately: the
+  routing tail is cut whether or not those experts were already free to run from RAM.
+- **Cache-aware dropping** (`--drop-cold-experts F`) fixes that: it skips a routed expert only when
+  it would cost a flash read *and* the router barely weighted it, so quality is spent only where it
+  buys I/O. Measured at **+55%** on Qwen3.6-35B-A3B at `F = 0.75` (**+84%** at `F = 1.0`), bootstrap
+  intervals disjoint ([data](docs/bench-data/2026-07-22-drop-cold-experts/findings.md)). Its output
+  is **not reproducible** — what gets skipped depends on what the cache held — so it has no rows in
+  the deterministic tables above. Details: [docs/expert-dropping.md](docs/expert-dropping.md).
 
-It also spends quality indiscriminately: the tail of the routing goes whether or not those experts
-were already in RAM, and a resident expert costs no flash read at all.
-[Cache-aware dropping](docs/expert-dropping.md) is the experimental answer to that — same kind of
-trade, but only where it buys I/O. It has no measured rows here yet, which is why the tables above
-are still turbo top-k's.
+On quality itself: a 15-question GSM8K check found no loss from dropping at any threshold
+([data](docs/bench-data/2026-07-22-drop-quality/findings.md)) — a sample that size rules out a
+collapse, not a subtle cost. Judge either knob on your own task before relying on it.
 
 ### What to expect in the app
 

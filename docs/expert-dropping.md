@@ -5,7 +5,7 @@ weighted it below `F × (1 / top-k)` — that is, below `F` of the uniform share
 selected experts would get if the router split its mass evenly. Off by default.
 
 It is the second lossy knob in the engine, after
-[turbo top-k](../README.md#turbo-top-k--the-measured-lossy-option), and it exists because the first one
+[turbo top-k](../README.md#trading-quality-for-speed), and it exists because the first one
 spends quality in a place it does not have to.
 
 ## Why cache state belongs in the decision
@@ -188,9 +188,6 @@ the same two conditions `validate()` enforces.
 75% rather than 100% is the deliberate choice: it is where the measured curve turns, taking the
 larger part of the throughput win (+55%) for half the discarded routings (14% against 28%). With
 quality unquantified, the conservative end of a measured range is the defensible default.
-
-The **CLI keeps defaulting to off**, and should: the byte-identity gates need a deterministic
-default, and an instrument that quietly changes what it measures is not an instrument.
 
 What is still owed before this is recommended beyond that:
 
