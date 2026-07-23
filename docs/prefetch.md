@@ -19,7 +19,9 @@ often and stall on flash (see [benchmarks.md](benchmarks.md)). Temporal prefetch
 
 > The predictor below can now be measured online, against a stronger one, on any model:
 > [`--predict-log`](expert-prediction.md) scores the previous-token bet alongside running the next
-> layer's router a layer early, and reports both per layer.
+> layer's router a layer early, and reports both per layer. The stronger predictor can also be
+> acted on: [`--predict-prefetch`](expert-prediction.md) feeds it to this same speculative read
+> path (mutually exclusive with `--prefetch`).
 
 ## The bet
 

@@ -3,6 +3,7 @@
 #include "ggml.h"
 #include "../io/platform_io.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -180,6 +181,7 @@ void RouterHook::apply_drop(ggml_tensor * wt) {
     if (tracing) pending_.dropped = drop_mask_;
     source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size());
     D.deferred = false;
+    predict_after_load(D.layer);
 }
 
 // Finish with the layer whose topk we last saw: record which node ended its weight chain, so the
@@ -199,6 +201,7 @@ void RouterHook::close_drop_layer() {
         source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size());
         if (D.layer < (int) term_node_.size()) term_node_[D.layer].clear();
         D.deferred = false;
+        predict_after_load(D.layer);
     }
     D.layer = -1;
 }
@@ -212,6 +215,15 @@ void RouterHook::close_drop_layer() {
 
 void RouterHook::set_predict_log(bool on) {
     predict_log_ = on;
+    predict_reset();
+}
+
+void RouterHook::set_predict_prefetch(bool on) {
+    predict_prefetch_ = on;
+    predict_reset();
+}
+
+void RouterHook::predict_reset() {
     const int n = n_layer_ > 0 ? n_layer_ : 0;
     gate_w_.assign(n, nullptr);
     pred_stale_.assign(n, std::vector<int32_t>{});
@@ -221,6 +233,7 @@ void RouterHook::set_predict_log(bool on) {
     ps_self_.assign(n, PredictorStats{});
     agg_stale_ = agg_prev_ = agg_self_ = PredictorStats{};
     predict_unscored_ = 0;
+    nu_hint_ = 0;
 }
 
 // Copy one token's row out of a 2-D activation as float, honouring the strides (the row may be a
@@ -352,14 +365,66 @@ void RouterHook::predict_at_logits(ggml_tensor * t, int il) {
 
     // Fresh-gate control: this layer's own matrix on its own input, with no staleness at all. It has
     // to reproduce the routing the graph is about to compute from those very two tensors, so it is
-    // also the check that this GEMV agrees with llama.cpp's.
-    if (gate_w_[il] && gate_scores(gate_w_[il], pred_row_, pred_scores_))
+    // also the check that this GEMV agrees with llama.cpp's. Probe-only — the prefetch has no use
+    // for a prediction of the layer it is already standing in, and skipping it halves the tax.
+    if (predict_log_ && gate_w_[il] && gate_scores(gate_w_[il], pred_row_, pred_scores_))
         rank_top_k(pred_scores_, predict_max_k, pred_self_[il]);
 
     // Stale-gate: the NEXT layer's matrix on this layer's input — the prediction under test. Silent
     // on the first token of a run, whose next layer has not been seen yet; score_layer counts those.
+    // Computed here but NOT speculated here: every load path starts by quiescing speculation, and
+    // this layer's own load_layer is only a few tiny nodes away — reads queued now would be
+    // cancelled before a lane picks them up. predict_after_load() issues them once this layer's
+    // load is behind us, which restores the same read-ahead window the temporal prefetch gets.
+    // pred_scores_ still holds this GEMV's full score vector until layer nl's own logits node,
+    // which is what the drop filter reads — keep it the LAST ranking computed here.
     if (nl < n_layer_ && gate_w_[nl] && gate_scores(gate_w_[nl], pred_row_, pred_scores_))
         rank_top_k(pred_scores_, predict_max_k, pred_stale_[nl]);
+}
+
+// Speculate on the prediction for layer il+1, called right after layer il's experts were handed to
+// the source — the one moment a queued read has a whole expert-matmul's worth of idle-lane time
+// before the next quiesce, whichever load path (plain topk, deferred drop, or the drop fallback)
+// just ran.
+void RouterHook::predict_after_load(int il) {
+    if (!predict_prefetch_ || batch_phase_ != 1) return;
+    const int nl = il + 1;
+    if (nl <= 0 || nl >= n_layer_ || pred_stale_[nl].empty()) return;
+    predict_issue_prefetch(nl);
+}
+
+// Hand the prediction for layer nl to the speculative read path, minus what the drop policy would
+// discard anyway. The filter reasons entirely in predicted quantities: softmax over the predicted
+// top-k's raw scores approximates the routing weights the real gate will produce (exact for
+// softmax-gated models, a fair proxy elsewhere), and a candidate below the drop threshold is only
+// ever read on demand — if it turns out resident it runs for free, if it misses the policy drops
+// it unread. Speculating it would spend the precise I/O the policy exists to save. The top
+// prediction is always kept, mirroring the policy's own pin of the top-weighted expert.
+void RouterHook::predict_issue_prefetch(int nl) {
+    const int nu = nu_hint_;
+    if (!source_ || nu <= 0 || nu > (int) pred_stale_[nl].size()) return; // width unknown yet, or ranked short
+
+    const std::vector<int32_t> & pred = pred_stale_[nl];
+    spec_ids_.clear();
+    if (drop_frac_ > 0.0f) {
+        // Softmax over the top-nu predicted scores only: the tail's mass is what the real gate's
+        // normalisation also throws away, and nu terms keep the exp() cost trivial.
+        spec_w_.assign((size_t) nu, 0.0f);
+        float mx = pred_scores_[(size_t) pred[0]];
+        for (int k = 1; k < nu; ++k)
+            if (pred_scores_[(size_t) pred[k]] > mx) mx = pred_scores_[(size_t) pred[k]];
+        float sum = 0.0f;
+        for (int k = 0; k < nu; ++k) {
+            spec_w_[(size_t) k] = std::exp(pred_scores_[(size_t) pred[k]] - mx);
+            sum += spec_w_[(size_t) k];
+        }
+        const float thr = drop_frac_ / (float) nu;
+        for (int k = 0; k < nu; ++k)
+            if (k == 0 || (sum > 0.0f && spec_w_[(size_t) k] / sum >= thr)) spec_ids_.push_back(pred[k]);
+    } else {
+        spec_ids_.assign(pred.begin(), pred.begin() + nu);
+    }
+    if (!spec_ids_.empty()) source_->prefetch(nl, spec_ids_.data(), (int) spec_ids_.size());
 }
 
 // At the topk of layer il: compare every predictor with what the router actually chose. Must run
@@ -588,7 +653,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // pattern is what keeps "ffn_moe_logits_biased-<il>" — a different node — from matching.
     int gl = -1;
     const bool is_logits =
-        predict_log_ && source_ && batch_phase_ == 1 && std::sscanf(t->name, "ffn_moe_logits-%d", &gl) == 1 && gl >= 0;
+        predict_on() && source_ && batch_phase_ == 1 && std::sscanf(t->name, "ffn_moe_logits-%d", &gl) == 1 && gl >= 0;
     // The compute trace wants every node isolated — or, at layer granularity, only the first
     // node of each layer: the cursor advances on the ask stream (every node passes through
     // here), so one isolation request per layer transition. Layerless names (embeddings, the
@@ -668,6 +733,11 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         // the wrong thing.
         if (drop_frac_ > 0.0f) experts_routed_ += (long long) gathered_.size();
 
+        // The routing width, learned from the node that defines it. The predictive prefetch needs
+        // it a layer before any topk of the predicted layer exists, and reading it here (not from
+        // config) keeps an --n-expert-used override honest without another plumbing path.
+        if (predict_on() && nu > 0) nu_hint_ = nu;
+
         // Open the layer for the drop policy. Deferring the load is only safe once this layer's
         // terminal weight node is known — otherwise there is no callback left to decide in, and the
         // expert matmul would run against slots nothing loaded. First graph of a run: load here.
@@ -678,10 +748,14 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         drop_.ids = t;
         drop_.deferred = defer;
         chain_last_.clear();
-        if (defer)
+        if (defer) {
             drop_ids_ = gathered_;
-        else
+        } else {
             source_->load_layer(il, gathered_.data(), (int) gathered_.size());
+            // Deferred layers speculate from apply_drop instead — after THEIR load, for the same
+            // reason this call sits after the one above: the load's quiesce would cancel it.
+            predict_after_load(il);
+        }
 
         // Score the predictors against the routing the router just produced — before the record
         // below moves on, or the previous-token predictor would be graded on the answer itself.
