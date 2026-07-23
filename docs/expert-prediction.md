@@ -111,6 +111,11 @@ Two design points matter more than the swap itself:
   is not speculated: if it misses, the policy would drop it unread — prefetching it would spend the
   exact I/O the policy exists to save. The top prediction is always kept, mirroring the policy's own
   pin of the top-weighted expert.
+- **It speculates at most the top 2 predicted misses per layer, not the routing.** The stall a
+  prefetch can remove is head-of-line — the wait on the first missing expert's slices — and overlap
+  already hides the tail behind the expert matmul. Speculating a full top-8 was measured to read 33%
+  more flash per token and to fight a full cache hard enough to triple major faults, costing several
+  times the stall it removed. Predicted experts already resident do not burn a slot of the cap.
 
 Byte-identity is the same contract as the temporal prefetch (gate `G10`): speculation only warms the
 cache, so output is unchanged — except under `--drop-cold-experts`, where residency is an input to
