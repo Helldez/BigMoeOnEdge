@@ -94,3 +94,10 @@ expert cache at 4000 MiB, 4 I/O lanes and 4 compute threads, decode settles arou
 sweep point from the benchmark protocol, not the app default: the app ships a fixed 2000 MiB
 expert cache. See `../../docs/benchmark-method.md` for the full procedure and the cache/thread
 sweep.
+
+The Streaming section also exposes the **predictive prefetch** (experimental, off by default):
+the engine predicts each layer's experts one layer early and reads ahead / retains what the
+prediction names (`--predict-prefetch`, with "predicted misses to read ahead" mapping to
+`--predict-spec-max`; 0 = retention only). It needs the cache on and replaces the temporal
+prefetch — the two are mutually exclusive. Its throughput is **not yet proven** on device; see
+`../../docs/expert-prediction.md` for the measured state before drawing conclusions from a run.
