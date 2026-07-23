@@ -424,6 +424,21 @@ void RouterHook::predict_issue_prefetch(int nl) {
     } else {
         spec_ids_.assign(pred.begin(), pred.begin() + nu);
     }
+
+    // Keep only the top predict_spec_max predicted MISSES. The stall a prefetch can remove is
+    // head-of-line — the per-expert wait on the first slices to land — and the tail is already
+    // hidden by overlapping reads with the expert matmul, so speculating the whole routing buys
+    // little stall while paying for every byte. Measured: speculating all of it read 33% more
+    // flash per token and its vm commits fought a full cache hard enough to triple major faults,
+    // costing far more than the stall it removed. Misses only, because a predicted expert that is
+    // already resident needs nothing and would only burn a slot of the cap.
+    pred_res_.assign(spec_ids_.size(), (uint8_t) 0);
+    source_->query_residency(nl, spec_ids_.data(), (int) spec_ids_.size(), pred_res_.data());
+    size_t w = 0;
+    for (size_t i = 0; i < spec_ids_.size() && w < (size_t) predict_spec_max; ++i)
+        if (pred_res_[i] == route_miss) spec_ids_[w++] = spec_ids_[i];
+    spec_ids_.resize(w);
+
     if (!spec_ids_.empty()) source_->prefetch(nl, spec_ids_.data(), (int) spec_ids_.size());
 }
 

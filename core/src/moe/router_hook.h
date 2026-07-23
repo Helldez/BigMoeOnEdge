@@ -234,6 +234,13 @@ private:
     int nu_hint_ = 0;
     std::vector<int32_t> spec_ids_; // scratch: the filtered prediction handed to prefetch()
     std::vector<float> spec_w_;     // scratch: softmax over the predicted top-k's raw scores
+    std::vector<uint8_t> pred_res_; // scratch: residency of the prediction being filtered
+
+    // How many predicted misses a layer may speculate. 2 covers the head-of-line stall (the only
+    // stall overlap leaves) at a quarter of the bytes of speculating a full top-8 routing; see
+    // predict_issue_prefetch for the measurement that set it. A candidate for a flag if the A/B
+    // says the mechanism earns one.
+    static constexpr int predict_spec_max = 2;
 
     bool predict_on() const { return predict_log_ || predict_prefetch_; }
     void predict_reset();
