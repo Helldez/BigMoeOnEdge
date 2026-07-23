@@ -9,6 +9,7 @@
 #include "bmoe/config.h"
 
 #include <cstdio>
+#include <limits>
 #include <string>
 
 using namespace bmoe;
@@ -163,6 +164,10 @@ int main() {
         expect_fail("a threshold above the uniform share is rejected", c);
         c.moe.drop_cold_frac = -0.1f;
         expect_fail("a negative threshold is rejected", c);
+        // NaN compares false against everything, so a plain min/max pair would wave it through —
+        // and it would also skip the cache_on requirement above for the same reason.
+        c.moe.drop_cold_frac = std::numeric_limits<float>::quiet_NaN();
+        expect_fail("a NaN threshold is rejected", c);
     }
 
     if (failures == 0) {

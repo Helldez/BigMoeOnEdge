@@ -91,7 +91,9 @@ ValidationResult validate(const RunConfig & cfg) {
                         "degenerates into an unconditional weight cut — which is what n_expert_used already "
                         "does, without pretending to consult residency.");
         }
-        if (m.drop_cold_frac < 0.0f || m.drop_cold_frac > 1.0f) {
+        // Written as a negated inclusive range so NaN (every comparison false) is rejected too,
+        // instead of slipping past both this check and the cache_on one above.
+        if (!(m.drop_cold_frac >= 0.0f && m.drop_cold_frac <= 1.0f)) {
             return fail("moe.drop_cold_frac must be in [0, 1] (0 = off). Above 1.0 the threshold can "
                         "exceed the largest weight in a routing, which would discard every expert of a "
                         "layer; 1.0 is the uniform share 1/n_expert_used and the useful maximum.");
