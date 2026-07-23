@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.15.1] - 2026-07-23
+
+### Added
+- **A warning when cache-aware dropping meets a narrow routing.** The threshold is a fraction of the
+  uniform share `1/top-k`, so `--drop-cold-experts 0.75` means "skip below 9.4% of the routing" at
+  top-k 8 — where every number in 0.15.0 was measured — but "below 18.8%" at top-k 4 and "below
+  37.5%" at top-k 2, where a miss discards the whole minority expert. The engine now says so once at
+  load when the effective top-k is 4 or fewer, quoting the real share for the model in hand, and the
+  app shows the same caveat inline under the setting. **gpt-oss is the case this exists for**: it
+  routes 4 of 128, and the app default is 75%, so 0.15.0 shipped that combination with nothing
+  saying it was outside the measured range.
+  It warns rather than clamping: the engine cannot know whether the trade is acceptable for a given
+  model, and silently adjusting a number the caller chose would be worse than a loud caveat.
+- `BMOE_READY` gains `n_expert_used`, the effective routing width after any override (0 on a non-MoE
+  model), so a UI can interpret the setting at all; `Session::n_expert_used()` exposes the same to
+  embedders. Additive — older consumers ignore it.
+
+### Fixed
+- The 0.15.0 entry for the app default still called the quality cost unquantified, contradicting the
+  GSM8K result recorded in the same section. Corrected in place.
+
 ## [0.15.0] - 2026-07-23
 
 ### Added
@@ -27,9 +48,9 @@ Semantic Versioning.
   actually traded. New CLI summary line `moe-drop:`.
 - Example app: **Speed / quality → Drop cold experts** (off / 50% / 75% / 100% of the uniform
   share), **defaulting to 75%**, disabled in mmap mode and with the cache off. 75% rather than 100%
-  takes the larger part of the win for half the discarded routings, which is the defensible choice
-  while the quality cost is unquantified. The CLI keeps defaulting to off — the byte-identity gates
-  need a deterministic default.
+  takes the larger part of the win for half the discarded routings — the conservative end of a
+  measured range (see the GSM8K check below). The CLI keeps defaulting to off — the byte-identity
+  gates need a deterministic default.
 - Gates **G8a/G8a'/G8b/G8c**: a threshold below any producible weight leaves the output
   byte-identical to the undropped stream (the deferred load and the learned terminal weight node are
   transparent) and is asserted to have examined routings while dropping none; at full strength
