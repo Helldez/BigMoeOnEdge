@@ -115,6 +115,23 @@ The flag fixes a *threshold*, not a rate: how much is actually discarded depends
 held, so this line — not the flag — is what a run traded. See
 [expert-dropping.md](expert-dropping.md).
 
+With `--predict-log` two `moe-predict:` lines and a per-layer table are added:
+
+```
+moe-predict: stale-gate <pct>% of routed slots (<pct>% whole routings) | prev-token <pct>% (<pct>%) | fresh-gate control <pct>% (<pct>%)
+moe-predict: scored — stale-gate <rows> routings/<slots> slots, prev-token <rows>/<slots>, control <rows>/<slots>; <n> routings the stale-gate could not rank
+  layer   stale    prev   ctrl   routings
+```
+
+Three predictors scored against the routing the router actually produced, so they are comparable on
+one run: `stale` runs the next layer's router a layer early, `prev` is the previous-token bet
+`--prefetch` makes, and `ctrl` is the same arithmetic with no staleness — a control that should read
+100%, not a predictor. Read the first two against `ctrl`. Denominators differ per predictor and are
+printed separately, because the stale gate structurally cannot rank layer 0 or the first token; a
+predictor with no routings at a layer prints `-`, never `0.0`. The probe changes nothing that is
+read, but it costs a barrier and two GEMVs per layer, so a probed run is not a benchmark run. See
+[expert-prediction.md](expert-prediction.md).
+
 Under `--overlap` the `moe-stream:` line additionally reports `stall_s/tok=<s>` — the mean
 wall time per token that compute threads waited for expert reads to complete. It is `0` in
 serial mode (where the read wait is already folded into decode time).

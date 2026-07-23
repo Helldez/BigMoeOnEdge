@@ -19,11 +19,17 @@
 // router weighted them, and whether they were already resident. It observes only — the ids
 // handed to load_layer are the same traced or not — but it costs a barrier per weight node,
 // so it stays off unless asked for. See bmoe/route_trace.h.
+//
+// And an optional fourth (set_predict_log): the expert-prediction probe, which asks for each
+// layer's gate matmul so it can rank the NEXT layer's experts before that layer runs, and reports
+// how often the ranking was right. It decides nothing — it exists to price a predictor before one
+// is wired into the loading path. See bmoe/predict_stats.h.
 #pragma once
 
 #include "bmoe/recipe.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
+#include "bmoe/predict_stats.h"
 #include "expert_stream_source.h"
 
 #include <chrono>
@@ -66,6 +72,29 @@ public:
     // experts the previous token used at layers l+1..l+K. 0 (default) disables it.
     void set_prefetch_layers(int k) { prefetch_layers_ = k; }
 
+    // ── expert-prediction accuracy probe (diagnostics; see bmoe/predict_stats.h) ──────
+    // Measures, without changing a byte of what gets loaded, how well the next layer's routing can
+    // be guessed before that layer runs. Three predictors are scored against the routing the
+    // router actually produced:
+    //
+    //   stale-gate  layer l's gate INPUT run through layer l+1's gate matrix. The residual stream
+    //               moves little between layers, so the stale input ranks l+1's experts nearly as
+    //               the real one will — a full layer earlier. Costs one GEMV per layer; needs no
+    //               training and no model change.
+    //   prev-token  what the PREVIOUS token routed at this layer: the predictor --prefetch already
+    //               bets on, scored here so the two are comparable on the same run.
+    //   fresh-gate  the layer's own matrix on its own gate input: the stale predictor with the
+    //               staleness taken out, sharing its every line of code. A control, not a
+    //               predictor — it must reproduce the routing the graph computes from those same
+    //               two tensors, so anything it misses is this probe being wrong (a GEMV that
+    //               disagrees with llama.cpp's, or a selection the architecture does not make by
+    //               raw-logit ranking: an additive bias, group-limited routing). Read the other
+    //               two against it: a fresh-gate below 100% caps what the stale one could show.
+    //
+    // Decode only, last token of the batch. Off by default: it isolates one extra node per MoE
+    // layer and does a per-layer GEMV on the eval thread, so a probed run is not a benchmark run.
+    void set_predict_log(bool on);
+
     // ── route trace (diagnostics; see bmoe/route_trace.h) ────────────────────────────
     // When on, the hook additionally asks for each layer's router-weight node and records one
     // RouteTraceRow per routed expert. Rows buffer in RAM — the callback runs on a compute
@@ -88,6 +117,19 @@ public:
 
     long long experts_routed() const { return experts_routed_; }
     long long experts_dropped() const { return experts_dropped_; }
+
+    // Prediction accuracy, aggregate and per layer (index = layer). Empty/zero unless the probe
+    // was armed. `predict_unscored` counts routings the probe had to skip: the first token, whose
+    // layers have not yet seen the next layer's gate matrix, plus any layer whose gate or hidden
+    // state is a dtype the probe does not read. It is reported rather than folded into the
+    // denominator — a skipped routing is not a wrong guess.
+    const PredictorStats & predict_stale() const { return agg_stale_; }
+    const PredictorStats & predict_prev() const { return agg_prev_; }
+    const PredictorStats & predict_self() const { return agg_self_; }
+    const std::vector<PredictorStats> & predict_stale_by_layer() const { return ps_stale_; }
+    const std::vector<PredictorStats> & predict_prev_by_layer() const { return ps_prev_; }
+    const std::vector<PredictorStats> & predict_self_by_layer() const { return ps_self_; }
+    long long predict_unscored() const { return predict_unscored_; }
 
     // ── compute trace (diagnostics; see bmoe/decode_trace.h) ────────────────────────
     // When on, the hook asks for EVERY node, which makes ggml compute and synchronize each one
@@ -159,6 +201,33 @@ private:
     // during prefill). Empty when prefetch is off or a layer has not been seen yet.
     int prefetch_layers_ = 0;
     std::vector<std::vector<int32_t>> prev_ids_;
+
+    // Prediction probe. All of this is inert unless predict_log_.
+    //
+    // gate_w_ is learned from the graph rather than looked up by name: the gate matmul's first
+    // source IS the router matrix, whatever the architecture calls its tensor. It is a weight LEAF,
+    // so unlike a graph intermediate the pointer stays valid across graphs — which is what lets
+    // layer l predict for layer l+1 using a matrix layer l+1 has not reached yet this token.
+    bool predict_log_ = false;
+    std::vector<ggml_tensor *> gate_w_;
+    std::vector<std::vector<int32_t>> pred_stale_; // per layer, ranked at the PREVIOUS layer
+    std::vector<std::vector<int32_t>> pred_self_;  // per layer, ranked from its own logits
+    std::vector<PredictorStats> ps_stale_, ps_prev_, ps_self_;
+    PredictorStats agg_stale_, agg_prev_, agg_self_;
+    long long predict_unscored_ = 0;
+    std::vector<float> pred_scores_; // scratch: one score per expert
+    std::vector<float> pred_row_;    // scratch: one activation row, as float
+
+    // Rank the top `k` of `scores` into `out`, and score a prediction against a routing.
+    static void rank_top_k(const std::vector<float> & scores, int k, std::vector<int32_t> & out);
+    static void score_prediction(
+        const std::vector<int32_t> & pred, const int32_t * actual, int k, PredictorStats & layer, PredictorStats & agg);
+    void predict_at_logits(ggml_tensor * logits, int il);
+    void score_layer(int il, const int32_t * actual, int nu);
+
+    // The probe's maximum prediction width. A routing wider than this would be scored against a
+    // truncated prediction and read as a miss it never was, so the probe declines it instead.
+    static constexpr int predict_max_k = 32;
 
     // Cache-aware dropping. Inert unless drop_frac_ > 0.
     //
