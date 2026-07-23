@@ -123,6 +123,19 @@ struct MoeStreamConfig {
     // compute-bound, so there is little to win.
     bool drop_prefill = false;
 
+    // Diagnostics: measure how predictable the routing is, without acting on it. For every decoded
+    // token the engine ranks each layer's experts a layer early — running the NEXT layer's gate
+    // matrix on the CURRENT layer's gate input, which the residual stream keeps nearly unchanged —
+    // and reports what fraction of the routing that would have had in flight. Scored alongside it:
+    // the previous-token bet --prefetch already makes, and a zero-staleness control that says how
+    // much of any gap is the ranking's own approximation rather than the staleness.
+    //
+    // Nothing it computes reaches the loading path: a probed run reads exactly the bytes an
+    // unprobed one does. It is not free, though — one isolated node and one gate GEMV per MoE layer
+    // per token, on the eval thread — so a probed run is not a benchmark run. Requires streaming.
+    // See docs/expert-prediction.md.
+    bool predict_log = false;
+
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
     // overlap compute) but makes speculative integration deterministic, so the byte-identity

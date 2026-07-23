@@ -49,6 +49,14 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("moe.overlap requires moe.enabled");
     }
 
+    // The probe rides on the routing nodes the streamer already isolates. Off the streaming path
+    // there is nothing for it to attach to — and nothing to learn either: routing does not depend
+    // on how the weights got into memory, so a dense run would only reproduce the same numbers
+    // more slowly.
+    if (cfg.moe.predict_log && !cfg.moe.enabled) {
+        return fail("moe.predict_log requires moe.enabled");
+    }
+
     if (cfg.moe.enabled) {
         const MoeStreamConfig & m = cfg.moe;
         if (m.io_threads < 1 || m.io_threads > MoeStreamConfig::io_threads_max) {

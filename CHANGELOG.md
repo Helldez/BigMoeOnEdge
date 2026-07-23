@@ -20,6 +20,24 @@ Semantic Versioning.
 - `BMOE_READY` gains `n_expert_used`, the effective routing width after any override (0 on a non-MoE
   model), so a UI can interpret the setting at all; `Session::n_expert_used()` exposes the same to
   embedders. Additive — older consumers ignore it.
+- **`--predict-log` — measure how predictable the routing is, without acting on it.** For every
+  decoded token the engine ranks each layer's experts a layer early, by running the **next** layer's
+  router matrix on the **current** layer's gate input — the residual stream barely moves between
+  layers, so the stale input ranks nearly as the real one will. It reports what fraction of each
+  routing that would have had in flight, scored against the previous-token bet
+  [`--prefetch`](docs/prefetch.md) already makes, per layer and in aggregate. Training-free and
+  model-unchanged: the router matrix is a dense weight already resident, and the prediction is one
+  GEMV.
+  Alongside both it prints a **zero-staleness control** — the same row read, GEMV and ranking on the
+  layer's own matrix — which must reproduce the routing llama.cpp computes from those same tensors.
+  A control below 100% means the probe is wrong, or the architecture does not select by raw-logit
+  ranking; either way it caps what the measurement could show, and the CLI says so rather than
+  letting the gap be blamed on staleness. The byte-identity gates cover both halves (`G9`).
+  Diagnostics only: nothing it computes reaches the loading path, so a probed run reads exactly the
+  bytes an unprobed one does — but it costs a barrier and two GEMVs per layer, so it is not a
+  benchmark run. Requires `--moe-stream`. See
+  [docs/expert-prediction.md](docs/expert-prediction.md), which also states why a *good* score still
+  would not imply a faster decode on a flash that is already saturated.
 
 ### Fixed
 - The 0.15.0 entry for the app default still called the quality cost unquantified, contradicting the

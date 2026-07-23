@@ -375,6 +375,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.hook = std::make_unique<RouterHook>(recipe ? *recipe : MoeRecipe{}, im.n_layer);
     im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
+    im.hook->set_predict_log(cfg.moe.predict_log);
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
@@ -972,6 +973,17 @@ RunResult Session::generate(const GenerateRequest & req,
     }
     s.experts_routed = im.hook->experts_routed() - prev_routed;
     s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
+    if (moe.predict_log) {
+        // Session totals, not a per-generation delta: these are an accuracy estimate, and every
+        // turn's routings are equally valid samples of it. See RunSummary.
+        s.predict_stale = im.hook->predict_stale();
+        s.predict_prev = im.hook->predict_prev();
+        s.predict_self = im.hook->predict_self();
+        s.predict_stale_by_layer = im.hook->predict_stale_by_layer();
+        s.predict_prev_by_layer = im.hook->predict_prev_by_layer();
+        s.predict_self_by_layer = im.hook->predict_self_by_layer();
+        s.predict_unscored = im.hook->predict_unscored();
+    }
     if (sink) sink->on_summary(s);
 
     {
