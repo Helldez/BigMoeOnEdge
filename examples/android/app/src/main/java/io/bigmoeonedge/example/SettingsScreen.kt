@@ -119,12 +119,40 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 IntSetting(
                     "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
                     format = { if (it == 0) "off" else "$it" },
-                    enabled = stream && cacheOn,
+                    // Mutually exclusive with predictive prefetch: two predictors would speculate
+                    // the same future twice, and the engine refuses the pair.
+                    enabled = stream && cacheOn && !current.predictPrefetch,
                 ) { onChange(current.copy(prefetchLayers = it)) }
                 Text(
                     "Experimental. Prefetch the next K layers' likely experts on idle read lanes. Needs the cache on.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                SwitchRow(
+                    "Predictive prefetch (experimental)",
+                    "Predict each layer's experts one layer early by running the next router on the " +
+                        "current activations, then read ahead and keep what the prediction names. " +
+                        "Needs the cache; replaces temporal prefetch.",
+                    current.predictPrefetch, enabled = stream && cacheOn && current.prefetchLayers == 0,
+                ) { onChange(current.copy(predictPrefetch = it)) }
+                if (current.predictPrefetch) {
+                    IntSetting(
+                        "Predicted misses to read ahead", AppSettings.PREDICT_SPEC_CHOICES, current.predictSpecMax,
+                        format = {
+                            when (it) {
+                                0 -> "0 — retention only"
+                                2 -> "2 — default"
+                                else -> "$it"
+                            }
+                        },
+                        enabled = stream && cacheOn,
+                    ) { onChange(current.copy(predictSpecMax = it)) }
+                    Text(
+                        "How much flash the prediction may spend per layer. 0 reads nothing ahead and only " +
+                            "protects predicted experts already in RAM from eviction. Under measurement — " +
+                            "throughput not yet proven; the per-run summary lines are the evidence.",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             Section("Speed / quality") {

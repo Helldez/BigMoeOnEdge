@@ -34,6 +34,14 @@ data class AppSettings(
     val overlap: Boolean = true,        // read the next experts while the current layer computes
     val denseWeights: DenseWeights = DenseWeights.ANON, // dense (non-expert) weight residency policy
     val prefetchLayers: Int = 0,        // temporal prefetch depth K (0 = off); needs the cache
+    // Predictive prefetch (experimental): run the NEXT layer's router on the current layer's
+    // input and speculate/retain on that prediction instead of the previous token's routing.
+    // Needs the cache; the engine rejects it combined with the temporal prefetch above, so
+    // sessionArgv only emits it when prefetchLayers == 0.
+    val predictPrefetch: Boolean = false,
+    // How many predicted MISSES per layer it may read ahead (0 = retention only: the prediction
+    // spends no flash and only protects predicted residents from eviction).
+    val predictSpecMax: Int = 2,
     // Cache-aware expert dropping, as a PERCENTAGE of the uniform share 1/top-k (0 = off, 100 = the
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
@@ -93,6 +101,13 @@ data class AppSettings(
             // Auto sizing is a live LRU cache, so it satisfies the prefetch cache requirement.
             val cacheOn = cacheMb == CACHE_AUTO || cacheMb > 0
             if (prefetchLayers > 0 && cacheOn) a += listOf("--prefetch", prefetchLayers.toString())
+            // Predictive prefetch shares the cache requirement and excludes the temporal one —
+            // two predictors would double-speculate the same future, and the engine refuses the
+            // pair. Temporal wins when both are somehow set; the UI keeps them exclusive anyway.
+            if (predictPrefetch && cacheOn && prefetchLayers == 0) {
+                a += "--predict-prefetch"
+                a += listOf("--predict-spec-max", predictSpecMax.toString())
+            }
             // Cache-aware dropping needs a live cache to ask about residency — with the cache off
             // every expert reads as a miss and the engine rejects the combination outright, so the
             // same cacheOn condition that guards prefetch guards this. The engine takes a fraction
@@ -110,7 +125,7 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, oDirect,
-               overlap, denseWeights, prefetchLayers, dropColdPct)
+               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -123,6 +138,8 @@ data class AppSettings(
             .putBoolean("overlap", overlap)
             .putString("denseWeights", denseWeights.name)
             .putInt("prefetchLayers", prefetchLayers)
+            .putBoolean("predictPrefetch", predictPrefetch)
+            .putInt("predictSpecMax", predictSpecMax)
             .putInt("dropColdPct", dropColdPct)
             .putBoolean("thinking", thinking)
             .putBoolean("metricsCsv", metricsCsv)
@@ -188,6 +205,9 @@ data class AppSettings(
         // 0 = model default (top-k as trained). 6/4/3/2 trade output quality for tok/s (fewer routed experts).
         val N_EXPERT_CHOICES = intArrayOf(0, 6, 4, 3, 2)
         val PREFETCH_CHOICES = intArrayOf(0, 1, 2, 4)
+        // Speculated predicted misses per layer. 0 = retention only (zero flash spent); 2 is the
+        // engine default; anything above it re-buys the measured full-speculation pathology.
+        val PREDICT_SPEC_CHOICES = intArrayOf(0, 1, 2, 4)
         // Percent of the uniform share 1/top-k. 100 is the share itself and the useful maximum:
         // above it the threshold could exceed every weight in a routing. The rungs below it are the
         // conservative half of the curve, where the replay already beats a top-k cut on both axes.
@@ -220,6 +240,8 @@ data class AppSettings(
                     }
                 },
                 prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
+                predictPrefetch = p.getBoolean("predictPrefetch", d.predictPrefetch),
+                predictSpecMax = p.getInt("predictSpecMax", d.predictSpecMax),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
                 thinking = p.getBoolean("thinking", d.thinking),
                 metricsCsv = p.getBoolean("metricsCsv", d.metricsCsv),

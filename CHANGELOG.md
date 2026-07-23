@@ -56,7 +56,10 @@ Semantic Versioning.
   a dedicated worker at an L+2 horizon (the probe's stale-2 column prices that staleness per
   model). Throughput verdict OPEN pending thermally matched A/B pairs — the first day's
   comparisons were invalidated by silent thermal capping (see docs/expert-prediction.md, which
-  also records the one matched pair measured: speculation on 8 io lanes loses −28%).
+  also records the one matched pair measured: speculation on 8 io lanes loses −28%). The example
+  app exposes it as an experimental toggle in the Streaming section (off by default, mutually
+  exclusive with the temporal-prefetch setting, spec-max rungs 0/1/2/4) so the matched pairs can
+  be run from the app itself.
 
 ### Fixed
 - The 0.15.0 entry for the app default still called the quality cost unquantified, contradicting the
