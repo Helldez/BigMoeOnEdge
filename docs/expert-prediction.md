@@ -1,5 +1,34 @@
 # Expert prediction: measuring it before building it
 
+> **Measured, 2026-07-23 — accuracy confirmed, throughput verdict OPEN, and a thermal lesson that
+> invalidated half a day of comparisons.** On device, the stale-gate predictor scores **88.6%** of
+> routed slots on Qwen3-30B (48 layers, top-8 of 128) and **80.7%** on Qwen3.6-35B (top-8 of 256),
+> with the zero-staleness control at exactly **100.0%** on every layer of both — Qwen selects by
+> pure logit ranking, so these numbers need no discount. The previous-token predictor scored 43.3% /
+> 35.4% on the same runs, corroborating the offline route-trace estimates.
+>
+> Acting on the prediction (`--predict-prefetch`) was then measured across the whole cost spectrum
+> against a drop-0.75 + pinned-dense baseline ("B", 6.54 tok/s cool): full-routing speculation
+> **4.02** (−38%: +33% flash bytes, major faults ×3), top-2-miss cap **4.46**, the rebuilt
+> implementation (native-F16 GEMV ~40× faster, no barrier + self-validating watchdog, worker at an
+> L+2 horizon, retention of predicted residents) **5.30**, retention-only (zero extra bytes)
+> **5.44**. Every variant improved its intermediate metrics — hit rate up, stall down to 9-22 ms,
+> 77-86% of speculations useful — while the wall clock stayed behind.
+>
+> **But those deltas are contaminated:** re-running B itself at the end of the day, on a device
+> that had heated through the whole campaign (mid cores silently capped ~8%), gave **3.93 tok/s
+> with byte-for-byte identical I/O, hit rate and drop counts** — the engine is deterministic; the
+> −40% was throttling. Each C variant ran on a progressively hotter device against the cool-morning
+> 6.54, so the pairwise conclusions do not stand. The one thermally matched pair of the day —
+> B-hot 3.93 vs prefetch on EIGHT io lanes 2.83 (−28%, effective flash bandwidth collapsing from
+> 585 to 392 MiB/s) — kills the more-lanes hypothesis specifically, consistent with the measured
+> lane ceiling, but the spec-max 2 and retention-only configurations still owe a matched cool-pair
+> A/B before any verdict. Two structural facts did survive the day: the observer tax was 109
+> ms/token before the rebuild (~35-45 ms per GEMV pass from a per-element exported-function
+> conversion — 21M calls/token — plus ~20 ms of barrier), and retention moved the hit rate by 0.1pp
+> on a 3000 MiB cache, confirming offline replay: at that size, eviction order within a two-layer
+> horizon is irrelevant.
+
 `--predict-log` answers one question and refuses to answer any other: **how much of a layer's
 routing could be known before that layer runs?** It predicts, scores itself against what the router
 actually chose, and prints the result. Nothing it computes reaches the loading path — a probed run

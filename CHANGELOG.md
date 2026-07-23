@@ -48,7 +48,15 @@ Semantic Versioning.
   reading them ahead spends the I/O the policy exists to save). Mutually exclusive with
   `--prefetch`; needs the LRU cache; byte-identical like the temporal prefetch (gate `G10`), with
   the same documented exception under dropping, where a correct guess un-drops an expert and buys
-  quality rather than speed. Off by default, pending an on-device A/B.
+  quality rather than speed. Off by default. `--predict-spec-max N` bounds how much flash the
+  prediction may spend per layer (0 = retention-only: predicted residents are LRU-protected via the
+  new `IExpertSource::retain`, and nothing is read ahead). Rebuilt once already around its measured
+  costs — native-F16 GEMV on aarch64 (~40× over a per-element exported-function conversion),
+  barrier-less gate-input capture guarded by a sampled self-validating watchdog, prediction GEMV on
+  a dedicated worker at an L+2 horizon (the probe's stale-2 column prices that staleness per
+  model). Throughput verdict OPEN pending thermally matched A/B pairs — the first day's
+  comparisons were invalidated by silent thermal capping (see docs/expert-prediction.md, which
+  also records the one matched pair measured: speculation on 8 io lanes loses −28%).
 
 ### Fixed
 - The 0.15.0 entry for the app default still called the quality cost unquantified, contradicting the
