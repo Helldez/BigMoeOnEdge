@@ -406,6 +406,10 @@ static void print_predict_report(const RunSummary & s) {
                 " | fresh-gate control %.1f%% (%.1f%%)\n",
                 100.0 * st.hit_frac(), 100.0 * st.exact_frac(), 100.0 * pv.hit_frac(), 100.0 * pv.exact_frac(),
                 100.0 * sf.hit_frac(), 100.0 * sf.exact_frac());
+    // The two-layer horizon, aggregate only: the staleness --predict-prefetch actually runs at.
+    if (s.predict_stale2.rows > 0)
+        std::printf("moe-predict: stale-2 (two layers early) %.1f%% of routed slots (%.1f%% whole routings)\n",
+                    100.0 * s.predict_stale2.hit_frac(), 100.0 * s.predict_stale2.exact_frac());
     // Per predictor, because their denominators genuinely differ: the stale one cannot speak for
     // layer 0 (nothing precedes it) nor for the first token of a run, and quoting one row count for
     // all three would misread those structural gaps as agreement.

@@ -72,6 +72,7 @@ public:
     // IExpertSource
     bool load_layer(int il, const int32_t * ids, int n_ids) override;
     void prefetch(int il, const int32_t * ids, int n_ids) override;
+    void retain(int il, const int32_t * ids, int n_ids) override;
     void settle_spec() override;
     void query_residency(int il, const int32_t * ids, int n_ids, uint8_t * out) const override;
     uint64_t expert_bytes(int il) const override;

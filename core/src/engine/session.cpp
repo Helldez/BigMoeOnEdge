@@ -979,6 +979,7 @@ RunResult Session::generate(const GenerateRequest & req,
         // Session totals, not a per-generation delta: these are an accuracy estimate, and every
         // turn's routings are equally valid samples of it. See RunSummary.
         s.predict_stale = im.hook->predict_stale();
+        s.predict_stale2 = im.hook->predict_stale2();
         s.predict_prev = im.hook->predict_prev();
         s.predict_self = im.hook->predict_self();
         s.predict_stale_by_layer = im.hook->predict_stale_by_layer();

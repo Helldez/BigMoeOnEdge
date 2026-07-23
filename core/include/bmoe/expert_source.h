@@ -34,6 +34,15 @@ public:
     // changes what load_layer produces. Default: no-op (a source without a speculative path).
     virtual void prefetch(int /*il*/, const int32_t * /*ids*/, int /*n_ids*/) {}
 
+    // Mark layer `il`'s already-resident `ids` as recently valuable, so an eviction pass prefers
+    // other entries. The retention half of a prediction: an expert the next layer will very likely
+    // route is worth keeping even if it has not been touched for a while, and protecting it costs
+    // zero bytes — unlike prefetching it, which pays flash for the same insurance. Ids not resident
+    // are ignored (retaining what is absent would mean reading it, which is prefetch's job).
+    // Advisory and eval-thread only, like every other LRU mutation. Default: no cache, nothing to
+    // retain.
+    virtual void retain(int /*il*/, const int32_t * /*ids*/, int /*n_ids*/) {}
+
     // ── route-trace support (diagnostics only; see bmoe/route_trace.h) ──────────────────
     // These let a tracer describe what a routing COST without changing what it does. All three
     // are eval-thread only, and meaningful only between the routing node and load_layer().
