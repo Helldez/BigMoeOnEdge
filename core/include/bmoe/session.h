@@ -118,6 +118,11 @@ public:
     const std::string & arch() const; // model architecture ("qwen3moe", "gemma4", …)
     int n_ctx() const;
 
+    // Experts this model actually routes per token, after any n_expert_used override — the width a
+    // caller needs to interpret MoeStreamConfig::drop_cold_frac, whose threshold is a fraction of
+    // 1/top-k. 0 when the model is not MoE or the count could not be read.
+    int n_expert_used() const;
+
     // Which thinking-off mechanism this model supports (probed at open()). Report it to the user
     // rather than leaving a Thinking toggle that silently does nothing. Always Template when chat
     // mode is off, where no template is rendered and the question does not arise.

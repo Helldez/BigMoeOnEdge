@@ -206,9 +206,13 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
     }
     // think_ctl states, once, whether this model can honour a think=false request at all, so a UI
     // can disable its Thinking control instead of leaving one that silently does nothing (#82).
-    std::printf("BMOE_READY {\"load_s\":%.3f,\"arch\":\"%s\",\"n_ctx\":%d,\"think_ctl\":\"%s\"}\n",
+    // n_expert_used is the EFFECTIVE routing width, after any override. A UI needs it to say
+    // anything sensible about --drop-cold-experts, whose threshold is a fraction of 1/top-k: the
+    // same percentage trims a tail at 8 and takes half the routing at 2. 0 on a non-MoE model.
+    std::printf("BMOE_READY {\"load_s\":%.3f,\"arch\":\"%s\",\"n_ctx\":%d,\"think_ctl\":\"%s\","
+                "\"n_expert_used\":%d}\n",
                 session->load_seconds(), json_escape(session->arch()).c_str(), session->n_ctx(),
-                bmoe::think_control_name(session->think_control()));
+                bmoe::think_control_name(session->think_control()), session->n_expert_used());
     std::fflush(stdout);
 
     std::mutex mtx;

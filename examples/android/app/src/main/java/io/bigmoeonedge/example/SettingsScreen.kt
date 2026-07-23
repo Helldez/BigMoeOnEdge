@@ -173,6 +173,20 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         "skipped depends on what the cache happened to hold.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // The threshold is a share of 1/top-k, so a narrow routing changes what the same
+                // percentage means: 75% is "below 9.4%" at eight experts but "below 18.8%" at four.
+                // Only shown once a model is loaded and reports its width — guessing would be worse
+                // than saying nothing.
+                val topk = ui.nExpertUsed
+                if (current.dropColdPct > 0 && topk != null && topk in 1..4) {
+                    Text(
+                        "⚠ This model routes only $topk experts per token, so ${current.dropColdPct}% here " +
+                            "means \"skip below ${"%.1f".format(current.dropColdPct.toDouble() / topk)}%\" — a much " +
+                            "bigger share of the reply than the 9.4% this setting was measured at (8 experts). " +
+                            "Check the answers, or turn it off for this model.",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
 
             Section("Compute") {

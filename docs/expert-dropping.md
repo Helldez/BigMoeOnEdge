@@ -98,6 +98,31 @@ prefetch exists for — treat the two as interacting, not composable.
 threshold discards ~42% of the weight mass instead of ~9%. Prefill is compute-bound anyway, so there
 is little to win. `--drop-in-prefill` arms it for experiments.
 
+## Narrow routings are a different regime, and the engine says so
+
+The threshold is a fraction of the uniform share `1/top-k`, so what it removes depends on how wide
+the routing is. At top-k 8 — where all the evidence here was collected — `F = 0.75` means "below
+9.4% of the routing", a tail trim. At top-k 4 the same `F` means "below 18.8%", and at top-k 2 it
+means "below 37.5%", which on a miss discards the entire minority expert. That is closer to halving
+the routing than to trimming it, and nothing in this document measured it.
+
+So the engine warns once at load when dropping is armed on a routing of four experts or fewer:
+
+```
+bmoe: WARNING drop-cold-experts=0.75 with top-k 2 — the threshold is 37.5% of the routing here,
+against 12.5% at the top-k 8 this was measured on. Expect it to discard much more, and check
+output quality on your own task.
+```
+
+It warns rather than clamping or refusing. The engine cannot know whether that trade is acceptable
+for a given model and task, and silently adjusting a number the caller chose would be worse than a
+loud caveat. `MoeStreamConfig::drop_low_topk_warn` is an **evidence** boundary, not a physical one:
+nothing in the streaming path reads it, it only decides whether the caller is told.
+
+The app shows the same warning inline under the setting, computed from the width the loaded model
+reports at `BMOE_READY` — and only once a model is loaded, since guessing would be worse than
+staying quiet. gpt-oss is the case to watch: it routes 4 of 128.
+
 ## The output is no longer reproducible
 
 This is the real novelty, and the reason the flag is off by default and named the way it is.

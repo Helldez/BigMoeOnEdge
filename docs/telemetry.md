@@ -279,7 +279,7 @@ Responses (stdout):
 
 ```
 BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>,
-            "think_ctl":"template|prefill|none"}                        # once, after the model loads
+            "think_ctl":"template|prefill|none","n_expert_used":<int>}  # once, after the model loads
 BMOE_BEGIN {"id":<int>}                                                # a generation started
 BMOE_LOAD / BMOE_PROGRESS ...                                          # per token, as above
 BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
@@ -290,6 +290,11 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "token_demand_mib":<float>,"reasoning":"<string>","text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
+
+`BMOE_READY`'s `n_expert_used` is the **effective** routing width, after any `--n-expert-used`
+override (`0` on a non-MoE model). A UI needs it to say anything sensible about
+[`--drop-cold-experts`](expert-dropping.md), whose threshold is a fraction of `1/top-k`: the same
+percentage trims a tail at 8 experts and takes half the routing at 2.
 
 `BMOE_READY`'s `think_ctl` states how a `"think":false` request can be honoured on the model that
 was just loaded, so a UI need not offer a control that does nothing. It is decided by rendering the
