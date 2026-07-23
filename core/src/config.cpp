@@ -101,6 +101,9 @@ ValidationResult validate(const RunConfig & cfg) {
                         "speculative reads land in the per-layer cache buffers, which do not exist "
                         "with the cache off.");
         }
+        if (m.predict_spec_max < 0 || m.predict_spec_max > 8) {
+            return fail("moe.predict_spec_max must be in [0, 8] (0 = retention only, no speculation)");
+        }
         if (m.predict_prefetch && m.prefetch_layers > 0) {
             return fail("moe.predict_prefetch and moe.prefetch_layers are mutually exclusive: they "
                         "are two predictors for the same speculative read lanes, and running both "

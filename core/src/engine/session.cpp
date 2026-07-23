@@ -376,7 +376,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
     im.hook->set_predict_log(cfg.moe.predict_log);
-    im.hook->set_predict_prefetch(cfg.moe.predict_prefetch);
+    im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;

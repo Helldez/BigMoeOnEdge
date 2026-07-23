@@ -156,6 +156,13 @@ struct MoeStreamConfig {
     // docs/expert-dropping.md).
     bool predict_prefetch = false;
 
+    // How many predicted MISSES per layer the predictive prefetch may speculate. The rest of the
+    // prediction still works at any value: predicted experts already resident are retained
+    // (LRU-protected) whatever this says, because that costs zero bytes. 0 is the retention-only
+    // mode — the prediction spends no flash at all and only protects; the measured sweet spot for
+    // speculation, if any, is small (the stall a prefetch can remove is head-of-line only).
+    int predict_spec_max = 2;
+
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
     // overlap compute) but makes speculative integration deterministic, so the byte-identity

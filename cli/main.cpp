@@ -378,10 +378,12 @@ static void print_usage(const char * argv0) {
         "                          input), scored against the previous-token bet --prefetch makes.\n"
         "                          Changes nothing that is read; costs a barrier and a GEMV per\n"
         "                          layer, so a probed run is not a benchmark run.\n"
-        "      --predict-prefetch  act on that prediction: speculatively read the next layer's\n"
-        "                          predicted experts on the idle lanes (needs the cache; excludes\n"
-        "                          --prefetch). Drop-aware: with --drop-cold-experts armed, experts\n"
+        "      --predict-prefetch  act on that prediction: speculatively read predicted expert\n"
+        "                          misses on the idle lanes and LRU-protect predicted residents\n"
+        "                          (needs the cache; excludes --prefetch). Drop-aware: experts\n"
         "                          predicted below the drop threshold are not speculated.\n"
+        "      --predict-spec-max N  speculated predicted misses per layer [0..8] (default 2;\n"
+        "                          0 = retention only, the prediction spends no flash at all)\n"
         "      --list-archs        print supported MoE architectures and exit\n"
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
@@ -566,6 +568,8 @@ int main(int argc, char ** argv) {
             cfg.moe.predict_log = true;
         else if (a == "--predict-prefetch")
             cfg.moe.predict_prefetch = true;
+        else if (a == "--predict-spec-max")
+            cfg.moe.predict_spec_max = std::atoi(next("--predict-spec-max"));
         else if (a == "--list-archs") {
             std::printf("supported MoE architectures:\n");
             for (int k = 0; k < n_moe_recipes(); ++k)

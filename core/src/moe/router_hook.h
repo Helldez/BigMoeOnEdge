@@ -106,7 +106,9 @@ public:
     // routing weight sits below the drop threshold is not speculated: if it misses, the policy
     // would discard it unread, so prefetching it buys nothing and costs the read. Independent of
     // set_predict_log (the probe adds scoring and the control on top of the same prediction).
-    void set_predict_prefetch(bool on);
+    // spec_max: how many predicted misses a layer may speculate (0 = retention only). Retention of
+    // predicted residents happens at every value — it costs zero bytes.
+    void set_predict_prefetch(bool on, int spec_max = 2);
 
     // ── route trace (diagnostics; see bmoe/route_trace.h) ────────────────────────────
     // When on, the hook additionally asks for each layer's router-weight node and records one
@@ -240,12 +242,7 @@ private:
     int nu_hint_ = 0;
     std::vector<int32_t> spec_ids_; // scratch: the filtered prediction handed to prefetch()
     std::vector<uint8_t> pred_res_; // scratch: residency of the prediction being filtered
-
-    // How many predicted misses a layer may speculate. 2 covers the head-of-line stall (the only
-    // stall overlap leaves) at a quarter of the bytes of speculating a full top-8 routing; see
-    // build_spec_lists for the measurement that set it. A candidate for a flag if the A/B says
-    // the mechanism earns one.
-    static constexpr int predict_spec_max = 2;
+    int pred_spec_max_ = 2;         // speculated predicted misses per layer (0 = retention only)
 
     // ── the prefetch's own prediction path (no barrier, GEMV off the eval thread) ─────
     //
@@ -271,6 +268,7 @@ private:
         int nl = 0; // layer the prediction is FOR
         int nu = 0;
         float drop_frac = 0.0f;
+        int spec_max = 2;
         const ggml_tensor * gate = nullptr; // layer nl's gate matrix, snapshotted with the job
         std::vector<float> row;             // the gate-input row, copied on the eval thread
         std::vector<uint8_t> resident;      // residency bitmap of layer nl, snapshotted on the eval thread
@@ -317,6 +315,7 @@ private:
     static void build_spec_lists(const std::vector<float> & scores,
                                  int nu,
                                  float drop_frac,
+                                 int spec_max,
                                  const std::vector<uint8_t> & resident,
                                  std::vector<int32_t> & spec,
                                  std::vector<int32_t> & keep);
