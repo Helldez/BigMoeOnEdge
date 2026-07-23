@@ -130,6 +130,13 @@ struct MoeStreamConfig {
     // on a fast host. Serial mode only. Never set in production.
     bool prefetch_sync = false;
 
+    // Top-k at or below which drop_cold_frac gets a warning. This is an EVIDENCE boundary, not a
+    // physical one: the policy is measured at top-k 8, where the uniform share is 12.5% and the
+    // threshold trims a long tail. At top-k 4 that share is 25% and at top-k 2 it is 50%, so the
+    // same fraction removes a far larger part of the routing — a different regime, unmeasured.
+    // Nothing in the streaming path reads this; it only decides whether the caller is told.
+    static constexpr int drop_low_topk_warn = 4;
+
     static constexpr int cache_min_mb = 1500; // smallest non-pathological cache (see above)
     static constexpr int io_threads_max = 8;
     static constexpr int prefetch_layers_max = 8;

@@ -60,6 +60,17 @@ Semantic Versioning.
   collapse, not a subtle cost. Harness, per-question replies and grading rule:
   [docs/bench-data/2026-07-22-drop-quality/](docs/bench-data/2026-07-22-drop-quality/findings.md).
 
+- **A warning when dropping meets a narrow routing.** The threshold is a fraction of the uniform
+  share `1/top-k`, so `0.75` means "below 9.4% of the routing" at top-k 8 but "below 37.5%" at
+  top-k 2 — a regime nothing here has measured. The engine now says so once at load when the
+  effective top-k is 4 or fewer, and the app shows the same caveat inline under the setting. It
+  warns rather than clamping: the engine cannot know whether the trade is acceptable for a given
+  model, and silently adjusting a number the caller chose would be worse than a loud caveat.
+  gpt-oss is the case to watch — it routes 4 of 128.
+- `BMOE_READY` gains `n_expert_used`, the effective routing width after any override (0 on a
+  non-MoE model), so a UI can interpret the setting at all. Additive; older consumers ignore it.
+  `Session::n_expert_used()` exposes the same value to embedders.
+
 ### Changed
 - With the policy armed, `load_layer()` moves from the topk node to the terminal node of the layer's
   weight chain — the decision needs the final router weights. Which node that is depends on the

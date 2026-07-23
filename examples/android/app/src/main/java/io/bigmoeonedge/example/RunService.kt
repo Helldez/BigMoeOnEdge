@@ -202,7 +202,8 @@ class RunService : Service() {
         when {
             t.startsWith("BMOE_READY ") -> {
                 val ctl = Regex(""""think_ctl":"([a-z_]+)"""").find(t)?.groupValues?.get(1)
-                RunBus.update { it.copy(state = EngineState.READY, thinkControl = ctl) }
+                val topk = Regex(""""n_expert_used":(\d+)""").find(t)?.groupValues?.get(1)?.toIntOrNull()
+                RunBus.update { it.copy(state = EngineState.READY, thinkControl = ctl, nExpertUsed = topk) }
                 main.post { notify("Model ready") }
                 pending?.let { p -> pending = null; sendGenerate(p) } ?: scheduleIdleUnload()
             }

@@ -35,6 +35,10 @@ data class UiState(
     // in the prompt), or "none" (neither — the model always reasons, and the switch is hidden rather
     // than left there doing nothing). Null until a session reports it. See docs/telemetry.md.
     val thinkControl: String? = null,
+    // Experts the loaded model routes per token, from BMOE_READY. Null = nothing loaded yet,
+    // 0 = not MoE. Settings needs it because "Drop cold experts" is a fraction of 1/top-k, so the
+    // same percentage means something very different on a narrow routing.
+    val nExpertUsed: Int? = null,
     val transcript: List<ChatTurn> = emptyList(), // committed turns; the in-flight answer is `answer`
     val streaming: Boolean = true,  // is the loaded session using the MoE streamer (vs mmap baseline)?
 ) {

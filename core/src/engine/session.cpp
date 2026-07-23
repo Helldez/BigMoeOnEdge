@@ -188,6 +188,7 @@ struct Session::Impl {
 
     const llama_vocab * vocab = nullptr;
     int n_vocab = 0;
+    int n_expert_used = 0; // effective routing width, after any override (0 = not MoE)
     int n_layer = 0;
     bool chat_on = false;
     common_chat_templates_ptr chat_tmpls;
@@ -255,6 +256,9 @@ const std::string & Session::arch() const {
 }
 int Session::n_ctx() const {
     return impl_->cfg.n_ctx;
+}
+int Session::n_expert_used() const {
+    return impl_->n_expert_used;
 }
 ThinkControl Session::think_control() const {
     return impl_->think_ctl;
@@ -583,6 +587,32 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 if (ri.n_expert_used <= 0) ri.n_expert_used = mi.n_expert_used;
             }
         }
+    }
+
+    // The effective routing width, resolved once: an override IS the applied width, otherwise the
+    // model's own count. Exposed so a UI can interpret drop_cold_frac, and used by the warning below.
+    im.n_expert_used = cfg.n_expert_used;
+    if (im.n_expert_used <= 0) {
+        const GgufModelInfo & mi = gguf();
+        im.n_expert_used = mi.ok ? mi.n_expert_used : 0;
+    }
+
+    // Cache-aware dropping on a narrow routing: say so once, at load.
+    //
+    // The threshold is a fraction of the uniform share 1/top-k, so what it removes scales with how
+    // wide the routing is. At top-k 8 (where it was measured) it trims a long tail; at top-k 2 the
+    // same fraction can discard the whole minority expert on every miss, which is closer to halving
+    // the routing than to trimming it. The engine has no way to know whether that is acceptable for
+    // a given model, so it states the fact rather than clamping the flag — a silent adjustment
+    // would be worse than a loud caveat.
+    if (cfg.moe.enabled && cfg.moe.drop_cold_frac > 0.0f) {
+        const int k = im.n_expert_used;
+        if (k > 0 && k <= MoeStreamConfig::drop_low_topk_warn)
+            std::fprintf(stderr,
+                         "bmoe: WARNING drop-cold-experts=%.2f with top-k %d — the threshold is %.1f%% of the "
+                         "routing here, against 12.5%% at the top-k 8 this was measured on. Expect it to discard "
+                         "much more, and check output quality on your own task.\n",
+                         (double) cfg.moe.drop_cold_frac, k, 100.0 * cfg.moe.drop_cold_frac / k);
     }
 
     im.load_seconds = secs(t_load0, clock_t_::now());
