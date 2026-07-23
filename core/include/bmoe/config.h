@@ -136,6 +136,26 @@ struct MoeStreamConfig {
     // See docs/expert-prediction.md.
     bool predict_log = false;
 
+    // Predictive prefetch: act on the stale-gate prediction instead of just logging it. While
+    // layer l computes, the NEXT layer's router matrix is run on l's gate input (the same one
+    // GEMV predict_log measures) and the predicted experts are handed to the same speculative
+    // read path --prefetch uses — same cache buffers, same accounting, same settle. Two things
+    // separate it from the temporal prefetch it replaces:
+    //   - the prediction is about THIS token (measured ~89% of routed slots on a 128-expert
+    //     model, vs ~43% for the previous-token bet), so far fewer speculated bytes are wasted;
+    //   - it is drop-aware: with drop_cold_frac armed, predicted experts whose predicted routing
+    //     weight falls below the drop threshold are not prefetched — if they miss they would be
+    //     dropped unread anyway, so reading them ahead would spend the exact I/O the drop policy
+    //     exists to save.
+    // Decode only. Needs the LRU cache (speculative slices land in the per-layer cache buffers)
+    // and is mutually exclusive with prefetch_layers — one speculative predictor at a time, or
+    // the lanes fill with two guesses about the same future. Costs one gate GEMV per MoE layer
+    // per token on the eval thread. Byte-identity: like --prefetch, it only warms the cache, so
+    // output is unchanged — except under drop_cold_frac, where residency is an input to the
+    // routing policy and a correct guess un-drops an expert (same caveat as --prefetch, see
+    // docs/expert-dropping.md).
+    bool predict_prefetch = false;
+
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
     // overlap compute) but makes speculative integration deterministic, so the byte-identity

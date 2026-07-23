@@ -169,6 +169,7 @@ struct RunInfo {
     bool o_direct = false;
     bool overlap = false;
     int prefetch_layers = 0;
+    bool predict_prefetch = false;      // stale-gate predictive prefetch (see MoeStreamConfig)
     std::string dense_weights = "anon"; // dense (non-expert) policy: "mmap" | "warm" | "anon"
     float drop_cold_frac = 0.0f;        // cache-aware expert dropping threshold (0 = off)
 };

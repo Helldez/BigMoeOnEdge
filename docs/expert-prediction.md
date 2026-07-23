@@ -91,6 +91,35 @@ Requires streaming (`--moe-stream`): the probe attaches to the routing nodes the
 isolates, and routing does not depend on how the weights reached memory, so a dense run would only
 reproduce the same numbers more slowly.
 
+## Acting on it: `--predict-prefetch`
+
+`--predict-log` measures; `--predict-prefetch` bets. It hands the stale-gate prediction for layer
+*l+1* to the same speculative read path [`--prefetch`](prefetch.md) uses — same cache buffers, same
+accounting, same `moe-prefetch:` summary line (tagged `[stale-gate]`) — replacing the previous-token
+predictor with one measured roughly twice as accurate on the same run. Mutually exclusive with
+`--prefetch`, and it needs the LRU cache for the same reason.
+
+Two design points matter more than the swap itself:
+
+- **The speculation is issued after the current layer's load, not when the prediction is made.**
+  Every load path begins by quiescing speculation, and the layer's own load sits a few graph nodes
+  after its gate — reads queued at prediction time would be cancelled before a lane picked them up.
+  Issuing after the load gives a queued read the layer's whole expert-matmul window, the same window
+  the temporal prefetch gets.
+- **It is drop-aware.** With [`--drop-cold-experts`](expert-dropping.md) armed, a predicted expert
+  whose predicted routing weight (softmax over the predicted top-k) falls below the drop threshold
+  is not speculated: if it misses, the policy would drop it unread — prefetching it would spend the
+  exact I/O the policy exists to save. The top prediction is always kept, mirroring the policy's own
+  pin of the top-weighted expert.
+
+Byte-identity is the same contract as the temporal prefetch (gate `G10`): speculation only warms the
+cache, so output is unchanged — except under `--drop-cold-experts`, where residency is an input to
+the routing policy and a correct guess un-drops an expert. That interplay is deliberate: prediction
+spent there buys back quality at the same threshold, not speed.
+
+Cost: one gate GEMV per MoE layer per decoded token on the eval thread (the control GEMV is
+probe-only and skipped here), plus one isolated node per layer.
+
 ## The honest caveat about what a good number would mean
 
 A high stale-gate accuracy would say the routing is *knowable* earlier. It would not say that

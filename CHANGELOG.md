@@ -38,6 +38,17 @@ Semantic Versioning.
   benchmark run. Requires `--moe-stream`. See
   [docs/expert-prediction.md](docs/expert-prediction.md), which also states why a *good* score still
   would not imply a faster decode on a flash that is already saturated.
+- **`--predict-prefetch` — speculate on that prediction instead of the previous token.** Feeds the
+  stale-gate ranking into the same speculative read path as `--prefetch` (same cache buffers,
+  accounting and summary line, tagged `[stale-gate]`), replacing a ~43%-accurate predictor with a
+  ~89%-accurate one measured on the same run. Issued after the current layer's load rather than at
+  prediction time — every load path starts by quiescing speculation, so an early queue would be
+  cancelled before a lane picked it up. Drop-aware: with `--drop-cold-experts` armed, predicted
+  experts below the drop threshold are not speculated (if they miss they would be dropped unread —
+  reading them ahead spends the I/O the policy exists to save). Mutually exclusive with
+  `--prefetch`; needs the LRU cache; byte-identical like the temporal prefetch (gate `G10`), with
+  the same documented exception under dropping, where a correct guess un-drops an expert and buys
+  quality rather than speed. Off by default, pending an on-device A/B.
 
 ### Fixed
 - The 0.15.0 entry for the app default still called the quality cost unquantified, contradicting the

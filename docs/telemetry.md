@@ -103,7 +103,10 @@ moe-prefetch: <mib> MiB speculative, <useful>/<prefetched> experts useful (<pct>
 
 `<mib>` is the flash read done speculatively this generation (a subset of the total read),
 `<prefetched>` the experts fully read ahead, and `<useful>` how many of those a later routing
-actually hit. See [prefetch.md](prefetch.md).
+actually hit. See [prefetch.md](prefetch.md). With `--predict-prefetch` the same line is emitted
+with a `[stale-gate]` tag — same counters, different predictor (see
+[expert-prediction.md](expert-prediction.md)). The CSV preamble records which was active
+(`prefetch=` / `predict_prefetch=`).
 
 With `--drop-cold-experts F` a `moe-drop:` line is added:
 

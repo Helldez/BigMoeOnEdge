@@ -378,10 +378,14 @@ static void print_usage(const char * argv0) {
         "                          input), scored against the previous-token bet --prefetch makes.\n"
         "                          Changes nothing that is read; costs a barrier and a GEMV per\n"
         "                          layer, so a probed run is not a benchmark run.\n"
+        "      --predict-prefetch  act on that prediction: speculatively read the next layer's\n"
+        "                          predicted experts on the idle lanes (needs the cache; excludes\n"
+        "                          --prefetch). Drop-aware: with --drop-cold-experts armed, experts\n"
+        "                          predicted below the drop threshold are not speculated.\n"
         "      --list-archs        print supported MoE architectures and exit\n"
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
-        "BMOE_N_EXPERT_USED, BMOE_PREDICT_LOG\n",
+        "BMOE_N_EXPERT_USED, BMOE_PREDICT_LOG, BMOE_PREDICT_PREFETCH\n",
         argv0, MoeStreamConfig::cache_min_mb, MoeStreamConfig::io_threads_max);
 }
 
@@ -556,6 +560,8 @@ int main(int argc, char ** argv) {
             cfg.moe.drop_prefill = true;
         else if (a == "--predict-log")
             cfg.moe.predict_log = true;
+        else if (a == "--predict-prefetch")
+            cfg.moe.predict_prefetch = true;
         else if (a == "--list-archs") {
             std::printf("supported MoE architectures:\n");
             for (int k = 0; k < n_moe_recipes(); ++k)
@@ -582,6 +588,7 @@ int main(int argc, char ** argv) {
     if (!seen.count("--prefetch")) cfg.moe.prefetch_layers = env_int("BMOE_PREFETCH", 0);
     if (!seen.count("--n-expert-used")) cfg.n_expert_used = env_int("BMOE_N_EXPERT_USED", 0);
     if (!seen.count("--predict-log")) cfg.moe.predict_log = env_int("BMOE_PREDICT_LOG", 0) != 0;
+    if (!seen.count("--predict-prefetch")) cfg.moe.predict_prefetch = env_int("BMOE_PREDICT_PREFETCH", 0) != 0;
 
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);
@@ -697,10 +704,11 @@ int main(int argc, char ** argv) {
         if (cfg.moe.overlap)
             std::printf("moe-overlap: stall %.3f s/token (flash reads overlapped with FFN compute)\n",
                         s.moe_stall_s_per_token);
-        if (cfg.moe.prefetch_layers > 0)
-            std::printf("moe-prefetch: %.1f MiB speculative, %lld/%lld experts useful (%.0f%%)\n", s.moe_spec_read_mib,
-                        s.moe_spec_useful, s.moe_spec_experts,
-                        s.moe_spec_experts > 0 ? 100.0 * s.moe_spec_useful / s.moe_spec_experts : 0.0);
+        if (cfg.moe.prefetch_layers > 0 || cfg.moe.predict_prefetch)
+            std::printf("moe-prefetch: %.1f MiB speculative, %lld/%lld experts useful (%.0f%%)%s\n",
+                        s.moe_spec_read_mib, s.moe_spec_useful, s.moe_spec_experts,
+                        s.moe_spec_experts > 0 ? 100.0 * s.moe_spec_useful / s.moe_spec_experts : 0.0,
+                        cfg.moe.predict_prefetch ? " [stale-gate]" : "");
         // How hard the policy actually bit. The flag sets a threshold, not a drop rate: what gets
         // discarded depends on what the cache held, so this is the only honest report of the trade
         // a given run made.

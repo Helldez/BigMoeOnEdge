@@ -38,6 +38,9 @@
 // G9's second half is the probe measuring itself: the control shares every line of code with the
 // prediction under test and differs only in having no staleness, so it must agree with llama.cpp's
 // own routing. A probe that is quietly wrong would otherwise report a plausible number.
+//
+//   G10 streaming + --predict-prefetch == streaming (speculating on the prediction only warms the
+//       cache), and the run must actually have speculated — an inert predictor passes vacuously.
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
@@ -488,6 +491,41 @@ int main(int argc, char ** argv) {
             std::printf("[FAIL] G9b per-layer tables disagree (stale=%d prev=%d self=%d)\n", (int) nst,
                         (int) r.summary.predict_prev_by_layer.size(), (int) r.summary.predict_self_by_layer.size());
             ++fails;
+        }
+    }
+
+    // G10 — predictive prefetch is speculation and nothing more.
+    //
+    // Same contract as the temporal prefetch (G5): whatever the predictor speculates, the routed
+    // slices a token consumes — and thus its output — must not change. prefetch-sync completes the
+    // speculative reads deterministically so the integrate-then-hit path is actually exercised on
+    // a fast host, exactly as G5c does; the small forced cache makes hits and evictions both occur.
+    RunConfig ppf = base(model);
+    ppf.moe.enabled = true;
+    ppf.moe.cache_mb = 2;
+    ppf.moe.force_cache = true;
+    ppf.moe.io_threads = 4;
+    ppf.moe.predict_prefetch = true;
+    ppf.moe.prefetch_sync = true;
+    std::string s_ppf;
+    if (!gen(ppf, s_ppf, err)) {
+        std::fprintf(stderr, "predict-prefetch run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G10a predict-prefetch(sync) == streaming(cache off)", s_s0, s_ppf);
+    // The identity is only evidence if something was actually speculated: a predictor that never
+    // fired would pass G10a vacuously. spec_experts counts what the speculative path fully read.
+    {
+        RunResult r = run(ppf);
+        if (!r || r.summary.moe_spec_experts <= 0) {
+            std::printf("[FAIL] G10b predict-prefetch speculated nothing (spec_experts=%lld)\n",
+                        r.summary.moe_spec_experts);
+            ++fails;
+        } else {
+            std::printf("[PASS] G10b predict-prefetch speculated %lld experts, %lld useful (%.0f%%)\n",
+                        r.summary.moe_spec_experts, r.summary.moe_spec_useful,
+                        r.summary.moe_spec_experts > 0 ? 100.0 * r.summary.moe_spec_useful / r.summary.moe_spec_experts
+                                                       : 0.0);
         }
     }
 

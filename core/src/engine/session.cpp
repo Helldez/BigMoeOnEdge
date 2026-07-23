@@ -376,6 +376,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
     im.hook->set_predict_log(cfg.moe.predict_log);
+    im.hook->set_predict_prefetch(cfg.moe.predict_prefetch);
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
@@ -567,6 +568,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
+        ri.predict_prefetch = cfg.moe.enabled && cfg.moe.predict_prefetch;
         ri.drop_cold_frac = cfg.moe.enabled ? cfg.moe.drop_cold_frac : 0.0f;
         // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
         ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"

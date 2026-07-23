@@ -56,6 +56,9 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.moe.predict_log && !cfg.moe.enabled) {
         return fail("moe.predict_log requires moe.enabled");
     }
+    if (cfg.moe.predict_prefetch && !cfg.moe.enabled) {
+        return fail("moe.predict_prefetch requires moe.enabled");
+    }
 
     if (cfg.moe.enabled) {
         const MoeStreamConfig & m = cfg.moe;
@@ -92,6 +95,16 @@ ValidationResult validate(const RunConfig & cfg) {
             return fail("moe.prefetch_layers requires the LRU cache (cache_mb > 0 or cache_auto): "
                         "speculative reads land in the per-layer cache buffers, which do not exist "
                         "with the cache off.");
+        }
+        if (m.predict_prefetch && !cache_on) {
+            return fail("moe.predict_prefetch requires the LRU cache (cache_mb > 0 or cache_auto): "
+                        "speculative reads land in the per-layer cache buffers, which do not exist "
+                        "with the cache off.");
+        }
+        if (m.predict_prefetch && m.prefetch_layers > 0) {
+            return fail("moe.predict_prefetch and moe.prefetch_layers are mutually exclusive: they "
+                        "are two predictors for the same speculative read lanes, and running both "
+                        "doubles the speculated bytes for the same future.");
         }
         if (m.drop_cold_frac > 0.0f && !cache_on) {
             return fail("moe.drop_cold_frac requires the LRU cache (cache_mb > 0 or cache_auto): with the "

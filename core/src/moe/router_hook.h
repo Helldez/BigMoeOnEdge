@@ -95,6 +95,15 @@ public:
     // layer and does a per-layer GEMV on the eval thread, so a probed run is not a benchmark run.
     void set_predict_log(bool on);
 
+    // ── predictive prefetch (see MoeStreamConfig::predict_prefetch) ───────────────────
+    // Act on the stale-gate prediction: hand the predicted next-layer experts to the source's
+    // speculative read path, exactly as the temporal prefetch does with the previous token's ids.
+    // Drop-aware by construction — with the drop policy armed, a predicted expert whose predicted
+    // routing weight sits below the drop threshold is not speculated: if it misses, the policy
+    // would discard it unread, so prefetching it buys nothing and costs the read. Independent of
+    // set_predict_log (the probe adds scoring and the control on top of the same prediction).
+    void set_predict_prefetch(bool on);
+
     // ── route trace (diagnostics; see bmoe/route_trace.h) ────────────────────────────
     // When on, the hook additionally asks for each layer's router-weight node and records one
     // RouteTraceRow per routed expert. Rows buffer in RAM — the callback runs on a compute
@@ -202,13 +211,14 @@ private:
     int prefetch_layers_ = 0;
     std::vector<std::vector<int32_t>> prev_ids_;
 
-    // Prediction probe. All of this is inert unless predict_log_.
+    // Prediction (probe and/or prefetch). All of this is inert unless one of the two is on.
     //
     // gate_w_ is learned from the graph rather than looked up by name: the gate matmul's first
     // source IS the router matrix, whatever the architecture calls its tensor. It is a weight LEAF,
     // so unlike a graph intermediate the pointer stays valid across graphs — which is what lets
     // layer l predict for layer l+1 using a matrix layer l+1 has not reached yet this token.
     bool predict_log_ = false;
+    bool predict_prefetch_ = false;
     std::vector<ggml_tensor *> gate_w_;
     std::vector<std::vector<int32_t>> pred_stale_; // per layer, ranked at the PREVIOUS layer
     std::vector<std::vector<int32_t>> pred_self_;  // per layer, ranked from its own logits
@@ -217,6 +227,16 @@ private:
     long long predict_unscored_ = 0;
     std::vector<float> pred_scores_; // scratch: one score per expert
     std::vector<float> pred_row_;    // scratch: one activation row, as float
+    // How wide a routing actually is, learned from the last topk node seen. The prefetch needs it
+    // BEFORE the predicted layer's topk exists, and reading it off the graph (rather than config)
+    // keeps an --n-expert-used override honest. 0 until the first routing of a run has been seen,
+    // during which the prefetch stays silent.
+    int nu_hint_ = 0;
+    std::vector<int32_t> spec_ids_; // scratch: the filtered prediction handed to prefetch()
+    std::vector<float> spec_w_;     // scratch: softmax over the predicted top-k's raw scores
+
+    bool predict_on() const { return predict_log_ || predict_prefetch_; }
+    void predict_reset();
 
     // Rank the top `k` of `scores` into `out`, and score a prediction against a routing.
     static void rank_top_k(const std::vector<float> & scores, int k, std::vector<int32_t> & out);
@@ -224,6 +244,8 @@ private:
         const std::vector<int32_t> & pred, const int32_t * actual, int k, PredictorStats & layer, PredictorStats & agg);
     void predict_at_logits(ggml_tensor * logits, int il);
     void score_layer(int il, const int32_t * actual, int nu);
+    void predict_issue_prefetch(int nl); // filter pred_scores_/pred_stale_[nl] and speculate
+    void predict_after_load(int il);     // issue the il+1 prediction once il's load is behind us
 
     // The probe's maximum prediction width. A routing wider than this would be scored against a
     // truncated prediction and read as a miss it never was, so the probe declines it instead.
