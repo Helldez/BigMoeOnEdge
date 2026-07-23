@@ -139,7 +139,9 @@ struct RunSummary {
     //
     // Unlike the drop counters these are NOT per-generation deltas: they accumulate over the whole
     // session, because an accuracy estimate wants every sample it can get.
-    PredictorStats predict_stale, predict_prev, predict_self;
+    // predict_stale2 is the same predictor two layers early — the staleness the ASYNC prefetch
+    // actually runs at — reported in aggregate only.
+    PredictorStats predict_stale, predict_stale2, predict_prev, predict_self;
     std::vector<PredictorStats> predict_stale_by_layer, predict_prev_by_layer, predict_self_by_layer;
     long long predict_unscored = 0; // routings the stale-gate probe could not rank (see RouterHook)
 };

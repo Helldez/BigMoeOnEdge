@@ -537,6 +537,22 @@ void ExpertStreamSource::evict_tail() {
 }
 
 // ── route-trace support: describe what a routing costs, without changing it ─────────
+// Move already-resident predicted entries to the MRU end so eviction takes something else first.
+// Deliberately NOT a cache hit: chits_ counts lookups the routing actually served, and a
+// prediction is not a routing — inflating the hit rate from here would corrupt the one metric
+// every cache decision in this project is argued from. Eval-thread only (LRU mutation).
+void ExpertStreamSource::retain(int il, const int32_t * ids, int n_ids) {
+    if (!active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids) return;
+    for (int i = 0; i < n_ids; ++i) {
+        const int e = ids[i];
+        if (e < 0 || e >= n_expert_) continue;
+        const int32_t id = il * n_expert_ + e;
+        if (!cvalid_[id]) continue; // absent: keeping it is prefetch's job, not retention's
+        lru_unlink(id);
+        lru_push_front(id);
+    }
+}
+
 void ExpertStreamSource::settle_spec() {
     // Only the LRU path speculates, so mirror load_layer's own guard. Running the quiesce here
     // makes the one inside the load_layer that follows a cheap no-op: nothing left queued, and
