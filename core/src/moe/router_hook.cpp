@@ -218,7 +218,8 @@ void RouterHook::set_predict_log(bool on) {
     predict_reset();
 }
 
-void RouterHook::set_predict_prefetch(bool on) {
+void RouterHook::set_predict_prefetch(bool on, int spec_max) {
+    pred_spec_max_ = spec_max >= 0 ? spec_max : 0;
     predict_prefetch_ = on;
     predict_reset();
     if (on && !pred_worker_.joinable()) pred_worker_ = std::thread([this] { predict_worker_main(); });
@@ -280,7 +281,7 @@ void RouterHook::predict_worker_main() {
         PredictResult r;
         r.seq = job.seq;
         r.nl = job.nl;
-        build_spec_lists(scores, job.nu, job.drop_frac, job.resident, r.spec, r.keep);
+        build_spec_lists(scores, job.nu, job.drop_frac, job.spec_max, job.resident, r.spec, r.keep);
         r.ready = true;
         std::lock_guard<std::mutex> lk(pred_mtx_);
         pred_result_ = std::move(r);
@@ -457,7 +458,7 @@ void RouterHook::predict_at_logits(ggml_tensor * t, int il) {
 // own pin of the top-weighted expert.
 //
 // The split by residency is the cost model in one line: an absent predicted expert is worth AT
-// MOST predict_spec_max flash reads (head-of-line stall is all a prefetch can remove — the tail is
+// MOST spec_max flash reads (head-of-line stall is all a prefetch can remove — the tail is
 // already hidden behind the expert matmul, and speculating a full top-8 was measured to read 33%
 // more flash per token and to triple major faults against a full cache); a RESIDENT predicted
 // expert costs nothing to keep and is merely retained, protecting it from an eviction that would
@@ -465,6 +466,7 @@ void RouterHook::predict_at_logits(ggml_tensor * t, int il) {
 void RouterHook::build_spec_lists(const std::vector<float> & scores,
                                   int nu,
                                   float drop_frac,
+                                  int spec_max,
                                   const std::vector<uint8_t> & resident,
                                   std::vector<int32_t> & spec,
                                   std::vector<int32_t> & keep) {
@@ -489,7 +491,7 @@ void RouterHook::build_spec_lists(const std::vector<float> & scores,
         const int32_t e = pred[k];
         if (e >= 0 && (size_t) e < resident.size() && resident[(size_t) e] != route_miss)
             keep.push_back(e);
-        else if ((int) spec.size() < predict_spec_max)
+        else if ((int) spec.size() < spec_max)
             spec.push_back(e);
     }
 }
@@ -552,6 +554,7 @@ void RouterHook::predict_at_topk(ggml_tensor * t, int il, int nu, int nt) {
         pred_job_.nl = nl;
         pred_job_.nu = nu;
         pred_job_.drop_frac = drop_frac_;
+        pred_job_.spec_max = pred_spec_max_;
         pred_job_.gate = wn;
         pred_job_.row = pred_row_;
         pred_job_.resident = pred_res_;
