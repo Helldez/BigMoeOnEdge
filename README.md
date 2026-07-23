@@ -71,10 +71,12 @@ Highlights:
 
 No build needed. Install the APK from the
 [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest), open the **Get a
-model** card, and tap one of the catalog entries — Qwen3-30B-A3B (~18.6 GB), Qwen3.6-35B-A3B
-(~22.3 GB) or Gemma-4-26B-A4B (~17 GB), each past most phones' RAM. When the download finishes,
-pick the model and chat; the telemetry panel shows tok/s and the compute-vs-flash split live,
-and every streaming knob below is in Settings.
+model** card, and tap one of the catalog entries: Qwen3-30B-A3B (~18.6 GB), Qwen3.6-35B-A3B
+(~22.3 GB) or Gemma-4-26B-A4B (~17 GB), each past most phones' RAM. The catalog is only a
+shortcut: the downloader takes any direct gguf URL, so any model from the
+[supported architecture families](#supported-models) streams the same way. When the download
+finishes, pick the model and chat; the telemetry panel shows tok/s and the compute-vs-flash
+split live, and every streaming knob below is in Settings.
 
 The flagship gpt-oss-120b ships from Hugging Face as two shards, so it needs a one-time merge
 and a manual copy to the device: steps in the
