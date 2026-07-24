@@ -40,8 +40,9 @@ data class AppSettings(
     // sessionArgv only emits it when prefetchLayers == 0.
     val predictPrefetch: Boolean = false,
     // How many predicted MISSES per layer it may read ahead (0 = retention only: the prediction
-    // spends no flash and only protects predicted residents from eviction).
-    val predictSpecMax: Int = 2,
+    // spends no flash and only protects predicted residents from eviction). Defaults to 0 because
+    // the matched-pair A/B showed read-ahead losing on a saturated flash (docs/expert-prediction.md).
+    val predictSpecMax: Int = 0,
     // Cache-aware expert dropping, as a PERCENTAGE of the uniform share 1/top-k (0 = off, 100 = the
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
@@ -205,8 +206,9 @@ data class AppSettings(
         // 0 = model default (top-k as trained). 6/4/3/2 trade output quality for tok/s (fewer routed experts).
         val N_EXPERT_CHOICES = intArrayOf(0, 6, 4, 3, 2)
         val PREFETCH_CHOICES = intArrayOf(0, 1, 2, 4)
-        // Speculated predicted misses per layer. 0 = retention only (zero flash spent); 2 is the
-        // engine default; anything above it re-buys the measured full-speculation pathology.
+        // Speculated predicted misses per layer. 0 = retention only (zero flash spent) and the app
+        // default — the matched-pair A/B showed 2 losing −21% on a saturated flash; anything above
+        // it re-buys the measured full-speculation pathology.
         val PREDICT_SPEC_CHOICES = intArrayOf(0, 1, 2, 4)
         // Percent of the uniform share 1/top-k. 100 is the share itself and the useful maximum:
         // above it the threshold could exceed every weight in a routing. The rungs below it are the
