@@ -239,9 +239,25 @@ telemetry panel reports the same fields as the CLI, so you can see it directly. 
 
 ### Desktop
 
-The same trick works on desktop where a model exceeds RAM (quick check: Qwen3-30B on a 14.8 GiB
-Windows PC streamed at 2.6 tok/s), but mobile is the target and desktop isn't tuned. If the model
-fits in RAM, just run it resident.
+The same engine builds and runs unmodified on desktop, and a >RAM model streams out of the box.
+Measured on a Windows x86 laptop (8 cores, 16 GB RAM, dual-channel DDR4, NVMe SSD) with
+Qwen3.6-35B-A3B at ~1.5× RAM, 256-token generations:
+
+| Configuration | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|
+| streamed, default k=8, cache auto, 4 lanes | 4.8 | 74 MiB | 84% |
+| streamed + `--drop-cold-experts 0.75` | 6.8 | 23 MiB | 92% |
+| **streamed + `--overlap` + `--drop-cold-experts 0.75`** | **7.3** | 24 MiB | 92% |
+
+The interesting part is that the bottleneck **flips**: on the phone streamed decode is I/O-bound,
+on this laptop it is DRAM-bandwidth-bound in compute (~0.11 s/token in every cell → a ~9 tok/s
+ceiling even at zero I/O). More io lanes, more compute threads and the ~3 GB/s NVMe are all
+neutral; the levers that pay are the cache budget, cache-aware dropping and `--overlap`. Full
+campaign, including the cache-auto confound that round 1 had to unwind:
+[docs/bench-data/2026-07-24-desktop-qwen36](docs/bench-data/2026-07-24-desktop-qwen36/findings.md).
+
+Mobile stays the target and desktop is not tuned beyond this. If the model fits in RAM, just run
+it resident.
 
 ### How this is tested, and where the numbers come from
 
