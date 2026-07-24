@@ -31,6 +31,16 @@
 // S3 guards set_cache_budget_mb: evicting a warm cache mid-session must cost only re-reads.
 // G5 guards temporal prefetch: speculatively reading the next layers' experts must only warm the
 // cache — the routed slices a token actually consumes, and thus its output, are unchanged.
+//
+//   G9  streaming + --predict-log == streaming (the prediction probe observes and nothing more),
+//       and its zero-staleness control reproduces the router it measures
+//
+// G9's second half is the probe measuring itself: the control shares every line of code with the
+// prediction under test and differs only in having no staleness, so it must agree with llama.cpp's
+// own routing. A probe that is quietly wrong would otherwise report a plausible number.
+//
+//   G10 streaming + --predict-prefetch == streaming (speculating on the prediction only warms the
+//       cache), and the run must actually have speculated — an inert predictor passes vacuously.
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
@@ -428,6 +438,96 @@ int main(int argc, char ** argv) {
         return 2;
     }
     fails += check("G8c drop(full strength, top-k=1) == top-k=1 undropped (top expert pinned)", s_k1, s_k1_drop);
+
+    // G9 — the expert-prediction probe observes and nothing more.
+    //
+    // It isolates an extra node per layer and reads the router's inputs, which puts it inside the
+    // most load-bearing callback in the engine. So the first thing to pin down is that it changes
+    // nothing: same prompt, same bytes as the unprobed stream.
+    RunConfig probe = base(model);
+    probe.moe.enabled = true;
+    probe.moe.cache_mb = 0;
+    probe.moe.predict_log = true;
+    std::string s_probe;
+    if (!gen(probe, s_probe, err)) {
+        std::fprintf(stderr, "predict-log run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G9a predict-log == streaming(cache off) (the probe only observes)", s_s0, s_probe);
+
+    // G9b — and that it measured something rather than reporting an empty run as a clean one.
+    //
+    // The load-bearing assertion is the CONTROL. It ranks experts from the layer's own gate matrix
+    // and its own gate input — the same row read, GEMV and ranking the stale prediction uses, with
+    // only the staleness removed — so it has to reproduce the selection llama.cpp computed from
+    // those exact two tensors. A transposed matrix, a mis-strided row or a wrong token would leave
+    // it near chance while the stale number stayed superficially plausible. It is checked against
+    // 0.99 rather than 1.0 because the probe accumulates in scalar float where ggml does not, so a
+    // routing whose top-k straddles a near-tie may legitimately order two experts differently.
+    {
+        RunResult r = run(probe);
+        const PredictorStats & self = r.summary.predict_self;
+        const PredictorStats & stale = r.summary.predict_stale;
+        const PredictorStats & prev = r.summary.predict_prev;
+        if (!r || self.rows == 0 || stale.rows == 0 || prev.rows == 0) {
+            std::printf("[FAIL] G9b probe scored nothing (self=%lld stale=%lld prev=%lld routings)\n", self.rows,
+                        stale.rows, prev.rows);
+            ++fails;
+        } else if (self.hit_frac() < 0.99) {
+            std::printf("[FAIL] G9b zero-staleness control only %.1f%% — the probe's own gate arithmetic disagrees "
+                        "with the router it is measuring\n",
+                        100.0 * self.hit_frac());
+            ++fails;
+        } else {
+            std::printf("[PASS] G9b control %.1f%% over %lld routings (stale %.1f%%, prev-token %.1f%%)\n",
+                        100.0 * self.hit_frac(), self.rows, 100.0 * stale.hit_frac(), 100.0 * prev.hit_frac());
+        }
+        // The per-layer breakdown is the half of the report conclusions get drawn from, so it must
+        // exist and the three predictors must be indexed the same way — a table where one of them
+        // is shifted or short would compare a layer against a different layer, legibly but wrongly.
+        const size_t nst = r.summary.predict_stale_by_layer.size();
+        if (r && (nst == 0 || r.summary.predict_prev_by_layer.size() != nst ||
+                  r.summary.predict_self_by_layer.size() != nst)) {
+            std::printf("[FAIL] G9b per-layer tables disagree (stale=%d prev=%d self=%d)\n", (int) nst,
+                        (int) r.summary.predict_prev_by_layer.size(), (int) r.summary.predict_self_by_layer.size());
+            ++fails;
+        }
+    }
+
+    // G10 — predictive prefetch is speculation and nothing more.
+    //
+    // Same contract as the temporal prefetch (G5): whatever the predictor speculates, the routed
+    // slices a token consumes — and thus its output — must not change. prefetch-sync completes the
+    // speculative reads deterministically so the integrate-then-hit path is actually exercised on
+    // a fast host, exactly as G5c does; the small forced cache makes hits and evictions both occur.
+    RunConfig ppf = base(model);
+    ppf.moe.enabled = true;
+    ppf.moe.cache_mb = 2;
+    ppf.moe.force_cache = true;
+    ppf.moe.io_threads = 4;
+    ppf.moe.predict_prefetch = true;
+    ppf.moe.prefetch_sync = true;
+    std::string s_ppf;
+    if (!gen(ppf, s_ppf, err)) {
+        std::fprintf(stderr, "predict-prefetch run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G10a predict-prefetch(sync) == streaming(cache off)", s_s0, s_ppf);
+    // The identity is only evidence if something was actually speculated: a predictor that never
+    // fired would pass G10a vacuously. spec_experts counts what the speculative path fully read.
+    {
+        RunResult r = run(ppf);
+        if (!r || r.summary.moe_spec_experts <= 0) {
+            std::printf("[FAIL] G10b predict-prefetch speculated nothing (spec_experts=%lld)\n",
+                        r.summary.moe_spec_experts);
+            ++fails;
+        } else {
+            std::printf("[PASS] G10b predict-prefetch speculated %lld experts, %lld useful (%.0f%%)\n",
+                        r.summary.moe_spec_experts, r.summary.moe_spec_useful,
+                        r.summary.moe_spec_experts > 0 ? 100.0 * r.summary.moe_spec_useful / r.summary.moe_spec_experts
+                                                       : 0.0);
+        }
+    }
 
     if (fails == 0) std::printf("\nall MoE byte-identity gates passed\n");
     return fails == 0 ? 0 : 1;

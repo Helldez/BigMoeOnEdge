@@ -49,6 +49,17 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("moe.overlap requires moe.enabled");
     }
 
+    // The probe rides on the routing nodes the streamer already isolates. Off the streaming path
+    // there is nothing for it to attach to — and nothing to learn either: routing does not depend
+    // on how the weights got into memory, so a dense run would only reproduce the same numbers
+    // more slowly.
+    if (cfg.moe.predict_log && !cfg.moe.enabled) {
+        return fail("moe.predict_log requires moe.enabled");
+    }
+    if (cfg.moe.predict_prefetch && !cfg.moe.enabled) {
+        return fail("moe.predict_prefetch requires moe.enabled");
+    }
+
     if (cfg.moe.enabled) {
         const MoeStreamConfig & m = cfg.moe;
         if (m.io_threads < 1 || m.io_threads > MoeStreamConfig::io_threads_max) {
@@ -84,6 +95,19 @@ ValidationResult validate(const RunConfig & cfg) {
             return fail("moe.prefetch_layers requires the LRU cache (cache_mb > 0 or cache_auto): "
                         "speculative reads land in the per-layer cache buffers, which do not exist "
                         "with the cache off.");
+        }
+        if (m.predict_prefetch && !cache_on) {
+            return fail("moe.predict_prefetch requires the LRU cache (cache_mb > 0 or cache_auto): "
+                        "speculative reads land in the per-layer cache buffers, which do not exist "
+                        "with the cache off.");
+        }
+        if (m.predict_spec_max < 0 || m.predict_spec_max > 8) {
+            return fail("moe.predict_spec_max must be in [0, 8] (0 = retention only, no speculation)");
+        }
+        if (m.predict_prefetch && m.prefetch_layers > 0) {
+            return fail("moe.predict_prefetch and moe.prefetch_layers are mutually exclusive: they "
+                        "are two predictors for the same speculative read lanes, and running both "
+                        "doubles the speculated bytes for the same future.");
         }
         if (m.drop_cold_frac > 0.0f && !cache_on) {
             return fail("moe.drop_cold_frac requires the LRU cache (cache_mb > 0 or cache_auto): with the "

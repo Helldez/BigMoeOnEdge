@@ -123,6 +123,46 @@ struct MoeStreamConfig {
     // compute-bound, so there is little to win.
     bool drop_prefill = false;
 
+    // Diagnostics: measure how predictable the routing is, without acting on it. For every decoded
+    // token the engine ranks each layer's experts a layer early — running the NEXT layer's gate
+    // matrix on the CURRENT layer's gate input, which the residual stream keeps nearly unchanged —
+    // and reports what fraction of the routing that would have had in flight. Scored alongside it:
+    // the previous-token bet --prefetch already makes, and a zero-staleness control that says how
+    // much of any gap is the ranking's own approximation rather than the staleness.
+    //
+    // Nothing it computes reaches the loading path: a probed run reads exactly the bytes an
+    // unprobed one does. It is not free, though — one isolated node and one gate GEMV per MoE layer
+    // per token, on the eval thread — so a probed run is not a benchmark run. Requires streaming.
+    // See docs/expert-prediction.md.
+    bool predict_log = false;
+
+    // Predictive prefetch: act on the stale-gate prediction instead of just logging it. While
+    // layer l computes, the NEXT layer's router matrix is run on l's gate input (the same one
+    // GEMV predict_log measures) and the predicted experts are handed to the same speculative
+    // read path --prefetch uses — same cache buffers, same accounting, same settle. Two things
+    // separate it from the temporal prefetch it replaces:
+    //   - the prediction is about THIS token (measured ~89% of routed slots on a 128-expert
+    //     model, vs ~43% for the previous-token bet), so far fewer speculated bytes are wasted;
+    //   - it is drop-aware: with drop_cold_frac armed, predicted experts whose predicted routing
+    //     weight falls below the drop threshold are not prefetched — if they miss they would be
+    //     dropped unread anyway, so reading them ahead would spend the exact I/O the drop policy
+    //     exists to save.
+    // Decode only. Needs the LRU cache (speculative slices land in the per-layer cache buffers)
+    // and is mutually exclusive with prefetch_layers — one speculative predictor at a time, or
+    // the lanes fill with two guesses about the same future. Costs one gate GEMV per MoE layer
+    // per token on the eval thread. Byte-identity: like --prefetch, it only warms the cache, so
+    // output is unchanged — except under drop_cold_frac, where residency is an input to the
+    // routing policy and a correct guess un-drops an expert (same caveat as --prefetch, see
+    // docs/expert-dropping.md).
+    bool predict_prefetch = false;
+
+    // How many predicted MISSES per layer the predictive prefetch may speculate. The rest of the
+    // prediction still works at any value: predicted experts already resident are retained
+    // (LRU-protected) whatever this says, because that costs zero bytes. 0 is the retention-only
+    // mode — the prediction spends no flash at all and only protects; the measured sweet spot for
+    // speculation, if any, is small (the stall a prefetch can remove is head-of-line only).
+    int predict_spec_max = 2;
+
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
     // overlap compute) but makes speculative integration deterministic, so the byte-identity

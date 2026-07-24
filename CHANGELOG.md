@@ -20,6 +20,48 @@ Semantic Versioning.
 - `BMOE_READY` gains `n_expert_used`, the effective routing width after any override (0 on a non-MoE
   model), so a UI can interpret the setting at all; `Session::n_expert_used()` exposes the same to
   embedders. Additive — older consumers ignore it.
+- **`--predict-log` — measure how predictable the routing is, without acting on it.** For every
+  decoded token the engine ranks each layer's experts a layer early, by running the **next** layer's
+  router matrix on the **current** layer's gate input — the residual stream barely moves between
+  layers, so the stale input ranks nearly as the real one will. It reports what fraction of each
+  routing that would have had in flight, scored against the previous-token bet
+  [`--prefetch`](docs/prefetch.md) already makes, per layer and in aggregate. Training-free and
+  model-unchanged: the router matrix is a dense weight already resident, and the prediction is one
+  GEMV.
+  Alongside both it prints a **zero-staleness control** — the same row read, GEMV and ranking on the
+  layer's own matrix — which must reproduce the routing llama.cpp computes from those same tensors.
+  A control below 100% means the probe is wrong, or the architecture does not select by raw-logit
+  ranking; either way it caps what the measurement could show, and the CLI says so rather than
+  letting the gap be blamed on staleness. The byte-identity gates cover both halves (`G9`).
+  Diagnostics only: nothing it computes reaches the loading path, so a probed run reads exactly the
+  bytes an unprobed one does — but it costs a barrier and two GEMVs per layer, so it is not a
+  benchmark run. Requires `--moe-stream`. See
+  [docs/expert-prediction.md](docs/expert-prediction.md), which also states why a *good* score still
+  would not imply a faster decode on a flash that is already saturated.
+- **`--predict-prefetch` — speculate on that prediction instead of the previous token.** Feeds the
+  stale-gate ranking into the same speculative read path as `--prefetch` (same cache buffers,
+  accounting and summary line, tagged `[stale-gate]`), replacing a ~43%-accurate predictor with a
+  ~89%-accurate one measured on the same run. Issued after the current layer's load rather than at
+  prediction time — every load path starts by quiescing speculation, so an early queue would be
+  cancelled before a lane picked it up. Drop-aware: with `--drop-cold-experts` armed, predicted
+  experts below the drop threshold are not speculated (if they miss they would be dropped unread —
+  reading them ahead spends the I/O the policy exists to save). Mutually exclusive with
+  `--prefetch`; needs the LRU cache; byte-identical like the temporal prefetch (gate `G10`), with
+  the same documented exception under dropping, where a correct guess un-drops an expert and buys
+  quality rather than speed. Off by default. `--predict-spec-max N` bounds how much flash the
+  prediction may spend per layer (0 = retention-only: predicted residents are LRU-protected via the
+  new `IExpertSource::retain`, and nothing is read ahead). Rebuilt once already around its measured
+  costs — native-F16 GEMV on aarch64 (~40× over a per-element exported-function conversion),
+  barrier-less gate-input capture guarded by a sampled self-validating watchdog, prediction GEMV on
+  a dedicated worker at an L+2 horizon (the probe's stale-2 column prices that staleness per
+  model). Throughput verdict, from thermally matched pairs (the first day's comparisons were
+  invalidated by silent thermal capping): **read-ahead loses** — −21% in the shipping drop+pinned
+  configuration at spec-max 2 and −28% on 8 io lanes, each with hit rate up and most speculations
+  useful, because the flash has no spare bandwidth to spend; **retention is hit-rate-neutral** at
+  a 3000 MiB cache, as the offline replay bound predicted (see docs/expert-prediction.md). The
+  example app exposes it as an experimental toggle in the Streaming section (off by default,
+  mutually exclusive with the temporal-prefetch setting, spec-max rungs 0/1/2/4 defaulting to 0 =
+  retention-only, the only rung the matched pairs did not refute).
 
 ### Fixed
 - The 0.15.0 entry for the app default still called the quality cost unquantified, contradicting the

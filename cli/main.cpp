@@ -373,11 +373,81 @@ static void print_usage(const char * argv0) {
         "                          it changes the output, and not reproducibly. Off by default.\n"
         "      --drop-no-renorm    do not rescale the surviving weights after a drop (A/B)\n"
         "      --drop-in-prefill   drop during prefill too (off: the cold cache makes it expensive)\n"
+        "      --predict-log       diagnostics: measure how much of each layer's routing could be\n"
+        "                          known a layer early (the next layer's gate run on this layer's\n"
+        "                          input), scored against the previous-token bet --prefetch makes.\n"
+        "                          Changes nothing that is read; costs a barrier and a GEMV per\n"
+        "                          layer, so a probed run is not a benchmark run.\n"
+        "      --predict-prefetch  act on that prediction: speculatively read predicted expert\n"
+        "                          misses on the idle lanes and LRU-protect predicted residents\n"
+        "                          (needs the cache; excludes --prefetch). Drop-aware: experts\n"
+        "                          predicted below the drop threshold are not speculated.\n"
+        "      --predict-spec-max N  speculated predicted misses per layer [0..8] (default 2;\n"
+        "                          0 = retention only, the prediction spends no flash at all)\n"
         "      --list-archs        print supported MoE architectures and exit\n"
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
-        "BMOE_N_EXPERT_USED\n",
+        "BMOE_N_EXPERT_USED, BMOE_PREDICT_LOG, BMOE_PREDICT_PREFETCH\n",
         argv0, MoeStreamConfig::cache_min_mb, MoeStreamConfig::io_threads_max);
+}
+
+// The prediction probe's report (see MoeStreamConfig::predict_log).
+//
+// Read the two predictors against the CONTROL rather than against 100%: the control ranks the same
+// way with no staleness at all, so it is the ceiling this measurement can show on this model, and
+// any gap below it is the ranking's approximation rather than the prediction's difficulty.
+//
+// The per-layer table is the substantive half. An aggregate flatters a prefetch: what a prefetch
+// costs is set by the layers it gets wrong, and the first layers of a MoE model are reliably the
+// worst — their routing scores sit close together, so a slightly stale input reorders them.
+static void print_predict_report(const RunSummary & s) {
+    const PredictorStats & st = s.predict_stale;
+    const PredictorStats & pv = s.predict_prev;
+    const PredictorStats & sf = s.predict_self;
+    std::printf("moe-predict: stale-gate %.1f%% of routed slots (%.1f%% whole routings) | prev-token %.1f%% (%.1f%%)"
+                " | fresh-gate control %.1f%% (%.1f%%)\n",
+                100.0 * st.hit_frac(), 100.0 * st.exact_frac(), 100.0 * pv.hit_frac(), 100.0 * pv.exact_frac(),
+                100.0 * sf.hit_frac(), 100.0 * sf.exact_frac());
+    // The two-layer horizon, aggregate only: the staleness --predict-prefetch actually runs at.
+    if (s.predict_stale2.rows > 0)
+        std::printf("moe-predict: stale-2 (two layers early) %.1f%% of routed slots (%.1f%% whole routings)\n",
+                    100.0 * s.predict_stale2.hit_frac(), 100.0 * s.predict_stale2.exact_frac());
+    // Per predictor, because their denominators genuinely differ: the stale one cannot speak for
+    // layer 0 (nothing precedes it) nor for the first token of a run, and quoting one row count for
+    // all three would misread those structural gaps as agreement.
+    std::printf("moe-predict: scored — stale-gate %lld routings/%lld slots, prev-token %lld/%lld, control %lld/%lld;"
+                " %lld routings the stale-gate could not rank\n",
+                st.rows, st.slots, pv.rows, pv.slots, sf.rows, sf.slots, s.predict_unscored);
+    // Say it rather than let the reader assume staleness cost what the ranking did.
+    if (sf.rows > 0 && sf.hit_frac() < 0.999)
+        std::printf("moe-predict: the control is below 100%%, so this model's expert selection is not raw-logit\n"
+                    "             ranking (an added selection bias, or group-limited routing). The stale-gate\n"
+                    "             figure understates the method by about the control's own gap.\n");
+
+    const size_t n = s.predict_stale_by_layer.size();
+    if (n == 0) return;
+    // A predictor with no routings at this layer prints "-", never 0.0. Layer 0 is the case that
+    // matters: nothing precedes it, so the stale gate structurally cannot reach it — a limit of the
+    // method, not a layer it predicts badly, and a table that showed 0.0% there would say the
+    // opposite. (It is also the gap trained per-layer predictors exist to close.)
+    auto pct = [](const PredictorStats & p, char * buf, size_t n_buf) -> const char * {
+        if (p.rows == 0) {
+            std::snprintf(buf, n_buf, "%6s", "-");
+            return buf;
+        }
+        std::snprintf(buf, n_buf, "%6.1f", 100.0 * p.hit_frac());
+        return buf;
+    };
+    std::printf("  layer   stale    prev   ctrl   routings\n");
+    for (size_t il = 0; il < n; ++il) {
+        const PredictorStats & a = s.predict_stale_by_layer[il];
+        const PredictorStats b = il < s.predict_prev_by_layer.size() ? s.predict_prev_by_layer[il] : PredictorStats{};
+        const PredictorStats c = il < s.predict_self_by_layer.size() ? s.predict_self_by_layer[il] : PredictorStats{};
+        if (a.rows == 0 && b.rows == 0 && c.rows == 0) continue; // a dense layer routes nothing
+        char ba[16], bb[16], bc[16];
+        std::printf("  %5d  %s  %s %s     %6lld\n", (int) il, pct(a, ba, sizeof ba), pct(b, bb, sizeof bb),
+                    pct(c, bc, sizeof bc), a.rows);
+    }
 }
 
 int main(int argc, char ** argv) {
@@ -494,6 +564,12 @@ int main(int argc, char ** argv) {
             cfg.moe.drop_renorm = false;
         else if (a == "--drop-in-prefill")
             cfg.moe.drop_prefill = true;
+        else if (a == "--predict-log")
+            cfg.moe.predict_log = true;
+        else if (a == "--predict-prefetch")
+            cfg.moe.predict_prefetch = true;
+        else if (a == "--predict-spec-max")
+            cfg.moe.predict_spec_max = std::atoi(next("--predict-spec-max"));
         else if (a == "--list-archs") {
             std::printf("supported MoE architectures:\n");
             for (int k = 0; k < n_moe_recipes(); ++k)
@@ -519,6 +595,8 @@ int main(int argc, char ** argv) {
     if (!seen.count("--overlap")) cfg.moe.overlap = env_int("BMOE_OVERLAP", 0) != 0;
     if (!seen.count("--prefetch")) cfg.moe.prefetch_layers = env_int("BMOE_PREFETCH", 0);
     if (!seen.count("--n-expert-used")) cfg.n_expert_used = env_int("BMOE_N_EXPERT_USED", 0);
+    if (!seen.count("--predict-log")) cfg.moe.predict_log = env_int("BMOE_PREDICT_LOG", 0) != 0;
+    if (!seen.count("--predict-prefetch")) cfg.moe.predict_prefetch = env_int("BMOE_PREDICT_PREFETCH", 0) != 0;
 
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);
@@ -634,10 +712,11 @@ int main(int argc, char ** argv) {
         if (cfg.moe.overlap)
             std::printf("moe-overlap: stall %.3f s/token (flash reads overlapped with FFN compute)\n",
                         s.moe_stall_s_per_token);
-        if (cfg.moe.prefetch_layers > 0)
-            std::printf("moe-prefetch: %.1f MiB speculative, %lld/%lld experts useful (%.0f%%)\n", s.moe_spec_read_mib,
-                        s.moe_spec_useful, s.moe_spec_experts,
-                        s.moe_spec_experts > 0 ? 100.0 * s.moe_spec_useful / s.moe_spec_experts : 0.0);
+        if (cfg.moe.prefetch_layers > 0 || cfg.moe.predict_prefetch)
+            std::printf("moe-prefetch: %.1f MiB speculative, %lld/%lld experts useful (%.0f%%)%s\n",
+                        s.moe_spec_read_mib, s.moe_spec_useful, s.moe_spec_experts,
+                        s.moe_spec_experts > 0 ? 100.0 * s.moe_spec_useful / s.moe_spec_experts : 0.0,
+                        cfg.moe.predict_prefetch ? " [stale-gate]" : "");
         // How hard the policy actually bit. The flag sets a threshold, not a drop rate: what gets
         // discarded depends on what the cache held, so this is the only honest report of the trade
         // a given run made.
@@ -646,6 +725,7 @@ int main(int argc, char ** argv) {
                         s.experts_dropped, s.experts_routed,
                         s.experts_routed > 0 ? 100.0 * s.experts_dropped / s.experts_routed : 0.0,
                         (double) cfg.moe.drop_cold_frac);
+        if (cfg.moe.predict_log) print_predict_report(s);
     }
     return 0;
 }

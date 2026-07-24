@@ -94,3 +94,13 @@ expert cache at 4000 MiB, 4 I/O lanes and 4 compute threads, decode settles arou
 sweep point from the benchmark protocol, not the app default: the app ships a fixed 2000 MiB
 expert cache. See `../../docs/benchmark-method.md` for the full procedure and the cache/thread
 sweep.
+
+The Streaming section also exposes the **predictive prefetch** (experimental, off by default):
+the engine predicts each layer's experts one layer early and reads ahead / retains what the
+prediction names (`--predict-prefetch`, with "predicted misses to read ahead" mapping to
+`--predict-spec-max`; 0 = retention only, the app default). It needs the cache on and replaces
+the temporal prefetch — the two are mutually exclusive, and they differ only in the predictor:
+temporal bets each layer repeats the previous token's experts (~40% right), predictive asks the
+next layer's own router one layer early (~85% right). A better guess did not buy throughput:
+in thermally matched pairs the read-ahead **lost** (−21% at spec-max 2), because the flash is
+already saturated — see `../../docs/expert-prediction.md` before drawing conclusions from a run.

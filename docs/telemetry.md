@@ -103,7 +103,10 @@ moe-prefetch: <mib> MiB speculative, <useful>/<prefetched> experts useful (<pct>
 
 `<mib>` is the flash read done speculatively this generation (a subset of the total read),
 `<prefetched>` the experts fully read ahead, and `<useful>` how many of those a later routing
-actually hit. See [prefetch.md](prefetch.md).
+actually hit. See [prefetch.md](prefetch.md). With `--predict-prefetch` the same line is emitted
+with a `[stale-gate]` tag — same counters, different predictor (see
+[expert-prediction.md](expert-prediction.md)). The CSV preamble records which was active
+(`prefetch=` / `predict_prefetch=`).
 
 With `--drop-cold-experts F` a `moe-drop:` line is added:
 
@@ -114,6 +117,23 @@ moe-drop: <dropped>/<routed> routed experts dropped (<pct>%), threshold <F> x un
 The flag fixes a *threshold*, not a rate: how much is actually discarded depends on what the cache
 held, so this line — not the flag — is what a run traded. See
 [expert-dropping.md](expert-dropping.md).
+
+With `--predict-log` two `moe-predict:` lines and a per-layer table are added:
+
+```
+moe-predict: stale-gate <pct>% of routed slots (<pct>% whole routings) | prev-token <pct>% (<pct>%) | fresh-gate control <pct>% (<pct>%)
+moe-predict: scored — stale-gate <rows> routings/<slots> slots, prev-token <rows>/<slots>, control <rows>/<slots>; <n> routings the stale-gate could not rank
+  layer   stale    prev   ctrl   routings
+```
+
+Three predictors scored against the routing the router actually produced, so they are comparable on
+one run: `stale` runs the next layer's router a layer early, `prev` is the previous-token bet
+`--prefetch` makes, and `ctrl` is the same arithmetic with no staleness — a control that should read
+100%, not a predictor. Read the first two against `ctrl`. Denominators differ per predictor and are
+printed separately, because the stale gate structurally cannot rank layer 0 or the first token; a
+predictor with no routings at a layer prints `-`, never `0.0`. The probe changes nothing that is
+read, but it costs a barrier and two GEMVs per layer, so a probed run is not a benchmark run. See
+[expert-prediction.md](expert-prediction.md).
 
 Under `--overlap` the `moe-stream:` line additionally reports `stall_s/tok=<s>` — the mean
 wall time per token that compute threads waited for expert reads to complete. It is `0` in
