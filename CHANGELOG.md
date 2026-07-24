@@ -54,12 +54,14 @@ Semantic Versioning.
   costs — native-F16 GEMV on aarch64 (~40× over a per-element exported-function conversion),
   barrier-less gate-input capture guarded by a sampled self-validating watchdog, prediction GEMV on
   a dedicated worker at an L+2 horizon (the probe's stale-2 column prices that staleness per
-  model). Throughput verdict OPEN pending thermally matched A/B pairs — the first day's
-  comparisons were invalidated by silent thermal capping (see docs/expert-prediction.md, which
-  also records the one matched pair measured: speculation on 8 io lanes loses −28%). The example
-  app exposes it as an experimental toggle in the Streaming section (off by default, mutually
-  exclusive with the temporal-prefetch setting, spec-max rungs 0/1/2/4) so the matched pairs can
-  be run from the app itself.
+  model). Throughput verdict, from thermally matched pairs (the first day's comparisons were
+  invalidated by silent thermal capping): **read-ahead loses** — −21% in the shipping drop+pinned
+  configuration at spec-max 2 and −28% on 8 io lanes, each with hit rate up and most speculations
+  useful, because the flash has no spare bandwidth to spend; **retention is hit-rate-neutral** at
+  a 3000 MiB cache, as the offline replay bound predicted (see docs/expert-prediction.md). The
+  example app exposes it as an experimental toggle in the Streaming section (off by default,
+  mutually exclusive with the temporal-prefetch setting, spec-max rungs 0/1/2/4 defaulting to 0 =
+  retention-only, the only rung the matched pairs did not refute).
 
 ### Fixed
 - The 0.15.0 entry for the app default still called the quality cost unquantified, contradicting the

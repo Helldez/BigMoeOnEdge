@@ -1,7 +1,7 @@
 # Expert prediction: measuring it before building it
 
-> **Measured, 2026-07-23 — accuracy confirmed, throughput verdict OPEN, and a thermal lesson that
-> invalidated half a day of comparisons.** On device, the stale-gate predictor scores **88.6%** of
+> **Measured, 2026-07-23/24 — accuracy confirmed, read-ahead refuted in a matched pair, retention
+> neutral on hit rate, and a thermal lesson that invalidated half a day of comparisons.** On device, the stale-gate predictor scores **88.6%** of
 > routed slots on Qwen3-30B (48 layers, top-8 of 128) and **80.7%** on Qwen3.6-35B (top-8 of 256),
 > with the zero-staleness control at exactly **100.0%** on every layer of both — Qwen selects by
 > pure logit ranking, so these numbers need no discount. The previous-token predictor scored 43.3% /
@@ -28,6 +28,20 @@
 > conversion — 21M calls/token — plus ~20 ms of barrier), and retention moved the hit rate by 0.1pp
 > on a 3000 MiB cache, confirming offline replay: at that size, eviction order within a two-layer
 > horizon is irrelevant.
+>
+> **The 2026-07-24 redo settled most of what stayed open.** A four-cell session (B, retention-only,
+> spec-2, then B again as a drift sentinel) run with fixed 30 s spacing first re-proved the
+> contamination mechanism on purpose — the closing B lost 17% against the opening B (4.77 → 3.96
+> tok/s) with the CPU clusters silently capped from the second cell on — and then yielded the one
+> pair the spacing left genuinely matched: **spec-2 vs the B sentinel, adjacent cells at the same
+> caps and the same battery temperature, 3.14 vs 3.96 tok/s (−21%)**, with hit rate *up* 4.3pp,
+> 79% of speculations useful, and +37% flash bytes per token. Speculation improves every metric it
+> owns and still loses the wall clock; the top-2 read-ahead is refuted in the shipping
+> configuration, by the same mechanism that killed more-lanes — the flash has no spare bandwidth to
+> spend. Retention-only again moved the hit rate by nothing (77.2% vs 77.6%), as the offline replay
+> bound predicted; its own wall-clock cell started inside the deepest throttle window and is not
+> readable, but with zero hit-rate movement there is no mechanism left for it to win by — only the
+> residual gate-GEMV cost to lose by.
 
 `--predict-log` answers one question and refuses to answer any other: **how much of a layer's
 routing could be known before that layer runs?** It predicts, scores itself against what the router
