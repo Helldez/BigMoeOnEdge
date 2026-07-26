@@ -139,6 +139,25 @@ more budget — which `--cache-mb auto` now takes automatically, capped by `--ca
 ([cache-sizing.md](cache-sizing.md)). Admission policies and a persistent cross-run cache
 remain unexplored.
 
+**A cache that sizes itself.** The budget is a static decision today: `auto` reads available RAM
+once at load and holds that number for the whole run, and every other path is a hand-picked
+constant. Neither the model nor the device gets a say afterwards. Both should: the same budget buys
+a very different cache on two models (3000 MiB is 1.65 token cycles on gpt-oss and 5.16 on
+Qwen3.6), and the same budget behaves very differently on two devices, or on the *same* device
+before and after it warms up — one committed run drops from 4.52 to 2.17 tok/s across a thousand
+tokens at a fixed budget.
+
+The pieces to make it dynamic already exist and are unused. The token cycle
+(`k × Σ entry_bytes(il)`) is derivable from the model shape at bind, and the routing traces show it
+is a hard boundary rather than a heuristic — below one cycle the hit rate is exactly 0.0 % on all
+three traced models. The marginal value of a further cycle is simulable from the model's own
+routing counters, and its cost is observable on the device (`dense_resident_frac`, faults) in a way
+available RAM is not: across the committed runs the correlation between `mem_available_mib` and the
+fault rate ranges from −0.49 to +0.64, i.e. none. So a self-sizing budget would grow while the
+measured benefit exceeds the measured cost, in whole cycles, between generations — never during
+one, and never touching a parameter that changes the output. Design under discussion, nothing
+implemented.
+
 ## Not on this list
 
 Routing prediction and speculative expert gating were built and **removed**: the recall/latency
