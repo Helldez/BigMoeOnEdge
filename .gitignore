@@ -3,6 +3,10 @@
 /out/
 cmake-build-*/
 
+# OpenCL headers + ICD loader, fetched by scripts/fetch-opencl-android.ps1 for the optional
+# GPU build. Third-party sources we do not vendor: they are a build prerequisite, not our code.
+/third_party/opencl-sdk/
+
 # Models and large artifacts (never commit weights)
 *.gguf
 *.bin

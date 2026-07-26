@@ -3,6 +3,7 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "chat_parse.h"
+#include "gpu_device.h"
 #include "thinking_control.h"
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
@@ -176,6 +177,8 @@ dense_bytes_per_layer(const GgufOffsets & offs, const std::vector<LayerExperts> 
 struct Session::Impl {
     SessionConfig cfg;
     std::string arch;
+    std::string gpu_device; // what the offload actually got, prose; empty means it ran on the CPU
+    std::string gpu_name;   // the same device as one whitespace-free token, for the CSV preamble
     double load_seconds = 0.0;
 
     // Ownership order matters at teardown: the source's I/O pool holds fds into the mmap'd
@@ -263,6 +266,9 @@ int Session::n_expert_used() const {
 ThinkControl Session::think_control() const {
     return impl_->think_ctl;
 }
+const std::string & Session::gpu_device() const {
+    return impl_->gpu_device;
+}
 void Session::set_cache_budget_mb(int mib) {
     impl_->source.set_cache_budget((size_t) std::max(0, mib) * 1024ull * 1024ull);
 }
@@ -308,7 +314,8 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     };
 
     // Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
-    // q4_K buffer would break the rebind), experts on CPU.
+    // q4_K buffer would break the rebind), everything on CPU. The GPU block below may move the
+    // dense half off the CPU; the experts stay here in every configuration.
     llama_model_params mparams = llama_model_default_params();
     mparams.use_mmap = true;
     mparams.use_extra_bufts = false;
@@ -336,6 +343,59 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         std::snprintf(kv_overrides[0].key, sizeof(kv_overrides[0].key), "%s", key.c_str());
         kv_overrides[0].val_i64 = cfg.n_expert_used;
         mparams.kv_overrides = kv_overrides;
+    }
+
+    // Dense-path GPU offload. Two things are arranged together here, and both must outlive the load
+    // call below: the device list, and a buffer-type override pinning the routed experts to the CPU.
+    // The pin is what makes the split safe rather than merely fast — llama.cpp resolves a matching
+    // override BEFORE it consults the layer's assigned device, so an expert tensor stays in host
+    // memory even in a layer that was handed to the GPU, and the streamer's rebind keeps working
+    // exactly as it does on a CPU-only run. See GpuConfig in bmoe/config.h for why the experts can
+    // never move.
+    GpuDevice gpu;
+    std::string expert_pattern;
+    ggml_backend_dev_t gpu_devs[2] = {nullptr, nullptr};
+    llama_model_tensor_buft_override buft_overrides[2];
+    std::memset(buft_overrides, 0, sizeof(buft_overrides)); // second entry stays the pattern==NULL terminator
+    if (cfg.gpu.enabled) {
+        gpu = find_gpu_device();
+        if (!gpu.found) {
+            // Availability is a device property, so "no GPU here" is an ordinary outcome, not a
+            // misconfiguration — unless the caller said it was measuring the GPU, in which case
+            // falling back would silently compare CPU against CPU.
+            if (cfg.gpu.require) {
+                return fail("gpu.require is set but no GPU device is available: this build registered no GPU "
+                            "backend, or the device has no usable driver");
+            }
+            std::fprintf(stderr, "bmoe: gpu — no device available, dense path stays on CPU\n");
+        } else {
+            gpu_devs[0] = gpu.dev;
+            mparams.devices = gpu_devs;
+            // -1 reaches llama.cpp as "every layer" (it normalises negatives to n_layer_all + 1),
+            // so the default needs no layer count of our own.
+            mparams.n_gpu_layers = cfg.gpu.n_layers;
+
+            // Pin the experts by name, from the recipe. Looked up independently of cfg.moe.enabled:
+            // an mmap baseline run is just as unable to fit a >RAM expert set into device memory,
+            // and keeping the placement identical across that A/B is the point. A model with no
+            // recipe (a dense model, or a MoE family not yet registered) pins nothing and offloads
+            // whole — correct for the former, and for the latter it fails loudly at allocation
+            // rather than quietly streaming from a device buffer it cannot rebind.
+            const GgufModelInfo & info = gguf();
+            const MoeRecipe * placement = info.ok ? find_moe_recipe(info.arch.c_str()) : nullptr;
+            if (placement) {
+                expert_pattern = expert_tensor_pattern(*placement);
+            }
+            if (!expert_pattern.empty()) {
+                buft_overrides[0].pattern = expert_pattern.c_str();
+                buft_overrides[0].buft = ggml_backend_cpu_buffer_type();
+                mparams.tensor_buft_overrides = buft_overrides;
+            }
+            im.gpu_device = describe(gpu);
+            im.gpu_name = gpu.name;
+            std::fprintf(stderr, "bmoe: gpu — offloading the dense path to %s%s\n", im.gpu_device.c_str(),
+                         expert_pattern.empty() ? "" : " (routed experts pinned to CPU)");
+        }
     }
 
     llama_model * model = llama_model_load_from_file(cfg.model_path.c_str(), mparams);
@@ -469,9 +529,18 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous || cfg.moe.dense_weights == DenseWeightsMode::Pinned) {
             const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
             std::vector<DenseTensorRef> dense;
+            int skipped_device = 0;
             for (const auto & kv : im.hook->captured_weights()) {
                 const std::string & name = kv.first;
                 if (expert_names.count(name)) continue;
+                // A tensor the GPU took is not ours to rebind: its ->data addresses device memory
+                // the backend resolved once at load, so pointing it at a host buffer would be
+                // ignored at best. These policies exist to survive host memory reclaim, which is
+                // not a pressure device-resident weights are under, so skipping them loses nothing.
+                if (kv.second->buffer && !ggml_backend_buffer_is_host(kv.second->buffer)) {
+                    ++skipped_device;
+                    continue;
+                }
                 auto off = offs.off_by_name.find(name);
                 auto sz = offs.size_by_name.find(name);
                 if (off == offs.off_by_name.end() || sz == offs.size_by_name.end()) continue; // not a file tensor
@@ -480,6 +549,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 d.file_off = off->second;
                 d.size = sz->second;
                 dense.push_back(d);
+            }
+            if (skipped_device > 0) {
+                std::fprintf(stderr, "bmoe: dense-weights — %d tensors left on the GPU (device-resident)\n",
+                             skipped_device);
             }
             im.source.set_dense_tensors(std::move(dense));
         }
@@ -567,6 +640,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
         ri.drop_cold_frac = cfg.moe.enabled ? cfg.moe.drop_cold_frac : 0.0f;
+        ri.gpu = im.gpu_name; // resolved, so a fallback to CPU records "" and not the request
         // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
         ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"
                            : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"

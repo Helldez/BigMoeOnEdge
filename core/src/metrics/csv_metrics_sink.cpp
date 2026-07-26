@@ -1,10 +1,21 @@
 #include "bmoe/metrics.h"
 
 #include <cstdio>
+#include <string>
 
 namespace bmoe {
 
 namespace {
+
+// The preamble is whitespace-split key=value, so any value taken from outside (a driver-reported
+// device name) has to be reduced to one token before it lands there.
+std::string no_whitespace(const std::string & s) {
+    std::string out = s;
+    for (char & c : out) {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') c = '_';
+    }
+    return out;
+}
 
 class CsvMetricsSink final : public IMetricsSink {
 public:
@@ -23,9 +34,14 @@ public:
                      r.model.c_str(), r.arch.c_str(), r.n_layer, r.n_expert, r.n_expert_used, r.n_threads, r.n_ctx);
         std::fprintf(f_,
                      "# moe_stream=%d cache_mb=%d cache_auto=%d cache_ceil_mb=%d force_cache=%d "
-                     "io_threads=%d o_direct=%d overlap=%d prefetch=%d dense_weights=%s drop_cold_frac=%.4g\n",
+                     "io_threads=%d o_direct=%d overlap=%d prefetch=%d dense_weights=%s drop_cold_frac=%.4g "
+                     "gpu=%s\n",
                      r.moe_stream, r.cache_mb, r.cache_auto, r.cache_ceil_mb, r.force_cache, r.io_threads, r.o_direct,
-                     r.overlap, r.prefetch_layers, r.dense_weights.c_str(), (double) r.drop_cold_frac);
+                     r.overlap, r.prefetch_layers, r.dense_weights.c_str(), (double) r.drop_cold_frac,
+                     // "cpu" rather than an empty value: the preamble is whitespace-split key=value,
+                     // so an empty one would swallow the following key on older parsers. Whitespace
+                     // inside a driver-supplied name would do the same, hence the scrub.
+                     (r.gpu.empty() ? std::string("cpu") : no_whitespace(r.gpu)).c_str());
         write_header();
     }
 

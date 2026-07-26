@@ -17,6 +17,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.compute_trace_layers = cfg.compute_trace_layers;
     sc.sampling = cfg.sampling; // greedy by default; opt-in stochastic decoding
     sc.moe = cfg.moe;
+    sc.gpu = cfg.gpu; // dense-path offload; falls back to CPU at open() if the device has no GPU
     return sc;
 }
 

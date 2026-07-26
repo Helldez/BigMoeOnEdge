@@ -142,6 +142,41 @@ struct MoeStreamConfig {
     static constexpr int prefetch_layers_max = 8;
 };
 
+// GPU offload of the DENSE half of the model. The streamed experts always stay on the CPU, and
+// that split is structural rather than a tuning choice: the streamer works by rebinding an expert
+// tensor's ->data to a host buffer it refills every token, and a device backend never re-reads
+// that pointer — it copies the weights into device memory once at load and dispatches against
+// cached handles thereafter. So a streamed expert on a GPU would silently compute whatever the
+// warm-up left behind. What a GPU *can* take is everything else: embeddings, attention/SSM, norms
+// and lm_head, which are resident, uploaded once, and never touched by the rebind.
+//
+// The prize is not marginal. A MoE uses 100% of its dense weights on every token but only
+// k/n_expert of its expert weights, which puts the two halves in the same order of magnitude
+// (measured: Qwen3-30B-A3B carries 951 MiB of dense weights against ~1.10 GiB of expert bytes
+// touched per token), so moving the dense side off the CPU removes roughly half the per-token
+// GEMV work — and decode on this engine is compute-bound once the I/O levers are in
+// (see docs/benchmarks.md).
+//
+// Availability is a property of the device, not of the build: the engine asks the ggml backend
+// registry at load time whether any GPU device exists and falls back to CPU when none does, so
+// the same binary is correct on a phone with no usable GPU driver. Nothing here names a vendor
+// or an API — whichever backend the build registered (OpenCL on Adreno/Mali today) is discovered
+// through the same registry.
+struct GpuConfig {
+    bool enabled = false; // opt in to offloading the dense path to a GPU device
+
+    // How many layers to hand to the GPU. -1 (the default) offloads every layer llama.cpp is
+    // willing to take; a smaller number offloads the last N, which is the knob to reach for when
+    // the whole dense set does not fit in what the driver will allocate. Ignored when disabled.
+    int n_layers = -1;
+
+    // Fail the load instead of falling back to CPU when no GPU device is present. Off by default
+    // because falling back is the right behaviour for a shipped app, but an A/B that silently
+    // compares CPU against CPU is worse than one that refuses to start — the same reasoning that
+    // makes DenseWeightsMode::Pinned fail rather than degrade.
+    bool require = false;
+};
+
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
@@ -175,6 +210,7 @@ struct RunConfig {
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
+    GpuConfig gpu; // dense-path GPU offload; orthogonal to streaming (see GpuConfig)
 };
 
 // Validation result: ok plus a human-readable reason when not.

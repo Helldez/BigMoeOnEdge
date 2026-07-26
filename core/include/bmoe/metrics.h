@@ -154,6 +154,12 @@ struct RunInfo {
     int prefetch_layers = 0;
     std::string dense_weights = "anon"; // dense (non-expert) policy: "mmap" | "warm" | "anon"
     float drop_cold_frac = 0.0f;        // cache-aware expert dropping threshold (0 = off)
+
+    // The GPU device the dense path was offloaded to, empty when it ran on the CPU. Resolved, like
+    // cache_mb above: a run that asked for the GPU on a device without one records the empty string,
+    // so a bench cell can never be mistaken for a GPU cell it silently was not. The registry's
+    // device name, not its prose description — the CSV preamble is whitespace-split key=value.
+    std::string gpu;
 };
 
 // Optional per-token sink (e.g. CSV for benchmarks). The engine calls on_run_info once before the

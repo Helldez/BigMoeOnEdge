@@ -115,7 +115,8 @@ class RunService : Service() {
             // thinkControl is a property of the model being loaded, so it goes the same way — the
             // incoming session reports its own at BMOE_READY.
             it.copy(state = EngineState.LOADING, error = null, sessionSig = sig, answer = "", summary = "",
-                transcript = emptyList(), streaming = streaming, ioMode = null, thinkControl = null)
+                transcript = emptyList(), streaming = streaming, ioMode = null, thinkControl = null,
+                gpuDevice = null)
         }
 
         thread(name = "bmoe-session") { runSession(argv, model, myEpoch, dying) }
@@ -203,7 +204,12 @@ class RunService : Service() {
             t.startsWith("BMOE_READY ") -> {
                 val ctl = Regex(""""think_ctl":"([a-z_]+)"""").find(t)?.groupValues?.get(1)
                 val topk = Regex(""""n_expert_used":(\d+)""").find(t)?.groupValues?.get(1)?.toIntOrNull()
-                RunBus.update { it.copy(state = EngineState.READY, thinkControl = ctl, nExpertUsed = topk) }
+                // Resolved, not requested: empty when the dense path ran on the CPU. Older engines
+                // omit the field entirely, which reads the same as "no GPU" — the correct fallback.
+                val gpu = Regex(""""gpu":"([^"]*)"""").find(t)?.groupValues?.get(1) ?: ""
+                RunBus.update {
+                    it.copy(state = EngineState.READY, thinkControl = ctl, nExpertUsed = topk, gpuDevice = gpu)
+                }
                 main.post { notify("Model ready") }
                 pending?.let { p -> pending = null; sendGenerate(p) } ?: scheduleIdleUnload()
             }

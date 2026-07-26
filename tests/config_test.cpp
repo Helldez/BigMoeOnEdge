@@ -7,6 +7,7 @@
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "bmoe/config.h"
+#include "bmoe/recipe.h"
 
 #include <cstdio>
 #include <limits>
@@ -168,6 +169,57 @@ int main() {
         // and it would also skip the cache_on requirement above for the same reason.
         c.moe.drop_cold_frac = std::numeric_limits<float>::quiet_NaN();
         expect_fail("a NaN threshold is rejected", c);
+    }
+
+    // GPU offload. Availability is a runtime question, so validate() only settles coherence.
+    {
+        RunConfig c = ok_base();
+        expect_ok("gpu off is the default and valid", c);
+
+        c.gpu.enabled = true;
+        expect_ok("gpu on with the default layer count is valid", c);
+        c.gpu.n_layers = 0;
+        expect_ok("gpu with zero layers is valid (offload nothing, still a legal request)", c);
+        c.gpu.n_layers = 24;
+        expect_ok("gpu with an explicit layer count is valid", c);
+        c.gpu.n_layers = -2;
+        expect_fail("a layer count below -1 is rejected", c);
+
+        c = ok_base();
+        c.gpu.require = true;
+        expect_fail("gpu.require without gpu.enabled is rejected", c);
+        c = ok_base();
+        c.gpu.n_layers = 24;
+        expect_fail("gpu.n_layers without gpu.enabled is rejected", c);
+
+        // The offload is orthogonal to streaming: it moves the half of the model the streamer
+        // never touches, so every combination of the two is legal.
+        c = ok_moe();
+        c.moe.cache_mb = MoeStreamConfig::cache_min_mb;
+        c.gpu.enabled = true;
+        expect_ok("gpu offload combines with expert streaming", c);
+    }
+
+    // The expert-tensor pattern is derived from the recipe table, so every registered
+    // architecture must produce one — a row that pinned nothing would silently offload its
+    // experts to a device the streamer cannot rebind.
+    {
+        for (int i = 0; i < n_moe_recipes(); ++i) {
+            const MoeRecipe * r = moe_recipe_at(i);
+            const std::string pat = expert_tensor_pattern(*r);
+            const bool ok = !pat.empty() && pat.front() == '\\' && pat.back() == '.';
+            std::printf("%s expert pattern for %s: %s\n", ok ? "[PASS]" : "[FAIL]", r->arch, pat.c_str());
+            if (!ok) ++failures;
+        }
+        // A recipe naming nothing must match nothing rather than everything — the failure mode
+        // that would quietly pin the whole model to the CPU.
+        const MoeRecipe empty{"none", {nullptr, nullptr, nullptr}};
+        if (!expert_tensor_pattern(empty).empty()) {
+            std::printf("[FAIL] an empty recipe must yield an empty pattern\n");
+            ++failures;
+        } else {
+            std::printf("[PASS] an empty recipe yields an empty pattern\n");
+        }
     }
 
     if (failures == 0) {

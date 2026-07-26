@@ -49,6 +49,17 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("moe.overlap requires moe.enabled");
     }
 
+    // GPU offload. Whether a GPU device actually exists is a runtime question answered in run()
+    // against the backend registry — validate() stays pure — so all that can be checked here is
+    // that the knobs describe a coherent request.
+    if (cfg.gpu.n_layers < -1) {
+        return fail("gpu.n_layers must be >= -1 (-1 = every layer the backend will take)");
+    }
+    if (!cfg.gpu.enabled && (cfg.gpu.require || cfg.gpu.n_layers != -1)) {
+        return fail("gpu.require and gpu.n_layers are only meaningful with gpu.enabled: a run that "
+                    "did not ask for the GPU would silently ignore them.");
+    }
+
     if (cfg.moe.enabled) {
         const MoeStreamConfig & m = cfg.moe;
         if (m.io_threads < 1 || m.io_threads > MoeStreamConfig::io_threads_max) {

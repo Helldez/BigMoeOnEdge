@@ -26,9 +26,11 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
 - **n=1 only.** The expert sparsity exists only for single-token decode, so streaming is
   incompatible with speculative decoding or batching. Prefill streams the union of the
   prompt's routed experts (still far below the full bank, but larger than one token's).
-- **CPU experts.** Streamed experts are computed on CPU; the rebind targets host memory.
-  GPU offload of the streamed experts is not supported (the dense parts can still use the
-  GPU). Decode is flash-I/O-bound anyway, so this is rarely the bottleneck.
+- **CPU experts.** Streamed experts are computed on CPU, and structurally must be: the rebind
+  targets host memory, while a GPU backend copies weights into device memory once at load and
+  never re-reads the pointer afterwards. The **dense** half can be offloaded (`--gpu`, see
+  [gpu-offload.md](gpu-offload.md)), and on a MoE that is roughly half the per-token arithmetic,
+  because 100% of the dense weights are used every token against `k/n_expert` of the experts.
 - **Shared experts stay resident.** Architectures with an always-on shared expert (e.g.
   `gemma4`) stream the routed experts but keep the shared expert — and any dense layers —
   resident (in the page cache, or in the engine's own buffers under `--dense-weights anon`),

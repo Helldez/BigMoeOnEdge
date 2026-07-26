@@ -94,3 +94,18 @@ expert cache at 4000 MiB, 4 I/O lanes and 4 compute threads, decode settles arou
 sweep point from the benchmark protocol, not the app default: the app ships a fixed 2000 MiB
 expert cache. See `../../docs/benchmark-method.md` for the full procedure and the cache/thread
 sweep.
+
+The Compute section also exposes **Dense weights on GPU** (experimental, off by default), which
+maps to the engine's `--gpu`: attention, norms and the output head run on the GPU while the routed
+experts stay on the CPU, where the streamer refills their memory every token. It combines with
+every streaming setting — the two halves of the model do not overlap — and is **lossless**, since
+it changes where the arithmetic runs, not what is computed. Roughly half the per-token work moves,
+because a MoE uses all of its dense weights on every token but only `k/n_expert` of its experts.
+
+Two things to know before reading a result from it. It needs a GPU-enabled build
+(`pwsh scripts/build-android.ps1 -OpenCL`, after `pwsh scripts/fetch-opencl-android.ps1`) **and** a
+device with an OpenCL driver; the setting reports the device it actually got and warns when a
+session asked for the GPU and fell back to the CPU, so trust that line rather than the switch. And
+it is **not yet measured** — see `../../docs/gpu-offload.md` for what is argued versus what is
+known, including why the batch-1 decode case may not favour a GPU as much as the byte split
+suggests.

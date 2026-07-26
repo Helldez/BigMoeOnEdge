@@ -20,3 +20,17 @@ libggml.so
 libggml-base.so
 libggml-cpu.so
 ```
+
+## Optional: the GPU build
+
+`pwsh scripts/build-android.ps1 -OpenCL` (after `pwsh scripts/fetch-opencl-android.ps1`) adds
+`libggml-opencl.so` to the set, which is what the app's **Dense weights on GPU** setting needs.
+
+Note what is deliberately *not* staged: `libOpenCL.so`. The GPU build leaves it as an unresolved
+`DT_NEEDED` so the device's own driver in `/vendor/lib64` satisfies it — the app already puts that
+directory on `LD_LIBRARY_PATH`. Shipping the Khronos loader here instead would take priority over
+the vendor driver and then find no ICD to dispatch to: everything would link, nothing would crash,
+and no GPU would ever be found.
+
+The trade-off is that a GPU-built CLI **will not start at all** on a device with no OpenCL driver,
+where the default build runs fine. See `../../../../../../docs/gpu-offload.md`.

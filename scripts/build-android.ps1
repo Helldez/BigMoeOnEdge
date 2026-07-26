@@ -17,14 +17,31 @@
 # because it splits the CPU backend into dlopen'd variant .so's, which drops the bmoe fork's
 # statically-linked `ggml_cpu_set_expert_ready_hook` (the I/O–compute overlap hook) — the two are
 # mutually exclusive today. A single dotprod baseline keeps overlap and still covers the field.
+#
+# -OpenCL builds the GPU backend in, so `--gpu` can offload the dense path (the routed experts
+# always stay on the CPU — see docs/gpu-offload.md). It is opt-in because it makes libOpenCL a
+# hard load-time dependency: the resulting CLI will not start on a device with no OpenCL driver,
+# where the default build runs fine. Run scripts/fetch-opencl-android.ps1 first.
 param(
     [string]$BuildDir = "build-android",
     [string]$Abi      = "arm64-v8a",
     [int]$ApiLevel    = 29,
-    [string]$BuildType = "Release"
+    [string]$BuildType = "Release",
+    [switch]$OpenCL
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+
+# cmake and the NDK toolchain write ordinary progress to stderr, which Windows PowerShell turns
+# into a terminating error under `ErrorActionPreference = Stop` even on success (pwsh does not).
+# Judge them by their exit code so the script behaves the same in both shells.
+function Invoke-Native {
+    param([string]$What, [scriptblock]$Cmd)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $Cmd } finally { $ErrorActionPreference = $prev }
+    if ($LASTEXITCODE -ne 0) { throw "$What failed (exit $LASTEXITCODE)" }
+}
 
 function Find-Ndk {
     if ($env:ANDROID_NDK_HOME -and (Test-Path $env:ANDROID_NDK_HOME)) { return $env:ANDROID_NDK_HOME }
@@ -42,19 +59,38 @@ $toolchain = Join-Path $ndk "build\cmake\android.toolchain.cmake"
 Write-Host "Using NDK: $ndk"
 
 $buildPath = Join-Path $root $BuildDir
-cmake -S $root -B $buildPath `
-    -G "Ninja" `
-    -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
-    -DANDROID_ABI="$Abi" `
-    -DANDROID_PLATFORM="android-$ApiLevel" `
-    -DCMAKE_BUILD_TYPE="$BuildType" `
-    -DBMOE_BUILD_TESTS=OFF `
-    -DGGML_NATIVE=OFF `
-    -DGGML_OPENMP=OFF `
-    -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" `
-    -DLLAMA_CURL=OFF
 
-cmake --build $buildPath -j
+# Extra args rather than a second cmake invocation, so the two builds cannot drift apart in the
+# flags they share — the CPU target in particular is load-bearing (see the header note).
+$extra = @()
+if ($OpenCL) {
+    $clInc = Join-Path $root "third_party\opencl-sdk\install\$Abi\include"
+    $clLib = Join-Path $root "third_party\opencl-sdk\install\$Abi\lib\libOpenCL.so"
+    if (-not (Test-Path $clLib)) {
+        throw "OpenCL SDK not built for $Abi. Run: pwsh scripts/fetch-opencl-android.ps1 -Abi $Abi"
+    }
+    $extra += "-DBMOE_OPENCL=ON"
+    $extra += "-DOpenCL_INCLUDE_DIR=$clInc"
+    $extra += "-DOpenCL_LIBRARY=$clLib"
+    Write-Host "OpenCL GPU backend: ON (binary will require libOpenCL.so on the device)"
+}
+
+Invoke-Native "cmake configure" {
+    cmake -S $root -B $buildPath `
+        -G "Ninja" `
+        -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
+        -DANDROID_ABI="$Abi" `
+        -DANDROID_PLATFORM="android-$ApiLevel" `
+        -DCMAKE_BUILD_TYPE="$BuildType" `
+        -DBMOE_BUILD_TESTS=OFF `
+        -DGGML_NATIVE=OFF `
+        -DGGML_OPENMP=OFF `
+        -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" `
+        -DLLAMA_CURL=OFF `
+        @extra
+}
+
+Invoke-Native "cmake build" { cmake --build $buildPath -j }
 
 # Stage the CLI and the shared libs it needs into the app's jniLibs as lib*.so.
 $jni = Join-Path $root "examples\android\app\src\main\jniLibs\$Abi"

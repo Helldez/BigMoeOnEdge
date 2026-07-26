@@ -209,10 +209,14 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
     // n_expert_used is the EFFECTIVE routing width, after any override. A UI needs it to say
     // anything sensible about --drop-cold-experts, whose threshold is a fraction of 1/top-k: the
     // same percentage trims a tail at 8 and takes half the routing at 2. 0 on a non-MoE model.
+    // gpu is what the offload RESOLVED to, not what was asked for — empty when the dense path ran
+    // on the CPU, whether because it was not requested or because this device offered no GPU. A UI
+    // that echoed its own switch back would report a fallback as a success.
     std::printf("BMOE_READY {\"load_s\":%.3f,\"arch\":\"%s\",\"n_ctx\":%d,\"think_ctl\":\"%s\","
-                "\"n_expert_used\":%d}\n",
+                "\"n_expert_used\":%d,\"gpu\":\"%s\"}\n",
                 session->load_seconds(), json_escape(session->arch()).c_str(), session->n_ctx(),
-                bmoe::think_control_name(session->think_control()), session->n_expert_used());
+                bmoe::think_control_name(session->think_control()), session->n_expert_used(),
+                json_escape(session->gpu_device()).c_str());
     std::fflush(stdout);
 
     std::mutex mtx;
@@ -362,7 +366,7 @@ static void print_usage(const char * argv0) {
         "                          reclaim hits zram not flash — the win on >RAM models;\n"
         "                          ahwb = as anon, but into dma-buf memory the kernel may not reclaim\n"
         "                          at all — not even to zram, which is what anon still pays for.\n"
-        "                          Android-only; measured +17.9% on a long generation, off by default)\n"
+        "                          Android-only; measured +17.9%% on a long generation, off by default)\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -374,6 +378,14 @@ static void print_usage(const char * argv0) {
         "      --drop-no-renorm    do not rescale the surviving weights after a drop (A/B)\n"
         "      --drop-in-prefill   drop during prefill too (off: the cold cache makes it expensive)\n"
         "      --list-archs        print supported MoE architectures and exit\n"
+        "\n"
+        "  GPU (dense path only — routed experts always compute on the CPU, see docs/gpu-offload.md):\n"
+        "      --gpu               offload the non-expert weights to a GPU device if the device has\n"
+        "                          one; stays on the CPU with a note when it does not. Independent\n"
+        "                          of --moe-stream. Lossless: placement does not change arithmetic.\n"
+        "      --gpu-layers N      how many layers to offload (default -1 = all). Implies --gpu.\n"
+        "      --gpu-require       fail instead of falling back when no GPU is found, so an A/B\n"
+        "                          cannot silently compare CPU against CPU. Implies --gpu.\n"
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
         "BMOE_N_EXPERT_USED\n",
@@ -488,7 +500,20 @@ int main(int argc, char ** argv) {
             cfg.moe.prefetch_layers = std::atoi(next("--prefetch"));
         else if (a == "--prefetch-sync") // debug: complete speculative reads synchronously
             cfg.moe.prefetch_sync = true;
-        else if (a == "--drop-cold-experts")
+        // Dense-path GPU offload. Independent of --moe-stream: it moves the non-expert half of the
+        // model, which exists whether or not the experts are streamed.
+        else if (a == "--gpu")
+            cfg.gpu.enabled = true;
+        // Both imply --gpu: there is no reading of "offload 20 layers" that does not want the
+        // offload. The library API still rejects the inconsistent pair, for callers that build a
+        // RunConfig directly.
+        else if (a == "--gpu-layers") {
+            cfg.gpu.n_layers = std::atoi(next("--gpu-layers"));
+            cfg.gpu.enabled = true;
+        } else if (a == "--gpu-require") { // measuring the GPU: refuse to fall back and compare CPU to CPU
+            cfg.gpu.require = true;
+            cfg.gpu.enabled = true;
+        } else if (a == "--drop-cold-experts")
             cfg.moe.drop_cold_frac = (float) std::atof(next("--drop-cold-experts"));
         else if (a == "--drop-no-renorm")
             cfg.moe.drop_renorm = false;

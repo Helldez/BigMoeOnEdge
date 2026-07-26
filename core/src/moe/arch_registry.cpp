@@ -1,6 +1,7 @@
 #include "bmoe/recipe.h"
 
 #include <cstring>
+#include <string>
 
 namespace bmoe {
 
@@ -62,6 +63,17 @@ int n_moe_recipes() {
 }
 const MoeRecipe * moe_recipe_at(int i) {
     return (i >= 0 && i < k_n_recipes) ? &k_recipes[i] : nullptr;
+}
+
+std::string expert_tensor_pattern(const MoeRecipe & recipe) {
+    std::string alt;
+    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        if (!recipe.exps_suffix[p]) continue; // slot unused by this architecture
+        if (!alt.empty()) alt += '|';
+        alt += recipe.exps_suffix[p];
+    }
+    if (alt.empty()) return {}; // a recipe naming nothing pins nothing, rather than matching everything
+    return "\\.(" + alt + ")\\.";
 }
 
 } // namespace bmoe

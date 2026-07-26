@@ -38,6 +38,12 @@ data class AppSettings(
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
     val dropColdPct: Int = 75,
+    // Run the dense (non-expert) half of the model on the GPU. The routed experts always stay on
+    // the CPU — the streamer refills their memory every token and no GPU backend re-reads a host
+    // pointer — so this is orthogonal to every streaming setting above and safe to combine with
+    // all of them. Off by default: it needs an OpenCL-enabled build AND a device with a driver,
+    // and the engine reports what it actually got rather than what was asked for.
+    val gpuDense: Boolean = false,
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
     val metricsCsv: Boolean = true,     // write the engine's per-token CSV for this session (--csv)
 ) {
@@ -99,6 +105,11 @@ data class AppSettings(
             // of the uniform share; the setting is stored as a percentage.
             if (dropColdPct > 0 && cacheOn) a += listOf("--drop-cold-experts", (dropColdPct / 100.0).toString())
         }
+        // Outside the mmap gate: the GPU takes the dense weights, which exist in both modes and
+        // are exactly the half the streamer never touches. Not --gpu-require: on a build or a
+        // device without a GPU the engine falls back to the CPU and says so in BMOE_READY, which
+        // is what an app should do — refusing to start would strand the user with no way back.
+        if (gpuDense) a += "--gpu"
         return a
     }
 
@@ -110,7 +121,7 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, oDirect,
-               overlap, denseWeights, prefetchLayers, dropColdPct)
+               overlap, denseWeights, prefetchLayers, dropColdPct, gpuDense)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -124,6 +135,7 @@ data class AppSettings(
             .putString("denseWeights", denseWeights.name)
             .putInt("prefetchLayers", prefetchLayers)
             .putInt("dropColdPct", dropColdPct)
+            .putBoolean("gpuDense", gpuDense)
             .putBoolean("thinking", thinking)
             .putBoolean("metricsCsv", metricsCsv)
             .apply()
@@ -221,6 +233,7 @@ data class AppSettings(
                 },
                 prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
+                gpuDense = p.getBoolean("gpuDense", d.gpuDense),
                 thinking = p.getBoolean("thinking", d.thinking),
                 metricsCsv = p.getBoolean("metricsCsv", d.metricsCsv),
             )

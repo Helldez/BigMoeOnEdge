@@ -45,6 +45,7 @@ struct SessionConfig {
     bool compute_trace_layers = false;
     SamplingConfig sampling; // fixed for the session; greedy by default (temp <= 0)
     MoeStreamConfig moe;
+    GpuConfig gpu; // dense-path GPU offload, resolved against the device at open()
 };
 
 // The RunConfig → SessionConfig mapping, in one place. Both entry points that open a session from a
@@ -127,6 +128,12 @@ public:
     // rather than leaving a Thinking toggle that silently does nothing. Always Template when chat
     // mode is off, where no template is rendered and the question does not arise.
     ThinkControl think_control() const;
+
+    // What the GPU offload actually did, which is not what the config asked for whenever the device
+    // has no usable GPU: empty means the dense path ran on the CPU, either because it was not
+    // requested or because nothing was found. A caller that surfaces a GPU switch should report
+    // this rather than echo its own setting back, or a fallback looks like a success.
+    const std::string & gpu_device() const;
 
     // Set the expert-cache budget in MiB and evict down to it now. PRECONDITION: no generate() in
     // flight — call it between generations (e.g. from an app's memory-pressure callback). A no-op

@@ -279,7 +279,8 @@ Responses (stdout):
 
 ```
 BMOE_READY {"load_s":<float>,"arch":"<string>","n_ctx":<int>,
-            "think_ctl":"template|prefill|none","n_expert_used":<int>}  # once, after the model loads
+            "think_ctl":"template|prefill|none","n_expert_used":<int>,
+            "gpu":"<device>"}                                          # once, after the model loads
 BMOE_BEGIN {"id":<int>}                                                # a generation started
 BMOE_LOAD / BMOE_PROGRESS ...                                          # per token, as above
 BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,

@@ -196,6 +196,33 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 IntSetting("Tokens to generate", AppSettings.NPREDICT_CHOICES, current.nPredict) {
                     onChange(current.copy(nPredict = it))
                 }
+                SwitchRow(
+                    "Dense weights on GPU (experimental)",
+                    "Runs attention, norms and the output head on the GPU. The routed experts stay " +
+                        "on the CPU — the streamer refills their memory every token and no GPU can " +
+                        "follow that — so this combines with every streaming setting above. Roughly " +
+                        "half the per-token maths moves off the CPU; lossless, it only changes where " +
+                        "the work runs.",
+                    current.gpuDense,
+                ) { onChange(current.copy(gpuDense = it)) }
+                // What the engine RESOLVED, never the switch echoed back: an app build without the
+                // GPU backend, or a device with no driver, silently runs on the CPU, and a toggle
+                // that just showed itself as "on" would hide exactly that.
+                if (current.gpuDense) {
+                    val gpu = ui.gpuDevice
+                    Text(
+                        when {
+                            gpu == null -> "Load a model to see whether this device offers a GPU."
+                            gpu.isEmpty() -> "⚠ No GPU available — this session is running the dense " +
+                                "path on the CPU. Either this build has no GPU backend or the device " +
+                                "has no driver; nothing else changes."
+                            else -> "Running on $gpu."
+                        },
+                        fontSize = 12.sp,
+                        color = if (gpu?.isEmpty() == true) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             Section("Prompt") {

@@ -25,6 +25,7 @@ core/
                 dense_weights — non-expert weight policy + the residency sensor
     engine/     session — composition + the generation loop (open/generate/close)
                 runtime — the one-shot run() wrapper over a Session
+                gpu_device — GPU discovery via the ggml registry, vendor/API agnostic
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 thinking_control — how "thinking off" is honoured, probed per model
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink

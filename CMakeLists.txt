@@ -32,6 +32,14 @@ option(BMOE_BUILD_CLI   "Build the bmoe-cli host tool"              ON)
 # configured and cross-compiled on their own without building the engine.
 option(BMOE_BUILD_TOOLS "Build standalone diagnostic tools (bmoe-iobench)" OFF)
 
+# Off by default, and deliberately so. Enabling it links ggml's OpenCL backend, which is a hard
+# link-time dependency on libOpenCL: the resulting binary will not start on a device that has no
+# OpenCL driver at all. The engine's own GPU support is runtime-probed and degrades cleanly (see
+# core/src/engine/gpu_device.h), but that probe never runs if the process cannot load. So the
+# default build stays dependency-free and runs everywhere, and an OpenCL build is an explicit
+# choice for a device known to have a driver. See docs/gpu-offload.md for the Android recipe.
+option(BMOE_OPENCL "Build with the OpenCL GPU backend (adds a libOpenCL dependency)" OFF)
+
 # --- Optional native dependency: llama.cpp ----------------------------------------
 # The streaming seam uses only the public C API (llama.h). We additionally link llama.cpp's
 # `common` layer for one thing: chat-template rendering + reasoning parsing (common_chat_*),
@@ -48,6 +56,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     set(LLAMA_BUILD_SERVER  OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_COMMON  ON  CACHE BOOL "" FORCE)
     set(LLAMA_CURL          OFF CACHE BOOL "" FORCE)  # common's model-download path unused
+    if(BMOE_OPENCL)
+        # The one GGML_* option this project sets. Everything else about the backend — which
+        # device, whether one exists — is decided at runtime, so nothing else needs configuring
+        # here; the Adreno kernel set is upstream's own default.
+        set(GGML_OPENCL ON CACHE BOOL "" FORCE)
+        message(STATUS "bmoe: OpenCL GPU backend enabled (binary will require libOpenCL at load)")
+    endif()
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
 endif()
 

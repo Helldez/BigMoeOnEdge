@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **`--gpu`: the dense half of the model can run on a GPU.** The routed experts always stay on the
+  CPU, and structurally must — the streamer rebinds their `->data` to host buffers it refills every
+  token, while a GPU backend copies weights into device memory once at load and never re-reads the
+  pointer. What a GPU *can* take is everything else: embeddings, attention/SSM, norms, `lm_head`.
+  On a MoE that is roughly half the per-token arithmetic, because 100% of the dense weights are used
+  on every token against only `k/n_expert` of the expert weights (Qwen3-30B-A3B: 951 MiB dense
+  against ~1.10 GiB of expert bytes touched). Lossless — placement changes where a matmul runs, not
+  what the model computes — and orthogonal to streaming, so it combines with every existing knob.
+  Also `--gpu-layers N` to offload only the last N layers, and `--gpu-require` to fail rather than
+  fall back, so a benchmark cannot silently compare CPU against CPU.
+
+  Two properties it was built to have. It is **device-agnostic**: availability is probed at load
+  through the ggml backend registry (`core/src/engine/gpu_device.h`), which names no vendor or API,
+  so a build without a GPU backend and a device without a driver take the same clean CPU fallback.
+  And it is **model-agnostic**: the buffer-type override that pins the experts is derived from the
+  architecture recipe (`expert_tensor_pattern()`), so a new MoE family added as a recipe row pins
+  its own experts with nothing else to update.
+
+  Off by default at every level. The OpenCL backend is opt-in at build time (`-DBMOE_OPENCL=ON`)
+  because linking it makes `libOpenCL` a hard load-time dependency: such a binary will not start on
+  a device with no OpenCL driver, where the default build runs fine. See `docs/gpu-offload.md` for
+  the build recipe and, importantly, for what is **not** yet known — this ships gated and measured
+  on nothing; the argument for it is the byte split plus the compute/stall attribution, not a
+  benchmark.
+- `BMOE_READY` gains `gpu`, and the metrics CSV preamble gains `gpu=`, both carrying the **resolved**
+  device (empty / `cpu` when the dense path ran on the CPU). A run that asked for the GPU on a
+  device without one records the fallback, so a bench cell can never be mistaken for a GPU cell it
+  silently was not. The example app exposes the whole thing as a **Dense weights on GPU** toggle in
+  the Compute section, which displays the device the engine actually got rather than echoing the
+  switch back.
+
+### Fixed
+- `--dense-weights anon|ahwb` no longer tries to rebind tensors the GPU has taken; they are not
+  under host-memory reclaim pressure, so skipping them loses nothing, and rebinding a device-resident
+  tensor would have been ignored at best.
+- A stray `%` in the `--dense-weights` help text was read by `printf` as a conversion specifier, so
+  that line printed garbage and read past the argument list. Pre-existing, unrelated to the above.
+- `scripts/build-android.ps1` now judges `cmake` by its exit code instead of by whether it wrote to
+  stderr, so it works under Windows PowerShell 5.1 and not only under `pwsh` (the NDK toolchain
+  prints progress to stderr, which 5.1 turns into a terminating error).
+
 ## [0.15.1] - 2026-07-23
 
 ### Added
