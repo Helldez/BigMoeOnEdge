@@ -60,6 +60,12 @@ public:
     // against the gguf tensor set, which those do not belong to. Only .tensor is meaningful here.
     const std::unordered_map<std::string, ggml_tensor *> & captured_weights() const { return captured_weights_; }
 
+    // True when the warm-up decode computed a layer's routing node on a device backend, whose
+    // contents the streamer cannot read from the host. Only reachable with GPU offload, and only if
+    // the routing path was not pinned to the CPU as it is meant to be. Checked once after capture:
+    // the alternative is a segfault on the first real token.
+    bool topk_on_device() const { return topk_on_device_; }
+
     void set_source(IExpertSource * src) { source_ = src; } // non-null → stream mode
 
     // Temporal prefetch depth K: while streaming layer l, hint the source to read ahead the
@@ -150,6 +156,7 @@ private:
     MoeRecipe recipe_;
     int n_layer_ = 0;
     bool capturing_ = false;
+    bool topk_on_device_ = false;      // see topk_on_device()
     IExpertSource * source_ = nullptr; // non-null → stream mode
     std::vector<LayerExperts> captured_;
     std::unordered_map<std::string, ggml_tensor *> captured_weights_; // non-expert weight leaves (see captured_weights)

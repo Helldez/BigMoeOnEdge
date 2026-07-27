@@ -76,4 +76,14 @@ std::string expert_tensor_pattern(const MoeRecipe & recipe) {
     return "\\.(" + alt + ")\\.";
 }
 
+std::string cpu_pinned_tensor_pattern(const MoeRecipe & recipe) {
+    const std::string experts = expert_tensor_pattern(recipe);
+    if (experts.empty()) return {};
+    // Splice the router into the alternation the experts already built, rather than returning two
+    // patterns: llama.cpp takes the first override that matches, so one expression cannot be
+    // shadowed by the other.
+    const std::string tail = ")\\.";
+    return experts.substr(0, experts.size() - tail.size()) + "|ffn_gate_inp" + tail;
+}
+
 } // namespace bmoe

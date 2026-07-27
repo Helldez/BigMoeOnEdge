@@ -50,4 +50,19 @@ const MoeRecipe * moe_recipe_at(int i);
 // (the same one holding the weights, or the layer's FFN would copy across devices every token).
 std::string expert_tensor_pattern(const MoeRecipe & recipe);
 
+// The tensors that must stay on the CPU when part of the model is offloaded to a GPU: the experts
+// above, plus the MoE **router**.
+//
+// The router is here for a different reason than the experts. The experts cannot move because the
+// streamer rebinds their memory. The router cannot move because the streamer *reads its output* —
+// the `ffn_moe_topk-<il>` node says which experts to fetch, and the hook dereferences it from the
+// host. Computed on a device backend, that node's `->data` is not a host address (and is not null
+// either, so it segfaults rather than failing a check). Pinning the router weight keeps its whole
+// argsort/top-k chain, and therefore the routing the hook reads, CPU-side.
+//
+// `ffn_gate_inp` is not a per-architecture guess: llama.cpp names every MoE router that, from a
+// single table entry, exactly as `ffn_moe_topk` names every routing node — a name the hook already
+// depends on. It is the same seam, not a new one.
+std::string cpu_pinned_tensor_pattern(const MoeRecipe & recipe);
+
 } // namespace bmoe

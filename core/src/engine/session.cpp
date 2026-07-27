@@ -384,7 +384,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             const GgufModelInfo & info = gguf();
             const MoeRecipe * placement = info.ok ? find_moe_recipe(info.arch.c_str()) : nullptr;
             if (placement) {
-                expert_pattern = expert_tensor_pattern(*placement);
+                expert_pattern = cpu_pinned_tensor_pattern(*placement);
             }
             if (!expert_pattern.empty()) {
                 buft_overrides[0].pattern = expert_pattern.c_str();
@@ -394,7 +394,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             im.gpu_device = describe(gpu);
             im.gpu_name = gpu.name;
             std::fprintf(stderr, "bmoe: gpu — offloading the dense path to %s%s\n", im.gpu_device.c_str(),
-                         expert_pattern.empty() ? "" : " (routed experts pinned to CPU)");
+                         expert_pattern.empty() ? "" : " (routed experts and the router pinned to CPU)");
         }
     }
 
@@ -487,6 +487,17 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         llama_batch warm = llama_batch_get_one(&warm_tok, 1);
         if (llama_decode(ctx, warm) != 0) return fail("capture warm-up decode failed");
         im.hook->end_capture();
+
+        // The streamer reads each layer's routing out of the graph from the host. If the scheduler
+        // put a routing node on a device backend, that read is not merely wrong, it is a wild
+        // pointer — so refuse the session here rather than crash on the first real token. Only
+        // reachable with GPU offload, and only if the CPU pin above failed to keep the router.
+        if (im.hook->topk_on_device()) {
+            return fail("the MoE routing node was computed on a device backend, where the streamer "
+                        "cannot read it. The router should have been pinned to the CPU alongside the "
+                        "experts — re-run without --gpu, or report this with the model's architecture "
+                        "(see docs/gpu-offload.md)");
+        }
 
         GgufOffsets offs = read_gguf_offsets(cfg.model_path.c_str());
         if (!offs.ok) return fail("cannot read gguf offsets: " + cfg.model_path);

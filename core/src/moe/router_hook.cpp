@@ -1,6 +1,7 @@
 #include "router_hook.h"
 
 #include "ggml.h"
+#include "ggml-backend.h"
 #include "../io/platform_io.h"
 
 #include <cstdio>
@@ -83,6 +84,22 @@ static void gather_weights(const ggml_tensor * t, int nu, int nt, std::vector<fl
 // nb[1] (n_expert * 4), not n_expert_used * 4 — see the gather at the topk node.
 static int32_t * id_at(ggml_tensor * t, int j, int k) {
     return (int32_t *) ((char *) t->data + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]);
+}
+
+// Can this node's contents be reached through `->data` from the host?
+//
+// Everything the hook does — reading the routing, gathering the weights, editing them for the drop
+// policy — dereferences `->data` directly, which is only meaningful for a node the CPU backend
+// computed. A device backend's `->data` is not a host address at all (ggml's OpenCL backend stores
+// an offset there and keeps the real allocation in `->extra`), and it is NON-NULL, so the old
+// `t->data &&` test waved it through and the first read segfaulted.
+//
+// With `--gpu` the MoE routing path is pinned to the CPU precisely so this stays true (see
+// cpu_pinned_tensor_pattern in arch_registry.cpp). This is the assertion of that invariant rather
+// than a fallback: if it ever fires, the placement is wrong and the run must not continue pretending
+// it routed correctly.
+static bool host_readable(const ggml_tensor * t) {
+    return t->data && (!t->buffer || ggml_backend_buffer_is_host(t->buffer));
 }
 
 void RouterHook::begin_capture() {
@@ -395,6 +412,16 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 if (src->op == GGML_OP_NONE) captured_weights_[src->name] = src;
             }
         }
+        // The streamer reads each layer's routing straight out of this node, so it has to be a node
+        // the CPU computed. Noticing here — during the warm-up decode, while the caller can still
+        // refuse to open — is the difference between a clear error and a segfault on the first real
+        // token. It can only happen with a device backend in the graph; see host_readable().
+        {
+            int cl = -1;
+            if (std::sscanf(t->name, "ffn_moe_topk-%d", &cl) == 1 && cl >= 0 && !host_readable(t)) {
+                topk_on_device_ = true;
+            }
+        }
         return false; // capture never isolates a node
     }
 
@@ -432,19 +459,19 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // one offered (match_weights explains why) and let the flush read it. This runs BEFORE the drop
     // policy edits the same tensor, so the trace records the routing the router produced, not the
     // one the policy left behind — `dropped` is what says which is which.
-    if (is_weights && t->data && t->type == GGML_TYPE_F32 && pending_.layer == wl && pending_.nu > 0)
+    if (is_weights && host_readable(t) && t->type == GGML_TYPE_F32 && pending_.layer == wl && pending_.nu > 0)
         gather_weights(t, pending_.nu, pending_.nt, pending_.weights);
 
     // Learn which node ends this layer's weight chain, and — once known — use it as the point where
     // the routing is decided: everything the drop policy needs is final here, and nothing has
     // consumed it yet. The learning pass and the deferral are the same walk, so a layer whose chain
     // shape the hook has not seen yet simply keeps the undropped behaviour.
-    if (is_weights && t->data && t->type == GGML_TYPE_F32 && drop_.layer == wl) {
+    if (is_weights && host_readable(t) && t->type == GGML_TYPE_F32 && drop_.layer == wl) {
         chain_last_ = t->name;
         if (drop_.deferred && wl >= 0 && wl < (int) term_node_.size() && term_node_[wl] == t->name) apply_drop(t);
     }
 
-    if (source_ && is_topk && t->data && t->type == GGML_TYPE_I32) {
+    if (source_ && is_topk && host_readable(t) && t->type == GGML_TYPE_I32) {
         // selected_experts is [n_expert_used, n_tokens] but a VIEW of the full argsort
         // [n_expert, n_tokens]: its row stride is nb[1] (= n_expert*4), not
         // n_expert_used*4. Gather respecting the strides — a flat read would grab token

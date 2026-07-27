@@ -210,10 +210,23 @@ int main() {
             const bool ok = !pat.empty() && pat.front() == '\\' && pat.back() == '.';
             std::printf("%s expert pattern for %s: %s\n", ok ? "[PASS]" : "[FAIL]", r->arch, pat.c_str());
             if (!ok) ++failures;
+
+            // The CPU pin must additionally carry the router: the streamer reads the routing node
+            // from the host, so leaving `ffn_gate_inp` on a device backend is a wild pointer, not a
+            // slow path. Its absence is exactly the bug that segfaulted the first GPU run.
+            const std::string pin = cpu_pinned_tensor_pattern(*r);
+            const bool pin_ok = pin.find("ffn_gate_inp") != std::string::npos && pin.back() == '.' &&
+                                pin.find(r->exps_suffix[0]) != std::string::npos;
+            std::printf("%s cpu pin for %s: %s\n", pin_ok ? "[PASS]" : "[FAIL]", r->arch, pin.c_str());
+            if (!pin_ok) ++failures;
         }
         // A recipe naming nothing must match nothing rather than everything — the failure mode
         // that would quietly pin the whole model to the CPU.
         const MoeRecipe empty{"none", {nullptr, nullptr, nullptr}};
+        if (!cpu_pinned_tensor_pattern(empty).empty()) {
+            std::printf("[FAIL] an empty recipe must yield an empty cpu pin\n");
+            ++failures;
+        }
         if (!expert_tensor_pattern(empty).empty()) {
             std::printf("[FAIL] an empty recipe must yield an empty pattern\n");
             ++failures;
