@@ -1,9 +1,17 @@
 # Dense-path GPU offload — measured on device (2026-07-27)
 
 **Verdict: with the memory confound removed, GPU offload of the dense path is between neutral and
-mildly negative on a phone-class integrated GPU — and the residual differences are inside this
-device's run-to-run noise, which is ±6%. It is never a correctness problem: output is
-token-identical. It is simply not a lever here.**
+mildly negative on a phone-class integrated GPU — and on the first model the residual differences
+are inside this device's run-to-run noise, which is ±6%. It is never a correctness problem: output
+is token-identical. It is simply not a lever here.**
+
+**Update, same day: on a second model with a faster CPU baseline the sign is no longer ambiguous —
+full offload −27%, output head alone −16 to −21%, both outside the noise. See
+[Confirmation on a second model](#confirmation-on-a-second-model-neutral-becomes-negative) below.
+The wider question of whether *any* GPU placement helps decode was settled separately, and it does
+not — including holding the routed experts in device memory, which measures 0.22×. That experiment
+needs seams carried on a llama.cpp fork branch, so it lives outside this tree:
+[feat/gpu-expert-slots](https://github.com/Helldez/BigMoeOnEdge/tree/feat/gpu-expert-slots).**
 
 This file records three passes, because the first two were wrong in instructive ways and the
 corrections are the useful part.
@@ -126,6 +134,36 @@ not a placement argument, in the same way a hit-rate curve is not a throughput a
   every number here is decode.
 - **Discrete GPUs are a different question entirely.** Dedicated VRAM changes the memory story and
   the transfer story at once; none of this transfers to a desktop.
+
+## Confirmation on a second model: neutral becomes negative
+
+Repeated the same two configurations on `Qwen3.6-35B-A3B` (Q4_0, 40 layers), this time with the
+full current recipe including `--drop-cold-experts 0.75`. Palindrome order `hyb, cpu, cpu, hyb`, and
+the SoC changed clock state midway, so cells are compared **within** a clock state. Raw output in
+[qwen36-confirmation.txt](qwen36-confirmation.txt).
+
+| `--gpu-layers` | clock | tok/s | compute s/tok | majflt/token |
+|---|---|---:|---:|---:|
+| 1 (output head only) | 3.03 GHz | 5.064 | 0.141 | 7.11 |
+| **0 (CPU)** | 3.03 GHz | **6.383** | 0.098 | 0.29 |
+| **0 (CPU)** | 2.27 GHz | **5.528** | 0.131 | 0.49 |
+| 1 (output head only) | 2.27 GHz | 4.663 | 0.157 | 1.65 |
+| 48→40 (all layers) | 2.27 GHz | 4.062 | 0.192 | 9.95 |
+
+`--gpu-layers 1` is **−21%** at the high clock and **−16%** at the low one, the same sign in both
+halves of the palindrome and outside the ±6% noise. Full offload is **−27%**.
+
+This does not contradict the Qwen3-30B result above; it explains it. Both configurations measured
+neutral there, and the CPU baseline has since got faster — `--drop-cold-experts` is worth ~+18% on
+this model. A fixed cost measured against a smaller total is a larger fraction of it. The
+boundary-crossing tax did not grow; everything it is being compared against shrank.
+
+The full-offload row shows the trade in one line: the GPU really does free the CPU (occupancy 70% →
+50%, and the overlapped I/O residual improves from 0.035 to 0.030 s/token), while compute rises
+0.131 → 0.192 and ~10 major faults per token appear from the OpenCL compute buffer's memory
+pressure. The freed CPU time is real; the boundary tax eats all of it and then some.
+
+Note these are Q4_0 numbers and are **not** comparable to the Q4_K_M figures in the README tables.
 
 ## Method notes for whoever repeats this
 

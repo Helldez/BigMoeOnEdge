@@ -40,6 +40,14 @@ Semantic Versioning.
   is reproducible, not because it is recommended. See `docs/gpu-offload.md` and
   `docs/bench-data/2026-07-27-gpu-dense-offload/`, which also records the two wrong verdicts that
   preceded this one and why they were wrong.
+
+  Repeated on a second model (`Qwen3.6-35B-A3B`, Q4_0, with `--drop-cold-experts`) the sign is no
+  longer ambiguous: full offload **−27%**, output head alone **−16 to −21%**, both outside the noise
+  and consistent across a palindrome. The CPU baseline got faster, so the same fixed
+  boundary-crossing cost is now a larger share of a smaller total. Decode belongs to the CPU on this
+  class of device at every placement measured — including holding the routed experts in device
+  memory, which is a separate experiment on a fork-dependent branch and measures 0.22×. The GPU's
+  one unrefuted advantage is batched **prefill** (~2.3×), which is not measured here.
 - **`--ubatch N`: the widest graph computed at once, decoupled from the context.** Compute buffers
   are reserved for the worst-case graph, and the engine had always set `n_ubatch = n_ctx` so that
   any fitting prompt prefills in one pass — which quietly ties resident memory to the context

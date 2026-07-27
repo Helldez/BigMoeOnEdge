@@ -136,7 +136,7 @@ One caveat for benchmarking: an OpenCL-enabled binary registers and initialises 
 startup whether or not the toggle is on, so it carries a fixed init cost the default build does not.
 Compare toggle-on against toggle-off **on the same binary**, not against a CPU-only build.
 
-## Status: measured — between neutral and mildly negative, and inside the noise
+## Status: measured — a lever that does not exist on this class of device
 
 Full numbers, the two wrong turns that preceded them, and method notes:
 [bench-data/2026-07-27-gpu-dense-offload](bench-data/2026-07-27-gpu-dense-offload/findings.md).
@@ -157,8 +157,24 @@ at 2.934 against a CPU cell at 3.116). Only the negative survives repetition: fu
 consistently a little slower than CPU. Treat this as a lever that does not exist here, not as one
 worth tuning.
 
+Repeated later the same day on `Qwen3.6-35B-A3B` (Q4_0, 40 layers) with the current recipe including
+`--drop-cold-experts`, as a palindrome, the ambiguity is gone: full offload **−27%**, output head
+alone **−16 to −21%**, both outside the noise and consistent in both halves. That is not a
+contradiction — the CPU baseline got faster (drop-cold is worth ~+18% on this model), so the same
+fixed boundary cost is now a larger share of a smaller total.
+
 It is never a correctness problem — output is token-identical, which is the losslessness claim
 holding.
+
+Nor is the answer different for the routed experts. Holding them in device memory as a
+flash-filled residency pool measures **0.22×**, and even a model held entirely resident with nothing
+streamed measures ~0.79×. The mechanism is the same underneath every placement: batch-1 decode is
+bandwidth-bound matrix-vector work, and an integrated GPU shares the CPU's memory. That experiment
+needs seams carried on a llama.cpp fork branch and therefore lives outside this tree, at
+[feat/gpu-expert-slots](https://github.com/Helldez/BigMoeOnEdge/tree/feat/gpu-expert-slots).
+
+**What is still open is prefill.** It is batched and compute-bound, the regime a GPU suits, and an
+independent measurement on this device puts GPU prefill at ~2.3×. Every number above is decode.
 
 ### Why: the halves interleave
 

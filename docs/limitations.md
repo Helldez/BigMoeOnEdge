@@ -31,6 +31,11 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   never re-reads the pointer afterwards. The **dense** half can be offloaded (`--gpu`, see
   [gpu-offload.md](gpu-offload.md)), and on a MoE that is roughly half the per-token arithmetic,
   because 100% of the dense weights are used every token against `k/n_expert` of the experts.
+  Measured, that offload does not pay on an integrated mobile GPU — and neither does any other
+  placement, including one that does move the experts into device memory by rebinding their
+  *contents* rather than a pointer. Decode is bandwidth-bound matrix-vector work and an integrated
+  GPU shares the CPU's memory. So this limitation is best read as a property of the hardware class,
+  not only of the rebind.
 - **Shared experts stay resident.** Architectures with an always-on shared expert (e.g.
   `gemma4`) stream the routed experts but keep the shared expert — and any dense layers —
   resident (in the page cache, or in the engine's own buffers under `--dense-weights anon`),
