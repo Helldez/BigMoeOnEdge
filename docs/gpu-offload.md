@@ -136,45 +136,71 @@ One caveat for benchmarking: an OpenCL-enabled binary registers and initialises 
 startup whether or not the toggle is on, so it carries a fixed init cost the default build does not.
 Compare toggle-on against toggle-off **on the same binary**, not against a CPU-only build.
 
-## Status: measured, currently behind the CPU, not yet settled
+## Status: measured — between neutral and mildly negative, and inside the noise
 
-Full numbers and method:
+Full numbers, the two wrong turns that preceded them, and method notes:
 [bench-data/2026-07-27-gpu-dense-offload](bench-data/2026-07-27-gpu-dense-offload/findings.md).
 
-| Config | tok/s | compute s/tok | majflt/token | graph splits |
-|---|---:|---:|---:|---:|
-| CPU | 3.175 | 0.124 | 0 | 1 |
-| `--gpu`, full context ubatch | 1.207 | 0.614 | 5 958 | 98 |
-| `--gpu`, capped ubatch | **2.752** | 0.188 | **1.06** | 98 |
+At `--ubatch 256`, `Qwen3-30B-A3B`, cache 2000, one pass with CPU first and last:
 
-It is never a correctness problem — GPU output was token-identical to CPU output, which is the
-losslessness claim holding.
+| `--gpu-layers` | tok/s | graph splits | CPU occupancy |
+|---|---:|---:|---:|
+| 0 (CPU) | 2.941 … 2.778 | 1 | 88 → 90% |
+| 48 (all) | 2.768 | 96 | **54%** |
+| 12 | 2.866 | 24 | 62% |
+| 1 (output head) | 3.029 | 2 | 68% |
 
-**The first measured verdict was wrong about why.** It read as "2.6x slower, because the GPU shares
-the same LPDDR and adds memory pressure". Most of that pressure was self-inflicted: compute buffers
-are reserved for the worst-case graph, and this engine sets `n_ubatch = n_ctx` so any fitting prompt
-prefills in one pass. That reservation scales with the **context**, not with the offload — 1203 MiB
-at n_ctx 2048 against 301 MiB at 512, the same 4x the CPU path shows (320 → 80 MiB). Capping it took
-the offload from 1.207 to 2.752 tok/s and the fault storm from 5 958 to 1.06 per token. Hence
-`--ubatch N`, which is not a GPU fix — the CPU path is reserving 240 avoidable MiB of its own, and
-on this engine every MiB reserved is a MiB the expert cache does not get.
+**The GPU genuinely takes work off the CPU** — occupancy drops from 88% to 54% at full offload — and
+within a single pass throughput orders perfectly and inversely by split count. But the device's
+run-to-run noise is **±6%**, and a repeat of the best-looking cell reversed its sign (`--gpu-layers 1`
+at 2.934 against a CPU cell at 3.116). Only the negative survives repetition: full offload is
+consistently a little slower than CPU. Treat this as a lever that does not exist here, not as one
+worth tuning.
 
-What remains is one cost, and it is the structural one: **the halves interleave.** A MoE layer is
-dense → experts → dense → experts, 48 times, so splitting them across two devices crosses the
-boundary twice per layer — 98 graph splits against 1 — and every crossing copies and synchronises an
-activation. That is the whole residual gap (compute 0.188 against 0.124).
+It is never a correctness problem — output is token-identical, which is the losslessness claim
+holding.
 
-**Owed before this can be called either way:** a `--gpu-layers` sweep at a capped ubatch, above all
-`--gpu-layers 1`. That offloads only the output head — one large matmul at the end of the graph,
-with no expert layer after it to hand control back to — so it should pay 1-2 splits instead of 98
-while still moving real work off the CPU. If the residual really is all split cost, that is where
-the offload can win.
+### Why: the halves interleave
 
-Also still open: a discrete GPU with its own VRAM changes the memory story completely, so none of
-this transfers to a desktop; and prefill — batched and compute-bound, the regime a GPU actually
-suits — is unmeasured, since every number here is decode.
+A MoE layer is dense → routed experts → dense → routed experts, 48 times. Splitting those across two
+devices crosses the boundary **twice per layer** — 96 graph splits against 1 — and every crossing
+copies and synchronises an activation. The freed CPU time is real; the boundary tax eats it. That is
+also why `--gpu-layers 1` comes closest: the output head is the one dense component with no expert
+layer after it, so it costs 2 splits rather than 96 — but one matmul is too small a share of the
+per-token work for its saving to clear the noise.
 
-The pre-measurement argument for the feature (the dense half is ~half the per-token arithmetic, and
-decode is compute-bound) remains true and remains insufficient: it was about *how much work* the
-dense half is, and said nothing about *where that work sits in the graph*. A byte-count argument is
-not a placement argument.
+### The first two verdicts were wrong, in useful ways
+
+The initial reading was "2.6x slower, because the GPU shares the same LPDDR and adds memory
+pressure". Most of that pressure was self-inflicted: compute buffers are reserved for the worst-case
+graph, and this engine set `n_ubatch = n_ctx` so any fitting prompt prefills in one pass. The
+reservation therefore scaled with the **context**, not the offload — 1203 MiB at n_ctx 2048 against
+301 MiB at 512, the same 4x the CPU path shows (320 → 80 MiB). Capping it moved the offload from
+1.207 to 2.752 tok/s and major faults from 5 958 to 1.06. Hence `--ubatch N`, which is not a GPU fix
+at all: the CPU path reserves 240 avoidable MiB of its own.
+
+The second reading was "`--gpu-layers 1` wins by ~7%". It did not replicate. One run per cell was
+not enough against ±6% noise.
+
+The *pre*-measurement argument (the dense half is ~half the per-token arithmetic, and decode is
+compute-bound) remains true and remains insufficient: it was about *how much work* the dense half
+is, and said nothing about *where that work sits in the graph*. A byte-count argument is not a
+placement argument.
+
+### What could still change the answer
+
+- **Contiguous layer blocks.** 96 splits is a property of *this* partition, not of offload as such.
+  Offloading the first N layers **whole** — experts included, resident rather than streamed — puts
+  the boundary in one place (~2 splits). llama.cpp already expresses per-block placement with a
+  regex over `blk.<il>.`, so the CPU pin could be made layer-aware instead of global. The cost is
+  that those layers stop streaming: ~363 MiB of resident experts per layer on this model, RAM the
+  expert cache no longer gets. Untested, and the only remaining shape in which this could win here.
+- **The cache curve, not a single point.** Full offload leaves decode more I/O-bound than before
+  (compute 0.187 against flash 0.648 s/token), so cache and lane levers should buy *more* with the
+  GPU on. The right experiment is the cache sweep under each backend, not GPU-vs-CPU at one budget.
+  Note the GPU frees no RAM — the dense weights move from anon buffers to OpenCL buffers, both the
+  same physical LPDDR.
+- **Prefill**, which is batched and compute-bound — the regime a GPU actually suits. Every number
+  here is decode.
+- **Discrete GPUs**, where dedicated VRAM changes the memory and transfer stories at once. None of
+  this transfers to a desktop.

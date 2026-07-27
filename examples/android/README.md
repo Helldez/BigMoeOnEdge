@@ -107,9 +107,9 @@ It needs a GPU-enabled build (`pwsh scripts/build-android.ps1 -OpenCL`, after
 the device it actually got and warns when a session asked for the GPU and fell back to the CPU, so
 trust that line rather than the switch.
 
-**Measured on a phone, it is 2.6x slower than leaving everything on the CPU**, so the toggle exists
-to reproduce that result rather than because it is recommended. The GPU shares the same memory, so
-its allocations add to the memory pressure this engine already fights (5 958 major faults per token
-against zero), and the dense and expert halves interleave at every layer, so a two-device split
-crosses the boundary twice per layer. Output is unaffected — it is slower, not wrong. See
-`../../docs/gpu-offload.md`.
+**Measured on a phone it does not pay**: between neutral and slightly behind the CPU, with the
+differences inside the device's own ±6% run-to-run noise. The GPU does take real work off the CPU
+(occupancy falls from 88% to 54%), but the dense and expert halves interleave at every layer, so a
+two-device split crosses the boundary twice per layer — 96 graph splits against 1 — and the boundary
+tax eats the saving. The toggle exists so the result can be reproduced, not because it is
+recommended. Output is unaffected: it is not faster, not wrong. See `../../docs/gpu-offload.md`.

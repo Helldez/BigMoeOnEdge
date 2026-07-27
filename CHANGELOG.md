@@ -29,15 +29,17 @@ Semantic Versioning.
   because linking it makes `libOpenCL` a hard load-time dependency: such a binary will not start on
   a device with no OpenCL driver, where the default build runs fine.
 
-  **Measured on a phone: behind the CPU, and not yet settled.** 3.175 tok/s on the CPU against
-  2.752 with the dense path offloaded — a ~15% gap, once `--ubatch` below removed a self-inflicted
-  cost that had made it look like 2.6x. What remains is structural: the dense and expert halves
-  interleave at every layer, so a two-device split crosses the boundary twice per layer (98 graph
-  splits against 1) and each crossing copies an activation. The configuration that would settle it,
-  `--gpu-layers 1` (output head only, 1-2 splits instead of 98), is owed. Output is token-identical
-  throughout, so this is a performance question and never a correctness one. Ships gated and off so
-  the measurement is reproducible, not because it is recommended. See `docs/gpu-offload.md` and
-  `docs/bench-data/2026-07-27-gpu-dense-offload/`.
+  **Measured on a phone: between neutral and mildly negative, and inside the noise.** At a capped
+  ubatch, CPU reads 2.941–3.116 tok/s across cells and full offload reads 2.768; `--gpu-layers 1`
+  (output head only) read 3.029 in one pass and 2.934 in a repeat that reversed its sign. The
+  device's run-to-run variation is ±6%, larger than every effect measured except the full-offload
+  penalty. The GPU does take real work off the CPU — occupancy falls from 88% to 54% — but the dense
+  and expert halves interleave, so a two-device split crosses the boundary twice per layer (96 graph
+  splits against 1) and the boundary tax eats the saving. Output is token-identical throughout, so
+  this is a performance question and never a correctness one. Ships gated and off so the measurement
+  is reproducible, not because it is recommended. See `docs/gpu-offload.md` and
+  `docs/bench-data/2026-07-27-gpu-dense-offload/`, which also records the two wrong verdicts that
+  preceded this one and why they were wrong.
 - **`--ubatch N`: the widest graph computed at once, decoupled from the context.** Compute buffers
   are reserved for the worst-case graph, and the engine had always set `n_ubatch = n_ctx` so that
   any fitting prompt prefills in one pass — which quietly ties resident memory to the context
