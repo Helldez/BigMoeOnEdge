@@ -22,6 +22,7 @@ if(BMOE_HAVE_LLAMA)
         src/moe/dense_weights.cpp
         src/moe/gguf_offsets.cpp
         src/moe/expert_stream_source.cpp
+        src/moe/gpu_slot_pool.cpp
         src/moe/router_hook.cpp
         src/engine/session.cpp
         src/engine/gpu_device.cpp
@@ -60,5 +61,18 @@ if(BMOE_HAVE_LLAMA)
         endif()
     else()
         message(STATUS "bmoe: expert-ready hook absent (overlap unavailable)")
+    endif()
+
+    # Holding routed experts in GPU memory needs the fork's OpenCL slot hook. Detected the same way
+    # and for the same reason as the hook above: the tree carrying it decides, not the build flag.
+    set(_ggml_cl_h "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include/ggml-opencl.h")
+    if(BMOE_OPENCL AND EXISTS "${_ggml_cl_h}")
+        file(READ "${_ggml_cl_h}" _ggml_cl_src)
+        if(_ggml_cl_src MATCHES "ggml_backend_opencl_set_moe_slot_hook")
+            target_compile_definitions(bmoe_core PUBLIC BMOE_HAVE_OPENCL_SLOT_HOOK=1)
+            message(STATUS "bmoe: OpenCL slot hook present (GPU expert residency available)")
+        else()
+            message(STATUS "bmoe: OpenCL slot hook absent (GPU expert residency unavailable)")
+        endif()
     endif()
 endif()

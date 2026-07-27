@@ -391,6 +391,13 @@ static void print_usage(const char * argv0) {
         "      --gpu-layers N      how many layers to offload (default -1 = all). Implies --gpu.\n"
         "      --gpu-require       fail instead of falling back when no GPU is found, so an A/B\n"
         "                          cannot silently compare CPU against CPU. Implies --gpu.\n"
+        "      --gpu-experts       put the routed experts in device memory too, leaving only the\n"
+        "                          router on the CPU. Cannot be combined with --moe-stream, and\n"
+        "                          needs a model whose experts fit the driver's allocation limit.\n"
+        "                          Implies --gpu.\n"
+        "      --gpu-expert-slots N  hold only N experts per layer in device memory, streamed from\n"
+        "                          flash a slice at a time, for an expert set that does not fit.\n"
+        "                          Mutually exclusive with --gpu-experts. Implies --gpu.\n"
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
         "BMOE_N_EXPERT_USED\n",
@@ -519,6 +526,12 @@ int main(int argc, char ** argv) {
             cfg.gpu.enabled = true;
         } else if (a == "--gpu-require") { // measuring the GPU: refuse to fall back and compare CPU to CPU
             cfg.gpu.require = true;
+            cfg.gpu.enabled = true;
+        } else if (a == "--gpu-experts") {
+            cfg.gpu.experts = true;
+            cfg.gpu.enabled = true;
+        } else if (a == "--gpu-expert-slots") {
+            cfg.gpu.expert_slots = std::atoi(next("--gpu-expert-slots"));
             cfg.gpu.enabled = true;
         } else if (a == "--drop-cold-experts")
             cfg.moe.drop_cold_frac = (float) std::atof(next("--drop-cold-experts"));

@@ -8,6 +8,8 @@
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
+#include "../moe/gpu_slot_pool.h"
+#include "../io/file_reader.h"
 #include "../io/platform_io.h"
 
 #include "llama.h"
@@ -188,6 +190,11 @@ struct Session::Impl {
     std::unique_ptr<llama_context, void (*)(llama_context *)> ctx{nullptr, llama_free};
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
     ExpertStreamSource source;
+
+    // GPU expert residency. Its hook is process-global and reads through `slot_reader`, so both
+    // must outlive every decode and be torn down before the model whose tensors they write into.
+    std::unique_ptr<GpuSlotPool> slot_pool;
+    std::unique_ptr<FileReader> slot_reader;
 
     const llama_vocab * vocab = nullptr;
     int n_vocab = 0;
@@ -384,8 +391,14 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             const GgufModelInfo & info = gguf();
             const MoeRecipe * placement = info.ok ? find_moe_recipe(info.arch.c_str()) : nullptr;
             if (placement) {
-                expert_pattern = cpu_pinned_tensor_pattern(*placement);
+                // A slot pool puts the experts in device memory exactly like `experts` does; what
+                // differs is how many of them are there at once, which is a load-time property of
+                // the tensors rather than a placement one.
+                const bool experts_on_device = cfg.gpu.experts || cfg.gpu.expert_slots > 0;
+                expert_pattern = experts_on_device ? router_pinned_tensor_pattern(*placement)
+                                                   : cpu_pinned_tensor_pattern(*placement);
             }
+            mparams.moe_expert_slots = cfg.gpu.expert_slots;
             if (!expert_pattern.empty()) {
                 buft_overrides[0].pattern = expert_pattern.c_str();
                 buft_overrides[0].buft = ggml_backend_cpu_buffer_type();
@@ -393,8 +406,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             }
             im.gpu_device = describe(gpu);
             im.gpu_name = gpu.name;
-            std::fprintf(stderr, "bmoe: gpu — offloading the dense path to %s%s\n", im.gpu_device.c_str(),
-                         expert_pattern.empty() ? "" : " (routed experts and the router pinned to CPU)");
+            const bool experts_on_device = cfg.gpu.experts || cfg.gpu.expert_slots > 0;
+            std::fprintf(stderr, "bmoe: gpu — offloading the %s path to %s%s\n",
+                         experts_on_device ? "dense and expert" : "dense", im.gpu_device.c_str(),
+                         expert_pattern.empty() ? ""
+                         : experts_on_device    ? " (only the router pinned to CPU)"
+                                                : " (routed experts and the router pinned to CPU)");
         }
     }
 
@@ -411,7 +428,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.arch = arch;
 
     const MoeRecipe * recipe = nullptr;
-    if (cfg.moe.enabled) {
+    if (cfg.moe.enabled || cfg.gpu.expert_slots > 0) {
         recipe = find_moe_recipe(arch);
         if (!recipe)
             return fail(std::string("no MoE recipe for architecture '") + arch +
@@ -446,7 +463,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
-    if (cfg.moe.enabled || compute_trace) {
+    // The GPU slot pool needs it for the same reason the streamer does: the expert tensors are only
+    // reachable by watching the graph go by.
+    if (cfg.moe.enabled || compute_trace || cfg.gpu.expert_slots > 0) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = im.hook.get();
     }
@@ -611,6 +630,72 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         }
 
         llama_memory_clear(llama_get_memory(ctx), true); // discard warm-up KV
+    }
+
+    if (cfg.gpu.expert_slots > 0) {
+#ifndef BMOE_HAVE_OPENCL_SLOT_HOOK
+        return fail("--gpu-expert-slots requires the bmoe llama.cpp fork (OpenCL slot hook not "
+                    "compiled in), and a build configured with -DBMOE_OPENCL=ON");
+#else
+        if (!recipe) return fail("--gpu-expert-slots needs a registered MoE architecture");
+
+        // Same capture warm-up the streamer does, and for the same reason: the expert tensors are
+        // only reachable through the graph. The routing must stay host-readable here too, since the
+        // slot pool rewrites it. The pool is armed first because this very decode already indexes
+        // the narrowed tensors with the model's full expert ids.
+        im.slot_pool = std::make_unique<GpuSlotPool>();
+        im.slot_pool->arm_for_capture(cfg.gpu.expert_slots);
+
+        im.hook->begin_capture();
+        llama_token warm_tok = llama_vocab_bos(im.vocab);
+        if (warm_tok < 0) warm_tok = 0;
+        llama_batch warm = llama_batch_get_one(&warm_tok, 1);
+        if (llama_decode(ctx, warm) != 0) return fail("capture warm-up decode failed");
+        im.hook->end_capture();
+
+        GgufOffsets offs = read_gguf_offsets(cfg.model_path.c_str());
+        if (!offs.ok) return fail("cannot read gguf offsets: " + cfg.model_path);
+
+        std::vector<LayerExperts> layers = im.hook->captured();
+        for (LayerExperts & L : layers) {
+            if (!L.bound) continue;
+            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                ggml_tensor * t = L.proj[p].tensor;
+                if (!t) continue;
+                auto it = offs.off_by_name.find(t->name);
+                if (it == offs.off_by_name.end()) return fail(std::string("no gguf offset for tensor ") + t->name);
+                L.proj[p].file_off = it->second;
+            }
+        }
+
+        // The pool reads whole expert slices, so it wants the same aligned direct path the streamer
+        // uses; a single lane is enough because a miss already blocks the GPU queue. An expert's
+        // offset is wherever the gguf put it, so the bounce has to hold a slice plus the alignment
+        // slop on both ends or every unaligned direct read fails.
+        size_t max_nb2 = 0;
+        for (const LayerExperts & L : layers) {
+            if (!L.bound) continue;
+            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                if (L.proj[p].tensor) max_nb2 = std::max(max_nb2, (size_t) L.proj[p].nb2);
+            }
+        }
+        const size_t align = 4096;
+        im.slot_reader = std::make_unique<FileReader>();
+        if (!im.slot_reader->open(cfg.model_path, /*lanes*/ 1, cfg.moe.o_direct, align, max_nb2 + 2 * align)) {
+            return fail("cannot open model for expert slot reads: " + cfg.model_path);
+        }
+
+        // From the file, not the model: the tensors were deliberately narrowed at load, so the
+        // model no longer knows how many experts the routing can name.
+        const int n_expert_total = gguf().n_expert;
+        if (n_expert_total <= 0) return fail("cannot read n_expert from the gguf");
+        if (!im.slot_pool->init(std::move(layers), n_expert_total, cfg.gpu.expert_slots, im.slot_reader.get())) {
+            return fail(im.slot_pool->error());
+        }
+        std::fprintf(stderr, "bmoe: gpu — %d of %d experts resident per layer\n", cfg.gpu.expert_slots, n_expert_total);
+
+        llama_memory_clear(llama_get_memory(ctx), true); // discard warm-up KV
+#endif
     }
 
     // Decode traces. Outside the streaming block on purpose: the compute trace measures the graph,
@@ -969,6 +1054,7 @@ RunResult Session::generate(const GenerateRequest & req,
     // for and the one the tok/s number is about.
     const long long prev_routed = im.hook->experts_routed();
     const long long prev_dropped = im.hook->experts_dropped();
+    const GpuSlotStats prev_slots = im.slot_pool ? im.slot_pool->stats() : GpuSlotStats{};
 
     for (int t = 0; t < req.n_predict; ++t) {
         // Greedy stays argmax (byte-identical to the resident reference the gates check); with a
@@ -1060,6 +1146,29 @@ RunResult Session::generate(const GenerateRequest & req,
     }
     s.experts_routed = im.hook->experts_routed() - prev_routed;
     s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
+    // The slot pool's stall is invisible to the streamer's counters (it happens inside the GPU
+    // dispatch), so it gets its own line: generation-phase deltas, stderr like the other reports.
+    if (im.slot_pool && n_gen > 0) {
+        const GpuSlotStats & now = im.slot_pool->stats();
+        const uint64_t lk = now.lookups - prev_slots.lookups;
+        const uint64_t rb = now.readbacks - prev_slots.readbacks;
+        const uint64_t hit = now.hits - prev_slots.hits;
+        const uint64_t miss = now.misses - prev_slots.misses;
+        const double up_mib = (double) (now.bytes_up - prev_slots.bytes_up) / (1024.0 * 1024.0);
+        const double stall_s = (double) (now.stall_ns - prev_slots.stall_ns) * 1e-9;
+        const double read_s = (double) (now.read_ns - prev_slots.read_ns) * 1e-9;
+        const double upload_s = (double) (now.upload_ns - prev_slots.upload_ns) * 1e-9;
+        const double map_s = stall_s - read_s - upload_s; // readback + id rewrite + LRU
+        std::fprintf(stderr,
+                     "gpu-slots: %llu lookups, %llu readbacks, hit %.1f%% (%llu/%llu), "
+                     "up %.1f MiB (%.2f MiB/tok)\n"
+                     "gpu-slots: stall %.3f s/tok = read %.3f + upload %.3f + map %.3f "
+                     "(read %.2f GiB/s, upload %.2f GiB/s)\n",
+                     (unsigned long long) lk, (unsigned long long) rb, hit + miss ? 100.0 * hit / (hit + miss) : 0.0,
+                     (unsigned long long) hit, (unsigned long long) (hit + miss), up_mib, up_mib / n_gen,
+                     stall_s / n_gen, read_s / n_gen, upload_s / n_gen, map_s / n_gen,
+                     read_s > 0 ? up_mib / 1024.0 / read_s : 0.0, upload_s > 0 ? up_mib / 1024.0 / upload_s : 0.0);
+    }
     if (sink) sink->on_summary(s);
 
     {

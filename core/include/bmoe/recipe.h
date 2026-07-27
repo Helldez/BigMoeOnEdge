@@ -65,4 +65,11 @@ std::string expert_tensor_pattern(const MoeRecipe & recipe);
 // depends on. It is the same seam, not a new one.
 std::string cpu_pinned_tensor_pattern(const MoeRecipe & recipe);
 
+// The router alone, for the placement where the routed experts are resident on the GPU rather than
+// streamed. Only the second reason above still applies then: nothing rebinds expert memory, so the
+// experts may live in device buffers, but the hook still reads `ffn_moe_topk-<il>` from the host
+// and that node's whole chain must stay CPU-side. Returns an empty string for a recipe naming no
+// experts, matching the convention of the patterns above.
+std::string router_pinned_tensor_pattern(const MoeRecipe & recipe);
+
 } // namespace bmoe

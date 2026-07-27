@@ -64,9 +64,27 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.gpu.n_layers < -1) {
         return fail("gpu.n_layers must be >= -1 (-1 = every layer the backend will take)");
     }
-    if (!cfg.gpu.enabled && (cfg.gpu.require || cfg.gpu.n_layers != -1)) {
-        return fail("gpu.require and gpu.n_layers are only meaningful with gpu.enabled: a run that "
-                    "did not ask for the GPU would silently ignore them.");
+    if (!cfg.gpu.enabled && (cfg.gpu.require || cfg.gpu.n_layers != -1 || cfg.gpu.experts || cfg.gpu.expert_slots)) {
+        return fail("gpu.require, gpu.n_layers, gpu.experts and gpu.expert_slots are only meaningful "
+                    "with gpu.enabled: a run that did not ask for the GPU would silently ignore them.");
+    }
+    if (cfg.gpu.expert_slots < 0) {
+        return fail("gpu.expert_slots must be >= 0 (0 = off)");
+    }
+    if (cfg.gpu.expert_slots > 0 && cfg.moe.enabled) {
+        return fail("gpu.expert_slots is itself an expert streaming mechanism and cannot run under "
+                    "the CPU streamer: the two would fetch the same experts into different places. "
+                    "Drop --moe-stream.");
+    }
+    if (cfg.gpu.expert_slots > 0 && cfg.gpu.experts) {
+        return fail("gpu.expert_slots and gpu.experts are two answers to the same question: the "
+                    "first holds a subset of the experts in device memory, the second holds all of "
+                    "them. Pick one.");
+    }
+    if (cfg.gpu.experts && cfg.moe.enabled) {
+        return fail("gpu.experts cannot be combined with the streamer: streaming rebinds expert "
+                    "memory to the native gguf layout, and a device buffer has no host address to "
+                    "rebind. Use gpu.experts only for a model whose experts fit in device memory.");
     }
 
     if (cfg.moe.enabled) {

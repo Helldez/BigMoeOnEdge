@@ -86,4 +86,9 @@ std::string cpu_pinned_tensor_pattern(const MoeRecipe & recipe) {
     return experts.substr(0, experts.size() - tail.size()) + "|ffn_gate_inp" + tail;
 }
 
+std::string router_pinned_tensor_pattern(const MoeRecipe & recipe) {
+    if (expert_tensor_pattern(recipe).empty()) return {};
+    return "\\.(ffn_gate_inp)\\.";
+}
+
 } // namespace bmoe

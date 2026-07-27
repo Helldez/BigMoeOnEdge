@@ -175,6 +175,21 @@ struct GpuConfig {
     // compares CPU against CPU is worse than one that refuses to start — the same reasoning that
     // makes DenseWeightsMode::Pinned fail rather than degrade.
     bool require = false;
+
+    // Let the routed experts live in device memory too, instead of pinning them to the CPU. Only
+    // legal when the streamer is off: streaming rebinds expert memory to the native gguf layout,
+    // and a device buffer has no host address to rebind. So this is the placement for a MoE whose
+    // experts fit in what the driver will allocate, and the way to measure the GPU's MoE matmul
+    // against the CPU's on equal terms. The router stays CPU-side either way.
+    bool experts = false;
+
+    // Hold the routed experts in device memory as a residency pool of this many experts per layer,
+    // filled from flash a slice at a time, instead of requiring the whole expert set to fit. 0 (the
+    // default) is off. This is the >RAM counterpart of `experts`: the model is loaded with narrowed
+    // expert tensors and the engine rewrites the routing to name slots. Needs a build carrying the
+    // OpenCL slot hook, and implies the experts are on the GPU, so it is refused together with
+    // `experts`.
+    int expert_slots = 0;
 };
 
 // A full run: model, prompt, decoding, streaming, telemetry.
