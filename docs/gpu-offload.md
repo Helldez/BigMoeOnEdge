@@ -136,31 +136,45 @@ One caveat for benchmarking: an OpenCL-enabled binary registers and initialises 
 startup whether or not the toggle is on, so it carries a fixed init cost the default build does not.
 Compare toggle-on against toggle-off **on the same binary**, not against a CPU-only build.
 
-## Status: measured, and it loses
+## Status: measured, currently behind the CPU, not yet settled
 
-**On a phone-class integrated GPU this is 2.6x SLOWER than the CPU**, and it degrades monotonically
-with how much is offloaded — 3.175 tok/s on the CPU, 2.985 at `--gpu-layers 12`, 1.207 with the
-whole dense path offloaded. Full numbers and method:
+Full numbers and method:
 [bench-data/2026-07-27-gpu-dense-offload](bench-data/2026-07-27-gpu-dense-offload/findings.md).
 
-It is not a correctness problem — the GPU run's output was token-identical to the CPU run's, which
-is the losslessness claim holding. It is simply not worth using on this class of device. Two costs
-compound, and both scale with the offload:
+| Config | tok/s | compute s/tok | majflt/token | graph splits |
+|---|---:|---:|---:|---:|
+| CPU | 3.175 | 0.124 | 0 | 1 |
+| `--gpu`, full context ubatch | 1.207 | 0.614 | 5 958 | 98 |
+| `--gpu`, capped ubatch | **2.752** | 0.188 | **1.06** | 98 |
 
-1. **The halves interleave.** A MoE layer is dense → experts → dense → experts, 48 times, so putting
-   the two halves on two devices crosses the boundary twice per layer: 98 graph splits against 1.
-   Every crossing copies and synchronises an activation.
-2. **The GPU has no memory of its own.** It shares the same LPDDR, so offloading does not relieve
-   memory pressure, it adds to it — 785 MiB of weights plus a fixed 1203 MiB compute buffer, on top
-   of the expert cache and the mmap'd model. That pushes the system into reclaim: **5 958 major
-   faults per token against zero on the CPU run**, reintroducing exactly the memory war that
-   `--dense-weights anon` exists to end.
+It is never a correctness problem — GPU output was token-identical to CPU output, which is the
+losslessness claim holding.
 
-The argument this feature was built on — the dense half is ~half the per-token arithmetic, and
-decode is compute-bound — is still true and turned out to be irrelevant. It was about *how much
-work* the dense half is, and said nothing about *where that work sits in the graph* or *what the
-accelerator costs to feed*. A byte-count argument is not a placement argument.
+**The first measured verdict was wrong about why.** It read as "2.6x slower, because the GPU shares
+the same LPDDR and adds memory pressure". Most of that pressure was self-inflicted: compute buffers
+are reserved for the worst-case graph, and this engine sets `n_ubatch = n_ctx` so any fitting prompt
+prefills in one pass. That reservation scales with the **context**, not with the offload — 1203 MiB
+at n_ctx 2048 against 301 MiB at 512, the same 4x the CPU path shows (320 → 80 MiB). Capping it took
+the offload from 1.207 to 2.752 tok/s and the fault storm from 5 958 to 1.06 per token. Hence
+`--ubatch N`, which is not a GPU fix — the CPU path is reserving 240 avoidable MiB of its own, and
+on this engine every MiB reserved is a MiB the expert cache does not get.
 
-What that leaves open: a discrete GPU with its own VRAM removes cost 2 entirely, so none of this
-transfers to a desktop; and prefill — batched and compute-bound, the regime a GPU is actually good
-at — is unmeasured, since every number here is decode.
+What remains is one cost, and it is the structural one: **the halves interleave.** A MoE layer is
+dense → experts → dense → experts, 48 times, so splitting them across two devices crosses the
+boundary twice per layer — 98 graph splits against 1 — and every crossing copies and synchronises an
+activation. That is the whole residual gap (compute 0.188 against 0.124).
+
+**Owed before this can be called either way:** a `--gpu-layers` sweep at a capped ubatch, above all
+`--gpu-layers 1`. That offloads only the output head — one large matmul at the end of the graph,
+with no expert layer after it to hand control back to — so it should pay 1-2 splits instead of 98
+while still moving real work off the CPU. If the residual really is all split cost, that is where
+the offload can win.
+
+Also still open: a discrete GPU with its own VRAM changes the memory story completely, so none of
+this transfers to a desktop; and prefill — batched and compute-bound, the regime a GPU actually
+suits — is unmeasured, since every number here is decode.
+
+The pre-measurement argument for the feature (the dense half is ~half the per-token arithmetic, and
+decode is compute-bound) remains true and remains insufficient: it was about *how much work* the
+dense half is, and said nothing about *where that work sits in the graph*. A byte-count argument is
+not a placement argument.

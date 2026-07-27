@@ -171,6 +171,21 @@ int main() {
         expect_fail("a NaN threshold is rejected", c);
     }
 
+    // n_ubatch: 0 follows the context; a value above it would reserve compute buffers for a batch
+    // that cannot occur, which inverts the memory saving the knob exists for.
+    {
+        RunConfig c = ok_base();
+        expect_ok("n_ubatch 0 (follow the context) is the default and valid", c);
+        c.n_ubatch = 512;
+        expect_ok("an n_ubatch below n_ctx is valid", c);
+        c.n_ubatch = c.n_ctx;
+        expect_ok("an n_ubatch equal to n_ctx is valid", c);
+        c.n_ubatch = c.n_ctx + 1;
+        expect_fail("an n_ubatch above n_ctx is rejected", c);
+        c.n_ubatch = -1;
+        expect_fail("a negative n_ubatch is rejected", c);
+    }
+
     // GPU offload. Availability is a runtime question, so validate() only settles coherence.
     {
         RunConfig c = ok_base();

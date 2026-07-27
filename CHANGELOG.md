@@ -29,15 +29,23 @@ Semantic Versioning.
   because linking it makes `libOpenCL` a hard load-time dependency: such a binary will not start on
   a device with no OpenCL driver, where the default build runs fine.
 
-  **Measured, and on a phone it loses: 2.6x slower than the CPU**, degrading monotonically with how
-  much is offloaded (3.175 tok/s CPU, 2.985 at `--gpu-layers 12`, 1.207 fully offloaded). Two costs
-  compound, both scaling with the offload: the dense and expert halves interleave at every layer, so
-  a two-device split crosses the boundary twice per layer (98 graph splits against 1); and the GPU
-  shares the same LPDDR, so its ~2 GiB of allocations add to memory pressure rather than relieving
-  it, producing 5 958 major faults per token against zero on the CPU run. Output was
-  token-identical, so this is a performance verdict and not a correctness one. The feature ships
-  gated and off so the measurement is reproducible, not because it is recommended. See
-  `docs/gpu-offload.md` and `docs/bench-data/2026-07-27-gpu-dense-offload/`.
+  **Measured on a phone: behind the CPU, and not yet settled.** 3.175 tok/s on the CPU against
+  2.752 with the dense path offloaded — a ~15% gap, once `--ubatch` below removed a self-inflicted
+  cost that had made it look like 2.6x. What remains is structural: the dense and expert halves
+  interleave at every layer, so a two-device split crosses the boundary twice per layer (98 graph
+  splits against 1) and each crossing copies an activation. The configuration that would settle it,
+  `--gpu-layers 1` (output head only, 1-2 splits instead of 98), is owed. Output is token-identical
+  throughout, so this is a performance question and never a correctness one. Ships gated and off so
+  the measurement is reproducible, not because it is recommended. See `docs/gpu-offload.md` and
+  `docs/bench-data/2026-07-27-gpu-dense-offload/`.
+- **`--ubatch N`: the widest graph computed at once, decoupled from the context.** Compute buffers
+  are reserved for the worst-case graph, and the engine had always set `n_ubatch = n_ctx` so that
+  any fitting prompt prefills in one pass — which quietly ties resident memory to the context
+  rather than to the work. Measured at n_ctx 2048: **320 MiB of CPU compute buffer, falling to
+  80 MiB at 512**; with a GPU in the graph, 1203 MiB falling to 301 MiB. On an engine whose whole
+  problem is that the expert cache and the dense weights compete for RAM, that is a real budget,
+  and it was invisible. Decode is unaffected — a decode graph is one token wide whatever this says;
+  the cost is prefill throughput. Default 0 keeps the previous behaviour exactly.
 - `BMOE_READY` gains `gpu`, and the metrics CSV preamble gains `gpu=`, both carrying the **resolved**
   device (empty / `cpu` when the dense path ran on the CPU). A run that asked for the GPU on a
   device without one records the fallback, so a bench cell can never be mistaken for a GPU cell it
