@@ -136,13 +136,31 @@ One caveat for benchmarking: an OpenCL-enabled binary registers and initialises 
 startup whether or not the toggle is on, so it carries a fixed init cost the default build does not.
 Compare toggle-on against toggle-off **on the same binary**, not against a CPU-only build.
 
-## Status
+## Status: measured, and it loses
 
-Implemented and gated; **not yet measured on device**. The prize argued above is an inference from
-the byte split and the compute/stall attribution, not a number anyone has run. Two things worth
-checking first, because either could sink it:
+**On a phone-class integrated GPU this is 2.6x SLOWER than the CPU**, and it degrades monotonically
+with how much is offloaded — 3.175 tok/s on the CPU, 2.985 at `--gpu-layers 12`, 1.207 with the
+whole dense path offloaded. Full numbers and method:
+[bench-data/2026-07-27-gpu-dense-offload](bench-data/2026-07-27-gpu-dense-offload/findings.md).
 
-- decode is batch-1, i.e. GEMV, which is memory-bound — a GPU's advantage there is bandwidth, not
-  FLOPs, and it shares the same LPDDR;
-- Adreno's `CL_DEVICE_MAX_MEM_ALLOC_SIZE` may sit below the dense footprint, in which case
-  `--gpu-layers N` (offload the last N only) is the knob.
+It is not a correctness problem — the GPU run's output was token-identical to the CPU run's, which
+is the losslessness claim holding. It is simply not worth using on this class of device. Two costs
+compound, and both scale with the offload:
+
+1. **The halves interleave.** A MoE layer is dense → experts → dense → experts, 48 times, so putting
+   the two halves on two devices crosses the boundary twice per layer: 98 graph splits against 1.
+   Every crossing copies and synchronises an activation.
+2. **The GPU has no memory of its own.** It shares the same LPDDR, so offloading does not relieve
+   memory pressure, it adds to it — 785 MiB of weights plus a fixed 1203 MiB compute buffer, on top
+   of the expert cache and the mmap'd model. That pushes the system into reclaim: **5 958 major
+   faults per token against zero on the CPU run**, reintroducing exactly the memory war that
+   `--dense-weights anon` exists to end.
+
+The argument this feature was built on — the dense half is ~half the per-token arithmetic, and
+decode is compute-bound — is still true and turned out to be irrelevant. It was about *how much
+work* the dense half is, and said nothing about *where that work sits in the graph* or *what the
+accelerator costs to feed*. A byte-count argument is not a placement argument.
+
+What that leaves open: a discrete GPU with its own VRAM removes cost 2 entirely, so none of this
+transfers to a desktop; and prefill — batched and compute-bound, the regime a GPU is actually good
+at — is unmeasured, since every number here is decode.

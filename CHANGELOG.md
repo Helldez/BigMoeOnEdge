@@ -27,10 +27,17 @@ Semantic Versioning.
 
   Off by default at every level. The OpenCL backend is opt-in at build time (`-DBMOE_OPENCL=ON`)
   because linking it makes `libOpenCL` a hard load-time dependency: such a binary will not start on
-  a device with no OpenCL driver, where the default build runs fine. See `docs/gpu-offload.md` for
-  the build recipe and, importantly, for what is **not** yet known — this ships gated and measured
-  on nothing; the argument for it is the byte split plus the compute/stall attribution, not a
-  benchmark.
+  a device with no OpenCL driver, where the default build runs fine.
+
+  **Measured, and on a phone it loses: 2.6x slower than the CPU**, degrading monotonically with how
+  much is offloaded (3.175 tok/s CPU, 2.985 at `--gpu-layers 12`, 1.207 fully offloaded). Two costs
+  compound, both scaling with the offload: the dense and expert halves interleave at every layer, so
+  a two-device split crosses the boundary twice per layer (98 graph splits against 1); and the GPU
+  shares the same LPDDR, so its ~2 GiB of allocations add to memory pressure rather than relieving
+  it, producing 5 958 major faults per token against zero on the CPU run. Output was
+  token-identical, so this is a performance verdict and not a correctness one. The feature ships
+  gated and off so the measurement is reproducible, not because it is recommended. See
+  `docs/gpu-offload.md` and `docs/bench-data/2026-07-27-gpu-dense-offload/`.
 - `BMOE_READY` gains `gpu`, and the metrics CSV preamble gains `gpu=`, both carrying the **resolved**
   device (empty / `cpu` when the dense path ran on the CPU). A run that asked for the GPU on a
   device without one records the fallback, so a bench cell can never be mistaken for a GPU cell it

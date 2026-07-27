@@ -102,10 +102,14 @@ every streaming setting — the two halves of the model do not overlap — and i
 it changes where the arithmetic runs, not what is computed. Roughly half the per-token work moves,
 because a MoE uses all of its dense weights on every token but only `k/n_expert` of its experts.
 
-Two things to know before reading a result from it. It needs a GPU-enabled build
-(`pwsh scripts/build-android.ps1 -OpenCL`, after `pwsh scripts/fetch-opencl-android.ps1`) **and** a
-device with an OpenCL driver; the setting reports the device it actually got and warns when a
-session asked for the GPU and fell back to the CPU, so trust that line rather than the switch. And
-it is **not yet measured** — see `../../docs/gpu-offload.md` for what is argued versus what is
-known, including why the batch-1 decode case may not favour a GPU as much as the byte split
-suggests.
+It needs a GPU-enabled build (`pwsh scripts/build-android.ps1 -OpenCL`, after
+`pwsh scripts/fetch-opencl-android.ps1`) **and** a device with an OpenCL driver; the setting reports
+the device it actually got and warns when a session asked for the GPU and fell back to the CPU, so
+trust that line rather than the switch.
+
+**Measured on a phone, it is 2.6x slower than leaving everything on the CPU**, so the toggle exists
+to reproduce that result rather than because it is recommended. The GPU shares the same memory, so
+its allocations add to the memory pressure this engine already fights (5 958 major faults per token
+against zero), and the dense and expert halves interleave at every layer, so a two-device split
+crosses the boundary twice per layer. Output is unaffected — it is slower, not wrong. See
+`../../docs/gpu-offload.md`.
