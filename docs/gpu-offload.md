@@ -90,6 +90,38 @@ behind it — everything links, nothing crashes, no GPU is ever found.
 Host builds take `-DBMOE_OPENCL=ON` the same way; `scripts/build-host.sh` and CI pass no GGML flags,
 so the default host build and the byte-identity gates are untouched.
 
+### The Android linker step everyone hits
+
+OpenCL is **not** an NDK library, and an Android app cannot load `/vendor/lib64/libOpenCL.so`
+just because the file exists. Without the right declaration the dynamic linker fails the process
+before `main` in one of two ways, both confusing:
+
+```
+library "libOpenCL.so" not found: needed by libggml-opencl.so in namespace (default)
+cannot locate symbol "_ZN7android15PermissionCache15checkPermission..." referenced by libgui.so
+```
+
+The second one appears when `LD_LIBRARY_PATH` is widened to `/vendor/lib64:/system/lib64` to get
+past the first: the loader then pulls the Adreno driver's own graphics dependencies into the app's
+namespace, where they cannot resolve. Widening the path further does not fix it, and neither does
+`LD_PRELOAD` — it is a namespace problem, not a search-path one.
+
+The actual fix is one manifest line (already in the example app):
+
+```xml
+<uses-native-library android:name="libOpenCL.so" android:required="false" />
+```
+
+This works only if the driver is listed in the device's `/vendor/etc/public.libraries.txt`, which is
+what makes a vendor library loadable by apps at all. Check before assuming:
+
+```
+adb shell cat /vendor/etc/public.libraries.txt | grep -i opencl
+```
+
+`required="false"` keeps the app installable on devices without it. Note the declaration is what
+lets the app's spawned `bmoe-cli` link — the engine runs as a subprocess of the app, not via JNI.
+
 ## Reading what happened
 
 Never trust the request — read the resolution:

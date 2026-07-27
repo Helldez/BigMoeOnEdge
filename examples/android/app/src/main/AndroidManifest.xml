@@ -23,6 +23,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.BigMoeOnEdge">
 
+        <!-- The GPU build's OpenCL backend needs the vendor driver, which is not an NDK library.
+             It IS listed in the device's /vendor/etc/public.libraries.txt on GPUs that expose it,
+             and this is the declaration that puts such a library in the app's linker namespace.
+             required=false so the app still installs and runs on devices without it. -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
