@@ -1,0 +1,96 @@
+Console summaries for the runs behind findings.md (2026-07-27).
+
+Device-identifying banner lines are deliberately omitted; the hardware is described
+generically in findings.md. The per-token CSVs in this directory are the primary
+record — every aggregate quoted below was re-derived from them and matches.
+
+Model: Qwen3.6-35B-A3B Q4_0 (20.8 GB, arch qwen35moe, 40 layers, 256 experts, top-8).
+Prompt: "Explain gravity in one paragraph.", 96 tokens generated, -c 2048 --ubatch 256.
+
+================================================================================
+A/B, instrumented: GPU slot pool (24 slots) vs CPU expert streaming
+Same binary, same model, same prompt, back to back. The CPU cell ran SECOND,
+i.e. on a hotter device, and still won.
+================================================================================
+
+--- cell A - GPU: --gpu-require --gpu-expert-slots 24
+gpu-slots: 11520 lookups, 3840 readbacks, hit 56.5% (17353/30720), up 22725.2 MiB (236.72 MiB/tok)
+gpu-slots: stall 0.731 s/tok = read 0.302 + upload 0.406 + map 0.023 (read 0.77 GiB/s, upload 0.57 GiB/s)
+generation: 96 tokens, 0.975 s/token (1.026 tok/s)
+compute: 15.8% CPU occupancy (0.6171 cpu-s/token over 4 threads), 0.02 major faults/token
+prefill: 7 tokens, 11.686 s (0.6 tok/s) | model load 54.680 s | TTFT 66.366 s
+
+--- cell B - CPU: --moe-stream --cache-mb 2000 --io-threads 4 --overlap --dense-weights anon
+generation: 96 tokens, 0.213 s/token (4.689 tok/s)
+compute: 71.6% CPU occupancy (0.6107 cpu-s/token over 4 threads), 0.00 major faults/token
+prefill: 7 tokens, 2.734 s (2.6 tok/s) | model load 27.054 s | TTFT 29.789 s
+moe-stream: read 22627.7 MiB (235.71 MiB/token), decode 0.213 s/token (compute 0.126 + cache mgmt 0.031 + flash I/O 0.319 s/token, 739 MiB/s)
+moe-cache: 54.4% hit, resident 1998.4 MiB
+moe-overlap: stall 0.057 s/token (flash reads overlapped with FFN compute)
+
+Note on reading cell A's CSV: the streamer is off in slot mode, so the streamer's
+own counters (read_bytes, cache_hit_pct, io_ms) are zero and compute_ms degenerates
+to wall_ms. The slot pool's I/O is reported by the gpu-slots lines instead — which
+is why that instrumentation had to be added before the comparison meant anything.
+
+================================================================================
+Palindrome: dense output head on GPU (--gpu-layers 1) vs CPU, both with the full
+CPU streaming recipe plus --drop-cold-experts 0.75. Order: hyb, cpu, cpu, hyb.
+scaling_max_freq is logged per cell because the SoC changed clock state mid-sweep;
+compare within a clock state, not across.
+================================================================================
+
+START 21:02:19
+=== mt-hyb-210219 21:02:19 freq=3033600
+rc=0 21:03:22
+generation: 96 tokens, 0.197 s/token (5.064 tok/s)
+compute: 58.8% CPU occupancy (0.4647 cpu-s/token over 4 threads), 7.11 major faults/token
+prefill: 7 tokens, 1.836 s (3.8 tok/s) | model load 40.745 s | TTFT 42.582 s
+moe-stream: read 11802.9 MiB (122.95 MiB/token), decode 0.197 s/token (compute 0.141 + cache mgmt 0.017 + flash I/O 0.204 s/token, 602 MiB/s)
+moe-cache: 68.2% hit, resident 1998.5 MiB
+moe-overlap: stall 0.039 s/token (flash reads overlapped with FFN compute)
+moe-drop: 5920/30720 routed experts dropped (19.3%), threshold 0.75 x uniform
+=== mt-cpu-210437 21:04:37 freq=3033600
+rc=0 21:05:14
+generation: 96 tokens, 0.157 s/token (6.383 tok/s)
+compute: 79.1% CPU occupancy (0.4955 cpu-s/token over 4 threads), 0.29 major faults/token
+prefill: 7 tokens, 1.838 s (3.8 tok/s) | model load 18.841 s | TTFT 20.679 s
+moe-stream: read 11802.9 MiB (122.95 MiB/token), decode 0.157 s/token (compute 0.098 + cache mgmt 0.013 + flash I/O 0.202 s/token, 609 MiB/s)
+moe-cache: 68.2% hit, resident 1998.5 MiB
+moe-overlap: stall 0.046 s/token (flash reads overlapped with FFN compute)
+moe-drop: 5920/30720 routed experts dropped (19.3%), threshold 0.75 x uniform
+=== mt-cpu-210629 21:06:29 freq=2265600
+rc=0 21:07:16
+generation: 96 tokens, 0.181 s/token (5.528 tok/s)
+compute: 70.1% CPU occupancy (0.5069 cpu-s/token over 4 threads), 0.49 major faults/token
+prefill: 7 tokens, 1.798 s (3.9 tok/s) | model load 26.516 s | TTFT 28.313 s
+moe-stream: read 11802.9 MiB (122.95 MiB/token), decode 0.181 s/token (compute 0.131 + cache mgmt 0.015 + flash I/O 0.179 s/token, 686 MiB/s)
+moe-cache: 68.2% hit, resident 1998.5 MiB
+moe-overlap: stall 0.035 s/token (flash reads overlapped with FFN compute)
+moe-drop: 5920/30720 routed experts dropped (19.3%), threshold 0.75 x uniform
+=== mt-hyb-210831 21:08:31 freq=2265600
+rc=0 21:09:40
+generation: 96 tokens, 0.214 s/token (4.663 tok/s)
+compute: 62.4% CPU occupancy (0.5353 cpu-s/token over 4 threads), 1.65 major faults/token
+prefill: 7 tokens, 4.872 s (1.4 tok/s) | model load 42.541 s | TTFT 47.413 s
+moe-stream: read 11802.9 MiB (122.95 MiB/token), decode 0.214 s/token (compute 0.157 + cache mgmt 0.020 + flash I/O 0.211 s/token, 582 MiB/s)
+moe-cache: 68.2% hit, resident 1998.5 MiB
+moe-overlap: stall 0.038 s/token (flash reads overlapped with FFN compute)
+moe-drop: 5920/30720 routed experts dropped (19.3%), threshold 0.75 x uniform
+ALLDONE 21:10:55
+
+================================================================================
+Full dense offload (--gpu-require, all 40 layers) at the same settings, for the
+2265600 kHz clock state — compare against the mt-cpu-210629 cell above.
+================================================================================
+
+=== dense-gpu 21:14:05 freq=2265600
+rc=0
+generation: 96 tokens, 0.246 s/token (4.062 tok/s)
+compute: 49.5% CPU occupancy (0.4875 cpu-s/token over 4 threads), 9.95 major faults/token
+prefill: 7 tokens, 1.690 s (4.1 tok/s) | model load 51.588 s | TTFT 53.278 s
+moe-stream: read 12320.2 MiB (128.34 MiB/token), decode 0.246 s/token (compute 0.192 + cache mgmt 0.024 + flash I/O 0.208 s/token, 618 MiB/s)
+moe-cache: 67.0% hit, resident 1998.3 MiB
+moe-overlap: stall 0.030 s/token (flash reads overlapped with FFN compute)
+moe-drop: 5956/30720 routed experts dropped (19.4%), threshold 0.75 x uniform
+ALLDONE freq=2265600

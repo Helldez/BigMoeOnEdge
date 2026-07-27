@@ -1,9 +1,22 @@
-# GPU offload of the dense path
+# GPU offload
 
-`--gpu` runs the **non-expert** half of the model on a GPU. The routed experts always stay on the
-CPU. That split is not a tuning choice, and this document is mostly about why.
+`--gpu` runs the **non-expert** half of the model on a GPU. By default the routed experts stay on
+the CPU, and the first half of this document is about why that default is the right one. Two flags
+move them anyway: `--gpu-experts` for a model whose experts fit in device memory, and
+`--gpu-expert-slots N` for one whose experts do not.
 
-## Why the experts can never move
+> **Measured verdict, and read it before reaching for any flag here: on an integrated mobile GPU,
+> decode is slower at every placement we tried** — experts streamed into device memory 0.22×, full
+> dense offload 0.73×, output head alone 0.80×, and even the whole model resident with nothing
+> streamed ~0.79×, all against the CPU-only path on the same device. Batch-1 decode is
+> bandwidth-bound matrix-vector work and an integrated GPU shares the CPU's memory, so there is no
+> bandwidth to win. These flags exist because the question deserved an answer with numbers behind
+> it, not because they are recommended. The GPU's one unrefuted advantage is batched **prefill**
+> (~2.3×), which is a different measurement and still open. Evidence:
+> [bench-data/2026-07-27-gpu-expert-slots](bench-data/2026-07-27-gpu-expert-slots/findings.md) and
+> [bench-data/2026-07-27-gpu-dense-offload](bench-data/2026-07-27-gpu-dense-offload/findings.md).
+
+## Why the experts cannot simply move
 
 The streamer works by rebinding an expert tensor's `->data` to a host buffer it refills from flash
 before every token (see [seam.md](seam.md)). This works because the CPU backend reads that pointer
@@ -17,8 +30,11 @@ no `CL_MEM_USE_HOST_PTR`, no SVM, no dma-buf import — so a weight in device me
 once at load. A streamed expert placed there would silently compute whatever the warm-up decode
 left behind, forever.
 
-The deeper reason survives any future backend that fixed the pointer question: the upload-once model
-assumes the weights fit. A 22 GB model on a 12 GB phone is the case this engine exists for.
+That argument is about **rebinding a pointer**, and it still holds. What it does not rule out is
+rebinding the *contents*, which is what `--gpu-expert-slots` does — see below.
+
+The other reason stands on its own: the upload-once model assumes the weights fit. A 22 GB model on
+a 12 GB phone is the case this engine exists for, and no amount of pointer trickery creates memory.
 
 ## Why the dense half is worth moving anyway
 
@@ -121,6 +137,60 @@ adb shell cat /vendor/etc/public.libraries.txt | grep -i opencl
 
 `required="false"` keeps the app installable on devices without it. Note the declaration is what
 lets the app's spawned `bmoe-cli` link — the engine runs as a subprocess of the app, not via JNI.
+
+## Moving the experts anyway
+
+Two flags, for two different situations. Both leave the **router** on the CPU: the hook reads
+`ffn_moe_topk-<il>` from the host, and a routing node computed on a device backend has no host
+address to read.
+
+`--gpu-experts` is for a MoE whose experts fit in what the driver will allocate. It simply stops
+pinning them, so the expert matmuls run on the device. It is refused together with `--moe-stream`,
+because that combination is the impossible one described above.
+
+`--gpu-expert-slots N` is for a MoE whose experts do not fit — the case this engine exists for. The
+model is loaded with each routed-expert tensor narrowed to `N` experts along dim 2 rather than
+`n_expert` (`llama_model_params::moe_expert_slots`), turning it into a residency pool. The engine
+keeps an LRU over those slots, reads a missing expert's slice from flash with O_DIRECT and writes it
+into a slot, then rewrites the routing so the dispatch names slots instead of experts. The weights
+never move; their *contents* do.
+
+Two properties make this cheap. The backend's convert kernels address the expert dimension as a
+whole multiple of the per-slice size and never read `ne02`, so one expert can be converted into an
+arbitrary slot with nothing but sub-buffer offsets — no new kernels. And the router keeps the full
+expert count, because `build_moe_ffn` takes it as an argument rather than from the tensor.
+
+**Sizing matters more than anything else.** `N` must clear one token's working set — `k` experts per
+layer — or the pool hits exactly 0%, the same cliff the CPU cache has. On Qwen3.6-35B-A3B (k=8) the
+difference between `N=8` and `N=24` is 0.720 → 1.116 tok/s (+55%). One slot costs
+`sum over projections of bytes-per-expert`, times the layer count: ~70 MiB on that model, so the
+~4.5 GiB a phone GPU reports leaves room for roughly 35 once the dense half is resident.
+
+### Measured status: correct, and not a speed win
+
+Bit-exact and producing coherent text, at **1.026 tok/s against 4.689 for the CPU streaming path on
+the same model, same binary, same bytes off the flash** (Q4_0, 24 slots; full numbers and raw data
+in [bench-data/2026-07-27-gpu-expert-slots](bench-data/2026-07-27-gpu-expert-slots/findings.md)).
+
+The token decomposes as compute 0.244 + flash read 0.302 + slice upload 0.406 + id readback 0.023
+seconds. Two of those are worth stating precisely, because both contradict what was expected:
+
+- **The per-layer synchronisation is not the problem.** Draining the GPU queue so the host can read
+  the routing costs 2.4% of the token. The published prior art that killed this design on another
+  backend measured ~400 µs per sync; here it is noise.
+- **The upload is the problem, but fixing it is not enough.** It runs at 0.57 GiB/s against 4.8–5.9
+  GiB/s of raw device bandwidth, because every projection of every miss pays a blocking write plus a
+  blocking convert dispatch. Yet even with upload *and* read set to zero the GPU still owes
+  0.267 s/token — 3.7 tok/s — which is below what the CPU path already delivers.
+
+The floor underneath is the compute: 0.244 s/token against the CPU's 0.126, uniform across all 40
+layers. Batch-1 decode is matrix-vector work bound by memory bandwidth, and an integrated GPU reads
+the same LPDDR as the CPU while adding per-dispatch overhead and a format it cannot read natively.
+
+So this path is a **research result, not a recommendation**, and the same is true of every other GPU
+placement measured on this device — full dense offload is −27% and even offloading the output head
+alone is −16 to −21%. Decode belongs to the CPU here. The GPU's one unrefuted advantage is batched
+**prefill**, which is measured at ~2.3× and is the experiment still worth running.
 
 ## Reading what happened
 

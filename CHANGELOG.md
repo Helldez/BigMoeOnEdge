@@ -7,6 +7,38 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **`--gpu-expert-slots N`: routed experts streamed into GPU memory, for a model that does not fit.**
+  Each expert tensor is loaded narrowed to `N` experts instead of `n_expert`, becoming a residency
+  pool; the engine runs an LRU over the slots, reads a missing expert's slice from flash with
+  O_DIRECT, writes it into a slot, and rewrites the routing so the dispatch names slots. The weights
+  never move, their contents do — which is why the "experts can never leave the CPU" argument in
+  `docs/gpu-offload.md`, an argument about rebinding a *pointer*, does not apply.
+
+  Validated end to end on a 20.8 GB MoE with 256 experts held 24 at a time: bit-exact slice writes,
+  coherent output. **It is not a speed win, and the measurements say it cannot become one**:
+  1.026 tok/s against 4.689 for the CPU streaming path at matched bytes-off-flash and matched hit
+  rate. The token is compute 0.244 + flash read 0.302 + upload 0.406 + id readback 0.023 s. The
+  readback — the per-layer synchronisation the published prior art died on — is 2.4% of the token,
+  so that objection is refuted; the upload is the real cost and is recoverable engineering. But even
+  with upload and read set to zero the floor is 0.267 s/token (3.7 tok/s), below what the CPU path
+  already delivers, because batch-1 decode is bandwidth-bound and an integrated GPU shares the CPU's
+  memory. Sizing is the one large lever inside the design: `N` below one token's working set (`k`
+  experts per layer) hits exactly 0%, the same cliff the CPU cache has; `N=8` → `N=24` is +55%.
+
+  Shipped as a documented negative result. See
+  `docs/bench-data/2026-07-27-gpu-expert-slots/findings.md`.
+
+- **`--gpu-experts`: the routed experts can run on the GPU too.** The pin that keeps them on the CPU
+  exists because the streamer rebinds their memory, so it only binds while the streamer is on. For a
+  MoE whose experts fit in what the driver will allocate, `--gpu-experts` leaves only the router
+  CPU-side (the hook still reads `ffn_moe_topk-<il>` from the host) and hands the expert matmuls to
+  the device. It is refused together with `--moe-stream` rather than silently ignored. This is the
+  placement that makes the GPU's MoE matmul measurable against the CPU's on equal terms; on the test
+  device that comparison favours the CPU for decode and the GPU for prefill.
+
+  Unlike `--gpu-expert-slots`, this one needs nothing beyond the public API — it is a buffer-type
+  override derived from the architecture recipe, like the pin it replaces.
+
 - **`--gpu`: the dense half of the model can run on a GPU.** The routed experts always stay on the
   CPU, and structurally must — the streamer rebinds their `->data` to host buffers it refills every
   token, while a GPU backend copies weights into device memory once at load and never re-reads the
