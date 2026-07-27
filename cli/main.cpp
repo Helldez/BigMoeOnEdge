@@ -324,6 +324,11 @@ static void print_usage(const char * argv0) {
         "  -n, --n-predict N       tokens to generate (default 128)\n"
         "  -t, --threads N         compute threads (default 4)\n"
         "  -c, --ctx-size N        context size (default 2048)\n"
+        "      --ubatch N          widest graph computed at once (0 = as wide as the context).\n"
+        "                          Compute buffers are reserved for it, so a smaller value hands\n"
+        "                          RAM back to the expert cache at the cost of prefill speed;\n"
+        "                          decode is unaffected. Measured: a context of 2048 reserves\n"
+        "                          320 MiB, falling to 80 MiB at 512.\n"
         "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
         "      --no-think          render the chat template with reasoning disabled\n"
         "      --progress          emit machine telemetry (one JSON line per token)\n"
@@ -362,7 +367,7 @@ static void print_usage(const char * argv0) {
         "                          reclaim hits zram not flash — the win on >RAM models;\n"
         "                          ahwb = as anon, but into dma-buf memory the kernel may not reclaim\n"
         "                          at all — not even to zram, which is what anon still pays for.\n"
-        "                          Android-only; measured +17.9% on a long generation, off by default)\n"
+        "                          Android-only; measured +17.9%% on a long generation, off by default)\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -412,6 +417,8 @@ int main(int argc, char ** argv) {
             cfg.n_threads = std::atoi(next("-t"));
         else if (a == "-c" || a == "--ctx-size")
             cfg.n_ctx = std::atoi(next("-c"));
+        else if (a == "--ubatch")
+            cfg.n_ubatch = std::atoi(next("--ubatch"));
         else if (a == "--n-expert-used")
             cfg.n_expert_used = std::atoi(next("--n-expert-used"));
         else if (a == "--temp")

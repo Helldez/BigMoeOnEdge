@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **`--ubatch N`: the widest graph computed at once, decoupled from the context.** Compute buffers
+  are reserved for the worst-case graph, and the engine had always set `n_ubatch = n_ctx` so that
+  any fitting prompt prefills in one pass — which quietly ties **resident memory** to the context
+  rather than to the work. Measured at n_ctx 2048: **320 MiB of compute buffer, falling to 80 MiB
+  at 512**, scaling exactly with the context. On an engine whose whole problem is that the expert
+  cache and the dense weights compete for RAM, that is a real budget, and it was invisible.
+  Decode is unaffected — a decode graph is one token wide whatever this says; the cost is prefill
+  throughput, which processes a long prompt in more, smaller passes. Default 0 keeps the previous
+  behaviour exactly.
+
+  Found while chasing what looked like a catastrophic slowdown and turned out to be this
+  reservation pushing an already-tight system into reclaim — nearly 6 000 major faults per token,
+  none of them the workload's fault.
+
+### Fixed
+- A stray `%` in the `--dense-weights` help text was read by `printf` as a conversion specifier, so
+  that line printed garbage and read past the argument list.
+- `scripts/build-android.ps1` now judges `cmake` by its exit code instead of by whether it wrote to
+  stderr, so it works under Windows PowerShell 5.1 and not only under `pwsh` (the NDK toolchain
+  prints progress to stderr, which 5.1 turns into a terminating error).
+
 ## [0.15.1] - 2026-07-23
 
 ### Added
