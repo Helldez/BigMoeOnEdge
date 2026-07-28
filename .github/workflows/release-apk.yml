@@ -1,0 +1,126 @@
+# Builds the example-app APKs for a published release and attaches them to it.
+#
+# Runs from a clean checkout of the release tag, so no local build residue can ride into a
+# published artifact (a stale cmake cache once shipped an OpenCL backend nobody chose — see
+# CHANGELOG 2026-07-28). Signing uses the stable release keystore from repository secrets:
+# the same key every release, so an APK update installs over the previous one without an
+# uninstall (which would wipe downloaded models).
+#
+# Secrets:
+#   RELEASE_KEYSTORE_B64      base64 of bmoe-release.jks
+#   RELEASE_KEYSTORE_PASSWORD store password
+#   RELEASE_KEY_ALIAS         key alias
+#   RELEASE_KEY_PASSWORD      key password
+name: release-apk
+
+on:
+  release:
+    types: [published]
+  # Manual re-run for an existing release (e.g. to rebuild assets for an old tag).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and upload assets for"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  NDK_VERSION: "27.2.12479018"
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install NDK and ninja
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
+          sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      # Mirrors scripts/build-android.ps1: same flags, same explicit staging list.
+      # Keep the two in sync — this one produces what users actually install.
+      - name: Build bmoe-cli (arm64)
+        run: |
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          cmake -S . -B build-android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-29 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBMOE_BUILD_TESTS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DGGML_OPENCL=OFF \
+            -DGGML_OPENMP=OFF \
+            -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" \
+            -DLLAMA_CURL=OFF
+          cmake --build build-android -j
+
+      - name: Stage jniLibs
+        run: |
+          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
+          JNI=examples/android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p "$JNI" && rm -f "$JNI"/*.so
+          cp build-android/cli/bmoe-cli "$JNI/libbmoe-cli.so"
+          for f in libggml.so libggml-base.so libggml-cpu.so libllama.so libllama-common.so; do
+            src=$(find build-android -name "$f" | head -1)
+            test -n "$src" || { echo "$f not found"; exit 1; }
+            cp "$src" "$JNI/$f"
+          done
+          cp "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$JNI/"
+
+      - name: Materialize signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > examples/android/bmoe-release.jks
+          cat > examples/android/keystore.properties <<EOF
+          storeFile=bmoe-release.jks
+          storePassword=${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.RELEASE_KEY_ALIAS }}
+          keyPassword=${{ secrets.RELEASE_KEY_PASSWORD }}
+          EOF
+
+      - name: Build APKs
+        run: |
+          cd examples/android
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDevRelease assembleDevDebug
+
+      # The whole point of building on CI: fail if anything but the chosen libraries is inside.
+      - name: Verify APK contents
+        run: |
+          APK=examples/android/app/build/outputs/apk/dev/release/app-dev-release.apk
+          unzip -l "$APK" | grep 'lib/arm64-v8a/'
+          if unzip -l "$APK" | grep -q libggml-opencl; then
+            echo "stray OpenCL backend in APK"; exit 1
+          fi
+
+      - name: Upload assets to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OUT=examples/android/app/build/outputs/apk/dev
+          gh release upload "${{ steps.tag.outputs.tag }}" \
+            "$OUT/release/app-dev-release.apk" \
+            "$OUT/debug/app-dev-debug.apk" \
+            --clobber
