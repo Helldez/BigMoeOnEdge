@@ -53,6 +53,10 @@ RunResult run(const RunConfig & cfg,
     req.n_predict = cfg.n_predict;
     req.think = cfg.think;
     req.clear_kv = true;
+    // Only --progress reads the per-token parsed answer; the plain path writes `piece` as it goes,
+    // and a benchmark run reads neither. Building it re-parses the whole generation every token, so
+    // an unread one is O(n²) of nothing. The final answer is parsed once at the end either way.
+    req.render_text = cfg.progress;
 
     return session->generate(req, on_token, sink);
 }

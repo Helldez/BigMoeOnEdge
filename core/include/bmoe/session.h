@@ -82,6 +82,13 @@ struct GenerateRequest {
     int n_predict = 32;
     bool think = true;
     bool clear_kv = true;
+    // Populate TokenMetrics::text / ::reasoning on every token. Building them means parsing the
+    // WHOLE generation so far — the chat parser cannot resume — so it is O(n) per token and O(n²)
+    // over a turn, and in chat mode it also allocates a copy of everything generated. A UI that
+    // renders a running answer needs it; a consumer that only concatenates `piece` (the CLI's
+    // default output, and every benchmark run) does not, and should turn it off. Default on so an
+    // embedder that does not know about this flag keeps the old behaviour.
+    bool render_text = true;
 };
 
 class Session {

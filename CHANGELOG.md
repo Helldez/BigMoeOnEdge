@@ -40,6 +40,10 @@ Semantic Versioning.
   byte plus a leading partial-block over-read, in the mode that is already the slow one. Buffered
   reads now go straight into the caller's memory, and report the bytes they actually moved rather
   than a window they never pulled.
+- **`--compute-trace` and `--io-trace` are no longer ignored in `--session` mode.** The CLI parsed
+  the flags, opened the files and wrote their headers, then dropped both sinks on the floor when it
+  entered the session loop — leaving an empty trace and nothing saying why. Both are now passed
+  through, so they work in a session exactly as in a one-shot run.
 - **A missing buffered tail fd is reported where it happens.** Its open was unchecked, and a read
   reaching the file's sub-alignment EOF tail then fell back to the O_DIRECT fd — which must reject a
   length that short — surfacing fd exhaustion as an unexplained read failure. It is now reported at
@@ -65,6 +69,16 @@ Semantic Versioning.
   Registration and publication are both sequentially consistent, so the two cannot miss each other:
   either the waiter sees the flag already set and never sleeps, or the publisher sees the
   registration and notifies.
+- **The generation loop stops re-parsing the whole answer for readers that do not exist.** Building
+  a token's rendered view means parsing everything generated so far — the chat parser cannot resume
+  — so it costs O(n) per token, O(n²) over a turn, and off the chat path it was a full copy of the
+  generation on top. It ran unconditionally, including for the plain CLI output that writes only
+  `piece` and for every benchmark run, which read neither field. `GenerateRequest::render_text` now
+  says whether anything will read it: the line protocol sets it (a UI renders a running answer), the
+  default CLI path and `run()` without `--progress` do not. It defaults to on, so an embedder that
+  has never heard of the flag keeps the previous behaviour.
+- **The finished answer is parsed once instead of twice.** The returned text and the history commit
+  asked the same question of the same string and each paid its own full non-partial parse.
 - `vm_reserve` maps with `MAP_NORESERVE`, making the address-only contract true rather than
   true-by-default: the expert cache reserves each span at full size and commits only resident
   slices, so the untouched remainder should never be charged against a strict overcommit limit.
