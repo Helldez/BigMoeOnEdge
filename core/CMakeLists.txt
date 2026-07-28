@@ -15,6 +15,9 @@ target_include_directories(bmoe_core PUBLIC
 
 target_compile_features(bmoe_core PUBLIC cxx_std_17)
 
+# One source of truth for the version: the CMake project version reaches the code only here.
+target_compile_definitions(bmoe_core PUBLIC BMOE_VERSION="${PROJECT_VERSION}")
+
 if(BMOE_HAVE_LLAMA)
     target_sources(bmoe_core PRIVATE
         src/io/platform_io.cpp

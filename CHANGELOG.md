@@ -6,6 +6,29 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **`loop_overhead_ms` — the time the reported `tok/s` never counted.** `wall_ms` brackets
+  `llama_decode` and nothing else, which is what makes `compute_ms` a clean residual; it also means
+  everything *between* two decodes — sampling, detokenization, rendering the answer for a UI, the
+  sink writes — falls outside `wall_ms`, outside `gen_seconds` and so outside `tok/s` entirely. A
+  change that moved only that region was invisible in `s/tok` while being paid on every token. It is
+  now a CSV column, plus `loop_overhead_s/tok` in the summary (which also carries the tail after the
+  last token that no row can hold). Read next to `s/tok`: the two together are what a caller waits
+  through.
+- **The metrics CSV records the whole run configuration, and says which engine produced it.** The
+  preamble had 18 keys and had gone stale against the last several releases: `--ubatch` (which sets
+  the compute-buffer reservation, and so moves the very memory columns underneath it),
+  `--predict-log`, `--predict-spec-max`, `--prefetch-sync`, `--drop-no-renorm`, `--drop-in-prefill`,
+  `--cache-floor-mb`, `--load-all`, every sampling parameter and the trace granularity were all
+  absent — so a file could not tell a probed run from a benchmark run, or a stochastic run from a
+  greedy one. All are now recorded (`# bmoe_metrics v2`), along with `engine=<version>`.
+  `think` is deliberately still absent: it belongs to a request, not a session.
+  The preamble itself is now documented in [docs/telemetry.md](docs/telemetry.md), which described
+  every other `#` block but not this one.
+- **`bmoe-cli --version`**, and a project version in CMake for it to report. There was no version
+  string anywhere in the engine; a committed benchmark CSV could only be dated by the commit that
+  copied it in.
+
 ### Fixed
 - **Router weights are located by the routing's shape, not by a test a top-1 routing defeats.** The
   helper that finds token `j`'s slot `k` inside a weight node told the 3-D `[1, nu, nt]` node from

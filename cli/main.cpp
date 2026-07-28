@@ -14,6 +14,7 @@
 #include "bmoe/metrics.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
+#include "bmoe/version.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -584,6 +585,9 @@ int main(int argc, char ** argv) {
             return 0;
         } else if (a == "-h" || a == "--help") {
             print_usage(argv[0]);
+            return 0;
+        } else if (a == "--version") {
+            std::printf("%s\n", bmoe::version());
             return 0;
         } else {
             std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
