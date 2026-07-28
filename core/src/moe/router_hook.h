@@ -330,9 +330,14 @@ private:
     // node of the layer's weight chain, and the ids/weights are edited there, before the expert
     // matmul consumes either. Which node is terminal depends on the model's gating (norm, softmax,
     // scaled, or none of them), so it is LEARNED from the graph rather than tabulated per
-    // architecture: term_node_[il] fills in on the first graph, and until it does the layer loads
+    // architecture: term_variant_[il] fills in on the first graph, and until it does the layer loads
     // at its topk node undropped, exactly as with the policy off. That costs the first token of a
     // run its dropping and nothing else.
+    //
+    // A terminal node is remembered as the INDEX of its name in kWeightNodes, not as the name: the
+    // four chain names are mutually exclusive, so the index identifies it exactly, and recording it
+    // costs neither an allocation nor a string compare on a path that runs for every weight node of
+    // every layer of every token.
     float drop_frac_ = 0.0f;
     bool drop_renorm_ = true;
     bool drop_prefill_ = false;
@@ -346,12 +351,12 @@ private:
         bool deferred = false;       // true when load_layer is waiting for the terminal weight node
     };
     PendingDrop drop_;
-    std::vector<std::string> term_node_; // per layer, "" until learned
-    std::string chain_last_;             // last weight node seen for drop_.layer while its chain runs
-    std::vector<int32_t> drop_ids_;      // this layer's routed ids, kept across the deferral
-    std::vector<float> drop_w_;          // scratch: the final weights
-    std::vector<uint8_t> drop_res_;      // scratch: residency of each routed id
-    std::vector<uint8_t> drop_mask_;     // scratch: which slots this layer dropped
+    std::vector<int8_t> term_variant_; // per layer, -1 until learned
+    int8_t chain_last_ = -1;           // last weight node seen for drop_.layer while its chain runs
+    std::vector<int32_t> drop_ids_;    // this layer's routed ids, kept across the deferral
+    std::vector<float> drop_w_;        // scratch: the final weights
+    std::vector<uint8_t> drop_res_;    // scratch: residency of each routed id
+    std::vector<uint8_t> drop_mask_;   // scratch: which slots this layer dropped
 
     // Route trace. All of this is inert unless trace_on_.
     bool trace_on_ = false;
