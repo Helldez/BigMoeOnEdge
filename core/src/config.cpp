@@ -110,6 +110,15 @@ ValidationResult validate(const RunConfig & cfg) {
                         "speculative reads land in the per-layer cache buffers, which do not exist "
                         "with the cache off.");
         }
+        if (m.io_two_wave && !m.overlap) {
+            return fail("moe.io_two_wave requires moe.overlap: without overlap the caller drains the "
+                        "batch synchronously and there is no lane idling on the publish to wake early.");
+        }
+        if (m.io_two_wave && !cache_on) {
+            return fail("moe.io_two_wave requires the LRU cache (cache_mb > 0 or cache_auto): the wave "
+                        "split exists to move per-expert page commits off the publish path, and the "
+                        "shared-slot path has none.");
+        }
         if (m.predict_spec_max < 0 || m.predict_spec_max > 8) {
             return fail("moe.predict_spec_max must be in [0, 8] (0 = retention only, no speculation)");
         }

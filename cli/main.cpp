@@ -402,6 +402,9 @@ static void print_usage(const char * argv0) {
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
+        "      --io-two-wave       publish a layer's first-projection reads before committing the\n"
+        "                          rest, so the lanes start sooner (needs --overlap and the cache;\n"
+        "                          experimental, off by default pending the on-device A/B)\n"
         "      --prefetch K        temporally prefetch the next K layers' experts (needs the cache)\n"
         "      --drop-cold-experts F  skip a routed expert that is a cache MISS and carries less than\n"
         "                          F x (1/top-k) of the routing's weight. F in (0, 1]; 1.0 is the\n"
@@ -592,6 +595,8 @@ int main(int argc, char ** argv) {
             cfg.moe.force_cache = true;
         else if (a == "--overlap")
             cfg.moe.overlap = true;
+        else if (a == "--io-two-wave")
+            cfg.moe.io_two_wave = true;
         else if (a == "--prefetch")
             cfg.moe.prefetch_layers = std::atoi(next("--prefetch"));
         else if (a == "--prefetch-sync") // debug: complete speculative reads synchronously

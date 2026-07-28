@@ -6,6 +6,18 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **`--io-two-wave` — publish a layer's read batch in two waves (experimental, off by default).**
+  A cold layer's batch used to become visible to the I/O lanes only after every miss took its page
+  commits — roughly two dozen syscalls of bookkeeping sitting in front of the first byte of I/O on
+  an eight-miss layer, which is exactly the latency-to-first-slice the sidecar refutation
+  identified as the binding constraint (#118). With the flag on, the first projection's jobs (the
+  ones `mul_mat_id` blocks on first) are committed and published immediately, and the remaining
+  projections are committed and appended while the lanes already read. The drain protocol grew the
+  one thing it needed — a worker that finished wave one comes back for a batch that grew in the
+  same generation — and a new gate (`G4d`) holds the two-wave output byte-identical to serial
+  streaming. Off by default until the on-device A/B (#120) says the bounded win is real.
+
 ### Changed
 - **`BMOE_PROGRESS` carries the answer as a delta, not cumulatively.** Every per-token line
   repeated the whole answer and reasoning so far, so a generation of n tokens wrote, JSON-escaped

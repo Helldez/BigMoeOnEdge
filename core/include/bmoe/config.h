@@ -71,6 +71,15 @@ struct MoeStreamConfig {
     // Requires the Helldez/llama.cpp fork submodule (the hook); run() fails fast otherwise.
     bool overlap = false;
 
+    // Two-wave batch publish (#118). A layer's read batch normally becomes visible to the I/O
+    // lanes only after ALL of its staging finished — up to three page-commit syscalls per cold
+    // expert sitting in front of the first byte of I/O, on the latency-to-first-slice path the
+    // sidecar refutation identified as the binding constraint. With this on, the jobs of the
+    // first projection (the one mul_mat_id blocks on first) are committed and published
+    // immediately, and the remaining projections are committed and appended while the lanes
+    // already read. Overlap + LRU cache only. Default off pending the on-device A/B.
+    bool io_two_wave = false;
+
     // Temporal prefetch: while a token computes layer l, speculatively read on the idle I/O
     // lanes the experts the PREVIOUS token routed at layers l+1..l+prefetch_layers, betting on
     // the strong temporal locality of routing. A correct guess turns the next layer's read into
