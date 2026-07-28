@@ -880,9 +880,10 @@ RunResult Session::generate(const GenerateRequest & req,
         tally.prev_mgmt_s = st0.mgmt_seconds;
         tally.prev_stall_s = st0.stall_seconds;
     }
-    long long prev_spec_bytes = moe.enabled ? (long long) im.source.stats().spec_read_bytes : 0;
-    long long prev_spec_experts = moe.enabled ? im.source.stats().spec_experts : 0;
-    long long prev_spec_useful = moe.enabled ? im.source.stats().spec_useful : 0;
+    const IExpertSource::Stats st_spec0 = moe.enabled ? im.source.stats() : IExpertSource::Stats{};
+    long long prev_spec_bytes = (long long) st_spec0.spec_read_bytes;
+    long long prev_spec_experts = st_spec0.spec_experts;
+    long long prev_spec_useful = st_spec0.spec_useful;
     // Taken after prefill, so the drop counters describe generation — the phase the policy is armed
     // for and the one the tok/s number is about.
     const long long prev_routed = im.hook->experts_routed();
@@ -931,7 +932,9 @@ RunResult Session::generate(const GenerateRequest & req,
         m.step = n_gen;
         m.steps = req.n_predict;
         m.piece = delta;
-        {
+        // Only when someone will read it: the parser cannot resume, so this re-parses everything
+        // generated so far on every token, and off the chat path it is a full copy of the same.
+        if (req.render_text) {
             ShownView sv = shown_view(gen, /*partial*/ true);
             m.text = std::move(sv.content);
             m.reasoning = std::move(sv.reasoning);
@@ -992,10 +995,26 @@ RunResult Session::generate(const GenerateRequest & req,
     }
     if (sink) sink->on_summary(s);
 
-    {
-        ShownView sv = shown_view(gen, /*partial*/ false);
-        res.generated_text = std::move(sv.content);
-        res.reasoning_text = std::move(sv.reasoning);
+    // One non-partial parse of the finished generation, shared by the returned text and the history
+    // commit below. They asked the same question of the same string and each paid a full parse for
+    // it; a reasoning model's answer is the whole turn's output, so that was not a small double.
+    common_chat_msg final_msg;
+    bool final_parsed = false;
+    if (chat_on && !prefilled_answer) {
+        try {
+            final_msg = common_chat_parse(gen, /*is_partial*/ false, parse_params);
+            final_parsed = true;
+        } catch (const std::exception & e) {
+            detail::warn_parse_failed_once(e.what());
+        }
+    }
+    if (final_parsed) {
+        res.generated_text = final_msg.content;
+        res.reasoning_text = final_msg.reasoning_content;
+    } else {
+        // Not chat, a prefilled turn (the stream IS the answer), or a parse that threw: the raw
+        // generation stands on its own, exactly as shown_view would have reported it.
+        res.generated_text = gen;
     }
 
     if (res.cancelled) {
@@ -1005,20 +1024,15 @@ RunResult Session::generate(const GenerateRequest & req,
     } else if (chat_on) {
         // Commit the assistant turn to the running conversation. Parsing separates a thinking
         // model's reasoning from the answer; the next turn re-renders history from these messages.
+        // Reuses the parse above. A prefilled turn has no turn header in the stream to parse — the
+        // generation is the answer verbatim — and is committed without the prefill, so history holds
+        // a normal assistant message and the next turn re-renders cleanly whatever this turn's think
+        // setting was. A parse that threw falls back the same way.
         common_chat_msg assistant;
-        if (prefilled_answer) {
-            // Prefilled turn: no turn header in the stream to parse; the generation is the answer
-            // verbatim. It is committed without the prefill, so history holds a normal assistant
-            // message and the next turn re-renders cleanly whatever this turn's think setting was.
+        if (final_parsed)
+            assistant = std::move(final_msg);
+        else
             assistant.content = gen;
-        } else {
-            try {
-                assistant = common_chat_parse(gen, /*is_partial*/ false, parse_params);
-            } catch (const std::exception & e) {
-                detail::warn_parse_failed_once(e.what());
-                assistant.content = gen;
-            }
-        }
         assistant.role = "assistant";
         im.chat_history.push_back(assistant);
     }

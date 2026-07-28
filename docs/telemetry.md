@@ -364,6 +364,8 @@ stalls, the matmuls) is pooled into it.
 Both are **diagnostics, not telemetry**, and both perturb what they measure. **A traced run is not
 a benchmark run.** Read the shares, not the absolutes.
 
+Both work in `--session` mode too, appending across turns like the per-token CSV.
+
 ### `--compute-trace` — one row per graph node
 
 Returning `true` from the eval callback makes ggml compute exactly up to that node, synchronize,

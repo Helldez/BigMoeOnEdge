@@ -194,11 +194,15 @@ struct SessionCmd {
 // Interactive session: keep the model loaded and the expert cache warm across prompts, reading
 // one JSON request per line from stdin and emitting the BMOE_* line protocol on stdout. See
 // docs/telemetry.md. Returns the process exit code.
-static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTraceSink * route_trace) {
+static int run_session_loop(const RunConfig & cfg,
+                            IMetricsSink * sink,
+                            IRouteTraceSink * route_trace,
+                            IComputeTraceSink * compute_trace,
+                            IIoTraceSink * io_trace) {
     const SessionConfig sc = session_config_from(cfg);
 
     std::string error;
-    std::unique_ptr<Session> session = Session::open(sc, error, route_trace);
+    std::unique_ptr<Session> session = Session::open(sc, error, route_trace, compute_trace, io_trace);
     if (!session) {
         std::printf("BMOE_ERROR {\"id\":0,\"fatal\":true,\"msg\":\"%s\"}\n", json_escape(error).c_str());
         std::fflush(stdout);
@@ -278,6 +282,7 @@ static int run_session_loop(const RunConfig & cfg, IMetricsSink * sink, IRouteTr
         req.n_predict = cmd.n_predict;
         req.think = cmd.think;
         req.clear_kv = cmd.clear_kv;
+        req.render_text = true; // the line protocol carries the parsed answer on every token
 
         RunResult r = session->generate(req, emit_progress_line, sink);
         if (!r) {
@@ -657,7 +662,7 @@ int main(int argc, char ** argv) {
     // Interactive session: one persistent process serves many prompts over stdin, keeping the
     // model loaded and the expert cache warm between them. Prompts arrive as JSON requests, not
     // via -p. This is a superset of --progress output (BMOE_* lines), so it never streams inline.
-    if (session_mode) return run_session_loop(cfg, sink.get(), route_trace.get());
+    if (session_mode) return run_session_loop(cfg, sink.get(), route_trace.get(), compute_trace.get(), io_trace.get());
 
     if (!cfg.progress) {
         std::printf("%s", cfg.prompt.c_str());
