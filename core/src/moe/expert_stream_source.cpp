@@ -12,6 +12,10 @@
 #include <thread>
 #include <utility>
 
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <intrin.h> // _mm_pause for the readiness spin-wait
+#endif
+
 namespace bmoe {
 
 using clock_t_ = std::chrono::steady_clock;
@@ -178,8 +182,10 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
             const LayerExperts & L = layers_[il];
             if (!L.bound) continue;
             for (int p = 0; p < MoeRecipe::max_exps; ++p)
-                if (L.proj[p].tensor) texp_[(const void *) L.proj[p].tensor] = ((uint32_t) il << 8) | (uint32_t) p;
+                if (L.proj[p].tensor)
+                    texp_.emplace_back((const void *) L.proj[p].tensor, ((uint32_t) il << 8) | (uint32_t) p);
         }
+        std::sort(texp_.begin(), texp_.end());
     }
 
     // Hand the dense (non-expert) weights to their policy module: it warms them into the page cache,
@@ -628,7 +634,7 @@ uint64_t ExpertStreamSource::expert_bytes(int il) const {
 
 // The cache accounting both load paths share. See the header for why this is the part that is shared
 // and the job emission is not. Eval-thread only, like every other LRU mutation.
-bool ExpertStreamSource::touch_entry(int il, int e, bool & hit) {
+bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote) {
     const int32_t id = il * n_expert_ + e;
     clookups_++;
     cstamp_[id] = cgen_;
@@ -638,8 +644,10 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit) {
             spec_useful_.fetch_add(1);
             cspec_[id] = 0;
         }
-        lru_unlink(id);
-        lru_push_front(id);
+        if (promote) {
+            lru_unlink(id);
+            lru_push_front(id);
+        }
         hit = true;
         return true;
     }
@@ -859,7 +867,9 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
         seen_.assign(seen_.size(), 0); // reuse as a per-staged miss marker keyed by expert
         for (int e : staged_) {
             bool hit = false;
-            if (!touch_entry(il, e, hit)) {
+            // promote=false: the token-major loop below re-orders every touched id anyway, so a
+            // hit-path LRU move here was k wasted pointer operations per layer per token.
+            if (!touch_entry(il, e, hit, /*promote=*/false)) {
                 // Nothing waits on a flag we will never publish: abort the graph instead.
                 fatal_.store(true, std::memory_order_release);
                 return false;
@@ -885,10 +895,9 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
 
         // Promote every touched expert in raw id order (token-major) so the LRU order reflects
         // the LAST token that used it, not the sorted/first-touch order staged_ imposes — this
-        // keeps the prompt tail's experts hot across prefill. Bookkeeping only; every id staged
-        // above is now valid and linked. In decode (n=1) this is a no-op reshuffle when the ids are
-        // distinct, and an idempotent re-promote of the same entry when cache-aware dropping has
-        // repointed a slot at the routing's top expert.
+        // keeps the prompt tail's experts hot across prefill. This loop is the ONLY promotion on
+        // this path (touch_entry above runs with promote=false); every id staged above is valid
+        // and linked, a miss by its initial push, so unlink here is always legal.
         // Skipped in load_all (everything is resident, so LRU order is meaningless).
         if (!load_all_) {
             for (int i = 0; i < n_ids; ++i) {
@@ -930,11 +939,29 @@ void ExpertStreamSource::c_expert_ready(const ggml_tensor * src0, int expert, vo
     static_cast<ExpertStreamSource *>(user_data)->on_expert_ready(src0, expert);
 }
 
+// One idle beat of the spin-wait below: keep the core out of the sibling threads' way without
+// entering the scheduler. yield() is a syscall; these are single instructions.
+static inline void cpu_relax() {
+#if defined(__aarch64__)
+    __asm__ __volatile__("isb" ::: "memory");
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#if defined(_MSC_VER)
+    _mm_pause();
+#else
+    __builtin_ia32_pause();
+#endif
+#else
+    std::this_thread::yield();
+#endif
+}
+
 // Called from EVERY compute thread, for each routed expert, before it reads that expert's rows.
 // Blocks until the expert's slice for the layer in flight is resident (or the run goes fatal).
 void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
-    auto it = texp_.find((const void *) src0);
-    if (it == texp_.end()) return; // not one of our streamed expert tensors
+    const void * key = (const void *) src0;
+    auto it = std::lower_bound(texp_.begin(), texp_.end(), key,
+                               [](const std::pair<const void *, uint32_t> & a, const void * k) { return a.first < k; });
+    if (it == texp_.end() || it->first != key) return; // not one of our streamed expert tensors
     const uint32_t packed = it->second;
     const int il = (int) (packed >> 8);
     const int p = (int) (packed & 0xff);
@@ -953,14 +980,17 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
     if (ready_[idx].gen.load(std::memory_order_acquire) == want) return; // already resident
 
     const auto t0 = clock_t_::now();
-    // Short spin first: a slice usually lands within microseconds, cheaper than a syscall.
-    for (int s = 0; s < 2048; ++s) {
+    // Short spin first: a slice usually lands within microseconds, cheaper than a syscall. The
+    // beat is a pause instruction, not yield() — 2048 yields burnt up to a millisecond of
+    // sched_yield churn per genuinely slow slice, stealing CPU from the I/O lanes and the
+    // sibling compute threads that would have finished the slice sooner.
+    for (int s = 0; s < 256; ++s) {
         if (ready_[idx].gen.load(std::memory_order_acquire) == want || fatal_.load(std::memory_order_acquire)) {
             stall_ns_.fetch_add(
                 (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
             return;
         }
-        std::this_thread::yield();
+        cpu_relax();
     }
     // Register as a waiter BEFORE the last look at the flag. The publisher sets the flag before it
     // reads this count, and both sides are seq_cst, so one of the two must observe the other: either

@@ -293,20 +293,22 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
     const auto t_load0 = clock_t_::now();
 
-    // The gguf header answers three separate questions below — the arch-prefixed key for a top-k
-    // override, the route trace's effective top-k, and the run info's top-k/expert count — and each
-    // used to reopen and reparse the file for its own answer. Read it at most once, lazily: the
-    // callers are conditional (a run with no override and no trace asks nothing), so an eager read
-    // would be work the common path never needs.
-    GgufModelInfo gguf_info;
-    bool gguf_info_read = false;
-    auto gguf = [&]() -> const GgufModelInfo & {
-        if (!gguf_info_read) {
-            gguf_info = read_gguf_model_info(cfg.model_path.c_str());
-            gguf_info_read = true;
+    // The gguf header answers several separate questions below — the arch-prefixed key for a
+    // top-k override, the route trace's effective top-k, the run info's top-k/expert count, and
+    // the streamer's per-tensor file offsets — and each used to reopen and reparse the file for
+    // its own answer. Parse it at most once, lazily: the callers are conditional (a run with no
+    // override, no trace and no streaming asks nothing), so an eager read would be work the
+    // common path never needs. One parse serves both the model info and the offsets.
+    GgufMeta gguf_meta;
+    bool gguf_meta_read = false;
+    auto meta = [&]() -> const GgufMeta & {
+        if (!gguf_meta_read) {
+            gguf_meta = read_gguf_meta(cfg.model_path.c_str());
+            gguf_meta_read = true;
         }
-        return gguf_info;
+        return gguf_meta;
     };
+    auto gguf = [&]() -> const GgufModelInfo & { return meta().info; };
 
     // Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
     // q4_K buffer would break the rebind), experts on CPU.
@@ -434,7 +436,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         if (llama_decode(ctx, warm) != 0) return fail("capture warm-up decode failed");
         im.hook->end_capture();
 
-        GgufOffsets offs = read_gguf_offsets(cfg.model_path.c_str());
+        const GgufOffsets & offs = meta().offsets;
         if (!offs.ok) return fail("cannot read gguf offsets: " + cfg.model_path);
 
         std::vector<LayerExperts> layers = im.hook->captured();
