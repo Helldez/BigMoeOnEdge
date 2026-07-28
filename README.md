@@ -349,7 +349,14 @@ What makes it worth reading is that the engine is candid about its own numbers. 
 particular, isn't measured: it's whatever time is left once the measured parts come out, so it
 silently absorbs page faults and throttled cores. Rather than let that pass, the engine ships the
 counters that pull the residual apart, and marks anything it couldn't measure as unmeasured instead
-of quietly reporting zero.
+of quietly reporting zero. That candour extends to the headline: tok/s times the decode and nothing
+else, so the sampling, detokenizing and rendering between one token and the next fall outside it —
+the engine reports that time too, rather than letting work hide in the gap.
+
+Every metrics file also states the run that produced it — the engine version and the full resolved
+configuration, including whether the run was instrumented or sampled, because such a run is not a
+benchmark run. Two files put side by side answer "which is faster" only if something says what
+differed between them, and by the time a file is read the command line that made it is long gone.
 
 When the per-token split isn't enough, two diagnostics go further: one records what the router
 asked for on every token, the other times the compute graph node by node. Both perturb the run they
