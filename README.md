@@ -355,6 +355,12 @@ The model must live on a real filesystem (on Android `/data/local/tmp/...`, not 
 `--moe-stream` for the plain mmap baseline. The byte-identity gates (streamed == resident) run with
 `cd build && ctest --output-on-failure` (needs `python3` with the `gguf` package).
 
+Platform status: Linux is exercised by CI (build + gates) and Windows is where the
+[desktop numbers](#desktop) were measured. On Windows, build with CMake directly (Visual Studio
+Build Tools); the script above is bash, and MSVC puts the binary in `build\cli\Release\bmoe-cli.exe`.
+macOS builds from the same sources (the platform branches exist) but is not validated, and it has
+no O_DIRECT, so direct reads fall back to buffered I/O there.
+
 ### Android
 
 The demo app is in [`examples/android`](examples/android): build the CLI for arm64 with
