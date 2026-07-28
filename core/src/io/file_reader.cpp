@@ -75,6 +75,11 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
             close();
             return false;
         }
+        // Not fatal — the buffered fd is only needed for a read that runs into a sub-alignment EOF
+        // tail, which expert slices never do. But say so here, where the cause (fd pressure) is still
+        // visible, rather than leaving a later tail read to fail with an unexplained EINVAL.
+        if (direct_ && !pio::fd_ok(fds_buf_[lane]))
+            std::fprintf(stderr, "bmoe: lane %d buffered tail fd unavailable — EOF-tail reads will fail\n", lane);
         bounces_[lane] = pio::alloc_aligned(align_, bounce_cap);
         if (!bounces_[lane]) {
             std::fprintf(stderr, "bmoe: lane %d bounce alloc failed\n", lane);
@@ -88,11 +93,41 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
 
 long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) {
     if (nbytes == 0) return 0;
+    const pio::fd_t fd = fds_[lane];
+
+    // Buffered mode: no alignment constraint, so the bounce buys nothing. Read straight into the
+    // caller's memory. This is the fallback path (the platform refused O_DIRECT, or the open-time
+    // verify caught storage that mis-serves it) and is already the slow mode — it must not also pay
+    // an extra copy of every byte plus a leading partial-block over-read just to share the mechanics
+    // O_DIRECT needs.
+    if (!direct_) {
+        const uint64_t end = (fsize_ && off + nbytes > fsize_) ? fsize_ : off + nbytes;
+        const auto t0 = clock_t_::now();
+        for (uint64_t a = off; a < end;) {
+            long long got = pio::pread_at(fd, (char *) dst + (a - off), (size_t) (end - a), a);
+            if (got <= 0) {
+                std::fprintf(stderr, "bmoe: pread failed at %llu\n", (unsigned long long) a);
+                return -1;
+            }
+            a += (uint64_t) got;
+        }
+        const auto t1 = clock_t_::now();
+        syscall_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+        const long long moved = (long long) (end - off);
+        read_bytes_.fetch_add(moved);
+        return moved; // no aligned window here: what was asked for is what was pulled
+    }
+
     const uint64_t a0 = off & ~(uint64_t) (align_ - 1);
     const uint64_t a1 = (off + nbytes + align_ - 1) & ~(uint64_t) (align_ - 1);
     const size_t len = (size_t) (a1 - a0);
     if (bounce_sz_[lane] < len) {
+        // Clear the size BEFORE the allocation: on failure the lane must look empty, not keep
+        // advertising the freed buffer's capacity — a later smaller read would skip the realloc and
+        // pread into a null pointer, turning one transient OOM into a permanently dead lane.
         if (bounces_[lane]) pio::aligned_free(bounces_[lane]);
+        bounces_[lane] = nullptr;
+        bounce_sz_[lane] = 0;
         bounces_[lane] = pio::alloc_aligned(align_, len);
         if (!bounces_[lane]) {
             std::fprintf(stderr, "bmoe: bounce realloc %zu failed\n", len);
@@ -101,10 +136,9 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
         bounce_sz_[lane] = len;
     }
     char * b = (char *) bounces_[lane];
-    const pio::fd_t fd = fds_[lane];
     const pio::fd_t fd_buf = fds_buf_[lane];
     const uint64_t read_end = (fsize_ && a1 > fsize_) ? fsize_ : a1;
-    const uint64_t bulk_end = direct_ ? (read_end & ~(uint64_t) (align_ - 1)) : read_end;
+    const uint64_t bulk_end = read_end & ~(uint64_t) (align_ - 1);
 
     const auto t0 = clock_t_::now();
     for (uint64_t a = a0; a < bulk_end;) {
@@ -115,8 +149,14 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
         }
         a += (uint64_t) got;
     }
+    if (bulk_end < read_end && !pio::fd_ok(fd_buf)) {
+        // The O_DIRECT fd would reject the sub-alignment length outright; say what is actually wrong.
+        std::fprintf(stderr, "bmoe: EOF tail at %llu needs the buffered fd, which failed to open\n",
+                     (unsigned long long) bulk_end);
+        return -1;
+    }
     for (uint64_t a = bulk_end; a < read_end;) { // sub-alignment EOF tail via the buffered fd
-        long long got = pio::pread_at(pio::fd_ok(fd_buf) ? fd_buf : fd, b + (a - a0), (size_t) (read_end - a), a);
+        long long got = pio::pread_at(fd_buf, b + (a - a0), (size_t) (read_end - a), a);
         if (got <= 0) {
             std::fprintf(stderr, "bmoe: tail pread failed at %llu\n", (unsigned long long) a);
             return -1;

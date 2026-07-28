@@ -16,12 +16,16 @@
 #include <cstring>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <ctime>
 #ifndef O_DIRECT
 #define O_DIRECT 0
 #endif
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
+#endif
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0 // absent on some BSDs; the mapping is simply charged as usual there
 #endif
 #if defined(__ANDROID__)
 #include <android/hardware_buffer.h> // reclaim-exempt allocation; see pinned_alloc
@@ -171,9 +175,11 @@ long long pread_at(fd_t fd, void * buf, size_t count, uint64_t off) {
 }
 
 uint64_t file_size(fd_t fd) {
-    off_t sz = lseek(fd, 0, SEEK_END);
-    lseek(fd, 0, SEEK_SET);
-    return sz > 0 ? (uint64_t) sz : 0;
+    // fstat rather than a seek pair: every consumer reads with pread, so the fd's file position is
+    // never used — and mutating shared fd state to answer a question about the file is a trap waiting
+    // for the first caller that does rely on the position.
+    struct stat st;
+    return fstat(fd, &st) == 0 && st.st_size > 0 ? (uint64_t) st.st_size : 0;
 }
 
 void * alloc_aligned(size_t align, size_t sz) {
@@ -189,7 +195,11 @@ size_t vm_page() {
     return ps > 0 ? (size_t) ps : 4096;
 }
 void * vm_reserve(size_t sz) {
-    void * p = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // MAP_NORESERVE makes the "address-only" contract true rather than merely true-by-default: these
+    // spans are reserved at full expert-set size but only ever committed for resident slices, so the
+    // untouched remainder must not be charged against the commit limit (which is what strict
+    // overcommit would do, refusing a reservation the cache never intends to fill).
+    void * p = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     return p == MAP_FAILED ? nullptr : p;
 }
 bool vm_commit(void * /*p*/, size_t /*sz*/) {
