@@ -38,6 +38,23 @@ What follows from that:
   slice, so the pipeline stalls. Bandwidth is not the binding constraint; latency-to-ready is.
   Closed unmerged (PR #90, tag `expert-sidecar-refuted`); full data in
   [bench-data/2026-07-20-sidecar/findings.md](bench-data/2026-07-20-sidecar/findings.md).
+- **Reading a slice straight into the cache buffer — blocked by the gguf's own offsets
+  (2026-07-28).** Every streamed byte is pulled into a per-lane bounce buffer and then memcpy'd to
+  its cache slot, so the CPU touches it twice; at 100-200 MB/token that copy is not free, and it
+  lands on the I/O lanes, which under overlap run alongside a decode that is already compute-bound.
+  Skipping it needs the read to be block-aligned at all three of offset, length and destination.
+  Measured on the three shipped models: **bytes-per-expert is 4096-aligned, the tensor's file
+  offset is not** — 512 (Qwen3-30B), 1152 (Qwen3.6-35B), 2272 (gpt-oss-120b) — because gguf aligns
+  tensor data to `general.alignment` (32), not to a device block. So an O_DIRECT window must round
+  outward and always spills one block into the *neighbouring experts'* bytes.
+
+  Writing that spill is content-identical (the cache buffer mirrors the file layout), but it is not
+  safe here: those pages belong to other cache entries, which may have been evicted, and touching
+  them would fault a page back with nothing accounting for it — putting the residency budget out of
+  step with what is actually resident. The trick that would make it work (offsetting each buffer's
+  base by `file_off % align` so the destination inherits the file's misalignment) does not remove
+  the spill, only its size. Not built: the win is a memcpy, the risk is the memory accounting the
+  whole engine's budget rests on, and it cannot be judged without a device.
 - The remaining gap between the engine's effective rate and the drive's is **duty cycle, not
   bandwidth**, and is not yet honestly sized: the ceiling itself falls by a third once the device
   is hot, so engine and microbench must be measured interleaved at matched entry state. Owed.
