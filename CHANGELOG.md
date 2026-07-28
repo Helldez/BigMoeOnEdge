@@ -89,6 +89,7 @@ Semantic Versioning.
 - `BMOE_READY` gains `n_expert_used`, the effective routing width after any override (0 on a non-MoE
   model), so a UI can interpret the setting at all; `Session::n_expert_used()` exposes the same to
   embedders. Additive — older consumers ignore it.
+
 ### Fixed
 - The 0.15.0 entry for the app default still called the quality cost unquantified, contradicting the
   GSM8K result recorded in the same section. Corrected in place.
