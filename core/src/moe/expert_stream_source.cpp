@@ -925,7 +925,8 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             }
         };
         if (!two_wave) {
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) emit_proj(p);
+            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                emit_proj(p);
         } else {
             // Wave one: the first projection's jobs, published before anything else is committed.
             emit_proj(p0);

@@ -42,9 +42,9 @@ GgufModelInfo read_gguf_model_info(const char * path);
 // Both of the above from ONE parse. gguf_init_from_file walks the whole KV section even with
 // no_alloc, so a caller that needs offsets and model info should not pay that walk twice.
 struct GgufMeta {
-    GgufOffsets   offsets;
+    GgufOffsets offsets;
     GgufModelInfo info;
-    bool          ok = false; // both parses' ok, from the single underlying open
+    bool ok = false; // both parses' ok, from the single underlying open
 };
 GgufMeta read_gguf_meta(const char * path);
 
