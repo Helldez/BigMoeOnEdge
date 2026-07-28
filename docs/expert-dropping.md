@@ -146,7 +146,7 @@ Which node is terminal depends on the model's gating (`_norm`, `_softmax`, `_sca
 the hook **learns** it from the graph instead of carrying a per-architecture table: the first graph
 of a run records the chain, and dropping starts from the second. A layer whose shape has not been
 seen yet simply loads at its topk node, undropped. That costs a run its first token's dropping and
-nothing else, and it keeps [hard rule 4](../CLAUDE.md) — no model-specific constants in the
+nothing else, and it keeps [hard rule 4](../AGENTS.md) — no model-specific constants in the
 streaming path.
 
 At the decision point two edits happen, both before anything reads them:
