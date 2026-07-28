@@ -24,6 +24,15 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.n_ctx <= 0) {
         return fail("n_ctx must be positive");
     }
+    // 0 means "as wide as the context"; anything larger than the context would be reserved for a
+    // batch that can never arrive, which is the opposite of what this knob is for.
+    if (cfg.n_ubatch < 0) {
+        return fail("n_ubatch must be >= 0 (0 = as wide as the context)");
+    }
+    if (cfg.n_ubatch > cfg.n_ctx) {
+        return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " exceeds n_ctx=" + std::to_string(cfg.n_ctx) +
+                    ": the compute buffers would be reserved for a batch that cannot occur.");
+    }
     // Lower bound only: 0 means "use the model default". The upper bound (<= the model's
     // real expert count) needs the loaded gguf, so it is deferred to run() where the model
     // is available — same rationale as the streaming checks that stay out of this pure path.

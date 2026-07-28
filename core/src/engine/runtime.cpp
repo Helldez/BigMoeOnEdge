@@ -11,7 +11,8 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.model_path = cfg.model_path;
     sc.n_threads = cfg.n_threads;
     sc.n_ctx = cfg.n_ctx;
-    sc.n_batch = cfg.n_ctx; // one-batch prefill for any prompt that fits the context
+    sc.n_batch = cfg.n_ctx;     // one-batch prefill for any prompt that fits the context
+    sc.n_ubatch = cfg.n_ubatch; // 0 = follow n_batch; smaller trades prefill speed for memory
     sc.chatml = cfg.chatml;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.compute_trace_layers = cfg.compute_trace_layers;

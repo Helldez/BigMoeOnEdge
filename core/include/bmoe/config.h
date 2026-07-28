@@ -149,6 +149,21 @@ struct RunConfig {
     int n_predict = 128;
     int n_threads = 4;
     int n_ctx = 2048;
+
+    // Largest batch computed in one graph, i.e. the prefill chunk size. 0 (the default) means
+    // "follow n_ctx", which prefills any fitting prompt in a single pass.
+    //
+    // It is worth exposing because it does not only cost time, it costs RESIDENT MEMORY: the
+    // scheduler reserves compute buffers for the worst-case graph, which is a full-width prefill,
+    // and on this engine every MiB reserved is a MiB the expert cache and the dense weights do not
+    // get. Measured at n_ctx 2048: 320 MiB of compute buffer, falling to 80 MiB at 512 — the
+    // reservation scales with the context, which is exactly the coupling this knob breaks. It was
+    // found while chasing a fault storm that turned out to be the reservation itself, not the
+    // workload.
+    //
+    // Decode is unaffected: a decode graph is one token wide whatever this says. The cost is
+    // prefill throughput, which processes a long prompt in more, smaller passes.
+    int n_ubatch = 0;
     bool chatml = false;   // wrap the prompt in the model family's chat turn (arch-aware)
     bool progress = false; // emit machine telemetry (one JSON line per token)
 

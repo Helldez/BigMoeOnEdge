@@ -379,7 +379,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
     cparams.n_batch = cfg.n_batch;
-    cparams.n_ubatch = cfg.n_batch;
+    // The graph is reserved for the widest ubatch, so this is what sets the resident compute
+    // buffers — the memory this engine is always short of. 0 keeps the historical behaviour
+    // (one graph as wide as the batch); a smaller value chunks prefill to buy that memory back.
+    cparams.n_ubatch = cfg.n_ubatch > 0 ? (uint32_t) cfg.n_ubatch : (uint32_t) cfg.n_batch;
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.

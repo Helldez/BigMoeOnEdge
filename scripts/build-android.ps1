@@ -26,6 +26,17 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
+# cmake and the NDK toolchain write ordinary progress to stderr, which Windows PowerShell turns
+# into a terminating error under `ErrorActionPreference = Stop` even on success (pwsh does not).
+# Judge them by their exit code so the script behaves the same in both shells.
+function Invoke-Native {
+    param([string]$What, [scriptblock]$Cmd)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $Cmd } finally { $ErrorActionPreference = $prev }
+    if ($LASTEXITCODE -ne 0) { throw "$What failed (exit $LASTEXITCODE)" }
+}
+
 function Find-Ndk {
     if ($env:ANDROID_NDK_HOME -and (Test-Path $env:ANDROID_NDK_HOME)) { return $env:ANDROID_NDK_HOME }
     $sdk = if ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { "$env:LOCALAPPDATA\Android\Sdk" }
@@ -42,19 +53,21 @@ $toolchain = Join-Path $ndk "build\cmake\android.toolchain.cmake"
 Write-Host "Using NDK: $ndk"
 
 $buildPath = Join-Path $root $BuildDir
-cmake -S $root -B $buildPath `
-    -G "Ninja" `
-    -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
-    -DANDROID_ABI="$Abi" `
-    -DANDROID_PLATFORM="android-$ApiLevel" `
-    -DCMAKE_BUILD_TYPE="$BuildType" `
-    -DBMOE_BUILD_TESTS=OFF `
-    -DGGML_NATIVE=OFF `
-    -DGGML_OPENMP=OFF `
-    -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" `
-    -DLLAMA_CURL=OFF
+Invoke-Native "cmake configure" {
+    cmake -S $root -B $buildPath `
+        -G "Ninja" `
+        -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
+        -DANDROID_ABI="$Abi" `
+        -DANDROID_PLATFORM="android-$ApiLevel" `
+        -DCMAKE_BUILD_TYPE="$BuildType" `
+        -DBMOE_BUILD_TESTS=OFF `
+        -DGGML_NATIVE=OFF `
+        -DGGML_OPENMP=OFF `
+        -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" `
+        -DLLAMA_CURL=OFF
+}
 
-cmake --build $buildPath -j
+Invoke-Native "cmake build" { cmake --build $buildPath -j }
 
 # Stage the CLI and the shared libs it needs into the app's jniLibs as lib*.so.
 $jni = Join-Path $root "examples\android\app\src\main\jniLibs\$Abi"
