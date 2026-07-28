@@ -36,20 +36,15 @@ int meta_int(const gguf_context * ctx, const std::string & key, int dflt) {
     }
 }
 
-} // namespace
-
-GgufOffsets read_gguf_offsets(const char * path) {
-    GgufOffsets out;
-
+// Single parse; each extraction below reads from the already-parsed context.
+gguf_context * open_meta(const char * path) {
     gguf_init_params gp{};
     gp.no_alloc = true; // metadata + offsets only; no tensor bytes touched
     gp.ctx = nullptr;
+    return gguf_init_from_file(path, gp);
+}
 
-    gguf_context * gctx = gguf_init_from_file(path, gp);
-    if (!gctx) {
-        return out;
-    }
-
+void fill_offsets(const gguf_context * gctx, GgufOffsets & out) {
     const uint64_t data_off = (uint64_t) gguf_get_data_offset(gctx);
     const int64_t n = gguf_get_n_tensors(gctx);
     out.off_by_name.reserve((size_t) n);
@@ -59,24 +54,10 @@ GgufOffsets read_gguf_offsets(const char * path) {
         out.off_by_name[name] = data_off + (uint64_t) gguf_get_tensor_offset(gctx, i);
         out.size_by_name[name] = (uint64_t) gguf_get_tensor_size(gctx, i);
     }
-
-    gguf_free(gctx);
     out.ok = true;
-    return out;
 }
 
-GgufModelInfo read_gguf_model_info(const char * path) {
-    GgufModelInfo out;
-
-    gguf_init_params gp{};
-    gp.no_alloc = true; // metadata only; no tensor bytes touched
-    gp.ctx = nullptr;
-
-    gguf_context * gctx = gguf_init_from_file(path, gp);
-    if (!gctx) {
-        return out;
-    }
-
+void fill_model_info(const gguf_context * gctx, GgufModelInfo & out) {
     const int64_t arch_id = gguf_find_key(gctx, "general.architecture");
     if (arch_id >= 0 && gguf_get_kv_type(gctx, arch_id) == GGUF_TYPE_STRING) {
         out.arch = gguf_get_val_str(gctx, arch_id);
@@ -87,9 +68,37 @@ GgufModelInfo read_gguf_model_info(const char * path) {
         out.n_expert = meta_int(gctx, out.arch + ".expert_count", 0);
         out.n_expert_used = meta_int(gctx, out.arch + ".expert_used_count", 0);
     }
-
-    gguf_free(gctx);
     out.ok = true;
+}
+
+} // namespace
+
+GgufOffsets read_gguf_offsets(const char * path) {
+    GgufOffsets out;
+    if (gguf_context * gctx = open_meta(path)) {
+        fill_offsets(gctx, out);
+        gguf_free(gctx);
+    }
+    return out;
+}
+
+GgufModelInfo read_gguf_model_info(const char * path) {
+    GgufModelInfo out;
+    if (gguf_context * gctx = open_meta(path)) {
+        fill_model_info(gctx, out);
+        gguf_free(gctx);
+    }
+    return out;
+}
+
+GgufMeta read_gguf_meta(const char * path) {
+    GgufMeta out;
+    if (gguf_context * gctx = open_meta(path)) {
+        fill_offsets(gctx, out.offsets);
+        fill_model_info(gctx, out.info);
+        gguf_free(gctx);
+        out.ok = true;
+    }
     return out;
 }
 

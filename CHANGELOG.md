@@ -6,6 +6,20 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **The overlap hook's per-expert bookkeeping got out of the kernel's way.** Three findings from
+  the audit's leftovers (#123): the readiness lookup every compute thread ran for every routed
+  expert was a hash-map probe — now a binary search over a flat sorted array, static after init;
+  the pre-block spin was 2048 `sched_yield` syscalls — up to a millisecond of scheduler churn per
+  genuinely slow slice, stealing CPU from the I/O lanes — now 256 single-instruction pauses
+  (`isb`/`pause`) before registering as a waiter; and a cache hit on the overlap path no longer
+  pays an LRU promotion that the token-major promote loop overwrote unconditionally two steps
+  later. LRU order, readiness semantics and the gates are unchanged.
+- **The gguf header is parsed once per run, not once per consumer.** The tensor-offset read and
+  the model-info read each ran `gguf_init_from_file` — a full KV walk of a multi-GB file's
+  header. One lazy parse now serves the top-k override, the route trace, the run info and the
+  streamer's offsets.
+
 ### Added
 - **Release APKs are built by CI, not uploaded by hand.** A `release-apk` workflow runs when a
   release is published: clean checkout of the tag, NDK build of the CLI with the same flags and

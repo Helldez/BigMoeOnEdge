@@ -156,7 +156,9 @@ private:
     // that stays with each caller. `hit` tells the caller whether this expert still needs reads.
     // Returns false only if committing the pages failed; the caller decides how fatal that is.
     // LRU mode only (cache_max_ > 0) — the shared-slot path has no entries to account for.
-    bool touch_entry(int il, int e, bool & hit);
+    // `promote` = false skips the hit-path LRU move for callers that re-order every touched id
+    // afterwards anyway (the overlap path's token-major promote loop); a miss is always linked.
+    bool touch_entry(int il, int e, bool & hit, bool promote = true);
 
     // LRU helpers (active only when cache_max_ > 0)
     void lru_unlink(int32_t id);
@@ -292,8 +294,10 @@ private:
     // re-check a predicate that was almost never its own. Registration and publication are both
     // seq_cst so the two cannot miss each other — see on_expert_ready.
     std::atomic<int> ready_waiters_{0};
-    std::atomic<long long> stall_ns_{0};              // summed across all stalling compute threads
-    std::unordered_map<const void *, uint32_t> texp_; // expert tensor* -> (il<<8)|p, built in init
+    std::atomic<long long> stall_ns_{0}; // summed across all stalling compute threads
+    // expert tensor* -> (il<<8)|p. Sorted by pointer and static after init, and probed by every
+    // compute thread for every routed expert — a flat binary search beats hashing the pointer.
+    std::vector<std::pair<const void *, uint32_t>> texp_;
     std::vector<int> staged_;                         // per-load sorted unique expert scratch
     bool hook_registered_ = false;
 };
