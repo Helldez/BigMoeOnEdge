@@ -12,7 +12,7 @@ BMOE_LOAD {"mb":<float>,"ms":<float>}
 BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
                "compute_ms":<float>,"mgmt_ms":<float>,"stall_ms":<float>,"read_mb":<float>,
                "cache_hit_pct":<float>,"majflt":<int>,"cpu_ms":<float>,"dense_resident_frac":<float>,
-               "reasoning":"<string>","text":"<string>"}
+               ["reset":1,]"delta_reasoning":"<string>","delta_text":"<string>"}
 ```
 
 - `BMOE_LOAD` appears only when experts were read this token; `mb` is the flash bytes read,
@@ -73,12 +73,18 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   `mincore`, throttled). Under `--dense-weights anon` it samples our own buffers (is zram holding
   them?); under mmap/warm the model's mmap (is the kernel dropping it?). A diagnostic read alongside
   `majflt` — nothing acts on it. `-1` when unmeasured.
-- `text` is the full generated **answer** so far, JSON-escaped (for streaming into a UI), with any
-  reasoning span stripped out.
-- `reasoning` is the thinking span so far, JSON-escaped, when a reasoning model's chat template
-  separated it from the answer. Empty with chat off, on a non-reasoning model, or when thinking was
-  disabled (`think=false`). It is display-only and kept apart from `text` so a UI can render it as a
-  distinct thinking block rather than inline in the answer.
+- `delta_text` is the newly generated **answer** text since the previous `BMOE_PROGRESS` line,
+  JSON-escaped, with any reasoning span stripped out. The reader appends it to what this
+  generation already delivered. (Carrying the cumulative answer on every line made a generation of
+  n tokens O(n²) on the wire; the full final text still travels in `BMOE_DONE`.)
+- `delta_reasoning` is the same delta for the thinking span, when a reasoning model's chat
+  template separated it from the answer. Empty with chat off, on a non-reasoning model, or when
+  thinking was disabled (`think=false`). Display-only, kept apart from the answer so a UI can
+  render it as a distinct thinking block.
+- `reset` (present only as `"reset":1`) means the deltas on THIS line are full snapshots that
+  **replace** the accumulated state instead of extending it. It appears when the chat parser
+  retroactively reclassifies — a closing think tag arrives and text reported as answer becomes
+  reasoning — which an append-only delta cannot express.
 
 ## End-of-run lines
 

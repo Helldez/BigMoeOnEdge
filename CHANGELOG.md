@@ -7,6 +7,16 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Changed
+- **`BMOE_PROGRESS` carries the answer as a delta, not cumulatively.** Every per-token line
+  repeated the whole answer and reasoning so far, so a generation of n tokens wrote, JSON-escaped
+  and made the app parse O(n²) bytes — megabytes of pipe traffic for a thousand-token reasoning
+  answer (#119). The line now carries `delta_reasoning`/`delta_text` (the tail since the previous
+  line) and the reader appends; when the chat parser retroactively reclassifies answer text as
+  reasoning (a closing think tag arrives) the line carries full snapshots with `"reset":1` and the
+  reader replaces. The full final text still travels in `BMOE_DONE`, and the app parser
+  accumulates in a builder instead of re-copying strings. Protocol readers: both emitters (one-shot
+  `--progress` and `--session`) changed together, and [docs/telemetry.md](docs/telemetry.md)
+  documents the new fields.
 - **The overlap hook's per-expert bookkeeping got out of the kernel's way.** Three findings from
   the audit's leftovers (#123): the readiness lookup every compute thread ran for every routed
   expert was a hash-map probe — now a binary search over a flat sorted array, static after init;
