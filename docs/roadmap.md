@@ -145,3 +145,19 @@ Routing prediction and speculative expert gating were built and **removed**: the
 trade never paid on-device, and the predictor coupled the streamer to model internals, which cost
 more in modularity than it returned in throughput. The archived measurements are in
 [bench-data/2026-07-12-pr23/](bench-data/2026-07-12-pr23/).
+
+**Reading a routing early is now measured, and it does not buy throughput either.** The question
+was reopened with a predictor that costs no training and no model coupling — run the *next* layer's
+router matrix on the *current* layer's gate input, which `--predict-log` scores against the
+previous-token bet and against a zero-staleness control ([expert-prediction.md](expert-prediction.md)).
+The accuracy is real: **88.6%** of routed slots on Qwen3-30B and **80.7%** on Qwen3.6-35B, against
+43.3% / 35.4% for the incumbent, with the control at exactly 100% on every layer. Acting on it is
+what fails. In thermally matched pairs, reading ahead on that prediction **lost 21%** in the
+shipping drop + pinned-dense configuration with its hit rate *up* 4.3 points and 79% of speculations
+useful — the same mechanism that killed more lanes, coalescing and the sidecar: on a saturated
+flash, a better guess still spends bandwidth that was the binding constraint. The half that spends
+nothing — retaining predicted residents against eviction — moved the hit rate by 0.4 points at a
+3000 MiB cache, inside the ~5-point ceiling the offline replay already put on the whole class.
+`--predict-prefetch` ships off by default, and the app defaults its budget to retention-only. What
+would change the answer is a device where flash is *not* the constraint, or a predictor that reaches
+layer 0 — which needs a trained per-layer artifact, a different project from this one.

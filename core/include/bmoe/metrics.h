@@ -6,8 +6,11 @@
 // as CSV for benchmarking. The engine itself makes no formatting decisions.
 #pragma once
 
+#include "bmoe/predict_stats.h"
+
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace bmoe {
 
@@ -125,6 +128,22 @@ struct RunSummary {
     double moe_spec_read_mib = 0.0;
     long long moe_spec_experts = 0;
     long long moe_spec_useful = 0;
+
+    // Expert-prediction accuracy (all zero unless MoeStreamConfig::predict_log). `predict_stale` is
+    // the next layer's routing ranked a layer early, `predict_prev` the previous token's routing —
+    // the bet --prefetch already makes — and `predict_self` a zero-staleness control that bounds
+    // what the ranking could show at best on this architecture. The *_by_layer vectors carry the
+    // same statistic per layer, which is where the interesting shape is: the first layers of a
+    // model route far less predictably than the rest, so an aggregate alone hides the case a
+    // prefetch would most need to get right.
+    //
+    // Unlike the drop counters these are NOT per-generation deltas: they accumulate over the whole
+    // session, because an accuracy estimate wants every sample it can get.
+    // predict_stale2 is the same predictor two layers early — the staleness the ASYNC prefetch
+    // actually runs at — reported in aggregate only.
+    PredictorStats predict_stale, predict_stale2, predict_prev, predict_self;
+    std::vector<PredictorStats> predict_stale_by_layer, predict_prev_by_layer, predict_self_by_layer;
+    long long predict_unscored = 0; // routings the stale-gate probe could not rank (see RouterHook)
 };
 
 // What this run IS: the model and the configuration every row below it was produced under.
@@ -152,6 +171,7 @@ struct RunInfo {
     bool o_direct = false;
     bool overlap = false;
     int prefetch_layers = 0;
+    bool predict_prefetch = false;      // stale-gate predictive prefetch (see MoeStreamConfig)
     std::string dense_weights = "anon"; // dense (non-expert) policy: "mmap" | "warm" | "anon"
     float drop_cold_frac = 0.0f;        // cache-aware expert dropping threshold (0 = off)
 };
