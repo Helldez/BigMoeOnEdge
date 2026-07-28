@@ -16,7 +16,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Does this push carry anything a build could break?
+  #
+  # `paths-ignore` handles that for pull requests, but it cannot be put on the push trigger: the
+  # same trigger carries the release tags, and a tag push has no commit range for a path filter to
+  # read, so filtering here would silence the tag build that attaches the APK. Hence the decision
+  # is made once, in ten seconds, and each build job is gated on it.
+  #
+  # Anything not a push (pull_request, workflow_dispatch) and every tag build answers "yes"
+  # unconditionally — this is a saver for docs merges, not a second opinion on what to test.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.decide.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          say() { echo "code=$1" >> "$GITHUB_OUTPUT"; echo "code=$1"; }
+          case "$EVENT:$REF" in
+            push:refs/tags/*) say true; exit 0 ;;
+            push:*) ;;
+            *) say true; exit 0 ;;
+          esac
+          # A branch created by this push, or a force-push past the old head, leaves nothing to
+          # diff against; build rather than guess.
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            say true; exit 0
+          fi
+          files=$(git diff --name-only "$BEFORE" "$SHA")
+          echo "changed:"; echo "$files"
+          if echo "$files" | grep -qvE '(\.md$|^docs/|^LICENSE$|^\.gitignore$)'; then
+            say true
+          else
+            say false
+          fi
+
   format:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +73,8 @@ jobs:
             -print0 | xargs -0 clang-format --dry-run --Werror
 
   host-linux:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
