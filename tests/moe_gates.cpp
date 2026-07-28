@@ -256,7 +256,18 @@ int main(int argc, char ** argv) {
     ov1.moe.io_threads = 1;
     ov1.moe.overlap = true;
 
-    std::string s_ov0, s_ovc, s_ov1;
+    // overlap, cache, two-wave publish: the lanes wake on the first projection's jobs and the
+    // batch grows mid-generation. Exercises the grown-batch worker predicate and the split
+    // commit; the wait-per-expert hook must still gate every projection to the same bytes.
+    RunConfig ov2w = base(model);
+    ov2w.moe.enabled = true;
+    ov2w.moe.cache_mb = 2;
+    ov2w.moe.force_cache = true;
+    ov2w.moe.io_threads = 4;
+    ov2w.moe.overlap = true;
+    ov2w.moe.io_two_wave = true;
+
+    std::string s_ov0, s_ovc, s_ov1, s_ov2w;
     if (!gen(ov0, s_ov0, err)) {
         std::fprintf(stderr, "overlap(cache off) run failed: %s\n", err.c_str());
         return 2;
@@ -269,9 +280,14 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "overlap(io_threads=1) run failed: %s\n", err.c_str());
         return 2;
     }
+    if (!gen(ov2w, s_ov2w, err)) {
+        std::fprintf(stderr, "overlap(two-wave) run failed: %s\n", err.c_str());
+        return 2;
+    }
     fails += check("G4a overlap(cache off) == streaming(cache off)", s_s0, s_ov0);
     fails += check("G4b overlap(LRU cache) == streaming(cache off)", s_s0, s_ovc);
     fails += check("G4c overlap(io_threads=1) == streaming(cache off)", s_s0, s_ov1);
+    fails += check("G4d overlap(two-wave publish) == streaming(cache off)", s_s0, s_ov2w);
 #else
     std::printf("[SKIP] G4 (expert-ready hook not built)\n");
 #endif

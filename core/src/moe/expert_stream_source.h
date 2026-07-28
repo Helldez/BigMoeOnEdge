@@ -158,7 +158,12 @@ private:
     // LRU mode only (cache_max_ > 0) — the shared-slot path has no entries to account for.
     // `promote` = false skips the hit-path LRU move for callers that re-order every touched id
     // afterwards anyway (the overlap path's token-major promote loop); a miss is always linked.
-    bool touch_entry(int il, int e, bool & hit, bool promote = true);
+    // `commit_only_proj` >= 0 commits only that projection's pages on a miss (two-wave publish:
+    // the caller contracts to commit the rest via commit_proj_pages before emitting their jobs).
+    bool touch_entry(int il, int e, bool & hit, bool promote = true, int commit_only_proj = -1);
+
+    // Commit the pages of one (layer, expert, projection) cache slice so a read can land in it.
+    bool commit_proj_pages(int il, int e, int p);
 
     // LRU helpers (active only when cache_max_ > 0)
     void lru_unlink(int32_t id);
@@ -176,6 +181,7 @@ private:
     bool active_ = false;
     bool load_all_ = false;
     bool overlap_ = false;
+    bool two_wave_ = false; // publish the first projection's jobs before committing the rest (#118)
     bool prefetch_sync_ = false; // test only: drain prefetch reads synchronously (serial mode)
     int n_layer_ = 0;
     int n_expert_ = 0;

@@ -40,6 +40,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     n_layer_ = (int) layers_.size();
     load_all_ = cfg.load_all;
     overlap_ = cfg.overlap;
+    two_wave_ = cfg.io_two_wave;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
@@ -265,13 +266,14 @@ void ExpertStreamSource::take_io_trace_rows(std::vector<IoTraceRow> & out) {
 
 void ExpertStreamSource::io_drain(int lane, uint64_t my_gen) {
     for (;;) {
-        size_t i;
+        IoJob j;
         {
             std::lock_guard<std::mutex> lk(io_mtx_);
             if (batch_gen_ != my_gen || next_idx_ >= batch_njobs_) return;
-            i = next_idx_++;
+            // Copy under the lock: a two-wave publish appends to jobs_ mid-batch, and a vector
+            // that reallocates would leave a reference taken here dangling.
+            j = jobs_[next_idx_++];
         }
-        const IoJob & j = jobs_[i];
         if (!read_slice(lane, j)) {
             io_err_.store(true);
             if (overlap_) fatal_.store(true, std::memory_order_release);
@@ -302,7 +304,12 @@ void ExpertStreamSource::io_worker(int lane) {
     for (;;) {
         {
             std::unique_lock<std::mutex> lk(io_mtx_);
-            io_cv_.wait(lk, [&] { return io_stop_ || batch_gen_ > seen || spec_next_ < spec_jobs_.size(); });
+            // `next_idx_ < batch_njobs_` admits a batch that GREW in the same generation (a
+            // two-wave publish): a worker that drained wave one and left has seen == batch_gen_,
+            // so the gen comparison alone would never bring it back for wave two.
+            io_cv_.wait(lk, [&] {
+                return io_stop_ || batch_gen_ > seen || next_idx_ < batch_njobs_ || spec_next_ < spec_jobs_.size();
+            });
             if (io_stop_) return;
         }
         uint64_t g;
@@ -310,10 +317,10 @@ void ExpertStreamSource::io_worker(int lane) {
             std::lock_guard<std::mutex> lk(io_mtx_);
             g = batch_gen_;
         }
-        if (g > seen) { // real batch first — it is latency-critical
-            seen = g;
-            io_drain(lane, g);
-        }
+        if (g > seen) seen = g;
+        // Real batch first — it is latency-critical. With nothing (left) to drain this returns
+        // on its first lock, so calling it on a spec-only wake costs one mutex round.
+        io_drain(lane, seen);
         // Then use spare capacity on queued speculative reads, yielding the moment a real batch
         // arrives (drain_spec bails when batch_gen_ advances past this worker's `seen`).
         drain_spec(lane, seen);
@@ -634,7 +641,21 @@ uint64_t ExpertStreamSource::expert_bytes(int il) const {
 
 // The cache accounting both load paths share. See the header for why this is the part that is shared
 // and the job emission is not. Eval-thread only, like every other LRU mutation.
-bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote) {
+bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
+    const LayerExperts & L = layers_[il];
+    const uint64_t slice = L.proj[p].nb2;
+    if (slice == 0) return true; // absent slot in a fused layout
+    char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
+    uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
+    uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
+    if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) {
+        std::fprintf(stderr, "bmoe: commit failed\n");
+        return false;
+    }
+    return true;
+}
+
+bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, int commit_only_proj) {
     const int32_t id = il * n_expert_ + e;
     clookups_++;
     cstamp_[id] = cgen_;
@@ -654,17 +675,12 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote) {
     // Miss: commit the pages the caller's reads will fill, then enter the expert as resident. The
     // entry is valid from here on because the caller is contracted to schedule those reads before
     // anything can consume the slices — the barrier that makes this safe is the eval-callback's.
-    const LayerExperts & L = layers_[il];
+    // (With commit_only_proj, the caller also contracts to commit the other projections before it
+    // emits their jobs; the residency accounting below still covers the whole entry, because the
+    // entry lives and is evicted as a unit either way.)
     for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-        const uint64_t slice = L.proj[p].nb2;
-        if (slice == 0) continue; // absent slot in a fused layout
-        char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-        uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
-        uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
-        if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) {
-            std::fprintf(stderr, "bmoe: commit failed\n");
-            return false;
-        }
+        if (commit_only_proj >= 0 && p != commit_only_proj) continue;
+        if (!commit_proj_pages(il, e, p)) return false;
     }
     cvalid_[id] = 1;
     cspec_[id] = 0; // a real read, not speculative
@@ -849,6 +865,8 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     account_demand(il, (int) staged_.size());
     maybe_sample_dense();
 
+    bool published = false; // a two-wave batch publishes inside the staging branch
+
     if (cache_max_ == 0) {
         // Cache off: every (projection, expert) is a fresh read into the shared full-size slot
         // at its canonical offset e*slice. Emit projection-major.
@@ -864,12 +882,26 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     } else {
         // Cache on: per-expert LRU bookkeeping (hit → mark all projections ready now; miss →
         // commit the pages and remember it). Then emit the misses' jobs projection-major.
+        //
+        // Two-wave publish (#118): normally no lane can start reading until every miss took up
+        // to three page-commit syscalls — bookkeeping sitting in front of the first byte of I/O,
+        // on the latency-to-first-slice path. With two_wave_, only the FIRST present projection
+        // (the one mul_mat_id blocks on first) is committed up front; its jobs publish
+        // immediately, and the remaining projections are committed and appended while the lanes
+        // already read. io_drain copies jobs under the lock and the worker wait predicate admits
+        // a grown batch, so appending mid-generation is safe.
+        const int p0 = [&] {
+            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                if (L.proj[p].nb2) return p;
+            return -1;
+        }();
+        const bool two_wave = two_wave_ && !load_all_ && p0 >= 0;
         seen_.assign(seen_.size(), 0); // reuse as a per-staged miss marker keyed by expert
         for (int e : staged_) {
             bool hit = false;
             // promote=false: the token-major loop below re-orders every touched id anyway, so a
             // hit-path LRU move here was k wasted pointer operations per layer per token.
-            if (!touch_entry(il, e, hit, /*promote=*/false)) {
+            if (!touch_entry(il, e, hit, /*promote=*/false, two_wave ? p0 : -1)) {
                 // Nothing waits on a flag we will never publish: abort the graph instead.
                 fatal_.store(true, std::memory_order_release);
                 return false;
@@ -881,9 +913,9 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             }
             seen_[e] = 1; // this expert missed → its projections need reads
         }
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        auto emit_proj = [&](int p) {
             const uint64_t slice = L.proj[p].nb2;
-            if (slice == 0) continue;
+            if (slice == 0) return;
             for (int e : staged_) {
                 if (!seen_[e]) continue; // cache hit, already marked ready
                 const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
@@ -891,6 +923,47 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
                                  L.proj[p].file_off + (uint64_t) e * slice, slice, flag, e, (int16_t) il, (int8_t) p,
                                  0});
             }
+        };
+        if (!two_wave) {
+            for (int p = 0; p < MoeRecipe::max_exps; ++p) emit_proj(p);
+        } else {
+            // Wave one: the first projection's jobs, published before anything else is committed.
+            emit_proj(p0);
+            {
+                std::lock_guard<std::mutex> lk(io_mtx_);
+                batch_njobs_ = jobs_.size();
+                next_idx_ = 0;
+                done_cnt_ = 0;
+                io_err_.store(false);
+                batch_flag_gen_ = gen;
+                ++batch_gen_;
+            }
+            io_cv_.notify_all();
+            published = true;
+            // Wave two: commit the remaining projections' pages, then append their jobs. A commit
+            // failure here is after wave one published, so waiters may already be blocked on
+            // flags this batch will now never flip — go fatal and wake them to observe it.
+            for (int e : staged_) {
+                if (!seen_[e]) continue;
+                for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                    if (p == p0) continue;
+                    if (!commit_proj_pages(il, e, p)) {
+                        fatal_.store(true, std::memory_order_release);
+                        {
+                            std::lock_guard<std::mutex> lk(ready_mtx_);
+                            ready_cv_.notify_all();
+                        }
+                        return false;
+                    }
+                }
+            }
+            {
+                std::lock_guard<std::mutex> lk(io_mtx_);
+                for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                    if (p != p0) emit_proj(p);
+                batch_njobs_ = jobs_.size();
+            }
+            io_cv_.notify_all();
         }
 
         // Promote every touched expert in raw id order (token-major) so the LRU order reflects
@@ -912,16 +985,19 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
 
     // 4. Publish the batch and return immediately — no drain. Workers fill the slices and
     //    flip the flags as they go; the compute threads block on those flags via the hook.
-    {
-        std::lock_guard<std::mutex> lk(io_mtx_);
-        batch_njobs_ = jobs_.size();
-        next_idx_ = 0;
-        done_cnt_ = 0;
-        io_err_.store(false);
-        batch_flag_gen_ = gen;
-        ++batch_gen_;
+    //    (A two-wave batch already published both waves inside the staging branch.)
+    if (!published) {
+        {
+            std::lock_guard<std::mutex> lk(io_mtx_);
+            batch_njobs_ = jobs_.size();
+            next_idx_ = 0;
+            done_cnt_ = 0;
+            io_err_.store(false);
+            batch_flag_gen_ = gen;
+            ++batch_gen_;
+        }
+        io_cv_.notify_all();
     }
-    io_cv_.notify_all();
 
     // 5. Evict cold entries to budget. Safe to run concurrently with this batch's reads: step 1
     //    guaranteed no stale in-flight jobs, and current-gen entries (cstamp_ == cgen_) — the
