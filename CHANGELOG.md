@@ -6,6 +6,8 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-07-28
+
 ### Added
 - **`--ubatch N`: the widest graph computed at once, decoupled from the context.** Compute buffers
   are reserved for the worst-case graph, and the engine had always set `n_ubatch = n_ctx` so that
