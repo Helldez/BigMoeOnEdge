@@ -90,22 +90,20 @@ and a manual copy to the device: steps in the
   the device; the biggest lever when the model's working set fits.
 - **Direct flash reads** (`--io-threads N`): parallel read lanes that bypass the OS page cache.
 - **Dense-weight policy** (`--dense-weights mmap|warm|anon|ahwb`): how the always-used (non-expert)
-  weights are held in memory. The decisive setting for models far past RAM: on gpt-oss-120b it's
-  worth **3.2×** on its own. `ahwb` goes further on Android — dma-buf memory the kernel cannot
-  reclaim *even to zram*, measured at **+17.9%** over `anon` on a long generation
-  ([data](docs/bench-data/2026-07-21-pinned-dense-ab/findings.md)); off by default, measured on one
-  device.
+  weights are held in memory — the decisive setting for models far past RAM, where leaving them to
+  the page cache means re-reading them from flash. `ahwb` goes further on Android, in memory the
+  kernel cannot reclaim even to zram
+  ([data](docs/bench-data/2026-07-21-pinned-dense-ab/findings.md)).
 - **I/O–compute overlap** (`--overlap`): hides flash latency behind compute. Byte-identical;
   needs a small optional add-on to llama.cpp (see [docs/seam.md](docs/seam.md)).
 - **Speed–quality knobs** (`--n-expert-used N`, `--drop-cold-experts F`): the two settings that
   trade output quality for speed — one narrows the routing width, the other skips only cold,
   barely-weighted experts. Both measured: [Trading quality for speed](#trading-quality-for-speed).
-- **Routing prediction** (`--predict-log`, `--predict-prefetch`): scores how much of a layer's
-  routing is knowable a layer early — **88.6%** on Qwen3-30B against 43.3% for the previous-token
-  bet — and can act on it. Reading ahead on the better predictor still *lost* 21% on device, so it
-  ships off: [docs/expert-prediction.md](docs/expert-prediction.md).
-- **Prefill window** (`--ubatch N`): caps the widest graph computed at once, decoupling reserved
-  compute buffers from the context (320 MiB at ctx 2048, 80 at 512). Decode is unaffected.
+- **Routing prediction** (`--predict-log`, `--predict-prefetch`): measures how much of a layer's
+  routing can be known before that layer runs, scored against a control that says whether the
+  measurement itself is sound, and can then read ahead on that prediction. Reading ahead lost its
+  on-device A/B and ships off — [docs/expert-prediction.md](docs/expert-prediction.md) explains why
+  a better guess still costs more than it saves.
 - **Multi-turn sessions and live telemetry**: the model stays loaded across chat turns, and every
   run can emit a per-token breakdown of where the time went.
 - **Android demo app** ([`examples/android`](examples/android)): a chat app with a live telemetry
