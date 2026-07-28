@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.18.0] - 2026-07-28
 
 ### Added
 - **`--io-two-wave` — publish a layer's read batch in two waves (experimental, off by default).**
@@ -16,7 +16,15 @@ Semantic Versioning.
   projections are committed and appended while the lanes already read. The drain protocol grew the
   one thing it needed — a worker that finished wave one comes back for a batch that grew in the
   same generation — and a new gate (`G4d`) holds the two-wave output byte-identical to serial
-  streaming. Off by default until the on-device A/B (#120) says the bounded win is real.
+  streaming. Measured on device the same day (#120): stall is flat across cells, so the flag stays
+  off; the mechanism and its gate remain for a cache-poor regime where cold layers dominate.
+- **Release APKs are built by CI, not uploaded by hand.** A `release-apk` workflow runs when a
+  release is published: clean checkout of the tag, NDK build of the CLI with the same flags and
+  explicit staging list as `scripts/build-android.ps1`, APK build signed with the stable release
+  key from repository secrets, a content check that fails on any stray library, and the assets
+  attached to the release. Both build types now sign with the stable key when it is available, so
+  the debug APK also updates in place instead of demanding an uninstall that wipes downloaded
+  models.
 
 ### Changed
 - **`BMOE_PROGRESS` carries the answer as a delta, not cumulatively.** Every per-token line
@@ -41,26 +49,6 @@ Semantic Versioning.
   the model-info read each ran `gguf_init_from_file` — a full KV walk of a multi-GB file's
   header. One lazy parse now serves the top-k override, the route trace, the run info and the
   streamer's offsets.
-
-### Added
-- **Release APKs are built by CI, not uploaded by hand.** A `release-apk` workflow runs when a
-  release is published: clean checkout of the tag, NDK build of the CLI with the same flags and
-  explicit staging list as `scripts/build-android.ps1`, APK build signed with the stable release
-  key from repository secrets, a content check that fails on any stray library, and the assets
-  attached to the release. Both build types now sign with the stable key when it is available, so
-  the debug APK also updates in place instead of demanding an uninstall that wipes downloaded
-  models.
-
-### Fixed
-- **The Android build script can no longer ship a backend nobody chose.** Staging swept every
-  `libggml*.so` it found in the build tree into the app's `jniLibs`, and the build directory's cmake
-  cache still carried `GGML_OPENCL=ON` from a GPU experiment — so a `libggml-opencl.so` no shipped
-  configuration loads rode along into the v0.16.0 and v0.17.0 APKs (the release assets have been
-  rebuilt without it). The script now forces `GGML_OPENCL=OFF`, wipes `jniLibs` before staging, and
-  copies an explicit list of libraries; a missing one fails the build instead of a stray one
-  shipping.
-
-### Changed
 - **With the drop policy armed, only the weight node that decides is isolated.** The router-weight
   chain is `ffn_moe_weights → (_softmax | _norm) → (_scaled)`, and the engine asked for **every**
   node of it so it could learn which one comes last. But once a layer's terminal node is known,
@@ -71,6 +59,21 @@ Semantic Versioning.
   graph after a terminal that stopped appearing is forgotten), so the learning stays self-correcting
   and a graph that moves is detected exactly as before. This ran inside every `--drop-cold-experts`
   measurement to date, including the shipping app default.
+
+### Fixed
+- **The Android build script can no longer ship a backend nobody chose.** Staging swept every
+  `libggml*.so` it found in the build tree into the app's `jniLibs`, and the build directory's cmake
+  cache still carried `GGML_OPENCL=ON` from a GPU experiment — so a `libggml-opencl.so` no shipped
+  configuration loads rode along into the v0.16.0 and v0.17.0 APKs (the release assets have been
+  rebuilt without it). The script now forces `GGML_OPENCL=OFF`, wipes `jniLibs` before staging, and
+  copies an explicit list of libraries; a missing one fails the build instead of a stray one
+  shipping.
+
+### Measured
+- The whole release, on device against v0.16.0 at matched clock caps (#120): throughput inside the
+  session's thermal noise — the shipping recipe is I/O-floor-bound, so removed work cannot move
+  tok/s — while `cpu-s/token` fell 14–25% and `majflt/token` roughly halved. The removed work is
+  real; it shows up as battery and thermal headroom rather than speed.
 
 ## [0.17.0] - 2026-07-28
 
