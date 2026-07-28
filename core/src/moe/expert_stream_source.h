@@ -247,6 +247,13 @@ private:
     std::vector<int32_t> spec_done_;      // entry ids whose every projection read completed
     std::vector<int32_t> spec_touched_;   // entry ids queued this round (for cleanup at quiesce)
     std::vector<int32_t> spec_remaining_; // per entry id: projection reads still pending (0 = none)
+    // Scratch for prefetch(): an expert's jobs are built here and published only once all of its
+    // projections have been committed, so a commit that fails part-way can never leave jobs queued
+    // against accounting that was never set up. Members rather than locals so the path stays
+    // allocation-free after the first call, like the other per-load scratch.
+    std::vector<IoJob> spec_stage_;
+    std::vector<int32_t> spec_stage_ids_;
+    std::vector<int> spec_stage_counts_;
     std::atomic<long long> spec_read_bytes_{0};
     std::atomic<long long> spec_experts_{0};
     std::atomic<long long> spec_useful_{0};
@@ -279,6 +286,12 @@ private:
     std::atomic<bool> fatal_{false};
     std::mutex ready_mtx_;
     std::condition_variable ready_cv_;
+    // How many compute threads are currently registered to block on a readiness flag. A completing
+    // read consults this before taking ready_mtx_: with no waiter there is nothing to wake, and
+    // notifying anyway woke every blocked compute thread on every slice completion so each could
+    // re-check a predicate that was almost never its own. Registration and publication are both
+    // seq_cst so the two cannot miss each other — see on_expert_ready.
+    std::atomic<int> ready_waiters_{0};
     std::atomic<long long> stall_ns_{0};              // summed across all stalling compute threads
     std::unordered_map<const void *, uint32_t> texp_; // expert tensor* -> (il<<8)|p, built in init
     std::vector<int> staged_;                         // per-load sorted unique expert scratch

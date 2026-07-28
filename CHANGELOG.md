@@ -16,6 +16,19 @@ Semantic Versioning.
   own width and batch size, which separates the two shapes exactly; where both fit (a single token
   at top-1) they name the same element. No shipped model in the catalog routes top-1, so this was
   latent rather than active.
+- **A failed page commit can no longer blacklist an expert from speculation for the rest of the
+  run.** `prefetch()` pushed a speculative read job per projection as it went, but recorded the
+  entry's pending count only after the last one. If a commit failed part-way through an expert, its
+  earlier jobs stayed queued against a count that was never set: a worker would decrement it below
+  zero, so the entry could never complete, the quiesce never saw it listed to release its pages, and
+  every later prefetch of that expert was skipped by the "already queued" test. An expert's jobs are
+  now staged and published as a unit, and a part-way failure hands its pages back. The path is
+  reachable only where page commit can fail (it is a no-op on POSIX), and only with prefetching on.
+- **`prefetch()` no longer holds the I/O mutex across its page commits.** It runs on the eval thread
+  immediately after a real batch was published, so a syscall per projection inside the lock stalled
+  the very lanes trying to pull real read indices out of it — undercutting the invariant that
+  speculation never delays real work. Pages are committed before the lock is taken; the lock now
+  covers only the bookkeeping.
 - **A failed bounce reallocation no longer kills the lane for good.** `FileReader::read` freed the
   old buffer before allocating the new one but left the recorded size behind, so after a transient
   allocation failure the next *smaller* read saw enough capacity, skipped the realloc, and read into
@@ -44,6 +57,14 @@ Semantic Versioning.
   an integer compare instead of a string one — on a path that ran for every weight node of every
   layer of every token with the drop policy armed. No routing decision changes; the byte-identity
   gates cover it.
+- **A completed slice read wakes a compute thread only when one is actually waiting.** Every
+  completed read took the readiness mutex and ran `notify_all`, waking *every* compute thread
+  blocked on *any* expert so each could re-check a predicate that was almost never its own — and
+  paying the mutex even in the common case where nobody was blocked at all, because the slice landed
+  inside the spin. Waiters now register themselves, and the publisher consults that count first.
+  Registration and publication are both sequentially consistent, so the two cannot miss each other:
+  either the waiter sees the flag already set and never sleeps, or the publisher sees the
+  registration and notifies.
 - `vm_reserve` maps with `MAP_NORESERVE`, making the address-only contract true rather than
   true-by-default: the expert cache reserves each span at full size and commits only resident
   slices, so the untouched remainder should never be charged against a strict overcommit limit.
