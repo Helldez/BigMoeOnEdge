@@ -33,6 +33,17 @@ Semantic Versioning.
   open, and a tail read that cannot be served says which fd is missing.
 
 ### Changed
+- **The ask pass stops parsing node names with `sscanf`.** The eval callback is offered every node
+  of every graph, and each one was run through one to three `sscanf` calls — a format-string parse,
+  locale machinery and all — to answer a question that is settled by the first eight characters.
+  Every routing node this engine looks for is named `ffn_moe_…`, so one `memcmp` now gates all the
+  matching and the thousands of nodes that are not routing nodes leave having done nothing else;
+  the layer index is parsed with a digit loop, which is also stricter than the `%d` it replaces
+  (`12abc` no longer reads as layer 12). A layer's terminal weight-chain node is remembered as the
+  index of its name rather than a copy of it, so learning it costs no allocation and matching it is
+  an integer compare instead of a string one — on a path that ran for every weight node of every
+  layer of every token with the drop policy armed. No routing decision changes; the byte-identity
+  gates cover it.
 - `vm_reserve` maps with `MAP_NORESERVE`, making the address-only contract true rather than
   true-by-default: the expert cache reserves each span at full size and commits only resident
   slices, so the untouched remainder should never be charged against a strict overcommit limit.

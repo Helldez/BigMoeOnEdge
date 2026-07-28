@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <string_view>
 
 namespace bmoe {
 
@@ -38,25 +39,62 @@ static int match_expert(const char * name, const MoeRecipe & r, int & il_out) {
     return -1;
 }
 
-// Match the router-weight nodes build_moe_ffn emits per layer. The chain is ffn_moe_weights →
+// Every routing node this hook looks for — the topk, the weight chain, the gate matmul — is named
+// "ffn_moe_<something>". A graph has thousands of nodes and the ask pass sees all of them, so this
+// one comparison is what keeps the rest of the matching off the hot path entirely. `name` is a
+// fixed-size array inside the tensor, so reading eight bytes of it is always in bounds.
+static inline bool is_moe_node(const char * name) {
+    return std::memcmp(name, "ffn_moe_", 8) == 0;
+}
+
+// Parse the "<il>" that llama.cpp appends after the '-' on a per-layer node name. Digits only, to
+// the end of the string — the same strictness node_layer applies, and stricter than the "%d" this
+// replaces, which would have read "12abc" as layer 12. Returns -1 on anything else.
+static inline int parse_layer_tail(const char * p) {
+    if (*p < '0' || *p > '9') return -1;
+    int il = 0;
+    for (; *p; ++p) {
+        if (*p < '0' || *p > '9') return -1;
+        il = il * 10 + (*p - '0');
+        if (il > (1 << 20)) return -1; // a runaway digit run is not a layer index
+    }
+    return il;
+}
+
+// "<prefix><il>" → il, or -1 if the name does not have that shape. Used for the two singular
+// routing nodes (the topk and the gate matmul), whose prefixes carry their own length.
+static inline int match_layer_node(const char * name, std::string_view prefix) {
+    return std::memcmp(name, prefix.data(), prefix.size()) == 0 ? parse_layer_tail(name + prefix.size()) : -1;
+}
+
+// The router-weight nodes build_moe_ffn emits per layer. The chain is ffn_moe_weights →
 // (_softmax | _norm) → (_scaled), each an optional refinement of the previous, so the LAST one
 // offered for a layer carries the weight actually applied to that layer's expert outputs.
 // Last-wins is what keeps this architecture-independent: no table of which gating each model
 // uses. The '-' check is load-bearing — it rejects "ffn_moe_weights_sum-3", which prefix-matches
 // "ffn_moe_weights" but is a row sum, not a weight.
-static bool match_weights(const char * name, int & il_out) {
-    static const char * const kNodes[] = {"ffn_moe_weights", "ffn_moe_weights_softmax", "ffn_moe_weights_norm",
-                                          "ffn_moe_weights_scaled"};
-    for (const char * n : kNodes) {
-        const size_t l = std::strlen(n);
-        if (std::strncmp(name, n, l) != 0 || name[l] != '-') continue;
-        int il = -1;
-        if (std::sscanf(name + l + 1, "%d", &il) == 1 && il >= 0) {
-            il_out = il;
-            return true;
-        }
+//
+// It also makes the four names mutually exclusive, which is why the match can be reported as an
+// INDEX rather than a name: that index is how a layer's terminal node is remembered, so learning it
+// costs no allocation and comparing against it is an integer test — on a path that runs for every
+// weight node of every layer of every token whenever the drop policy is armed.
+static constexpr std::string_view kWeightNodes[] = {
+    "ffn_moe_weights",
+    "ffn_moe_weights_softmax",
+    "ffn_moe_weights_norm",
+    "ffn_moe_weights_scaled",
+};
+
+static int match_weights(const char * name, int & il_out) {
+    for (int v = 0; v < (int) (sizeof(kWeightNodes) / sizeof(kWeightNodes[0])); ++v) {
+        const std::string_view n = kWeightNodes[v];
+        if (std::memcmp(name, n.data(), n.size()) != 0 || name[n.size()] != '-') continue;
+        const int il = parse_layer_tail(name + n.size() + 1);
+        if (il < 0) continue;
+        il_out = il;
+        return v;
     }
-    return false;
+    return -1;
 }
 
 // Where token j's slot k lives inside a weight node. Single source of truth for the layout: the
@@ -110,9 +148,9 @@ void RouterHook::set_drop_policy(float frac, bool renorm, bool in_prefill) {
     drop_frac_ = frac > 0.0f ? frac : 0.0f;
     drop_renorm_ = renorm;
     drop_prefill_ = in_prefill;
-    term_node_.assign(n_layer_ > 0 ? n_layer_ : 0, std::string{});
+    term_variant_.assign(n_layer_ > 0 ? n_layer_ : 0, (int8_t) -1);
     drop_ = PendingDrop{};
-    chain_last_.clear();
+    chain_last_ = -1;
     experts_routed_ = experts_dropped_ = 0;
 }
 
@@ -199,8 +237,8 @@ void RouterHook::apply_drop(ggml_tensor * wt) {
 void RouterHook::close_drop_layer() {
     PendingDrop & D = drop_;
     if (D.layer < 0) return;
-    if (D.layer < (int) term_node_.size() && term_node_[D.layer].empty() && !chain_last_.empty())
-        term_node_[D.layer] = chain_last_;
+    if (D.layer < (int) term_variant_.size() && term_variant_[D.layer] < 0 && chain_last_ >= 0)
+        term_variant_[D.layer] = chain_last_;
     if (D.deferred && source_) {
         // The node we learned as terminal did not appear this time, so the deferral was never
         // honoured and this layer's matmul has already run against slots nothing loaded. Load the
@@ -209,7 +247,7 @@ void RouterHook::close_drop_layer() {
         // Deferring again on the same stale guess would repeat the fault every single token; one
         // bad layer in one token is recoverable, a standing bet against a graph that moved is not.
         source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size());
-        if (D.layer < (int) term_node_.size()) term_node_[D.layer].clear();
+        if (D.layer < (int) term_variant_.size()) term_variant_[D.layer] = -1;
         D.deferred = false;
         predict_after_load(D.layer);
     }
@@ -815,22 +853,26 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     }
 
     // ── stream: the routing nodes get the single-node barrier so we see the selected ids ──
-    int il = -1;
-    const bool is_topk = std::sscanf(t->name, "ffn_moe_topk-%d", &il) == 1 && il >= 0;
+    // One prefix test decides whether any of the three matchers below can possibly fire. The vast
+    // majority of a graph's nodes fail it and leave having done nothing else.
+    const bool moe_node = is_moe_node(t->name);
+    const int il = moe_node ? match_layer_node(t->name, "ffn_moe_topk-") : -1;
+    const bool is_topk = il >= 0;
     // The weight nodes are asked for by a traced run, and by the drop policy, which decides on the
     // weights the matmul will actually apply. Each extra ask is another barrier — a handful per MoE
     // layer, on tensors of a few floats — so neither is on by default.
     int wl = -1;
     const bool want_weights = trace_on_ || drop_armed();
-    const bool is_weights = want_weights && match_weights(t->name, wl);
+    const int weight_variant = (moe_node && want_weights) ? match_weights(t->name, wl) : -1;
+    const bool is_weights = weight_variant >= 0;
     // The gate matmul. The probe ISOLATES it (a barrier per layer — a probed run is not a
     // benchmark run); the prefetch only wants its source pointers, which the ask pass hands over
     // for free, so it asks for nothing and validates its barrier-less read with the watchdog
     // instead. Decode-only either way. The "-" in the pattern is what keeps
     // "ffn_moe_logits_biased-<il>" — a different node — from matching.
-    int gl = -1;
-    const bool is_logits =
-        predict_on() && source_ && batch_phase_ == 1 && std::sscanf(t->name, "ffn_moe_logits-%d", &gl) == 1 && gl >= 0;
+    const int gl =
+        (moe_node && predict_on() && source_ && batch_phase_ == 1) ? match_layer_node(t->name, "ffn_moe_logits-") : -1;
+    const bool is_logits = gl >= 0;
     if (ask && is_logits && gl < n_layer_) {
         ggml_tensor * w = t->src[0];
         if (w && w->op == GGML_OP_NONE && w->data && ggml_is_contiguous(w)) gate_w_[gl] = w;
@@ -874,8 +916,9 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // consumed it yet. The learning pass and the deferral are the same walk, so a layer whose chain
     // shape the hook has not seen yet simply keeps the undropped behaviour.
     if (is_weights && t->data && t->type == GGML_TYPE_F32 && drop_.layer == wl) {
-        chain_last_ = t->name;
-        if (drop_.deferred && wl >= 0 && wl < (int) term_node_.size() && term_node_[wl] == t->name) apply_drop(t);
+        chain_last_ = (int8_t) weight_variant;
+        if (drop_.deferred && wl >= 0 && wl < (int) term_variant_.size() && term_variant_[wl] == weight_variant)
+            apply_drop(t);
     }
 
     if (source_ && is_topk && t->data && t->type == GGML_TYPE_I32) {
@@ -923,13 +966,13 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         // Open the layer for the drop policy. Deferring the load is only safe once this layer's
         // terminal weight node is known — otherwise there is no callback left to decide in, and the
         // expert matmul would run against slots nothing loaded. First graph of a run: load here.
-        const bool defer = drop_armed() && il >= 0 && il < (int) term_node_.size() && !term_node_[il].empty();
+        const bool defer = drop_armed() && il >= 0 && il < (int) term_variant_.size() && term_variant_[il] >= 0;
         drop_.layer = il;
         drop_.nu = nu;
         drop_.nt = nt;
         drop_.ids = t;
         drop_.deferred = defer;
-        chain_last_.clear();
+        chain_last_ = -1;
         if (defer) {
             drop_ids_ = gathered_;
         } else {
