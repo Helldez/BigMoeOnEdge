@@ -51,7 +51,7 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 // inert (the CLI omits --moe-stream and all sub-flags), so they are disabled.
                 SwitchRow(
                     "mmap baseline (no streaming)",
-                    "Load the whole model via llama.cpp mmap — the baseline to compare against",
+                    "Load the model the ordinary way, without streaming experts. The baseline to compare against",
                     current.mmap,
                 ) { onChange(current.copy(mmap = it)) }
 
@@ -69,14 +69,13 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     enabled = stream,
                 ) { onChange(current.copy(cacheMb = it)) }
                 Text(
-                    "Larger cache = fewer flash reads per token, but more RAM — and RAM the kernel takes " +
-                        "back is paid for twice. Auto sizes to free RAM once at load, then holds. On a >RAM " +
-                        "model, off is usually the ceiling. " +
+                    "Experts already in memory cost no read at all, so a bigger cache means less waiting on " +
+                        "flash — paid for in memory the rest of the system no longer has. Auto sizes it once " +
+                        "at load from what is free, then holds that budget. " +
                         if (AppSettings.cacheNeedsForce(current.cacheMb))
-                            "500 and 1000 are below the engine's floor (--force-cache): a cache under one " +
-                                "token's routed experts can only thrash. Kept for measuring where the cache " +
-                                "stops earning its memory."
-                        else "500 and 1000 sit below the engine's floor and need --force-cache.",
+                            "The smallest rungs sit below the engine's own floor: a cache too small to hold " +
+                                "one token's experts evicts them before they are reused, and only churns."
+                        else "The smallest rungs sit below the engine's floor and have to be forced.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 IntSetting(
@@ -85,25 +84,25 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     enabled = stream && current.cacheMb == AppSettings.CACHE_AUTO,
                 ) { onChange(current.copy(cacheCeilMb = it)) }
                 Text(
-                    "Upper bound on the Auto budget at load, so it does not over-ask on devices with " +
-                        "tight free RAM (MemAvailable counts the model's own weights as free).",
+                    "Caps what Auto may claim. The system reports the model's own mapped weights as free " +
+                        "memory, so left uncapped Auto can ask for more than really exists.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 IntSetting("Parallel I/O lanes", AppSettings.IO_CHOICES, current.ioThreads, enabled = stream) {
                     onChange(current.copy(ioThreads = it))
                 }
                 Text(
-                    "Number of parallel flash-read threads for the expert stream.",
+                    "How many expert reads are in flight at once. More lanes help only until the flash itself is saturated.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 SwitchRow(
                     "Direct I/O (O_DIRECT)",
-                    "Bypass the page cache for expert reads. Falls back to buffered automatically if unsupported",
+                    "Read experts straight from flash, so the system does not keep a second copy of what the cache above already holds. Falls back automatically where unsupported",
                     current.oDirect, enabled = stream,
                 ) { onChange(current.copy(oDirect = it)) }
                 SwitchRow(
                     "I/O–compute overlap",
-                    "Read the next experts while the current layer computes, hiding read latency",
+                    "Start the next reads while the current layer is still computing, so waiting for flash happens behind the work instead of after it",
                     current.overlap, enabled = stream,
                 ) { onChange(current.copy(overlap = it)) }
                 LabeledDropdown(
@@ -124,15 +123,15 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     enabled = stream && cacheOn && !current.predictPrefetch,
                 ) { onChange(current.copy(prefetchLayers = it)) }
                 Text(
-                    "Experimental. Bets each layer will reuse the experts it picked for the previous " +
-                        "token and reads them ahead on idle lanes — right ~40% of the time. Needs the cache on.",
+                    "Experimental. Bets a layer will reuse the experts it picked for the previous token, and " +
+                        "reads them ahead on lanes that would otherwise sit idle. Needs the cache.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 SwitchRow(
                     "Predictive prefetch (experimental)",
-                    "Instead of betting on the previous token, asks the next layer's own router one " +
-                        "layer early — right ~85% of the time. Reads ahead within the budget below and " +
-                        "keeps what the prediction names. Needs the cache; replaces temporal prefetch.",
+                    "Experimental. Rather than betting on the previous token, runs the next layer's own " +
+                        "router early to ask which experts it will actually want. Reads ahead within the " +
+                        "budget below and protects what it names. Needs the cache; replaces the above.",
                     current.predictPrefetch, enabled = stream && cacheOn && current.prefetchLayers == 0,
                 ) { onChange(current.copy(predictPrefetch = it)) }
                 if (current.predictPrefetch) {
@@ -147,15 +146,41 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         enabled = stream && cacheOn,
                     ) { onChange(current.copy(predictSpecMax = it)) }
                     Text(
-                        "How much flash the prediction may spend per layer. 0 reads nothing ahead and only " +
-                            "protects predicted experts already in RAM from eviction. Measured: reading ahead " +
-                            "lost its matched A/B — the flash has no spare bandwidth — so 0 is the honest default.",
+                        "How much reading ahead the prediction may pay for. At zero it reads nothing and only " +
+                            "keeps the experts it names from being evicted — the safe setting, since reading " +
+                            "ahead competes for the same flash the current token is waiting on.",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
 
             Section("Speed / quality") {
+                // MTP sits at the top of this section because it is the only entry here that does
+                // NOT trade quality: it changes how many tokens a decode confirms, not what the
+                // model computes. Not gated on the streamer — it is a decode-loop change, so it
+                // applies to the mmap baseline too.
+                SwitchRow(
+                    "MTP decoding (needs an MTP model)",
+                    "Some models carry a small extra head trained to guess the next few tokens. With this " +
+                        "on the model drafts its own continuation and the engine checks the whole group in " +
+                        "one pass, keeping only what the model itself would have produced. Nothing is " +
+                        "skipped or approximated.\n\nThe gain is reading the weights once for several " +
+                        "tokens instead of once each; the cost is that checking several at a time makes " +
+                        "every layer touch more experts. Which side wins depends on whether this device " +
+                        "spends its time computing or waiting on flash.",
+                    current.mtp,
+                ) { onChange(current.copy(mtp = it)) }
+                if (current.mtp) {
+                    IntSetting(
+                        "Tokens drafted per pass", AppSettings.MTP_DRAFT_CHOICES, current.mtpDraft,
+                    ) { onChange(current.copy(mtpDraft = it)) }
+                    Text(
+                        "How far ahead the head guesses. Further means more tokens confirmed per pass, but " +
+                            "the guesses grow less reliable and a wrong one is paid for and thrown away. " +
+                            "The best setting is rarely the largest.",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 // Active-expert (top-k) override is a load-time kv_override, valid in both streaming
                 // and mmap mode, so it is not gated on the streamer.
                 IntSetting(
@@ -168,8 +193,8 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     },
                 ) { onChange(current.copy(nExpertUsed = it)) }
                 Text(
-                    "Route fewer experts per token than the model's default. Faster and lighter on flash, " +
-                        "but the output changes — a speed/quality trade-off.",
+                    "Consult fewer experts per token than the model asks for. Cuts both the computing and " +
+                        "the reading, and changes the reply — a deliberate trade of quality for speed.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 IntSetting(
@@ -191,14 +216,12 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         (current.cacheMb == AppSettings.CACHE_AUTO || current.cacheMb > 0),
                 ) { onChange(current.copy(dropColdPct = it)) }
                 Text(
-                    "Reading an expert that is not already in RAM is what slows a token down. This skips " +
-                        "one — but only if the router barely wanted it, below the chosen share of an even " +
-                        "split. With 8 active experts an even split is 12.5%, so 75% skips anything under " +
-                        "9.4%. Experts already in RAM always run; the strongest is never skipped.\n\n" +
-                        "50% barely fires and changes little. 75% measured +55% faster and 100% +84% on one " +
-                        "model, but the top rung discards twice as much of the routing for that extra speed." +
+                    "Waiting for an expert that is not already in memory is what slows a token down. This " +
+                        "skips one — but only when it is missing AND the router barely wanted it, below the " +
+                        "chosen share of an even split. Experts already in memory always run, and the " +
+                        "strongest is never skipped, so quality is spent only where it buys back a read." +
                         "\n\nThe reply changes, and unlike Active experts not the same way twice: what gets " +
-                        "skipped depends on what the cache happened to hold.",
+                        "skipped depends on what the cache happened to be holding.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 // The threshold is a share of 1/top-k, so a narrow routing changes what the same
@@ -208,10 +231,9 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 val topk = ui.nExpertUsed
                 if (current.dropColdPct > 0 && topk != null && topk in 1..4) {
                     Text(
-                        "⚠ This model routes only $topk experts per token, so ${current.dropColdPct}% here " +
-                            "means \"skip below ${"%.1f".format(current.dropColdPct.toDouble() / topk)}%\" — a much " +
-                            "bigger share of the reply than the 9.4% this setting was measured at (8 experts). " +
-                            "Check the answers, or turn it off for this model.",
+                        "⚠ This model routes only $topk experts per token, so the same share covers far more " +
+                            "of the reply than it does on a model that routes many. Check the answers, or " +
+                            "turn this off for this model.",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -258,9 +280,8 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
             Section("Diagnostics") {
                 SwitchRow(
                     "Metrics CSV",
-                    "Write one CSV per session with every token's timings, page faults (count and MiB), " +
-                        "cache budget, and the memory split — anon (the expert cache), file (the model), " +
-                        "swap. Takes effect on the next session; share it from the menu",
+                    "Write one CSV per session: every token's timings, its page faults, the cache budget " +
+                        "and where memory sat. Takes effect on the next session; share it from the menu",
                     current.metricsCsv,
                 ) { onChange(current.copy(metricsCsv = it)) }
             }

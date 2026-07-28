@@ -67,6 +67,12 @@ struct TokenMetrics {
     double cache_budget_mib = 0.0;
     int turn = 0; // session turn this token belongs to (0 for a one-shot run)
 
+    // How many tokens the decode that produced this one confirmed (1 without speculation). Under
+    // --mtp a verify decode confirms a whole group, and the group's entire cost — wall, faults,
+    // CPU, flash bytes — is charged to its FIRST row; the rest carry zeros. Without this field those
+    // zeros read as free tokens. Divide the first row's wall_ms by mtp_batch for the per-token cost.
+    int mtp_batch = 1;
+
     std::string piece; // text of just this token (delta, for inline streaming)
     std::string text;  // full generated answer so far, reasoning stripped (for UI streaming)
     // The reasoning span so far, when the model is thinking and the chat parser separated it from
@@ -139,6 +145,15 @@ struct RunSummary {
     long long moe_spec_experts = 0;
     long long moe_spec_useful = 0;
 
+    // MTP self-speculation (zero when MtpConfig::enabled is off). `mtp_drafted` counts tokens the head
+    // proposed, `mtp_accepted` how many the target's argmax confirmed; their ratio is the head's
+    // acceptance on this prompt, the one number that decides whether the feature can pay. Tokens
+    // per verify decode (n_generated / mtp_decodes) is the amortisation actually achieved — it is
+    // what tok/s is bought with, and it is always below 1 + draft_max.
+    long long mtp_drafted = 0;
+    long long mtp_accepted = 0;
+    long long mtp_decodes = 0; // verify decodes issued; equals n_generated when speculation is off
+
     // Expert-prediction accuracy (all zero unless MoeStreamConfig::predict_log). `predict_stale` is
     // the next layer's routing ranked a layer early, `predict_prev` the previous token's routing —
     // the bet --prefetch already makes — and `predict_self` a zero-staleness control that bounds
@@ -207,6 +222,12 @@ struct RunInfo {
     int top_k = 40;
     float top_p = 0.95f;
     uint32_t seed = 0xFFFFFFFFu;
+
+    // Self-speculation. It changes how many tokens a decode confirms, so every per-token row in the
+    // file was produced under a different accounting than an unspeculated run — see
+    // TokenMetrics::mtp_batch. Recorded so the two are never averaged together by accident.
+    bool mtp = false;
+    int mtp_draft_max = 0;
 
     // Diagnostics that perturb what they measure. A traced run is not a benchmark run — recorded so
     // a file cannot be mistaken for one.

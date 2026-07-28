@@ -185,6 +185,40 @@ int main() {
         expect_fail("a negative n_ubatch is rejected", c);
     }
 
+    // Speculation: lossless only under greedy, and the draft width is bounded on both sides.
+    {
+        RunConfig c = ok_base();
+        expect_ok("speculation off is the default and valid", c);
+        c.mtp.enabled = true;
+        expect_ok("speculation on with the default draft width is valid", c);
+        c.mtp.draft_max = MtpConfig::draft_max_limit;
+        expect_ok("the largest allowed draft width is valid", c);
+        c.mtp.draft_max = MtpConfig::draft_max_limit + 1;
+        expect_fail("a draft width above the limit is rejected", c);
+        c.mtp.draft_max = 0;
+        expect_fail("drafting zero tokens is rejected", c);
+        c.mtp.draft_max = 3;
+        c.sampling.temp = 0.8f;
+        expect_fail("speculation with a sampling chain is rejected", c);
+        // The same temperature is fine once speculation is off: the rejection is about the pair.
+        c.mtp.enabled = false;
+        expect_ok("sampling without speculation stays valid", c);
+    }
+
+    // The verify batch must fit in one graph, or the amortisation it exists for is split away.
+    {
+        RunConfig c = ok_base();
+        c.mtp.enabled = true;
+        c.mtp.draft_max = 3;
+        expect_ok("the default ubatch (0 = as wide as the context) is valid with mtp", c);
+        c.n_ubatch = 4; // exactly 1 + draft_max
+        expect_ok("a ubatch exactly as wide as the verify batch is valid", c);
+        c.n_ubatch = 3;
+        expect_fail("a ubatch narrower than the verify batch is rejected", c);
+        c.mtp.enabled = false;
+        expect_ok("the same narrow ubatch is fine without mtp", c);
+    }
+
     if (failures == 0) {
         std::printf("all config checks passed\n");
         return 0;

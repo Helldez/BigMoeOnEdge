@@ -330,13 +330,14 @@ static int run_session_loop(const RunConfig & cfg,
                     "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
-                    "\"token_demand_mib\":%.1f,\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
+                    "\"token_demand_mib\":%.1f,\"mtp_drafted\":%lld,\"mtp_accepted\":%lld,\"mtp_decodes\":%lld,"
+                    "\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
-                    s.majflt_per_token, s.cpu_s_per_token, s.token_demand_mib, json_escape(r.reasoning_text).c_str(),
-                    json_escape(r.generated_text).c_str());
+                    s.majflt_per_token, s.cpu_s_per_token, s.token_demand_mib, s.mtp_drafted, s.mtp_accepted,
+                    s.mtp_decodes, json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
 
@@ -385,6 +386,15 @@ static void print_usage(const char * argv0) {
         "      --top-p F           nucleus cutoff in (0,1] when sampling (default 0.95)\n"
         "      --seed N            RNG seed for sampling (default: random per run)\n"
         "\n"
+        "  Self-speculative decoding (lossless; needs a gguf with the MTP/nextn block):\n"
+        "      --mtp          draft with the model's own multi-token-prediction head and\n"
+        "                          verify every draft in one wider decode. Greedy verification\n"
+        "                          makes the output token-identical to plain decode; the win is\n"
+        "                          reading the weights once per N tokens instead of N times,\n"
+        "                          the risk is that N positions route independently and widen\n"
+        "                          the per-layer expert read set. Off by default\n"
+        "      --mtp-draft N      tokens drafted per verify batch (default 3, max %d)\n"
+        "\n"
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
         "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
@@ -427,7 +437,7 @@ static void print_usage(const char * argv0) {
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
         "BMOE_N_EXPERT_USED, BMOE_PREDICT_LOG, BMOE_PREDICT_PREFETCH\n",
-        argv0, MoeStreamConfig::cache_min_mb, MoeStreamConfig::io_threads_max);
+        argv0, MtpConfig::draft_max_limit, MoeStreamConfig::cache_min_mb, MoeStreamConfig::io_threads_max);
 }
 
 // The prediction probe's report (see MoeStreamConfig::predict_log).
@@ -533,6 +543,10 @@ int main(int argc, char ** argv) {
             cfg.sampling.top_p = (float) std::atof(next("--top-p"));
         else if (a == "--seed")
             cfg.sampling.seed = (uint32_t) std::strtoul(next("--seed"), nullptr, 10);
+        else if (a == "--mtp")
+            cfg.mtp.enabled = true;
+        else if (a == "--mtp-draft")
+            cfg.mtp.draft_max = std::atoi(next("--mtp-draft"));
         else if (a == "--chatml")
             cfg.chatml = true;
         else if (a == "--no-think")
@@ -735,6 +749,14 @@ int main(int argc, char ** argv) {
             s.s_per_token > 0 && cfg.n_threads > 0 ? s.cpu_s_per_token / (s.s_per_token * cfg.n_threads) : 0.0;
         std::printf("compute: %.1f%% CPU occupancy (%.4f cpu-s/token over %d threads), %.2f major faults/token\n",
                     occ * 100.0, s.cpu_s_per_token, cfg.n_threads, s.majflt_per_token);
+    }
+    // Acceptance is the number that decides whether speculation can pay at all; tokens-per-decode is
+    // what it actually bought, and it is what tok/s above is a function of.
+    if (s.mtp_decodes > 0 && cfg.mtp.enabled) {
+        std::printf("mtp: %lld/%lld drafts accepted (%.1f%%), %.2f tokens per verify decode "
+                    "(%lld decodes for %d tokens)\n",
+                    s.mtp_accepted, s.mtp_drafted, s.mtp_drafted > 0 ? 100.0 * s.mtp_accepted / s.mtp_drafted : 0.0,
+                    (double) s.n_generated / (double) s.mtp_decodes, s.mtp_decodes, s.n_generated);
     }
     if (s.n_prompt > 0) {
         double prefill_tps = s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0;

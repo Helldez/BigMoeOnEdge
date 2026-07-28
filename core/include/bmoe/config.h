@@ -191,6 +191,41 @@ struct MoeStreamConfig {
     static constexpr int prefetch_layers_max = 8;
 };
 
+// Self-speculative decoding through the model's own trained multi-token-prediction head.
+//
+// The head drafts draft_max continuation tokens, the target then verifies all of them in ONE
+// decode; the longest prefix whose argmax agrees with the draft is accepted. Nothing is approximated
+// and no weight is skipped, so this is a latency optimisation, not a quality trade.
+//
+// It is NOT byte-identical the way overlap and prefetch are, and must not be used in a byte-identity
+// gate. Verification evaluates 1 + draft_max positions in one batch, and a batched matmul is not
+// bit-identical to that many single-token ones; on a near-tie the argmax can flip. Measured on
+// Qwen3.6-35B-A3B-MXFP4 over 128 greedy tokens: one token differs from an unspeculated run, and
+// every draft width agrees with every other. See docs/mtp.md.
+//
+// Only applies to models whose gguf carries the nextn block (Qwen3.5/3.6); init fails loudly on a
+// model without one rather than silently decoding one token at a time.
+//
+// Why it can win, and why it can lose. Verifying N positions in one decode reads the dense weights
+// and each routed expert ONCE for N tokens instead of N times, which is the whole prize: on a
+// DRAM-bandwidth-bound host it amortises the measured bottleneck directly, and on a flash-streamed
+// device it amortises latency-to-ready. The counterweight is that the N verify positions route
+// INDEPENDENTLY, so a layer's read set widens toward N*k experts instead of k, and the draft pass
+// itself routes through the MTP block's own expert layer. Where routing across adjacent tokens
+// diverges, the widened read set can cost more than the amortisation saves. Default off until the
+// A/B says otherwise on the target device.
+struct MtpConfig {
+    bool enabled = false; // draft with the model's native MTP head and verify greedily
+
+    // Tokens drafted per verify batch. The verify decode is 1 + draft_max positions wide, so this
+    // sets both the ceiling on tokens-per-decode and the width of the read-set widening above.
+    // Past the head's acceptance horizon the extra drafts are rejected and paid for anyway, which
+    // is why the useful range is small; 3 is upstream's default for a single trained head.
+    int draft_max = 3;
+
+    static constexpr int draft_max_limit = 8;
+};
+
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
@@ -239,6 +274,7 @@ struct RunConfig {
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
+    MtpConfig mtp; // self-speculative decoding via the model's MTP head; off by default
 };
 
 // Validation result: ok plus a human-readable reason when not.

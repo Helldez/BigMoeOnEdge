@@ -119,6 +119,17 @@ with a `[stale-gate]` tag — same counters, different predictor (see
 [expert-prediction.md](expert-prediction.md)). The CSV preamble records which was active
 (`prefetch=` / `predict_prefetch=`).
 
+With `--mtp` a `mtp:` line is added:
+
+```
+mtp: <accepted>/<drafted> drafts accepted (<pct>%), <t> tokens per verify decode (<d> decodes for <n> tokens)
+```
+
+Acceptance is what decides whether speculation can pay at all — it is a property of the model's
+trained head, not of this engine. Tokens per verify decode is what it actually bought: it is the
+factor the decode count fell by, and so the factor `tok/s` rose by, minus the drafting cost. It is
+always below `1 + --mtp-draft`. See [mtp.md](mtp.md).
+
 With `--drop-cold-experts F` a `moe-drop:` line is added:
 
 ```
@@ -170,7 +181,7 @@ prints just the summary lines.
   force_cache=<0|1> load_all=<0|1> io_threads=<n> o_direct=<0|1> overlap=<0|1> io_two_wave=<0|1> prefetch=<n>
   predict_prefetch=<0|1> predict_log=<0|1> predict_spec_max=<n> prefetch_sync=<0|1>
   dense_weights=<mmap|warm|anon|ahwb> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
-# temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n>
+# temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n> mtp=<0|1> mtp_draft_max=<n>
 ```
 
 Rows without this are not evidence: two files answer "which is faster" only if something says what
@@ -196,6 +207,12 @@ effective top-k after any override. Fields to read carefully:
   not reproducible except through `seed`.
 - `load_all=1` reads the whole expert set, so its `read_bytes` means something different from a
   selective run's.
+- `mtp=1` means the run used the model's MTP head to draft and verified a whole group per decode.
+  No weight is skipped and nothing is approximated, but the text is **not** guaranteed identical to
+  an unspeculated greedy run: a verify decode is a wide batch, and batch width moves the last bits on
+  this backend, so a near-tie can flip (see [mtp.md](mtp.md)). The per-token *accounting* differs
+  too: see `mtp_batch` below. Never average rows from an `mtp=1` file together with rows from an
+  `mtp=0` one.
 
 `think` is deliberately absent: it is a property of a *request*, not of the session, so one value in
 a session-wide preamble would be wrong for every turn that asked for the other. Per-turn facts belong
@@ -206,7 +223,7 @@ next to the `turn` column.
 ```
 step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,
 dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,
-mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms
+mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms,mtp_batch
 ```
 
 `stall_ms`, `mgmt_ms`, `majflt`, `cpu_ms` and `dense_resident_frac` are trailing columns appended
@@ -223,8 +240,10 @@ floor to defend; see [pressure.md](pressure.md)), `experts_routed=<n>` / `expert
 threshold, not a rate, so this is the only record of the trade a run made) and
 `layer_demand_MiB=<f>` (the widest layer's routed
 bytes: the mechanical floor the cache must be able to stage) and `loop_overhead_s/tok=<s>` (see
-[below](#what-toks-does-not-include)); see the `io_ms` note above for how the
-read-time columns are reinterpreted under overlap.
+[below](#what-toks-does-not-include)) and, under `--mtp`, `mtp_drafted=<n>` /
+`mtp_accepted=<n>` / `mtp_decodes=<n>` (the acceptance rate and how many decodes the generation
+actually cost — `tokens / mtp_decodes` is the amortisation achieved); see the `io_ms` note above for
+how the read-time columns are reinterpreted under overlap.
 
 The trailing block is the memory picture, added so a run can be diagnosed from its own file:
 
@@ -240,6 +259,7 @@ The trailing block is the memory picture, added so a run can be diagnosed from i
 | `rss_mib` | total resident (`VmRSS`). |
 | `mem_available_mib` / `mem_free_mib` / `swap_free_mib` | what the device claims about itself. `MemAvailable` counts this process's own mmap'd weights as reclaimable, so it over-states headroom — it is recorded next to what we measured ourselves because the gap between them is the story. |
 | `loop_overhead_ms` | wall time between the **previous** token's decode and this one's: sampling, detokenization, rendering the answer for a UI, and the sink writes. On the first token, the gap from the end of prefill to the first decode. |
+| `mtp_batch` | how many tokens the decode that produced this row confirmed. `1` without `--mtp`. A verify decode confirms a whole group and its **entire** cost — `wall_ms`, `io_ms`, `majflt`, `cpu_ms`, `read_bytes`, `loop_overhead_ms` — is charged to the group's FIRST row; the rest carry zeros. Without this column those zeros read as free tokens. Per-token cost of a group is the first row's `wall_ms / mtp_batch`. |
 
 All are `0` where the platform cannot report them (the Windows host build reports device memory but not the per-process split).
 
@@ -374,9 +394,15 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
             "stall_s_tok":<float>,"mgmt_s_tok":<float>,"majflt_tok":<float>,"cpu_s_tok":<float>,
-            "token_demand_mib":<float>,"reasoning":"<string>","text":"<string>"}
+            "token_demand_mib":<float>,"mtp_drafted":<int>,"mtp_accepted":<int>,"mtp_decodes":<int>,
+            "reasoning":"<string>","text":"<string>"}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
+
+`BMOE_DONE`'s `mtp_*` keys are the self-speculation counters (all `0` without `--mtp`):
+`mtp_accepted / mtp_drafted` is the head's acceptance on that turn, and `tokens / mtp_decodes` is
+the amortisation the turn actually achieved. See
+[mtp.md](mtp.md).
 
 `BMOE_READY`'s `n_expert_used` is the **effective** routing width, after any `--n-expert-used`
 override (`0` on a non-MoE model). A UI needs it to say anything sensible about

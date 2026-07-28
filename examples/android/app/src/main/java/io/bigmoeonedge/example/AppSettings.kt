@@ -8,10 +8,10 @@ import android.content.Context
  * pair of switches, which could express the same policy two ways (or contradict each other).
  */
 enum class DenseWeights(val flag: String, val label: String, val blurb: String) {
-    MMAP("mmap", "Mmap (baseline)", "Leave the dense weights mmap'd; the kernel faults them in. Slow first tokens on a >RAM model — the A/B baseline."),
-    WARM("warm", "Warm at load", "Page-cache the dense weights once at load, so the first tokens don't fault them in a page at a time. Best when the model fits in RAM."),
-    ANON("anon", "Anon (O_DIRECT)", "Read the dense weights via O_DIRECT into our own buffers so a reclaim swaps to zram (fast) instead of a slow flash refault. Costs a private copy. The default — it wins on >RAM models."),
-    AHWB("ahwb", "Pinned (dma-buf)", "As Anon, but into dma-buf memory the kernel cannot reclaim at all — not even to zram, which is what Anon still pays for. Measured +17.9% on a long generation; the gain needs a real conversation to appear, since short turns never build up enough reclaim. Off by default: measured on one device."),
+    MMAP("mmap", "Mmap (baseline)", "Leave the always-needed weights to the kernel, which faults them in as they are touched. The plain baseline to compare the others against."),
+    WARM("warm", "Warm at load", "Read them once at load so the first tokens do not fault them in a page at a time. Suits a model that fits in memory comfortably."),
+    ANON("anon", "Anon (O_DIRECT)", "Hold them in the app's own memory instead of the file cache. When the system reclaims, they are compressed rather than dropped and re-read from flash. Costs a private copy; the default."),
+    AHWB("ahwb", "Pinned (dma-buf)", "As Anon, but in memory the system cannot reclaim at all — not even by compressing it, which Anon still pays for. The gain shows up over a long conversation, once reclaim has had time to bite."),
 }
 
 /**
@@ -51,6 +51,17 @@ data class AppSettings(
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
     val dropColdPct: Int = 75,
+    // Self-speculation through the model's own MTP head. Needs a gguf carrying the nextn block,
+    // which Qwen3.5/3.6 do in their ordinary quantisations — the catalog's Qwen3.6 included, so no
+    // special "-MTP-" download. On anything else the engine refuses to open with it on, so the UI
+    // states the requirement rather than letting the session fail. Off by default:
+    // it is a clear win where decode is DRAM-bound (desktop, +15%), but on a phone decode is
+    // flash-bound and the wider verify batch widens each layer's expert read set — which way that
+    // lands is the measurement this toggle exists to make.
+    val mtp: Boolean = false,
+    // Tokens drafted per verify pass. 3 is the measured optimum on desktop: acceptance falls as the
+    // draft widens, and past the head's horizon the extra drafts are paid for and thrown away.
+    val mtpDraft: Int = 3,
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
     val metricsCsv: Boolean = true,     // write the engine's per-token CSV for this session (--csv)
 ) {
@@ -121,6 +132,10 @@ data class AppSettings(
             // of the uniform share; the setting is stored as a percentage.
             if (dropColdPct > 0 && cacheOn) a += listOf("--drop-cold-experts", (dropColdPct / 100.0).toString())
         }
+        // Outside the streaming block on purpose: MTP is a decode-loop change, not a residency
+        // policy, so it applies to the mmap baseline too — which is what makes an A/B of the two
+        // against each other meaningful.
+        if (mtp) a += listOf("--mtp", "--mtp-draft", mtpDraft.toString())
         return a
     }
 
@@ -132,7 +147,8 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, sessionCtx, oDirect,
-               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct)
+               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct,
+               mtp, mtpDraft)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -149,6 +165,7 @@ data class AppSettings(
             .putInt("predictSpecMax", predictSpecMax)
             .putInt("dropColdPct", dropColdPct)
             .putInt("sessionCtx", sessionCtx)
+            .putBoolean("mtp", mtp).putInt("mtpDraft", mtpDraft)
             .putBoolean("thinking", thinking)
             .putBoolean("metricsCsv", metricsCsv)
             .apply()
@@ -179,6 +196,11 @@ data class AppSettings(
         // places free to disagree. 128 matches the CLI default (issue #71): shorter budgets
         // truncate most answers mid-sentence, which reads as broken rather than slow.
         const val DEFAULT_N_PREDICT = 128
+
+        // Draft widths worth offering. The useful range is small and not monotonic: acceptance
+        // falls as the draft widens while tokens-per-decode rises, and on desktop the two cross at
+        // 3 — 4 measured WORSE than 2. Stopping at 5 keeps the picker honest about that.
+        val MTP_DRAFT_CHOICES = intArrayOf(1, 2, 3, 4, 5)
 
         /**
          * A fresh CSV path for a session about to open, under the app's own external files dir —
@@ -267,6 +289,8 @@ data class AppSettings(
                 predictSpecMax = p.getInt("predictSpecMax", d.predictSpecMax),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
                 sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
+                mtp = p.getBoolean("mtp", d.mtp),
+                mtpDraft = p.getInt("mtpDraft", d.mtpDraft),
                 thinking = p.getBoolean("thinking", d.thinking),
                 metricsCsv = p.getBoolean("metricsCsv", d.metricsCsv),
             )

@@ -27,6 +27,40 @@ Semantic Versioning.
   (compressed sparse attention, the lightning indexer and its dedicated KV cache) is dense-side
   llama.cpp code, invisible to the streaming seam. Requires a llama.cpp with DeepSeek V4 support
   (the pinned submodule has it).
+- **`--mtp` — decode through the model's own MTP head, verifying a whole group per pass (off by
+  default).** Qwen3.5/3.6 ship a trained multi-token-prediction block inside the gguf. With the flag
+  on, that head drafts `--mtp-draft` continuation tokens and the target verifies all of them in one
+  wider decode, confirming the longest prefix whose argmax equals what the target itself would have
+  produced. Nothing is approximated and no weight is skipped, so the quality is the full model's —
+  but it is **not** byte-identical the way `--overlap` and `--prefetch` are, and it must not be used
+  in a byte-identity gate: the verify pass evaluates `1 + N` positions in one batch, and a batched
+  matmul is not bit-identical to N single-token ones, so a near-tie can flip. Measured on
+  Qwen3.6-35B-A3B-MXFP4 over 128 greedy tokens: exactly one token differs from an unspeculated run,
+  draft widths 1 and 3 agree with each other exactly, and a plain-vs-plain control is exact.
+  The prize is that a decode's dominant cost, moving the dense weights and the routed expert slices,
+  is paid once per group instead of once per token; the counterweight is that the verify positions
+  route independently, so a layer's read set widens toward `N × k` wherever adjacent tokens disagree,
+  and the draft pass routes through the MTP block's own expert layer on top. Measured on the desktop
+  host (DRAM-bandwidth-bound, model streamed at ~1.4× RAM): **+15.1%** at draft 3 with the host's
+  best recipe (7.12 → 8.19 tok/s) and **+29%** without the lossy drop knob, with acceptance falling
+  from 71% at draft 2 to 52% at draft 4 and flash bytes per token rising 19.7 → 33.7 MiB as the
+  widening predicts. Draft 3 is the optimum here; 4 is worse than 2. On a flash-I/O-bound phone that
+  balance can invert, so the flag ships off pending the device A/B. The orchestration is llama.cpp's own
+  (`common/speculative.h`, public headers only): no fork, no patch, no submodule bump. The MTP block
+  is streamed like any other layer — the hook and the expert source are sized `n_layer +
+  n_layer_nextn`, the capture warm-up runs on the draft context too (the MTP graph exists nowhere
+  else), and prefill is fed through the driver so the draft context's KV reaches the last prompt
+  position. The loop also accepts **before** catching the draft context up, so the catch-up runs on
+  the accepted prefix instead of the whole verify batch: acceptance depends only on the target's
+  logits, which are already in hand, and the rejected tail was being computed only to be deleted a
+  few statements later. Identical state, `n_draft − n_accepted` fewer positions through the MTP
+  block per group — and since that block carries its own MoE FFN, on a streamed device those are
+  expert reads that no longer happen. New telemetry: `mtp:` summary line, `mtp_batch` per-token column (a verify decode's
+  whole cost is charged to its group's first row), `mtp_drafted` / `mtp_accepted` / `mtp_decodes` in
+  the CSV trailer, and `mtp` / `mtp_draft_max` in the preamble. Needs a gguf carrying the `nextn`
+  block — which Qwen3.6's ordinary quantisations do, verified from their headers, so no `-MTP-`
+  conversion is required — and greedy decoding; both are rejected at load with a message rather than
+  silently ignored. See `docs/mtp.md`.
 
 ## [0.18.1] - 2026-07-29
 

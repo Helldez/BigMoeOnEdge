@@ -52,6 +52,32 @@ ValidationResult validate(const RunConfig & cfg) {
         }
     }
 
+    // Verification is exact only because greedy acceptance compares argmax against argmax. Under a
+    // sampling chain the accepted prefix would depend on which draws happened to agree, which is a
+    // different distribution from the one the caller asked for. Rejected rather than silently
+    // ignored: a caller who asked for both was promised something the engine cannot give.
+    if (cfg.mtp.enabled && cfg.sampling.temp > 0.0f) {
+        return fail("mtp requires greedy decoding (sampling.temp <= 0): speculative verification is "
+                    "token-identical to single-token decode only under argmax.");
+    }
+    // The floor is 1 (draft one token, verify two positions); at 0 there is nothing to verify and
+    // the loop degenerates into plain decode with a draft context's memory attached. The ceiling is
+    // an evidence boundary, not a physical one — see MtpConfig::draft_max.
+    if (cfg.mtp.enabled && (cfg.mtp.draft_max < 1 || cfg.mtp.draft_max > MtpConfig::draft_max_limit)) {
+        return fail("mtp.draft_max must be in [1, " + std::to_string(MtpConfig::draft_max_limit) + "]");
+    }
+    // The verify pass is 1 + draft_max positions and its whole point is that they are computed
+    // TOGETHER. A narrower graph splits it back into single-token passes, which spends the draft
+    // and keeps none of the amortisation — the feature would cost time and buy nothing. Rejected
+    // rather than silently degraded: nothing in the output would show that it happened. 0 means
+    // "as wide as the context" and is always wide enough.
+    if (cfg.mtp.enabled && cfg.n_ubatch > 0 && cfg.n_ubatch < cfg.mtp.draft_max + 1) {
+        return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " is narrower than the verify batch (" +
+                    std::to_string(cfg.mtp.draft_max + 1) +
+                    " positions): the graph would be split back into single-token passes and MTP would "
+                    "draft at a cost with nothing to show for it. Raise n_ubatch or lower mtp.draft_max.");
+    }
+
     // overlap is meaningless without streaming (it gates the streamer's own reads). The
     // hook-availability check is deferred to run(): validate() stays pure (no native).
     if (cfg.moe.overlap && !cfg.moe.enabled) {
