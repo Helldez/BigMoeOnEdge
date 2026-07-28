@@ -6,6 +6,15 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **The Android build script can no longer ship a backend nobody chose.** Staging swept every
+  `libggml*.so` it found in the build tree into the app's `jniLibs`, and the build directory's cmake
+  cache still carried `GGML_OPENCL=ON` from a GPU experiment — so a `libggml-opencl.so` no shipped
+  configuration loads rode along into the v0.16.0 and v0.17.0 APKs (the release assets have been
+  rebuilt without it). The script now forces `GGML_OPENCL=OFF`, wipes `jniLibs` before staging, and
+  copies an explicit list of libraries; a missing one fails the build instead of a stray one
+  shipping.
+
 ### Changed
 - **With the drop policy armed, only the weight node that decides is isolated.** The router-weight
   chain is `ffn_moe_weights → (_softmax | _norm) → (_scaled)`, and the engine asked for **every**
