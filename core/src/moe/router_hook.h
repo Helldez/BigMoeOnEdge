@@ -17,8 +17,9 @@
 // Streaming carries an optional third job, the route trace (set_trace): the same pass also
 // asks for each layer's router-weight node and records which experts were routed, how the
 // router weighted them, and whether they were already resident. It observes only — the ids
-// handed to load_layer are the same traced or not — but it costs a barrier per weight node,
-// so it stays off unless asked for. See bmoe/route_trace.h.
+// handed to load_layer are the same traced or not — but it costs a barrier per layer (the whole
+// weight chain on the first graph, then only its terminal node), so it stays off unless asked
+// for. See bmoe/route_trace.h.
 //
 // And an optional fourth (set_predict_log): the expert-prediction probe, which asks for each
 // layer's gate matmul so it can rank the NEXT layer's experts before that layer runs, and reports
@@ -338,6 +339,11 @@ private:
     // four chain names are mutually exclusive, so the index identifies it exactly, and recording it
     // costs neither an allocation nor a string compare on a path that runs for every weight node of
     // every layer of every token.
+    //
+    // Once it IS known, only that node is asked for. The rest of the chain exists to identify it,
+    // and each extra ask is a graph split plus a compute-thread synchronization — per layer, per
+    // token, on tensors of a few floats. A layer whose terminal is forgotten (below) goes back to
+    // asking for the whole chain, so the learning is never one-way.
     float drop_frac_ = 0.0f;
     bool drop_renorm_ = true;
     bool drop_prefill_ = false;
