@@ -6,6 +6,30 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **A failed bounce reallocation no longer kills the lane for good.** `FileReader::read` freed the
+  old buffer before allocating the new one but left the recorded size behind, so after a transient
+  allocation failure the next *smaller* read saw enough capacity, skipped the realloc, and read into
+  a null pointer — every subsequent read on that lane failing forever. The size is now cleared with
+  the pointer, so a failure costs one read instead of the lane.
+- **The buffered fallback stops paying O_DIRECT's mechanics.** When the platform refuses O_DIRECT, or
+  the open-time verify catches storage that mis-serves it (a FUSE-backed volume), reads still aligned
+  their window outward, staged into the bounce and memcpy'd the interior out — an extra copy of every
+  byte plus a leading partial-block over-read, in the mode that is already the slow one. Buffered
+  reads now go straight into the caller's memory, and report the bytes they actually moved rather
+  than a window they never pulled.
+- **A missing buffered tail fd is reported where it happens.** Its open was unchecked, and a read
+  reaching the file's sub-alignment EOF tail then fell back to the O_DIRECT fd — which must reject a
+  length that short — surfacing fd exhaustion as an unexplained read failure. It is now reported at
+  open, and a tail read that cannot be served says which fd is missing.
+
+### Changed
+- `vm_reserve` maps with `MAP_NORESERVE`, making the address-only contract true rather than
+  true-by-default: the expert cache reserves each span at full size and commits only resident
+  slices, so the untouched remainder should never be charged against a strict overcommit limit.
+- `pio::file_size` asks `fstat` instead of seeking to the end and back. Every consumer reads with
+  `pread`, so the fd position was mutated to answer a question about the file and nothing used it.
+
 ## [0.16.0] - 2026-07-28
 
 ### Added

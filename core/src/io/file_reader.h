@@ -1,9 +1,10 @@
 // A pooled, positioned file reader with optional cache-bypassing (O_DIRECT) I/O.
 //
 // One reader owns N lane fds and N bounce buffers, so N threads can read distinct byte ranges of the
-// same file concurrently without contending. Each read aligns its window to the device block size,
-// pulls it into the lane's bounce buffer, and memcpy's the requested interior out — the mechanics
-// O_DIRECT requires. `direct` is a property of the reader, chosen by whoever opens it: the expert
+// same file concurrently without contending. A direct read aligns its window to the device block
+// size, pulls it into the lane's bounce buffer, and memcpy's the requested interior out — the
+// mechanics O_DIRECT requires; a buffered read has no such constraint and goes straight into the
+// caller's memory. `direct` is a property of the reader, chosen by whoever opens it: the expert
 // streamer and the dense-weights loader each construct their own, so one can bypass the page cache
 // while the other does not — the two O_DIRECT decisions are independent, not a shared global.
 //
@@ -41,9 +42,10 @@ public:
     int lanes() const { return (int) fds_.size(); }
 
     // Read `nbytes` at file offset `off` into `dst`, on `lane` (0 <= lane < lanes()). Thread-safe
-    // across distinct lanes — each has its own fd and bounce. Returns the aligned window actually
-    // pulled from the drive (>= nbytes; what the bandwidth must be judged against), or -1 on I/O
-    // error. A zero-length read is a no-op returning 0. The lane's bounce grows if a read needs more.
+    // across distinct lanes — each has its own fd and bounce. Returns what was actually pulled from
+    // the drive — the aligned window (>= nbytes) when direct, exactly the requested bytes when
+    // buffered — which is what the bandwidth must be judged against; or -1 on I/O error. A
+    // zero-length read is a no-op returning 0. The lane's bounce grows if a direct read needs more.
     long long read(int lane, void * dst, uint64_t off, uint64_t nbytes);
 
     // Aggregate accounting since open, summed across lanes.
