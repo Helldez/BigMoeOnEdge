@@ -124,7 +124,13 @@ fun breakdown(t: Telemetry, overlap: Boolean, busyThreads: Int): Breakdown {
  * Incrementally parses the CLI's per-token telemetry contract (see docs/telemetry.md):
  *   BMOE_LOAD     {"mb":..,"ms":..}
  *   BMOE_PROGRESS {"step":..,"steps":..,"wall_ms":..,"io_ms":..,"compute_ms":..,
- *                  "cache_hit_pct":..,"text":".."}
+ *                  "cache_hit_pct":..,"delta_text":".."}
+ *
+ * The answer arrives as a delta: `delta_reasoning`/`delta_text` append to what this generation
+ * already received, unless the line carries `"reset":1` — the engine's chat parser retroactively
+ * reclassified answer text as reasoning (a closing tag arrived), and the deltas are full
+ * snapshots that REPLACE the accumulated state. Sending the cumulative text every token made a
+ * generation O(n²) on the wire (engine #119).
  *
  * The session control lines (BMOE_READY/BEGIN/DONE/ERROR) and the one-shot text summary lines
  * are handled by the RunService state machine, not here.
@@ -133,9 +139,17 @@ class TelemetryParser {
     var current = Telemetry()
         private set
 
+    // Accumulated answer/reasoning of the generation in flight. StringBuilder, not the data
+    // class's String fields: appending a token to a String re-copies the whole answer per token,
+    // which is the O(n²) this protocol change removes.
+    private val text = StringBuilder()
+    private val reasoning = StringBuilder()
+
     /** Clear the per-token state at the start of a new generation. */
     fun reset() {
         current = Telemetry()
+        text.setLength(0)
+        reasoning.setLength(0)
     }
 
     /** Returns true if [line] updated the token telemetry (UI should refresh). */
@@ -154,8 +168,14 @@ class TelemetryParser {
             current.cacheHitPct = o.optDouble("cache_hit_pct", -1.0)
             current.majflt = o.optDouble("majflt", 0.0)
             current.cpuMs = o.optDouble("cpu_ms", 0.0)
-            current.reasoning = o.optString("reasoning")
-            current.text = o.optString("text")
+            if (o.optInt("reset") == 1) {
+                reasoning.setLength(0)
+                text.setLength(0)
+            }
+            reasoning.append(o.optString("delta_reasoning"))
+            text.append(o.optString("delta_text"))
+            current.reasoning = reasoning.toString()
+            current.text = text.toString()
         }.isSuccess
     }
 }

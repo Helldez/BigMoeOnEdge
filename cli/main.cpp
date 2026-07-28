@@ -68,20 +68,44 @@ static std::string json_escape(const std::string & s) {
     return o;
 }
 
+// What BMOE_PROGRESS already delivered this generation, so each line carries only the new tail.
+// One state per generation: reset it (fresh object) when a new one begins.
+struct ProgressDelta {
+    std::string reasoning;
+    std::string text;
+};
+
+static bool is_extension(const std::string & full, const std::string & prev) {
+    return full.size() >= prev.size() && full.compare(0, prev.size(), prev) == 0;
+}
+
 // One token's line-protocol output: the optional BMOE_LOAD, then BMOE_PROGRESS (docs/telemetry.md).
 // Both emitters — the one-shot --progress run and the interactive session, which is a superset of it
 // — must produce a byte-identical line, since the Android app parses one parser's worth of protocol.
 // Keeping the format string in one place is what makes that true rather than merely intended.
-static void emit_progress_line(const TokenMetrics & m) {
+//
+// The answer travels as a DELTA: sending the cumulative text every token made a generation of n
+// tokens write, escape and parse O(n^2) bytes (#119). The common case appends the suffix since the
+// last line; when a closing tag makes common_chat_parse retroactively reclassify answer text as
+// reasoning, an append cannot express it, so the line carries the full snapshot with "reset":1 and
+// the reader replaces instead of appending. The first line of a generation is a plain extension of
+// the empty state. The full final text still travels in BMOE_DONE.
+static void emit_progress_line(const TokenMetrics & m, ProgressDelta & st) {
     if (m.read_bytes || m.io_ms > 0.0)
         std::printf("BMOE_LOAD {\"mb\":%.2f,\"ms\":%.1f}\n", m.read_bytes / (1024.0 * 1024.0), m.io_ms);
+    const bool ext = is_extension(m.reasoning, st.reasoning) && is_extension(m.text, st.text);
+    const std::string d_reason = ext ? m.reasoning.substr(st.reasoning.size()) : m.reasoning;
+    const std::string d_text = ext ? m.text.substr(st.text.size()) : m.text;
     std::printf("BMOE_PROGRESS {\"step\":%d,\"steps\":%d,\"wall_ms\":%.1f,\"io_ms\":%.1f,"
                 "\"compute_ms\":%.1f,\"mgmt_ms\":%.1f,\"stall_ms\":%.1f,\"read_mb\":%.2f,"
                 "\"cache_hit_pct\":%.1f,\"majflt\":%llu,\"cpu_ms\":%.1f,\"dense_resident_frac\":%.3f,"
-                "\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
+                "%s\"delta_reasoning\":\"%s\",\"delta_text\":\"%s\"}\n",
                 m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, m.mgmt_ms, m.stall_ms,
                 m.read_bytes / (1024.0 * 1024.0), m.cache_hit_pct, (unsigned long long) m.majflt, m.cpu_ms,
-                m.dense_resident_frac, json_escape(m.reasoning).c_str(), json_escape(m.text).c_str());
+                m.dense_resident_frac, ext ? "" : "\"reset\":1,", json_escape(d_reason).c_str(),
+                json_escape(d_text).c_str());
+    st.reasoning = m.reasoning;
+    st.text = m.text;
     std::fflush(stdout);
 }
 
@@ -285,7 +309,8 @@ static int run_session_loop(const RunConfig & cfg,
         req.clear_kv = cmd.clear_kv;
         req.render_text = true; // the line protocol carries the parsed answer on every token
 
-        RunResult r = session->generate(req, emit_progress_line, sink);
+        ProgressDelta pd; // fresh per generation: the first line extends the empty state
+        RunResult r = session->generate(req, [&](const TokenMetrics & m) { emit_progress_line(m, pd); }, sink);
         if (!r) {
             // A bad request (empty prompt, context overflow) leaves the session usable; a decode
             // failure means the context is compromised, so end the loop.
@@ -673,9 +698,10 @@ int main(int argc, char ** argv) {
         std::fflush(stdout);
     }
 
+    ProgressDelta pd; // one generation per one-shot run
     auto on_token = [&](const TokenMetrics & m) {
         if (cfg.progress) {
-            emit_progress_line(m);
+            emit_progress_line(m, pd);
         } else {
             std::fwrite(m.piece.data(), 1, m.piece.size(), stdout);
             std::fflush(stdout);
