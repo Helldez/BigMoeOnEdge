@@ -865,6 +865,18 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     const bool want_weights = trace_on_ || drop_armed();
     const int weight_variant = (moe_node && want_weights) ? match_weights(t->name, wl) : -1;
     const bool is_weights = weight_variant >= 0;
+    // Which of them is worth a BARRIER is a narrower question than which of them we recognise. The
+    // chain's earlier nodes exist only so the terminal one can be identified; once a layer's
+    // terminal is known, both consumers — the drop policy's decision point and the trace's
+    // last-wins gather — read that node and no other. Isolating the rest costs a graph split and a
+    // full compute-thread synchronization each, per layer, per token, on tensors of a few floats.
+    //
+    // Ask for the whole chain only while the layer is still learning its shape (term_variant_ < 0),
+    // which is the first graph of a run and any graph after close_drop_layer forgets a terminal
+    // that stopped appearing. That re-widening is what keeps this self-correcting: a graph that
+    // moves is detected exactly as before, because the deferral still fails to be honoured.
+    const bool weights_iso = is_weights && (wl < 0 || wl >= (int) term_variant_.size() || term_variant_[wl] < 0 ||
+                                            term_variant_[wl] == weight_variant);
     // The gate matmul. The probe ISOLATES it (a barrier per layer — a probed run is not a
     // benchmark run); the prefetch only wants its source pointers, which the ask pass hands over
     // for free, so it asks for nothing and validates its barrier-less read with the watchdog
@@ -896,7 +908,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 }
             }
         }
-        return ctrace_iso || is_topk || is_weights || (is_logits && predict_log_);
+        return ctrace_iso || is_topk || weights_iso || (is_logits && predict_log_);
     }
 
     // The probe attaches to the gate matmul rather than to the topk node because this is where the

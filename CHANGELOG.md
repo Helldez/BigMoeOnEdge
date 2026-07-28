@@ -6,6 +6,18 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **With the drop policy armed, only the weight node that decides is isolated.** The router-weight
+  chain is `ffn_moe_weights → (_softmax | _norm) → (_scaled)`, and the engine asked for **every**
+  node of it so it could learn which one comes last. But once a layer's terminal node is known,
+  that is the only one either consumer reads — the drop policy decides there, and the route trace's
+  last-wins gather lands there — so the other two or three asks per layer bought nothing and cost a
+  graph split plus a full compute-thread synchronization each, per layer, per token. They are now
+  asked for only while a layer is still learning its chain shape (the first graph of a run, and any
+  graph after a terminal that stopped appearing is forgotten), so the learning stays self-correcting
+  and a graph that moves is detected exactly as before. This ran inside every `--drop-cold-experts`
+  measurement to date, including the shipping app default.
+
 ## [0.17.0] - 2026-07-28
 
 ### Added
