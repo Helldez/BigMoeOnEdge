@@ -62,6 +62,7 @@ Invoke-Native "cmake configure" {
         -DCMAKE_BUILD_TYPE="$BuildType" `
         -DBMOE_BUILD_TESTS=OFF `
         -DGGML_NATIVE=OFF `
+        -DGGML_OPENCL=OFF `
         -DGGML_OPENMP=OFF `
         -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" `
         -DLLAMA_CURL=OFF
@@ -70,14 +71,23 @@ Invoke-Native "cmake configure" {
 Invoke-Native "cmake build" { cmake --build $buildPath -j }
 
 # Stage the CLI and the shared libs it needs into the app's jniLibs as lib*.so.
+# The list is explicit, and jniLibs is wiped first: a recursive sweep of the build tree once
+# staged a libggml-opencl.so left over from a GPU experiment's cmake cache, and it rode along
+# into two published APKs. If a submodule bump adds a library, the app fails at dlopen — loud —
+# instead of the APK silently growing a binary nobody chose to ship.
+$libs = @("libggml.so", "libggml-base.so", "libggml-cpu.so", "libllama.so", "libllama-common.so")
+
 $jni = Join-Path $root "examples\android\app\src\main\jniLibs\$Abi"
 New-Item -ItemType Directory -Force -Path $jni | Out-Null
+Get-ChildItem $jni -Filter "*.so" | Remove-Item -Force
 
 $cli = Join-Path $buildPath "cli\bmoe-cli"
 Copy-Item $cli (Join-Path $jni "libbmoe-cli.so") -Force
-Get-ChildItem -Path $buildPath -Recurse -Filter "*.so" |
-    Where-Object { $_.Name -like "libggml*" -or $_.Name -like "libllama*" } |
-    ForEach-Object { Copy-Item $_.FullName (Join-Path $jni $_.Name) -Force }
+foreach ($name in $libs) {
+    $src = Get-ChildItem -Path $buildPath -Recurse -Filter $name | Select-Object -First 1
+    if (-not $src) { throw "$name not found in $buildPath" }
+    Copy-Item $src.FullName (Join-Path $jni $name) -Force
+}
 
 # bmoe-cli links the c++_shared STL, so its runtime must ride along in the APK —
 # it lives in the NDK sysroot, not the build tree.
