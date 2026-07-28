@@ -21,29 +21,6 @@ Semantic Versioning.
   reservation pushing an already-tight system into reclaim — nearly 6 000 major faults per token,
   none of them the workload's fault.
 
-### Fixed
-- A stray `%` in the `--dense-weights` help text was read by `printf` as a conversion specifier, so
-  that line printed garbage and read past the argument list.
-- `scripts/build-android.ps1` now judges `cmake` by its exit code instead of by whether it wrote to
-  stderr, so it works under Windows PowerShell 5.1 and not only under `pwsh` (the NDK toolchain
-  prints progress to stderr, which 5.1 turns into a terminating error).
-
-## [0.15.1] - 2026-07-23
-
-### Added
-- **A warning when cache-aware dropping meets a narrow routing.** The threshold is a fraction of the
-  uniform share `1/top-k`, so `--drop-cold-experts 0.75` means "skip below 9.4% of the routing" at
-  top-k 8 — where every number in 0.15.0 was measured — but "below 18.8%" at top-k 4 and "below
-  37.5%" at top-k 2, where a miss discards the whole minority expert. The engine now says so once at
-  load when the effective top-k is 4 or fewer, quoting the real share for the model in hand, and the
-  app shows the same caveat inline under the setting. **gpt-oss is the case this exists for**: it
-  routes 4 of 128, and the app default is 75%, so 0.15.0 shipped that combination with nothing
-  saying it was outside the measured range.
-  It warns rather than clamping: the engine cannot know whether the trade is acceptable for a given
-  model, and silently adjusting a number the caller chose would be worse than a loud caveat.
-- `BMOE_READY` gains `n_expert_used`, the effective routing width after any override (0 on a non-MoE
-  model), so a UI can interpret the setting at all; `Session::n_expert_used()` exposes the same to
-  embedders. Additive — older consumers ignore it.
 - **`--predict-log` — measure how predictable the routing is, without acting on it.** For every
   decoded token the engine ranks each layer's experts a layer early, by running the **next** layer's
   router matrix on the **current** layer's gate input — the residual stream barely moves between
@@ -87,6 +64,29 @@ Semantic Versioning.
   mutually exclusive with the temporal-prefetch setting, spec-max rungs 0/1/2/4 defaulting to 0 =
   retention-only, the only rung the matched pairs did not refute).
 
+### Fixed
+- A stray `%` in the `--dense-weights` help text was read by `printf` as a conversion specifier, so
+  that line printed garbage and read past the argument list.
+- `scripts/build-android.ps1` now judges `cmake` by its exit code instead of by whether it wrote to
+  stderr, so it works under Windows PowerShell 5.1 and not only under `pwsh` (the NDK toolchain
+  prints progress to stderr, which 5.1 turns into a terminating error).
+
+## [0.15.1] - 2026-07-23
+
+### Added
+- **A warning when cache-aware dropping meets a narrow routing.** The threshold is a fraction of the
+  uniform share `1/top-k`, so `--drop-cold-experts 0.75` means "skip below 9.4% of the routing" at
+  top-k 8 — where every number in 0.15.0 was measured — but "below 18.8%" at top-k 4 and "below
+  37.5%" at top-k 2, where a miss discards the whole minority expert. The engine now says so once at
+  load when the effective top-k is 4 or fewer, quoting the real share for the model in hand, and the
+  app shows the same caveat inline under the setting. **gpt-oss is the case this exists for**: it
+  routes 4 of 128, and the app default is 75%, so 0.15.0 shipped that combination with nothing
+  saying it was outside the measured range.
+  It warns rather than clamping: the engine cannot know whether the trade is acceptable for a given
+  model, and silently adjusting a number the caller chose would be worse than a loud caveat.
+- `BMOE_READY` gains `n_expert_used`, the effective routing width after any override (0 on a non-MoE
+  model), so a UI can interpret the setting at all; `Session::n_expert_used()` exposes the same to
+  embedders. Additive — older consumers ignore it.
 ### Fixed
 - The 0.15.0 entry for the app default still called the quality cost unquantified, contradicting the
   GSM8K result recorded in the same section. Corrected in place.

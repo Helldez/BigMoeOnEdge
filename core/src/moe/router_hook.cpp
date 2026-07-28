@@ -253,7 +253,6 @@ void RouterHook::predict_reset() {
     ps_self_.assign(n, PredictorStats{});
     agg_stale_ = agg_stale2_ = agg_prev_ = agg_self_ = PredictorStats{};
     predict_unscored_ = 0;
-    nu_hint_ = 0;
     wd_slots_ = wd_hits_ = wd_rout_ = 0;
     wd_tripped_ = false;
     std::lock_guard<std::mutex> lk(pred_mtx_);
@@ -905,11 +904,6 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         // experts, and a denominator that skipped them would report the drop rate as a fraction of
         // the wrong thing.
         if (drop_frac_ > 0.0f) experts_routed_ += (long long) gathered_.size();
-
-        // The routing width, learned from the node that defines it. The predictive prefetch needs
-        // it a layer before any topk of the predicted layer exists, and reading it here (not from
-        // config) keeps an --n-expert-used override honest without another plumbing path.
-        if (predict_on() && nu > 0) nu_hint_ = nu;
 
         // Watchdog sample + submit the il+2 prediction job. Before the load flow on purpose: the
         // snapshot must precede load_layer, whose staging would otherwise count this layer's own

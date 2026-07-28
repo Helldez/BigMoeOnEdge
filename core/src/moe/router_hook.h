@@ -235,14 +235,9 @@ private:
     long long predict_unscored_ = 0;
     std::vector<float> pred_scores_; // scratch: one score per expert
     std::vector<float> pred_row_;    // scratch: one activation row, as float
-    // How wide a routing actually is, learned from the last topk node seen. The prefetch needs it
-    // BEFORE the predicted layer's topk exists, and reading it off the graph (rather than config)
-    // keeps an --n-expert-used override honest. 0 until the first routing of a run has been seen,
-    // during which the prefetch stays silent.
-    int nu_hint_ = 0;
-    std::vector<int32_t> spec_ids_; // scratch: the filtered prediction handed to prefetch()
-    std::vector<uint8_t> pred_res_; // scratch: residency of the prediction being filtered
-    int pred_spec_max_ = 2;         // speculated predicted misses per layer (0 = retention only)
+    std::vector<int32_t> spec_ids_;  // scratch: the filtered prediction handed to prefetch()
+    std::vector<uint8_t> pred_res_;  // scratch: residency of the prediction being filtered
+    int pred_spec_max_ = 2;          // speculated predicted misses per layer (0 = retention only)
 
     // ── the prefetch's own prediction path (no barrier, GEMV off the eval thread) ─────
     //
