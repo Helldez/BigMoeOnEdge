@@ -274,8 +274,14 @@ void ExpertStreamSource::io_drain(int lane, uint64_t my_gen) {
         // in-flight batch, fixed until it fully drains) and wake any compute thread blocked on
         // it. Notify even on failure so a straggler wakes and observes fatal_ instead of hanging.
         if (j.flag >= 0) {
-            ready_[(size_t) j.flag].gen.store(batch_flag_gen_, std::memory_order_release);
-            {
+            // Publish first, then look for waiters. on_expert_ready registers itself before its own
+            // last look at the flag, and both operations are seq_cst, so the two cannot miss each
+            // other: either the compute thread sees the flag and never sleeps, or it is counted here
+            // and gets woken. With nobody waiting — the common case, since a slice usually lands
+            // inside the spin — this costs one atomic load instead of a mutex plus a notify_all that
+            // woke EVERY compute thread blocked on ANY expert to re-check its own predicate.
+            ready_[(size_t) j.flag].gen.store(batch_flag_gen_, std::memory_order_seq_cst);
+            if (ready_waiters_.load(std::memory_order_seq_cst) != 0) {
                 std::lock_guard<std::mutex> lk(ready_mtx_);
                 ready_cv_.notify_all();
             }
@@ -314,30 +320,70 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
     if (!active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return;
     const LayerExperts & L = layers_[il];
     bool any = false;
-    std::lock_guard<std::mutex> lk(io_mtx_);
+
+    // Stage each expert's jobs locally and publish them only once ALL of its projections have been
+    // committed. Pushing them as they were built meant a commit failure mid-expert could leave jobs
+    // queued for an entry whose spec_remaining_ was never set: a worker would then decrement it from
+    // zero, the entry could never reach zero to complete, the quiesce would never see it in
+    // spec_touched_ to release, and the `!= 0` guard above would skip that expert's speculation for
+    // the rest of the run. One failure, permanent damage — in exactly the low-memory situation this
+    // path exists to degrade gracefully in.
+    //
+    // Committing before taking io_mtx_ matters for the same call: prefetch runs on the eval thread
+    // right after a real batch was published, so holding the mutex across a syscall per projection
+    // stalls the lanes trying to pull real read indices out of it. The pages are the eval thread's
+    // to commit — no worker touches them until the jobs below exist.
+    std::vector<IoJob> & staged = spec_stage_;
+    std::vector<int32_t> & staged_ids = spec_stage_ids_;
+    std::vector<int> & staged_counts = spec_stage_counts_;
+    staged.clear();
+    staged_ids.clear();
+    staged_counts.clear();
     for (int i = 0; i < n_ids; ++i) {
         const int e = ids[i];
         if (e < 0 || e >= n_expert_) continue;
         const int32_t id = il * n_expert_ + e;
-        if (cvalid_[id] || spec_remaining_[id] != 0) continue; // already resident or already queued
+        {
+            std::lock_guard<std::mutex> lk(io_mtx_);
+            if (cvalid_[id] || spec_remaining_[id] != 0) continue; // already resident or already queued
+        }
+        const size_t mark = staged.size();
         int njobs = 0;
+        bool ok = true;
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue;
             char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
             uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
             uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
-            if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) return; // low on memory — stop quietly
-            spec_jobs_.push_back(
+            if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) { // low on memory — stop quietly
+                ok = false;
+                break;
+            }
+            staged.push_back(
                 {dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, e, (int16_t) il, (int8_t) p, 1});
             ++njobs;
         }
+        if (!ok) {
+            // Hand back what this expert already committed and drop its jobs: an entry is queued
+            // whole or not at all.
+            staged.resize(mark);
+            release_entry_pages(id);
+            break;
+        }
         if (njobs == 0) continue;
-        spec_remaining_[id] = njobs;
-        spec_touched_.push_back(id);
+        staged_ids.push_back(id);
+        staged_counts.push_back(njobs);
         any = true;
     }
     if (!any) return;
+
+    std::lock_guard<std::mutex> lk(io_mtx_);
+    for (size_t s = 0; s < staged_ids.size(); ++s) {
+        spec_remaining_[staged_ids[s]] = staged_counts[s];
+        spec_touched_.push_back(staged_ids[s]);
+    }
+    spec_jobs_.insert(spec_jobs_.end(), staged.begin(), staged.end());
     if (prefetch_sync_) {
         // Test path: read the queued slices now on lane 0 (free on the eval thread in serial mode),
         // so the next quiesce integrates them deterministically. Mirrors drain_spec's accounting.
@@ -916,12 +962,19 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
         }
         std::this_thread::yield();
     }
-    {
+    // Register as a waiter BEFORE the last look at the flag. The publisher sets the flag before it
+    // reads this count, and both sides are seq_cst, so one of the two must observe the other: either
+    // the flag is already set here and this thread never sleeps, or the publisher sees a non-zero
+    // count and notifies. That is what lets io_drain skip the mutex and the notify_all when no
+    // compute thread is blocked, which is the usual case.
+    ready_waiters_.fetch_add(1, std::memory_order_seq_cst);
+    if (ready_[idx].gen.load(std::memory_order_seq_cst) != want && !fatal_.load(std::memory_order_acquire)) {
         std::unique_lock<std::mutex> lk(ready_mtx_);
         ready_cv_.wait(lk, [&] {
             return ready_[idx].gen.load(std::memory_order_acquire) == want || fatal_.load(std::memory_order_acquire);
         });
     }
+    ready_waiters_.fetch_sub(1, std::memory_order_seq_cst);
     stall_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
 }
 
