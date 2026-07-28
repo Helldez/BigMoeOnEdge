@@ -181,7 +181,7 @@ private:
     bool active_ = false;
     bool load_all_ = false;
     bool overlap_ = false;
-    bool two_wave_ = false; // publish the first projection's jobs before committing the rest (#118)
+    bool two_wave_ = false;      // publish the first projection's jobs before committing the rest (#118)
     bool prefetch_sync_ = false; // test only: drain prefetch reads synchronously (serial mode)
     int n_layer_ = 0;
     int n_expert_ = 0;
@@ -304,7 +304,7 @@ private:
     // expert tensor* -> (il<<8)|p. Sorted by pointer and static after init, and probed by every
     // compute thread for every routed expert — a flat binary search beats hashing the pointer.
     std::vector<std::pair<const void *, uint32_t>> texp_;
-    std::vector<int> staged_;                         // per-load sorted unique expert scratch
+    std::vector<int> staged_; // per-load sorted unique expert scratch
     bool hook_registered_ = false;
 };
 

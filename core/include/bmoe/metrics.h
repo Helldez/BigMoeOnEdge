@@ -189,7 +189,7 @@ struct RunInfo {
     int io_threads = 0;
     bool o_direct = false;
     bool overlap = false;
-    bool io_two_wave = false;           // two-wave batch publish (#118): first projection published early
+    bool io_two_wave = false; // two-wave batch publish (#118): first projection published early
     int prefetch_layers = 0;
     bool predict_prefetch = false;      // stale-gate predictive prefetch (see MoeStreamConfig)
     bool predict_log = false;           // the accuracy probe: costs a barrier and two GEMVs per layer
