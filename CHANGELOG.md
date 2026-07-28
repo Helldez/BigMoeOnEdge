@@ -7,6 +7,15 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Fixed
+- **Router weights are located by the routing's shape, not by a test a top-1 routing defeats.** The
+  helper that finds token `j`'s slot `k` inside a weight node told the 3-D `[1, nu, nt]` node from
+  the norm variant's pre-reshape 2-D `[nu, nt]` by asking whether `ne[0] == 1`. With `n_expert_used`
+  of 1 the 2-D node *is* `[1, nt]`, passes that test, and is read with the 3-D token stride — so
+  every token after the first is read from the wrong row, and under `--drop-cold-experts` in prefill
+  the policy's writes land on the wrong slot. It now matches the full extents against the routing's
+  own width and batch size, which separates the two shapes exactly; where both fit (a single token
+  at top-1) they name the same element. No shipped model in the catalog routes top-1, so this was
+  latent rather than active.
 - **A failed bounce reallocation no longer kills the lane for good.** `FileReader::read` freed the
   old buffer before allocating the new one but left the recorded size behind, so after a transient
   allocation failure the next *smaller* read saw enough capacity, skipped the realloc, and read into
