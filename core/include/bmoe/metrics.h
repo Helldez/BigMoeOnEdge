@@ -15,13 +15,19 @@
 namespace bmoe {
 
 struct TokenMetrics {
-    int step = 0;               // 1-based index of this token
-    int steps = 0;              // n_predict target
-    double wall_ms = 0.0;       // total wall time for this token
-    double io_ms = 0.0;         // flash read time this token (serial: subset of wall; overlap: lane-busy sum)
-    double mgmt_ms = 0.0;       // cache-management time (vm commit + evict + LRU bookkeeping) this token
-    double compute_ms = 0.0;    // residual: serial wall - io - mgmt; overlap wall - stall - mgmt
-    double stall_ms = 0.0;      // overlap only: wall time the FFN kernel blocked on flash (0 when serial)
+    int step = 0;            // 1-based index of this token
+    int steps = 0;           // n_predict target
+    double wall_ms = 0.0;    // total wall time for this token
+    double io_ms = 0.0;      // flash read time this token (serial: subset of wall; overlap: lane-busy sum)
+    double mgmt_ms = 0.0;    // cache-management time (vm commit + evict + LRU bookkeeping) this token
+    double compute_ms = 0.0; // residual: serial wall - io - mgmt; overlap wall - stall - mgmt
+    double stall_ms = 0.0;   // overlap only: wall time the FFN kernel blocked on flash (0 when serial)
+    // Wall time between the PREVIOUS token's decode and this one's: sampling, detokenization,
+    // rendering the answer for a UI, this struct, and the sinks. None of it is inside wall_ms, so
+    // none of it reaches the reported tok/s — which is exactly why it is worth a column. A change
+    // that moves only this number is invisible in s/tok while being paid on every token.
+    // On the first token it is the gap from the end of prefill to the first decode.
+    double loop_overhead_ms = 0.0;
     uint64_t read_bytes = 0;    // expert bytes pulled from flash this token
     double cache_hit_pct = 0.0; // cumulative cache hit rate (-1 if no cache)
     // Compute-decomposition counters, measured around llama_decode (0 if the platform can't report
@@ -100,6 +106,10 @@ struct RunSummary {
     // well below 1 is a throttled/preempted core. 0 when the platform can't measure them.
     double majflt_per_token = 0.0;
     double cpu_s_per_token = 0.0;
+    // Everything between the decodes, per token: the region gen_seconds (and so tok/s) excludes.
+    // Includes the tail after the last token, which no row can carry. Read next to s_per_token: the
+    // two together are what a caller actually waits through.
+    double loop_overhead_s_per_token = 0.0;
     double cache_resident_mib = 0.0;
     double cache_budget_mib = 0.0; // the fixed cache budget the run used (explicit, or auto-sized at load)
     long long cache_resizes = 0;   // runtime budget changes — now only an app's explicit set_cache_budget
@@ -152,28 +162,54 @@ struct RunSummary {
 // something says what differed between them — and by the time a file is read, the argv that made
 // it is long gone. The engine states it once, in the file, next to the numbers it explains.
 struct RunInfo {
-    std::string model; // file name, not the full path: the path is the reader's machine, not the run's
+    std::string engine_version; // the build that produced the rows; see bmoe/version.h
+    std::string model;          // file name, not the full path: the path is the reader's machine, not the run's
     std::string arch;
     int n_layer = 0;
     int n_expert = 0;
     int n_expert_used = 0; // effective top-k, after any override
     int n_threads = 0;
     int n_ctx = 0;
+    int n_ubatch = 0;    // widest graph computed at once; 0 = follow n_batch. Sets the compute-buffer
+                         // reservation, so it moves the very memory columns these rows record.
+    bool chatml = false; // a chat-templated prompt is not the prompt that was typed
+    // Deliberately absent: `think`. It is a property of a REQUEST, not of the session, so a session
+    // preamble stating one value would be wrong for every turn that asked for the other. The `turn`
+    // column is where per-turn facts belong.
 
     // The streaming configuration, as resolved (not as typed): cache_mb is what the engine settled
     // on, which under auto-sizing is a number no flag mentioned.
     bool moe_stream = false;
     int cache_mb = 0;
     bool cache_auto = false;
+    int cache_floor_mb = 0; // the RAM auto-sizing was told to leave free — the input behind cache_mb
     int cache_ceil_mb = 0;
     bool force_cache = false;
+    bool load_all = false; // whole-expert-set baseline: reads everything, so its bytes mean something else
     int io_threads = 0;
     bool o_direct = false;
     bool overlap = false;
     int prefetch_layers = 0;
     bool predict_prefetch = false;      // stale-gate predictive prefetch (see MoeStreamConfig)
-    std::string dense_weights = "anon"; // dense (non-expert) policy: "mmap" | "warm" | "anon"
+    bool predict_log = false;           // the accuracy probe: costs a barrier and two GEMVs per layer
+    int predict_spec_max = 0;           // how many predicted misses a layer may speculate (0 = retention only)
+    bool prefetch_sync = false;         // test path: speculative reads served inline, no latency hiding
+    std::string dense_weights = "anon"; // dense (non-expert) policy: "mmap" | "warm" | "anon" | "ahwb"
     float drop_cold_frac = 0.0f;        // cache-aware expert dropping threshold (0 = off)
+    bool drop_renorm = true;            // survivors rescaled to keep the routing's total mass
+    bool drop_prefill = false;          // dropping armed during prefill too, where it discards far more
+
+    // Sampling. Greedy (temp <= 0) is the default and the only deterministic one; the byte-identity
+    // gates depend on it. A stochastic run and a greedy one are not comparable, and until these were
+    // recorded the file could not tell them apart.
+    float temp = 0.0f;
+    int top_k = 40;
+    float top_p = 0.95f;
+    uint32_t seed = 0xFFFFFFFFu;
+
+    // Diagnostics that perturb what they measure. A traced run is not a benchmark run — recorded so
+    // a file cannot be mistaken for one.
+    int compute_trace_layers = 0;
 };
 
 // Optional per-token sink (e.g. CSV for benchmarks). The engine calls on_run_info once before the

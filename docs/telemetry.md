@@ -32,6 +32,11 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   that recovers the flash-wait term as `wall_ms − compute_ms − mgmt_ms` gets `wall_ms − mgmt_ms`
   when the clamp fires, over-attributing to flash. Read the wall-additive flash term straight from
   `io_ms` (serial) / `stall_ms` (overlap) instead of inverting the residual.
+  Precisely: `stall_ms` is the summed per-thread block time divided by `n_threads`, which equals the
+  wall stall only if every compute thread blocks together. When one thread waits on an expert while
+  the others keep working it **under**-states the stall, and `compute_ms` — being the residual —
+  absorbs the difference. Read an attribution between compute and flash as approximate, and reach
+  for `--compute-trace` when the split itself is the question.
   In serial mode `io_ms` is the wall time blocked on reads (a subset of `wall_ms`). Under
   `--overlap` its meaning changes: it is the **sum of per-lane busy time**, so it can exceed
   `wall_ms` because lanes read in parallel with compute. Use `stall_ms` for the wall time
@@ -145,15 +150,58 @@ prints just the summary lines.
 
 ## CSV sink
 
-`--csv PATH` additionally writes one row per token:
+`--csv PATH` additionally writes a `#` preamble describing the run, then one row per token, then a
+`# summary ...` trailer. Intended for the benchmark sweep.
+
+### Run-parameter preamble
+
+```
+# bmoe_metrics v2
+# engine=<ver>
+# model=<file> arch=<arch> n_layer=<n> n_expert=<n> n_expert_used=<k> threads=<n>
+  n_ctx=<n> n_ubatch=<n> chatml=<0|1>
+# moe_stream=<0|1> cache_mb=<n> cache_auto=<0|1> cache_floor_mb=<n> cache_ceil_mb=<n>
+  force_cache=<0|1> load_all=<0|1> io_threads=<n> o_direct=<0|1> overlap=<0|1> prefetch=<n>
+  predict_prefetch=<0|1> predict_log=<0|1> predict_spec_max=<n> prefetch_sync=<0|1>
+  dense_weights=<mmap|warm|anon|ahwb> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
+# temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n>
+```
+
+Rows without this are not evidence: two files answer "which is faster" only if something says what
+differed between them, and by the time a CSV is read the argv that produced it is gone. Written once
+per session (a second `generate()` does not repeat it). Keys are whitespace-separated `key=value`
+and **order-independent**; new keys are appended freely and older parsers ignore what they do not
+know.
+
+Values are the **resolved** configuration, not what was typed — `cache_mb` is what the streamer
+settled on, which under `--cache-mb auto` is a number no flag mentioned, and `n_expert_used` is the
+effective top-k after any override. Fields to read carefully:
+
+- `engine` is the version that produced the rows (`bmoe-cli --version`), so a committed file still
+  names its build after the checkout has moved on. `unknown` if the build did not define it. It sits
+  on its own line so the `model=` line keeps starting with `model=`, which is how the app's CSV
+  reader finds a run's name.
+- `n_ubatch` sets the compute-buffer reservation, so it moves the very memory columns below;
+  `0` means it follows `n_batch`.
+- `predict_log=1`, `prefetch_sync=1` or `compute_trace_layers>0` mean **the run was instrumented**.
+  A probed or traced run is not a benchmark run — see the warning under [Decode
+  traces](#decode-traces).
+- `temp>0` means the run was **stochastic**: not comparable token-for-token with a greedy one, and
+  not reproducible except through `seed`.
+- `load_all=1` reads the whole expert set, so its `read_bytes` means something different from a
+  selective run's.
+
+`think` is deliberately absent: it is a property of a *request*, not of the session, so one value in
+a session-wide preamble would be wrong for every turn that asked for the other. Per-turn facts belong
+next to the `turn` column.
+
+### Per-token rows
 
 ```
 step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,
 dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,
-mem_available_mib,mem_free_mib,swap_free_mib
+mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms
 ```
-
-followed by a `# summary ...` comment line. Intended for the benchmark sweep.
 
 `stall_ms`, `mgmt_ms`, `majflt`, `cpu_ms` and `dense_resident_frac` are trailing columns appended
 after the original seven. `stall_ms` is the wall time compute threads waited for expert reads that
@@ -168,7 +216,8 @@ floor to defend; see [pressure.md](pressure.md)), `experts_routed=<n>` / `expert
 [cache-aware dropping](expert-dropping.md) actually discarded during generation — the flag sets a
 threshold, not a rate, so this is the only record of the trade a run made) and
 `layer_demand_MiB=<f>` (the widest layer's routed
-bytes: the mechanical floor the cache must be able to stage); see the `io_ms` note above for how the
+bytes: the mechanical floor the cache must be able to stage) and `loop_overhead_s/tok=<s>` (see
+[below](#what-toks-does-not-include)); see the `io_ms` note above for how the
 read-time columns are reinterpreted under overlap.
 
 The trailing block is the memory picture, added so a run can be diagnosed from its own file:
@@ -184,8 +233,20 @@ The trailing block is the memory picture, added so a run can be diagnosed from i
 | `swap_mib` | anonymous memory already lost to zram (`VmSwap`). |
 | `rss_mib` | total resident (`VmRSS`). |
 | `mem_available_mib` / `mem_free_mib` / `swap_free_mib` | what the device claims about itself. `MemAvailable` counts this process's own mmap'd weights as reclaimable, so it over-states headroom — it is recorded next to what we measured ourselves because the gap between them is the story. |
+| `loop_overhead_ms` | wall time between the **previous** token's decode and this one's: sampling, detokenization, rendering the answer for a UI, and the sink writes. On the first token, the gap from the end of prefill to the first decode. |
 
 All are `0` where the platform cannot report them (the Windows host build reports device memory but not the per-process split).
+
+### What `tok/s` does not include
+
+`wall_ms` brackets `llama_decode` and nothing else — that is what makes `compute_ms` a clean
+residual. It also means everything *between* two decodes is outside `wall_ms`, outside `gen_seconds`
+and therefore **outside the reported `tok/s`**. `loop_overhead_ms` is that region, measured, so a
+change that moves only it is visible instead of free.
+
+Read it next to `wall_ms`: the two together are what a caller actually waits through. The summary's
+`loop_overhead_s/tok` is the same figure averaged, and includes the tail after the last token that
+no row can carry.
 
 ## Route trace
 

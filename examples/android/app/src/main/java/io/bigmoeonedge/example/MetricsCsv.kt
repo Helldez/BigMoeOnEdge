@@ -90,8 +90,13 @@ internal class Csv(
  */
 internal fun runTitle(file: File): String {
     val lines = runCatching { file.readLines() }.getOrElse { return "" }
-    val model = lines.firstOrNull { it.startsWith("# model=") }
-        ?.substringAfter("model=", "")?.substringBefore(" ").orEmpty()
+    // Find the `model=` token wherever it sits in the preamble, rather than requiring the line to
+    // begin with it: the preamble grows by appending keys and lines, and a title should not be the
+    // one thing that depends on their order.
+    val model = lines.filter { it.startsWith("# ") && !it.startsWith("# summary") }
+        .flatMap { it.removePrefix("# ").trim().split(" ") }
+        .firstOrNull { it.startsWith("model=") }
+        ?.substringAfter("model=", "").orEmpty()
     if (model.isEmpty()) return ""
     val initial = model.first().uppercaseChar()
     val tps = lines.filter { it.startsWith("# summary") }

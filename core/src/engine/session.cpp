@@ -2,6 +2,7 @@
 #include "bmoe/recipe.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
+#include "bmoe/version.h"
 #include "chat_parse.h"
 #include "thinking_control.h"
 #include "../moe/router_hook.h"
@@ -561,18 +562,33 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.model = slash == std::string::npos ? p : p.substr(slash + 1);
         ri.arch = im.arch;
         ri.n_layer = im.n_layer;
+        ri.engine_version = version();
         ri.n_threads = cfg.n_threads;
         ri.n_ctx = cfg.n_ctx;
+        ri.n_ubatch = cfg.n_ubatch;
+        ri.chatml = cfg.chatml;
+        ri.compute_trace_layers = cfg.compute_trace_layers;
+        ri.temp = cfg.sampling.temp;
+        ri.top_k = cfg.sampling.top_k;
+        ri.top_p = cfg.sampling.top_p;
+        ri.seed = cfg.sampling.seed;
         ri.moe_stream = cfg.moe.enabled;
         ri.cache_auto = cfg.moe.cache_auto;
+        ri.cache_floor_mb = cfg.moe.cache_floor_mb;
         ri.cache_ceil_mb = cfg.moe.cache_ceil_mb;
         ri.force_cache = cfg.moe.force_cache;
+        ri.load_all = cfg.moe.enabled && cfg.moe.load_all;
         ri.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
         ri.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
         ri.predict_prefetch = cfg.moe.enabled && cfg.moe.predict_prefetch;
+        ri.predict_log = cfg.moe.enabled && cfg.moe.predict_log;
+        ri.predict_spec_max = cfg.moe.enabled ? cfg.moe.predict_spec_max : 0;
+        ri.prefetch_sync = cfg.moe.enabled && cfg.moe.prefetch_sync;
         ri.drop_cold_frac = cfg.moe.enabled ? cfg.moe.drop_cold_frac : 0.0f;
+        ri.drop_renorm = cfg.moe.drop_renorm;
+        ri.drop_prefill = cfg.moe.drop_prefill;
         // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
         ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"
                            : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"
@@ -889,6 +905,13 @@ RunResult Session::generate(const GenerateRequest & req,
     const long long prev_routed = im.hook->experts_routed();
     const long long prev_dropped = im.hook->experts_dropped();
 
+    // The decode bracket below measures llama_decode and nothing else, which is what makes
+    // compute_ms a clean residual — but it also means everything BETWEEN two decodes (sampling,
+    // detokenization, rendering, the sinks) is charged to nobody and disappears from tok/s. Mark
+    // where the last decode ended so each token can report the gap it actually waited through.
+    auto loop_mark = clock_t_::now();
+    double loop_overhead_s = 0.0;
+
     for (int t = 0; t < req.n_predict; ++t) {
         // Greedy stays argmax (byte-identical to the resident reference the gates check); with a
         // sampling chain, draw from the context's last-position logits, which llama_sampler_sample
@@ -906,10 +929,13 @@ RunResult Session::generate(const GenerateRequest & req,
         const uint64_t f0 = pio::major_faults();
         const double c0 = pio::process_cpu_seconds();
         auto s0 = clock_t_::now();
+        const double overhead = secs(loop_mark, s0); // everything since the previous decode returned
+        loop_overhead_s += overhead;
         llama_batch step = llama_batch_get_one(&tok, 1);
         trace_begin(n_prompt + t, /*n_tokens*/ 1, /*phase*/ 1); // decodes at the position after the prompt
         int dec = llama_decode(ctx, step);
         auto s1 = clock_t_::now();
+        loop_mark = s1; // the next token's overhead is measured from here
         const uint64_t f1 = pio::major_faults();
         const double c1 = pio::process_cpu_seconds();
         if (dec != 0) {
@@ -931,6 +957,7 @@ RunResult Session::generate(const GenerateRequest & req,
         TokenMetrics m;
         m.step = n_gen;
         m.steps = req.n_predict;
+        m.loop_overhead_ms = overhead * 1000.0;
         m.piece = delta;
         // Only when someone will read it: the parser cannot resume, so this re-parses everything
         // generated so far on every token, and off the chat path it is a full copy of the same.
@@ -953,6 +980,9 @@ RunResult Session::generate(const GenerateRequest & req,
     s.gen_seconds = gen_seconds;
     s.s_per_token = n_gen ? gen_seconds / n_gen : 0.0;
     s.tokens_per_second = gen_seconds > 0 ? n_gen / gen_seconds : 0.0;
+    // Close the accounting: the tail after the last decode belongs to no row, so add it here.
+    loop_overhead_s += secs(loop_mark, clock_t_::now());
+    s.loop_overhead_s_per_token = n_gen ? loop_overhead_s / n_gen : 0.0;
     s.n_prompt = n_prompt - (int) n_common; // tokens actually prefilled this turn (after KV reuse)
     s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
     s.load_seconds = im.load_seconds;

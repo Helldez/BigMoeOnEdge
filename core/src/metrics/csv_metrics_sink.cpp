@@ -18,16 +18,33 @@ public:
     // parsers ignore what they do not know.
     void on_run_info(const RunInfo & r) override {
         if (header_) return; // a session sends this once; a second call would interleave a preamble
-        std::fprintf(f_, "# bmoe_metrics v1\n");
-        std::fprintf(f_, "# model=%s arch=%s n_layer=%d n_expert=%d n_expert_used=%d threads=%d n_ctx=%d\n",
-                     r.model.c_str(), r.arch.c_str(), r.n_layer, r.n_expert, r.n_expert_used, r.n_threads, r.n_ctx);
+        // v2 adds the engine version and every knob v1 left out — the compute-buffer width, the
+        // prediction settings, the drop variants, the sampling parameters. A file that does not
+        // record a setting cannot be compared against one that changed it, and several of these
+        // move the very columns below (n_ubatch sets the compute-buffer reservation; a probed or
+        // sampled run is not a benchmark run at all).
+        std::fprintf(f_, "# bmoe_metrics v2\n");
+        // The engine version gets its own line, and the model line keeps starting with `model=`:
+        // the app's CSV reader finds the run's name by looking for a line that BEGINS with
+        // "# model=", so prefixing that line with anything would have cost every already-installed
+        // build its run titles. A new key on a new line is invisible to a parser that ignores it.
+        std::fprintf(f_, "# engine=%s\n", r.engine_version.c_str());
         std::fprintf(f_,
-                     "# moe_stream=%d cache_mb=%d cache_auto=%d cache_ceil_mb=%d force_cache=%d "
-                     "io_threads=%d o_direct=%d overlap=%d prefetch=%d predict_prefetch=%d dense_weights=%s "
-                     "drop_cold_frac=%.4g\n",
-                     r.moe_stream, r.cache_mb, r.cache_auto, r.cache_ceil_mb, r.force_cache, r.io_threads, r.o_direct,
-                     r.overlap, r.prefetch_layers, r.predict_prefetch, r.dense_weights.c_str(),
-                     (double) r.drop_cold_frac);
+                     "# model=%s arch=%s n_layer=%d n_expert=%d n_expert_used=%d threads=%d "
+                     "n_ctx=%d n_ubatch=%d chatml=%d\n",
+                     r.model.c_str(), r.arch.c_str(), r.n_layer, r.n_expert, r.n_expert_used, r.n_threads, r.n_ctx,
+                     r.n_ubatch, r.chatml);
+        std::fprintf(f_,
+                     "# moe_stream=%d cache_mb=%d cache_auto=%d cache_floor_mb=%d cache_ceil_mb=%d "
+                     "force_cache=%d load_all=%d io_threads=%d o_direct=%d overlap=%d prefetch=%d "
+                     "predict_prefetch=%d predict_log=%d predict_spec_max=%d prefetch_sync=%d "
+                     "dense_weights=%s drop_cold_frac=%.4g drop_renorm=%d drop_prefill=%d\n",
+                     r.moe_stream, r.cache_mb, r.cache_auto, r.cache_floor_mb, r.cache_ceil_mb, r.force_cache,
+                     r.load_all, r.io_threads, r.o_direct, r.overlap, r.prefetch_layers, r.predict_prefetch,
+                     r.predict_log, r.predict_spec_max, r.prefetch_sync, r.dense_weights.c_str(),
+                     (double) r.drop_cold_frac, r.drop_renorm, r.drop_prefill);
+        std::fprintf(f_, "# temp=%.4g top_k=%d top_p=%.4g seed=%u compute_trace_layers=%d\n", (double) r.temp, r.top_k,
+                     (double) r.top_p, r.seed, r.compute_trace_layers);
         write_header();
     }
 
@@ -35,11 +52,12 @@ public:
         write_header(); // a caller that never sent RunInfo still gets a readable file
         std::fprintf(f_,
                      "%d,%d,%.3f,%.3f,%.3f,%llu,%.2f,%.3f,%.3f,%llu,%.3f,%.3f,%d,%.2f,%.1f,%.1f,%.1f,"
-                     "%.1f,%.1f,%.1f,%.1f,%.1f\n",
+                     "%.1f,%.1f,%.1f,%.1f,%.1f,%.3f\n",
                      m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, (unsigned long long) m.read_bytes,
                      m.cache_hit_pct, m.stall_ms, m.mgmt_ms, (unsigned long long) m.majflt, m.cpu_ms,
                      m.dense_resident_frac, m.turn, m.majflt_mib, m.cache_budget_mib, m.rss_mib, m.rss_anon_mib,
-                     m.rss_file_mib, m.swap_mib, m.mem_available_mib, m.mem_free_mib, m.swap_free_mib);
+                     m.rss_file_mib, m.swap_mib, m.mem_available_mib, m.mem_free_mib, m.swap_free_mib,
+                     m.loop_overhead_ms);
         std::fflush(f_);
     }
     void on_summary(const RunSummary & s) override {
@@ -52,13 +70,14 @@ public:
                      "cache_resident_MiB=%.1f cache_budget_MiB=%.1f cache_resizes=%lld "
                      "spec_read_MiB=%.1f spec_experts=%lld spec_useful=%lld "
                      "majflt/tok=%.2f cpu_s/tok=%.4f token_demand_MiB=%.1f layer_demand_MiB=%.1f "
-                     "experts_routed=%lld experts_dropped=%lld\n",
+                     "experts_routed=%lld experts_dropped=%lld loop_overhead_s/tok=%.4f\n",
                      s.n_generated, s.s_per_token, s.tokens_per_second, s.moe_read_mib, s.moe_io_seconds,
                      s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct, s.n_prompt, s.load_seconds,
                      s.prefill_seconds, s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0,
                      s.moe_stall_s_per_token, s.moe_mgmt_s_per_token, s.cache_resident_mib, s.cache_budget_mib,
                      s.cache_resizes, s.moe_spec_read_mib, s.moe_spec_experts, s.moe_spec_useful, s.majflt_per_token,
-                     s.cpu_s_per_token, s.token_demand_mib, s.layer_demand_mib, s.experts_routed, s.experts_dropped);
+                     s.cpu_s_per_token, s.token_demand_mib, s.layer_demand_mib, s.experts_routed, s.experts_dropped,
+                     s.loop_overhead_s_per_token);
         std::fflush(f_);
     }
 
@@ -74,7 +93,7 @@ private:
         // then the memory block. Consumers read columns by name, so order is not a contract.
         std::fprintf(f_, "step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,"
                          "dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,"
-                         "rss_file_mib,swap_mib,mem_available_mib,mem_free_mib,swap_free_mib\n");
+                         "rss_file_mib,swap_mib,mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms\n");
     }
 
     std::FILE * f_ = nullptr;
