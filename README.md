@@ -100,6 +100,12 @@ and a manual copy to the device: steps in the
 - **Speed–quality knobs** (`--n-expert-used N`, `--drop-cold-experts F`): the two settings that
   trade output quality for speed — one narrows the routing width, the other skips only cold,
   barely-weighted experts. Both measured: [Trading quality for speed](#trading-quality-for-speed).
+- **Routing prediction** (`--predict-log`, `--predict-prefetch`): scores how much of a layer's
+  routing is knowable a layer early — **88.6%** on Qwen3-30B against 43.3% for the previous-token
+  bet — and can act on it. Reading ahead on the better predictor still *lost* 21% on device, so it
+  ships off: [docs/expert-prediction.md](docs/expert-prediction.md).
+- **Prefill window** (`--ubatch N`): caps the widest graph computed at once, decoupling reserved
+  compute buffers from the context (320 MiB at ctx 2048, 80 at 512). Decode is unaffected.
 - **Multi-turn sessions and live telemetry**: the model stays loaded across chat turns, and every
   run can emit a per-token breakdown of where the time went.
 - **Android demo app** ([`examples/android`](examples/android)): a chat app with a live telemetry
