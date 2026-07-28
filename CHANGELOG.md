@@ -6,6 +6,8 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-28
+
 ### Added
 - **`loop_overhead_ms` — the time the reported `tok/s` never counted.** `wall_ms` brackets
   `llama_decode` and nothing else, which is what makes `compute_ms` a clean residual; it also means
