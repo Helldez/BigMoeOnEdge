@@ -6,6 +6,15 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **Release APKs are built by CI, not uploaded by hand.** A `release-apk` workflow runs when a
+  release is published: clean checkout of the tag, NDK build of the CLI with the same flags and
+  explicit staging list as `scripts/build-android.ps1`, APK build signed with the stable release
+  key from repository secrets, a content check that fails on any stray library, and the assets
+  attached to the release. Both build types now sign with the stable key when it is available, so
+  the debug APK also updates in place instead of demanding an uninstall that wipes downloaded
+  models.
+
 ### Fixed
 - **The Android build script can no longer ship a backend nobody chose.** Staging swept every
   `libggml*.so` it found in the build tree into the app's `jniLibs`, and the build directory's cmake
