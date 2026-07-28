@@ -87,6 +87,9 @@ jobs:
             cp "$src" "$JNI/$f"
           done
           cp "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$JNI/"
+          # Strip here, not in AGP: the Gradle plugin silently skips stripping when its default
+          # NDK is absent on the runner, and the first CI build shipped a 77 MB libllama-common.
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "$JNI"/*.so
 
       - name: Materialize signing keystore
         env:
