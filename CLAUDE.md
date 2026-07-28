@@ -69,6 +69,9 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`,
   `build:`, `ci:`, `chore:`). Author is **Helldez only** — do NOT add AI co-author or
   session trailers to commits.
+- **Group commits.** One commit = one coherent change. Never a commit for a trivial
+  tweak on its own — fold small fixes, doc touches and follow-ups into the change they
+  belong to. If several small things accumulate, batch them into one commit.
 - **Language:** all code, comments, docs, and commit messages in English.
 - **Style:** `.clang-format` (LLVM base, 4-space, 120 col). Comments explain *why* /
   invariants, not *what*.
