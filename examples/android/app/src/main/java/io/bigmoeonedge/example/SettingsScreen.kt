@@ -180,6 +180,16 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                             "The best setting is rarely the largest.",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    IntSetting(
+                        "Guess only when confident", AppSettings.MTP_P_MIN_CHOICES, current.mtpPMinPct,
+                        format = { if (it == 0) "Always guess" else "Above $it%" },
+                    ) { onChange(current.copy(mtpPMinPct = it)) }
+                    Text(
+                        "Stop guessing as soon as the model is unsure, instead of always filling the pass. " +
+                            "A guess not made costs nothing and keeps the pass narrow, so fewer experts have " +
+                            "to be read — but it also gives up the tokens that guess might have won.",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 // Active-expert (top-k) override is a load-time kv_override, valid in both streaming
                 // and mmap mode, so it is not gated on the streamer.

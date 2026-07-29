@@ -118,6 +118,50 @@ One consequence for measurement: **an MTP A/B must be the same file with the fla
 Comparing an `-MTP-`-named file against a differently-quantised baseline confounds the feature with
 the quantisation change.
 
+## On device it loses, and the counters say why
+
+Measured on the test phone (12 GB), Qwen3.6-35B-A3B-Q4_K_M streamed with the shipping recipe
+(`--overlap`, 3000 MiB cache, pinned dense, `--drop-cold-experts 0.75`), same file with the flag on
+and off:
+
+| | tok/s | MiB/token | majflt/token | cpu-s/token | cache hit | acceptance |
+|---|---|---|---|---|---|---|
+| off | 5.82 / 6.14 | 69.3 | 69–109 | 0.43–0.45 | 73.5% | — |
+| `--mtp-draft 2` | 5.59 | 93.8 | 230 | 0.57 | 65.4% | 69% |
+| `--mtp-draft 3` | 4.38 | 106.6 | 633 | 0.74 | 66.7% | 52% |
+
+Speculation is working — 2.35–2.52 tokens per verify decode — and still losing, because **the prize
+does not exist in this regime**. `stall_s/tok` is 0.025–0.027 in every one of those runs, MTP on or
+off: 11–16% of the token. This configuration is compute-bound, and what MTP amortises is weight
+*movement*. Meanwhile all three costs are real and monotonic in the draft width: the read set widens
+(+35%, +54% flash bytes per token), the draft context's memory tips the device into a fault storm
+(major faults per token 3–9×), and the drafting itself adds CPU (+28%, +67%).
+
+Two mitigations came out of that measurement and are in the engine now. The draft context's graph
+width was cut from 256 to 32, because compute buffers are reserved for the widest ubatch and the
+output buffer scales with `ubatch × vocabulary` — 493 MiB reserved on device for a context that
+evaluates one token at a time. And `--mtp-p-min` makes the draft width adaptive. Neither changes the
+regime: the honest expectation is nearer break-even, not a win.
+
+The two `off` runs did byte-identical work and still differ by 5.6% in tok/s, so treat that as the
+noise floor: draft 2 is at its edge, draft 3 is well outside it. The runs were also back-to-back
+without thermal gating, so the *mechanism* counters are the trustworthy part, not the exact deltas.
+
+## Stopping early when the head is unsure (`--mtp-p-min`)
+
+The draft loop already knows how confident the head is in each token it proposes. `--mtp-p-min F`
+stops drafting as soon as that confidence falls below `F`; at the default `0` it never stops and
+always drafts the full width.
+
+On a streamed device this pays twice, which is why it is the cheapest lever available: a draft not
+made is a pass through the MTP block — with its own MoE FFN, and therefore its own expert reads —
+that never happens, **and** one fewer position in the verify batch, so one fewer independent routing
+widening the layer's read set. A draft that is made and then rejected costs both and buys nothing,
+and at draft 3 above roughly half of them were rejected.
+
+It is a knob rather than a default because the useful value is a property of the device's balance
+between drafting cost and acceptance, and 0 is what the host numbers were measured at.
+
 Speculation requires greedy decoding: `validate()` rejects `--mtp` together with `--temp > 0`,
 because acceptance under a sampling chain would depend on which draws happened to agree and the run
 would no longer be the single-token run it claims to be.
@@ -184,7 +228,11 @@ mtp: 41/63 drafts accepted (65.1%), 2.31 tokens per verify decode (57 decodes fo
 - **Acceptance** is a property of the model's trained head, not of this engine. It bounds everything
   else: at 0% the feature is pure overhead.
 - **Tokens per verify decode** is what was actually bought — the factor the decode count fell by. It
-  is always below `1 + --mtp-draft`, and it is what `tok/s` is a function of.
+  is always below `1 + --mtp-draft`.
+- **The effective rate**, on the second line, is the one to believe. `tok/s` is computed from decode
+  time alone and drafting happens *between* decodes, so the headline rate leaves out everything
+  speculation adds. `mtp_draft_s/tok` in the CSV trailer and `mtp_draft_ms` per row measure it
+  directly, instead of leaving it to be inferred by differencing against an unspeculated run.
 
 `token_demand_MiB` keeps its mechanical meaning but changes scope: it is the distinct expert bytes
 one **decode** routes, and under speculation a decode is a group, so the figure is the group's union

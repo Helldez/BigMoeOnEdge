@@ -223,6 +223,21 @@ struct MtpConfig {
     // is why the useful range is small; 3 is upstream's default for a single trained head.
     int draft_max = 3;
 
+    // Confidence floor for continuing to draft, as the head's own probability for the token it is
+    // proposing. At 0 the head is asked for draft_max tokens unconditionally, however unsure it is;
+    // above 0 it stops as soon as its best candidate falls below this, making the draft width
+    // adaptive per step at no cost.
+    //
+    // This is the cheap half of expert-cost-aware drafting, and on a streamed device it pays twice:
+    // a draft not made is a pass through the MTP block (with its own MoE FFN) that does not happen,
+    // AND one fewer position in the verify batch, so one fewer independent routing widening the
+    // layer's read set. A rejected draft costs both of those and buys nothing.
+    //
+    // 0 by default — it is the width the host measurement was taken at, and the useful value is a
+    // property of the device's balance between drafting cost and acceptance, so it is a knob to
+    // measure rather than a constant to guess.
+    float draft_p_min = 0.0f;
+
     static constexpr int draft_max_limit = 8;
 };
 

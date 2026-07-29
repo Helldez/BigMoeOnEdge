@@ -331,13 +331,15 @@ static int run_session_loop(const RunConfig & cfg,
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
                     "\"token_demand_mib\":%.1f,\"mtp_drafted\":%lld,\"mtp_accepted\":%lld,\"mtp_decodes\":%lld,"
+                    "\"mtp_draft_s_tok\":%.4f,\"loop_overhead_s_tok\":%.4f,"
                     "\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
                     s.majflt_per_token, s.cpu_s_per_token, s.token_demand_mib, s.mtp_drafted, s.mtp_accepted,
-                    s.mtp_decodes, json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str());
+                    s.mtp_decodes, s.mtp_draft_s_per_token, s.loop_overhead_s_per_token,
+                    json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
 
@@ -394,6 +396,11 @@ static void print_usage(const char * argv0) {
         "                          the risk is that N positions route independently and widen\n"
         "                          the per-layer expert read set. Off by default\n"
         "      --mtp-draft N      tokens drafted per verify batch (default 3, max %d)\n"
+        "      --mtp-p-min F       stop drafting when the head's best candidate falls below this\n"
+        "                          probability (0..1, default 0 = draft the full width however\n"
+        "                          unsure it is). Makes the draft width adaptive per step: a draft\n"
+        "                          not made is one fewer MTP-block pass AND one fewer independently\n"
+        "                          routed position in the verify batch\n"
         "\n"
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
@@ -547,6 +554,8 @@ int main(int argc, char ** argv) {
             cfg.mtp.enabled = true;
         else if (a == "--mtp-draft")
             cfg.mtp.draft_max = std::atoi(next("--mtp-draft"));
+        else if (a == "--mtp-p-min")
+            cfg.mtp.draft_p_min = (float) std::atof(next("--mtp-p-min"));
         else if (a == "--chatml")
             cfg.chatml = true;
         else if (a == "--no-think")
@@ -757,6 +766,13 @@ int main(int argc, char ** argv) {
                     "(%lld decodes for %d tokens)\n",
                     s.mtp_accepted, s.mtp_drafted, s.mtp_drafted > 0 ? 100.0 * s.mtp_accepted / s.mtp_drafted : 0.0,
                     (double) s.n_generated / (double) s.mtp_decodes, s.mtp_decodes, s.n_generated);
+        // tok/s above counts decode time only, so drafting is time the caller waits that the
+        // headline rate does not show. Print what it actually costs, and the rate that includes it.
+        const double eff =
+            s.s_per_token + s.mtp_draft_s_per_token > 0 ? 1.0 / (s.s_per_token + s.mtp_draft_s_per_token) : 0.0;
+        std::printf("mtp: drafting costs %.4f s/token on top of decode → %.2f tok/s effective "
+                    "(vs %.2f reported)\n",
+                    s.mtp_draft_s_per_token, eff, s.tokens_per_second);
     }
     if (s.n_prompt > 0) {
         double prefill_tps = s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0;

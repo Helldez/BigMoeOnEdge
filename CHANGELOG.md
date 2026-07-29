@@ -61,6 +61,32 @@ Semantic Versioning.
   block — which Qwen3.6's ordinary quantisations do, verified from their headers, so no `-MTP-`
   conversion is required — and greedy decoding; both are rejected at load with a message rather than
   silently ignored. See `docs/mtp.md`.
+- **`--mtp-p-min F` — stop drafting when the head is unsure.** The draft loop already knows the
+  head's confidence in each token it proposes; this makes it stop below a floor instead of always
+  filling the width. On a streamed device a draft not made is a pass through the MTP block — with
+  its own MoE FFN — that never happens, *and* one fewer independently routed position in the verify
+  batch. Default `0` (never stop), which is what the host numbers were measured at.
+
+### Changed
+- **The MTP draft context's graph width drops from 256 to 32.** Compute buffers are reserved for the
+  widest ubatch and the dominant term scales with `ubatch × vocabulary`; on device that reservation
+  measured **493 MiB** for a context that evaluates one token per draft step and is handed at most
+  `1 + draft_max` positions by the catch-up. On this engine memory is the expert cache's, and the
+  device A/B showed exactly what it cost: major faults per token rose from ~69 without speculation
+  to 633 at draft 3 as the kernel swapped and dropped file pages to find the room.
+
+### Fixed
+- **The cost of speculation is now measured rather than inferred.** Drafting happens between decodes,
+  so it never entered `wall_ms` and `tok/s` never included it — a speculated run could report a rate
+  the user was not experiencing. New `mtp_draft_ms` per-token column, `mtp_draft_s/tok` in the CSV
+  trailer, `mtp_draft_s_tok` and `loop_overhead_s_tok` in `BMOE_DONE`, and a second `mtp:` summary
+  line giving the effective rate next to the reported one. The Android app now reads the `mtp_*`
+  keys it was already being sent and shows acceptance, tokens per pass and the real rate — before,
+  the UI could not tell whether speculation had run at all.
+- The first device A/B is recorded in `docs/mtp.md`: on the test phone MTP **loses** at every draft
+  width (5.59 at draft 2 and 4.38 at draft 3 against 5.82–6.14 baseline) because the shipping
+  configuration is compute-bound — `stall_s/tok` is 0.025–0.027 whether speculation is on or off —
+  while the read set widens 35–54% and CPU per token rises 28–67%. The flag stays off.
 
 ## [0.18.1] - 2026-07-29
 

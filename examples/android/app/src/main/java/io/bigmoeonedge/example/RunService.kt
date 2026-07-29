@@ -257,6 +257,18 @@ class RunService : Service() {
             val cacheBudgetMib = o.optDouble("cache_budget_mib", -1.0)
             val majfltPerTok = o.optDouble("majflt_tok", -1.0)
             val cpuSPerTok = o.optDouble("cpu_s_tok", -1.0)
+            // Self-speculation. All 0 with MTP off, which is what makes them safe to read
+            // unconditionally — and reading them is the only way the UI can say whether
+            // speculation ran and what it earned.
+            val mtpDrafted = o.optLong("mtp_drafted", 0)
+            val mtpAccepted = o.optLong("mtp_accepted", 0)
+            val mtpDecodes = o.optLong("mtp_decodes", 0)
+            val mtpDraftSTok = o.optDouble("mtp_draft_s_tok", 0.0)
+            val loopOverheadSTok = o.optDouble("loop_overhead_s_tok", 0.0)
+            // What the user actually waits: tok_s counts decode time only, so drafting — which
+            // happens between decodes — is invisible to it. With MTP off the gap is ~0 and this
+            // equals tokS; with it on the two can differ by tens of percent.
+            val effTokS = if (tokS > 0) 1.0 / (1.0 / tokS + loopOverheadSTok) else -1.0
             // Time-to-first-token: the model load plus this turn's prompt prefill.
             val ttft = if (loadS >= 0 && prefill >= 0) loadS + prefill else -1.0
             val cancelled = o.optBoolean("cancelled")
@@ -272,6 +284,15 @@ class RunService : Service() {
                 if (ttft >= 0) append(String.format(loc, " | TTFT %.2fs", ttft))
                 if (hit >= 0) append(String.format(loc, " | cache %.0f%%", hit))
                 if (cancelled) append(" | cancelled")
+                if (mtpDecodes > 0 && mtpDrafted > 0) {
+                    append(String.format(loc, "\nMTP: %d/%d guesses kept (%.0f%%), %.2f tok per pass",
+                        mtpAccepted, mtpDrafted, 100.0 * mtpAccepted / mtpDrafted,
+                        tokens.toDouble() / mtpDecodes))
+                    if (mtpDraftSTok > 0) {
+                        append(String.format(loc, " | guessing costs %.3fs/tok → %.2f tok/s real",
+                            mtpDraftSTok, effTokS))
+                    }
+                }
             }
             // Compact one-line metrics shown under this turn's answer in the transcript.
             val turnMetrics = buildString {
@@ -282,6 +303,12 @@ class RunService : Service() {
                 }
                 if (nPast >= 0) append(String.format(loc, " · ctx %d/%d", nPast, sessionCtx))
                 if (hit >= 0) append(String.format(loc, " · cache %.0f%%", hit))
+                // With speculation on, the headline rate leaves out the drafting between decodes;
+                // show what the turn really ran at, and how often the guesses were right.
+                if (mtpDecodes > 0 && mtpDrafted > 0) {
+                    if (effTokS > 0) append(String.format(loc, " · %.1f real", effTokS))
+                    append(String.format(loc, " · MTP %.0f%% kept", 100.0 * mtpAccepted / mtpDrafted))
+                }
                 if (cancelled) append(" · cancelled")
             }
             val tel = telemetry.current.copy(
@@ -290,6 +317,8 @@ class RunService : Service() {
                 prefillTps = prefillTps, ttftS = ttft, readMib = readMib,
                 cacheResidentMib = cacheResidentMib, cacheBudgetMib = cacheBudgetMib,
                 avgMajfltPerTok = majfltPerTok, avgCpuSPerTok = cpuSPerTok,
+                mtpDrafted = mtpDrafted, mtpAccepted = mtpAccepted, mtpDecodes = mtpDecodes,
+                mtpDraftSPerTok = mtpDraftSTok, loopOverheadSPerTok = loopOverheadSTok,
             )
             RunBus.update {
                 val answer = if (text.isNotEmpty()) text else it.answer

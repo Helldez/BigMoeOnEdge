@@ -46,8 +46,36 @@ data class Telemetry(
     // Run averages of the compute decomposition, from the final summary (BMOE_DONE); -1 until done.
     var avgMajfltPerTok: Double = -1.0, // major page faults per token over the run
     var avgCpuSPerTok: Double = -1.0,   // CPU-seconds per token (summed across threads) over the run
+    // Self-speculation counters from BMOE_DONE; all 0 when MTP was off. Without these the UI cannot
+    // tell whether speculation ran at all, let alone whether it earned its keep.
+    var mtpDrafted: Long = 0,
+    var mtpAccepted: Long = 0,
+    var mtpDecodes: Long = 0,
+    // Seconds per token spent drafting, and the whole between-decode gap. tok/s counts decode time
+    // ONLY, so these are time the user waits that the headline rate does not include.
+    var mtpDraftSPerTok: Double = 0.0,
+    var loopOverheadSPerTok: Double = 0.0,
 ) {
     val tokensPerSecond: Double get() = if (wallMs > 0) 1000.0 / wallMs else 0.0
+
+    /** Share of drafts the model itself confirmed, or -1 when nothing was drafted. */
+    val mtpAcceptancePct: Double get() =
+        if (mtpDrafted > 0) 100.0 * mtpAccepted / mtpDrafted else -1.0
+
+    /** Tokens confirmed per verify pass — what the speculation actually bought. */
+    val mtpTokensPerDecode: Double get() =
+        if (mtpDecodes > 0 && step > 0) step.toDouble() / mtpDecodes else -1.0
+
+    /**
+     * The rate the user actually experiences: decode time PLUS the gap between decodes, where
+     * drafting lives. Reporting only the decode rate flatters speculation, because the drafting it
+     * adds happens outside the measured window.
+     */
+    val effectiveTokensPerSecond: Double get() {
+        if (avgTokensPerSecond <= 0) return -1.0
+        val perTok = 1.0 / avgTokensPerSecond + loopOverheadSPerTok
+        return if (perTok > 0) 1.0 / perTok else -1.0
+    }
 }
 
 /**

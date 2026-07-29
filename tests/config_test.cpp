@@ -198,6 +198,18 @@ int main() {
         c.mtp.draft_max = 0;
         expect_fail("drafting zero tokens is rejected", c);
         c.mtp.draft_max = 3;
+        // The confidence floor is a probability, so both ends are bounded.
+        c.mtp.draft_p_min = 0.0f;
+        expect_ok("no confidence floor is the default and valid", c);
+        c.mtp.draft_p_min = 0.6f;
+        expect_ok("a confidence floor inside (0,1) is valid", c);
+        c.mtp.draft_p_min = 1.0f;
+        expect_ok("a confidence floor of 1 is valid (draft only what is certain)", c);
+        c.mtp.draft_p_min = 1.5f;
+        expect_fail("a confidence floor above 1 is rejected", c);
+        c.mtp.draft_p_min = -0.1f;
+        expect_fail("a negative confidence floor is rejected", c);
+        c.mtp.draft_p_min = 0.0f;
         c.sampling.temp = 0.8f;
         expect_fail("speculation with a sampling chain is rejected", c);
         // The same temperature is fine once speculation is off: the rejection is about the pair.

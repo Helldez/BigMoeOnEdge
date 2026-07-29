@@ -66,6 +66,12 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.mtp.enabled && (cfg.mtp.draft_max < 1 || cfg.mtp.draft_max > MtpConfig::draft_max_limit)) {
         return fail("mtp.draft_max must be in [1, " + std::to_string(MtpConfig::draft_max_limit) + "]");
     }
+    // A probability, so [0,1]. 1 would mean "only draft what the head is certain of", which is a
+    // legitimate (if extreme) setting; above 1 nothing would ever be drafted and the flag would be
+    // an expensive way to decode one token at a time.
+    if (cfg.mtp.enabled && (cfg.mtp.draft_p_min < 0.0f || cfg.mtp.draft_p_min > 1.0f)) {
+        return fail("mtp.draft_p_min must be in [0, 1]");
+    }
     // The verify pass is 1 + draft_max positions and its whole point is that they are computed
     // TOGETHER. A narrower graph splits it back into single-token passes, which spends the draft
     // and keeps none of the amortisation — the feature would cost time and buy nothing. Rejected

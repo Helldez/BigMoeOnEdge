@@ -60,8 +60,16 @@ data class AppSettings(
     // lands is the measurement this toggle exists to make.
     val mtp: Boolean = false,
     // Tokens drafted per verify pass. 3 is the measured optimum on desktop: acceptance falls as the
-    // draft widens, and past the head's horizon the extra drafts are paid for and thrown away.
+    // draft widens, and past the head's horizon the extra drafts are paid for and thrown away. On
+    // this phone the device A/B measured 2 better than 3 and both below the baseline, which is why
+    // the confidence floor below exists.
     val mtpDraft: Int = 3,
+    // Stop drafting when the head's own probability for what it is proposing drops below this
+    // percentage (0 = never stop, draft the full width however unsure it is). Makes the width
+    // adaptive per step, which on this device pays twice: a draft not made is one fewer pass
+    // through the MTP block AND one fewer independently routed position in the verify batch. 0 is
+    // the setting the desktop numbers were measured at, so it stays the default until the A/B says.
+    val mtpPMinPct: Int = 0,
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
     val metricsCsv: Boolean = true,     // write the engine's per-token CSV for this session (--csv)
 ) {
@@ -135,7 +143,10 @@ data class AppSettings(
         // Outside the streaming block on purpose: MTP is a decode-loop change, not a residency
         // policy, so it applies to the mmap baseline too — which is what makes an A/B of the two
         // against each other meaningful.
-        if (mtp) a += listOf("--mtp", "--mtp-draft", mtpDraft.toString())
+        if (mtp) {
+            a += listOf("--mtp", "--mtp-draft", mtpDraft.toString())
+            if (mtpPMinPct > 0) a += listOf("--mtp-p-min", (mtpPMinPct / 100.0).toString())
+        }
         return a
     }
 
@@ -148,7 +159,7 @@ data class AppSettings(
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, sessionCtx, oDirect,
                overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct,
-               mtp, mtpDraft)
+               mtp, mtpDraft, mtpPMinPct)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -165,7 +176,7 @@ data class AppSettings(
             .putInt("predictSpecMax", predictSpecMax)
             .putInt("dropColdPct", dropColdPct)
             .putInt("sessionCtx", sessionCtx)
-            .putBoolean("mtp", mtp).putInt("mtpDraft", mtpDraft)
+            .putBoolean("mtp", mtp).putInt("mtpDraft", mtpDraft).putInt("mtpPMinPct", mtpPMinPct)
             .putBoolean("thinking", thinking)
             .putBoolean("metricsCsv", metricsCsv)
             .apply()
@@ -201,6 +212,10 @@ data class AppSettings(
         // falls as the draft widens while tokens-per-decode rises, and on desktop the two cross at
         // 3 — 4 measured WORSE than 2. Stopping at 5 keeps the picker honest about that.
         val MTP_DRAFT_CHOICES = intArrayOf(1, 2, 3, 4, 5)
+
+        // Confidence floors worth offering, as percentages. 0 keeps the current behaviour (draft
+        // the full width unconditionally); the rest trade speculative reach for wasted drafts.
+        val MTP_P_MIN_CHOICES = intArrayOf(0, 40, 60, 80)
 
         /**
          * A fresh CSV path for a session about to open, under the app's own external files dir —
@@ -291,6 +306,7 @@ data class AppSettings(
                 sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
                 mtp = p.getBoolean("mtp", d.mtp),
                 mtpDraft = p.getInt("mtpDraft", d.mtpDraft),
+                mtpPMinPct = p.getInt("mtpPMinPct", d.mtpPMinPct),
                 thinking = p.getBoolean("thinking", d.thinking),
                 metricsCsv = p.getBoolean("metricsCsv", d.metricsCsv),
             )

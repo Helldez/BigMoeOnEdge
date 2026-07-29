@@ -73,6 +73,12 @@ struct TokenMetrics {
     // zeros read as free tokens. Divide the first row's wall_ms by mtp_batch for the per-token cost.
     int mtp_batch = 1;
 
+    // Time this group spent drafting and catching the draft context up — everything speculation
+    // adds OUTSIDE the target decode. A SLICE of loop_overhead_ms, not an addition: both measure
+    // the gap between decodes. Charged to the group's first row like every other group cost, and 0
+    // without --mtp. Without it the drafting cost can only be inferred by differencing two runs.
+    double mtp_draft_ms = 0.0;
+
     std::string piece; // text of just this token (delta, for inline streaming)
     std::string text;  // full generated answer so far, reasoning stripped (for UI streaming)
     // The reasoning span so far, when the model is thinking and the chat parser separated it from
@@ -153,6 +159,11 @@ struct RunSummary {
     long long mtp_drafted = 0;
     long long mtp_accepted = 0;
     long long mtp_decodes = 0; // verify decodes issued; equals n_generated when speculation is off
+    // Drafting + catch-up seconds per generated token: the price of speculation, measured rather
+    // than inferred. tok/s is computed from decode time alone, so this is time the caller waits
+    // that the headline rate does not show — compare it against s_per_token before believing a
+    // speculated run is faster.
+    double mtp_draft_s_per_token = 0.0;
 
     // Expert-prediction accuracy (all zero unless MoeStreamConfig::predict_log). `predict_stale` is
     // the next layer's routing ranked a layer early, `predict_prev` the previous token's routing —
@@ -228,6 +239,7 @@ struct RunInfo {
     // TokenMetrics::mtp_batch. Recorded so the two are never averaged together by accident.
     bool mtp = false;
     int mtp_draft_max = 0;
+    float mtp_p_min = 0.0f; // the head's confidence floor for continuing to draft (0 = no floor)
 
     // Diagnostics that perturb what they measure. A traced run is not a benchmark run — recorded so
     // a file cannot be mistaken for one.

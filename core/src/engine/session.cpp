@@ -59,11 +59,24 @@ void batch_fill(llama_batch & b, const llama_token * toks, int n, llama_pos pos0
     }
 }
 
-// Graph width for the MTP draft context. Wide enough that prefilling the head (ONE layer) is not
-// chopped into pointless slivers, narrow enough that its compute-buffer reservation is a rounding
-// error next to the target's. Raised to 1 + draft_max when a very wide draft asks for more, and
-// clamped down to the target's own ubatch so it is never the wider of the two.
-constexpr int mtp_draft_ubatch = 256;
+// Graph width for the MTP draft context, and it wants to be SMALL.
+//
+// llama.cpp reserves a context's compute buffers for its widest ubatch, and the dominant term is the
+// output buffer, which scales with ubatch x vocabulary — at 256 on a 152k-vocab model that alone is
+// ~156 MB, inside a reservation measured at 493 MiB on device. The draft context never needs it:
+// at decode time it evaluates ONE token per draft step, the catch-up hands it at most 1 + draft_max
+// positions, and that catch-up asks for no logits at all. Only prefill ever feeds it a wide batch,
+// and that is one layer, so splitting it into more ubatches costs very little.
+//
+// The width was 256 until the device A/B showed what it cost. Half a gigabyte of reservation is what
+// tipped the phone past its memory budget: major faults per token went from ~69 without speculation
+// to 632 at draft 3, as the kernel swapped and dropped file pages to find the room. On this engine
+// memory is never free — it is the expert cache's, and the cache is what decides whether the wider
+// verify read set is a hit or a flash read.
+//
+// Raised to 1 + draft_max when a very wide draft asks for more, and clamped down to the target's own
+// ubatch so it is never the wider of the two.
+constexpr int mtp_draft_ubatch = 32;
 
 llama_token argmax(const float * logits, int n_vocab) {
     llama_token best = 0;
@@ -226,6 +239,10 @@ struct Session::Impl {
     long long mtp_drafted = 0;
     long long mtp_accepted = 0;
     long long mtp_decodes = 0;
+    // Time spent drafting and catching the draft context up, i.e. everything speculation adds
+    // OUTSIDE the target decode. It used to land in loop_overhead_ms together with sampling and
+    // rendering, where it could only be inferred by differencing against an unspeculated run.
+    double mtp_draft_seconds = 0.0;
 
     const llama_vocab * vocab = nullptr;
     int n_vocab = 0;
@@ -523,8 +540,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         common_params_speculative sp;
         sp.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
         sp.draft.n_max = cfg.mtp.draft_max;
-        sp.draft.n_min = 0;     // never skip a draft: the engine decides the width, not a heuristic
-        sp.draft.p_min = 0.0f;  // greedy — the draft is a proposal, acceptance is decided by argmax
+        sp.draft.n_min = 0; // never skip a whole draft; width is bounded by n_max and p_min below
+        // The head's own confidence floor for continuing to draft. At 0 (the default) it drafts
+        // n_max tokens however unsure it is, which is what the host was measured at; above 0 the
+        // width becomes adaptive per step. See MtpConfig::draft_p_min for why that pays twice on a
+        // streamed device.
+        sp.draft.p_min = cfg.mtp.draft_p_min;
         sp.draft.ctx_tgt = ctx; // self-speculation: one model, two contexts over it
         sp.draft.ctx_dft = im.ctx_dft.get();
         im.mtp.reset(common_speculative_init(sp, /*n_seq*/ 1));
@@ -699,6 +720,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.compute_trace_layers = cfg.compute_trace_layers;
         ri.mtp = cfg.mtp.enabled;
         ri.mtp_draft_max = cfg.mtp.enabled ? cfg.mtp.draft_max : 0;
+        ri.mtp_p_min = cfg.mtp.enabled ? cfg.mtp.draft_p_min : 0.0f;
         ri.temp = cfg.sampling.temp;
         ri.top_k = cfg.sampling.top_k;
         ri.top_p = cfg.sampling.top_p;
@@ -1090,6 +1112,7 @@ RunResult Session::generate(const GenerateRequest & req,
     const long long mtp0_drafted = im.mtp_drafted;
     const long long mtp0_accepted = im.mtp_accepted;
     const long long mtp0_decodes = im.mtp_decodes;
+    const double mtp0_draft_s = im.mtp_draft_seconds;
 
     // The token the last decode settled on, not yet in the KV. Greedy stays argmax (byte-identical
     // to the resident reference the gates check); with a sampling chain, draw from the context's
@@ -1105,8 +1128,10 @@ RunResult Session::generate(const GenerateRequest & req,
         // draft accepted past n_predict would be verified, charged for, and then discarded. The cap
         // goes in BEFORE drafting, so the head is never asked for tokens with nowhere to go.
         int n_draft = 0;
+        double draft_s = 0.0;                       // this group's drafting + catch-up (see below)
         const int room = req.n_predict - n_gen - 1; // tokens still wanted after `tok` itself
         if (mtp_on && room > 0) {
+            const auto d0 = clock_t_::now();
             im.draft_buf.clear();
             common_speculative_draft_params & dp = common_speculative_get_draft_params(im.mtp.get(), /*seq*/ 0);
             dp.drafting = true;
@@ -1127,6 +1152,7 @@ RunResult Session::generate(const GenerateRequest & req,
             // target's own hidden states instead of the head's guesses.
             if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), /*seq*/ 0, n_past, -1))
                 return fail("the MTP draft context does not support rewinding its KV cache");
+            draft_s += secs(d0, clock_t_::now());
         }
 
         // ── verify batch: the confirmed token, then every draft, all asking for logits ──
@@ -1204,9 +1230,12 @@ RunResult Session::generate(const GenerateRequest & req,
             // range the rollback used to carve out. What it saves is (n_draft - n_acc) positions
             // through the MTP block — and that block routes experts of its own, so on a streamed
             // device the saving is flash reads, not just arithmetic.
+            const auto p0 = clock_t_::now();
             batch_fill(im.mtp_batch, verify_toks.data(), 1 + n_acc, n_past, /*all_logits*/ false);
             if (!common_speculative_process(im.mtp.get(), im.mtp_batch))
                 return fail("MTP draft context failed to process the verify batch");
+            draft_s += secs(p0, clock_t_::now());
+            im.mtp_draft_seconds += draft_s;
 
             // Drop the rejected tail from the target; the bounded-rollback snapshots asked for at
             // context creation are what make this a restore rather than a replay. The draft context
@@ -1241,6 +1270,9 @@ RunResult Session::generate(const GenerateRequest & req,
             m.steps = req.n_predict;
             m.mtp_batch = (int) confirmed.size();
             m.loop_overhead_ms = e == 0 ? overhead * 1000.0 : 0.0;
+            // Charged to the group's first row like every other group cost. This is a SLICE of
+            // loop_overhead_ms, not an addition to it: both measure time outside the decode.
+            m.mtp_draft_ms = e == 0 ? draft_s * 1000.0 : 0.0;
             m.piece = delta;
             // Only when someone will read it: the parser cannot resume, so this re-parses everything
             // generated so far on every token, and off the chat path it is a full copy of the same.
@@ -1330,6 +1362,7 @@ RunResult Session::generate(const GenerateRequest & req,
     s.mtp_drafted = im.mtp_drafted - mtp0_drafted;
     s.mtp_accepted = im.mtp_accepted - mtp0_accepted;
     s.mtp_decodes = im.mtp_decodes - mtp0_decodes;
+    s.mtp_draft_s_per_token = n_gen > 0 ? (im.mtp_draft_seconds - mtp0_draft_s) / n_gen : 0.0;
     if (moe.predict_log) {
         // Session totals, not a per-generation delta: these are an accuracy estimate, and every
         // turn's routings are equally valid samples of it. See RunSummary.
