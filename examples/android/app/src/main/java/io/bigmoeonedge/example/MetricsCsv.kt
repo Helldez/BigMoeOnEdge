@@ -42,6 +42,11 @@ internal class Csv(
             info["io_threads"]?.let { "$it lanes" },
             if (info["overlap"] == "1") "overlap" else null,
             info["prefetch"]?.takeIf { it != "0" }?.let { "prefetch $it" },
+            // The lossy levers belong in the identity, not only in the config table: a run that
+            // dropped experts is not the same KIND of run as one that did not, and two compare
+            // legends that differ only by this used to read as identical (#136).
+            if (info["predict_prefetch"] == "1") "predict" else null,
+            info["drop_cold_frac"]?.takeIf { (it.toFloatOrNull() ?: 0f) > 0f }?.let { "drop $it" },
         ).joinToString(" · ")
     }
 

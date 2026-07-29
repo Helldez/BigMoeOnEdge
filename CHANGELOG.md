@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.18.1] - 2026-07-29
+
+### Fixed
+- **A saved metrics CSV now states its whole configuration in the app (#136).** The engine has
+  written every resolved knob into the `# bmoe_metrics v2` preamble for several releases, but the
+  app displayed hand-picked subsets of it: the header card of an opened file listed eight fields,
+  and the compare view rendered a 17-key whitelist that had quietly drifted behind the metrics
+  sink. Expert dropping, predictive prefetch and its speculation width, the sampling parameters and
+  the engine build that produced the rows were all in the file and none of them reachable — so a
+  run could not say whether it dropped experts, let alone at what fraction, and an A/B whose only
+  difference was one of those levers showed two configuration cards that looked identical. Both
+  views now share one renderer over the whole preamble: the curated keys in order, then every
+  remaining key under its own name, so a knob added to the sink shows up without an app change.
+  `drop` and `predict` also joined the short run label, which is what a compare legend shows.
+- App version bumped to 0.18.1 (versionCode 33).
+
 ## [0.18.0] - 2026-07-28
 
 ### Added
