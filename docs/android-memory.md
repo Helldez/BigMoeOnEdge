@@ -64,6 +64,29 @@ This is the unnoticed cost of the O_DIRECT design. O_DIRECT buys large sequentia
 4 KiB demand-fault storm — real and worth having — but it also converts free evictions into paid
 ones. Any future design should weigh both halves.
 
+## The two vocabulary tensors are the same size and nothing alike
+
+The dense policy applies one mode to every non-expert byte, which quietly treats the two largest
+dense tensors as equals. They are not. Measured with `--compute-trace` on a host, per decoded token:
+
+| tensor | Qwen3-30B | bytes read per token | node cost |
+|---|---|---|---|
+| `output.weight` (head) | 243 MiB Q6_K | **all of it** — a matmul over the whole vocabulary | 8.94 ms |
+| `token_embd.weight` | 167 MiB Q4_K | **one row, 1152 bytes** — a `GET_ROWS` lookup | 0.26 ms |
+
+The head must be resident: were it evicted, every token would refault the entire tensor from flash.
+The table need not be. Pinned, it holds 167 MiB (273 on Qwen3.6, 380 on gpt-oss-120b) for about a
+kilobyte of use per token — memory the expert cache could hold instead. Left mmap'd, the kernel keeps
+only the 4 KiB pages actually touched, which converges to the distinct token ids a conversation uses;
+the cost is one fault the first time an id appears, not one per token. That is what
+`--dense-embd-mmap` does, and it is refused on a model that ties the table to the head, where the
+table *is* the head and the row above does not hold.
+
+The head itself is bandwidth-bound and has no software lever: halving the threads (8 → 4) leaves its
+node at 8.94 → 8.97 ms, and two different head sizes run at the same 26.6 / 27.5 GB/s. Its cost is
+exactly `bytes / bandwidth`, so only fewer bytes — a lower `--output-tensor-type` at quantization
+time — can move it. The final norm is not a cost at all: all 49 `RMS_NORM` nodes together are 1.4 ms.
+
 ## The hit rate is what decides whether the kernel keeps your cache
 
 The LRU promotes a page from *inactive* to *active* only on a **second reference** — and a cache hit

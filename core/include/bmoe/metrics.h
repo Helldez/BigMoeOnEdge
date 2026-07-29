@@ -196,6 +196,7 @@ struct RunInfo {
     int predict_spec_max = 0;           // how many predicted misses a layer may speculate (0 = retention only)
     bool prefetch_sync = false;         // test path: speculative reads served inline, no latency hiding
     std::string dense_weights = "anon"; // dense (non-expert) policy: "mmap" | "warm" | "anon" | "ahwb"
+    bool dense_embd_mmap = false;       // embedding table held back from the anon/pinned set
     float drop_cold_frac = 0.0f;        // cache-aware expert dropping threshold (0 = off)
     bool drop_renorm = true;            // survivors rescaled to keep the routing's total mass
     bool drop_prefill = false;          // dropping armed during prefill too, where it discards far more

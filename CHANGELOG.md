@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **`--dense-embd-mmap` — keep the embedding table out of the pinned dense set (off by default).**
+  The dense policy applied one mode to every non-expert byte, which treated the two vocabulary
+  tensors as equals. A compute trace says they are not: on Qwen3-30B the output head is 243 MiB and
+  **all of it** is read every token (a matmul over the whole vocabulary, 8.94 ms/token), while
+  `token_embd` is 167 MiB of which **one row, 1152 bytes**, is read (a `GET_ROWS`, 0.26 ms). Pinning
+  both spends 167 MiB — 273 on Qwen3.6, 380 on gpt-oss-120b — for about a kilobyte of use per token.
+  With the flag on, the table stays mmap'd and the kernel keeps only the pages a conversation
+  touches; the anon set drops from 951 to 784 MiB on Qwen3-30B. Refused, with a message, on a model
+  that ties the table to the head, where the table is the head. The win is memory handed back to the
+  expert cache, so it converts to tok/s only where more cache buys hits — the flag stays off until
+  that A/B runs on device. `dense_embd_mmap` joins the CSV config line.
+
+### Documented
+- **The head is bandwidth-bound; the final norm is not a cost.** Halving the threads leaves the
+  `result_output` node at 8.94 → 8.97 ms and two head sizes run at the same 26.6 / 27.5 GB/s, so its
+  time is exactly `bytes / bandwidth` and no kernel or threading change can move it — only fewer
+  bytes, i.e. a lower `--output-tensor-type` at quantization time. All 49 `RMS_NORM` nodes together
+  are 1.4 ms. `docs/android-memory.md` gains the measurements.
+
 ## [0.18.0] - 2026-07-28
 
 ### Added

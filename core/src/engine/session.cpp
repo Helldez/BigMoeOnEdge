@@ -476,6 +476,17 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // an empty list.
         if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous || cfg.moe.dense_weights == DenseWeightsMode::Pinned) {
             const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
+            // --dense-embd-mmap: hold back the embedding table, which is read one row per token, and
+            // let the kernel keep only the pages a conversation touches. These are llama.cpp's
+            // canonical tensor names across every architecture, not model-specific constants. A model
+            // that ties the two has no separate output tensor, and then the table is the head and is
+            // read whole every token — so the skip is refused rather than silently applied.
+            const bool untied = offs.off_by_name.count("output.weight") != 0;
+            const bool skip_embd = cfg.moe.dense_embd_mmap && untied;
+            if (cfg.moe.dense_embd_mmap && !untied)
+                std::fprintf(stderr, "bmoe: --dense-embd-mmap ignored — this model ties the embedding to the "
+                                     "output head, so the table is read whole every token\n");
+            uint64_t held_back = 0;
             std::vector<DenseTensorRef> dense;
             for (const auto & kv : im.hook->captured_weights()) {
                 const std::string & name = kv.first;
@@ -483,12 +494,19 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 auto off = offs.off_by_name.find(name);
                 auto sz = offs.size_by_name.find(name);
                 if (off == offs.off_by_name.end() || sz == offs.size_by_name.end()) continue; // not a file tensor
+                if (skip_embd && name == "token_embd.weight") {
+                    held_back = sz->second;
+                    continue;
+                }
                 DenseTensorRef d;
                 d.tensor = kv.second;
                 d.file_off = off->second;
                 d.size = sz->second;
                 dense.push_back(d);
             }
+            if (held_back)
+                std::fprintf(stderr, "bmoe: --dense-embd-mmap — token_embd (%llu MiB) left mmap'd\n",
+                             (unsigned long long) (held_back >> 20));
             im.source.set_dense_tensors(std::move(dense));
         }
 
@@ -597,6 +615,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                            : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"
                            : cfg.moe.dense_weights == DenseWeightsMode::Pinned    ? "ahwb"
                                                                                   : "warm";
+        ri.dense_embd_mmap = cfg.moe.dense_embd_mmap;
         if (cfg.moe.enabled) {
             const IExpertSource::Stats st = im.source.stats();
             ri.cache_mb = (int) (st.cache_budget_bytes / (1024ull * 1024ull));

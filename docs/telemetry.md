@@ -169,7 +169,8 @@ prints just the summary lines.
 # moe_stream=<0|1> cache_mb=<n> cache_auto=<0|1> cache_floor_mb=<n> cache_ceil_mb=<n>
   force_cache=<0|1> load_all=<0|1> io_threads=<n> o_direct=<0|1> overlap=<0|1> io_two_wave=<0|1> prefetch=<n>
   predict_prefetch=<0|1> predict_log=<0|1> predict_spec_max=<n> prefetch_sync=<0|1>
-  dense_weights=<mmap|warm|anon|ahwb> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
+  dense_weights=<mmap|warm|anon|ahwb> dense_embd_mmap=<0|1> drop_cold_frac=<f> drop_renorm=<0|1>
+  drop_prefill=<0|1>
 # temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n>
 ```
 

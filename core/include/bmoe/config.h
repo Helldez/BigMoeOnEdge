@@ -103,6 +103,22 @@ struct MoeStreamConfig {
     //             and the policy the Android app ships by default — the CLI matches it here.
     DenseWeightsMode dense_weights = DenseWeightsMode::Anonymous;
 
+    // Leave the input embedding table OUT of the anon/pinned dense set, mmap'd (Anonymous and Pinned
+    // only; the other policies already leave everything mmap'd). Off by default — the mechanism ships
+    // ahead of the device A/B that decides whether it earns its place.
+    //
+    // The two vocabulary tensors are the same size and are read in opposite ways. The output head is
+    // a matmul over the whole vocabulary: every one of its bytes is read every token, so it must be
+    // resident or each token pays a flash refault of the entire tensor. The embedding table is a
+    // GET_ROWS of ONE row — 1152 bytes of 167 MiB on Qwen3-30B — so a policy that pins it holds
+    // hundreds of MiB for about a kilobyte of use per token. Left mmap'd, the kernel keeps only the
+    // 4 KiB pages actually touched, which converges to the distinct token ids a conversation uses;
+    // the cost is one minor-or-major fault the first time an id appears, not one per token.
+    //
+    // Refused when the model ties the embedding to the output head (no separate output tensor in the
+    // gguf), because there the table IS the head and the access pattern above does not hold.
+    bool dense_embd_mmap = false;
+
     // ── cache-aware expert dropping (lossy; opt-in) ──────────────────────────────────
     // Skip a routed expert when it is a cache MISS *and* the router weighted it below
     // drop_cold_frac × (1 / n_expert_used) — i.e. below that fraction of the uniform share a

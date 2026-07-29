@@ -399,6 +399,11 @@ static void print_usage(const char * argv0) {
         "                          ahwb = as anon, but into dma-buf memory the kernel may not reclaim\n"
         "                          at all — not even to zram, which is what anon still pays for.\n"
         "                          Android-only; measured +17.9%% on a long generation, off by default)\n"
+        "      --dense-embd-mmap   keep the embedding table OUT of the anon/ahwb dense set, mmap'd.\n"
+        "                          It is read one row (~1 KiB) per token but is as large as the\n"
+        "                          output head, which IS read whole every token, so pinning both\n"
+        "                          spends hundreds of MiB the expert cache could hold. Ignored on a\n"
+        "                          model that ties the embedding to the head. Off by default\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -582,7 +587,8 @@ int main(int argc, char ** argv) {
                 std::fprintf(stderr, "bmoe: --dense-weights expects mmap|warm|anon|ahwb, got '%s'\n", m.c_str());
                 return 2;
             }
-        }
+        } else if (a == "--dense-embd-mmap")
+            cfg.moe.dense_embd_mmap = true;
         // Deprecated aliases, kept so existing scripts and the app keep working: --no-warm-dense is
         // the Mmap policy, --dense-odirect is Anonymous. Prefer --dense-weights.
         else if (a == "--no-warm-dense")
