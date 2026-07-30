@@ -16,6 +16,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.chatml = cfg.chatml;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.compute_trace_layers = cfg.compute_trace_layers;
+    sc.gate_sparsity = cfg.gate_sparsity;
     sc.sampling = cfg.sampling; // greedy by default; opt-in stochastic decoding
     sc.moe = cfg.moe;
     return sc;

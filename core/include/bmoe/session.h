@@ -17,10 +17,12 @@
 #include "bmoe/config.h"
 #include "bmoe/metrics.h"
 #include "bmoe/runtime.h"
+#include "bmoe/sparsity_stats.h"
 
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace bmoe {
 
@@ -47,6 +49,9 @@ struct SessionConfig {
     // Compute-trace granularity: false = a barrier per graph node, true = per layer boundary.
     // Only read when a compute-trace sink is attached. See RunConfig::compute_trace_layers.
     bool compute_trace_layers = false;
+    // Measure intra-expert activation sparsity. Observes only; expensive. See
+    // RunConfig::gate_sparsity and bmoe/sparsity_stats.h.
+    bool gate_sparsity = false;
     SamplingConfig sampling; // fixed for the session; greedy by default (temp <= 0)
     MoeStreamConfig moe;
 };
@@ -143,6 +148,13 @@ public:
     // flight — call it between generations (e.g. from an app's memory-pressure callback). A no-op
     // when the cache is off. The only way the budget moves after init sizes it.
     void set_cache_budget_mb(int mib);
+
+    // The intra-expert sparsity probe's totals, aggregated over every token the session has run,
+    // and the same broken out per layer (index = layer). All zero unless RunConfig::gate_sparsity
+    // was set. Session totals rather than a per-generation delta: this is a distribution estimate,
+    // and every routing is an equally valid sample of it. See bmoe/sparsity_stats.h.
+    SparsityStats sparsity() const;
+    std::vector<SparsityStats> sparsity_by_layer() const;
 
 private:
     Session();

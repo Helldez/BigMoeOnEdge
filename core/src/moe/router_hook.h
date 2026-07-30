@@ -31,6 +31,7 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/predict_stats.h"
+#include "bmoe/sparsity_stats.h"
 #include "expert_stream_source.h"
 
 #include <chrono>
@@ -110,6 +111,25 @@ public:
     // spec_max: how many predicted misses a layer may speculate (0 = retention only). Retention of
     // predicted residents happens at every value — it costs zero bytes.
     void set_predict_prefetch(bool on, int spec_max = 2);
+
+    // ── intra-expert sparsity probe (diagnostics; see bmoe/sparsity_stats.h) ─────────
+    // Measures how concentrated the vector feeding each routed expert's down projection is — the
+    // quantity that decides whether a row-sparse expert matmul could pay. It attaches to the down
+    // matmul rather than to the activation node it consumes: src[1] of ffn_moe_down IS that vector
+    // by construction, whichever activation the architecture used (swiglu, geglu, relu, the clamped
+    // OAI variant), so the probe needs no per-architecture node list and cannot pick up the
+    // gate-only intermediate that some of those branches also emit under a matching name.
+    //
+    // Every token of every batch is sampled, prefill included — a prompt is as valid a sample of
+    // activation sparsity as a generated token, and it delivers hundreds of slots in one graph.
+    // Costs one isolated node per MoE layer plus a sort per routed slot; off by default.
+    void set_gate_sparsity(bool on);
+
+    // Aggregated on read rather than kept alongside the per-layer blocks: the probe runs inside the
+    // eval callback, and a second set of accumulators there would be bookkeeping on a hot path to
+    // save a sum over a few dozen layers once per run.
+    SparsityStats sparsity() const;
+    const std::vector<SparsityStats> & sparsity_by_layer() const { return sp_by_layer_; }
 
     // ── route trace (diagnostics; see bmoe/route_trace.h) ────────────────────────────
     // When on, the hook additionally asks for each layer's router-weight node and records one
@@ -370,6 +390,12 @@ private:
     PendingLayer pending_;
     std::vector<RouteTraceRow> trace_rows_;
     std::unordered_set<int32_t> charged_; // per-flush scratch: experts already charged for a read
+
+    // Intra-expert sparsity probe. All of this is inert unless sparsity_on_.
+    bool sparsity_on_ = false;
+    std::vector<SparsityStats> sp_by_layer_;
+    std::vector<float> sp_scratch_; // one slot's |h|, sorted in place
+    void sparsity_at_down(const ggml_tensor * t, int il);
 
     // Compute trace. All of this is inert unless ctrace_on_. `ctrace_mark_` is the previous
     // isolation boundary: the node reported by the next callback is charged the wall since it.

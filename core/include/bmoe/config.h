@@ -237,6 +237,15 @@ struct RunConfig {
     // bmoe/decode_trace.h for what the layer-mode rows contain.
     bool compute_trace_layers = false;
 
+    // Diagnostics: measure the intra-expert activation sparsity — how concentrated the vector each
+    // routed expert's down projection consumes is. It prices a row-sparse expert matmul before one
+    // is built: rows that hold no mass are rows neither read nor multiplied. Independent of
+    // streaming (a dense run is measurable too) and of quality — it observes and changes nothing.
+    // Expensive by construction: one isolated node per MoE layer plus a sort per routed slot, on
+    // every token of every batch including prefill, so a probed run is not a benchmark run.
+    // See bmoe/sparsity_stats.h.
+    bool gate_sparsity = false;
+
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
 };

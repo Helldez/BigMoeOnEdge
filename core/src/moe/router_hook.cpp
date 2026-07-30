@@ -3,9 +3,11 @@
 #include "ggml.h"
 #include "../io/platform_io.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <string_view>
 
@@ -657,6 +659,95 @@ void RouterHook::score_layer(int il, const int32_t * actual, int nu) {
     pred_self_[il].clear();
 }
 
+void RouterHook::set_gate_sparsity(bool on) {
+    sparsity_on_ = on;
+    sp_by_layer_.assign(n_layer_ > 0 ? n_layer_ : 0, SparsityStats{});
+}
+
+SparsityStats RouterHook::sparsity() const {
+    SparsityStats agg;
+    for (const SparsityStats & L : sp_by_layer_)
+        agg.add(L);
+    return agg;
+}
+
+// One routed slot's concentration curve, from the vector the down projection is about to consume.
+//
+// t is ffn_moe_down-<il>; t->src[1] is that vector, shaped [n_ff_exp, n_expert_used, n_tokens]. Its
+// rows correspond one-to-one with the columns of down_exps, so "how few rows hold the mass" IS the
+// row budget a sparse down projection would need — the reason this is measured here rather than at
+// the gate, whose rows only predict it.
+void RouterHook::sparsity_at_down(const ggml_tensor * t, int il) {
+    const ggml_tensor * h = t->src[1];
+    if (!h || !h->data || h->type != GGML_TYPE_F32 || !ggml_is_contiguous(h)) return;
+    if (il < 0 || il >= (int) sp_by_layer_.size()) return;
+
+    const int nf = (int) h->ne[0]; // intermediate width
+    const int nu = (int) h->ne[1]; // routed experts per token
+    const int nt = (int) h->ne[2]; // tokens in this batch
+    if (nf <= 0 || nu <= 0 || nt <= 0) return;
+
+    SparsityStats & L = sp_by_layer_[il];
+    sp_scratch_.resize((size_t) nf);
+
+    for (int j = 0; j < nt; ++j) {
+        for (int k = 0; k < nu; ++k) {
+            const float * row =
+                (const float *) ((const char *) h->data + (size_t) j * h->nb[2] + (size_t) k * h->nb[1]);
+            double total = 0.0;
+            long long zeros = 0;
+            for (int i = 0; i < nf; ++i) {
+                const float a = std::fabs(row[i]);
+                sp_scratch_[(size_t) i] = a;
+                total += a;
+                if (a == 0.0f) ++zeros;
+            }
+            L.slots += 1;
+            L.rows += nf;
+            L.zeros += zeros;
+            if (total <= 0.0) {
+                // A slot with no mass is perfectly sparse rather than undefined: zero rows hold all
+                // of it. Counting it as "needs every row" would be the opposite of the truth.
+                for (int c = 0; c < 4; ++c)
+                    L.mass_at[c] += 1.0;
+                continue;
+            }
+
+            std::sort(sp_scratch_.begin(), sp_scratch_.end(), std::greater<float>());
+
+            // One descending walk answers both curves: the mass targets are crossings of a running
+            // prefix, the row budgets are readings of it at fixed indices.
+            int next_target = 0;
+            int next_budget = 0;
+            int budget_at[4];
+            for (int c = 0; c < 4; ++c) {
+                // ceil, so a budget always keeps at least one row: floor would round the tightest
+                // budget to zero on a narrow expert and report it as holding no mass.
+                int b = (int) std::ceil((double) kRowBudgets[c] * (double) nf);
+                if (b < 1) b = 1;
+                if (b > nf) b = nf;
+                budget_at[c] = b;
+            }
+            double acc = 0.0;
+            for (int i = 0; i < nf; ++i) {
+                acc += sp_scratch_[(size_t) i];
+                const int kept = i + 1;
+                while (next_target < 4 && acc >= (double) kMassTargets[next_target] * total)
+                    L.rows_for[next_target++] += kept;
+                while (next_budget < 4 && kept >= budget_at[next_budget])
+                    L.mass_at[next_budget++] += acc / total;
+                if (next_target >= 4 && next_budget >= 4) break;
+            }
+            // Floating-point summation can leave the running total a hair under the highest target
+            // even after every row; that is the whole vector, not a missing measurement.
+            while (next_target < 4)
+                L.rows_for[next_target++] += nf;
+            while (next_budget < 4)
+                L.mass_at[next_budget++] += 1.0;
+        }
+    }
+}
+
 void RouterHook::set_trace(bool on) {
     trace_on_ = on;
     pending_ = PendingLayer{};
@@ -885,6 +976,11 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     const int gl =
         (moe_node && predict_on() && source_ && batch_phase_ == 1) ? match_layer_node(t->name, "ffn_moe_logits-") : -1;
     const bool is_logits = gl >= 0;
+    // The sparsity probe's anchor. The trailing "-" keeps the post-matmul chain
+    // (ffn_moe_down_scaled-<il>, ffn_moe_down_biased-<il>) from matching: those carry the layer's
+    // OUTPUT, whereas the probe wants the matmul's input, which only this node's src[1] holds.
+    const int dl = (moe_node && sparsity_on_) ? match_layer_node(t->name, "ffn_moe_down-") : -1;
+    const bool is_down = dl >= 0;
     if (ask && is_logits && gl < n_layer_) {
         ggml_tensor * w = t->src[0];
         if (w && w->op == GGML_OP_NONE && w->data && ggml_is_contiguous(w)) gate_w_[gl] = w;
@@ -908,8 +1004,14 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 }
             }
         }
-        return ctrace_iso || is_topk || weights_iso || (is_logits && predict_log_);
+        return ctrace_iso || is_topk || weights_iso || is_down || (is_logits && predict_log_);
     }
+
+    // The probe reads the down matmul's INPUT, in the callback that fires once that matmul has run.
+    // The buffer is necessarily still live at this instant — ggml cannot have handed it to a later
+    // node before the node consuming it finished — which is why this needs none of the watchdog
+    // the barrier-less prefetch read requires.
+    if (is_down) sparsity_at_down(t, dl);
 
     // The probe attaches to the gate matmul rather than to the topk node because this is where the
     // router's own two inputs are reachable: a graph intermediate cannot be found by name later, and

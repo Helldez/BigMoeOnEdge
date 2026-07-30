@@ -270,6 +270,12 @@ void Session::set_cache_budget_mb(int mib) {
 void Session::cancel() {
     impl_->cancel_requested.store(true, std::memory_order_relaxed);
 }
+SparsityStats Session::sparsity() const {
+    return impl_->hook ? impl_->hook->sparsity() : SparsityStats{};
+}
+std::vector<SparsityStats> Session::sparsity_by_layer() const {
+    return impl_->hook ? impl_->hook->sparsity_by_layer() : std::vector<SparsityStats>{};
+}
 
 std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                                        std::string & error,
@@ -380,6 +386,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
     im.hook->set_predict_log(cfg.moe.predict_log);
     im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
+    im.hook->set_gate_sparsity(cfg.gate_sparsity);
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
@@ -391,7 +398,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
-    if (cfg.moe.enabled || compute_trace) {
+    if (cfg.moe.enabled || compute_trace || cfg.gate_sparsity) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = im.hook.get();
     }
@@ -1025,6 +1032,11 @@ RunResult Session::generate(const GenerateRequest & req,
         s.predict_prev_by_layer = im.hook->predict_prev_by_layer();
         s.predict_self_by_layer = im.hook->predict_self_by_layer();
         s.predict_unscored = im.hook->predict_unscored();
+    }
+    if (im.cfg.gate_sparsity) {
+        // Session totals for the same reason: a distribution estimate wants every sample.
+        s.sparsity = im.hook->sparsity();
+        s.sparsity_by_layer = im.hook->sparsity_by_layer();
     }
     if (sink) sink->on_summary(s);
 

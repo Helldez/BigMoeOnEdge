@@ -7,6 +7,7 @@
 #pragma once
 
 #include "bmoe/predict_stats.h"
+#include "bmoe/sparsity_stats.h"
 
 #include <cstdint>
 #include <string>
@@ -154,6 +155,12 @@ struct RunSummary {
     PredictorStats predict_stale, predict_stale2, predict_prev, predict_self;
     std::vector<PredictorStats> predict_stale_by_layer, predict_prev_by_layer, predict_self_by_layer;
     long long predict_unscored = 0; // routings the stale-gate probe could not rank (see RouterHook)
+
+    // Intra-expert activation sparsity (all zero unless RunConfig::gate_sparsity). Session totals,
+    // for the same reason the prediction stats are: this estimates a distribution, and every
+    // routing is a sample of it. See bmoe/sparsity_stats.h.
+    SparsityStats sparsity;
+    std::vector<SparsityStats> sparsity_by_layer;
 };
 
 // What this run IS: the model and the configuration every row below it was produced under.

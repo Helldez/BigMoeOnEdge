@@ -423,6 +423,10 @@ static void print_usage(const char * argv0) {
         "                          predicted below the drop threshold are not speculated.\n"
         "      --predict-spec-max N  speculated predicted misses per layer [0..8] (default 2;\n"
         "                          0 = retention only, the prediction spends no flash at all)\n"
+        "      --gate-sparsity     diagnostics: measure how concentrated the vector each routed\n"
+        "                          expert's down projection consumes is — what a row-sparse expert\n"
+        "                          matmul could skip. Observes only; costs a barrier per layer and\n"
+        "                          a sort per routed slot, on every token including the prompt.\n"
         "      --list-archs        print supported MoE architectures and exit\n"
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
@@ -486,6 +490,46 @@ static void print_predict_report(const RunSummary & s) {
         char ba[16], bb[16], bc[16];
         std::printf("  %5d  %s  %s %s     %6lld\n", (int) il, pct(a, ba, sizeof ba), pct(b, bb, sizeof bb),
                     pct(c, bc, sizeof bc), a.rows);
+    }
+}
+
+// The intra-expert sparsity probe's report (see RunConfig::gate_sparsity).
+//
+// Two curves over the same measurement, because the two questions a row-sparse expert matmul raises
+// are inverses of each other. "rows for N% of mass" says what a quality target costs in rows; "mass
+// at a K% row budget" says what a bandwidth target costs in quality. A lever exists only if the
+// first is small — the routed slot's output is carried by a few of its neurons — and the second
+// stays near 1.0 well below half the rows.
+//
+// Read the aggregate against the per-layer table, not instead of it. A model can be concentrated
+// everywhere except its first layers and still be worth exploiting; the reverse — concentrated on
+// average because a handful of layers are extremely sparse — is not a lever, and only the table
+// tells the two apart.
+static void print_sparsity_report(const RunSummary & s) {
+    const SparsityStats & a = s.sparsity;
+    if (a.slots == 0) {
+        std::printf("moe-sparsity: no routed slots observed (is this a MoE model?)\n");
+        return;
+    }
+    std::printf("moe-sparsity: %lld slots over %.0f intermediate rows each; %.2f%% exactly zero\n", a.slots,
+                a.mean_width(), 100.0 * a.zero_frac());
+    std::printf("moe-sparsity: rows needed for");
+    for (int i = 0; i < 4; ++i)
+        std::printf("  %.0f%% mass %.1f%%", 100.0 * kMassTargets[i], 100.0 * a.row_frac_for(i));
+    std::printf("\n");
+    std::printf("moe-sparsity: mass kept at  ");
+    for (int i = 0; i < 4; ++i)
+        std::printf("  %.2f%% rows %.1f%%", 100.0 * kRowBudgets[i], 100.0 * a.mass_frac_at(i));
+    std::printf("\n");
+
+    const size_t n = s.sparsity_by_layer.size();
+    if (n == 0) return;
+    std::printf("  layer   rows@95%%  mass@25%%  mass@12.5%%     slots\n");
+    for (size_t il = 0; il < n; ++il) {
+        const SparsityStats & L = s.sparsity_by_layer[il];
+        if (L.slots == 0) continue; // a dense layer routes nothing
+        std::printf("  %5d   %7.1f%%  %7.1f%%    %7.1f%%  %8lld\n", (int) il, 100.0 * L.row_frac_for(2),
+                    100.0 * L.mass_frac_at(2), 100.0 * L.mass_frac_at(1), L.slots);
     }
 }
 
@@ -613,6 +657,8 @@ int main(int argc, char ** argv) {
             cfg.moe.predict_prefetch = true;
         else if (a == "--predict-spec-max")
             cfg.moe.predict_spec_max = std::atoi(next("--predict-spec-max"));
+        else if (a == "--gate-sparsity")
+            cfg.gate_sparsity = true;
         else if (a == "--list-archs") {
             std::printf("supported MoE architectures:\n");
             for (int k = 0; k < n_moe_recipes(); ++k)
@@ -643,6 +689,7 @@ int main(int argc, char ** argv) {
     if (!seen.count("--n-expert-used")) cfg.n_expert_used = env_int("BMOE_N_EXPERT_USED", 0);
     if (!seen.count("--predict-log")) cfg.moe.predict_log = env_int("BMOE_PREDICT_LOG", 0) != 0;
     if (!seen.count("--predict-prefetch")) cfg.moe.predict_prefetch = env_int("BMOE_PREDICT_PREFETCH", 0) != 0;
+    if (!seen.count("--gate-sparsity")) cfg.gate_sparsity = env_int("BMOE_GATE_SPARSITY", 0) != 0;
 
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);
@@ -774,5 +821,8 @@ int main(int argc, char ** argv) {
                         (double) cfg.moe.drop_cold_frac);
         if (cfg.moe.predict_log) print_predict_report(s);
     }
+    // Outside the streaming block on purpose: the probe reads a graph intermediate, so it measures
+    // the same model whether its experts arrived from flash or from mmap.
+    if (cfg.gate_sparsity) print_sparsity_report(s);
     return 0;
 }
