@@ -243,6 +243,12 @@ struct Session::Impl {
     // OUTSIDE the target decode. It used to land in loop_overhead_ms together with sampling and
     // rendering, where it could only be inferred by differencing against an unspeculated run.
     double mtp_draft_seconds = 0.0;
+    // Flash bytes those passes streamed. The MTP block is a MoE layer of its own, so drafting has
+    // an I/O cost as well as a compute one — and it is invisible to the route trace, whose framing
+    // brackets the target decode only. Without this the growth in bytes/token under speculation
+    // cannot be split between the widened verify union on the trunk and the head's own routing,
+    // which are attacked in completely different ways.
+    uint64_t mtp_draft_read_bytes = 0;
 
     const llama_vocab * vocab = nullptr;
     int n_vocab = 0;
@@ -1113,6 +1119,7 @@ RunResult Session::generate(const GenerateRequest & req,
     const long long mtp0_accepted = im.mtp_accepted;
     const long long mtp0_decodes = im.mtp_decodes;
     const double mtp0_draft_s = im.mtp_draft_seconds;
+    const uint64_t mtp0_draft_bytes = im.mtp_draft_read_bytes;
 
     // The token the last decode settled on, not yet in the KV. Greedy stays argmax (byte-identical
     // to the resident reference the gates check); with a sampling chain, draw from the context's
@@ -1132,6 +1139,7 @@ RunResult Session::generate(const GenerateRequest & req,
         const int room = req.n_predict - n_gen - 1; // tokens still wanted after `tok` itself
         if (mtp_on && room > 0) {
             const auto d0 = clock_t_::now();
+            const uint64_t db0 = moe.enabled ? im.source.stats().read_bytes : 0;
             im.draft_buf.clear();
             common_speculative_draft_params & dp = common_speculative_get_draft_params(im.mtp.get(), /*seq*/ 0);
             dp.drafting = true;
@@ -1153,6 +1161,7 @@ RunResult Session::generate(const GenerateRequest & req,
             if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), /*seq*/ 0, n_past, -1))
                 return fail("the MTP draft context does not support rewinding its KV cache");
             draft_s += secs(d0, clock_t_::now());
+            if (moe.enabled) im.mtp_draft_read_bytes += im.source.stats().read_bytes - db0;
         }
 
         // ── verify batch: the confirmed token, then every draft, all asking for logits ──
@@ -1231,10 +1240,12 @@ RunResult Session::generate(const GenerateRequest & req,
             // through the MTP block — and that block routes experts of its own, so on a streamed
             // device the saving is flash reads, not just arithmetic.
             const auto p0 = clock_t_::now();
+            const uint64_t pb0 = moe.enabled ? im.source.stats().read_bytes : 0;
             batch_fill(im.mtp_batch, verify_toks.data(), 1 + n_acc, n_past, /*all_logits*/ false);
             if (!common_speculative_process(im.mtp.get(), im.mtp_batch))
                 return fail("MTP draft context failed to process the verify batch");
             draft_s += secs(p0, clock_t_::now());
+            if (moe.enabled) im.mtp_draft_read_bytes += im.source.stats().read_bytes - pb0;
             im.mtp_draft_seconds += draft_s;
 
             // Drop the rejected tail from the target; the bounded-rollback snapshots asked for at
@@ -1363,6 +1374,7 @@ RunResult Session::generate(const GenerateRequest & req,
     s.mtp_accepted = im.mtp_accepted - mtp0_accepted;
     s.mtp_decodes = im.mtp_decodes - mtp0_decodes;
     s.mtp_draft_s_per_token = n_gen > 0 ? (im.mtp_draft_seconds - mtp0_draft_s) / n_gen : 0.0;
+    s.mtp_draft_read_mib = (double) (im.mtp_draft_read_bytes - mtp0_draft_bytes) / (1024.0 * 1024.0);
     if (moe.predict_log) {
         // Session totals, not a per-generation delta: these are an accuracy estimate, and every
         // turn's routings are equally valid samples of it. See RunSummary.

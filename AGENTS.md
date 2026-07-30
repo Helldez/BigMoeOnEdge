@@ -74,6 +74,10 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
 - **Group commits.** One commit = one coherent change. Never a commit for a trivial
   tweak on its own — fold small fixes, doc touches and follow-ups into the change they
   belong to. If several small things accumulate, batch them into one commit.
+- **Delete the branch when its PR closes** — merged or rejected, local and remote
+  (`git branch -d`, `git push origin --delete`). A branch list should only show work in
+  flight. Nothing is lost on a rejected PR: GitHub keeps its commits reachable from the
+  closed PR itself.
 - **Language:** all code, comments, docs, and commit messages in English.
 - **Style:** `.clang-format` (LLVM base, 4-space, 120 col). CI checks with
   **clang-format 18**; match that version locally (`pip install clang-format==18.*`) or

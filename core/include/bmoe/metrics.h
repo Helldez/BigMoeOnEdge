@@ -164,6 +164,13 @@ struct RunSummary {
     // that the headline rate does not show — compare it against s_per_token before believing a
     // speculated run is faster.
     double mtp_draft_s_per_token = 0.0;
+    // Flash MiB the drafting passes streamed, as a subset of moe_read_mib. The MTP block is a MoE
+    // layer of its own, so the head has an I/O cost and not just a compute one. Subtracting this
+    // from the run's total is what splits the growth in bytes/token under speculation into its two
+    // causes — the widened verify union on the trunk, and the head's own routing — which need
+    // completely different fixes. The route trace cannot see it: its framing brackets the target
+    // decode, and the head only ever runs in the draft context.
+    double mtp_draft_read_mib = 0.0;
 
     // Expert-prediction accuracy (all zero unless MoeStreamConfig::predict_log). `predict_stale` is
     // the next layer's routing ranked a layer early, `predict_prev` the previous token's routing —

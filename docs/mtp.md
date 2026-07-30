@@ -233,6 +233,11 @@ mtp: 41/63 drafts accepted (65.1%), 2.31 tokens per verify decode (57 decodes fo
   time alone and drafting happens *between* decodes, so the headline rate leaves out everything
   speculation adds. `mtp_draft_s/tok` in the CSV trailer and `mtp_draft_ms` per row measure it
   directly, instead of leaving it to be inferred by differencing against an unspeculated run.
+- **The flash split**, on the third line, says how much of the run's streamed MiB the head's own
+  routing pulled and how much was the widened verify batch. Speculation grows bytes per token for
+  two unrelated reasons and they need opposite fixes: a narrower draft attacks the head's share,
+  while the verify union only shrinks if adjacent positions agree more. The route trace cannot
+  separate them — it brackets the target decode, and the head only ever runs in the draft context.
 
 `token_demand_MiB` keeps its mechanical meaning but changes scope: it is the distinct expert bytes
 one **decode** routes, and under speculation a decode is a group, so the figure is the group's union

@@ -773,6 +773,15 @@ int main(int argc, char ** argv) {
         std::printf("mtp: drafting costs %.4f s/token on top of decode → %.2f tok/s effective "
                     "(vs %.2f reported)\n",
                     s.mtp_draft_s_per_token, eff, s.tokens_per_second);
+        // Splits the run's flash bytes into the head's own routing and everything else, which is
+        // the widened verify union. The two are attacked in completely different ways, and the
+        // route trace cannot tell them apart — it brackets the target decode only.
+        if (s.moe_read_mib > 0) {
+            std::printf("mtp: of %.1f MiB streamed, %.1f MiB (%.1f%%) was the head's own routing, "
+                        "%.1f MiB the widened verify batch\n",
+                        s.moe_read_mib, s.mtp_draft_read_mib, 100.0 * s.mtp_draft_read_mib / s.moe_read_mib,
+                        s.moe_read_mib - s.mtp_draft_read_mib);
+        }
     }
     if (s.n_prompt > 0) {
         double prefill_tps = s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0;

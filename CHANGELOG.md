@@ -83,6 +83,13 @@ Semantic Versioning.
   line giving the effective rate next to the reported one. The Android app now reads the `mtp_*`
   keys it was already being sent and shows acceptance, tokens per pass and the real rate — before,
   the UI could not tell whether speculation had run at all.
+- **The flash cost of drafting is now attributable.** A speculated run reads more bytes per token
+  for two unrelated reasons — the head's own MoE FFN routes on every draft pass, and the verify
+  batch widens the trunk's read set wherever adjacent positions disagree — and the route trace can
+  see neither apart, since its framing brackets the target decode while the head only ever runs in
+  the draft context. A third `mtp:` summary line now splits the run's streamed MiB between the two.
+  They are attacked in opposite ways (a narrower draft shrinks the first, only better agreement
+  shrinks the second), so a single total was not actionable.
 - The first device A/B is recorded in `docs/mtp.md`: on the test phone MTP **loses** at every draft
   width (5.59 at draft 2 and 4.38 at draft 3 against 5.82–6.14 baseline) because the shipping
   configuration is compute-bound — `stall_s/tok` is 0.025–0.027 whether speculation is on or off —
