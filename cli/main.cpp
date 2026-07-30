@@ -666,8 +666,8 @@ int main(int argc, char ** argv) {
             cfg.gate_sparsity = true;
         else if (a == "--expert-row-sparsity")
             cfg.expert_row_sparsity = (float) std::atof(next("--expert-row-sparsity"));
-        else if (a == "--expert-row-keep-pct")
-            cfg.expert_row_keep_pct = std::atoi(next("--expert-row-keep-pct"));
+        else if (a == "--expert-row-stride")
+            cfg.expert_row_stride = std::atoi(next("--expert-row-stride"));
         else if (a == "--list-archs") {
             std::printf("supported MoE architectures:\n");
             for (int k = 0; k < n_moe_recipes(); ++k)

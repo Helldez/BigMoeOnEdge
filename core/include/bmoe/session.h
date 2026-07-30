@@ -57,7 +57,7 @@ struct SessionConfig {
     float expert_row_sparsity = 0.0f;
     // Row-sparse up-projection measurement; makes the output meaningless. See
     // RunConfig::expert_row_keep_pct.
-    int expert_row_keep_pct = 100;
+    int expert_row_stride = 1;
     SamplingConfig sampling; // fixed for the session; greedy by default (temp <= 0)
     MoeStreamConfig moe;
 };

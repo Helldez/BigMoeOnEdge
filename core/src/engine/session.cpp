@@ -391,7 +391,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.hook->set_row_sparsity(cfg.expert_row_sparsity);
     // Process-global and forked-backend-only: set it here, next to the other expert-path
     // policies, so a session that does not ask for it still clears whatever a previous one set.
-    ggml_cpu_set_expert_row_keep_pct(cfg.expert_row_keep_pct);
+    ggml_cpu_set_expert_row_stride(cfg.expert_row_stride);
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;

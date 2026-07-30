@@ -254,13 +254,13 @@ struct RunConfig {
     // See bmoe/sparsity_stats.h and docs/expert-dropping.md for the sibling lossy knob.
     float expert_row_sparsity = 0.0f;
 
-    // EXPERIMENTAL measurement, and it makes the output MEANINGLESS. Percentage of the expert
+    // EXPERIMENTAL measurement, and it makes the output MEANINGLESS. Evaluate only every Nth output row of the expert
     // up-projection's output rows the CPU kernel evaluates; the rest are written as zero and
     // their dot products never run. It prices what a row-sparse expert matmul could save in
     // wall-clock -- a matmul's cost depends on how many rows are computed, not which -- but the
     // kept rows are a fixed stride, not the ones a magnitude threshold would keep. Never a
     // benchmark of quality, only of speed. 100 = off. Requires the forked CPU backend.
-    int expert_row_keep_pct = 100;
+    int expert_row_stride = 1;
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
