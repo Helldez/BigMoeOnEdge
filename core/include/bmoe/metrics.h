@@ -161,6 +161,10 @@ struct RunSummary {
     // routing is a sample of it. See bmoe/sparsity_stats.h.
     SparsityStats sparsity;
     std::vector<SparsityStats> sparsity_by_layer;
+
+    // What RunConfig::expert_row_sparsity actually zeroed. The requested fraction is a target;
+    // ties at the cutoff keep more rows than asked for, so the achieved figure is the honest one.
+    long long rows_zeroed = 0, rows_seen = 0;
 };
 
 // What this run IS: the model and the configuration every row below it was produced under.

@@ -246,6 +246,22 @@ struct RunConfig {
     // See bmoe/sparsity_stats.h.
     bool gate_sparsity = false;
 
+    // LOSSY, and a measurement rather than an optimisation. Zero the lowest-magnitude fraction of
+    // each routed expert's intermediate vector before its down projection — the CATS/TEAL row
+    // policy, applied to a MoE expert. Nothing is skipped: the rows are zeroed, so the same bytes
+    // are read and the same matmul runs. What it prices is the question a row-sparse kernel cannot
+    // answer for itself, which is whether the model survives losing those rows. 0 = off.
+    // See bmoe/sparsity_stats.h and docs/expert-dropping.md for the sibling lossy knob.
+    float expert_row_sparsity = 0.0f;
+
+    // EXPERIMENTAL measurement, and it makes the output MEANINGLESS. Percentage of the expert
+    // up-projection's output rows the CPU kernel evaluates; the rest are written as zero and
+    // their dot products never run. It prices what a row-sparse expert matmul could save in
+    // wall-clock -- a matmul's cost depends on how many rows are computed, not which -- but the
+    // kept rows are a fixed stride, not the ones a magnitude threshold would keep. Never a
+    // benchmark of quality, only of speed. 100 = off. Requires the forked CPU backend.
+    int expert_row_keep_pct = 100;
+
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
 };

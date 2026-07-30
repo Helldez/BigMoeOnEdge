@@ -52,6 +52,12 @@ struct SessionConfig {
     // Measure intra-expert activation sparsity. Observes only; expensive. See
     // RunConfig::gate_sparsity and bmoe/sparsity_stats.h.
     bool gate_sparsity = false;
+    // Zero the lowest-magnitude fraction of each routed expert's intermediate vector (LOSSY).
+    // See RunConfig::expert_row_sparsity.
+    float expert_row_sparsity = 0.0f;
+    // Row-sparse up-projection measurement; makes the output meaningless. See
+    // RunConfig::expert_row_keep_pct.
+    int expert_row_keep_pct = 100;
     SamplingConfig sampling; // fixed for the session; greedy by default (temp <= 0)
     MoeStreamConfig moe;
 };

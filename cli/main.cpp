@@ -427,6 +427,11 @@ static void print_usage(const char * argv0) {
         "                          expert's down projection consumes is — what a row-sparse expert\n"
         "                          matmul could skip. Observes only; costs a barrier per layer and\n"
         "                          a sort per routed slot, on every token including the prompt.\n"
+        "      --expert-row-sparsity F  LOSSY, and a measurement: zero the lowest-magnitude F of\n"
+        "                          each routed expert's intermediate vector before its down\n"
+        "                          projection. Nothing is skipped — same bytes read, same matmul —\n"
+        "                          so this prices the QUALITY cost of a row-sparse kernel, not its\n"
+        "                          speed. Changes the output. 0 = off.\n"
         "      --list-archs        print supported MoE architectures and exit\n"
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
@@ -659,6 +664,10 @@ int main(int argc, char ** argv) {
             cfg.moe.predict_spec_max = std::atoi(next("--predict-spec-max"));
         else if (a == "--gate-sparsity")
             cfg.gate_sparsity = true;
+        else if (a == "--expert-row-sparsity")
+            cfg.expert_row_sparsity = (float) std::atof(next("--expert-row-sparsity"));
+        else if (a == "--expert-row-keep-pct")
+            cfg.expert_row_keep_pct = std::atoi(next("--expert-row-keep-pct"));
         else if (a == "--list-archs") {
             std::printf("supported MoE architectures:\n");
             for (int k = 0; k < n_moe_recipes(); ++k)
@@ -823,6 +832,10 @@ int main(int argc, char ** argv) {
     }
     // Outside the streaming block on purpose: the probe reads a graph intermediate, so it measures
     // the same model whether its experts arrived from flash or from mmap.
+    if (cfg.expert_row_sparsity > 0.0f)
+        std::printf("moe-rows: zeroed %lld of %lld intermediate rows (%.1f%%), requested %.0f%%\n", s.rows_zeroed,
+                    s.rows_seen, s.rows_seen > 0 ? 100.0 * s.rows_zeroed / s.rows_seen : 0.0,
+                    100.0 * (double) cfg.expert_row_sparsity);
     if (cfg.gate_sparsity) print_sparsity_report(s);
     return 0;
 }

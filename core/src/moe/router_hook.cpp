@@ -748,6 +748,53 @@ void RouterHook::sparsity_at_down(const ggml_tensor * t, int il) {
     }
 }
 
+void RouterHook::set_row_sparsity(float frac) {
+    row_frac_ = (frac > 0.0f && frac < 1.0f) ? frac : 0.0f;
+    act_name_.assign(n_layer_ > 0 ? n_layer_ : 0, std::string{});
+    rows_zeroed_ = rows_seen_ = 0;
+}
+
+// Zero the lowest-magnitude row_frac_ of each routed slot, in the buffer the down matmul is about
+// to read. Per slot, so every routing keeps the same PROPORTION of its own rows — a global
+// threshold would strip a quiet routing bare and leave a loud one untouched.
+void RouterHook::apply_row_sparsity(ggml_tensor * t) {
+    if (!t->data || t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t)) return;
+    const int nf = (int) t->ne[0], nu = (int) t->ne[1], nt = (int) t->ne[2];
+    if (nf <= 0 || nu <= 0 || nt <= 0) return;
+
+    // How many to keep, not how many to drop: rounding the survivors up means a slot always keeps
+    // at least one row, and the count is exact rather than the complement of a rounded drop.
+    int keep = (int) std::ceil((1.0 - (double) row_frac_) * (double) nf);
+    if (keep < 1) keep = 1;
+    if (keep >= nf) return;
+
+    row_scratch_.resize((size_t) nf);
+    for (int j = 0; j < nt; ++j) {
+        for (int k = 0; k < nu; ++k) {
+            float * row = (float *) ((char *) t->data + (size_t) j * t->nb[2] + (size_t) k * t->nb[1]);
+            for (int i = 0; i < nf; ++i)
+                row_scratch_[(size_t) i] = std::fabs(row[i]);
+            // The keep-th largest magnitude is the cutoff. nth_element is linear, which matters:
+            // this runs for every routed slot of every layer of every token.
+            std::nth_element(row_scratch_.begin(), row_scratch_.begin() + (keep - 1), row_scratch_.end(),
+                             std::greater<float>());
+            const float cut = row_scratch_[(size_t) (keep - 1)];
+            // Ties at the cutoff keep more than `keep` rows rather than fewer — dropping an
+            // arbitrary subset of equal-magnitude rows would make the policy depend on the
+            // partition order, and a run would not reproduce itself.
+            long long zeroed = 0;
+            for (int i = 0; i < nf; ++i) {
+                if (std::fabs(row[i]) < cut) {
+                    row[i] = 0.0f;
+                    ++zeroed;
+                }
+            }
+            rows_zeroed_ += zeroed;
+            rows_seen_ += nf;
+        }
+    }
+}
+
 void RouterHook::set_trace(bool on) {
     trace_on_ = on;
     pending_ = PendingLayer{};
@@ -979,8 +1026,22 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // The sparsity probe's anchor. The trailing "-" keeps the post-matmul chain
     // (ffn_moe_down_scaled-<il>, ffn_moe_down_biased-<il>) from matching: those carry the layer's
     // OUTPUT, whereas the probe wants the matmul's input, which only this node's src[1] holds.
-    const int dl = (moe_node && sparsity_on_) ? match_layer_node(t->name, "ffn_moe_down-") : -1;
+    const int dl = (moe_node && (sparsity_on_ || row_frac_ > 0.0f)) ? match_layer_node(t->name, "ffn_moe_down-") : -1;
     const bool is_down = dl >= 0;
+    // Learn, once per layer, the name of the node feeding the down matmul, so the next graph can
+    // isolate it and the row policy can edit it before that matmul consumes it.
+    if (ask && is_down && row_frac_ > 0.0f && dl < (int) act_name_.size() && act_name_[dl].empty()) {
+        const ggml_tensor * h = t->src[1];
+        if (h && h->name[0] != '\0') act_name_[dl] = h->name;
+    }
+    // Is THIS node the one a layer learned? Names are unique per layer, so one compare against the
+    // layer parsed out of the name is enough — and a layer that has not learned yet simply runs
+    // undisturbed, exactly as with the policy off. That costs the first token of a run its sparsity.
+    bool is_act = false;
+    if (moe_node && row_frac_ > 0.0f) {
+        const int al = node_layer(t->name);
+        if (al >= 0 && al < (int) act_name_.size() && !act_name_[al].empty()) is_act = act_name_[al] == t->name;
+    }
     if (ask && is_logits && gl < n_layer_) {
         ggml_tensor * w = t->src[0];
         if (w && w->op == GGML_OP_NONE && w->data && ggml_is_contiguous(w)) gate_w_[gl] = w;
@@ -1004,8 +1065,13 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 }
             }
         }
-        return ctrace_iso || is_topk || weights_iso || is_down || (is_logits && predict_log_);
+        return ctrace_iso || is_topk || weights_iso || is_down || is_act || (is_logits && predict_log_);
     }
+
+    // Sparsify BEFORE the probe below reads anything: with both on, the probe should report what the
+    // down matmul actually consumed, and its zero count is then a free check that the policy zeroed
+    // the fraction it was asked for.
+    if (is_act) apply_row_sparsity(t);
 
     // The probe reads the down matmul's INPUT, in the callback that fires once that matmul has run.
     // The buffer is necessarily still live at this instant — ggml cannot have handed it to a later

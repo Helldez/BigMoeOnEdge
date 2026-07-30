@@ -12,6 +12,7 @@
 
 #include "llama.h"
 #include "ggml.h"
+#include "ggml-cpu.h"
 
 // llama.cpp's `common` layer (NOT the stable public API): chat-template rendering and
 // reasoning parsing. See the note in the root CMakeLists / docs/seam.md.
@@ -387,6 +388,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.hook->set_predict_log(cfg.moe.predict_log);
     im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
     im.hook->set_gate_sparsity(cfg.gate_sparsity);
+    im.hook->set_row_sparsity(cfg.expert_row_sparsity);
+    // Process-global and forked-backend-only: set it here, next to the other expert-path
+    // policies, so a session that does not ask for it still clears whatever a previous one set.
+    ggml_cpu_set_expert_row_keep_pct(cfg.expert_row_keep_pct);
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
@@ -398,7 +403,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
-    if (cfg.moe.enabled || compute_trace || cfg.gate_sparsity) {
+    if (cfg.moe.enabled || compute_trace || cfg.gate_sparsity || cfg.expert_row_sparsity > 0.0f) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = im.hook.get();
     }
@@ -1032,6 +1037,10 @@ RunResult Session::generate(const GenerateRequest & req,
         s.predict_prev_by_layer = im.hook->predict_prev_by_layer();
         s.predict_self_by_layer = im.hook->predict_self_by_layer();
         s.predict_unscored = im.hook->predict_unscored();
+    }
+    if (im.cfg.expert_row_sparsity > 0.0f) {
+        s.rows_zeroed = im.hook->rows_zeroed();
+        s.rows_seen = im.hook->rows_seen();
     }
     if (im.cfg.gate_sparsity) {
         // Session totals for the same reason: a distribution estimate wants every sample.

@@ -131,6 +131,19 @@ public:
     SparsityStats sparsity() const;
     const std::vector<SparsityStats> & sparsity_by_layer() const { return sp_by_layer_; }
 
+    // ── row sparsity (LOSSY; see RunConfig::expert_row_sparsity) ─────────────────────
+    // Zero the lowest-magnitude `frac` of each routed slot's intermediate vector, so the down
+    // projection sums only the surviving rows. This is the CATS/TEAL policy applied to a MoE
+    // expert, and here it is a MEASUREMENT of that policy's quality cost, not an optimisation: no
+    // byte goes unread and no matmul shrinks, because the rows are zeroed rather than skipped. What
+    // it prices is the only question a row-sparse kernel cannot answer for itself — whether the
+    // model survives losing them. Build the kernel after this says yes, not before.
+    //
+    // The threshold is per slot (keep the top 1-frac of THIS routing's rows) rather than a global
+    // per-layer percentile calibrated offline, as CATS uses. Per-slot needs no calibration pass and
+    // no shipped artifact, which is the difference between a knob and a model conversion.
+    void set_row_sparsity(float frac);
+
     // ── route trace (diagnostics; see bmoe/route_trace.h) ────────────────────────────
     // When on, the hook additionally asks for each layer's router-weight node and records one
     // RouteTraceRow per routed expert. Rows buffer in RAM — the callback runs on a compute
@@ -153,6 +166,8 @@ public:
 
     long long experts_routed() const { return experts_routed_; }
     long long experts_dropped() const { return experts_dropped_; }
+    long long rows_zeroed() const { return rows_zeroed_; }
+    long long rows_seen() const { return rows_seen_; }
 
     // Prediction accuracy, aggregate and per layer (index = layer). Empty/zero unless the probe
     // was armed. `predict_unscored` counts routings the probe had to skip: the first token, whose
@@ -396,6 +411,20 @@ private:
     std::vector<SparsityStats> sp_by_layer_;
     std::vector<float> sp_scratch_; // one slot's |h|, sorted in place
     void sparsity_at_down(const ggml_tensor * t, int il);
+
+    // Row sparsity. Inert unless row_frac_ > 0.
+    //
+    // The node to edit is the one feeding the down matmul, and its NAME is learned from the graph
+    // rather than matched against a list of activation names: the ask pass sees ffn_moe_down-<il>
+    // and its sources, so src[1]->name says exactly which node to isolate on the next graph. A list
+    // would have to know that the clamped SwiGLU branch emits ffn_moe_silu for its gate-only
+    // intermediate as well as ffn_moe_swiglu_limited for the product — and would silently sparsify
+    // the wrong one on any architecture whose branch it did not anticipate.
+    float row_frac_ = 0.0f;
+    std::vector<std::string> act_name_; // per layer, the learned name of the down matmul's input
+    std::vector<float> row_scratch_;    // magnitudes, partitioned by nth_element
+    long long rows_zeroed_ = 0, rows_seen_ = 0;
+    void apply_row_sparsity(ggml_tensor * t);
 
     // Compute trace. All of this is inert unless ctrace_on_. `ctrace_mark_` is the previous
     // isolation boundary: the node reported by the next callback is charged the wall since it.
