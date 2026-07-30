@@ -217,6 +217,51 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 }
             }
 
+            // Two diagnostics for the row-sparsity question ("LLM in a flash" applied inside an
+            // expert). They are deliberately NOT one setting: one changes quality without changing
+            // speed, the other changes speed without leaving the answer usable, and the whole point
+            // is that each is read on its own.
+            Section("Row sparsity (diagnostics)") {
+                IntSetting(
+                    "Zero low-magnitude rows (%)", AppSettings.ROW_SPARSITY_CHOICES,
+                    current.expertRowSparsityPct,
+                    format = { if (it == 0) "off" else "$it%" },
+                ) { onChange(current.copy(expertRowSparsityPct = it)) }
+                Text(
+                    "Inside each routed expert, discards the quietest share of its neurons before the " +
+                        "final projection — the rows that carry almost none of the output. Nothing is read " +
+                        "or computed any faster: this measures whether the model still answers correctly, " +
+                        "not whether it answers sooner. Watch the replies, not the tok/s.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                IntSetting(
+                    "Skip up-projection rows (stopwatch)", AppSettings.ROW_STRIDE_CHOICES,
+                    current.expertRowStride,
+                    format = {
+                        when (it) {
+                            1 -> "off"
+                            0 -> "skip all — the ceiling"
+                            else -> "1 row in $it"
+                        }
+                    },
+                ) { onChange(current.copy(expertRowStride = it)) }
+                Text(
+                    "This one really does skip the arithmetic, so the tok/s it shows is real. But it keeps " +
+                        "an arbitrary stride of rows instead of the ones that matter, so the reply is " +
+                        "nonsense by construction — often a repeated loop. That is expected and is not a bug.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (current.expertRowStride != 1) {
+                    Text(
+                        "⚠ The reply is meaningless while this is on. Read only the speed, and compare it " +
+                            "against the same prompt with this off. Beware that a degenerate reply routes to " +
+                            "very few experts, which lifts the cache hit rate and cuts flash reads on its own " +
+                            "— so the honest figure is the compute term in the metrics panel, not tok/s.",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+
             Section("Compute") {
                 IntSetting("Compute threads", AppSettings.THREAD_CHOICES, current.threads) {
                     onChange(current.copy(threads = it))

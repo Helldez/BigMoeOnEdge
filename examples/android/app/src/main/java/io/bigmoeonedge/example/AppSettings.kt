@@ -47,6 +47,17 @@ data class AppSettings(
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
     val dropColdPct: Int = 75,
+    // ── row-sparsity diagnostics (see docs; both default to off) ─────────────────────────────
+    // Zero the lowest-magnitude percentage of each routed expert's intermediate vector before its
+    // down projection. Quality-preserving in principle (the rows dropped are the ones that carry
+    // no mass) and it costs nothing and SAVES nothing: the rows are zeroed, not skipped. Answers
+    // "does the model survive losing them", which is the only question the kernel cannot answer.
+    val expertRowSparsityPct: Int = 0,
+    // Evaluate only every Nth output row of the expert up-projection in the CPU kernel. This one
+    // really does skip the work, so the tok/s it reports is real — but the rows it keeps are a
+    // fixed stride rather than the ones that matter, so THE REPLY IS MEANINGLESS. A stopwatch,
+    // not a feature. 1 = off; 0 skips the projection entirely (the ceiling).
+    val expertRowStride: Int = 1,
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
     val metricsCsv: Boolean = true,     // write the engine's per-token CSV for this session (--csv)
 ) {
@@ -115,6 +126,11 @@ data class AppSettings(
             // of the uniform share; the setting is stored as a percentage.
             if (dropColdPct > 0 && cacheOn) a += listOf("--drop-cold-experts", (dropColdPct / 100.0).toString())
         }
+        // Both diagnostics act on the expert FFN, which exists with or without streaming, so they
+        // sit outside the mmap gate: the row policy is measurable against the mmap baseline too.
+        if (expertRowSparsityPct > 0)
+            a += listOf("--expert-row-sparsity", (expertRowSparsityPct / 100.0).toString())
+        if (expertRowStride != 1) a += listOf("--expert-row-stride", expertRowStride.toString())
         return a
     }
 
@@ -126,7 +142,8 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, oDirect,
-               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct)
+               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct,
+               expertRowSparsityPct, expertRowStride)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -142,6 +159,8 @@ data class AppSettings(
             .putBoolean("predictPrefetch", predictPrefetch)
             .putInt("predictSpecMax", predictSpecMax)
             .putInt("dropColdPct", dropColdPct)
+            .putInt("expertRowSparsityPct", expertRowSparsityPct)
+            .putInt("expertRowStride", expertRowStride)
             .putBoolean("thinking", thinking)
             .putBoolean("metricsCsv", metricsCsv)
             .apply()
@@ -214,6 +233,10 @@ data class AppSettings(
         // above it the threshold could exceed every weight in a routing. The rungs below it are the
         // conservative half of the curve, where the replay already beats a top-k cut on both axes.
         val DROP_COLD_CHOICES = intArrayOf(0, 50, 75, 100)
+        val ROW_SPARSITY_CHOICES = intArrayOf(0, 25, 50, 75)
+        // Powers of two, plus 0 = skip the projection outright. The kernel rounds anything else
+        // down to a power of two, so offering values it would silently change would be a lie.
+        val ROW_STRIDE_CHOICES = intArrayOf(1, 2, 4, 8, 0)
         val THREAD_CHOICES = intArrayOf(2, 4, 6, 8)
         val NPREDICT_CHOICES = intArrayOf(16, 32, 48, 64, 128, 256, 512, 1024, 2048)
 
@@ -245,6 +268,8 @@ data class AppSettings(
                 predictPrefetch = p.getBoolean("predictPrefetch", d.predictPrefetch),
                 predictSpecMax = p.getInt("predictSpecMax", d.predictSpecMax),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
+                expertRowSparsityPct = p.getInt("expertRowSparsityPct", d.expertRowSparsityPct),
+                expertRowStride = p.getInt("expertRowStride", d.expertRowStride),
                 thinking = p.getBoolean("thinking", d.thinking),
                 metricsCsv = p.getBoolean("metricsCsv", d.metricsCsv),
             )
