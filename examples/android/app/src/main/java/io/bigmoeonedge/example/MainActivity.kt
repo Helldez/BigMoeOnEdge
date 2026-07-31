@@ -293,8 +293,50 @@ private fun MainScreen(
                         }
                     }
 
-                    // A quick reminder of the active config (full controls in Settings).
-                    Text(configSummary(settings), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // A quick reminder of the active config (full controls in Settings), with the
+                    // rest of it one tap away: the line above names the levers that change the kind
+                    // of run, but "what exactly was this answer produced under" is a question the
+                    // main screen has to be able to answer too, not only a saved CSV (#136).
+                    // Remembered, not recomputed: this item redraws on every streamed token (it holds
+                    // the telemetry card), and the configuration it describes changes only when the
+                    // user changes a setting.
+                    val summary = remember(settings) { configSummary(settings) }
+                    Text(summary, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    var showConfig by rememberSaveable { mutableStateOf(false) }
+                    val flags = remember(settings, models, modelIdx) {
+                        models.getOrNull(modelIdx.coerceIn(0, (models.size - 1).coerceAtLeast(0)))
+                            ?.let { configFlags(settings, it.absolutePath, settings.metricsCsv) }
+                            .orEmpty()
+                    }
+                    if (flags.isNotEmpty()) {
+                        TextButton(
+                            onClick = { showConfig = !showConfig },
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                        ) {
+                            Text(
+                                if (showConfig) "Hide full configuration"
+                                else "Full configuration (${flags.size} flags)",
+                                fontSize = 12.sp,
+                            )
+                        }
+                        if (showConfig) {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                // The engine's own flag names rather than prose labels: this is the
+                                // command line the session runs on, and a name that matches the CLI
+                                // is what makes a screenshot of it reproducible off-device.
+                                flags.forEach { (flag, value) ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(
+                                            flag, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Text(value, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     if (ui.loading) {
                         Row(
@@ -413,20 +455,71 @@ private fun ReasoningBlock(reasoning: String, initiallyExpanded: Boolean) {
     }
 }
 
-/** One-line reminder of the active configuration, mirroring the key Settings knobs. */
+/**
+ * One-line reminder of the active configuration. A glance, not the record — [configFlags] is what
+ * states the run in full. What earns a place here is what makes this a different KIND of run from
+ * the next one: the lossy levers above all (dropping experts and a narrowed top-k change the
+ * ANSWER, not just the speed), then the residency policies that decide where the time goes.
+ */
 private fun configSummary(s: AppSettings): String {
-    val core = if (s.mmap) {
-        "mmap baseline (no streaming) · ${s.threads} threads"
+    val parts = mutableListOf<String>()
+    if (s.mmap) {
+        parts += "mmap baseline (no streaming)"
     } else {
-        val cache = when {
+        parts += when {
             s.cacheMb == AppSettings.CACHE_AUTO -> if (s.cacheCeilMb > 0) "cache auto≤${s.cacheCeilMb}" else "cache auto"
             s.cacheMb == 0 -> "cache off"
             else -> "cache ${s.cacheMb} MiB"
         }
-        "$cache · ${s.ioThreads} lanes${if (s.overlap) " · overlap" else ""} · ${s.threads} threads"
+        parts += "${s.ioThreads} lanes"
+        if (s.overlap) parts += "overlap"
+        if (!s.oDirect) parts += "buffered"
+        parts += "dense ${s.denseWeights.flag}"
+        // Gated exactly as sessionArgv gates the flags themselves: a lever the CLI will not be told
+        // about must not be named here, or the line goes back to describing a run that never ran.
+        val cacheOn = s.cacheMb == AppSettings.CACHE_AUTO || s.cacheMb > 0
+        if (cacheOn) {
+            if (s.prefetchLayers > 0) parts += "prefetch ${s.prefetchLayers}"
+            else if (s.predictPrefetch) parts += "predict" + if (s.predictSpecMax > 0) " ${s.predictSpecMax}" else ""
+            if (s.dropColdPct > 0) parts += "drop ${s.dropColdPct}%"
+        }
     }
-    val topk = if (s.nExpertUsed > 0) " · top-k ${s.nExpertUsed}" else ""
-    return "$core$topk · thinking ${if (s.thinking) "on" else "off"} · build ${BuildConfig.GIT_SHA}"
+    parts += "${s.threads} threads"
+    if (s.nExpertUsed > 0) parts += "top-k ${s.nExpertUsed}"
+    parts += "thinking ${if (s.thinking) "on" else "off"}"
+    parts += "build ${BuildConfig.GIT_SHA}"
+    return parts.joinToString(" · ")
+}
+
+/**
+ * The whole configuration as (flag, value) pairs, read back from the argv these settings would
+ * actually open the session with. Deliberately NOT a second hand-kept list beside
+ * [AppSettings.sessionArgv]: a knob added there appears here on its own, and a knob the argv gates
+ * off (dropping without a cache, prefetch under mmap) is absent here for the same reason it is
+ * absent from the run. A curated subset is what left the metrics views unable to state their own
+ * drop fraction (#136); this display starts out unable to drift.
+ */
+private fun configFlags(s: AppSettings, modelPath: String, csv: Boolean): List<Pair<String, String>> {
+    // Placeholders for the two paths the argv needs but that say nothing about the configuration;
+    // the CSV one only has to be non-null for --csv to be emitted at all.
+    val argv = s.sessionArgv("bmoe-cli", modelPath, if (csv) "metrics.csv" else null)
+    val out = mutableListOf<Pair<String, String>>()
+    var i = 1 // argv[0] is the binary
+    while (i < argv.size) {
+        val flag = argv[i]
+        val next = argv.getOrNull(i + 1)
+        // Every value here is a path, a number or a keyword — none of them start with a dash, so
+        // the next token being one is what distinguishes a value from the following flag.
+        if (next != null && !next.startsWith("-")) {
+            // Paths are the user's own storage layout, not configuration: name the file, not where it lives.
+            out += flag to (if (flag == "-m" || flag == "--csv") File(next).name else next)
+            i += 2
+        } else {
+            out += flag to "on"
+            i += 1
+        }
+    }
+    return out
 }
 
 /**

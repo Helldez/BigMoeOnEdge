@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.18.1] - 2026-07-29
+
+### Fixed
+- **A saved metrics CSV now states its whole configuration in the app (#136).** The engine has
+  written every resolved knob into the `# bmoe_metrics v2` preamble for several releases, but the
+  app displayed hand-picked subsets of it: the header card of an opened file listed eight fields,
+  and the compare view rendered a 17-key whitelist that had quietly drifted behind the metrics
+  sink. Expert dropping, predictive prefetch and its speculation width, the sampling parameters and
+  the engine build that produced the rows were all in the file and none of them reachable — so a
+  run could not say whether it dropped experts, let alone at what fraction, and an A/B whose only
+  difference was one of those levers showed two configuration cards that looked identical. Both
+  views now share one renderer over the whole preamble: the curated keys in order, then every
+  remaining key under its own name, so a knob added to the sink shows up without an app change.
+  `drop` and `predict` also joined the short run label, which is what a compare legend shows.
+- **The main screen states the whole configuration too.** The reminder line under the prompt was a
+  hand-picked subset of the same kind: it named the cache, the lanes and the threads but not the
+  dense-weight policy, prefetch, predictive prefetch, or expert dropping — which is on by default at
+  75%, so the default configuration changed the answers without the screen saying so. The line now
+  carries the levers that make a run a different kind of run, and the full flag list is one tap
+  below it, read back from the argv the session actually opens with rather than from a second list
+  kept by hand.
+- **The glossary explains the configuration too, in its own section.** The `?` reference covered the
+  per-token columns only, so surfacing thirty-odd settings would have surfaced thirty-odd unexplained
+  names. It now has two halves — the columns, and every preamble key described in the words its own
+  definition uses — and it is reachable from Compare, where the configuration table matters most.
+- **`loop_overhead_ms` is described at last.** The engine has written the column since 0.17.0 and the
+  app never explained it: the time between two decodes, outside `wall_ms` and therefore outside the
+  reported tok/s.
+- **`predict_spec_max` no longer reads as a setting when the prediction was off.** The engine records
+  its own default (2) whenever predictive prefetch is disabled — it is the one field of that block
+  `session.cpp` does not neutralise — so a file claimed two speculated misses per layer for a run
+  that speculated nothing. It now renders as inert. The engine-side fix is tracked separately;
+  nothing about how those runs executed changes, since the value is never read with the feature off.
+- App version bumped to 0.18.1 (versionCode 33).
+
 ## [0.18.0] - 2026-07-28
 
 ### Added

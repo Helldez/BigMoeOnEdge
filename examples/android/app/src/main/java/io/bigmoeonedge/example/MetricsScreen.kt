@@ -77,7 +77,7 @@ fun MetricsScreen(onBack: () -> Unit) {
                         when (view) {
                             View.COMPARE -> "Compare files"
                             View.CORRELATE -> "Correlate fields"
-                            View.GLOSSARY -> "What the columns mean"
+                            View.GLOSSARY -> "What the fields mean"
                             View.FILE -> picked?.name ?: "Metrics"
                             View.LIST -> "Metrics"
                         },
@@ -94,7 +94,7 @@ fun MetricsScreen(onBack: () -> Unit) {
                         TextButton(onClick = { view = View.CORRELATE }) { Text("Correlate") }
                         picked?.let { f -> TextButton(onClick = { shareCsv(context, listOf(f)) }) { Text("Share") } }
                     }
-                    if (view == View.LIST || view == View.FILE) {
+                    if (view == View.LIST || view == View.FILE || view == View.COMPARE) {
                         TextButton(onClick = { view = View.GLOSSARY }) { Text("?") }
                     }
                 },
@@ -200,6 +200,9 @@ private fun CsvView(file: File, modifier: Modifier) {
     // One horizontal scroll shared by the header and every row, so the columns stay aligned. Each
     // scrollable Row observes and mutates this one state, so dragging any of them moves them all.
     val hscroll = rememberScrollState()
+    // Held here rather than inside the lazy item so scrolling the config card off-screen does not
+    // collapse it again.
+    var showConfig by remember(file) { mutableStateOf(false) }
     // The whole view is one vertical scroller. The config card, the per-turn summaries and the
     // caption are lazy items, NOT a fixed block above the list — a fixed block grows one summary
     // card per turn and eventually pushes the last token rows off-screen with nothing able to
@@ -226,6 +229,24 @@ private fun CsvView(file: File, modifier: Modifier) {
                             ).joinToString(" · "),
                             fontSize = 11.sp,
                         )
+                        // The lines above are a glance, not the record: they name a handful of
+                        // settings out of the thirty-odd the preamble carries, and the ones they
+                        // leave out (expert dropping above all, which changes the OUTPUT and not
+                        // just the speed) are the ones a saved run is least able to state
+                        // otherwise. Everything the file says is one tap away, and stays one tap
+                        // away as the engine grows knobs. See #136.
+                        val rows = remember(csv) { configRows(csv.info) }
+                        TextButton(
+                            onClick = { showConfig = !showConfig },
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                        ) {
+                            Text(
+                                if (showConfig) "Hide full configuration"
+                                else "Full configuration (${rows.size} settings)",
+                                fontSize = 11.sp,
+                            )
+                        }
+                        if (showConfig) ConfigRows(csv.info, MaterialTheme.colorScheme.primary, emptySet())
                     }
                 }
                 Spacer(Modifier.height(4.dp))
@@ -361,33 +382,87 @@ private fun Legend(name: String, label: String, color: Color, series: List<Float
     }
 }
 
-// The run preamble, every field, in the settings screen's order. Kept in full — not just what
-// differs — because a setting that did NOT change between two runs is still worth seeing: "was warm
-// dense on in both?" is a real question, and a diff that hides it cannot answer it.
+// Display order and labels for the preamble keys this build knows about. It is NOT a filter: a key
+// the engine writes and this list does not mention is still rendered, after these, under its own
+// name (see [configRows]). That is the invariant — a knob added to the metrics sink must never need
+// an app change before a saved run can say whether it was on. The previous whitelist quietly drifted
+// behind the engine until a file could not tell you its own drop fraction (#136).
 private val CONFIG_ORDER = listOf(
     "model" to "Model",
+    "engine" to "Engine build",
     "arch" to "Architecture",
     "n_layer" to "Layers",
     "n_expert" to "Experts",
     "n_expert_used" to "Active experts (top-k)",
     "n_ctx" to "Context",
+    "n_ubatch" to "Compute batch (n_ubatch)",
     "threads" to "Compute threads",
+    "chatml" to "Chat template",
     "moe_stream" to "MoE streaming",
     "cache_mb" to "Cache budget (MiB)",
     "cache_auto" to "Cache auto-size",
+    "cache_floor_mb" to "Cache floor (MiB)",
     "cache_ceil_mb" to "Cache ceiling (MiB)",
     "force_cache" to "Force cache",
     "io_threads" to "I/O lanes",
     "o_direct" to "Direct I/O",
     "overlap" to "I/O–compute overlap",
+    "io_two_wave" to "Two-wave publish",
+    "load_all" to "Load all experts",
     "prefetch" to "Temporal prefetch",
+    "predict_prefetch" to "Predictive prefetch",
+    "predict_spec_max" to "Speculated misses/layer",
+    "predict_log" to "Prediction probe",
+    "prefetch_sync" to "Synchronous prefetch",
     "dense_weights" to "Dense weights",
+    "drop_cold_frac" to "Drop cold experts",
+    "drop_renorm" to "Drop renormalise",
+    "drop_prefill" to "Drop in prefill",
+    "temp" to "Temperature",
+    "top_k" to "top-k",
+    "top_p" to "top-p",
+    "seed" to "Seed",
+    "compute_trace_layers" to "Compute trace (layers)",
 )
-private val CONFIG_BOOLS = setOf("moe_stream", "cache_auto", "force_cache", "o_direct", "overlap")
+private val CONFIG_LABELS = CONFIG_ORDER.toMap()
+private val CONFIG_BOOLS = setOf(
+    "moe_stream", "cache_auto", "force_cache", "o_direct", "overlap", "io_two_wave", "load_all",
+    "predict_prefetch", "predict_log", "prefetch_sync", "drop_renorm", "drop_prefill", "chatml",
+    "compute_trace_layers",
+)
 
-private fun prettyConfigValue(key: String, v: String): String = when {
+/**
+ * The run's whole configuration as (key, label, value), curated keys first and everything else after
+ * — so a file written by a newer engine still shows what it was run with, under raw key names, on a
+ * build that predates the setting. Keys the preamble does not carry are simply absent: an older
+ * engine wrote fewer, and inventing a default for them would be a claim the file never made.
+ */
+private fun configRows(info: Map<String, String>): List<Triple<String, String, String>> {
+    val known = CONFIG_ORDER.mapNotNull { (k, label) ->
+        info[k]?.let { Triple(k, label, prettyConfigValue(k, it, info)) }
+    }
+    val rest = info.keys.filter { it !in CONFIG_LABELS }.sorted()
+        .map { k -> Triple(k, k, prettyConfigValue(k, info.getValue(k), info)) }
+    return known + rest
+}
+
+/**
+ * One preamble value, rendered as what it MEANT for the run — which sometimes takes the rest of
+ * [info] to know, because a knob the run never consulted is recorded all the same.
+ */
+private fun prettyConfigValue(key: String, v: String, info: Map<String, String>): String = when {
+    // Read ahead is a property of the prediction, so with the prediction off the engine's own
+    // default (2, config.h) lands in the preamble governing nothing at all — it is the one field of
+    // that block session.cpp does not neutralise when the feature is off. Printing the bare number
+    // reads as "this run speculated two misses per layer", which is exactly false.
+    key == "predict_spec_max" && info["predict_prefetch"] != "1" -> "— (predictive prefetch off)"
     key in CONFIG_BOOLS -> if (v == "1") "on" else "off"
-    key == "prefetch" && v == "0" -> "off"
+    // A zero here is not a small setting, it is the feature being off, and reading "0" as "some
+    // dropping happened" is exactly the misreading this display exists to prevent. The drop
+    // fraction is shown as the engine took it (a fraction of the uniform share 1/top-k, not of the
+    // routing) so it matches --drop-cold-experts and the settings screen.
+    (key == "prefetch" || key == "drop_cold_frac") && v.toFloatOrNull() == 0f -> "off"
+    key == "predict_spec_max" && v == "0" -> "0 (retention only)"
     else -> v
 }
 
@@ -409,22 +484,30 @@ private fun FullConfig(csv: Csv, accent: Color, changed: Set<String>) {
                 Canvas(Modifier.size(12.dp)) { drawRect(accent) }
                 Text(csv.info["model"] ?: "run", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
-            CONFIG_ORDER.forEach { (key, label) ->
-                val v = csv.info[key] ?: return@forEach // a field an older engine did not write
-                val isChanged = key in changed
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("$label:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                         modifier = Modifier.weight(1f))
-                    Text(
-                        prettyConfigValue(key, v),
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        // A changed setting is the reason to be here; make it the thing the eye lands on.
-                        fontWeight = if (isChanged) FontWeight.Bold else FontWeight.Normal,
-                        color = if (isChanged) accent else MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
+            ConfigRows(csv.info, accent, changed)
+        }
+    }
+}
+
+/**
+ * Every configuration row of one run, [changed] ones highlighted in [accent]. Shared by the single
+ * file view and the compare view so the two can never disagree about what a file says it was.
+ */
+@Composable
+private fun ConfigRows(info: Map<String, String>, accent: Color, changed: Set<String>) {
+    configRows(info).forEach { (key, label, value) ->
+        val isChanged = key in changed
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("$label:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                 modifier = Modifier.weight(1f))
+            Text(
+                value,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                // A changed setting is the reason to be here; make it the thing the eye lands on.
+                fontWeight = if (isChanged) FontWeight.Bold else FontWeight.Normal,
+                color = if (isChanged) accent else MaterialTheme.colorScheme.onSurface,
+            )
         }
     }
 }
@@ -513,12 +596,14 @@ private fun FieldNote(name: String) {
 @Composable
 private fun GlossaryView(modifier: Modifier) {
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+        // Two halves, in the order a file is read: the preamble says what the run was configured
+        // with, the columns say what it then measured.
         item {
-            Text(
-                "Every column the metrics CSV can hold. \"depends\" means neither direction is simply " +
-                    "good — a bigger cache buys hits but risks the reclaim war, and mem_available lies.",
-                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 10.dp),
+            GlossarySection(
+                "Per-token columns",
+                "One row per generated token. \"depends\" means neither direction is simply good — a " +
+                    "bigger cache buys hits but risks the reclaim war, and mem_available lies.",
+                top = 10.dp,
             )
         }
         items(MetricFields.all) { f ->
@@ -532,6 +617,34 @@ private fun GlossaryView(modifier: Modifier) {
             }
             HorizontalDivider()
         }
+        // The configuration half. Showing a run's whole preamble (#136) is only half an answer while
+        // the settings it names go unexplained — several are unguessable from the key alone, and one
+        // (predict_spec_max) is actively misleading read as a bare number.
+        item {
+            GlossarySection(
+                "Run configuration",
+                "The preamble at the top of every file: what the run was configured with, as opposed " +
+                    "to what it measured. Two files whose engine, dropping or prediction differ are " +
+                    "two experiments, not a comparison.",
+                top = 24.dp,
+            )
+        }
+        items(ConfigFields.all) { c ->
+            Column(Modifier.padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(c.name, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(c.what, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            HorizontalDivider()
+        }
+    }
+}
+
+/** A glossary section heading and its one-paragraph framing, so both halves are introduced alike. */
+@Composable
+private fun GlossarySection(title: String, blurb: String, top: androidx.compose.ui.unit.Dp) {
+    Column(Modifier.padding(top = top, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Text(blurb, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
