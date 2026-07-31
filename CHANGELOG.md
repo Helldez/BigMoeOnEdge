@@ -18,6 +18,13 @@ Semantic Versioning.
   views now share one renderer over the whole preamble: the curated keys in order, then every
   remaining key under its own name, so a knob added to the sink shows up without an app change.
   `drop` and `predict` also joined the short run label, which is what a compare legend shows.
+- **The main screen states the whole configuration too.** The reminder line under the prompt was a
+  hand-picked subset of the same kind: it named the cache, the lanes and the threads but not the
+  dense-weight policy, prefetch, predictive prefetch, or expert dropping — which is on by default at
+  75%, so the default configuration changed the answers without the screen saying so. The line now
+  carries the levers that make a run a different kind of run, and the full flag list is one tap
+  below it, read back from the argv the session actually opens with rather than from a second list
+  kept by hand.
 - App version bumped to 0.18.1 (versionCode 33).
 
 ## [0.18.0] - 2026-07-28
