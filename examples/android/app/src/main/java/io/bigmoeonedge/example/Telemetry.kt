@@ -46,11 +46,15 @@ data class Telemetry(
     // Run averages of the compute decomposition, from the final summary (BMOE_DONE); -1 until done.
     var avgMajfltPerTok: Double = -1.0, // major page faults per token over the run
     var avgCpuSPerTok: Double = -1.0,   // CPU-seconds per token (summed across threads) over the run
-    // Self-speculation counters from BMOE_DONE; all 0 when MTP was off. Without these the UI cannot
-    // tell whether speculation ran at all, let alone whether it earned its keep.
+    // Self-speculation counters from BMOE_DONE; all 0 when speculation was off. Without these the UI
+    // cannot tell whether it ran at all, let alone whether it earned its keep. They describe the
+    // loop, not a source: the n-gram lookup and the MTP head report through the same fields.
     var mtpDrafted: Long = 0,
     var mtpAccepted: Long = 0,
     var mtpDecodes: Long = 0,
+    // Passes that guessed anything. Below mtpDecodes it means the source abstained on the rest,
+    // which ran at exactly the unspeculated cost — only the n-gram source ever does that.
+    var draftedSteps: Long = 0,
     // Seconds per token spent drafting, and the whole between-decode gap. tok/s counts decode time
     // ONLY, so these are time the user waits that the headline rate does not include.
     var mtpDraftSPerTok: Double = 0.0,

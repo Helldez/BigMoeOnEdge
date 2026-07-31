@@ -49,9 +49,10 @@ struct SessionConfig {
     bool compute_trace_layers = false;
     SamplingConfig sampling; // fixed for the session; greedy by default (temp <= 0)
     MoeStreamConfig moe;
-    // Self-speculative decoding through the model's MTP head. Fixed for the session: it decides
-    // whether open() builds the draft context and the wider verify batch. See RunConfig::mtp.
-    MtpConfig mtp;
+    // Self-speculative decoding, and which source drafts. Fixed for the session: it decides whether
+    // open() builds the wider verify batch, and — for the MTP source only — the draft context.
+    // See RunConfig::spec.
+    SpecConfig spec;
 };
 
 // The RunConfig → SessionConfig mapping, in one place. Both entry points that open a session from a

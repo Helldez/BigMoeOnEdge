@@ -331,14 +331,14 @@ static int run_session_loop(const RunConfig & cfg,
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
                     "\"token_demand_mib\":%.1f,\"mtp_drafted\":%lld,\"mtp_accepted\":%lld,\"mtp_decodes\":%lld,"
-                    "\"mtp_draft_s_tok\":%.4f,\"loop_overhead_s_tok\":%.4f,"
+                    "\"mtp_draft_s_tok\":%.4f,\"drafted_steps\":%lld,\"loop_overhead_s_tok\":%.4f,"
                     "\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
                     s.majflt_per_token, s.cpu_s_per_token, s.token_demand_mib, s.mtp_drafted, s.mtp_accepted,
-                    s.mtp_decodes, s.mtp_draft_s_per_token, s.loop_overhead_s_per_token,
+                    s.mtp_decodes, s.mtp_draft_s_per_token, s.drafted_steps, s.loop_overhead_s_per_token,
                     json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
@@ -388,19 +388,26 @@ static void print_usage(const char * argv0) {
         "      --top-p F           nucleus cutoff in (0,1] when sampling (default 0.95)\n"
         "      --seed N            RNG seed for sampling (default: random per run)\n"
         "\n"
-        "  Self-speculative decoding (lossless; needs a gguf with the MTP/nextn block):\n"
-        "      --mtp          draft with the model's own multi-token-prediction head and\n"
-        "                          verify every draft in one wider decode. Greedy verification\n"
-        "                          makes the output token-identical to plain decode; the win is\n"
-        "                          reading the weights once per N tokens instead of N times,\n"
-        "                          the risk is that N positions route independently and widen\n"
-        "                          the per-layer expert read set. Off by default\n"
-        "      --mtp-draft N      tokens drafted per verify batch (default 3, max %d)\n"
-        "      --mtp-p-min F       stop drafting when the head's best candidate falls below this\n"
-        "                          probability (0..1, default 0 = draft the full width however\n"
-        "                          unsure it is). Makes the draft width adaptive per step: a draft\n"
-        "                          not made is one fewer MTP-block pass AND one fewer independently\n"
-        "                          routed position in the verify batch\n"
+        "  Self-speculative decoding (draft a continuation, verify it in one wider decode).\n"
+        "  Greedy verification makes the output token-identical to plain decode; the win is reading\n"
+        "  the weights once per N tokens instead of N times, the risk is that N positions route\n"
+        "  independently and widen the per-layer expert read set. Pick one source; off by default:\n"
+        "      --mtp               draft with the model's own multi-token-prediction head.\n"
+        "                          Needs a gguf with the nextn block (Qwen3.5/3.6)\n"
+        "      --ngram             draft by looking the recent tokens up in the prompt and in what\n"
+        "                          has been generated, proposing whatever followed last time. Costs\n"
+        "                          no compute, no memory and no expert read, works on any model,\n"
+        "                          and drafts NOTHING when it has no confident match — so a step\n"
+        "                          without one costs exactly a plain decode\n"
+        "      --draft N           tokens drafted per verify batch (default 3, max %d)\n"
+        "      --mtp-p-min F       --mtp only: stop drafting when the head's best candidate falls\n"
+        "                          below this probability (0..1, default 0 = draft the full width\n"
+        "                          however unsure it is). Makes the draft width adaptive per step:\n"
+        "                          a draft not made is one fewer MTP-block pass AND one fewer\n"
+        "                          independently routed position in the verify batch\n"
+        "      --ngram-min-match N --ngram only: shortest run of matching tokens allowed to draft\n"
+        "                          (default 3). The confidence gate: raise it for fewer, better\n"
+        "                          drafts, lower it for coverage\n"
         "\n"
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
@@ -444,7 +451,7 @@ static void print_usage(const char * argv0) {
         "\n"
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
         "BMOE_N_EXPERT_USED, BMOE_PREDICT_LOG, BMOE_PREDICT_PREFETCH\n",
-        argv0, MtpConfig::draft_max_limit, MoeStreamConfig::cache_min_mb, MoeStreamConfig::io_threads_max);
+        argv0, SpecConfig::draft_max_limit, MoeStreamConfig::cache_min_mb, MoeStreamConfig::io_threads_max);
 }
 
 // The prediction probe's report (see MoeStreamConfig::predict_log).
@@ -550,12 +557,22 @@ int main(int argc, char ** argv) {
             cfg.sampling.top_p = (float) std::atof(next("--top-p"));
         else if (a == "--seed")
             cfg.sampling.seed = (uint32_t) std::strtoul(next("--seed"), nullptr, 10);
-        else if (a == "--mtp")
-            cfg.mtp.enabled = true;
-        else if (a == "--mtp-draft")
-            cfg.mtp.draft_max = std::atoi(next("--mtp-draft"));
+        else if (a == "--mtp" || a == "--ngram") {
+            // Two sources for one loop, so asking for both is a contradiction rather than a
+            // precedence question — say so instead of silently honouring the last flag.
+            const DraftSource want = a == "--mtp" ? DraftSource::mtp : DraftSource::ngram;
+            if (cfg.spec.enabled() && cfg.spec.source != want) {
+                std::fprintf(stderr, "bmoe: --mtp and --ngram are two draft sources for the same verify loop; "
+                                     "choose one.\n");
+                return 2;
+            }
+            cfg.spec.source = want;
+        } else if (a == "--draft")
+            cfg.spec.draft_max = std::atoi(next("--draft"));
         else if (a == "--mtp-p-min")
-            cfg.mtp.draft_p_min = (float) std::atof(next("--mtp-p-min"));
+            cfg.spec.draft_p_min = (float) std::atof(next("--mtp-p-min"));
+        else if (a == "--ngram-min-match")
+            cfg.spec.ngram_min_match = std::atoi(next("--ngram-min-match"));
         else if (a == "--chatml")
             cfg.chatml = true;
         else if (a == "--no-think")
@@ -761,22 +778,32 @@ int main(int argc, char ** argv) {
     }
     // Acceptance is the number that decides whether speculation can pay at all; tokens-per-decode is
     // what it actually bought, and it is what tok/s above is a function of.
-    if (s.mtp_decodes > 0 && cfg.mtp.enabled) {
-        std::printf("mtp: %lld/%lld drafts accepted (%.1f%%), %.2f tokens per verify decode "
+    if (s.mtp_decodes > 0 && cfg.spec.enabled()) {
+        const char * src = cfg.spec.is_mtp() ? "mtp" : "ngram";
+        std::printf("%s: %lld/%lld drafts accepted (%.1f%%), %.2f tokens per verify decode "
                     "(%lld decodes for %d tokens)\n",
-                    s.mtp_accepted, s.mtp_drafted, s.mtp_drafted > 0 ? 100.0 * s.mtp_accepted / s.mtp_drafted : 0.0,
+                    src, s.mtp_accepted, s.mtp_drafted,
+                    s.mtp_drafted > 0 ? 100.0 * s.mtp_accepted / s.mtp_drafted : 0.0,
                     (double) s.n_generated / (double) s.mtp_decodes, s.mtp_decodes, s.n_generated);
         // tok/s above counts decode time only, so drafting is time the caller waits that the
         // headline rate does not show. Print what it actually costs, and the rate that includes it.
         const double eff =
             s.s_per_token + s.mtp_draft_s_per_token > 0 ? 1.0 / (s.s_per_token + s.mtp_draft_s_per_token) : 0.0;
-        std::printf("mtp: drafting costs %.4f s/token on top of decode → %.2f tok/s effective "
+        std::printf("%s: drafting costs %.4f s/token on top of decode → %.2f tok/s effective "
                     "(vs %.2f reported)\n",
-                    s.mtp_draft_s_per_token, eff, s.tokens_per_second);
+                    src, s.mtp_draft_s_per_token, eff, s.tokens_per_second);
+        // How often the source had anything to say. For the n-gram lookup this is the whole shape of
+        // the result: the steps that did not draft ran at exactly the unspeculated cost, so a small
+        // delta over baseline means something quite different at 10% coverage than at 90%.
+        if (cfg.spec.is_ngram()) {
+            std::printf("ngram: drafted on %lld of %lld steps (%.1f%%); the rest decoded plainly\n", s.drafted_steps,
+                        s.mtp_decodes, s.mtp_decodes > 0 ? 100.0 * (double) s.drafted_steps / s.mtp_decodes : 0.0);
+        }
         // Splits the run's flash bytes into the head's own routing and everything else, which is
         // the widened verify union. The two are attacked in completely different ways, and the
-        // route trace cannot tell them apart — it brackets the target decode only.
-        if (s.moe_read_mib > 0) {
+        // route trace cannot tell them apart — it brackets the target decode only. Only the head has
+        // a share: the n-gram source reads no weights at all, so its split is 0 by construction.
+        if (cfg.spec.is_mtp() && s.moe_read_mib > 0) {
             std::printf("mtp: of %.1f MiB streamed, %.1f MiB (%.1f%%) was the head's own routing, "
                         "%.1f MiB the widened verify batch\n",
                         s.moe_read_mib, s.mtp_draft_read_mib, 100.0 * s.mtp_draft_read_mib / s.moe_read_mib,

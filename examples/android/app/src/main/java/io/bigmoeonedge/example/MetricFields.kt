@@ -102,6 +102,10 @@ object ConfigFields {
         ConfigField("top_p", "sampling candidates kept by cumulative probability"),
         ConfigField("seed", "sampling seed. Inert at temperature 0; otherwise the only thing that makes a run repeatable"),
         ConfigField("compute_trace_layers", "per-layer compute tracing. It instruments the graph, so a traced run is a diagnostic rather than a benchmark"),
+        ConfigField("spec", "which source drafted for speculative decoding: off, mtp (the model's own trained head) or ngram (repeated text looked up in the prompt and the answer so far). Both verify identically, so this changes what a draft cost, not what was accepted"),
+        ConfigField("spec_draft_max", "tokens drafted per verify pass. The pass is one wider than this, and every position in it routes its own experts — which is what speculation trades for confirming several tokens at once"),
+        ConfigField("mtp_p_min", "the head stopped drafting below this confidence, making the width adaptive. 0 = always draft the full width. Applies to spec=mtp only"),
+        ConfigField("ngram_min_match", "shortest run of repeated tokens the lookup would draft from. Below it the step drafted nothing and cost exactly an unspeculated decode. Applies to spec=ngram only"),
     )
 
     private val byName = all.associateBy { it.name }

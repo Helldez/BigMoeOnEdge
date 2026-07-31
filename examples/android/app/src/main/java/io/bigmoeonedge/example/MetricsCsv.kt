@@ -47,6 +47,10 @@ internal class Csv(
             // legends that differ only by this used to read as identical (#136).
             if (info["predict_prefetch"] == "1") "predict" else null,
             info["drop_cold_frac"]?.takeIf { (it.toFloatOrNull() ?: 0f) > 0f }?.let { "drop $it" },
+            // Same argument, and stronger: under speculation a decode confirms a whole group, so
+            // the per-token rows are not even accounted the same way (mtp_batch). Two runs that
+            // differ by this must never read as the same kind of run.
+            info["spec"]?.takeIf { it != "off" }?.let { "$it ${info["spec_draft_max"]}" },
         ).joinToString(" · ")
     }
 

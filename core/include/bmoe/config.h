@@ -191,42 +191,45 @@ struct MoeStreamConfig {
     static constexpr int prefetch_layers_max = 8;
 };
 
-// Self-speculative decoding through the model's own trained multi-token-prediction head.
-//
-// The head drafts draft_max continuation tokens, the target then verifies all of them in ONE
-// decode; the longest prefix whose argmax agrees with the draft is accepted. Nothing is approximated
+// Where the draft tokens of a self-speculative step come from. The verify half of the loop is
+// identical for both sources; only the producer differs, and with it what a draft costs.
+enum class DraftSource {
+    none,  // no speculation: one token per decode
+    mtp,   // the model's own trained multi-token-prediction head (needs the nextn block)
+    ngram, // prompt-lookup over prompt + generated tokens (needs nothing from the model)
+};
+
+// Self-speculative decoding: draft draft_max continuation tokens, then verify all of them in ONE
+// decode and accept the longest prefix whose argmax agrees with the draft. Nothing is approximated
 // and no weight is skipped, so this is a latency optimisation, not a quality trade.
 //
 // It is NOT byte-identical the way overlap and prefetch are, and must not be used in a byte-identity
 // gate. Verification evaluates 1 + draft_max positions in one batch, and a batched matmul is not
 // bit-identical to that many single-token ones; on a near-tie the argmax can flip. Measured on
 // Qwen3.6-35B-A3B-MXFP4 over 128 greedy tokens: one token differs from an unspeculated run, and
-// every draft width agrees with every other. See docs/mtp.md.
-//
-// Only applies to models whose gguf carries the nextn block (Qwen3.5/3.6); init fails loudly on a
-// model without one rather than silently decoding one token at a time.
+// every draft width agrees with every other. The caveat is a property of the batched verify, so it
+// applies to every draft source. See docs/mtp.md.
 //
 // Why it can win, and why it can lose. Verifying N positions in one decode reads the dense weights
 // and each routed expert ONCE for N tokens instead of N times, which is the whole prize: on a
 // DRAM-bandwidth-bound host it amortises the measured bottleneck directly, and on a flash-streamed
 // device it amortises latency-to-ready. The counterweight is that the N verify positions route
-// INDEPENDENTLY, so a layer's read set widens toward N*k experts instead of k, and the draft pass
-// itself routes through the MTP block's own expert layer. Where routing across adjacent tokens
-// diverges, the widened read set can cost more than the amortisation saves. Default off until the
-// A/B says otherwise on the target device.
-struct MtpConfig {
-    bool enabled = false; // draft with the model's native MTP head and verify greedily
+// INDEPENDENTLY, so a layer's read set widens toward N*k experts instead of k. Measured at draft 3
+// on the host, that widening is 97.1% of the extra bytes a speculated run streams — it is what the
+// choice of source cannot change. Default off until the A/B says otherwise on the target device.
+struct SpecConfig {
+    DraftSource source = DraftSource::none;
 
     // Tokens drafted per verify batch. The verify decode is 1 + draft_max positions wide, so this
     // sets both the ceiling on tokens-per-decode and the width of the read-set widening above.
-    // Past the head's acceptance horizon the extra drafts are rejected and paid for anyway, which
+    // Past the source's acceptance horizon the extra drafts are rejected and paid for anyway, which
     // is why the useful range is small; 3 is upstream's default for a single trained head.
     int draft_max = 3;
 
-    // Confidence floor for continuing to draft, as the head's own probability for the token it is
-    // proposing. At 0 the head is asked for draft_max tokens unconditionally, however unsure it is;
-    // above 0 it stops as soon as its best candidate falls below this, making the draft width
-    // adaptive per step at no cost.
+    // MTP only. Confidence floor for continuing to draft, as the head's own probability for the
+    // token it is proposing. At 0 the head is asked for draft_max tokens unconditionally, however
+    // unsure it is; above 0 it stops as soon as its best candidate falls below this, making the
+    // draft width adaptive per step at no cost.
     //
     // This is the cheap half of expert-cost-aware drafting, and on a streamed device it pays twice:
     // a draft not made is a pass through the MTP block (with its own MoE FFN) that does not happen,
@@ -238,7 +241,24 @@ struct MtpConfig {
     // measure rather than a constant to guess.
     float draft_p_min = 0.0f;
 
+    // N-gram only. Shortest suffix match that is allowed to draft. This is the whole economics of
+    // the n-gram source: below it the step drafts NOTHING and costs exactly a plain decode, so the
+    // floor of the feature is the baseline rather than a loss. Raising it buys precision (fewer,
+    // better drafts) at the cost of coverage. 3 because free prose rarely repeats a trigram, which
+    // is what keeps prose runs on the floor while copy-heavy segments still match.
+    int ngram_min_match = 3;
+
+    // N-gram only. Longest suffix considered when looking for a match. A cap, not a target: it
+    // bounds the per-step scan (O(corpus * ngram_max_match)) and stops a long verbatim quote from
+    // making every step scan its full length for no additional selectivity.
+    int ngram_max_match = 12;
+
     static constexpr int draft_max_limit = 8;
+    static constexpr int ngram_match_limit = 64;
+
+    bool enabled() const { return source != DraftSource::none; }
+    bool is_mtp() const { return source == DraftSource::mtp; }
+    bool is_ngram() const { return source == DraftSource::ngram; }
 };
 
 // A full run: model, prompt, decoding, streaming, telemetry.
@@ -289,7 +309,7 @@ struct RunConfig {
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
-    MtpConfig mtp; // self-speculative decoding via the model's MTP head; off by default
+    SpecConfig spec; // self-speculative decoding (MTP head or n-gram lookup); off by default
 };
 
 // Validation result: ok plus a human-readable reason when not.

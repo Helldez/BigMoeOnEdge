@@ -155,31 +155,39 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
             }
 
             Section("Speed / quality") {
-                // MTP sits at the top of this section because it is the only entry here that does
-                // NOT trade quality: it changes how many tokens a decode confirms, not what the
+                // Speculation sits at the top of this section because it is the only entry here that
+                // does NOT trade quality: it changes how many tokens a decode confirms, not what the
                 // model computes. Not gated on the streamer — it is a decode-loop change, so it
                 // applies to the mmap baseline too.
-                SwitchRow(
-                    "MTP decoding (needs an MTP model)",
-                    "Some models carry a small extra head trained to guess the next few tokens. With this " +
-                        "on the model drafts its own continuation and the engine checks the whole group in " +
-                        "one pass, keeping only what the model itself would have produced. Nothing is " +
-                        "skipped or approximated.\n\nThe gain is reading the weights once for several " +
-                        "tokens instead of once each; the cost is that checking several at a time makes " +
-                        "every layer touch more experts. Which side wins depends on whether this device " +
-                        "spends its time computing or waiting on flash.",
-                    current.mtp,
-                ) { onChange(current.copy(mtp = it)) }
-                if (current.mtp) {
+                LabeledDropdown(
+                    "Guess ahead",
+                    listOf("Off", "Model's own head (MTP)", "Repeated text (n-gram)"),
+                    AppSettings.SPEC_CHOICES.indexOf(current.spec).coerceAtLeast(0),
+                ) { onChange(current.copy(spec = AppSettings.SPEC_CHOICES[it])) }
+                Text(
+                    "Guess the next few tokens, then check the whole group in one pass and keep only what " +
+                        "the model itself would have produced. Nothing is skipped or approximated. The gain " +
+                        "is reading the weights once for several tokens instead of once each; the cost is " +
+                        "that checking several at a time makes every layer touch more experts.\n\n" +
+                        "The head is a small extra part of the model trained to guess — accurate, but only " +
+                        "some models carry it, and running it costs a pass of its own. The n-gram guess " +
+                        "instead looks for the text repeating itself, which costs nothing at all and works " +
+                        "on every model, but only has something to say when the model is quoting or " +
+                        "editing. When it has nothing, that token runs exactly as if this were off.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (current.spec != AppSettings.SPEC_OFF) {
                     IntSetting(
-                        "Tokens drafted per pass", AppSettings.MTP_DRAFT_CHOICES, current.mtpDraft,
+                        "Tokens guessed per pass", AppSettings.MTP_DRAFT_CHOICES, current.mtpDraft,
                     ) { onChange(current.copy(mtpDraft = it)) }
                     Text(
-                        "How far ahead the head guesses. Further means more tokens confirmed per pass, but " +
-                            "the guesses grow less reliable and a wrong one is paid for and thrown away. " +
+                        "How far ahead to guess. Further means more tokens confirmed per pass, but the " +
+                            "guesses grow less reliable and a wrong one is paid for and thrown away. " +
                             "The best setting is rarely the largest.",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+                if (current.spec == AppSettings.SPEC_MTP) {
                     IntSetting(
                         "Guess only when confident", AppSettings.MTP_P_MIN_CHOICES, current.mtpPMinPct,
                         format = { if (it == 0) "Always guess" else "Above $it%" },

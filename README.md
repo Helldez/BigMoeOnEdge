@@ -143,6 +143,16 @@ is flash-bound) may not win; and unlike `--overlap` it is not *byte*-identical, 
 single-token matmuls differ in the last bits and a near-tie can flip one token.
 [docs/mtp.md](docs/mtp.md).
 
+`--ngram` drafts for the same verify loop without the head: it looks the last few tokens up in the
+prompt and in what has been generated, and proposes whatever followed last time. That costs no
+compute, no memory and no expert read, and it works on any model — including the ones `--mtp`
+refuses. It exists because of what the counters said about MTP: the head's own routing was only
+**3%** of the bytes speculation adds, so making the draft cheaper is not where the prize is. What is
+left is that this source can decline to draft at zero cost. Measured, that floor holds per *step*
+but not per *run*: the steps it does draft widen the expert read set at a lower acceptance than a
+trained head, and on the host that put it slightly **below** baseline while `--mtp` gained 15%.
+Off by default, and honest about it — [docs/ngram.md](docs/ngram.md).
+
 ### Sessions and telemetry
 
 The model stays loaded across chat turns, and every run can account for its own time: `--progress`

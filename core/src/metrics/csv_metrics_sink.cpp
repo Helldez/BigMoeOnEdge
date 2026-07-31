@@ -44,10 +44,10 @@ public:
                      r.predict_prefetch, r.predict_log, r.predict_spec_max, r.prefetch_sync, r.dense_weights.c_str(),
                      (double) r.drop_cold_frac, r.drop_renorm, r.drop_prefill);
         std::fprintf(f_,
-                     "# temp=%.4g top_k=%d top_p=%.4g seed=%u compute_trace_layers=%d mtp=%d "
-                     "mtp_draft_max=%d mtp_p_min=%.4g\n",
-                     (double) r.temp, r.top_k, (double) r.top_p, r.seed, r.compute_trace_layers, r.mtp, r.mtp_draft_max,
-                     (double) r.mtp_p_min);
+                     "# temp=%.4g top_k=%d top_p=%.4g seed=%u compute_trace_layers=%d spec=%s "
+                     "spec_draft_max=%d mtp_p_min=%.4g ngram_min_match=%d\n",
+                     (double) r.temp, r.top_k, (double) r.top_p, r.seed, r.compute_trace_layers, r.spec.c_str(),
+                     r.spec_draft_max, (double) r.mtp_p_min, r.ngram_min_match);
         write_header();
     }
 
@@ -74,15 +74,16 @@ public:
                      "spec_read_MiB=%.1f spec_experts=%lld spec_useful=%lld "
                      "majflt/tok=%.2f cpu_s/tok=%.4f token_demand_MiB=%.1f layer_demand_MiB=%.1f "
                      "experts_routed=%lld experts_dropped=%lld loop_overhead_s/tok=%.4f "
-                     "mtp_drafted=%lld mtp_accepted=%lld mtp_decodes=%lld mtp_draft_s/tok=%.4f\n",
+                     "mtp_drafted=%lld mtp_accepted=%lld mtp_decodes=%lld mtp_draft_s/tok=%.4f "
+                     "drafted_steps=%lld\n",
                      s.n_generated, s.s_per_token, s.tokens_per_second, s.moe_read_mib, s.moe_io_seconds,
                      s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct, s.n_prompt, s.load_seconds,
                      s.prefill_seconds, s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0,
                      s.moe_stall_s_per_token, s.moe_mgmt_s_per_token, s.cache_resident_mib, s.cache_budget_mib,
                      s.cache_resizes, s.moe_spec_read_mib, s.moe_spec_experts, s.moe_spec_useful, s.majflt_per_token,
                      s.cpu_s_per_token, s.token_demand_mib, s.layer_demand_mib, s.experts_routed, s.experts_dropped,
-                     s.loop_overhead_s_per_token, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes,
-                     s.mtp_draft_s_per_token);
+                     s.loop_overhead_s_per_token, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token,
+                     s.drafted_steps);
         std::fflush(f_);
     }
 

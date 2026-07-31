@@ -27,9 +27,9 @@ Measured on Qwen3.6-35B-A3B-MXFP4, 128 greedy tokens, streamed with `--overlap -
 |---|---|
 | plain vs plain (control) | identical, 608/608 chars |
 | **plain vs plain at `--ubatch 1`, no MTP at all** | **differs, 608/612 chars** |
-| plain vs `--mtp --mtp-draft 1` | diverges at char 151 — one token |
-| plain vs `--mtp --mtp-draft 3` | diverges at char 151 — the same token |
-| `--mtp-draft 1` vs `--mtp-draft 3` | **identical** |
+| plain vs `--mtp --draft 1` | diverges at char 151 — one token |
+| plain vs `--mtp --draft 3` | diverges at char 151 — the same token |
+| `--draft 1` vs `--draft 3` | **identical** |
 
 The second row is the one that settles it, and it involves **no speculation**: `--ubatch 1` only
 forces the prompt to be prefilled one token at a time instead of in one wide pass. Same model, same
@@ -127,8 +127,8 @@ and off:
 | | tok/s | MiB/token | majflt/token | cpu-s/token | cache hit | acceptance |
 |---|---|---|---|---|---|---|
 | off | 5.82 / 6.14 | 69.3 | 69–109 | 0.43–0.45 | 73.5% | — |
-| `--mtp-draft 2` | 5.59 | 93.8 | 230 | 0.57 | 65.4% | 69% |
-| `--mtp-draft 3` | 4.38 | 106.6 | 633 | 0.74 | 66.7% | 52% |
+| `--draft 2` | 5.59 | 93.8 | 230 | 0.57 | 65.4% | 69% |
+| `--draft 3` | 4.38 | 106.6 | 633 | 0.74 | 66.7% | 52% |
 
 Speculation is working — 2.35–2.52 tokens per verify decode — and still losing, because **the prize
 does not exist in this regime**. `stall_s/tok` is 0.025–0.027 in every one of those runs, MTP on or
@@ -174,7 +174,7 @@ same rule the rest of the engine follows ([seam.md](seam.md)).
 
 Self-speculation means one model and two contexts over it:
 
-- the **target** context, created with `n_rs_seq = --mtp-draft` so a rejected tail is rewound from a
+- the **target** context, created with `n_rs_seq = --draft` so a rejected tail is rewound from a
   bounded snapshot instead of replayed;
 - the **draft** context, created with `ctx_type = LLAMA_CONTEXT_TYPE_MTP` so llama.cpp builds the
   nextn graph, and carrying the **same eval callback** as the target — the router hook is per-context,
@@ -192,7 +192,7 @@ from that and are easy to get wrong:
 - Prefill goes through the driver as well. The draft context's KV must reach the last prompt
   position or the first draft is conditioned on a state that never saw the prompt.
 
-Per step the loop is: draft `--mtp-draft` tokens from the head, decode
+Per step the loop is: draft `--draft` tokens from the head, decode
 `[confirmed token, drafts…]` asking for logits at every position, accept the longest prefix whose
 argmax matches, let the draft context catch up on **that prefix**, roll the target's KV back over the
 rejected tail, and read the next token for free out of the logits at the first unverified position.
@@ -228,7 +228,7 @@ mtp: 41/63 drafts accepted (65.1%), 2.31 tokens per verify decode (57 decodes fo
 - **Acceptance** is a property of the model's trained head, not of this engine. It bounds everything
   else: at 0% the feature is pure overhead.
 - **Tokens per verify decode** is what was actually bought — the factor the decode count fell by. It
-  is always below `1 + --mtp-draft`.
+  is always below `1 + --draft`.
 - **The effective rate**, on the second line, is the one to believe. `tok/s` is computed from decode
   time alone and drafting happens *between* decodes, so the headline rate leaves out everything
   speculation adds. `mtp_draft_s/tok` in the CSV trailer and `mtp_draft_ms` per row measure it
@@ -261,9 +261,9 @@ With the host's measured best recipe (`--overlap --cache-mb auto --drop-cold-exp
 | draft width | tok/s | vs off | acceptance | tokens / verify decode | flash MiB/token |
 |---|---|---|---|---|---|
 | off | 7.12 | — | — | 1.00 | 19.7 |
-| `--mtp-draft 2` | 7.66 | +7.6% | 71.4% | 2.42 | 30.3 |
-| **`--mtp-draft 3`** | **8.19** | **+15.1%** | 60.1% | 2.78 | 33.7 |
-| `--mtp-draft 4` | 7.64 | +7.3% | 52.4% | 3.08 | 31.1 |
+| `--draft 2` | 7.66 | +7.6% | 71.4% | 2.42 | 30.3 |
+| **`--draft 3`** | **8.19** | **+15.1%** | 60.1% | 2.78 | 33.7 |
+| `--draft 4` | 7.64 | +7.3% | 52.4% | 3.08 | 31.1 |
 
 Without the lossy drop knob (`--overlap --cache-mb auto`, 128 tokens), the gain is larger — 4.28 →
 5.52 tok/s, **+29%** at draft 3 — because dropping had already removed some of the compute the

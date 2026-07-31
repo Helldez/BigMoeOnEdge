@@ -18,7 +18,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.compute_trace_layers = cfg.compute_trace_layers;
     sc.sampling = cfg.sampling; // greedy by default; opt-in stochastic decoding
     sc.moe = cfg.moe;
-    sc.mtp = cfg.mtp; // MTP self-speculation; off by default
+    sc.spec = cfg.spec; // self-speculation (MTP head or n-gram lookup); off by default
     return sc;
 }
 

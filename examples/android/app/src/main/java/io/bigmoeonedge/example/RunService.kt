@@ -264,6 +264,7 @@ class RunService : Service() {
             val mtpAccepted = o.optLong("mtp_accepted", 0)
             val mtpDecodes = o.optLong("mtp_decodes", 0)
             val mtpDraftSTok = o.optDouble("mtp_draft_s_tok", 0.0)
+            val draftedSteps = o.optLong("drafted_steps", 0)
             val loopOverheadSTok = o.optDouble("loop_overhead_s_tok", 0.0)
             // What the user actually waits: tok_s counts decode time only, so drafting — which
             // happens between decodes — is invisible to it. With MTP off the gap is ~0 and this
@@ -285,12 +286,18 @@ class RunService : Service() {
                 if (hit >= 0) append(String.format(loc, " | cache %.0f%%", hit))
                 if (cancelled) append(" | cancelled")
                 if (mtpDecodes > 0 && mtpDrafted > 0) {
-                    append(String.format(loc, "\nMTP: %d/%d guesses kept (%.0f%%), %.2f tok per pass",
+                    append(String.format(loc, "\nGuessing: %d/%d kept (%.0f%%), %.2f tok per pass",
                         mtpAccepted, mtpDrafted, 100.0 * mtpAccepted / mtpDrafted,
                         tokens.toDouble() / mtpDecodes))
                     if (mtpDraftSTok > 0) {
                         append(String.format(loc, " | guessing costs %.3fs/tok → %.2f tok/s real",
                             mtpDraftSTok, effTokS))
+                    }
+                    // Only the n-gram source ever abstains, so a coverage below every step is what
+                    // says the rest of the turn ran at the plain, unspeculated cost.
+                    if (draftedSteps in 1 until mtpDecodes) {
+                        append(String.format(loc, " | guessed on %.0f%% of passes",
+                            100.0 * draftedSteps / mtpDecodes))
                     }
                 }
             }
@@ -307,7 +314,7 @@ class RunService : Service() {
                 // show what the turn really ran at, and how often the guesses were right.
                 if (mtpDecodes > 0 && mtpDrafted > 0) {
                     if (effTokS > 0) append(String.format(loc, " · %.1f real", effTokS))
-                    append(String.format(loc, " · MTP %.0f%% kept", 100.0 * mtpAccepted / mtpDrafted))
+                    append(String.format(loc, " · %.0f%% kept", 100.0 * mtpAccepted / mtpDrafted))
                 }
                 if (cancelled) append(" · cancelled")
             }
@@ -318,6 +325,7 @@ class RunService : Service() {
                 cacheResidentMib = cacheResidentMib, cacheBudgetMib = cacheBudgetMib,
                 avgMajfltPerTok = majfltPerTok, avgCpuSPerTok = cpuSPerTok,
                 mtpDrafted = mtpDrafted, mtpAccepted = mtpAccepted, mtpDecodes = mtpDecodes,
+                draftedSteps = draftedSteps,
                 mtpDraftSPerTok = mtpDraftSTok, loopOverheadSPerTok = loopOverheadSTok,
             )
             RunBus.update {
