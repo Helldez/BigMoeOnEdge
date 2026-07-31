@@ -297,7 +297,11 @@ private fun MainScreen(
                     // rest of it one tap away: the line above names the levers that change the kind
                     // of run, but "what exactly was this answer produced under" is a question the
                     // main screen has to be able to answer too, not only a saved CSV (#136).
-                    Text(configSummary(settings), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // Remembered, not recomputed: this item redraws on every streamed token (it holds
+                    // the telemetry card), and the configuration it describes changes only when the
+                    // user changes a setting.
+                    val summary = remember(settings) { configSummary(settings) }
+                    Text(summary, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     var showConfig by rememberSaveable { mutableStateOf(false) }
                     val flags = remember(settings, models, modelIdx) {
                         models.getOrNull(modelIdx.coerceIn(0, (models.size - 1).coerceAtLeast(0)))

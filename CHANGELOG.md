@@ -25,6 +25,18 @@ Semantic Versioning.
   carries the levers that make a run a different kind of run, and the full flag list is one tap
   below it, read back from the argv the session actually opens with rather than from a second list
   kept by hand.
+- **The glossary explains the configuration too, in its own section.** The `?` reference covered the
+  per-token columns only, so surfacing thirty-odd settings would have surfaced thirty-odd unexplained
+  names. It now has two halves — the columns, and every preamble key described in the words its own
+  definition uses — and it is reachable from Compare, where the configuration table matters most.
+- **`loop_overhead_ms` is described at last.** The engine has written the column since 0.17.0 and the
+  app never explained it: the time between two decodes, outside `wall_ms` and therefore outside the
+  reported tok/s.
+- **`predict_spec_max` no longer reads as a setting when the prediction was off.** The engine records
+  its own default (2) whenever predictive prefetch is disabled — it is the one field of that block
+  `session.cpp` does not neutralise — so a file claimed two speculated misses per layer for a run
+  that speculated nothing. It now renders as inert. The engine-side fix is tracked separately;
+  nothing about how those runs executed changes, since the value is never read with the feature off.
 - App version bumped to 0.18.1 (versionCode 33).
 
 ## [0.18.0] - 2026-07-28

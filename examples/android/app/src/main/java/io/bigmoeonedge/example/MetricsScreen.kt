@@ -77,7 +77,7 @@ fun MetricsScreen(onBack: () -> Unit) {
                         when (view) {
                             View.COMPARE -> "Compare files"
                             View.CORRELATE -> "Correlate fields"
-                            View.GLOSSARY -> "What the columns mean"
+                            View.GLOSSARY -> "What the fields mean"
                             View.FILE -> picked?.name ?: "Metrics"
                             View.LIST -> "Metrics"
                         },
@@ -94,7 +94,7 @@ fun MetricsScreen(onBack: () -> Unit) {
                         TextButton(onClick = { view = View.CORRELATE }) { Text("Correlate") }
                         picked?.let { f -> TextButton(onClick = { shareCsv(context, listOf(f)) }) { Text("Share") } }
                     }
-                    if (view == View.LIST || view == View.FILE) {
+                    if (view == View.LIST || view == View.FILE || view == View.COMPARE) {
                         TextButton(onClick = { view = View.GLOSSARY }) { Text("?") }
                     }
                 },
@@ -438,13 +438,24 @@ private val CONFIG_BOOLS = setOf(
  * engine wrote fewer, and inventing a default for them would be a claim the file never made.
  */
 private fun configRows(info: Map<String, String>): List<Triple<String, String, String>> {
-    val known = CONFIG_ORDER.mapNotNull { (k, label) -> info[k]?.let { Triple(k, label, prettyConfigValue(k, it)) } }
+    val known = CONFIG_ORDER.mapNotNull { (k, label) ->
+        info[k]?.let { Triple(k, label, prettyConfigValue(k, it, info)) }
+    }
     val rest = info.keys.filter { it !in CONFIG_LABELS }.sorted()
-        .map { k -> Triple(k, k, prettyConfigValue(k, info.getValue(k))) }
+        .map { k -> Triple(k, k, prettyConfigValue(k, info.getValue(k), info)) }
     return known + rest
 }
 
-private fun prettyConfigValue(key: String, v: String): String = when {
+/**
+ * One preamble value, rendered as what it MEANT for the run — which sometimes takes the rest of
+ * [info] to know, because a knob the run never consulted is recorded all the same.
+ */
+private fun prettyConfigValue(key: String, v: String, info: Map<String, String>): String = when {
+    // Read ahead is a property of the prediction, so with the prediction off the engine's own
+    // default (2, config.h) lands in the preamble governing nothing at all — it is the one field of
+    // that block session.cpp does not neutralise when the feature is off. Printing the bare number
+    // reads as "this run speculated two misses per layer", which is exactly false.
+    key == "predict_spec_max" && info["predict_prefetch"] != "1" -> "— (predictive prefetch off)"
     key in CONFIG_BOOLS -> if (v == "1") "on" else "off"
     // A zero here is not a small setting, it is the feature being off, and reading "0" as "some
     // dropping happened" is exactly the misreading this display exists to prevent. The drop
@@ -585,12 +596,14 @@ private fun FieldNote(name: String) {
 @Composable
 private fun GlossaryView(modifier: Modifier) {
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+        // Two halves, in the order a file is read: the preamble says what the run was configured
+        // with, the columns say what it then measured.
         item {
-            Text(
-                "Every column the metrics CSV can hold. \"depends\" means neither direction is simply " +
-                    "good — a bigger cache buys hits but risks the reclaim war, and mem_available lies.",
-                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 10.dp),
+            GlossarySection(
+                "Per-token columns",
+                "One row per generated token. \"depends\" means neither direction is simply good — a " +
+                    "bigger cache buys hits but risks the reclaim war, and mem_available lies.",
+                top = 10.dp,
             )
         }
         items(MetricFields.all) { f ->
@@ -604,6 +617,34 @@ private fun GlossaryView(modifier: Modifier) {
             }
             HorizontalDivider()
         }
+        // The configuration half. Showing a run's whole preamble (#136) is only half an answer while
+        // the settings it names go unexplained — several are unguessable from the key alone, and one
+        // (predict_spec_max) is actively misleading read as a bare number.
+        item {
+            GlossarySection(
+                "Run configuration",
+                "The preamble at the top of every file: what the run was configured with, as opposed " +
+                    "to what it measured. Two files whose engine, dropping or prediction differ are " +
+                    "two experiments, not a comparison.",
+                top = 24.dp,
+            )
+        }
+        items(ConfigFields.all) { c ->
+            Column(Modifier.padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(c.name, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(c.what, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            HorizontalDivider()
+        }
+    }
+}
+
+/** A glossary section heading and its one-paragraph framing, so both halves are introduced alike. */
+@Composable
+private fun GlossarySection(title: String, blurb: String, top: androidx.compose.ui.unit.Dp) {
+    Column(Modifier.padding(top = top, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Text(blurb, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
