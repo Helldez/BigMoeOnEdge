@@ -27,9 +27,15 @@ tokenizer and chat template llama.cpp supports works out of the box, because lla
 doing that part: MXFP4 and Q4_K_M stream through the same code. Supporting a new MoE architecture
 is one row in a registry, and following a new llama.cpp release is a routine submodule bump.
 
-The most extreme thing it can do today: **gpt-oss-120b**, a ~60 GB model, on a phone with 12 GB of
-RAM. Five times more model than memory, generating at **1.3 tok/s** losslessly and **2.2 tok/s**
-with one speed knob, against **0.09 tok/s** for the same file loaded the ordinary way.
+The most extreme thing it can do today: **DeepSeek V4 Flash 0731**, a 284B-parameter MoE
+(~91 GB on disk at 2-bit expert quantization), on a phone with 12 GB of RAM: more than seven
+times more model than memory, streamed from flash as three shard files exactly as Hugging Face
+ships them, no merge step. Behind it, **gpt-oss-120b** (~60 GB) generates at **1.3 tok/s**
+losslessly and **2.2 tok/s** with one speed knob, against **0.09 tok/s** for the same file
+loaded the ordinary way.
+
+<!-- DSv4 hero video: replace the asset link below when the on-device recording lands with the
+     v0.19.0 release. Caption pattern: model, size, device RAM, "real time, not sped up". -->
 
 <p align="center"><img src="docs/assets/hero.gif" width="380" alt="gpt-oss-120b (~60 GB) generating on a 12 GB phone, with live tok/s and telemetry"></p>
 <p align="center"><em>gpt-oss-120b (~60 GB) on a 12 GB phone. Real time, not sped up. Full three-model demo below.</em></p>
@@ -91,7 +97,7 @@ finishes, pick the model and chat. The telemetry panel shows tok/s and the compu
 split live, and every streaming knob below is in Settings.
 
 Models above Hugging Face's 50 GB per-file limit (gpt-oss-120b, DeepSeek V4 Flash) ship as
-multi-shard ggufs. The engine reads split models natively — point it at the first shard
+multi-shard ggufs. The engine reads split models natively: point it at the first shard
 (`-00001-of-...`) with the siblings alongside; no merge step. gpt-oss-120b still needs a manual
 copy to the device: steps in the [Android example README](examples/android/README.md#gpt-oss-120b).
 
@@ -179,11 +185,11 @@ reads served from RAM instead of flash. Bold marks the best configuration for th
 
 | Configuration | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|
+| mmap baseline (no streaming) | 0.09 | n/a | n/a |
+| streamed, k=4 (default), no cache, 4 lanes | 0.7 | 1817 MiB | n/a |
+| streamed, k=4 (default), cache 2000 MiB, 8 lanes | 1.3 | 1292 MiB | 27% |
+| streamed, k=2, no cache, 4 lanes | 1.8 | 909 MiB | n/a |
 | **streamed, k=2, cache 2000 MiB, 8 lanes** | **2.2** | 590 MiB | 32% |
-| streamed, k=2, no cache, 4 lanes | 1.8 | 909 MiB | — |
-| streamed, default k=4, cache 2000 MiB, 8 lanes | 1.3 | 1292 MiB | 27% |
-| streamed, default k=4, no cache, 4 lanes | 0.7 | 1817 MiB | — |
-| mmap baseline (no streaming) | 0.09 | — | — |
 
 All streamed rows use `--overlap --dense-weights anon --no-think`. The setting that unlocked this
 model is `--dense-weights anon`: this far past RAM the phone keeps reclaiming the always-used
@@ -200,9 +206,9 @@ dense weights kept out of the page cache (`--dense-weights anon`) runs it stably
 
 | Configuration | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|
-| mmap baseline (no streaming) | 0.1 (unstable) | — | — |
-| streamed, default k=8, cache 2000 MiB, 4 lanes, overlap | 4.3 | 206 MiB | 56% |
-| streamed, default k=8, cache 3000 MiB, 4 lanes, overlap | 5.0 | 144 MiB | 65% |
+| mmap baseline (no streaming) | 0.1 (unstable) | n/a | n/a |
+| streamed, k=8 (default), cache 2000 MiB, 4 lanes, overlap | 4.3 | 206 MiB | 56% |
+| streamed, k=8 (default), cache 3000 MiB, 4 lanes, overlap | 5.0 | 144 MiB | 65% |
 | streamed, k=6, cache 2000 MiB, 4 lanes, overlap | 5.4 | 137 MiB | 60% |
 | **streamed, k=6, cache 3000 MiB, 4 lanes, overlap** | **5.8** | 91 MiB | 68% |
 
@@ -219,12 +225,12 @@ worth a further ~16% by routing to six experts instead of eight. The lossless be
 
 | Configuration | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|
-| mmap baseline (no streaming) | 2.0 (unstable) | — | — |
-| streamed, default k=8, no cache, 4 lanes | 1.7 | 1051 MiB | — |
-| streamed, default k=8, cache 2000 MiB, 4 lanes | 2.4 | 480 MiB | 53% |
-| streamed, default k=8, cache 4000 MiB, 4 lanes | 4.0 | 225 MiB | 76% |
-| **streamed, default k=8, auto cache (capped 4000 MiB), 4 lanes, overlap** | **5.2** | 225 MiB | 76% |
+| streamed, k=8 (default), no cache, 4 lanes | 1.7 | 1051 MiB | n/a |
+| mmap baseline (no streaming) | 2.0 (unstable) | n/a | n/a |
+| streamed, k=8 (default), cache 2000 MiB, 4 lanes | 2.4 | 480 MiB | 53% |
+| streamed, k=8 (default), cache 4000 MiB, 4 lanes | 4.0 | 225 MiB | 76% |
 | streamed, k=6, cache 4000 MiB, 4 lanes | 5.0 | 165 MiB | 77% |
+| **streamed, k=8 (default), auto cache (cap 4000 MiB), 4 lanes, overlap** | **5.2** | 225 MiB | 76% |
 
 Cache size is the dominant lever here, and the auto-sized cache with a ceiling
 ([docs/cache-sizing.md](docs/cache-sizing.md)) is the winning recipe. The mmap baseline
@@ -235,11 +241,11 @@ a little quality for a further +24% over the model's own width.
 
 | Configuration | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|
-| mmap baseline (no streaming) | 0.4 | — | — |
-| streamed, default k=8, no cache, 4 lanes | 1.6 | 904 MiB | — |
-| streamed, default k=8, cache 2000 MiB, 4 lanes | 2.2 | 366 MiB | 58% |
-| streamed, default k=8, cache 2000 MiB, 4 lanes, overlap | 2.8 | 365 MiB | 58% |
-| streamed, default k=8, cache 4000 MiB, 4 lanes | 4.1 | 144 MiB | 82% |
+| mmap baseline (no streaming) | 0.4 | n/a | n/a |
+| streamed, k=8 (default), no cache, 4 lanes | 1.6 | 904 MiB | n/a |
+| streamed, k=8 (default), cache 2000 MiB, 4 lanes | 2.2 | 366 MiB | 58% |
+| streamed, k=8 (default), cache 2000 MiB, 4 lanes, overlap | 2.8 | 365 MiB | 58% |
+| streamed, k=8 (default), cache 4000 MiB, 4 lanes | 4.1 | 144 MiB | 82% |
 | **streamed, k=6, cache 4000 MiB, 4 lanes** | **5.0** | 98 MiB | 83% |
 
 Gemma keeps more of itself permanently resident, so the 4000 MiB cache fits only when enough RAM is
@@ -252,7 +258,7 @@ Every other benchmarked setting changes *how* weights are fetched, never the mat
 *what* the model computes, and both are measured:
 
 **Turbo top-k** (`--n-expert-used N`) forces the routing width below the model's own (8 for the
-Qwen and Gemma models, 4 for gpt-oss), cutting compute and flash reads together: **+22–24%** on
+Qwen and Gemma models, 4 for gpt-oss), cutting compute and flash reads together: **+22-24%** on
 the Qwen and Gemma models, and gpt-oss goes from 1.3 to **2.2 tok/s** at k=2. It is deterministic,
 which is why its `k=6` rows sit in the tables above. But it spends quality indiscriminately: the
 routing tail is cut whether or not those experts were already free to run from RAM.

@@ -12,13 +12,19 @@ import java.io.InputStream
  * the KV section is (a big tokenizer can push the tensor names well past any fixed window).
  *
  * gguf layout: "GGUF" magic, u32 version, then counts and a key/value metadata block, then one
- * info record per tensor (name, dims, type, offset). We only need the tensor names: a MoE model
- * names its down projection `blk.<il>.ffn_down_exps`, absent from dense models.
+ * info record per tensor (name, dims, type, offset).
+ *
+ * Two signals say "MoE", and both are needed. The metadata key `<arch>.expert_count` is the
+ * definitive one and is the only one a SPLIT model's first shard carries: that shard holds the
+ * metadata and (with the layout Hugging Face quants use) barely any tensors, so looking for an
+ * expert tensor there finds nothing and would hide the model from the picker. The tensor name
+ * `blk.<il>.ffn_down_exps` stays as the second check, for a file whose metadata omits the count.
  *
  * Spec: https://github.com/ggml-org/ggml/blob/master/docs/gguf.md
  */
 object GgufHeader {
     private const val MOE_MARKER = "ffn_down_exps"
+    private const val MOE_KV_SUFFIX = ".expert_count"
 
     // gguf value types (for skipping KV entries we don't read).
     private const val T_UINT8 = 0
@@ -69,10 +75,16 @@ object GgufHeader {
             throw IllegalArgumentException("implausible header counts")
         }
 
-        // Skip the KV metadata block to reach the tensor-info records.
+        // Walk the KV metadata block. The expert count settles it on its own — and is the only
+        // signal present in a split model's first shard, which carries no expert tensors.
         for (i in 0 until kvCount) {
-            skipString(s)                 // key
-            skipValue(s, s.u32())         // value
+            val key = readString(s)
+            val type = s.u32()
+            if (key.endsWith(MOE_KV_SUFFIX) && isIntScalar(type)) {
+                if (readIntScalar(s, type) > 0) return true
+            } else {
+                skipValue(s, type)
+            }
             if (s.pos > MAX_HEADER_BYTES) throw IllegalArgumentException("header too large")
         }
 
@@ -88,6 +100,24 @@ object GgufHeader {
             if (s.pos > MAX_HEADER_BYTES) throw IllegalArgumentException("header too large")
         }
         return false
+    }
+
+    private fun isIntScalar(type: Int): Boolean = when (type) {
+        T_UINT8, T_INT8, T_UINT16, T_INT16, T_UINT32, T_INT32, T_UINT64, T_INT64 -> true
+        else -> false
+    }
+
+    /** Read an integer KV value of any width. Callers check [isIntScalar] first. */
+    private fun readIntScalar(s: Counting, type: Int): Long = when (type) {
+        T_UINT8, T_INT8 -> {
+            val b = ByteArray(1); s.readFully(b); b[0].toLong() and 0xff
+        }
+        T_UINT16, T_INT16 -> {
+            val b = ByteArray(2); s.readFully(b)
+            (b[0].toLong() and 0xff) or ((b[1].toLong() and 0xff) shl 8)
+        }
+        T_UINT32, T_INT32 -> s.u32().toLong() and 0xffffffffL
+        else -> s.u64()
     }
 
     private fun skipValue(s: Counting, type: Int) {
@@ -149,7 +179,10 @@ object GgufHeader {
                 off += n
             }
         }
-        String(buf, Charsets.US_ASCII).contains(MOE_MARKER)
+        val text = String(buf, Charsets.US_ASCII)
+        // The KV key is enough here too: a dense model names neither. (`expert_used_count` does
+        // not contain `expert_count` as a substring, so this cannot fire on the wrong key.)
+        text.contains(MOE_MARKER) || text.contains("expert_count")
     }.getOrDefault(false)
 
     /** InputStream wrapper: little-endian primitive reads, exact skipping, and a byte counter. */

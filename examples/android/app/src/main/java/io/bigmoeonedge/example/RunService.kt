@@ -83,6 +83,9 @@ class RunService : Service() {
 
     // ── session lifecycle ──
 
+    /** Context of the running session, parsed from its argv at start (see startSession). */
+    private var sessionCtx = AppSettings.SESSION_CTX
+
     private fun startSession(intent: Intent?) {
         val model = intent?.getStringExtra(EXTRA_MODEL) ?: run { fail("no model"); return }
         val argv = intent.getStringArrayListExtra(EXTRA_ARGV) ?: run { fail("no argv"); return }
@@ -108,6 +111,13 @@ class RunService : Service() {
         main.removeCallbacks(forceKill)
 
         val streaming = argv.contains("--moe-stream")
+        // The context this session was actually opened with, for the "ctx used/total" readout.
+        // Taken from the argv rather than re-read from settings, so the number always describes
+        // the running process even if the setting changed after it started.
+        sessionCtx = argv.indexOf("-c").let { i ->
+            if (i >= 0 && i + 1 < argv.size) argv[i + 1].toIntOrNull() ?: AppSettings.SESSION_CTX
+            else AppSettings.SESSION_CTX
+        }
         startForeground(NOTIF_ID, buildNotification("Loading model…"))
         RunBus.update {
             // ioMode is re-sniffed from the new session's stderr, so clear it: it describes the
@@ -270,7 +280,7 @@ class RunService : Service() {
                     append(String.format(loc, " · prefill %.1fs", prefill))
                     if (nPrompt >= 0) append(String.format(loc, " (%d tok)", nPrompt))
                 }
-                if (nPast >= 0) append(String.format(loc, " · ctx %d/%d", nPast, AppSettings.SESSION_CTX))
+                if (nPast >= 0) append(String.format(loc, " · ctx %d/%d", nPast, sessionCtx))
                 if (hit >= 0) append(String.format(loc, " · cache %.0f%%", hit))
                 if (cancelled) append(" · cancelled")
             }

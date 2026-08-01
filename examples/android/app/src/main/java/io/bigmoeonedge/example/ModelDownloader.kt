@@ -102,6 +102,91 @@ object ModelDownloader {
     }
 
     /**
+     * Start a sharded (multi-file) catalog download: one [DownloadWorker] per missing shard,
+     * CHAINED so they transfer sequentially — the phone's line is the bottleneck, and one file at a
+     * time keeps the resume story per-file. The chain's unique-work name is the ENTRY's fileName
+     * (the first shard), so enqueuing twice is a no-op and cancel kills the whole set; each link
+     * still tags its own shard name, so [events] reports per-shard progress under that name.
+     *
+     * Free space is checked ONCE against the whole remaining set (missing shards minus their
+     * partial bytes), not per file — three separate late failures for one decision is the thing
+     * this avoids. Shards already fully on disk are skipped, so a torn set resumes cleanly.
+     */
+    fun enqueueShards(ctx: Context, entry: ModelCatalog.Entry): Result<String> = runCatching {
+        require(entry.shards.isNotEmpty()) { "not a sharded entry" }
+        val dir = ModelManager.internalModelsDir(ctx)
+        val missing = entry.shards.filter { !File(dir, it.fileName).isFile }
+        if (missing.isEmpty()) return@runCatching entry.fileName // all landed — caller re-scans
+        val needed = missing.sumOf { s ->
+            (s.bytes - File(dir, s.fileName + DownloadWorker.PART_SUFFIX).length()).coerceAtLeast(0)
+        }
+        if (needed > dir.usableSpace) {
+            error(
+                "needs ${ModelCatalog.gbLabel(needed)}, " +
+                    "only ${ModelCatalog.gbLabel(dir.usableSpace)} free"
+            )
+        }
+
+        val requests = missing.map { s ->
+            OneTimeWorkRequestBuilder<DownloadWorker>()
+                .setInputData(
+                    workDataOf(
+                        DownloadWorker.KEY_URL to s.url,
+                        DownloadWorker.KEY_NAME to s.fileName,
+                        DownloadWorker.KEY_EXPECTED to s.bytes,
+                    )
+                )
+                .addTag(DownloadWorker.TAG)
+                .addTag(NAME_TAG_PREFIX + s.fileName)
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .build()
+        }
+        var chain = WorkManager.getInstance(ctx).beginUniqueWork(entry.fileName, ExistingWorkPolicy.KEEP, requests.first())
+        for (req in requests.drop(1)) chain = chain.then(req)
+        // Block until the chain is persisted, same reason as enqueue above.
+        chain.enqueue().result.get()
+        entry.fileName
+    }
+
+    /**
+     * A catalog entry's aggregate progress, or null when nothing of it is in flight. Single-file
+     * entries pass through; for a sharded entry the fraction is over the WHOLE set — shards already
+     * on disk count as done, the in-flight shard contributes its partial bytes — because the row
+     * shows one model, not three files.
+     */
+    fun entryProgress(ctx: Context, e: ModelCatalog.Entry, live: Map<String, Progress>): Progress? {
+        if (e.shards.isEmpty()) return live[e.fileName]
+        val active = e.shards.firstNotNullOfOrNull { s -> live[s.fileName]?.let { s to it } } ?: return null
+        val dir = ModelManager.internalModelsDir(ctx)
+        val landed = e.shards.sumOf { s -> if (File(dir, s.fileName).isFile) s.bytes else 0L }
+        // A shard that is queued rather than running reports 0 bytes (events() has no progress row
+        // for it yet), which on a resumed 50 GB transfer would read as lost ground. Fall back to
+        // what is already in its .part.
+        val inFlight = if (active.second.downloadedBytes > 0) active.second.downloadedBytes
+        else File(dir, active.first.fileName + DownloadWorker.PART_SUFFIX).length()
+        return Progress(
+            id = e.fileName,
+            name = e.fileName,
+            downloadedBytes = landed + inFlight,
+            totalBytes = e.approxBytes,
+            state = active.second.state,
+            reason = active.second.reason,
+        )
+    }
+
+    /**
+     * Cancel a catalog entry's download — the whole chain for a sharded entry — and delete the
+     * leftover .part files. Shards that fully landed stay: a later retry skips them.
+     */
+    fun cancelEntry(ctx: Context, e: ModelCatalog.Entry) {
+        WorkManager.getInstance(ctx).cancelUniqueWork(e.fileName).result.get()
+        val dir = ModelManager.internalModelsDir(ctx)
+        val names = if (e.shards.isEmpty()) listOf(e.fileName) else e.shards.map { it.fileName }
+        names.forEach { File(dir, it + DownloadWorker.PART_SUFFIX).delete() }
+    }
+
+    /**
      * Every download's progress and outcome, as a stream. WorkManager's own flow drives it, so the
      * UI observes instead of polling, and a transfer started before the app was killed reappears on
      * the first emission rather than running unseen.
