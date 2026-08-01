@@ -30,6 +30,10 @@ data class AppSettings(
     val threads: Int = 4,               // compute threads (-t)
     val nExpertUsed: Int = 0,           // top-k override (0 = model default); lower = faster, changes output
     val nPredict: Int = DEFAULT_N_PREDICT,
+    // Context the session is opened with: prompt plus reply for the whole conversation. It is also
+    // memory — the KV cache is sized for it once at open — so on a model that already fills RAM a
+    // shorter context hands the difference back to the expert cache and the dense weights.
+    val sessionCtx: Int = SESSION_CTX,
     val oDirect: Boolean = true,        // bypass the page cache
     val overlap: Boolean = true,        // read the next experts while the current layer computes
     val denseWeights: DenseWeights = DenseWeights.ANON, // dense (non-expert) weight residency policy
@@ -70,8 +74,9 @@ data class AppSettings(
             cliPath,
             "-m", modelPath,
             "-t", threads.toString(),
-            "-c", SESSION_CTX.toString(),
-            "--ubatch", SESSION_UBATCH.toString(),
+            "-c", sessionCtx.toString(),
+            // Never reserve a graph wider than the context itself.
+            "--ubatch", minOf(SESSION_UBATCH, sessionCtx).toString(),
             // Render the model's OWN chat template, whichever family it belongs to; the flag name
             // is historical (ChatML is only llama.cpp's fallback when a gguf ships no template).
             // Nothing here selects a format, so it is correct for every model in the catalog.
@@ -126,7 +131,7 @@ data class AppSettings(
      * excluded — they vary per request without touching the loaded model.
      */
     fun sessionSignature(modelPath: String): String =
-        listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, oDirect,
+        listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, sessionCtx, oDirect,
                overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct)
             .joinToString("|")
 
@@ -143,6 +148,7 @@ data class AppSettings(
             .putBoolean("predictPrefetch", predictPrefetch)
             .putInt("predictSpecMax", predictSpecMax)
             .putInt("dropColdPct", dropColdPct)
+            .putInt("sessionCtx", sessionCtx)
             .putBoolean("thinking", thinking)
             .putBoolean("metricsCsv", metricsCsv)
             .apply()
@@ -163,6 +169,10 @@ data class AppSettings(
         // width). Prefill pays instead, and barely: chunking it costs ~7.7x the flash reads but
         // only ~6% of prefill wall time, because prefill is compute-bound.
         const val SESSION_UBATCH = 512
+
+        // Context rungs. 4096 is the default a chat wants; the shorter ones exist for a model that
+        // already fills RAM, where the KV cache competes with the weights themselves.
+        val CTX_CHOICES = intArrayOf(512, 1024, 2048, 4096, 8192)
 
         // Tokens to generate per turn, when nothing says otherwise. The service falls back to this
         // for a request that arrives without one, so the default lives here rather than in two
@@ -256,6 +266,7 @@ data class AppSettings(
                 predictPrefetch = p.getBoolean("predictPrefetch", d.predictPrefetch),
                 predictSpecMax = p.getInt("predictSpecMax", d.predictSpecMax),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
+                sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
                 thinking = p.getBoolean("thinking", d.thinking),
                 metricsCsv = p.getBoolean("metricsCsv", d.metricsCsv),
             )

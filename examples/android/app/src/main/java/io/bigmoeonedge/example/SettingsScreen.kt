@@ -224,6 +224,17 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 IntSetting("Tokens to generate", AppSettings.NPREDICT_CHOICES, current.nPredict) {
                     onChange(current.copy(nPredict = it))
                 }
+                IntSetting("Context (tokens)", AppSettings.CTX_CHOICES, current.sessionCtx) {
+                    onChange(current.copy(sessionCtx = it))
+                }
+                Text(
+                    "How much of the conversation the session can hold, prompt and reply together. " +
+                        "It is also memory: the KV cache is sized for it once when the model opens, " +
+                        "and on a model that already fills RAM that memory comes out of the expert " +
+                        "cache and the weights. Shorten it on the largest models, raise it when you " +
+                        "want long conversations and have the room. Changing it reopens the session.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Section("Prompt") {
