@@ -61,7 +61,29 @@ struct MoeStreamConfig {
     // Clamped to [1, io_threads_max]. 4 is the measured sweet spot on UFS4 phones.
     int io_threads = 4;
 
-    bool o_direct = true;     // bypass the page cache (O_DIRECT / FILE_FLAG_NO_BUFFERING)
+    bool o_direct = true; // bypass the page cache (O_DIRECT / FILE_FLAG_NO_BUFFERING)
+
+    // Read expert slices straight into the cache buffers, with no bounce copy.
+    //
+    // O_DIRECT dictates that the file offset, the length and the buffer address all be aligned,
+    // and a gguf's expert tensor data does not start on a page boundary (the default
+    // `general.alignment` is 32, so on this file family every expert offset sits a constant 1152
+    // bytes past one). The reader therefore pulls the enclosing aligned window into a per-lane
+    // bounce buffer and memcpy's the payload back by that remainder — 200+ MiB a token of pure
+    // shift correction, on a device whose decode is already memory-bound.
+    //
+    // The shift is only needed because the destination does NOT share the file's sub-page
+    // remainder. It can: this engine reserves the per-layer buffers itself, so with this on they
+    // are placed at an address carrying the tensor's own remainder. Every expert inherits it (the
+    // per-expert stride is a multiple of the page size), the aligned window then maps onto the
+    // buffer at the same relative position, and the read lands where mul_mat_id expects it with
+    // no copy at all. The window's overhang writes a neighbouring expert's boundary bytes — with
+    // the identical values from the same file, into pages the commit already covers exactly.
+    //
+    // Off by default until the device A/B; falls back to the bounce whenever the remainder would
+    // leave the tensor under-aligned for the compute kernels, or the reader is in buffered mode.
+    bool odirect_zero_copy = false;
+
     bool load_all = false;    // debug/A-B: load ALL experts each token (full-sweep baseline)
     bool force_cache = false; // allow a cache_mb in the pathological band (tests/experiments)
 

@@ -63,6 +63,61 @@ calling thread participates as lane 0. On UFS 4.x, 4 lanes roughly triples effec
 bandwidth over serial. Compute threads (`-t`) show a U-shape — 4 is the measured optimum;
 8 regresses badly because ggml's spin-wait contends with the synchronous reads.
 
+## Skipping the bounce copy (`--odirect-zero-copy`)
+
+O_DIRECT requires the file offset, the transfer length and the buffer address to be aligned.
+Expert slices are a whole number of pages long, but a gguf's tensor data does not begin on a page
+boundary — `general.alignment` is 32 by default, and on the model family measured here every
+expert offset lands a constant **1152 bytes** past one. So the reader pulls the enclosing aligned
+window into a per-lane bounce buffer and `memcpy`s the payload back by that remainder: **200+ MiB
+a token of pure shift correction**, on a device whose decode is already memory-bound.
+
+The shift is only needed because the destination does *not* share the file's remainder. It can.
+This engine reserves the per-layer buffers itself (`vm_reserve`, then `tensor->data` is rebound),
+so with the flag on each buffer is placed at an address carrying its own tensor's remainder. Every
+expert inherits it, because the per-expert stride is a multiple of the page size; the aligned
+window then maps onto the buffer at the same relative position and the read goes straight into the
+cache, with no copy anywhere.
+
+The window overhangs the payload at both ends, so a read writes a few bytes of its neighbours'
+slices. That is safe by construction rather than by luck: buffer and file differ by a constant
+offset under this placement, so the overhung bytes receive *their own* correct file contents, and
+the pages involved are exactly the ones the entry's page commit already covers. Reads of the same
+neighbour concurrent with the overhang see identical values.
+
+The shift has one consequence that is not free, and it cost a full regression before it was found.
+Off the page boundary, the first and last page of **every** slice is shared with the neighbouring
+expert, where the aligned placement had no partial pages at all. Eviction releases only the pages an
+entry fully covers — it must never free one a neighbour is still using — so under the shift each
+eviction left two pages behind: bytes the cache counted as freed that the kernel still held. Over a
+long session that is tens of MiB a turn, it goes to zram, and the decode pays it back as **major
+faults** — measured in the app at 1-7 per token without the flag against 66 on the first turn with
+it and 332 on the second, rising turn over turn, which is the shape of a leak rather than a cost.
+Eviction now also releases a boundary page once the neighbour sharing it is gone (not resident and
+with no speculative read outstanding); the outermost pages of a buffer border its own padding and
+are always free to take.
+
+The episode is worth stating because of how it hid: every device run that had measured this feature
+was short, single-turn and in a fresh process, where a leak has no time to accumulate. Only the
+app's long session shows it.
+
+Measured on device via the CLI (Qwen3.6-35B-A3B Q4_0, cache 2000 MiB, overlap, interleaved cells,
+short single-turn runs): **+20%** tok/s, from 3.65 to 4.40 median, with the compute residual falling
+0.180 → 0.143 s/token. **That figure predates the boundary-page fix above and was taken in the one
+regime where the leak could not show.** In a long app session the same build measured *slower* than
+the baseline (4.41-4.57 against 5.02-5.58) until the leak was fixed. Both numbers are owed a
+re-measurement on a long session before either belongs in a table.
+The bytes read are unchanged (230.77 MiB/token in every cell) and the generated text is byte-identical
+with the flag on and off — which is the correctness proof, since the host gates cannot supply one:
+on a tiny test model the per-expert stride is not a multiple of the page size, so the placement
+declines and the gate proves only that the flag is harmless. The engine says which happened
+(`odirect-zero-copy ON|INERT — n/m layer buffers placed`), so a silent no-op cannot be mistaken
+for a pass.
+
+It falls back to the bounce whenever the remainder would leave the tensor under-aligned for the
+compute kernels (below 64 bytes), the stride is not a multiple of the alignment, or O_DIRECT was
+refused. Off by default pending a second confirmation on a cool device.
+
 ## Why repack must stay off
 
 The streamer rebinds `tensor->data` to a buffer it fills from the file's native byte

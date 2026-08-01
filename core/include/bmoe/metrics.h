@@ -188,6 +188,7 @@ struct RunInfo {
     bool load_all = false; // whole-expert-set baseline: reads everything, so its bytes mean something else
     int io_threads = 0;
     bool o_direct = false;
+    bool odirect_zero_copy = false; // expert slices read straight into the cache, no bounce copy
     bool overlap = false;
     bool io_two_wave = false; // two-wave batch publish (#118): first projection published early
     int prefetch_layers = 0;
