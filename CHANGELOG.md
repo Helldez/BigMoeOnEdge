@@ -45,7 +45,14 @@ Semantic Versioning.
   (Qwen3.6-35B-A3B Q4_0, cache 2000 MiB, overlap, interleaved cells so thermal drift hits both):
   **+20% tok/s**, 3.65 → 4.40 median, with the compute residual down 0.180 → 0.143 s/token, the
   same bytes read (230.77 MiB/token in every cell) and the generated text **byte-identical** with
-  the flag on and off. This is not specific to any decode feature: every expert read goes through
+  the flag on and off. That figure comes from short single-turn CLI runs, and it hid a leak: off
+  the page boundary the first and last page of every slice is shared with the neighbouring expert,
+  and eviction — which may never free a page a neighbour still uses — left two pages behind each
+  time. Over a long app session that grew the anonymous footprint tens of MiB a turn, went to zram,
+  and came back as major faults (1-7 per token without the flag; 66 then 332 with it, rising turn
+  over turn), making the flag a net LOSS in the app: 4.41-4.57 tok/s against 5.02-5.58. Eviction now
+  releases a boundary page once the neighbour sharing it is gone, and **both numbers are owed a
+  re-measurement on a long session** before either is quotable. This is not specific to any decode feature: every expert read goes through
   this path. The host gates cannot prove it — a tiny test model's per-expert stride is not a
   multiple of the page size, so the placement declines and the gates show only that the flag is
   harmless — so the engine reports which happened (`odirect-zero-copy ON|INERT — n/m layer buffers
