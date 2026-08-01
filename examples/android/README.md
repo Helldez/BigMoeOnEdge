@@ -82,11 +82,11 @@ check). Nothing below needs a storage permission except the last option.
 Models above Hugging Face's 50 GB per-file limit ship as several shard files
 (`-00001-of-0000N.gguf`). The engine streams a split set natively, so these download in-app
 like any other catalog entry: the shards are fetched one at a time (each resumable), the row
-shows one progress bar over the whole set, and the model list offers the FIRST shard — that is
+shows one progress bar over the whole set, and the model list offers the FIRST shard, which is
 the file the engine opens; it finds the siblings next to it. A merged single-file gpt-oss from
 an earlier release keeps working and still shows as on-device.
 
-For adb-pushed models the same rule applies — push all shards to the same directory and pass
+For adb-pushed models the same rule applies: push all shards to the same directory and pass
 the first one:
 
 ```bash
