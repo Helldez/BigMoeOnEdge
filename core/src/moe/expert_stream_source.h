@@ -25,6 +25,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -38,8 +39,9 @@ namespace bmoe {
 // One expert weight tensor to rebind, with where its data lives in the gguf.
 struct ExpertTensorRef {
     ggml_tensor * tensor = nullptr; // persistent weight tensor whose ->data we rebind
-    uint64_t file_off = 0;          // absolute file offset of the tensor's data
+    uint64_t file_off = 0;          // byte offset of the tensor's data within its shard
     uint64_t nb2 = 0;               // bytes per expert (== tensor->nb[2])
+    int file_idx = 0;               // which shard file holds the bytes (0 for a single-file model)
 };
 
 // The expert weight tensors of one MoE layer, one per recipe suffix slot. The split
@@ -59,10 +61,13 @@ public:
     ExpertStreamSource & operator=(const ExpertStreamSource &) = delete;
 
     // Build buffers, rebind the bound layers' expert tensors onto them, and start the
-    // I/O pool. `layers` is indexed by layer id (unbound entries are skipped).
-    // Returns false on any allocation/open failure or an inconsistent tensor.
-    bool
-    init(const std::string & gguf_path, int n_expert, std::vector<LayerExperts> layers, const MoeStreamConfig & cfg);
+    // I/O pool. `layers` is indexed by layer id (unbound entries are skipped); each tensor's
+    // file_idx indexes `shard_paths` (a single-file model passes one path). Returns false on
+    // any allocation/open failure or an inconsistent tensor.
+    bool init(const std::vector<std::string> & shard_paths,
+              int n_expert,
+              std::vector<LayerExperts> layers,
+              const MoeStreamConfig & cfg);
 
     // Supply the dense (non-expert) weight tensors the DenseWeights policy may need (only the
     // Anonymous mode reads+rebinds them). Call BEFORE init, which hands them to the dense module.
@@ -109,6 +114,10 @@ private:
         uint64_t off = 0;
         uint64_t nbytes = 0;
         int32_t flag = -1; // overlap: index into ready_ to publish on completion; -1 = serial
+        // Which shard reader serves this read. Wide enough for the whole filename format
+        // (-%05d-of-%05d): an int8_t would wrap a 200-shard model into a negative index that the
+        // init-time bounds check, which sees the untruncated value, could never catch.
+        int16_t file = 0;
         // Which (layer, expert, projection) this read serves. Known at every enqueue site and
         // otherwise thrown away; carried so the I/O trace can attribute a read without the read
         // path having to guess. Inert unless the trace is on.
@@ -187,10 +196,11 @@ private:
     int n_expert_ = 0;
     size_t align_ = 4096;
 
-    // The positioned reader that owns the fd pool, bounces and O_DIRECT decision. Expert slices are
-    // read through it; the dense-weights loader constructs its own, so their O_DIRECT choices are
-    // independent (see docs/architecture.md). file_size() replaces the old fsize_ member.
-    FileReader reader_;
+    // The positioned readers that own the fd pools, bounces and O_DIRECT decision — one per shard
+    // file, in shard order (a single-file model has exactly one). Expert slices are read through
+    // them; the dense-weights loader constructs its own, so their O_DIRECT choices are independent
+    // (see docs/architecture.md). FileReader is not movable, hence the unique_ptr.
+    std::vector<std::unique_ptr<FileReader>> readers_;
 
     std::vector<LayerExperts> layers_;
 

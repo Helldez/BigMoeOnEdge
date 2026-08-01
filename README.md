@@ -90,9 +90,10 @@ shortcut: the downloader takes any direct gguf URL, so any model from the
 finishes, pick the model and chat. The telemetry panel shows tok/s and the compute-vs-flash
 split live, and every streaming knob below is in Settings.
 
-The flagship gpt-oss-120b ships from Hugging Face as two shards, so it needs a one-time merge
-and a manual copy to the device: steps in the
-[Android example README](examples/android/README.md#gpt-oss-120b).
+Models above Hugging Face's 50 GB per-file limit (gpt-oss-120b, DeepSeek V4 Flash) ship as
+multi-shard ggufs. The engine reads split models natively — point it at the first shard
+(`-00001-of-...`) with the siblings alongside; no merge step. gpt-oss-120b still needs a manual
+copy to the device: steps in the [Android example README](examples/android/README.md#gpt-oss-120b).
 
 ## Features
 
@@ -149,6 +150,7 @@ Defaults are the measured winning recipe for a model near RAM.
 | `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | Fused expert layout, handled by its registry row |
 | `gpt-oss` | OpenAI gpt-oss-20b / 120b | Purely routed; MXFP4 weights stream unchanged |
 | `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
+| `deepseek4` | DeepSeek V4 Flash (284B-A13B) | V3.2-style routing (256 experts + shared); compressed attention is dense-side; ships multi-shard |
 
 Adding an architecture is one row in the registry; expert counts and layouts are discovered from
 the model file at runtime, so nothing about a specific model is hardcoded in the streaming path.

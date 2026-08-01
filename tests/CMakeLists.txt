@@ -53,6 +53,22 @@ if(PYTHON3)
         add_test(NAME moe_gates_${spec} COMMAND bmoe_moe_gates ${_model})
         set_tests_properties(moe_gates_${spec} PROPERTIES FIXTURES_REQUIRED ${_fixture})
     endforeach()
+
+    # The same qwen3moe fixture, written as a 4-shard split gguf (metadata-only first shard —
+    # the layout large models actually ship in, since Hugging Face rejects files above 50 GB).
+    # 51 tensors at 20 per shard is deterministic: -00001-of-00004 .. -00004-of-00004. The gate
+    # binary gets the FIRST shard, exactly as a user would pass it; the streamer must resolve
+    # every expert tensor to its (shard, offset) and produce byte-identical output.
+    add_test(
+        NAME moe_make_tiny_model_split
+        COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/scripts/make-tiny-moe.py --arch qwen3moe
+                --split-max-tensors 20 --out "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-split.gguf"
+    )
+    set_tests_properties(moe_make_tiny_model_split PROPERTIES FIXTURES_SETUP TINY_MOE_MODEL_split)
+
+    add_test(NAME moe_gates_split
+             COMMAND bmoe_moe_gates "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-split-00001-of-00004.gguf")
+    set_tests_properties(moe_gates_split PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_split)
 else()
     message(WARNING "python3 not found: MoE gates will not run (models cannot be generated)")
 endif()

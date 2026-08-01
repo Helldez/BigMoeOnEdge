@@ -41,6 +41,14 @@ static const MoeRecipe k_recipes[] = {
     // node the hook reads (ffn_moe_topk). Both lower the streamed fraction relative to a purely
     // routed model — see docs/limitations.md.
     {"lfm2moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    // deepseek4 (DeepSeek V4 Flash, 284B-A13B) reuses the V3.2 MoE routing — 256 routed experts,
+    // top-k with a per-expert bias (exp_probs_b, the lfm2moe pattern) plus one always-on shared
+    // expert (ffn_*_shexp) that matches no suffix and stays mmap-resident. The experts name the
+    // standard split suffixes, so streaming is one row. The V4 attention novelties (compressed
+    // sparse attention, the lightning indexer, its dedicated KV cache) are dense-side machinery
+    // inside llama.cpp and invisible to the streaming seam. Models this size ship as multi-shard
+    // ggufs; the streamer resolves each expert tensor to its (shard, offset) — see gguf_offsets.
+    {"deepseek4", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
 };
 
 static const int k_n_recipes = (int) (sizeof(k_recipes) / sizeof(k_recipes[0]));

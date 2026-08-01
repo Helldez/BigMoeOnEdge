@@ -454,6 +454,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 auto it = offs.off_by_name.find(t->name);
                 if (it == offs.off_by_name.end()) return fail(std::string("no gguf offset for tensor ") + t->name);
                 L.proj[p].file_off = it->second;
+                L.proj[p].file_idx = offs.file_by_name.at(t->name); // same parse as the offset, so present
                 const int ne2 = (int) t->ne[2];
                 if (n_expert == 0)
                     n_expert = ne2;
@@ -487,12 +488,13 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 d.tensor = kv.second;
                 d.file_off = off->second;
                 d.size = sz->second;
+                d.file_idx = offs.file_by_name.at(name);
                 dense.push_back(d);
             }
             im.source.set_dense_tensors(std::move(dense));
         }
 
-        if (!im.source.init(cfg.model_path, n_expert, std::move(layers), cfg.moe))
+        if (!im.source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
 

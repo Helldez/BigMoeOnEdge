@@ -28,17 +28,20 @@ DenseWeights::byte_ranges(std::vector<std::pair<uint64_t, uint64_t>> expert_rang
 }
 
 bool DenseWeights::init(DenseWeightsMode mode,
-                        const std::string & path,
+                        const std::vector<std::string> & paths,
                         size_t align,
-                        std::vector<std::pair<uint64_t, uint64_t>> ranges,
+                        std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges,
                         std::vector<DenseTensorRef> tensors) {
     mode_ = mode;
-    path_ = path;
+    paths_ = paths;
     align_ = align ? align : 4096;
     ranges_ = std::move(ranges);
     tensors_ = std::move(tensors);
-    const size_t slash = path_.find_last_of("/\\");
-    basename_ = slash == std::string::npos ? path_ : path_.substr(slash + 1);
+    basenames_.clear();
+    for (const std::string & p : paths_) {
+        const size_t slash = p.find_last_of("/\\");
+        basenames_.push_back(slash == std::string::npos ? p : p.substr(slash + 1));
+    }
 
     if (mode_ == DenseWeightsMode::Anonymous || mode_ == DenseWeightsMode::Pinned) {
         if (tensors_.empty()) return true; // nothing captured to rebind — behave as Mmap
@@ -47,11 +50,19 @@ bool DenseWeights::init(DenseWeightsMode mode,
                                  "platform does not provide (Android only)\n");
             return false;
         }
-        // A single-lane reader with a bounce large enough for our chunk; O_DIRECT independent of the
-        // expert stream. Sized to the largest tensor is unnecessary — we read in bounded chunks.
+        // Single-lane readers (one per shard) with a bounce large enough for our chunk; O_DIRECT
+        // independent of the expert stream. Sized to the largest tensor is unnecessary — we read in
+        // bounded chunks.
         const size_t chunk = 8ull << 20;
-        if (!reader_.open(path_, 1, /*direct=*/true, align_, chunk + 2 * align_)) return false;
+        for (const std::string & p : paths_) {
+            readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
+            if (!readers_.back()->open(p, 1, /*direct=*/true, align_, chunk + 2 * align_)) return false;
+        }
         if (!read_anonymous(align_)) return false;
+        // The tensors are copied and rebound; nothing reads through these again. Their fds and
+        // per-lane bounce buffers would otherwise sit allocated for the whole session, next to
+        // the expert cache that is counting every MiB.
+        readers_.clear();
         drop_mmap_copies(pio::vm_page());
     } else if (mode_ == DenseWeightsMode::Warmed) {
         warm();
@@ -79,6 +90,10 @@ bool DenseWeights::read_anonymous(size_t align) {
     if (pinned) pinned_.reserve(tensors_.size());
     for (const DenseTensorRef & d : tensors_) {
         if (!d.tensor || d.size == 0) continue;
+        if (d.file_idx < 0 || d.file_idx >= (int) readers_.size()) {
+            std::fprintf(stderr, "bmoe: dense tensor points at shard %d of %zu\n", d.file_idx, readers_.size());
+            return false;
+        }
         void * buf = nullptr;
         if (pinned) {
             pio::PinnedAlloc pa;
@@ -101,7 +116,7 @@ bool DenseWeights::read_anonymous(size_t align) {
         buf_sz_.push_back((size_t) d.size);
         for (uint64_t done = 0; done < d.size;) {
             const uint64_t n = std::min<uint64_t>(chunk, d.size - done);
-            if (reader_.read(0, (char *) buf + done, d.file_off + done, n) < 0) return false;
+            if (readers_[(size_t) d.file_idx]->read(0, (char *) buf + done, d.file_off + done, n) < 0) return false;
             done += n;
         }
         d.tensor->data = buf; // rebind the model weight onto its private copy
@@ -112,6 +127,25 @@ bool DenseWeights::read_anonymous(size_t align) {
     return true;
 }
 
+// Per-shard VMA resolution for every consumer that must turn (file_idx, offset) into an address.
+// llama.cpp maps each shard of a split model separately, so the lookup is per shard basename.
+void DenseWeights::resolve_vmas() {
+    if (vmas_tried_) return;
+    vmas_tried_ = true;
+    vmas_.resize(basenames_.size());
+    for (size_t s = 0; s < basenames_.size(); ++s)
+        pio::file_mapped_regions(basenames_[s].c_str(), vmas_[s]);
+}
+
+const char * DenseWeights::addr_of(int file_idx, uint64_t off) const {
+    if (file_idx < 0 || file_idx >= (int) vmas_.size()) return nullptr;
+    for (const auto & v : vmas_[file_idx]) {
+        const uint64_t span = (uint64_t) (v.end - v.start);
+        if (off >= v.file_offset && off < v.file_offset + span) return (const char *) v.start + (off - v.file_offset);
+    }
+    return nullptr;
+}
+
 // Hand the mmap copies back. The capture warm-up decode faulted these dense pages in mmap-resident,
 // and read_anonymous has just copied them into anon buffers and rebound every tensor — so the file-
 // backed pages are referenced by nobody. Left alone they sit resident until reclaim, doubling the
@@ -119,19 +153,11 @@ bool DenseWeights::read_anonymous(size_t align) {
 // read-only mapping, so nothing is lost and nothing will refault the range. Best-effort — needs
 // /proc/self/maps to turn a file offset into an address; where that is unreadable the pages stay.
 void DenseWeights::drop_mmap_copies(size_t page) {
-    std::vector<pio::MappedRegion> vmas;
-    if (!pio::file_mapped_regions(basename_.c_str(), vmas) || vmas.empty()) return;
-    auto addr_of = [&](uint64_t off) -> char * {
-        for (const auto & v : vmas) {
-            const uint64_t span = (uint64_t) (v.end - v.start);
-            if (off >= v.file_offset && off < v.file_offset + span) return (char *) v.start + (off - v.file_offset);
-        }
-        return nullptr;
-    };
+    resolve_vmas();
     uint64_t dropped = 0;
     for (const DenseTensorRef & d : tensors_) {
         if (!d.tensor || d.size == 0) continue;
-        char * a = addr_of(d.file_off);
+        const char * a = addr_of(d.file_idx, d.file_off);
         if (!a) continue;
         // Align INWARD to whole pages (start up, end down), so a page shared with an adjacent tensor
         // that stays mmap-resident — an expert slice, or the next dense tensor — is never dropped.
@@ -149,30 +175,34 @@ void DenseWeights::drop_mmap_copies(size_t page) {
 
 // ── Warmed: one sequential buffered sweep over the dense ranges to populate the page cache ──
 void DenseWeights::warm() {
-    pio::fd_t fd = pio::open_read(path_.c_str(), false);
-    if (!pio::fd_ok(fd)) return;
     const size_t chunk = 8ull << 20;
     void * buf = pio::alloc_aligned(align_, chunk);
-    if (!buf) {
-        pio::close_fd(fd);
-        return;
-    }
+    if (!buf) return;
     const auto t0 = clock_t_::now();
     uint64_t warmed = 0;
-    bool ok = true;
-    for (const auto & r : ranges_) {
-        for (uint64_t a = r.first; a < r.second && ok;) {
-            const long long got = pio::pread_at(fd, buf, (size_t) std::min<uint64_t>(chunk, r.second - a), a);
-            if (got <= 0) {
-                ok = false; // best-effort: those pages just stay cold
-                break;
-            }
-            a += (uint64_t) got;
-            warmed += (uint64_t) got;
+    bool all_ok = true; // sticky, for the report only: a failed shard must not abort the others
+    for (size_t s = 0; s < paths_.size() && s < ranges_.size(); ++s) {
+        pio::fd_t fd = pio::open_read(paths_[s].c_str(), false);
+        if (!pio::fd_ok(fd)) {
+            all_ok = false; // best-effort: that shard's pages just stay cold
+            continue;
         }
+        bool shard_ok = true;
+        for (const auto & r : ranges_[s]) {
+            for (uint64_t a = r.first; a < r.second && shard_ok;) {
+                const long long got = pio::pread_at(fd, buf, (size_t) std::min<uint64_t>(chunk, r.second - a), a);
+                if (got <= 0) {
+                    shard_ok = all_ok = false;
+                    break;
+                }
+                a += (uint64_t) got;
+                warmed += (uint64_t) got;
+            }
+        }
+        pio::close_fd(fd);
     }
+    const bool ok = all_ok;
     pio::aligned_free(buf);
-    pio::close_fd(fd);
     const double s = std::chrono::duration<double>(clock_t_::now() - t0).count();
     std::fprintf(stderr, "bmoe: dense warm-up — %llu MiB in %.1f s%s\n", (unsigned long long) (warmed >> 20), s,
                  ok ? "" : " (partial)");
@@ -214,46 +244,39 @@ void DenseWeights::sample_anon(size_t page) {
     resident_frac_ = sampled ? (double) resident / (double) sampled : -1.0;
 }
 
-// Mmap/Warmed: the weights are one mmap of the gguf; a dense file offset becomes an address through
-// the VMA that backs it (/proc/self/maps), which an app may read, being its own. Probe sample_pages
-// points spread evenly across the dense byte ranges, one page each.
+// Mmap/Warmed: the weights are llama.cpp's mmaps of the gguf shards; a dense (shard, offset) becomes
+// an address through the VMA that backs it (/proc/self/maps), which an app may read, being its own.
+// Probe sample_pages points spread evenly across the dense bytes of ALL shards, one page each, so the
+// fraction keeps meaning "of the whole dense set" whatever the shard layout.
 void DenseWeights::sample_mmap(size_t page) {
     if (ranges_.empty()) return;
-    if (!vmas_tried_) { // resolve the mmap once; llama.cpp has mapped the file by the first decode
-        vmas_tried_ = true;
-        pio::file_mapped_regions(basename_.c_str(), vmas_);
-    }
-    if (vmas_.empty()) return; // maps unreadable → leave resident_frac_ at -1
+    resolve_vmas();
 
     uint64_t total = 0;
-    for (const auto & r : ranges_)
-        total += r.second - r.first;
+    for (const auto & shard : ranges_)
+        for (const auto & r : shard)
+            total += r.second - r.first;
     if (total == 0) return;
-
-    auto addr_of = [&](uint64_t off) -> const char * {
-        for (const auto & v : vmas_) {
-            const uint64_t span = (uint64_t) (v.end - v.start);
-            if (off >= v.file_offset && off < v.file_offset + span)
-                return (const char *) v.start + (off - v.file_offset);
-        }
-        return nullptr;
-    };
 
     size_t sampled = 0, resident = 0;
     for (int k = 0; k < sample_pages; ++k) {
         uint64_t target = (total * (uint64_t) k) / (uint64_t) sample_pages;
+        int fi = -1; // found shard; a dense offset of 0 is valid, so the sentinel is the index
         uint64_t off = 0;
-        for (const auto & r : ranges_) {
-            const uint64_t len = r.second - r.first;
-            if (target < len) {
-                off = r.first + target;
-                break;
+        for (size_t s = 0; s < ranges_.size() && fi < 0; ++s) {
+            for (const auto & r : ranges_[s]) {
+                const uint64_t len = r.second - r.first;
+                if (target < len) {
+                    fi = (int) s;
+                    off = r.first + target;
+                    break;
+                }
+                target -= len;
             }
-            target -= len;
         }
         // Align the probe DOWN to its page: vm_resident_sample counts only pages fully inside the
         // range, so a single page handed in at an arbitrary offset would clip to nothing.
-        if (const char * a = addr_of(off)) {
+        if (const char * a = fi >= 0 ? addr_of(fi, off) : nullptr) {
             const char * pg = (const char *) ((uintptr_t) a & ~(uintptr_t) (page - 1));
             pio::vm_resident_sample(pg, page, &sampled, &resident);
         }
@@ -271,7 +294,7 @@ void DenseWeights::shutdown() {
     bases_.clear();
     buf_sz_.clear();
     tensors_.clear();
-    reader_.close();
+    readers_.clear();
 }
 
 } // namespace bmoe

@@ -21,7 +21,8 @@ core/
   src/
     io/         platform_io — O_DIRECT reads + reserve/commit/evict VM, cross-platform
                 file_reader — pooled positioned reader, per-consumer O_DIRECT
-    moe/        gguf_offsets, arch_registry, expert_stream_source, router_hook
+    moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), arch_registry,
+                expert_stream_source (one reader per shard), router_hook
                 dense_weights — non-expert weight policy + the residency sensor
     engine/     session — composition + the generation loop (open/generate/close)
                 runtime — the one-shot run() wrapper over a Session
