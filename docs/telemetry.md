@@ -116,8 +116,24 @@ moe-prefetch: <mib> MiB speculative, <useful>/<prefetched> experts useful (<pct>
 `<prefetched>` the experts fully read ahead, and `<useful>` how many of those a later routing
 actually hit. See [prefetch.md](prefetch.md). With `--predict-prefetch` the same line is emitted
 with a `[stale-gate]` tag — same counters, different predictor (see
-[expert-prediction.md](expert-prediction.md)). The CSV preamble records which was active
-(`prefetch=` / `predict_prefetch=`).
+[expert-prediction.md](expert-prediction.md)) — and with `--route-ahead N` with a `[route-ahead]`
+tag, where the useful fraction sits at ~100% by construction: the "speculated" ids are the
+committed routing itself (see [route-ahead.md](route-ahead.md)). The CSV preamble records which
+was active (`prefetch=` / `predict_prefetch=` / `route_ahead=`).
+
+With `--route-ahead N` a `moe-route-ahead:` line is added:
+
+```
+moe-route-ahead: <N> layers early — <committed> routings committed, <passed> passed through;
+committed selection agreed with the router on <pct>% of slots
+```
+
+`<committed>` decode routings had their expert selection replaced by the N-layers-early
+prediction; `<passed>` were eligible but had no prediction to commit (the first decode token, and
+any layer the hook could not read) and kept the router's choice. The agreement percentage is the
+measured routing perturbation: 100% minus it is the fraction of routed slots that went to an
+expert the router did not choose. See [route-ahead.md](route-ahead.md). The CSV preamble records
+the flag (`route_ahead=`).
 
 With `--mtp` or `--ngram` a summary line is added, prefixed with the source that drafted:
 
@@ -202,7 +218,7 @@ prints just the summary lines.
   n_ctx=<n> n_ubatch=<n> chatml=<0|1>
 # moe_stream=<0|1> cache_mb=<n> cache_auto=<0|1> cache_floor_mb=<n> cache_ceil_mb=<n>
   force_cache=<0|1> load_all=<0|1> io_threads=<n> o_direct=<0|1> overlap=<0|1> io_two_wave=<0|1> prefetch=<n>
-  predict_prefetch=<0|1> predict_log=<0|1> predict_spec_max=<n> prefetch_sync=<0|1>
+  route_ahead=<n> predict_prefetch=<0|1> predict_log=<0|1> predict_spec_max=<n> prefetch_sync=<0|1>
   dense_weights=<mmap|warm|anon|ahwb> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
 # temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n> spec=<off|mtp|ngram>
   spec_draft_max=<n> mtp_p_min=<f> ngram_min_match=<n>
@@ -247,7 +263,8 @@ next to the `turn` column.
 ```
 step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,
 dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,
-mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms,mtp_batch,mtp_draft_ms
+mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms,mtp_batch,mtp_draft_ms,drain_ms,
+adopt_ms,ra_issue_ms,ra_wd_ms
 ```
 
 `stall_ms`, `mgmt_ms`, `majflt`, `cpu_ms` and `dense_resident_frac` are trailing columns appended
@@ -270,7 +287,12 @@ actually cost — `tokens / mtp_decodes` is the amortisation achieved) and `mtp_
 that amortisation cost outside the decode, which `s/tok` and `tok/s` both exclude) and
 `drafted_steps=<n>` (how many steps drafted at all — below `mtp_decodes` only for `--ngram`, which
 abstains); see the `io_ms`
-note above for how the read-time columns are reinterpreted under overlap.
+note above for how the read-time columns are reinterpreted under overlap. The route-ahead keys `ra_committed`,
+`ra_passthrough`, `ra_agree_pct`, `ra_gemv_ms/tok`, `ra_issue_ms/tok` and `ra_wd_ms/tok` mirror the
+CLI's `moe-route-ahead:` report ([route-ahead.md](route-ahead.md)); `drain_s/tok` / `adopt_s/tok`
+average the two wait columns below, and `evictions` / `rereads` are the cache-churn counters from
+the `moe-cache:` line — a read of an entry the cache had already held once is the only way a
+prefetch whose reads are all "useful" can still raise the byte count.
 
 The trailing block is the memory picture, added so a run can be diagnosed from its own file:
 
@@ -288,6 +310,10 @@ The trailing block is the memory picture, added so a run can be diagnosed from i
 | `loop_overhead_ms` | wall time between the **previous** token's decode and this one's: sampling, detokenization, rendering the answer for a UI, and the sink writes. On the first token, the gap from the end of prefill to the first decode. |
 | `mtp_batch` | how many tokens the decode that produced this row confirmed. `1` without speculation. A verify decode confirms a whole group and its **entire** cost — `wall_ms`, `io_ms`, `majflt`, `cpu_ms`, `read_bytes`, `loop_overhead_ms` — is charged to the group's FIRST row; the rest carry zeros. Without this column those zeros read as free tokens. Per-token cost of a group is the first row's `wall_ms / mtp_batch`. |
 | `mtp_draft_ms` | time this group spent drafting and catching the draft context up — everything speculation adds **outside** the decode. A slice of `loop_overhead_ms`, not an addition to it. `0` without speculation, and near-zero under `--ngram`, whose drafting is a scan of the token history rather than a decode. This is the column that makes the price of speculation measurable instead of inferable: `wall_ms` never contained it, and neither does `tok/s`. |
+| `drain_ms` | overlap only: eval-thread wall waiting for the **previous** layer's read batch to finish before its job slots are reused, at the top of each async load. Part of `compute_ms` — named so a fat compute residual can be attributed instead of theorised about. `0` when it costs nothing. |
+| `adopt_ms` | route-ahead only: the load waiting for its own committed speculative reads to complete before staging (adoption). Part of `mgmt_ms`. |
+| `ra_issue_ms` | route-ahead only: eval-thread time issuing the committed selection's early reads (settle, residency split, retain, prefetch — page commits included). Part of `compute_ms`. |
+| `ra_wd_ms` | route-ahead only: the sampled fresh-gate watchdog's exact float GEMV on the eval thread. Part of `compute_ms`. |
 
 All are `0` where the platform cannot report them (the Windows host build reports device memory but not the per-process split).
 

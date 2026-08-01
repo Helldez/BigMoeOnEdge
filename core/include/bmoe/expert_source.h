@@ -78,6 +78,21 @@ public:
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
         uint64_t cache_budget_bytes = 0;   // cache budget in force; fixed for the run once init sizes it
         long long cache_resizes = 0;       // explicit set_cache_budget_mb() calls that moved the budget
+        // Cache churn. `evictions` is how many entries the budget forced out; `rereads` how many
+        // reads went to an entry that had been resident before — the cache paying for the same
+        // bytes twice. A prefetch cannot reduce what a routing needs (the ideal is the same
+        // bytes, earlier), so rereads is the only way a prefetch whose every read is USEFUL can
+        // still raise the byte count, and therefore the number to look at when it does.
+        long long evictions = 0;
+        long long rereads = 0;
+        // Eval-thread waits that are NOT part of the windows above, split out because each lives
+        // inside a different residual and hid there. `drain_wait` is the top of the async load:
+        // waiting for the previous layer's batch to finish before its jobs_/flags are reused —
+        // billed to neither io nor mgmt, so it sits in the compute residual. `adopt_wait` is the
+        // route-ahead adoption: the load waiting for its own committed speculative reads to
+        // complete before staging — inside the mgmt window, so this names its share of mgmt.
+        double drain_wait_seconds = 0.0;
+        double adopt_wait_seconds = 0.0;
 
         // ── residency telemetry (diagnostic) ──
         // Sampled fraction of the DENSE weights still in RAM, or -1 when not measured yet. Under the

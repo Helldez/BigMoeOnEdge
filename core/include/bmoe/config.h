@@ -172,6 +172,34 @@ struct MoeStreamConfig {
     // speculation, if any, is small (the stall a prefetch can remove is head-of-line only).
     int predict_spec_max = 2;
 
+    // ── route-ahead: commit to the prediction (lossy; opt-in; experimental) ───────────
+    // With N > 0, decode routing at MoE layer L is REPLACED by the ranking layer L's own gate
+    // matrix produced on the hidden state N layers earlier in the same forward pass — the
+    // stale-gate prediction predict_log measures, acted on as the routing itself instead of as a
+    // prefetch hint. The router still computes: its logits give the substituted experts their
+    // true renormalized weights, and each layer's gate input feeds the prediction for layer L+N.
+    // Layers 0..N-1, prefill, the first decode token and any unreadable layer route normally.
+    //
+    // Why anyone would do this: a prediction that IS the routing cannot miss, and it is known a
+    // full N layers of compute early — the perfect-prefetch regime no honest predictor reaches
+    // (measured here: one layer of staleness costs ~3.5-4pp of slot agreement, and the union of
+    // four stale horizons still covers only 81-89% of misses). With the LRU cache on, the engine
+    // acts on that: the committed selection of layer L+N is handed to the speculative read path
+    // the moment it is fixed (at layer L's load), uncapped — those reads can never be wasted —
+    // so by the time layer L+N runs its experts are resident or already in flight. Without the
+    // cache the selection still commits but nothing is read early. The price is a quality
+    // perturbation: ~15-20% of slots route to a different expert than the router chose at N=1,
+    // and the error compounds through the residual stream. LOSSY by construction; changes the
+    // output. See docs/route-ahead.md.
+    //
+    // Mutually exclusive with the probe and both prefetchers: the probe would score a predictor
+    // against a routing this policy rewrote from that same predictor (a tautology), and a
+    // speculative prefetch would bet lanes on a future this policy has already fixed. Also
+    // mutually exclusive with self-speculation, for a measured reason rather than a conceptual
+    // one: a verify decode is several positions wide and this policy declines to commit on every
+    // one of them, so the pair pays the prediction and the early reads and commits nothing.
+    int route_ahead = 0;
+
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
     // overlap compute) but makes speculative integration deterministic, so the byte-identity
@@ -189,6 +217,7 @@ struct MoeStreamConfig {
     static constexpr int cache_min_mb = 1500; // smallest non-pathological cache (see above)
     static constexpr int io_threads_max = 8;
     static constexpr int prefetch_layers_max = 8;
+    static constexpr int route_ahead_max = 8; // beyond this the staleness has no measured meaning
 };
 
 // Where the draft tokens of a self-speculative step come from. The verify half of the loop is

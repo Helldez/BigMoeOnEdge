@@ -25,6 +25,7 @@ for the idea the project is built on.
 | [expert-dropping.md](expert-dropping.md) | `--drop-cold-experts F`: spending quality only where it buys a flash read, and why it is the one setting whose output is not reproducible. |
 | [mtp.md](mtp.md) | `--mtp`: drafting with the model's own MTP head and verifying a whole group per decode — lossless by construction, and why a wider decode can lose in the streamed regime. |
 | [expert-prediction.md](expert-prediction.md) | `--predict-log`: how much of a routing can be known a layer early, measured against the predictor `--prefetch` already bets on — and why a good score still would not mean a faster decode. |
+| [route-ahead.md](route-ahead.md) | `--route-ahead N`: committing the routing to the N-layers-early prediction, so a prefetch of it can never miss — and what that costs in quality (experimental, lossy). |
 | [android-memory.md](android-memory.md) | What reclaims the engine's memory on a phone, which levers exist (almost none), and why the cache hit rate is what the kernel judges you by. |
 | [pressure.md](pressure.md) | Cache policy under memory pressure: why an unaffordable budget starts a reclaim war, why the adaptive governor was retired, and what the fixed `--cache-mb` / `--dense-weights` levers do. |
 

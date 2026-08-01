@@ -118,6 +118,10 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.moe.predict_prefetch && !cfg.moe.enabled) {
         return fail("moe.predict_prefetch requires moe.enabled");
     }
+    if (cfg.moe.route_ahead > 0 && !cfg.moe.enabled) {
+        return fail("moe.route_ahead requires moe.enabled: it attaches to the routing nodes the "
+                    "streamer isolates, and off the streaming path there is nothing to commit to");
+    }
 
     if (cfg.moe.enabled) {
         const MoeStreamConfig & m = cfg.moe;
@@ -176,6 +180,29 @@ ValidationResult validate(const RunConfig & cfg) {
             return fail("moe.predict_prefetch and moe.prefetch_layers are mutually exclusive: they "
                         "are two predictors for the same speculative read lanes, and running both "
                         "doubles the speculated bytes for the same future.");
+        }
+        if (m.route_ahead < 0 || m.route_ahead > MoeStreamConfig::route_ahead_max) {
+            return fail("moe.route_ahead must be in [0, " + std::to_string(MoeStreamConfig::route_ahead_max) +
+                        "] (0 = off)");
+        }
+        if (m.route_ahead > 0 && (m.predict_log || m.predict_prefetch || m.prefetch_layers > 0)) {
+            return fail("moe.route_ahead excludes predict_log, predict_prefetch and prefetch_layers: "
+                        "the probe would grade a predictor against a routing rewritten from that same "
+                        "predictor, and a speculative prefetch would bet lanes on a future route-ahead "
+                        "has already fixed.");
+        }
+        // Measured, not theorised: with a draft source on, a verify decode is several positions wide
+        // and route-ahead declines every one of them — a run at draft 3 committed 0 routings and
+        // passed 249 through. It still pays for itself, though: the prediction GEMVs run, and its
+        // early reads become ordinary speculation that can now miss (81% useful against 100% when it
+        // commits). Cost with no commitment is worse than either feature alone, so the pair is
+        // refused rather than silently charged for. Making it work means committing the whole verify
+        // batch to one selection, which costs draft acceptance; see docs/route-ahead.md.
+        if (m.route_ahead > 0 && cfg.spec.enabled()) {
+            return fail("moe.route_ahead and self-speculative decoding are mutually exclusive: a "
+                        "verify decode is several positions wide, so route-ahead declines to commit "
+                        "on every one of them while still paying for its prediction and its early "
+                        "reads. Turn off --mtp/--ngram, or turn off --route-ahead.");
         }
         if (m.drop_cold_frac > 0.0f && !cache_on) {
             return fail("moe.drop_cold_frac requires the LRU cache (cache_mb > 0 or cache_auto): with the "

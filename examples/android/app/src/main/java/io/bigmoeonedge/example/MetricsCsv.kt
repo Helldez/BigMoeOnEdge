@@ -46,6 +46,7 @@ internal class Csv(
             // dropped experts is not the same KIND of run as one that did not, and two compare
             // legends that differ only by this used to read as identical (#136).
             if (info["predict_prefetch"] == "1") "predict" else null,
+            info["route_ahead"]?.takeIf { it != "0" }?.let { "route-ahead $it" },
             info["drop_cold_frac"]?.takeIf { (it.toFloatOrNull() ?: 0f) > 0f }?.let { "drop $it" },
             // Same argument, and stronger: under speculation a decode confirms a whole group, so
             // the per-token rows are not even accounted the same way (mtp_batch). Two runs that

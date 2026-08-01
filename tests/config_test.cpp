@@ -112,6 +112,53 @@ int main() {
         expect_ok("prefetch allowed with the cache on", c);
     }
 
+    // Route-ahead: needs streaming, bounded, excludes the probe and both prefetchers. It does NOT
+    // need the cache — committing the routing is orthogonal to how the committed experts get read.
+    {
+        RunConfig c = ok_base();
+        c.moe.route_ahead = 1; // enabled stays false
+        expect_fail("route_ahead requires streaming", c);
+    }
+    {
+        RunConfig c = ok_moe();
+        c.moe.route_ahead = 1;
+        expect_ok("route_ahead with cache off", c);
+        c.moe.route_ahead = MoeStreamConfig::route_ahead_max + 1;
+        expect_fail("route_ahead out of range", c);
+        c.moe.route_ahead = -1;
+        expect_fail("route_ahead negative", c);
+    }
+    {
+        RunConfig c = ok_moe();
+        c.moe.route_ahead = 1;
+        c.moe.predict_log = true;
+        expect_fail("route_ahead excludes predict_log", c);
+    }
+    {
+        RunConfig c = ok_moe();
+        c.moe.route_ahead = 1;
+        c.moe.cache_mb = MoeStreamConfig::cache_min_mb;
+        c.moe.predict_prefetch = true;
+        expect_fail("route_ahead excludes predict_prefetch", c);
+        c.moe.predict_prefetch = false;
+        c.moe.prefetch_layers = 2;
+        expect_fail("route_ahead excludes prefetch_layers", c);
+        c.moe.prefetch_layers = 0;
+        expect_ok("route_ahead with the cache and no predictor", c);
+    }
+    // A verify decode is several positions wide, and route-ahead declines to commit on every one of
+    // them while still paying for the prediction and the early reads — measured, see config.cpp.
+    {
+        RunConfig c = ok_moe();
+        c.moe.route_ahead = 1;
+        c.spec.source = DraftSource::mtp;
+        expect_fail("route_ahead excludes the MTP draft source", c);
+        c.spec.source = DraftSource::ngram;
+        expect_fail("route_ahead excludes the n-gram draft source", c);
+        c.spec.source = DraftSource::none;
+        expect_ok("route_ahead with speculation off", c);
+    }
+
     // Sampling ranges — enforced only when temp > 0.
     {
         RunConfig c = ok_base();

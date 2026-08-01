@@ -410,6 +410,7 @@ private val CONFIG_ORDER = listOf(
     "io_two_wave" to "Two-wave publish",
     "load_all" to "Load all experts",
     "prefetch" to "Temporal prefetch",
+    "route_ahead" to "Route-ahead (layers)",
     "predict_prefetch" to "Predictive prefetch",
     "predict_spec_max" to "Speculated misses/layer",
     "predict_log" to "Prediction probe",
@@ -461,7 +462,7 @@ private fun prettyConfigValue(key: String, v: String, info: Map<String, String>)
     // dropping happened" is exactly the misreading this display exists to prevent. The drop
     // fraction is shown as the engine took it (a fraction of the uniform share 1/top-k, not of the
     // routing) so it matches --drop-cold-experts and the settings screen.
-    (key == "prefetch" || key == "drop_cold_frac") && v.toFloatOrNull() == 0f -> "off"
+    (key == "prefetch" || key == "route_ahead" || key == "drop_cold_frac") && v.toFloatOrNull() == 0f -> "off"
     key == "predict_spec_max" && v == "0" -> "0 (retention only)"
     else -> v
 }

@@ -436,6 +436,13 @@ static void print_usage(const char * argv0) {
         "                          it changes the output, and not reproducibly. Off by default.\n"
         "      --drop-no-renorm    do not rescale the surviving weights after a drop (A/B)\n"
         "      --drop-in-prefill   drop during prefill too (off: the cold cache makes it expensive)\n"
+        "      --route-ahead N     EXPERIMENTAL, LOSSY: commit decode routing to the prediction made\n"
+        "                          N layers earlier in the same forward pass (each layer's own gate\n"
+        "                          run on the hidden state N layers back). The router still computes\n"
+        "                          and gives the substituted experts their true renormalized weights;\n"
+        "                          a prefetch of a committed layer can then never miss. Changes the\n"
+        "                          output — this flag exists to measure that quality trade [0..8].\n"
+        "                          Excludes --predict-log / --predict-prefetch / --prefetch.\n"
         "      --predict-log       diagnostics: measure how much of each layer's routing could be\n"
         "                          known a layer early (the next layer's gate run on this layer's\n"
         "                          input), scored against the previous-token bet --prefetch makes.\n"
@@ -647,6 +654,8 @@ int main(int argc, char ** argv) {
             cfg.moe.drop_renorm = false;
         else if (a == "--drop-in-prefill")
             cfg.moe.drop_prefill = true;
+        else if (a == "--route-ahead")
+            cfg.moe.route_ahead = std::atoi(next("--route-ahead"));
         else if (a == "--predict-log")
             cfg.moe.predict_log = true;
         else if (a == "--predict-prefetch")
@@ -829,15 +838,31 @@ int main(int argc, char ** argv) {
                             s.cache_resident_mib, s.cache_budget_mib);
             else
                 std::printf("moe-cache: %.1f%% hit, resident %.1f MiB\n", s.cache_hit_pct, s.cache_resident_mib);
+            // Churn: a read of an entry the cache already held once. The bytes a routing needs are
+            // fixed, so this is where any surplus goes — and the number to compare across an A/B
+            // whose byte count moved.
+            if (s.cache_evictions > 0 || s.cache_rereads > 0)
+                std::printf("moe-cache: %lld evictions, %lld re-reads (%.1f/token) — bytes the cache had "
+                            "already paid for once\n",
+                            s.cache_evictions, s.cache_rereads,
+                            s.n_generated ? (double) s.cache_rereads / s.n_generated : 0.0);
         }
         if (cfg.moe.overlap)
             std::printf("moe-overlap: stall %.3f s/token (flash reads overlapped with FFN compute)\n",
                         s.moe_stall_s_per_token);
-        if (cfg.moe.prefetch_layers > 0 || cfg.moe.predict_prefetch)
+        // The named eval-thread waits, printed only when they cost something: the previous-batch
+        // drain lives inside the compute residual, the adoption wait inside mgmt. Either being
+        // large is a finding, not a footnote — both were invisible before they had meters.
+        if (s.moe_drain_s_per_token >= 0.0005 || s.moe_adopt_s_per_token >= 0.0005)
+            std::printf("moe-waits: drain %.3f s/token (inside compute), adopt %.3f s/token (inside mgmt)\n",
+                        s.moe_drain_s_per_token, s.moe_adopt_s_per_token);
+        if (cfg.moe.prefetch_layers > 0 || cfg.moe.predict_prefetch || cfg.moe.route_ahead > 0)
             std::printf("moe-prefetch: %.1f MiB speculative, %lld/%lld experts useful (%.0f%%)%s\n",
                         s.moe_spec_read_mib, s.moe_spec_useful, s.moe_spec_experts,
                         s.moe_spec_experts > 0 ? 100.0 * s.moe_spec_useful / s.moe_spec_experts : 0.0,
-                        cfg.moe.predict_prefetch ? " [stale-gate]" : "");
+                        cfg.moe.route_ahead > 0    ? " [route-ahead]"
+                        : cfg.moe.predict_prefetch ? " [stale-gate]"
+                                                   : "");
         // How hard the policy actually bit. The flag sets a threshold, not a drop rate: what gets
         // discarded depends on what the cache held, so this is the only honest report of the trade
         // a given run made.
@@ -846,6 +871,23 @@ int main(int argc, char ** argv) {
                         s.experts_dropped, s.experts_routed,
                         s.experts_routed > 0 ? 100.0 * s.experts_dropped / s.experts_routed : 0.0,
                         (double) cfg.moe.drop_cold_frac);
+        // The agreement is the honest label for what the run just generated under: 100% minus it
+        // is the fraction of routed slots that went to an expert the router did not choose.
+        if (cfg.moe.route_ahead > 0) {
+            std::printf("moe-route-ahead: %d layers early — %lld routings committed, %lld passed through; "
+                        "committed selection agreed with the router on %.1f%% of slots\n",
+                        cfg.moe.route_ahead, s.route_ahead_overridden, s.route_ahead_passthrough,
+                        s.route_ahead_slots > 0 ? 100.0 * s.route_ahead_hits / s.route_ahead_slots : 0.0);
+            // The prediction's own CPU, per token. On a host with spare cores this hides from the
+            // wall clock; on a phone it competes with the decode, so it is printed either way.
+            if (s.route_ahead_gemv_jobs > 0)
+                std::printf("moe-route-ahead: prediction %.1f ms/token of worker CPU (%lld GEMVs, %.3f ms each)"
+                            " + %.1f ms/token issuing the reads + %.1f ms/token watchdog, both on the eval thread\n",
+                            s.n_generated ? s.route_ahead_gemv_ns / 1e6 / s.n_generated : 0.0, s.route_ahead_gemv_jobs,
+                            s.route_ahead_gemv_ns / 1e6 / s.route_ahead_gemv_jobs,
+                            s.n_generated ? s.route_ahead_issue_ns / 1e6 / s.n_generated : 0.0,
+                            s.n_generated ? s.route_ahead_wd_ns / 1e6 / s.n_generated : 0.0);
+        }
         if (cfg.moe.predict_log) print_predict_report(s);
     }
     return 0;

@@ -37,10 +37,10 @@ public:
         std::fprintf(f_,
                      "# moe_stream=%d cache_mb=%d cache_auto=%d cache_floor_mb=%d cache_ceil_mb=%d "
                      "force_cache=%d load_all=%d io_threads=%d o_direct=%d overlap=%d io_two_wave=%d prefetch=%d "
-                     "predict_prefetch=%d predict_log=%d predict_spec_max=%d prefetch_sync=%d "
+                     "route_ahead=%d predict_prefetch=%d predict_log=%d predict_spec_max=%d prefetch_sync=%d "
                      "dense_weights=%s drop_cold_frac=%.4g drop_renorm=%d drop_prefill=%d\n",
                      r.moe_stream, r.cache_mb, r.cache_auto, r.cache_floor_mb, r.cache_ceil_mb, r.force_cache,
-                     r.load_all, r.io_threads, r.o_direct, r.overlap, r.io_two_wave, r.prefetch_layers,
+                     r.load_all, r.io_threads, r.o_direct, r.overlap, r.io_two_wave, r.prefetch_layers, r.route_ahead,
                      r.predict_prefetch, r.predict_log, r.predict_spec_max, r.prefetch_sync, r.dense_weights.c_str(),
                      (double) r.drop_cold_frac, r.drop_renorm, r.drop_prefill);
         std::fprintf(f_,
@@ -55,12 +55,13 @@ public:
         write_header(); // a caller that never sent RunInfo still gets a readable file
         std::fprintf(f_,
                      "%d,%d,%.3f,%.3f,%.3f,%llu,%.2f,%.3f,%.3f,%llu,%.3f,%.3f,%d,%.2f,%.1f,%.1f,%.1f,"
-                     "%.1f,%.1f,%.1f,%.1f,%.1f,%.3f,%d,%.3f\n",
+                     "%.1f,%.1f,%.1f,%.1f,%.1f,%.3f,%d,%.3f,%.3f,%.3f,%.3f,%.3f\n",
                      m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, (unsigned long long) m.read_bytes,
                      m.cache_hit_pct, m.stall_ms, m.mgmt_ms, (unsigned long long) m.majflt, m.cpu_ms,
                      m.dense_resident_frac, m.turn, m.majflt_mib, m.cache_budget_mib, m.rss_mib, m.rss_anon_mib,
                      m.rss_file_mib, m.swap_mib, m.mem_available_mib, m.mem_free_mib, m.swap_free_mib,
-                     m.loop_overhead_ms, m.mtp_batch, m.mtp_draft_ms);
+                     m.loop_overhead_ms, m.mtp_batch, m.mtp_draft_ms, m.drain_ms, m.adopt_ms, m.ra_issue_ms,
+                     m.ra_wd_ms);
         std::fflush(f_);
     }
     void on_summary(const RunSummary & s) override {
@@ -75,7 +76,10 @@ public:
                      "majflt/tok=%.2f cpu_s/tok=%.4f token_demand_MiB=%.1f layer_demand_MiB=%.1f "
                      "experts_routed=%lld experts_dropped=%lld loop_overhead_s/tok=%.4f "
                      "mtp_drafted=%lld mtp_accepted=%lld mtp_decodes=%lld mtp_draft_s/tok=%.4f "
-                     "drafted_steps=%lld\n",
+                     "drafted_steps=%lld "
+                     "ra_committed=%lld ra_passthrough=%lld ra_agree_pct=%.1f ra_gemv_ms/tok=%.2f "
+                     "ra_issue_ms/tok=%.2f ra_wd_ms/tok=%.2f drain_s/tok=%.3f adopt_s/tok=%.3f "
+                     "evictions=%lld rereads=%lld\n",
                      s.n_generated, s.s_per_token, s.tokens_per_second, s.moe_read_mib, s.moe_io_seconds,
                      s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct, s.n_prompt, s.load_seconds,
                      s.prefill_seconds, s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0,
@@ -83,7 +87,12 @@ public:
                      s.cache_resizes, s.moe_spec_read_mib, s.moe_spec_experts, s.moe_spec_useful, s.majflt_per_token,
                      s.cpu_s_per_token, s.token_demand_mib, s.layer_demand_mib, s.experts_routed, s.experts_dropped,
                      s.loop_overhead_s_per_token, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token,
-                     s.drafted_steps);
+                     s.drafted_steps, s.route_ahead_overridden, s.route_ahead_passthrough,
+                     s.route_ahead_slots > 0 ? 100.0 * s.route_ahead_hits / s.route_ahead_slots : 0.0,
+                     s.n_generated ? s.route_ahead_gemv_ns / 1e6 / s.n_generated : 0.0,
+                     s.n_generated ? s.route_ahead_issue_ns / 1e6 / s.n_generated : 0.0,
+                     s.n_generated ? s.route_ahead_wd_ns / 1e6 / s.n_generated : 0.0, s.moe_drain_s_per_token,
+                     s.moe_adopt_s_per_token, s.cache_evictions, s.cache_rereads);
         std::fflush(f_);
     }
 
@@ -97,10 +106,14 @@ private:
         // compute residual), majflt/cpu_ms (the fault + CPU-time decomposition of what remains of
         // "compute"), dense_resident_frac (how much of the dense set is still in RAM; -1 = unmeasured),
         // then the memory block. Consumers read columns by name, so order is not a contract.
+        // The tail names costs that would otherwise hide inside another column: mtp_batch and
+        // mtp_draft_ms describe a speculative group (one decode, several rows, the cost on the
+        // first), and drain_ms / ra_issue_ms / ra_wd_ms come out of compute_ms while adopt_ms comes
+        // out of mgmt_ms — see TokenMetrics. All 0 when the feature that pays them is off.
         std::fprintf(f_, "step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,"
                          "dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,"
                          "rss_file_mib,swap_mib,mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms,"
-                         "mtp_batch,mtp_draft_ms\n");
+                         "mtp_batch,mtp_draft_ms,drain_ms,adopt_ms,ra_issue_ms,ra_wd_ms\n");
     }
 
     std::FILE * f_ = nullptr;
