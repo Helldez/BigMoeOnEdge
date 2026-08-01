@@ -27,9 +27,15 @@ tokenizer and chat template llama.cpp supports works out of the box, because lla
 doing that part: MXFP4 and Q4_K_M stream through the same code. Supporting a new MoE architecture
 is one row in a registry, and following a new llama.cpp release is a routine submodule bump.
 
-The most extreme thing it can do today: **gpt-oss-120b**, a ~60 GB model, on a phone with 12 GB of
-RAM. Five times more model than memory, generating at **1.3 tok/s** losslessly and **2.2 tok/s**
-with one speed knob, against **0.09 tok/s** for the same file loaded the ordinary way.
+The most extreme thing it can do today: **DeepSeek V4 Flash 0731**, a 284B-parameter MoE
+(~91 GB on disk at 2-bit expert quantization), on a phone with 12 GB of RAM — more than seven
+times more model than memory, streamed from flash as three shard files exactly as Hugging Face
+ships them, no merge step. Behind it, **gpt-oss-120b** (~60 GB) generates at **1.3 tok/s**
+losslessly and **2.2 tok/s** with one speed knob, against **0.09 tok/s** for the same file
+loaded the ordinary way.
+
+<!-- DSv4 hero video: replace the asset link below when the on-device recording lands with the
+     v0.19.0 release. Caption pattern: model, size, device RAM, "real time, not sped up". -->
 
 <p align="center"><img src="docs/assets/hero.gif" width="380" alt="gpt-oss-120b (~60 GB) generating on a 12 GB phone, with live tok/s and telemetry"></p>
 <p align="center"><em>gpt-oss-120b (~60 GB) on a 12 GB phone. Real time, not sped up. Full three-model demo below.</em></p>
