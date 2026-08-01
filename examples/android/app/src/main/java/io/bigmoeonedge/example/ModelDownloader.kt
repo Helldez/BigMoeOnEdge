@@ -157,16 +157,21 @@ object ModelDownloader {
      */
     fun entryProgress(ctx: Context, e: ModelCatalog.Entry, live: Map<String, Progress>): Progress? {
         if (e.shards.isEmpty()) return live[e.fileName]
-        val active = e.shards.firstNotNullOfOrNull { live[it.fileName] } ?: return null
+        val active = e.shards.firstNotNullOfOrNull { s -> live[s.fileName]?.let { s to it } } ?: return null
         val dir = ModelManager.internalModelsDir(ctx)
         val landed = e.shards.sumOf { s -> if (File(dir, s.fileName).isFile) s.bytes else 0L }
+        // A shard that is queued rather than running reports 0 bytes (events() has no progress row
+        // for it yet), which on a resumed 50 GB transfer would read as lost ground. Fall back to
+        // what is already in its .part.
+        val inFlight = if (active.second.downloadedBytes > 0) active.second.downloadedBytes
+        else File(dir, active.first.fileName + DownloadWorker.PART_SUFFIX).length()
         return Progress(
             id = e.fileName,
             name = e.fileName,
-            downloadedBytes = landed + active.downloadedBytes.coerceAtLeast(0),
+            downloadedBytes = landed + inFlight,
             totalBytes = e.approxBytes,
-            state = active.state,
-            reason = active.reason,
+            state = active.second.state,
+            reason = active.second.reason,
         )
     }
 

@@ -41,6 +41,21 @@ object ModelCatalog {
     /** One file of a sharded entry. [bytes] is exact (from the repository), not approximate. */
     data class Shard(val fileName: String, val url: String, val bytes: Long)
 
+    /**
+     * Every on-disk name this entry can own: its own file plus any shards. The entry's [Entry.fileName]
+     * is usually the first shard, but not always — gpt-oss keeps the legacy merged name so a file
+     * merged by an earlier release still counts. Anything that asks "does this filename belong to a
+     * catalog entry?" must ask THIS, not [Entry.fileName]: a shard answered no, and then showed up as
+     * an imported model with a Delete that orphaned the rest of the set.
+     */
+    fun fileNamesOf(e: Entry): Set<String> = buildSet {
+        add(e.fileName)
+        e.shards.forEach { add(it.fileName) }
+    }
+
+    /** True if [name] is a file some catalog entry owns. */
+    fun isCatalogFile(name: String): Boolean = entries.any { name in fileNamesOf(it) }
+
     enum class Status {
         /** Already on the device — nothing to do. */
         ON_DEVICE,

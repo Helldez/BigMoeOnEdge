@@ -565,7 +565,15 @@ private fun AddModelSection(
 
     // The raw on-disk view, shards included: `models` is the SELECTABLE list (non-first shards
     // hidden), but a sharded catalog entry is on-device only when every shard file is.
-    val present = remember(models) { models.map { it.name }.toSet() + ModelManager.allGgufNames(context) }
+    //
+    // Keyed on the in-flight NAMES as well as `models`, because `models` alone cannot see a shard
+    // land: shards 2..N are hidden from the selectable list by design, so finishing a 41 GB shard
+    // leaves it byte-identical and a `remember(models)` would serve a stale set forever — the entry
+    // would offer "Download" for a model already fully on the device. The key set changes exactly
+    // when a shard starts or finishes, not on every progress tick, so the directory scan stays rare.
+    val present = remember(models, progress.keys) {
+        models.map { it.name }.toSet() + ModelManager.allGgufNames(context)
+    }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -642,7 +650,7 @@ private fun AddModelSection(
                 // On-device models the catalog does not list — imported via the URL field or the
                 // file picker below. They have no catalog row of their own, only a picker entry, so
                 // this is the one place to remove them.
-                val extraModels = models.filter { m -> ModelCatalog.entries.none { it.fileName == m.name } }
+                val extraModels = models.filter { m -> !ModelCatalog.isCatalogFile(m.name) }
                 if (extraModels.isNotEmpty()) {
                     HorizontalDivider()
                     Text("Imported models", fontSize = 14.sp, fontWeight = FontWeight.Medium)
@@ -699,8 +707,11 @@ private fun AddModelSection(
                         modifier = Modifier.weight(1f),
                     ) { Text("Pick file") }
                 }
-                // A pasted URL has no catalog row to show its progress in.
-                progress.filterKeys { k -> ModelCatalog.entries.none { it.fileName == k } }
+                // A pasted URL has no catalog row to show its progress in. Shard names belong to
+                // their entry's row: listing them here would duplicate the download AND offer a
+                // Cancel that cancels nothing (the chain is registered under the entry name) while
+                // still deleting the .part the worker is writing.
+                progress.filterKeys { k -> !ModelCatalog.isCatalogFile(k) }
                     .forEach { (name, p) ->
                         DownloadProgress(p, onCancel = { ModelDownloader.cancel(context, name) })
                     }
@@ -720,11 +731,13 @@ private fun AddModelSection(
     }
 
     deleteTarget?.let { fname ->
-        // A sharded catalog entry deletes as a unit: every shard's copies, not just the first's —
-        // orphaned 40 GB tails are the failure mode this forbids.
+        // A catalog entry deletes as a unit: every file it owns, not just the one whose button was
+        // tapped. Orphaned 40 GB tails are the failure mode this forbids. The entry's own name stays
+        // in the set alongside the shards, so a gpt-oss merged by an earlier release is still
+        // deletable; copiesOf drops the names that are not on disk.
         val targetNames = remember(fname) {
-            ModelCatalog.entries.firstOrNull { it.fileName == fname && it.shards.isNotEmpty() }
-                ?.shards?.map { it.fileName } ?: listOf(fname)
+            ModelCatalog.entries.firstOrNull { fname in ModelCatalog.fileNamesOf(it) }
+                ?.let { ModelCatalog.fileNamesOf(it).toList() } ?: listOf(fname)
         }
         val copies = remember(fname, models) { targetNames.flatMap { ModelManager.copiesOf(context, it) } }
         // The loaded session pins its gguf via mmap; deleting it out from under a live engine is the
