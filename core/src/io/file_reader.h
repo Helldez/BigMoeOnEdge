@@ -46,7 +46,15 @@ public:
     // the drive — the aligned window (>= nbytes) when direct, exactly the requested bytes when
     // buffered — which is what the bandwidth must be judged against; or -1 on I/O error. A
     // zero-length read is a no-op returning 0. The lane's bounce grows if a direct read needs more.
-    long long read(int lane, void * dst, uint64_t off, uint64_t nbytes);
+    //
+    // `allow_in_place` is a PROMISE from the caller, never an inference: that the pages either side
+    // of [dst, dst+nbytes) — up to the enclosing alignment boundaries — are writable and are the
+    // caller's to clobber. Given it, and given `dst` carrying the same sub-alignment remainder as
+    // `off`, the aligned window is read straight into place and the bounce copy disappears. Only
+    // the expert cache can promise that (it reserves one contiguous range per layer and places it
+    // to match the file); the dense loader, whose tensors are separately sized buffers, must not —
+    // for it the window is simply longer than the tensor and would run off the end.
+    long long read(int lane, void * dst, uint64_t off, uint64_t nbytes, bool allow_in_place = false);
 
     // Aggregate accounting since open, summed across lanes.
     long long read_bytes() const { return read_bytes_.load(std::memory_order_relaxed); }

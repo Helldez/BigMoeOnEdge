@@ -148,6 +148,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             lbuf_[p].assign(n_layer_, nullptr);
             lbuf_base_[p].assign(n_layer_, nullptr);
             lbuf_sz_[p].assign(n_layer_, 0);
+            lbuf_zc_[p].assign(n_layer_, 0);
         }
         for (int il = 0; il < n_layer_; ++il) {
             LayerExperts & L = layers_[il];
@@ -162,9 +163,16 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                 // survive across experts, and the remainder must keep the tensor acceptably
                 // aligned for the compute kernels — otherwise the buffer stays page-aligned and
                 // the reader keeps copying, which is the pre-existing behaviour.
-                const size_t shift = zero_copy_shift(L.proj[p].file_off, L.proj[p].nb2);
-                if (zero_copy_) (shift ? zc_placed_ : zc_declined_)++;
-                const size_t reserve = full + (shift ? align_ : 0);
+                // Whether reads into THIS buffer may go in place, and where it therefore starts.
+                // The two are decided together and recorded per buffer: a remainder of 0 is a
+                // perfectly good placement (the file offset was already aligned), so "no shift"
+                // must not be confused with "declined" — the extra page is what makes the last
+                // expert's window fit inside the reservation, and it is needed either way.
+                const bool zc = zero_copy_ok(L.proj[p].file_off, L.proj[p].nb2);
+                const size_t shift = zc ? (size_t) (L.proj[p].file_off & (uint64_t) (align_ - 1)) : 0;
+                if (zero_copy_) (zc ? zc_placed_ : zc_declined_)++;
+                lbuf_zc_[p][il] = zc ? 1 : 0;
+                const size_t reserve = full + (zc ? align_ : 0);
                 void * raw = pio::vm_reserve(reserve);
                 if (!raw) {
                     std::fprintf(stderr, "bmoe: vm_reserve %zu failed (layer %d)\n", reserve, il);
@@ -298,7 +306,11 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
 bool ExpertStreamSource::read_slice(int lane, const IoJob & j) {
     if (j.nbytes == 0) return true;
     const auto t0 = clock_t_::now();
-    const long long window = readers_[(size_t) j.file]->read(lane, j.dst, j.off, j.nbytes);
+    // In-place is promised only for the per-layer cache buffers that were placed for it: they own
+    // the pages the aligned window overhangs into. The cache-off path shares one slot per
+    // projection across every layer and makes no such promise, so it keeps the bounce.
+    const bool in_place = cache_max_ != 0 && j.layer >= 0 && j.proj >= 0 && lbuf_zc_[j.proj][j.layer] != 0;
+    const long long window = readers_[(size_t) j.file]->read(lane, j.dst, j.off, j.nbytes, in_place);
     if (window < 0) return false;
 
     if (io_trace_on_) {
@@ -720,12 +732,10 @@ uint64_t ExpertStreamSource::expert_bytes(int il) const {
 //     16, but a base that splits cache lines would tax every matmul row to save a copy, and the
 //     trade is not obviously positive. A gguf's `general.alignment` is a power of two (32 by
 //     default), so in practice this either holds comfortably or the file wanted something exotic.
-size_t ExpertStreamSource::zero_copy_shift(uint64_t file_off, uint64_t nb2) const {
-    if (!zero_copy_) return 0;
-    if (align_ == 0 || (nb2 & (uint64_t) (align_ - 1)) != 0) return 0;
-    const size_t rem = (size_t) (file_off & (uint64_t) (align_ - 1));
-    if (rem % 64 != 0) return 0;
-    return rem;
+bool ExpertStreamSource::zero_copy_ok(uint64_t file_off, uint64_t nb2) const {
+    if (!zero_copy_ || align_ == 0) return false;
+    if ((nb2 & (uint64_t) (align_ - 1)) != 0) return false;
+    return (file_off & (uint64_t) (align_ - 1)) % 64 == 0;
 }
 
 bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {

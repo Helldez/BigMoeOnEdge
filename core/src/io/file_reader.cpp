@@ -91,7 +91,7 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
     return true;
 }
 
-long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) {
+long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes, bool allow_in_place) {
     if (nbytes == 0) return 0;
     const pio::fd_t fd = fds_[lane];
 
@@ -124,19 +124,22 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
     const uint64_t shift = off - a0; // where the payload sits inside the aligned window
 
     // Zero-copy: the bounce exists only to undo `shift`, so when the caller's buffer already
-    // carries the same sub-alignment remainder as the file offset, there is nothing to undo —
-    // the aligned window maps onto the destination at the same relative position and can be read
-    // in place. The streamer places its per-layer buffers that way deliberately (see
-    // MoeStreamConfig::odirect_zero_copy); every other caller simply fails this test and keeps
-    // the copy, so the fast path needs no flag of its own and cannot be entered by accident.
+    // carries the same sub-alignment remainder as the file offset, there is nothing to undo — the
+    // aligned window maps onto the destination at the same relative position and can be read in
+    // place. The streamer places its per-layer buffers that way deliberately (see
+    // MoeStreamConfig::odirect_zero_copy).
     //
-    // The window overhangs the payload on both sides, so this writes up to `shift` bytes before
-    // the destination and the rest of a page after it. Those bytes belong to the neighbouring
-    // slices, and they receive their own correct file contents — buffer and file differ by a
-    // constant offset here, which is exactly what the remainder match establishes. The caller is
-    // responsible for the overhung pages being writable; for the expert cache they are, because
-    // its page commit covers precisely this window.
-    const bool in_place = ((uintptr_t) dst & (uintptr_t) (align_ - 1)) == (uintptr_t) shift;
+    // The remainder match is necessary but NOT sufficient, which is why `allow_in_place` exists.
+    // The window overhangs the payload at both ends — up to `shift` bytes before it and the rest
+    // of a page after — so the destination must have room for bytes beyond the slice it asked for.
+    // The expert cache does: one contiguous reservation per layer, whose page commit covers
+    // precisely this window, and where the overhung bytes belong to neighbouring experts and
+    // receive their own correct file contents (buffer and file differ by a constant offset there).
+    // A caller with a separately sized buffer does not, and the most ordinary case of all — a
+    // page-aligned tensor offset read into a page-aligned buffer — passes the remainder test with
+    // shift 0 while the window is still a page longer than the tensor. Inferring the fast path
+    // from addresses alone therefore overran the dense loader's buffers; it is a promise now.
+    const bool in_place = allow_in_place && ((uintptr_t) dst & (uintptr_t) (align_ - 1)) == (uintptr_t) shift;
 
     char * b;
     if (in_place) {

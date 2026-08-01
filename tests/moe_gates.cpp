@@ -205,7 +205,18 @@ int main(int argc, char ** argv) {
     RunConfig zcopy = streamc;
     zcopy.moe.odirect_zero_copy = true;
 
-    std::string s_res, s_s0, s_sc, s_all, s_dod, s_dodb, s_zc, err;
+    // Zero-copy alongside the dense loader, which reads through its own FileReader into separately
+    // sized per-tensor buffers. The in-place path must never reach it: its window is longer than
+    // the tensor it was asked for, so a read that went straight in would run off the end of the
+    // buffer. That is not hypothetical — deciding the fast path from the destination's alignment
+    // alone did exactly this, and the most ordinary case (a page-aligned tensor offset read into a
+    // page-aligned buffer) was the one that triggered it.
+    RunConfig zcopy_dense = dense_od;
+    zcopy_dense.moe.cache_mb = 2;
+    zcopy_dense.moe.force_cache = true;
+    zcopy_dense.moe.odirect_zero_copy = true;
+
+    std::string s_res, s_s0, s_sc, s_all, s_dod, s_dodb, s_zc, s_zcd, err;
     if (!gen(resident, s_res, err)) {
         std::fprintf(stderr, "resident run failed: %s\n", err.c_str());
         return 2;
@@ -234,6 +245,10 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "odirect-zero-copy run failed: %s\n", err.c_str());
         return 2;
     }
+    if (!gen(zcopy_dense, s_zcd, err)) {
+        std::fprintf(stderr, "odirect-zero-copy + dense=anon run failed: %s\n", err.c_str());
+        return 2;
+    }
 
     int fails = 0;
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);
@@ -250,6 +265,9 @@ int main(int argc, char ** argv) {
     // alignment or the platform's O_DIRECT left the placement unused, and this gate then proves
     // only that the flag is harmless, not that the path works — the device run is what settles it.
     fails += check("G8 odirect-zero-copy == streaming(cache off)", s_s0, s_zc);
+    // G9: and the dense loader must be untouched by it. This one bites on any model, INERT expert
+    // placement or not, because the dense reads are real either way.
+    fails += check("G9 odirect-zero-copy + dense=anon == resident", s_res, s_zcd);
 
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // overlap, cache off
