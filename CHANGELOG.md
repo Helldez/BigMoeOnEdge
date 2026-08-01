@@ -15,6 +15,12 @@ Semantic Versioning.
   the first shard, as with llama.cpp itself; a missing sibling fails the load with the shard named.
   The byte-identity gates gained a 4-shard fixture (metadata-only first shard, the layout large
   quants actually use) proving streamed == resident across shard boundaries.
+- **The app downloads sharded models.** A catalog entry can list several shard files; they are
+  fetched sequentially (each resumable, one aggregate progress bar, free space checked once
+  against the whole remaining set) and the model list offers the first shard — the file the
+  engine opens. gpt-oss-120b turns from a "merge it on a PC" recipe into a one-tap download, and
+  DeepSeek V4 Flash UD-IQ2_M (~91 GB, three shards) joins the catalog. Deleting a sharded model
+  deletes the whole set. App version 0.19.0 (versionCode 34).
 - **DeepSeek V4 Flash (`deepseek4`) recipe.** V3.2-style expert routing — 256 routed experts with a
   per-expert bias (the `lfm2moe` pattern) plus an always-on shared expert that stays resident — over
   the standard split expert suffixes, so streaming is one registry row. The V4 attention machinery

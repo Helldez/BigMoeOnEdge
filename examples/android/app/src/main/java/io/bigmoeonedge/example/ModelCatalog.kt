@@ -26,9 +26,20 @@ object ModelCatalog {
         val url: String?,
         /** Why you would pick this one. Kept short enough to sit on one line. */
         val blurb: String,
-        /** Manual install steps, shown on demand. Non-null exactly when [url] is null. */
+        /** Manual install steps, shown on demand. Non-null exactly when the entry is [Status.MANUAL_ONLY]. */
         val install: String? = null,
+        /**
+         * A model above Hugging Face's 50 GB per-file limit ships as several shard files; the engine
+         * opens the FIRST shard and streams the whole set. For such an entry this lists every shard
+         * in order, [fileName] is the first shard (the file handed to the engine, and the name the
+         * whole set is keyed by in downloads and deletes), [approxBytes] is the total, and [url]
+         * stays null — the shard URLs are here.
+         */
+        val shards: List<Shard> = emptyList(),
     )
+
+    /** One file of a sharded entry. [bytes] is exact (from the repository), not approximate. */
+    data class Shard(val fileName: String, val url: String, val bytes: Long)
 
     enum class Status {
         /** Already on the device — nothing to do. */
@@ -77,27 +88,55 @@ object ModelCatalog {
         Entry(
             title = "gpt-oss-120b",
             quant = "Q4_K_M",
+            // The legacy name: earlier releases required merging the two shards on a PC, so a
+            // merged file by this name on the device still counts as ON_DEVICE. New downloads
+            // fetch the two shards as-is — the engine streams a split set natively.
             fileName = "gpt-oss-120b-Q4_K_M.gguf",
             approxBytes = 62_768_723_552L,
-            // Not downloadable in-app: Hugging Face ships this quant as two shards (the 50 GB
-            // per-file limit), and expert streaming reads tensors by byte offset from one file.
-            // Merging on the phone would need ~120 GB of free space, so it is a PC step.
             url = null,
-            blurb = "5B active of 117B. The >RAM case — merge it on a PC.",
-            install = "Hugging Face ships this quant as two shards, and expert streaming needs a\n" +
-                "single file. Merging on the phone would need ~120 GB free, so merge on a PC:\n" +
-                "\n" +
-                "1. Download both shards from\n" +
-                "   huggingface.co/unsloth/gpt-oss-120b-GGUF (folder Q4_K_M/)\n" +
-                "2. llama-gguf-split --merge \\\n" +
-                "     gpt-oss-120b-Q4_K_M-00001-of-00002.gguf \\\n" +
-                "     gpt-oss-120b-Q4_K_M.gguf\n" +
-                "3. Move the merged file to the phone" +
-                if (BuildConfig.SHARED_STORAGE) {
-                    ":\n   adb push gpt-oss-120b-Q4_K_M.gguf /data/local/tmp/bmoe/"
-                } else {
-                    ", then pick it with\n   \"Other model\" below."
-                },
+            blurb = "5B active of 117B. The >RAM case — two shards, downloaded as-is.",
+            shards = listOf(
+                Shard(
+                    "gpt-oss-120b-Q4_K_M-00001-of-00002.gguf",
+                    "https://huggingface.co/unsloth/gpt-oss-120b-GGUF/resolve/main/Q4_K_M/" +
+                        "gpt-oss-120b-Q4_K_M-00001-of-00002.gguf?download=true",
+                    49_630_904_192L,
+                ),
+                Shard(
+                    "gpt-oss-120b-Q4_K_M-00002-of-00002.gguf",
+                    "https://huggingface.co/unsloth/gpt-oss-120b-GGUF/resolve/main/Q4_K_M/" +
+                        "gpt-oss-120b-Q4_K_M-00002-of-00002.gguf?download=true",
+                    13_137_819_360L,
+                ),
+            ),
+        ),
+        Entry(
+            title = "DeepSeek V4 Flash",
+            quant = "UD-IQ2_M",
+            fileName = "DeepSeek-V4-Flash-0731-UD-IQ2_M-00001-of-00003.gguf",
+            approxBytes = 90_926_928_288L,
+            url = null,
+            blurb = "13B active of 284B. The biggest thing this app offers — needs ~95 GB free.",
+            shards = listOf(
+                Shard(
+                    "DeepSeek-V4-Flash-0731-UD-IQ2_M-00001-of-00003.gguf",
+                    "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_M/" +
+                        "DeepSeek-V4-Flash-0731-UD-IQ2_M-00001-of-00003.gguf?download=true",
+                    5_257_664L,
+                ),
+                Shard(
+                    "DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf",
+                    "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_M/" +
+                        "DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf?download=true",
+                    49_956_780_160L,
+                ),
+                Shard(
+                    "DeepSeek-V4-Flash-0731-UD-IQ2_M-00003-of-00003.gguf",
+                    "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_M/" +
+                        "DeepSeek-V4-Flash-0731-UD-IQ2_M-00003-of-00003.gguf?download=true",
+                    40_964_890_464L,
+                ),
+            ),
         ),
     )
 
@@ -117,6 +156,15 @@ object ModelCatalog {
      * in-flight downloads.
      */
     fun statusOf(e: Entry, present: Set<String>, downloading: Set<String>): Status = when {
+        // A sharded entry is on-device when EVERY shard landed — or when a legacy pre-split file
+        // by the entry name is present (gpt-oss merged on a PC by an earlier release). Any shard
+        // still in flight makes the whole entry DOWNLOADING: the set is downloaded sequentially,
+        // so exactly one transfers at a time but the entry is one unit of progress to the user.
+        e.shards.isNotEmpty() -> when {
+            e.fileName in present || e.shards.all { it.fileName in present } -> Status.ON_DEVICE
+            e.shards.any { it.fileName in downloading } -> Status.DOWNLOADING
+            else -> Status.AVAILABLE
+        }
         e.fileName in present -> Status.ON_DEVICE
         e.fileName in downloading -> Status.DOWNLOADING
         e.url == null -> Status.MANUAL_ONLY

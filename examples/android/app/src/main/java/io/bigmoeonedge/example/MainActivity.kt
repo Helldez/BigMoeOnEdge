@@ -563,7 +563,9 @@ private fun AddModelSection(
     // at the bottom of the card it would surface under a different heading entirely.
     var rowError by remember { mutableStateOf<Pair<String, String>?>(null) }
 
-    val present = remember(models) { models.map { it.name }.toSet() }
+    // The raw on-disk view, shards included: `models` is the SELECTABLE list (non-first shards
+    // hidden), but a sharded catalog entry is on-device only when every shard file is.
+    val present = remember(models) { models.map { it.name }.toSet() + ModelManager.allGgufNames(context) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -616,19 +618,23 @@ private fun AddModelSection(
                     CatalogRow(
                         entry = e,
                         status = ModelCatalog.statusOf(e, present, progress.keys),
-                        progress = progress[e.fileName],
+                        progress = ModelDownloader.entryProgress(context, e, progress),
                         installShown = showInstall == e.fileName,
                         error = rowError?.takeIf { it.first == e.fileName }?.second,
                         onToggleInstall = { showInstall = if (showInstall == e.fileName) null else e.fileName },
                         onDownload = {
                             error = null
                             rowError = null
-                            ModelDownloader.enqueue(context, e.url ?: "", e.fileName, e.approxBytes)
-                                .onFailure {
-                                    rowError = e.fileName to (it.message ?: "download failed to start")
-                                }
+                            val res = if (e.shards.isNotEmpty()) {
+                                ModelDownloader.enqueueShards(context, e)
+                            } else {
+                                ModelDownloader.enqueue(context, e.url ?: "", e.fileName, e.approxBytes)
+                            }
+                            res.onFailure {
+                                rowError = e.fileName to (it.message ?: "download failed to start")
+                            }
                         },
-                        onCancel = { ModelDownloader.cancel(context, e.fileName) },
+                        onCancel = { ModelDownloader.cancelEntry(context, e) },
                         onDelete = { deleteTarget = e.fileName },
                     )
                 }
@@ -714,7 +720,13 @@ private fun AddModelSection(
     }
 
     deleteTarget?.let { fname ->
-        val copies = remember(fname, models) { ModelManager.copiesOf(context, fname) }
+        // A sharded catalog entry deletes as a unit: every shard's copies, not just the first's —
+        // orphaned 40 GB tails are the failure mode this forbids.
+        val targetNames = remember(fname) {
+            ModelCatalog.entries.firstOrNull { it.fileName == fname && it.shards.isNotEmpty() }
+                ?.shards?.map { it.fileName } ?: listOf(fname)
+        }
+        val copies = remember(fname, models) { targetNames.flatMap { ModelManager.copiesOf(context, it) } }
         // The loaded session pins its gguf via mmap; deleting it out from under a live engine is the
         // failure mode to forbid. sessionSignature starts with the model's path, so match on that.
         val isLoaded = copies.any { loadedSig != null && loadedSig.startsWith(it.absolutePath + "|") }

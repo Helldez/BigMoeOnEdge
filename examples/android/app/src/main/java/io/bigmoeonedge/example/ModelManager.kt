@@ -65,8 +65,25 @@ object ModelManager {
             .distinctBy { it.name }
             .sortedBy { it.name }
 
-    /** List MoE models only. Blocking header reads — call off the main thread. */
-    fun listMoeModels(ctx: Context): List<File> = allGguf(ctx).filter { GgufHeader.isMoe(it) }
+    // Shards 2..N of a split gguf (`-00002-of-00003.gguf`) carry tensor data but no model
+    // metadata — llama.cpp and the engine read everything from the FIRST shard, which is the only
+    // selectable file of the set. Their header also fails GgufHeader.isMoe, but that would be
+    // filtering by accident; this is the designed rule.
+    private val SHARD_SUFFIX = Regex("-(\\d{5})-of-\\d{5}\\.gguf$")
+
+    private fun isNonFirstShard(name: String): Boolean =
+        SHARD_SUFFIX.find(name)?.let { it.groupValues[1] != "00001" } == true
+
+    /** List MoE models only (first shard represents a split set). Blocking header reads — call off the main thread. */
+    fun listMoeModels(ctx: Context): List<File> =
+        allGguf(ctx).filter { !isNonFirstShard(it.name) && GgufHeader.isMoe(it) }
+
+    /**
+     * Names of every gguf on the device, non-first shards included. The catalog's presence check
+     * needs this raw view: a sharded entry is ON_DEVICE only when every shard is, and shards 2..N
+     * are exactly what [listMoeModels] hides.
+     */
+    fun allGgufNames(ctx: Context): Set<String> = allGguf(ctx).map { it.name }.toSet()
 
     /**
      * Every on-disk copy of [fileName] across the scanned dirs. listMoeModels dedups by name and

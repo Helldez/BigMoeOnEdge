@@ -77,16 +77,23 @@ check). Nothing below needs a storage permission except the last option.
    adb shell mv /data/local/tmp/shardllm /data/local/tmp/bmoe
    ```
 
-### gpt-oss-120b
+### Sharded models (gpt-oss-120b, DeepSeek V4 Flash)
 
-Listed in the catalog but not downloadable in-app: Hugging Face ships the Q4_K_M quant as two
-shards (the 50 GB per-file limit), and expert streaming reads tensors by byte offset from a
-single file. Merge the shards on a PC, then transfer the result:
+Models above Hugging Face's 50 GB per-file limit ship as several shard files
+(`-00001-of-0000N.gguf`). The engine streams a split set natively, so these download in-app
+like any other catalog entry: the shards are fetched one at a time (each resumable), the row
+shows one progress bar over the whole set, and the model list offers the FIRST shard — that is
+the file the engine opens; it finds the siblings next to it. A merged single-file gpt-oss from
+an earlier release keeps working and still shows as on-device.
+
+For adb-pushed models the same rule applies — push all shards to the same directory and pass
+the first one:
 
 ```bash
-llama-gguf-split --merge gpt-oss-120b-Q4_K_M-00001-of-00002.gguf gpt-oss-120b-Q4_K_M.gguf
-adb push gpt-oss-120b-Q4_K_M.gguf /data/local/tmp/bmoe/   # or import it with the file picker
+adb push DeepSeek-V4-Flash-0731-UD-IQ2_M-0000*-of-00003.gguf /data/local/tmp/bmoe/
 ```
+
+Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk.
 
 ## Expected numbers
 
