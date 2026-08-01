@@ -36,13 +36,14 @@ public:
                      r.n_ubatch, r.chatml);
         std::fprintf(f_,
                      "# moe_stream=%d cache_mb=%d cache_auto=%d cache_floor_mb=%d cache_ceil_mb=%d "
-                     "force_cache=%d load_all=%d io_threads=%d o_direct=%d overlap=%d io_two_wave=%d prefetch=%d "
+                     "force_cache=%d load_all=%d io_threads=%d o_direct=%d odirect_zero_copy=%d overlap=%d "
+                     "io_two_wave=%d prefetch=%d "
                      "predict_prefetch=%d predict_log=%d predict_spec_max=%d prefetch_sync=%d "
                      "dense_weights=%s drop_cold_frac=%.4g drop_renorm=%d drop_prefill=%d\n",
                      r.moe_stream, r.cache_mb, r.cache_auto, r.cache_floor_mb, r.cache_ceil_mb, r.force_cache,
-                     r.load_all, r.io_threads, r.o_direct, r.overlap, r.io_two_wave, r.prefetch_layers,
-                     r.predict_prefetch, r.predict_log, r.predict_spec_max, r.prefetch_sync, r.dense_weights.c_str(),
-                     (double) r.drop_cold_frac, r.drop_renorm, r.drop_prefill);
+                     r.load_all, r.io_threads, r.o_direct, r.odirect_zero_copy, r.overlap, r.io_two_wave,
+                     r.prefetch_layers, r.predict_prefetch, r.predict_log, r.predict_spec_max, r.prefetch_sync,
+                     r.dense_weights.c_str(), (double) r.drop_cold_frac, r.drop_renorm, r.drop_prefill);
         std::fprintf(f_, "# temp=%.4g top_k=%d top_p=%.4g seed=%u compute_trace_layers=%d\n", (double) r.temp, r.top_k,
                      (double) r.top_p, r.seed, r.compute_trace_layers);
         write_header();

@@ -584,6 +584,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.load_all = cfg.moe.enabled && cfg.moe.load_all;
         ri.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
         ri.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
+        ri.odirect_zero_copy = cfg.moe.enabled && cfg.moe.o_direct && cfg.moe.odirect_zero_copy;
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.io_two_wave = cfg.moe.enabled && cfg.moe.io_two_wave;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;

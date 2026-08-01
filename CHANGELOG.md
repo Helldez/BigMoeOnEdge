@@ -27,6 +27,32 @@ Semantic Versioning.
   (compressed sparse attention, the lightning indexer and its dedicated KV cache) is dense-side
   llama.cpp code, invisible to the streaming seam. Requires a llama.cpp with DeepSeek V4 support
   (the pinned submodule has it).
+- **`--odirect-zero-copy` — read expert slices straight into the cache, with no bounce copy
+  (off by default).** O_DIRECT wants the file offset, the length and the buffer address aligned.
+  Expert slices are a whole number of pages long, but a gguf's tensor data does not start on a page
+  boundary — `general.alignment` is 32 by default, so on the measured model family every expert
+  offset sits a constant 1152 bytes past one. The reader therefore pulled the enclosing aligned
+  window into a per-lane bounce buffer and `memcpy`'d the payload back by that remainder: over
+  200 MiB a token of pure shift correction, on a device whose decode is already memory-bound. The
+  shift exists only because the destination did not share the file's remainder — and it can, since
+  this engine reserves the per-layer buffers itself. With the flag on, each buffer is placed at an
+  address carrying its own tensor's remainder; every expert inherits it (the per-expert stride is a
+  multiple of the page size), so the aligned window maps onto the buffer in place and the read
+  needs no copy at all. The window overhangs its neighbours' slices, which is safe by construction
+  rather than by luck: buffer and file differ by a constant offset under this placement, so the
+  overhung bytes get their own correct file contents, into pages the entry's commit already covers
+  exactly (eviction never releases a page shared with a neighbour). Measured on device
+  (Qwen3.6-35B-A3B Q4_0, cache 2000 MiB, overlap, interleaved cells so thermal drift hits both):
+  **+20% tok/s**, 3.65 → 4.40 median, with the compute residual down 0.180 → 0.143 s/token, the
+  same bytes read (230.77 MiB/token in every cell) and the generated text **byte-identical** with
+  the flag on and off. This is not specific to any decode feature: every expert read goes through
+  this path. The host gates cannot prove it — a tiny test model's per-expert stride is not a
+  multiple of the page size, so the placement declines and the gates show only that the flag is
+  harmless — so the engine reports which happened (`odirect-zero-copy ON|INERT — n/m layer buffers
+  placed`) rather than letting a silent no-op read as a pass. Falls back to the bounce when the
+  remainder would leave the tensor under-aligned for the compute kernels, when the stride is not a
+  multiple of the alignment, or when O_DIRECT was refused. Off by default pending a confirmation
+  run on a cool device. See `docs/moe-streaming.md`.
 
 ## [0.18.1] - 2026-07-29
 

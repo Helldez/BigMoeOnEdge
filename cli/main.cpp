@@ -392,6 +392,9 @@ static void print_usage(const char * argv0) {
         "      --cache-ceil-mb N   with --cache-mb auto: upper bound on the budget (0 = no cap)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache for expert reads\n"
+        "      --odirect-zero-copy read expert slices straight into the cache, with no bounce copy\n"
+        "                          (places the layer buffers to match the file's alignment; off by\n"
+        "                          default pending the device A/B)\n"
         "      --dense-weights M   dense (non-expert) weight policy: mmap | warm | anon (default) | ahwb\n"
         "                          (warm = page-cache them at load, best when the model fits in RAM;\n"
         "                          anon = read via O_DIRECT into our own buffers and rebind, so a\n"
@@ -568,6 +571,8 @@ int main(int argc, char ** argv) {
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
             cfg.moe.o_direct = false;
+        else if (a == "--odirect-zero-copy")
+            cfg.moe.odirect_zero_copy = true;
         else if (a == "--dense-weights") {
             const std::string m = next("--dense-weights");
             if (m == "mmap")

@@ -196,7 +196,16 @@ int main(int argc, char ** argv) {
     RunConfig dense_od_buf = dense_od;
     dense_od_buf.moe.o_direct = false;
 
-    std::string s_res, s_s0, s_sc, s_all, s_dod, s_dodb, err;
+    // Zero-copy O_DIRECT: the layer buffers are placed to carry the file's own sub-alignment
+    // remainder, so the reader drops the bounce and pulls the aligned window straight into the
+    // cache — overhanging each slice into its neighbours' boundary bytes, which it rewrites with
+    // their own file contents. That overhang is the entire risk of the change, and the tiny forced
+    // cache is where it is worst: experts are read, evicted and re-read constantly, so boundaries
+    // are rewritten again and again while their neighbours are live. Byte-identical or nothing.
+    RunConfig zcopy = streamc;
+    zcopy.moe.odirect_zero_copy = true;
+
+    std::string s_res, s_s0, s_sc, s_all, s_dod, s_dodb, s_zc, err;
     if (!gen(resident, s_res, err)) {
         std::fprintf(stderr, "resident run failed: %s\n", err.c_str());
         return 2;
@@ -221,6 +230,10 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "dense-odirect(no O_DIRECT) run failed: %s\n", err.c_str());
         return 2;
     }
+    if (!gen(zcopy, s_zc, err)) {
+        std::fprintf(stderr, "odirect-zero-copy run failed: %s\n", err.c_str());
+        return 2;
+    }
 
     int fails = 0;
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);
@@ -232,6 +245,11 @@ int main(int argc, char ** argv) {
     fails += check("G6 dense-odirect(rebind) == resident", s_res, s_dod);
     // G7: the rebind is byte-identical whether or not the dense read bypassed the page cache.
     fails += check("G7 dense=anon + expert O_DIRECT off == resident", s_res, s_dodb);
+    // G8: reading straight into the cache, with the window overhanging its neighbours, must not
+    // move a byte. Watch the engine's `odirect-zero-copy` line: it reports INERT when the file's
+    // alignment or the platform's O_DIRECT left the placement unused, and this gate then proves
+    // only that the flag is harmless, not that the path works — the device run is what settles it.
+    fails += check("G8 odirect-zero-copy == streaming(cache off)", s_s0, s_zc);
 
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // overlap, cache off
@@ -267,7 +285,19 @@ int main(int argc, char ** argv) {
     ov2w.moe.overlap = true;
     ov2w.moe.io_two_wave = true;
 
-    std::string s_ov0, s_ovc, s_ov1, s_ov2w;
+    // overlap + zero-copy: the shipping combination, and the one where the overhang is genuinely
+    // concurrent — several lanes write neighbouring slices while the compute threads read the ones
+    // already published. The bytes each lane writes into its neighbour's boundary are that
+    // neighbour's own, so this must still be byte-identical.
+    RunConfig ovzc = base(model);
+    ovzc.moe.enabled = true;
+    ovzc.moe.cache_mb = 2;
+    ovzc.moe.force_cache = true;
+    ovzc.moe.io_threads = 4;
+    ovzc.moe.overlap = true;
+    ovzc.moe.odirect_zero_copy = true;
+
+    std::string s_ov0, s_ovc, s_ov1, s_ov2w, s_ovzc;
     if (!gen(ov0, s_ov0, err)) {
         std::fprintf(stderr, "overlap(cache off) run failed: %s\n", err.c_str());
         return 2;
@@ -284,10 +314,15 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "overlap(two-wave) run failed: %s\n", err.c_str());
         return 2;
     }
+    if (!gen(ovzc, s_ovzc, err)) {
+        std::fprintf(stderr, "overlap(zero-copy) run failed: %s\n", err.c_str());
+        return 2;
+    }
     fails += check("G4a overlap(cache off) == streaming(cache off)", s_s0, s_ov0);
     fails += check("G4b overlap(LRU cache) == streaming(cache off)", s_s0, s_ovc);
     fails += check("G4c overlap(io_threads=1) == streaming(cache off)", s_s0, s_ov1);
     fails += check("G4d overlap(two-wave publish) == streaming(cache off)", s_s0, s_ov2w);
+    fails += check("G4e overlap(zero-copy) == streaming(cache off)", s_s0, s_ovzc);
 #else
     std::printf("[SKIP] G4 (expert-ready hook not built)\n");
 #endif

@@ -121,21 +121,43 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
     const uint64_t a0 = off & ~(uint64_t) (align_ - 1);
     const uint64_t a1 = (off + nbytes + align_ - 1) & ~(uint64_t) (align_ - 1);
     const size_t len = (size_t) (a1 - a0);
-    if (bounce_sz_[lane] < len) {
-        // Clear the size BEFORE the allocation: on failure the lane must look empty, not keep
-        // advertising the freed buffer's capacity — a later smaller read would skip the realloc and
-        // pread into a null pointer, turning one transient OOM into a permanently dead lane.
-        if (bounces_[lane]) pio::aligned_free(bounces_[lane]);
-        bounces_[lane] = nullptr;
-        bounce_sz_[lane] = 0;
-        bounces_[lane] = pio::alloc_aligned(align_, len);
-        if (!bounces_[lane]) {
-            std::fprintf(stderr, "bmoe: bounce realloc %zu failed\n", len);
-            return -1;
+    const uint64_t shift = off - a0; // where the payload sits inside the aligned window
+
+    // Zero-copy: the bounce exists only to undo `shift`, so when the caller's buffer already
+    // carries the same sub-alignment remainder as the file offset, there is nothing to undo —
+    // the aligned window maps onto the destination at the same relative position and can be read
+    // in place. The streamer places its per-layer buffers that way deliberately (see
+    // MoeStreamConfig::odirect_zero_copy); every other caller simply fails this test and keeps
+    // the copy, so the fast path needs no flag of its own and cannot be entered by accident.
+    //
+    // The window overhangs the payload on both sides, so this writes up to `shift` bytes before
+    // the destination and the rest of a page after it. Those bytes belong to the neighbouring
+    // slices, and they receive their own correct file contents — buffer and file differ by a
+    // constant offset here, which is exactly what the remainder match establishes. The caller is
+    // responsible for the overhung pages being writable; for the expert cache they are, because
+    // its page commit covers precisely this window.
+    const bool in_place = ((uintptr_t) dst & (uintptr_t) (align_ - 1)) == (uintptr_t) shift;
+
+    char * b;
+    if (in_place) {
+        b = (char *) dst - shift;
+    } else {
+        if (bounce_sz_[lane] < len) {
+            // Clear the size BEFORE the allocation: on failure the lane must look empty, not keep
+            // advertising the freed buffer's capacity — a later smaller read would skip the realloc
+            // and pread into a null pointer, turning one transient OOM into a permanently dead lane.
+            if (bounces_[lane]) pio::aligned_free(bounces_[lane]);
+            bounces_[lane] = nullptr;
+            bounce_sz_[lane] = 0;
+            bounces_[lane] = pio::alloc_aligned(align_, len);
+            if (!bounces_[lane]) {
+                std::fprintf(stderr, "bmoe: bounce realloc %zu failed\n", len);
+                return -1;
+            }
+            bounce_sz_[lane] = len;
         }
-        bounce_sz_[lane] = len;
+        b = (char *) bounces_[lane];
     }
-    char * b = (char *) bounces_[lane];
     const pio::fd_t fd_buf = fds_buf_[lane];
     const uint64_t read_end = (fsize_ && a1 > fsize_) ? fsize_ : a1;
     const uint64_t bulk_end = read_end & ~(uint64_t) (align_ - 1);
@@ -165,7 +187,7 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
     }
     const auto t1 = clock_t_::now();
     syscall_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
-    std::memcpy(dst, b + (off - a0), (size_t) nbytes);
+    if (!in_place) std::memcpy(dst, b + shift, (size_t) nbytes);
     const long long window = (long long) (read_end - a0);
     read_bytes_.fetch_add(window);
     return window; // the aligned window pulled — what the effective bandwidth is judged against

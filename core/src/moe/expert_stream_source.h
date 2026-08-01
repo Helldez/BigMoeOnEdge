@@ -190,8 +190,13 @@ private:
     bool active_ = false;
     bool load_all_ = false;
     bool overlap_ = false;
-    bool two_wave_ = false;      // publish the first projection's jobs before committing the rest (#118)
-    bool prefetch_sync_ = false; // test only: drain prefetch reads synchronously (serial mode)
+    bool two_wave_ = false;               // publish the first projection's jobs before committing the rest (#118)
+    bool prefetch_sync_ = false;          // test only: drain prefetch reads synchronously (serial mode)
+    bool zero_copy_ = false;              // place layer buffers so O_DIRECT reads skip the bounce copy
+    int zc_placed_ = 0, zc_declined_ = 0; // buffers that got the placement, and that could not
+    // Sub-alignment offset for a layer buffer whose tensor data starts at file_off, or 0 to keep
+    // the plain page-aligned placement. See the definition for the three conditions.
+    size_t zero_copy_shift(uint64_t file_off, uint64_t nb2) const;
     int n_layer_ = 0;
     int n_expert_ = 0;
     size_t align_ = 4096;
@@ -242,8 +247,9 @@ private:
     size_t layer_demand_accum_ = 0;
     size_t layer_demand_ = 0;
     int last_il_ = -1;
-    std::vector<void *> lbuf_[MoeRecipe::max_exps];
-    std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];
+    std::vector<void *> lbuf_[MoeRecipe::max_exps];      // where expert 0 of the layer lives
+    std::vector<void *> lbuf_base_[MoeRecipe::max_exps]; // the reservation to release (lbuf_ may be shifted)
+    std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];   // reserved bytes, including any shift page
     std::vector<uint8_t> cvalid_;
     std::vector<int32_t> cprev_, cnext_;
     std::vector<uint32_t> cstamp_;
