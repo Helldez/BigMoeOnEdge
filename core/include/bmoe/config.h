@@ -194,7 +194,10 @@ struct MoeStreamConfig {
     //
     // Mutually exclusive with the probe and both prefetchers: the probe would score a predictor
     // against a routing this policy rewrote from that same predictor (a tautology), and a
-    // speculative prefetch would bet lanes on a future this policy has already fixed.
+    // speculative prefetch would bet lanes on a future this policy has already fixed. Also
+    // mutually exclusive with self-speculation, for a measured reason rather than a conceptual
+    // one: a verify decode is several positions wide and this policy declines to commit on every
+    // one of them, so the pair pays the prediction and the early reads and commits nothing.
     int route_ahead = 0;
 
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval

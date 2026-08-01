@@ -229,7 +229,13 @@ Semantic Versioning.
   assumed: the committed generations match the baseline's on a four-prompt objective battery
   (4/4 correct in both, one answer byte-identical), on a 512-token essay, and on a second model
   of a different generation and quantization (+22% there); output is deterministic across
-  repeated runs, which expert dropping is not. See `docs/route-ahead.md`.
+  repeated runs, which expert dropping is not. It is refused alongside self-speculation, and that
+  exclusion is measured rather than reasoned: a verify decode is several positions wide, so the
+  policy declines to commit on every one of them while still running its prediction and issuing
+  early reads that have become ordinary speculation (a combined run committed 0 routings, passed
+  249 through, and dropped its speculative usefulness from 100% to 81%). Cost without commitment
+  is worse than either feature alone, so `validate()` rejects the pair instead of silently
+  charging for it. See `docs/route-ahead.md`.
 
 ## [0.18.1] - 2026-07-29
 

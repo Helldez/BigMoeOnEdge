@@ -152,9 +152,11 @@ data class AppSettings(
                 a += listOf("--predict-spec-max", predictSpecMax.toString())
             }
             // Route-ahead excludes both prefetchers (the engine refuses the pairs: they would
-            // speculate a future route-ahead has already fixed). It works without the cache too —
-            // the routing still commits — but only reads early when the cache is on.
-            if (routeAhead > 0 && prefetchLayers == 0 && !predictPrefetch) {
+            // speculate a future route-ahead has already fixed) and self-speculation (a verify
+            // decode is several positions wide, and route-ahead declines to commit on every one of
+            // them while still paying for the prediction). It works without the cache too — the
+            // routing still commits — but only reads early when the cache is on.
+            if (routeAhead > 0 && prefetchLayers == 0 && !predictPrefetch && spec == SPEC_OFF) {
                 a += listOf("--route-ahead", routeAhead.toString())
             }
             // Cache-aware dropping needs a live cache to ask about residency — with the cache off

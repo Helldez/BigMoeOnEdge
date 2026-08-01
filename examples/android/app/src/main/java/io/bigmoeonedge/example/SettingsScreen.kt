@@ -220,9 +220,12 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 IntSetting(
                     "Route-ahead (layers)", AppSettings.ROUTE_AHEAD_CHOICES, current.routeAhead,
                     format = { if (it == 0) "off" else "$it" },
-                    // Excludes both prefetchers: the engine refuses speculating a future this has
-                    // already fixed. Needs streaming; the cache is what turns it into early reads.
-                    enabled = !current.mmap && current.prefetchLayers == 0 && !current.predictPrefetch,
+                    // Excludes both prefetchers (the engine refuses speculating a future this has
+                    // already fixed) and guessing ahead, where a verify pass is several tokens wide
+                    // and this declines to commit on all of them while still paying for itself.
+                    // Needs streaming; the cache is what turns it into early reads.
+                    enabled = !current.mmap && current.prefetchLayers == 0 && !current.predictPrefetch &&
+                        current.spec == AppSettings.SPEC_OFF,
                 ) { onChange(current.copy(routeAhead = it)) }
                 Text(
                     "Experimental, changes the output. Each layer's expert choice is committed N layers " +

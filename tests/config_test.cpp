@@ -146,6 +146,18 @@ int main() {
         c.moe.prefetch_layers = 0;
         expect_ok("route_ahead with the cache and no predictor", c);
     }
+    // A verify decode is several positions wide, and route-ahead declines to commit on every one of
+    // them while still paying for the prediction and the early reads — measured, see config.cpp.
+    {
+        RunConfig c = ok_moe();
+        c.moe.route_ahead = 1;
+        c.spec.source = DraftSource::mtp;
+        expect_fail("route_ahead excludes the MTP draft source", c);
+        c.spec.source = DraftSource::ngram;
+        expect_fail("route_ahead excludes the n-gram draft source", c);
+        c.spec.source = DraftSource::none;
+        expect_ok("route_ahead with speculation off", c);
+    }
 
     // Sampling ranges — enforced only when temp > 0.
     {
