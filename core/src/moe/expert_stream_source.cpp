@@ -657,12 +657,44 @@ size_t ExpertStreamSource::entry_bytes(int il) const {
 // with a neighbouring expert). Shared by eviction and by discarding an incomplete spec entry.
 void ExpertStreamSource::release_entry_pages(int32_t id) {
     const int il = id / n_expert_, e = id % n_expert_;
+    // A page that an entry only PARTLY covers is shared with the neighbouring expert, so the
+    // interior is all this entry may release on its own. With the page-aligned placement there is
+    // no such page — a slice is a whole number of pages at a page boundary, so the interior IS the
+    // whole slice and this is exact.
+    //
+    // The zero-copy placement shifts the buffer off the page boundary on purpose, which makes the
+    // first and last page of EVERY slice shared. Releasing only the interior then leaks two pages
+    // per eviction: the entry's bytes are accounted as freed while the kernel still holds them.
+    // Measured in the app, where a session evicts thousands of entries: the process's anonymous
+    // footprint grew ~40 MiB a turn and went to zram, and the decode paid it back as major faults
+    // (1-7 per token without the placement, 66 and then 332 with it, rising turn over turn).
+    //
+    // So a boundary page is released too, once the neighbour that shares it is gone. `cvalid_`
+    // covers demand reads — an entry being read is valid from the moment it is staged — and
+    // `spec_remaining_` covers speculative ones. Both are read without the lanes' mutex, which is
+    // safe in one direction only, and that is the direction needed: staging happens on this thread,
+    // so nothing can raise them concurrently; a lane can only lower spec_remaining_ toward zero, so
+    // a stale read is stale-high and merely skips a release that the next eviction will make.
+    auto neighbour_gone = [&](int ne) {
+        if (ne < 0 || ne >= n_expert_) return true; // the buffer's own padding, owned by nobody else
+        const int32_t nid = il * n_expert_ + ne;
+        return !cvalid_[nid] && spec_remaining_[nid] == 0;
+    };
+    const bool lead_free = neighbour_gone(e - 1);
+    const bool tail_free = neighbour_gone(e + 1);
+
     for (int p = 0; p < MoeRecipe::max_exps; ++p) {
         const uint64_t slice = layers_[il].proj[p].nb2;
         if (slice == 0) continue; // absent slot in a fused layout
+        // Per projection: only a buffer that actually got the shifted placement has shared edges.
+        const bool shared = !lbuf_zc_[p].empty() && lbuf_zc_[p][il] != 0;
+        const bool take_lead = shared && lead_free;
+        const bool take_tail = shared && tail_free;
         char * s = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-        uintptr_t a0 = ((uintptr_t) s + page_ - 1) & ~(uintptr_t) (page_ - 1);
-        uintptr_t a1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
+        uintptr_t a0 = take_lead ? ((uintptr_t) s & ~(uintptr_t) (page_ - 1))
+                                 : (((uintptr_t) s + page_ - 1) & ~(uintptr_t) (page_ - 1));
+        uintptr_t a1 = take_tail ? (((uintptr_t) s + slice + page_ - 1) & ~(uintptr_t) (page_ - 1))
+                                 : (((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1));
         if (a1 > a0) pio::vm_evict((void *) a0, (size_t) (a1 - a0));
     }
 }
