@@ -8,10 +8,10 @@ import android.content.Context
  * pair of switches, which could express the same policy two ways (or contradict each other).
  */
 enum class DenseWeights(val flag: String, val label: String, val blurb: String) {
-    MMAP("mmap", "Leave them to the system", "Let the system bring the always-needed weights in as they are touched, and take them back when it wants the memory. The plain baseline to compare the others against."),
-    WARM("warm", "Read them once at the start", "Read them all when the model opens, so the first tokens do not stop to fetch them a piece at a time. Suits a model that fits in memory comfortably."),
-    ANON("anon", "Held in the app", "Keep them in the app's own memory rather than the system's file cache. When the system wants memory back it compresses them instead of dropping them, so getting them back does not mean reading storage again. Costs a private copy, and is the default."),
-    AHWB("ahwb", "Pinned", "As Held in the app, but in memory the system cannot take back at all, not even by compressing it, which the option above still pays for. The gain shows up over a long conversation, once the system has had time to start taking memory back."),
+    MMAP("mmap", "Mmap (baseline)", "Left to the kernel, faulted in as touched. The baseline."),
+    WARM("warm", "Warm at load", "Paged in once at load, so the first tokens do not fault. Best when the model fits in RAM."),
+    ANON("anon", "Anon (O_DIRECT)", "Read into the app's own memory. Reclaim compresses them instead of dropping them, so a refault costs no flash read. The default."),
+    AHWB("ahwb", "Pinned (dma-buf)", "As Anon, but reclaim cannot touch it at all, not even to compress. Pays off over a long conversation."),
 }
 
 /**

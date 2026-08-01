@@ -10,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -64,30 +65,47 @@ fun IntSetting(
 @Composable
 fun ExperimentalGroup(content: @Composable ColumnScope.() -> Unit) {
     var open by rememberSaveable { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-        Row(
-            Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        // A tonal bar rather than a plain text row: collapsed, this is the only thing standing
+        // between the recommended configuration and the levers that can slow a run down or change
+        // the reply, so it has to read as a boundary and not as one more setting.
+        Surface(
+            color = MaterialTheme.colorScheme.tertiaryContainer,
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp).clickable { open = !open },
         ) {
-            Icon(
-                if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                "Experimental",
-                fontSize = 14.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "EXPERIMENTAL",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    if (open) "hide" else "show",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                Icon(
+                    if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+            }
         }
         if (open) {
             Text(
-                "Measured on one device, or not measured yet. These can slow things down or change " +
-                    "the reply. The settings above are the recommended configuration.",
+                "Measured on one device, or not measured yet. These can slow a run down or change the " +
+                    "reply. The settings above are the recommended configuration.",
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 8.dp),
+                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
             )
             Column(verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
         }

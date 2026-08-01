@@ -18,14 +18,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  * the caller persists them.
  *
  * Each category shows the recommended configuration first and folds the rest into an
- * [ExperimentalGroup]. That is a statement about evidence, not about how finished the code is:
- * inside are the levers measured on one device, or measured once, or still owed a measurement.
- * They stay in the release build because testing them on other hardware is what the demo app is
- * for, and a lever nobody can reach is a lever nobody can refute.
+ * [ExperimentalGroup]: the levers measured on one device, measured once, or still owed a
+ * measurement. They stay in the release build because testing them on other hardware is what this
+ * app is for, and a lever nobody can reach is a lever nobody can refute.
  *
- * Descriptions say what a setting does for the person reading, not how it is implemented, and
- * carry no measured figures. A number here would need the device, the model and the day beside it
- * to mean anything, and none of those fit under a switch. The documents do that job.
+ * Labels keep the flag's own vocabulary, so a setting here can be matched against the CLI, the CSV
+ * preamble and the docs. Descriptions say what the knob does in one or two lines and carry no
+ * measured figures: a number would need the device, the model and the day beside it to mean
+ * anything, and the docs are where that fits.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -63,63 +63,54 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 // mmap is the no-streaming baseline. When on, every streaming knob below is
                 // inert (the CLI omits --moe-stream and all sub-flags), so they are disabled.
                 SwitchRow(
-                    "Load the whole model instead",
-                    "Let the system load the model the ordinary way rather than streaming experts " +
-                        "from storage. On a model past your memory this is much slower; it is here " +
-                        "to compare against.",
+                    "mmap baseline (no streaming)",
+                    "Load the model the ordinary way. The baseline to compare against.",
                     current.mmap,
                 ) { onChange(current.copy(mmap = it)) }
 
                 IntSetting(
-                    "Expert cache", AppSettings.CACHE_CHOICES, current.cacheMb,
+                    "Expert cache (MiB)", AppSettings.CACHE_CHOICES, current.cacheMb,
                     format = {
                         when (it) {
                             AppSettings.CACHE_AUTO -> "Auto"
-                            0 -> "Off"
+                            0 -> "off"
                             else -> "$it MiB"
                         }
                     },
                     enabled = stream,
                 ) { onChange(current.copy(cacheMb = it)) }
                 Hint(
-                    "An expert already in memory costs no read at all, so a bigger cache means less " +
-                        "waiting on storage, paid for in memory the rest of the system no longer has. " +
-                        "Auto sizes it once when the model opens and then holds that budget. " +
-                        "The smallest sizes sit below the engine's own floor: a cache too small to " +
-                        "hold what a single token needs throws experts away before they are reused, " +
-                        "so it only churns."
+                    "A resident expert costs no read, so a bigger cache means less waiting on flash, " +
+                        "paid for in RAM. Auto sizes it once at load. The smallest rungs sit below the " +
+                        "engine's floor and only churn."
                 )
                 IntSetting(
-                    "Cache ceiling for Auto", AppSettings.CACHE_CEIL_CHOICES, current.cacheCeilMb,
-                    format = { if (it == 0) "No cap" else "$it MiB" },
+                    "Auto cache ceiling (MiB)", AppSettings.CACHE_CEIL_CHOICES, current.cacheCeilMb,
+                    format = { if (it == 0) "no cap" else "$it MiB" },
                     enabled = stream && current.cacheMb == AppSettings.CACHE_AUTO,
                 ) { onChange(current.copy(cacheCeilMb = it)) }
                 Hint(
-                    "Caps what Auto may claim. The system counts the model's own mapped weights as " +
-                        "free memory, so left uncapped Auto can ask for more than really exists."
+                    "Caps what Auto may claim. The system counts our own mapped weights as free, so " +
+                        "uncapped it can ask for more than exists."
                 )
-                IntSetting("Parallel reads", AppSettings.IO_CHOICES, current.ioThreads, enabled = stream) {
+                IntSetting("Parallel I/O lanes", AppSettings.IO_CHOICES, current.ioThreads, enabled = stream) {
                     onChange(current.copy(ioThreads = it))
                 }
-                Hint(
-                    "How many expert reads are in flight at once. More helps only until the storage " +
-                        "itself is saturated, and past that point it costs without buying anything."
-                )
+                Hint("Expert reads in flight at once. Helps only until the flash saturates.")
                 SwitchRow(
-                    "Read straight from storage",
-                    "Skip the system's file cache, so it does not keep a second copy of what the " +
-                        "expert cache already holds. Falls back on its own where the storage does " +
-                        "not support it.",
+                    "Direct I/O (O_DIRECT)",
+                    "Bypass the page cache, so the system keeps no second copy of what the cache " +
+                        "already holds. Falls back where unsupported.",
                     current.oDirect, enabled = stream,
                 ) { onChange(current.copy(oDirect = it)) }
                 SwitchRow(
-                    "Read while computing",
-                    "Start the next reads while the current layer is still being computed, so " +
-                        "waiting for storage happens behind the work instead of after it.",
+                    "I/O and compute overlap",
+                    "Issue the next reads while the current layer computes, so flash latency hides " +
+                        "behind the work.",
                     current.overlap, enabled = stream,
                 ) { onChange(current.copy(overlap = it)) }
                 LabeledDropdown(
-                    "Always-needed weights",
+                    "Dense weights",
                     DenseWeights.values().map { it.label },
                     current.denseWeights.ordinal,
                     enabled = stream,
@@ -128,147 +119,125 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
 
                 ExperimentalGroup {
                     IntSetting(
-                        "Read ahead from the last token", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
-                        format = { if (it == 0) "Off" else "$it layers" },
+                        "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
+                        format = { if (it == 0) "off" else "$it" },
                         // Mutually exclusive with predictive prefetch: two predictors would speculate
                         // the same future twice, and the engine refuses the pair.
                         enabled = stream && cacheOn && !current.predictPrefetch && current.routeAhead == 0,
                     ) { onChange(current.copy(prefetchLayers = it)) }
                     Hint(
-                        "Bets that a layer will want the same experts it wanted for the previous " +
-                            "token, and fetches them on reads that would otherwise sit idle. Needs " +
-                            "the expert cache."
+                        "Bets a layer reuses the previous token's experts and reads them on idle lanes. " +
+                            "Needs the cache."
                     )
                     SwitchRow(
-                        "Ask the next layer what it wants",
-                        "Instead of betting on the previous token, asks the next layer itself which " +
-                            "experts it is about to need, and fetches those. Needs the expert cache, " +
-                            "and replaces the guess above.",
+                        "Predictive prefetch",
+                        "Runs the next layer's own router a layer early and prefetches what it names. " +
+                            "More accurate than the bet above, and replaces it. Needs the cache.",
                         current.predictPrefetch,
                         enabled = stream && cacheOn && current.prefetchLayers == 0 && current.routeAhead == 0,
                     ) { onChange(current.copy(predictPrefetch = it)) }
                     if (current.predictPrefetch) {
                         IntSetting(
-                            "How much to fetch on that answer", AppSettings.PREDICT_SPEC_CHOICES,
+                            "Predicted misses to read ahead", AppSettings.PREDICT_SPEC_CHOICES,
                             current.predictSpecMax,
-                            format = { if (it == 0) "Only keep what it names" else "$it per layer" },
+                            format = { if (it == 0) "retention only" else "$it" },
                             enabled = stream && cacheOn,
                         ) { onChange(current.copy(predictSpecMax = it)) }
                         Hint(
-                            "At the first setting it fetches nothing and only protects the experts it " +
-                                "names from being thrown out, which is the safe choice: fetching ahead " +
-                                "competes for the same storage the current token is waiting on."
+                            "Retention only reads nothing and just protects what the prediction names, " +
+                                "which is the safe setting: reading ahead competes with the token now."
                         )
                     }
                 }
             }
 
-            Section("Speed and quality") {
-                // Both entries here are load-time or residency policies, not decode-loop changes.
+            Section("Speed / quality") {
                 IntSetting(
-                    "Skip experts that are not in memory", AppSettings.DROP_COLD_CHOICES, current.dropColdPct,
+                    "Drop cold experts (% of even share)", AppSettings.DROP_COLD_CHOICES, current.dropColdPct,
                     format = {
                         when (it) {
-                            0 -> "Off"
-                            50 -> "Rarely"
-                            75 -> "Recommended"
-                            100 -> "Fastest, roughest"
+                            0 -> "off"
+                            50 -> "50% (barely bites)"
+                            75 -> "75% (recommended)"
+                            100 -> "100% (fastest, roughest)"
                             else -> "$it%"
                         }
                     },
-                    // Unlike top-k, this one asks the expert source what is resident, so it needs
-                    // both the streamer and a live cache, the same condition prefetch is under.
+                    // Needs the streamer and a live cache: it asks the source what is resident.
                     enabled = stream && cacheOn,
                 ) { onChange(current.copy(dropColdPct = it)) }
                 Hint(
-                    "Waiting for an expert that is not already in memory is what slows a token down. " +
-                        "This skips one, but only when it is missing and the model barely wanted it. " +
-                        "An expert already in memory always runs, and the one the model wanted most " +
-                        "is never skipped, so quality is given up only where it buys back a read." +
-                        "\n\nThe reply changes, and not the same way twice: what gets skipped depends " +
-                        "on what the cache happened to be holding at that moment."
+                    "Skips a routed expert only when it is a cache miss and the router barely wanted " +
+                        "it, so quality is spent only where it buys a read. A resident expert always " +
+                        "runs and the top one is never dropped. Changes the reply, and not the same " +
+                        "way twice: it depends on what the cache held."
                 )
                 // The threshold is a share of the even split, so a narrow routing changes what the
-                // same setting means. Only shown once a model is loaded and reports its width;
-                // guessing would be worse than saying nothing.
+                // same percentage means. Only shown once a model reports its width.
                 val topk = ui.nExpertUsed
                 if (current.dropColdPct > 0 && topk != null && topk in 1..4) {
                     Text(
-                        "This model asks for very few experts per token, so the same setting covers " +
-                            "far more of the reply than it does on a model that asks for many. Check " +
-                            "the answers, or turn this off for this model.",
+                        "This model routes very few experts per token, so the same share covers much " +
+                            "more of the reply. Check the answers, or turn this off here.",
                         fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
                     )
                 }
                 IntSetting(
-                    "Experts per token", AppSettings.N_EXPERT_CHOICES, current.nExpertUsed,
-                    format = { if (it == 0) "As the model asks" else "$it" },
+                    "Active experts (top-k)", AppSettings.N_EXPERT_CHOICES, current.nExpertUsed,
+                    format = { if (it == 0) "model default" else "$it" },
                 ) { onChange(current.copy(nExpertUsed = it)) }
                 Hint(
-                    "Consult fewer experts per token than the model asks for. Cuts the computing and " +
-                        "the reading together, and changes the reply: a deliberate trade of quality " +
-                        "for speed."
+                    "Consult fewer experts per token than the model asks for. Cuts compute and reads " +
+                        "together, and changes the reply."
                 )
 
                 ExperimentalGroup {
                     LabeledDropdown(
-                        "Guess several tokens at once",
-                        listOf("Off", "The model's own guess", "Text that repeats"),
+                        "Guess ahead",
+                        listOf("Off", "Model's own head (MTP)", "Repeated text (n-gram)"),
                         AppSettings.SPEC_CHOICES.indexOf(current.spec).coerceAtLeast(0),
-                        // Excluded by route-ahead, which declines to commit across a wider pass while
-                        // still paying for its prediction.
+                        // Excluded by route-ahead, which declines to commit across a wider verify
+                        // pass while still paying for its prediction.
                         enabled = current.routeAhead == 0,
                     ) { onChange(current.copy(spec = AppSettings.SPEC_CHOICES[it])) }
                     Hint(
-                        "Guess the next few tokens, then check the whole group in one pass and keep " +
-                            "only what the model itself would have produced. Nothing is skipped or " +
-                            "approximated, so the reply is the one you would have got anyway. It wins " +
-                            "by reading the weights once for several tokens instead of once each, and " +
-                            "loses when checking several at a time makes every layer touch more " +
-                            "experts than it would have." +
-                            "\n\nThe model's own guess comes from a small extra part trained for it: " +
-                            "accurate, but only some models carry it and running it costs a pass of " +
-                            "its own. The other watches for the text repeating itself, costs nothing " +
-                            "and works on every model, but has something to say only when the model " +
-                            "is quoting or editing. When it has nothing, that token runs exactly as " +
-                            "if this were off."
+                        "Draft the next few tokens, verify the group in one decode, keep only what the " +
+                            "model would have produced. Lossless. Wins by reading the weights once for " +
+                            "several tokens, loses when the wider verify makes each layer touch more " +
+                            "experts. The head is accurate but only some models carry it; the n-gram " +
+                            "lookup is free and works on any model, but only fires on repeated text."
                     )
                     if (current.spec != AppSettings.SPEC_OFF) {
                         IntSetting(
-                            "Tokens per guess", AppSettings.MTP_DRAFT_CHOICES, current.mtpDraft,
+                            "Tokens guessed per pass", AppSettings.MTP_DRAFT_CHOICES, current.mtpDraft,
                         ) { onChange(current.copy(mtpDraft = it)) }
                         Hint(
-                            "How far ahead to guess. Further means more tokens confirmed per pass, but " +
-                                "guesses grow less reliable the further out they go, and a wrong one is " +
-                                "paid for and thrown away. The best setting is rarely the largest."
+                            "Wider means more tokens per decode, but drafts get less reliable and a " +
+                                "rejected one is paid for anyway. The best value is rarely the largest."
                         )
                     }
                     if (current.spec == AppSettings.SPEC_MTP) {
                         IntSetting(
-                            "Guess only when sure", AppSettings.MTP_P_MIN_CHOICES, current.mtpPMinPct,
-                            format = { if (it == 0) "Always guess" else "Above $it%" },
+                            "Guess only when confident", AppSettings.MTP_P_MIN_CHOICES, current.mtpPMinPct,
+                            format = { if (it == 0) "always draft" else "above $it%" },
                         ) { onChange(current.copy(mtpPMinPct = it)) }
                         Hint(
-                            "Stop guessing as soon as the model is unsure, instead of always filling " +
-                                "the pass. A guess not made costs nothing and keeps the pass narrow, so " +
-                                "fewer experts have to be read, but it also gives up the tokens that " +
-                                "guess might have won."
+                            "Stop drafting once the head is unsure. A draft not made keeps the verify " +
+                                "batch narrow, so fewer experts are read."
                         )
                     }
                     IntSetting(
-                        "Decide the experts early", AppSettings.ROUTE_AHEAD_CHOICES, current.routeAhead,
-                        format = { if (it == 0) "Off" else "$it layers early" },
-                        // Excludes both prefetchers (the engine refuses speculating a future this has
-                        // already fixed) and guessing ahead. Needs streaming; the cache is what turns
-                        // it into early reads.
+                        "Route-ahead (layers)", AppSettings.ROUTE_AHEAD_CHOICES, current.routeAhead,
+                        format = { if (it == 0) "off" else "$it" },
+                        // Excludes both prefetchers and speculation; needs the streamer, and the cache
+                        // is what turns a committed selection into early reads.
                         enabled = stream && current.prefetchLayers == 0 && !current.predictPrefetch &&
                             current.spec == AppSettings.SPEC_OFF,
                     ) { onChange(current.copy(routeAhead = it)) }
                     Hint(
-                        "Settles which experts a layer will use before that layer is reached, so their " +
-                            "reads can start early and none of them is ever wasted. Changes the reply: " +
-                            "some of those choices differ from the ones the model would have made. " +
-                            "Cannot be combined with guessing ahead or with the fetching above."
+                        "Commits each layer's routing that many layers early, so its reads start early " +
+                            "and can never be wasted. Lossy: some slots route differently. Excludes the " +
+                            "prefetchers and Guess ahead."
                     )
                 }
             }
@@ -280,15 +249,13 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 IntSetting("Tokens to generate", AppSettings.NPREDICT_CHOICES, current.nPredict) {
                     onChange(current.copy(nPredict = it))
                 }
-                IntSetting("Conversation length", AppSettings.CTX_CHOICES, current.sessionCtx) {
+                IntSetting("Context (tokens)", AppSettings.CTX_CHOICES, current.sessionCtx) {
                     onChange(current.copy(sessionCtx = it))
                 }
                 Hint(
-                    "How much of the conversation the model can hold at once, your prompt and its " +
-                        "reply together. It is also memory: room for it is set aside when the model " +
-                        "opens, and on a model that already fills your device that room comes out of " +
-                        "the expert cache. Shorten it on the largest models, raise it when you want " +
-                        "long conversations and have the space. Changing it reopens the model."
+                    "Prompt plus reply the session can hold. Also memory: the KV cache is sized for it " +
+                        "at open, and on a model that fills RAM that comes out of the expert cache. " +
+                        "Changing it reopens the session."
                 )
             }
 
@@ -296,13 +263,11 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 SwitchRow(
                     "Thinking",
                     if (thinkingLocked)
-                        "This model always reasons and offers no way to turn it off, so the switch " +
-                            "is disabled here rather than ignored silently. Its reasoning still " +
-                            "appears in a block above the reply."
+                        "This model always reasons and offers no way to turn it off, so the switch is " +
+                            "disabled rather than ignored. Its reasoning still shows above the reply."
                     else
-                        "Let a model that can reason think before answering; its reasoning appears " +
-                            "in a block above the reply. Off asks it to answer directly. No effect " +
-                            "on models that do not reason.",
+                        "Let a reasoning model think first; its reasoning shows in a block above the " +
+                            "reply. No effect on models that do not reason.",
                     // Locked reads ON, not OFF: the model reasons on every turn, and that is what
                     // the switch should be showing whatever the stored preference says.
                     checked = current.thinking || thinkingLocked,
@@ -312,10 +277,9 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
 
             Section("Diagnostics") {
                 SwitchRow(
-                    "Save a metrics file",
-                    "Write one file per session with every token's timings, the memory it needed and " +
-                        "where the time went. Takes effect the next time a model opens; share it from " +
-                        "the menu.",
+                    "Metrics CSV",
+                    "One CSV per session: per-token timings, faults, cache budget and where memory sat. " +
+                        "Takes effect on the next session; share it from the menu.",
                     current.metricsCsv,
                 ) { onChange(current.copy(metricsCsv = it)) }
             }
