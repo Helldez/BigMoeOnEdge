@@ -41,6 +41,16 @@
 //
 //   G10 streaming + --predict-prefetch == streaming (speculating on the prediction only warms the
 //       cache), and the run must actually have speculated — an inert predictor passes vacuously.
+//   G8  streaming + --drop-cold-experts, plumbing vs policy: an inert threshold drops nothing and
+//       the top-weighted expert is never dropped, so no cell is left with nothing to compute
+//   G11 streaming + --odirect-zero-copy == streaming (the in-place read lands the same bytes the
+//       bounce copy did, overhang and all), and G12 the same alongside the dense loader
+//   G4e overlap + --odirect-zero-copy, the shipping combination, where the overhang is written
+//       while neighbouring slices are live
+//
+// Gate numbers are allocated once and never reused: a failing label has to name one thing. G8 and
+// G9 were briefly claimed twice while four feature branches were in flight, which is what this
+// index exists to prevent — extend it in the same commit that adds a gate.
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
@@ -260,14 +270,14 @@ int main(int argc, char ** argv) {
     fails += check("G6 dense-odirect(rebind) == resident", s_res, s_dod);
     // G7: the rebind is byte-identical whether or not the dense read bypassed the page cache.
     fails += check("G7 dense=anon + expert O_DIRECT off == resident", s_res, s_dodb);
-    // G8: reading straight into the cache, with the window overhanging its neighbours, must not
+    // G11: reading straight into the cache, with the window overhanging its neighbours, must not
     // move a byte. Watch the engine's `odirect-zero-copy` line: it reports INERT when the file's
     // alignment or the platform's O_DIRECT left the placement unused, and this gate then proves
     // only that the flag is harmless, not that the path works — the device run is what settles it.
-    fails += check("G8 odirect-zero-copy == streaming(cache off)", s_s0, s_zc);
-    // G9: and the dense loader must be untouched by it. This one bites on any model, INERT expert
+    fails += check("G11 odirect-zero-copy == streaming(cache off)", s_s0, s_zc);
+    // G12: and the dense loader must be untouched by it. This one bites on any model, INERT expert
     // placement or not, because the dense reads are real either way.
-    fails += check("G9 odirect-zero-copy + dense=anon == resident", s_res, s_zcd);
+    fails += check("G12 odirect-zero-copy + dense=anon == resident", s_res, s_zcd);
 
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // overlap, cache off
