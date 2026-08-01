@@ -25,13 +25,17 @@ ExpertStreamSource::~ExpertStreamSource() {
 }
 
 // ── init: allocate buffers, rebind expert tensors, start the read pool ──────────────
-bool ExpertStreamSource::init(const std::string & gguf_path,
+bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                               int n_expert,
                               std::vector<LayerExperts> layers,
                               const MoeStreamConfig & cfg) {
     if (active_) return false;
     if (n_expert <= 0) {
         std::fprintf(stderr, "bmoe: expert streaming needs a MoE model (n_expert=%d)\n", n_expert);
+        return false;
+    }
+    if (shard_paths.empty()) {
+        std::fprintf(stderr, "bmoe: expert streaming got no model file\n");
         return false;
     }
 
@@ -151,12 +155,25 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
         clookups_ = 0;
     }
 
-    // Read pool: the reader owns a private fd + bounce per lane so concurrent preads never contend,
-    // and the O_DIRECT request + its verify/fallback. The dense-weights loader opens its own reader,
-    // so its cache-bypass choice is independent of this one.
+    // Read pool: one reader per shard file, each owning a private fd + bounce per lane so concurrent
+    // preads never contend, and the O_DIRECT request + its verify/fallback (per file — a shard set
+    // could in principle straddle storage with different O_DIRECT behaviour). The dense-weights
+    // loader opens its own readers, so its cache-bypass choice is independent of this one.
     const size_t max_slice = max_full_any / (size_t) n_expert_;
     const size_t bounce_cap = max_slice + 2 * align_;
-    if (!reader_.open(gguf_path, io_threads_, cfg.o_direct, align_, bounce_cap)) return false;
+    for (const std::string & sp : shard_paths) {
+        readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
+        if (!readers_.back()->open(sp, io_threads_, cfg.o_direct, align_, bounce_cap)) return false;
+    }
+    for (const LayerExperts & L : layers_) {
+        if (!L.bound) continue;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            if (L.proj[p].nb2 && (L.proj[p].file_idx < 0 || L.proj[p].file_idx >= (int) readers_.size())) {
+                std::fprintf(stderr, "bmoe: expert tensor points at shard %d of %zu\n", L.proj[p].file_idx,
+                             readers_.size());
+                return false;
+            }
+    }
 
     seen_.assign(n_expert_, 0);
     jobs_.reserve((size_t) n_expert_ * MoeRecipe::max_exps);
@@ -195,16 +212,18 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     // are the complement of the expert ranges in the file, computed once here and shared by the warm
     // sweep and the sensor.
     {
-        std::vector<std::pair<uint64_t, uint64_t>> exp;
+        std::vector<std::vector<std::pair<uint64_t, uint64_t>>> exp(readers_.size());
         for (const LayerExperts & L : layers_) {
             if (!L.bound) continue;
             for (int p = 0; p < MoeRecipe::max_exps; ++p) {
                 const uint64_t sz = (uint64_t) L.proj[p].nb2 * (uint64_t) n_expert_;
-                if (sz) exp.push_back({L.proj[p].file_off, L.proj[p].file_off + sz});
+                if (sz) exp[L.proj[p].file_idx].push_back({L.proj[p].file_off, L.proj[p].file_off + sz});
             }
         }
-        auto ranges = DenseWeights::byte_ranges(std::move(exp), reader_.file_size());
-        if (!dense_.init(cfg.dense_weights, gguf_path, align_, std::move(ranges), std::move(dense_tensors_))) {
+        std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges(readers_.size());
+        for (size_t s = 0; s < readers_.size(); ++s)
+            ranges[s] = DenseWeights::byte_ranges(std::move(exp[s]), readers_[s]->file_size());
+        if (!dense_.init(cfg.dense_weights, shard_paths, align_, std::move(ranges), std::move(dense_tensors_))) {
             std::fprintf(stderr, "bmoe: dense-weights init failed\n");
             return false;
         }
@@ -218,8 +237,8 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
     for (int lane = first_worker_lane; lane < io_threads_; ++lane)
         io_pool_.emplace_back(&ExpertStreamSource::io_worker, this, lane);
 
-    std::fprintf(stderr, "bmoe: expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB\n", n_expert_,
-                 (int) reader_.direct(), io_threads_, cache_max_ >> 20);
+    std::fprintf(stderr, "bmoe: expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB shards=%zu\n",
+                 n_expert_, (int) readers_[0]->direct(), io_threads_, cache_max_ >> 20, readers_.size());
     return true;
 }
 
@@ -230,7 +249,7 @@ bool ExpertStreamSource::init(const std::string & gguf_path,
 bool ExpertStreamSource::read_slice(int lane, const IoJob & j) {
     if (j.nbytes == 0) return true;
     const auto t0 = clock_t_::now();
-    const long long window = reader_.read(lane, j.dst, j.off, j.nbytes);
+    const long long window = readers_[(size_t) j.file]->read(lane, j.dst, j.off, j.nbytes);
     if (window < 0) return false;
 
     if (io_trace_on_) {
@@ -373,8 +392,8 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
                 ok = false;
                 break;
             }
-            staged.push_back(
-                {dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, e, (int16_t) il, (int8_t) p, 1});
+            staged.push_back({dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, (int8_t) L.proj[p].file_idx, e,
+                              (int16_t) il, (int8_t) p, 1});
             ++njobs;
         }
         if (!ok) {
@@ -713,7 +732,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
                 const uint64_t slice = L.proj[p].nb2;
                 if (slice == 0) continue; // absent slot in a fused layout
                 jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
-                                 slice, -1, e, (int16_t) il, (int8_t) p, 0});
+                                 slice, -1, (int8_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
             }
             return true;
         }
@@ -727,7 +746,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue; // absent slot in a fused layout
             jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
-                             slice, -1, e, (int16_t) il, (int8_t) p, 0});
+                             slice, -1, (int8_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
         }
         return true;
     };
@@ -876,7 +895,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             for (int e : staged_) {
                 const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
                 jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
-                                 slice, flag, e, (int16_t) il, (int8_t) p, 0});
+                                 slice, flag, (int8_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
             }
         }
     } else {
@@ -920,8 +939,8 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
                 if (!seen_[e]) continue; // cache hit, already marked ready
                 const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
                 jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice,
-                                 L.proj[p].file_off + (uint64_t) e * slice, slice, flag, e, (int16_t) il, (int8_t) p,
-                                 0});
+                                 L.proj[p].file_off + (uint64_t) e * slice, slice, flag, (int8_t) L.proj[p].file_idx, e,
+                                 (int16_t) il, (int8_t) p, 0});
             }
         };
         if (!two_wave) {
@@ -1094,11 +1113,16 @@ void ExpertStreamSource::enable_overlap_hook() {
 
 IExpertSource::Stats ExpertStreamSource::stats() const {
     Stats s;
-    s.read_bytes = (uint64_t) reader_.read_bytes();
+    long long rd_bytes = 0, rd_syscall_ns = 0;
+    for (const auto & r : readers_) {
+        rd_bytes += r->read_bytes();
+        rd_syscall_ns += r->syscall_ns();
+    }
+    s.read_bytes = (uint64_t) rd_bytes;
     // Serial: read_ns_ is the wall time the caller was blocked in the read phase. Overlap: the
-    // caller never blocks, so "I/O time" is instead the summed lane-busy time (the reader's syscall
+    // caller never blocks, so "I/O time" is instead the summed lane-busy time (the readers' syscall
     // ns), which the runtime reports as lane-busy per token rather than as a slice of wall time.
-    s.read_seconds = (overlap_ ? reader_.syscall_ns() : read_ns_.load()) / 1e9;
+    s.read_seconds = (overlap_ ? rd_syscall_ns : read_ns_.load()) / 1e9;
     s.mgmt_seconds = mgmt_ns_.load() / 1e9;
     s.spec_read_bytes = (uint64_t) spec_read_bytes_.load();
     s.spec_experts = spec_experts_.load();
@@ -1162,7 +1186,7 @@ void ExpertStreamSource::shutdown() {
     // contract as the slot and LRU buffers freed above.
     dense_.shutdown();
     dense_tensors_.clear();
-    reader_.close(); // closes the lane fds and frees the bounces
+    readers_.clear(); // closes every shard's lane fds and frees the bounces
     jobs_.clear();
     layers_.clear();
     active_ = false;

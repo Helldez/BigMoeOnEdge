@@ -30,7 +30,7 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   GPU offload of the streamed experts is not supported (the dense parts can still use the
   GPU). Decode is flash-I/O-bound anyway, so this is rarely the bottleneck.
 - **Shared experts stay resident.** Architectures with an always-on shared expert (e.g.
-  `gemma4`) stream the routed experts but keep the shared expert — and any dense layers —
+  `gemma4`, `deepseek4`) stream the routed experts but keep the shared expert — and any dense layers —
   resident (in the page cache, or in the engine's own buffers under `--dense-weights anon`),
   so the streamed fraction (and the memory saving) is smaller than for a purely routed model
   like `qwen3moe`. The same applies to architectures whose first blocks are dense by design

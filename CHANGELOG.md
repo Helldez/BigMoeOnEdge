@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.19.0] - 2026-08-01
+
+### Added
+- **Split (multi-shard) ggufs stream natively.** Hugging Face rejects single files above 50 GB, so
+  every large model ships as `-00001-of-0000N.gguf` shards — and until now the streamer assumed one
+  file, forcing a merge with double the disk. `gguf_offsets` now fans the first shard out to the
+  whole set and resolves every tensor to its (shard, offset); the expert streamer and the dense
+  loader open one positioned reader per shard and route each read by the tensor's shard index. Pass
+  the first shard, as with llama.cpp itself; a missing sibling fails the load with the shard named.
+  The byte-identity gates gained a 4-shard fixture (metadata-only first shard, the layout large
+  quants actually use) proving streamed == resident across shard boundaries.
+- **DeepSeek V4 Flash (`deepseek4`) recipe.** V3.2-style expert routing — 256 routed experts with a
+  per-expert bias (the `lfm2moe` pattern) plus an always-on shared expert that stays resident — over
+  the standard split expert suffixes, so streaming is one registry row. The V4 attention machinery
+  (compressed sparse attention, the lightning indexer and its dedicated KV cache) is dense-side
+  llama.cpp code, invisible to the streaming seam. Requires a llama.cpp with DeepSeek V4 support
+  (the pinned submodule has it).
+
 ## [0.18.1] - 2026-07-29
 
 ### Fixed

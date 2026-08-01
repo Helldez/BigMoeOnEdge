@@ -7,10 +7,13 @@
 // sensor that reports how much of the dense set the kernel still has — the half the expert cache's
 // own residency sensor is blind to.
 //
-// It reads through its OWN FileReader, so its O_DIRECT choice is independent of the expert stream's:
+// It reads through its OWN FileReaders, so its O_DIRECT choice is independent of the expert stream's:
 // the dense set may be pulled cache-bypassing while the experts are not, or the reverse. There is one
 // definition of "which bytes are dense" here (byte_ranges), shared by the warm sweep, the anonymous
 // read, and the sensor — the three used to compute it separately.
+//
+// A split model hands in one path (and one set of dense ranges) per shard file; every consumer walks
+// the set. A single-file model is the one-entry case of the same shape, not a separate path.
 #pragma once
 
 #include "../io/file_reader.h"
@@ -18,6 +21,7 @@
 #include "bmoe/config.h" // DenseWeightsMode
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -27,11 +31,12 @@ struct ggml_tensor;
 namespace bmoe {
 
 // One dense weight tensor: where its bytes live in the gguf, and the tensor whose ->data we rebind.
-// Read whole and contiguous (`size` bytes from `file_off`), unlike an expert slice.
+// Read whole and contiguous (`size` bytes from `file_off` in shard `file_idx`), unlike an expert slice.
 struct DenseTensorRef {
     ggml_tensor * tensor = nullptr;
     uint64_t file_off = 0;
     uint64_t size = 0;
+    int file_idx = 0; // which shard file holds the bytes (0 for a single-file model)
 };
 
 class DenseWeights {
@@ -42,20 +47,20 @@ public:
     DenseWeights(const DenseWeights &) = delete;
     DenseWeights & operator=(const DenseWeights &) = delete;
 
-    // The dense byte ranges: the complement of `expert_ranges` within [0, file_size). Sorts the
-    // input; the result is the gaps between expert ranges plus the trailing tail. The single source
-    // of truth every consumer here shares.
+    // The dense byte ranges OF ONE FILE: the complement of `expert_ranges` within [0, file_size).
+    // Sorts the input; the result is the gaps between expert ranges plus the trailing tail. The
+    // single source of truth every consumer here shares; called once per shard.
     static std::vector<std::pair<uint64_t, uint64_t>>
     byte_ranges(std::vector<std::pair<uint64_t, uint64_t>> expert_ranges, uint64_t file_size);
 
-    // Apply `mode` for the model at `path` (dense `ranges` precomputed via byte_ranges; `tensors`
-    // needed only for Anonymous). `align` is the O_DIRECT block size. Runs once at load, before the
-    // streamer's workers start (Anonymous rebinds tensor->data on the caller's thread). Returns false
-    // only on a hard Anonymous failure (alloc/read); Mmap and Warmed cannot fail.
+    // Apply `mode` for the model files `paths` (per-shard dense `ranges` precomputed via byte_ranges;
+    // `tensors` needed only for Anonymous/Pinned). `align` is the O_DIRECT block size. Runs once at
+    // load, before the streamer's workers start (Anonymous rebinds tensor->data on the caller's
+    // thread). Returns false only on a hard Anonymous failure (alloc/read); Mmap and Warmed cannot fail.
     bool init(DenseWeightsMode mode,
-              const std::string & path,
+              const std::vector<std::string> & paths,
               size_t align,
-              std::vector<std::pair<uint64_t, uint64_t>> ranges,
+              std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges,
               std::vector<DenseTensorRef> tensors);
 
     // Sample how much of the dense set the kernel still has in RAM (mincore), setting resident_frac().
@@ -74,26 +79,29 @@ private:
     void drop_mmap_copies(size_t page);
     void sample_anon(size_t page);
     void sample_mmap(size_t page);
+    void resolve_vmas(); // per-shard /proc/self/maps lookup, once
+    const char * addr_of(int file_idx, uint64_t off) const;
 
     DenseWeightsMode mode_ = DenseWeightsMode::Warmed;
-    std::string path_;
-    std::string basename_;
+    std::vector<std::string> paths_;     // one per shard, in shard order
+    std::vector<std::string> basenames_; // what /proc/self/maps entries are matched against
     size_t align_ = 4096;
 
-    // Anonymous/Pinned: our own reader, the tensors we read, and the buffers backing them. `bases_`
-    // is what the sensor probes and is filled by both modes; `bufs_` and `pinned_` are the two
-    // release lists, exactly one of which is populated for a given run.
-    FileReader reader_;
+    // Anonymous/Pinned: our own readers (one per shard; FileReader is not movable, hence the
+    // unique_ptr), the tensors we read, and the buffers backing them. `bases_` is what the sensor
+    // probes and is filled by both modes; `bufs_` and `pinned_` are the two release lists, exactly
+    // one of which is populated for a given run.
+    std::vector<std::unique_ptr<FileReader>> readers_;
     std::vector<DenseTensorRef> tensors_;
     std::vector<void *> bases_;
     std::vector<void *> bufs_;
     std::vector<pio::PinnedAlloc> pinned_;
     std::vector<size_t> buf_sz_;
 
-    // Mmap/Warmed: the dense byte ranges and the mmap VMAs that back them, resolved once from
-    // /proc/self/maps for the sensor.
-    std::vector<std::pair<uint64_t, uint64_t>> ranges_;
-    std::vector<pio::MappedRegion> vmas_;
+    // Mmap/Warmed: the dense byte ranges and the mmap VMAs that back them, per shard, resolved once
+    // from /proc/self/maps for the sensor (llama.cpp maps every shard of a split model).
+    std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges_;
+    std::vector<std::vector<pio::MappedRegion>> vmas_;
     bool vmas_tried_ = false;
 
     double resident_frac_ = -1.0; // last sampled dense residency; -1 = never/unmeasured

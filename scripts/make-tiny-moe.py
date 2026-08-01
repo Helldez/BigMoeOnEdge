@@ -87,11 +87,29 @@ def add_attn_tensors(w, p, s):
 
 
 # --- qwen3moe: split expert layout -------------------------------------------------
-def build_qwen3moe(out):
+def make_writer(out, arch, split_max_tensors):
+    """A plain writer, or a sharding one when --split-max-tensors is set.
+
+    Sharded output mirrors how real >50 GB models arrive from Hugging Face: the writer
+    emits <out>-%05d-of-%05d.gguf siblings, with a metadata-only first shard
+    (small_first_shard, the layout unsloth ships). The byte-identity gates then prove the
+    multi-shard streaming path against the same tensors the single-file fixture uses.
+    """
+    if not split_max_tensors:
+        return gguf.GGUFWriter(out, arch)
+    try:
+        return gguf.GGUFWriter(out, arch,
+                               split_max_tensors=split_max_tensors,
+                               small_first_shard=True)
+    except TypeError:
+        raise SystemExit("this gguf package cannot write split files: pip install -U gguf")
+
+
+def build_qwen3moe(out, split_max_tensors=0):
     tokens, scores, toktypes = build_vocab()
     n_vocab = len(tokens)
 
-    w = gguf.GGUFWriter(out, "qwen3moe")
+    w = make_writer(out, "qwen3moe", split_max_tensors)
     w.add_name("tiny-moe")
     w.add_context_length(N_CTX)
     w.add_embedding_length(N_EMBD)
@@ -223,12 +241,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--arch", choices=["qwen3moe", "gemma4"], default="qwen3moe")
     ap.add_argument("--out", default="tiny-moe.gguf")
+    ap.add_argument("--split-max-tensors", type=int, default=0,
+                    help="emit a sharded gguf (N tensors per shard, metadata-only first shard)")
     args = ap.parse_args()
 
     if args.arch == "gemma4":
+        if args.split_max_tensors:
+            raise SystemExit("--split-max-tensors is exercised via the qwen3moe fixture only")
         build_gemma4(args.out)
     else:
-        build_qwen3moe(args.out)
+        build_qwen3moe(args.out, args.split_max_tensors)
 
 
 if __name__ == "__main__":
