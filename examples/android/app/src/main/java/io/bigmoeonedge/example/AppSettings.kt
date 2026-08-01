@@ -71,6 +71,7 @@ data class AppSettings(
             "-m", modelPath,
             "-t", threads.toString(),
             "-c", SESSION_CTX.toString(),
+            "--ubatch", SESSION_UBATCH.toString(),
             // Render the model's OWN chat template, whichever family it belongs to; the flag name
             // is historical (ChatML is only llama.cpp's fallback when a gguf ships no template).
             // Nothing here selects a format, so it is correct for every model in the catalog.
@@ -152,6 +153,16 @@ data class AppSettings(
         // long prompt plus the largest practical generation. A request that would overflow it is
         // rejected recoverably by the CLI, leaving the session usable.
         const val SESSION_CTX = 4096
+
+        // Widest graph computed at once. Compute buffers are RESERVED for it, so leaving it at the
+        // context width (the engine's default) hands the whole reservation to a model that only
+        // ever decodes one token at a time. That reservation is memory the expert cache and the
+        // dense weights do not get: measured +18% decode on a model near RAM, and on a >RAM model
+        // with a large dense set it is the difference between decoding and swapping (DeepSeek V4
+        // spent 13.9 s/token of "compute" that was really page faults, against 1.5 s at this
+        // width). Prefill pays instead, and barely: chunking it costs ~7.7x the flash reads but
+        // only ~6% of prefill wall time, because prefill is compute-bound.
+        const val SESSION_UBATCH = 512
 
         // Tokens to generate per turn, when nothing says otherwise. The service falls back to this
         // for a request that arrives without one, so the default lives here rather than in two
