@@ -15,8 +15,18 @@
          filesystem where O_DIRECT works). The dev flavor overlay (src/dev/AndroidManifest.xml)
          adds all-files access to also read adb-pushed models in place. -->
 
+    <!-- appCategory="game" is a performance decision, not a claim about what this app is. Vendor
+         performance layers read it: on the OxygenOS test device it moves the app onto the boosted
+         path, where the foreground CPU ceiling goes from 1.9/1.65 GHz to the hardware maximum of
+         3.32/3.80 GHz — measured before and after, with the app in the foreground. Decode is the
+         most CPU-hungry thing a phone can do outside a game, so the boosted path is the right one.
+         It cannot be a runtime setting: a manifest attribute is fixed at install time, and the
+         only lever would be a per-flavor manifest. The effect is the vendor's, not Android's:
+         neutral on stock builds, and Samsung's game service has historically THROTTLED what it
+         classifies this way, so treat any per-device number as a measurement rather than a rule. -->
     <application
         android:allowBackup="false"
+        android:appCategory="game"
         android:extractNativeLibs="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"

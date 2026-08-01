@@ -52,3 +52,9 @@ __pycache__/
 *.jks
 *.keystore
 keystore.properties
+
+# Agent session state and its worktrees. Ignored belt-and-braces rather than relying on a
+# machine-local exclude: a clone elsewhere would otherwise show a second checkout, build output
+# and .so binaries as untracked, which is exactly what the never-'git add -A' rule exists to
+# survive.
+.claude/

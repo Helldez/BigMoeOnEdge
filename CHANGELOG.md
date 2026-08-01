@@ -116,6 +116,25 @@ Semantic Versioning.
   batch. Default `0` (never stop), which is what the host numbers were measured at.
 
 ### Changed
+- **The demo app declares `android:appCategory="game"`.** Vendor performance layers read that
+  attribute, and on the OxygenOS test device it moves the app onto the boosted path: with the app
+  in the foreground the CPU ceiling went from 1.9/1.65 GHz to the hardware maximum of 3.32/3.80 GHz,
+  measured before and after. Decode is the most CPU-hungry thing a phone does outside a game, so
+  that is the right path to be on. It cannot be a runtime setting — a manifest attribute is fixed
+  at install — and the effect belongs to the vendor rather than to Android: neutral on stock
+  builds, and Samsung's game service has historically throttled what it classifies this way, so any
+  per-device figure is a measurement rather than a rule. **In-app numbers taken before this change
+  are not comparable with numbers taken after it.**
+- **CI enforces the versions it claims to.** The format job installs `clang-format-18` explicitly
+  instead of whatever the runner image ships, which happened to be 18 and would have started
+  failing every PR against an unannounced version on the next image bump; the APK job builds with
+  NDK r27c, the same release that produces published APKs, so CI stops validating a build nobody
+  installs; and it passes `-DGGML_OPENCL=OFF`, the flag whose absence once shipped a stray backend
+  into two releases. `actions/checkout` moves to v5 (v4 pins a deprecated Node runtime).
+- **`--help` lists every flag the CLI accepts.** `--io-trace` in particular was a fully documented,
+  guarded diagnostic that the usage text never mentioned; `--version`, `-h`, `--prefetch-sync` and
+  the two deprecated `--dense-weights` aliases are named now too. A flag that works but is not
+  listed reads as an accident rather than a decision.
 - **The speculation config generalised to a draft *source*, and the flags with it.** `MtpConfig`
   became `SpecConfig` with `DraftSource { none, mtp, ngram }`, and `--mtp-draft N` became `--draft N`
   because the width belongs to the verify batch, not to whoever filled it; `--mtp` and `--ngram`

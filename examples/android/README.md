@@ -44,6 +44,16 @@ Two build flavors differ only in how a model reaches the device:
 - **play** — Play-Store-compliant. No broad storage permission: models come only through the
   in-app downloader or the file picker. `./gradlew assemblePlayDebug`.
 
+Both declare `android:appCategory="game"`. That is a performance decision rather than a claim
+about what the app is: vendor layers read the attribute to pick a CPU governor profile, and on the
+OxygenOS test device it lifted the foreground ceiling from 1.9/1.65 GHz to the hardware maximum of
+3.32/3.80 GHz. Decode is the most CPU-hungry thing a phone does outside a game. The effect is the
+vendor's, not Android's — neutral on stock builds, and Samsung's game service has historically
+throttled apps it classifies this way — so treat any figure as a per-device measurement. It cannot
+be toggled at runtime; a manifest attribute is fixed at install, and the only lever would be a
+per-flavor manifest. **Numbers measured in the app before this landed are not comparable with
+numbers measured after it.**
+
 ## Getting a model onto the device
 
 The picker lists every MoE `.gguf` it finds (dense models are filtered out by a gguf-header
