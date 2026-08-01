@@ -116,6 +116,22 @@ Semantic Versioning.
   batch. Default `0` (never stop), which is what the host numbers were measured at.
 
 ### Changed
+- **The app's Settings are grouped by purpose, with an Experimental group folded under each.** Each
+  category shows the recommended configuration first; the levers measured on one device, measured
+  once, or still owed a measurement are one tap away rather than interleaved with the settings that
+  are known to work. They stay in the release build on purpose: testing them on other hardware is
+  what the demo app is for, and a lever nobody can reach is a lever nobody can refute. The caveat is
+  stated once in the group header instead of leaking into some descriptions and not others.
+  Every description was rewritten to say what a setting does for the person reading it, with the
+  measured figures removed (a number needs the device, the model and the day beside it to mean
+  anything, and none of that fits under a switch) and the implementation names with them:
+  `O_DIRECT`, top-k, dma-buf, mmap and KV cache are not what someone deciding whether to turn
+  something on needs to know. The metrics screen keeps the flag names deliberately, because there
+  the reader is matching the UI against a CSV column.
+- **The app's session signature is derived from the argv it would open.** It was a hand-written list
+  beside `sessionArgv` with nothing keeping the two in step, and omitting a field there is a silent
+  bug: the setting appears to change while the engine keeps running the old configuration. Three of
+  the four merges in this release collided on exactly that list.
 - **The demo app declares `android:appCategory="game"`.** Vendor performance layers read that
   attribute, and on the OxygenOS test device it moves the app onto the boosted path: with the app
   in the foreground the CPU ceiling went from 1.9/1.65 GHz to the hardware maximum of 3.32/3.80 GHz,

@@ -122,12 +122,25 @@ sweep point from the benchmark protocol, not the app default: the app ships a fi
 expert cache. See `../../docs/benchmark-method.md` for the full procedure and the cache/thread
 sweep.
 
-The Streaming section also exposes the **predictive prefetch** (experimental, off by default):
-the engine predicts each layer's experts one layer early and reads ahead / retains what the
-prediction names (`--predict-prefetch`, with "predicted misses to read ahead" mapping to
-`--predict-spec-max`; 0 = retention only, the app default). It needs the cache on and replaces
-the temporal prefetch — the two are mutually exclusive, and they differ only in the predictor:
-temporal bets each layer repeats the previous token's experts (~40% right), predictive asks the
-next layer's own router one layer early (~85% right). A better guess did not buy throughput:
-in thermally matched pairs the read-ahead **lost** (−21% at spec-max 2), because the flash is
-already saturated — see `../../docs/expert-prediction.md` before drawing conclusions from a run.
+## How Settings are organised
+
+Each category shows the recommended configuration first and folds everything else into a collapsed
+**Experimental** group: the levers measured on one device, measured once, or still owed a
+measurement. They ship in the release build deliberately, because testing them on hardware other
+than the one test phone is what this app is for.
+
+Descriptions in the UI say what a setting does, without measured figures or flag names, because a
+number needs the device, the model and the day beside it to be worth anything. The mapping to the
+CLI flags and the evidence behind each one lives in the docs, and the **metrics screen** keeps the
+flag names so a reading there can be matched against a CSV column.
+
+Two worth knowing before you turn them on:
+
+- **"Ask the next layer what it wants"** (`--predict-prefetch`) predicts each layer's experts one
+  layer early and fetches or retains what the prediction names. It is markedly more accurate than
+  the previous-token guess it replaces, and a better guess still did not buy throughput: in
+  thermally matched pairs the read-ahead **lost**, because the flash is already saturated. See
+  `../../docs/expert-prediction.md` before drawing conclusions from a run.
+- **"Decide the experts early"** (`--route-ahead`) commits each layer's routing before that layer
+  runs, so the reads can never be wasted. It changes the reply, and it is refused alongside guessing
+  ahead. See `../../docs/route-ahead.md`.

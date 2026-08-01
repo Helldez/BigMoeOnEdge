@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- The only string the app resolves through resources: it names the launcher icon and the
+         manifest reads it. Everything the UI shows is written where it is shown, which for a
+         single-locale demo keeps the wording next to the control it explains; the five entries
+         that used to sit here described a UI two rewrites ago and nothing referenced them. -->
     <string name="app_name">BigMoeOnEdge</string>
-    <string name="prompt_hint">Enter a prompt…</string>
-    <string name="run">Run</string>
-    <string name="stop">Stop</string>
-    <string name="cache_label">Expert cache</string>
-    <string name="telemetry_idle">Idle. Pick a model and press Run.</string>
 </resources>

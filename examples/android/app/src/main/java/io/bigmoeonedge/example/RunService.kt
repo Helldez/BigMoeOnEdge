@@ -60,10 +60,6 @@ class RunService : Service() {
     // new prompt would otherwise let a stale kill land on the fresh process.
     private val forceKill = Runnable { killProcess() }
 
-    // The prompt of the in-flight generation, so onDone can commit the completed turn's answer
-    // against the question that produced it.
-    @Volatile private var inFlightPrompt: String = ""
-
     // The CPU thermal-zone `temp` node, discovered once on the first sample and reused thereafter.
     @Volatile private var cpuThermalZone: File? = null
 
@@ -240,6 +236,9 @@ class RunService : Service() {
     }
 
     private fun onDone(json: String) {
+        // A malformed summary must not leave the UI in GENERATING forever with no turn committed
+        // and nothing said. The parse is allowed to fail, but the failure has to reach the user and
+        // the state machine has to return to READY, which the epilogue below does unconditionally.
         runCatching {
             val o = JSONObject(json)
             val tokens = o.optInt("tokens")
@@ -341,10 +340,21 @@ class RunService : Service() {
                 it.copy(state = EngineState.READY, telemetry = tel, answer = "", reasoning = "",
                     summary = summary, transcript = transcript)
             }
+        }.onFailure { e ->
+            // Commit whatever was streamed so the answer is not lost, say what happened, and go
+            // back to READY. Anything else strands the session in a state only a restart clears.
+            RunBus.update {
+                val transcript =
+                    if (it.answer.isNotEmpty())
+                        it.transcript + ChatTurn("assistant", it.answer, "", it.reasoning)
+                    else it.transcript
+                it.copy(state = EngineState.READY, answer = "", reasoning = "", transcript = transcript,
+                    error = "The engine's end-of-turn summary could not be read (${e.message}). " +
+                        "The answer above is what streamed before it.")
+            }
         }
         sampleCpuTemp()
         releaseWake()
-        inFlightPrompt = ""
         main.post { notify("Model ready") }
         scheduleIdleUnload()
     }
@@ -428,7 +438,6 @@ class RunService : Service() {
 
     private fun sendGenerate(req: Req) {
         val id = nextId++
-        inFlightPrompt = req.prompt
         // Show the user's turn immediately. clear_kv = "new chat" resets the transcript to this turn.
         RunBus.update {
             val user = ChatTurn("user", req.prompt)
