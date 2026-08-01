@@ -120,7 +120,7 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     format = { if (it == 0) "off" else "$it" },
                     // Mutually exclusive with predictive prefetch: two predictors would speculate
                     // the same future twice, and the engine refuses the pair.
-                    enabled = stream && cacheOn && !current.predictPrefetch,
+                    enabled = stream && cacheOn && !current.predictPrefetch && current.routeAhead == 0,
                 ) { onChange(current.copy(prefetchLayers = it)) }
                 Text(
                     "Experimental. Bets a layer will reuse the experts it picked for the previous token, and " +
@@ -129,10 +129,12 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 )
                 SwitchRow(
                     "Predictive prefetch (experimental)",
-                    "Experimental. Rather than betting on the previous token, runs the next layer's own " +
-                        "router early to ask which experts it will actually want. Reads ahead within the " +
-                        "budget below and protects what it names. Needs the cache; replaces the above.",
-                    current.predictPrefetch, enabled = stream && cacheOn && current.prefetchLayers == 0,
+                    "Instead of betting on the previous token, asks the next layer's own router one " +
+                        "layer early to find out which experts it will actually want. Reads ahead within " +
+                        "the budget below and keeps what the prediction names. Needs the cache; replaces " +
+                        "temporal prefetch.",
+                    current.predictPrefetch,
+                    enabled = stream && cacheOn && current.prefetchLayers == 0 && current.routeAhead == 0,
                 ) { onChange(current.copy(predictPrefetch = it)) }
                 if (current.predictPrefetch) {
                     IntSetting(
@@ -213,6 +215,19 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 Text(
                     "Consult fewer experts per token than the model asks for. Cuts both the computing and " +
                         "the reading, and changes the reply — a deliberate trade of quality for speed.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                IntSetting(
+                    "Route-ahead (layers)", AppSettings.ROUTE_AHEAD_CHOICES, current.routeAhead,
+                    format = { if (it == 0) "off" else "$it" },
+                    // Excludes both prefetchers: the engine refuses speculating a future this has
+                    // already fixed. Needs streaming; the cache is what turns it into early reads.
+                    enabled = !current.mmap && current.prefetchLayers == 0 && !current.predictPrefetch,
+                ) { onChange(current.copy(routeAhead = it)) }
+                Text(
+                    "Experimental, changes the output. Each layer's expert choice is committed N layers " +
+                        "early — so with the cache on their reads start that early and are never wasted. " +
+                        "~20% of choices differ from the router's at 1 layer; quality held in the host A/B.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 IntSetting(

@@ -142,7 +142,12 @@ private:
     // Speculative prefetch (temporal): drain queued spec reads on an idle lane, and integrate /
     // discard them on the eval thread at the next real load. See docs/prefetch.md.
     void drain_spec(int lane, uint64_t worker_seen);
-    void quiesce_spec();
+    // adopt_il >= 0 (route-ahead only): the layer being staged COMMITTED to its speculated ids, so
+    // its queued spec reads are the demand reads — finish them instead of cancelling them, and
+    // leave every other layer's committed reads queued rather than destroying them.
+    void quiesce_spec(int adopt_il = -1);
+    void spec_integrate_done();       // integrate completed spec entries; cancel nothing (route-ahead)
+    void drain_adopted(int adopt_il); // serial: lane 0 reads the loading layer's adopted jobs inline
     void release_entry_pages(int32_t id);
 
     // Accumulate one token's routed working set. Eval-thread only, called per layer load.
@@ -190,8 +195,27 @@ private:
     bool active_ = false;
     bool load_all_ = false;
     bool overlap_ = false;
-    bool two_wave_ = false;      // publish the first projection's jobs before committing the rest (#118)
-    bool prefetch_sync_ = false; // test only: drain prefetch reads synchronously (serial mode)
+    bool two_wave_ = false;                  // publish the first projection's jobs before committing the rest (#118)
+    bool prefetch_sync_ = false;             // test only: drain prefetch reads synchronously (serial mode)
+    bool spec_adopt_ = false;                // route-ahead: staged layers adopt committed spec reads (see quiesce_spec)
+    std::vector<int32_t> spec_adopt_ids_;    // scratch: the loading layer's pending spec entries
+    std::vector<int32_t> spec_done_scratch_; // scratch: completed entries being integrated
+    std::vector<int32_t> spec_cand_;         // scratch: prefetch candidates surviving the residency filter
+    // How many completed entries are waiting to be integrated. Mirrors spec_done_.size(), but
+    // readable without the lanes' mutex, so the route-ahead settle — which runs before every issue,
+    // 40 times a token — can skip the lock entirely on the common empty case.
+    std::atomic<long long> spec_done_pending_{0};
+    // Churn detector: which entries have ever been evicted, and how many reads went to an entry
+    // that had been resident before. A prefetch cannot reduce the bytes a routing needs — the
+    // ideal is the same bytes, earlier — so any read of something the cache already had once is
+    // the cache paying twice, and it is the only way a "100% useful" prefetch can still raise
+    // the byte count. Reported per run; cheap enough (one byte per entry, one branch per read).
+    std::vector<uint8_t> ever_evicted_;
+    long long rereads_ = 0, evictions_ = 0;
+    // Eval-thread wait counters (see IExpertSource::Stats): the async load's previous-batch drain
+    // (lives in the compute residual) and the route-ahead adoption wait (lives inside mgmt).
+    // Eval-thread only, like the LRU itself — two clock reads per wait, nothing on the lanes.
+    long long drain_wait_ns_ = 0, adopt_wait_ns_ = 0;
     int n_layer_ = 0;
     int n_expert_ = 0;
     size_t align_ = 4096;

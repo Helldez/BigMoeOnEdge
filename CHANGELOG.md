@@ -166,6 +166,70 @@ Semantic Versioning.
   width (5.59 at draft 2 and 4.38 at draft 3 against 5.82–6.14 baseline) because the shipping
   configuration is compute-bound — `stall_s/tok` is 0.025–0.027 whether speculation is on or off —
   while the read set widens 35–54% and CPU per token rises 28–67%. The flag stays off.
+- **`--route-ahead N` — commit decode routing to the N-layers-early prediction (experimental,
+  lossy, off by default).** Every prefetch lives under the same ceiling: layer L's routing needs
+  layer L−1's output, so any predictor working earlier is approximate and every speculated read
+  can miss. This flag inverts the bet — the expert selection of decode layer L is *replaced* by
+  the ranking layer L's own gate produced on the hidden state N layers back in the same forward
+  pass, so the selection is known N full layers of compute early and a prefetch of it could never
+  be wrong (the training-free cousin of Pre-gated MoE, ISCA'24). The router still computes: its
+  logits give the substituted experts their true renormalized weights via the graph's own weight
+  chain, and each layer's gate input feeds the prediction for layer L+N. Layers 0..N−1, prefill,
+  the first decode token and anything unreadable route normally and are counted as passed
+  through. The `moe-route-ahead:` report line and the `route_ahead=` CSV preamble key record how
+  many routings were committed and how far the committed selection sat from the router's own
+  choice — the measured perturbation the run generated under. Mutually exclusive with
+  `--predict-log` and both prefetchers; composes with the cache and expert dropping. With the
+  LRU cache on, the committed selection is also acted on: layer L+N's ids are handed to the
+  speculative read path the moment they are fixed (at layer L's load), uncapped — unlike every
+  predictor before them these reads can never be wasted, so the `moe-prefetch: [route-ahead]`
+  line reports a useful fraction that sits at ~100% by construction — and the issue list is
+  drop-aware: committed experts predicted below the `--drop-cold-experts` threshold are left
+  cold on purpose so the commit-time drop discards them unread, exactly as it does the router's
+  own tail (measured on device before this filter: uncapped early reads un-dropped everything,
+  3x the flash per token and half the tok/s at depth 4). The prediction itself runs
+  on the barrier-less path predictive prefetch built — pointers stashed in the ask pass, the row
+  copied at the topk callback, the GEMV on the shared worker thread, the sampled fresh-gate
+  watchdog validating the read — so no graph barrier is added and the eval thread pays only a
+  row copy per layer; a watchdog trip disarms the policy out loud, and a layer whose ranking is
+  not ready when its topk fires keeps the router's own choice. On the streamer side, committed
+  speculation is exempt from the destructive quiesce built for guessing predictors: a loading
+  layer adopts its own committed jobs (finishing them instead of discarding and re-reading), and
+  other layers' committed reads survive in the queue — without this, every early read at depth 2
+  was destroyed before use. Host A/B under `--overlap` (fixed cache, same prompt): N=2 cuts the
+  overlap stall 0.060 → 0.010 s/token (97% of early reads useful) for +20% tok/s end to end,
+  with the generation still correct. **Device: components proven, end-to-end owed.** An I/O trace of every physical read
+  (decode-only, equal length) shows the committed routing reads what the baseline reads — 133.6
+  vs 134.4 MiB/token, the same 4% redundancy, zero speculative-then-demand pairs — so nothing is
+  fetched twice, and the overlap stall falls consistently from 0.038-0.059 to 0.006-0.007
+  s/token. **Device throughput, measured: +21%.** Interleaved cells (baseline / N=2, two passes,
+  same prompt and length, so thermal drift hits both equally) put N=2 at 5.29 tok/s against 4.36
+  for the baseline, with the overlap stall down 0.067 → 0.010 s/token and the compute residual
+  essentially unchanged (0.135 → 0.146) — the win is the stall, not a trade. The same build
+  measures only +4% inside the demo app, and the reason is not the engine: with the app in
+  foreground the device caps its six main cores at 1.9 GHz (2188800 → 1900800 Hz, measured),
+  which slows the compute the flag is trying to keep busy and shrinks the share of the token
+  that was stall. Two real costs were found by instrumenting rather than arguing, and both are fixed:
+  the issue path took the I/O lanes' mutex once per expert (~120 acquisitions a token; the same
+  run with one lane did identical work at a quarter of the compute time), now 0.9 ms/token; and
+  the gate GEMV was bandwidth-bound rather than compute-bound — ranking 256 experts re-reads a
+  ~4 MB gate matrix per layer — now served from an int8 mirror with a quantized activation
+  (aarch64 only; on x86 the float path is already vectorized and the detour costs more than it
+  saves), 19 → 6 ms/token with the committed selection agreeing on 74.5% of slots against 74.7%
+  for the exact weights. What is still missing is a clean throughput pair: after a long
+  benchmarking session the phone's own baseline swung between 0.79 and 4.54 tok/s in the same
+  cell — which is why the figure above comes from interleaved cells rather than absolutes. Every
+  eval-thread cost the flag adds now reports itself in the CSV and the summary (`ra_issue_ms`,
+  `ra_wd_ms`, `adopt_ms` inside mgmt, `drain_ms` inside compute, plus cache `evictions`/`rereads`),
+  because five successive explanations of this feature's device cost were deduced from a residual
+  and all five were wrong. One structural cost remains and is documented as the next step: the graph
+  computes its own router matmul regardless, so this implementation runs two gate matmuls per
+  layer where the design wants one substituted — removing the second one means changing the
+  graph, i.e. the fork that already exists for the expert-ready hook. Quality is measured, not
+  assumed: the committed generations match the baseline's on a four-prompt objective battery
+  (4/4 correct in both, one answer byte-identical), on a 512-token essay, and on a second model
+  of a different generation and quantization (+22% there); output is deterministic across
+  repeated runs, which expert dropping is not. See `docs/route-ahead.md`.
 
 ## [0.18.1] - 2026-07-29
 

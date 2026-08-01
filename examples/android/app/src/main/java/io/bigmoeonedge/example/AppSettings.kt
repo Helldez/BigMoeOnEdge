@@ -47,6 +47,13 @@ data class AppSettings(
     // spends no flash and only protects predicted residents from eviction). Defaults to 0 because
     // the matched-pair A/B showed read-ahead losing on a saturated flash (docs/expert-prediction.md).
     val predictSpecMax: Int = 0,
+    // Route-ahead (experimental, LOSSY): decode routing at layer L is COMMITTED to the prediction
+    // made N layers earlier in the same forward pass, and with the cache on the committed experts
+    // are read that early — reads that can never be wasted, since they ARE the routing. Changes
+    // the output (~20% of slots re-route at N=1; quality held in the first host A/B). Excludes
+    // both prefetchers, so sessionArgv only emits it when they are off. 0 = off, the default
+    // until the on-device A/B earns it more.
+    val routeAhead: Int = 0,
     // Cache-aware expert dropping, as a PERCENTAGE of the uniform share 1/top-k (0 = off, 100 = the
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
@@ -144,6 +151,12 @@ data class AppSettings(
                 a += "--predict-prefetch"
                 a += listOf("--predict-spec-max", predictSpecMax.toString())
             }
+            // Route-ahead excludes both prefetchers (the engine refuses the pairs: they would
+            // speculate a future route-ahead has already fixed). It works without the cache too —
+            // the routing still commits — but only reads early when the cache is on.
+            if (routeAhead > 0 && prefetchLayers == 0 && !predictPrefetch) {
+                a += listOf("--route-ahead", routeAhead.toString())
+            }
             // Cache-aware dropping needs a live cache to ask about residency — with the cache off
             // every expert reads as a miss and the engine rejects the combination outright, so the
             // same cacheOn condition that guards prefetch guards this. The engine takes a fraction
@@ -170,8 +183,8 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, sessionCtx, oDirect,
-               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct,
-               spec, mtpDraft, mtpPMinPct)
+               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, routeAhead,
+               dropColdPct, spec, mtpDraft, mtpPMinPct)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -186,6 +199,7 @@ data class AppSettings(
             .putInt("prefetchLayers", prefetchLayers)
             .putBoolean("predictPrefetch", predictPrefetch)
             .putInt("predictSpecMax", predictSpecMax)
+            .putInt("routeAhead", routeAhead)
             .putInt("dropColdPct", dropColdPct)
             .putInt("sessionCtx", sessionCtx)
             .putString("spec", spec).putInt("mtpDraft", mtpDraft).putInt("mtpPMinPct", mtpPMinPct)
@@ -287,6 +301,10 @@ data class AppSettings(
         // default — the matched-pair A/B showed 2 losing −21% on a saturated flash; anything above
         // it re-buys the measured full-speculation pathology.
         val PREDICT_SPEC_CHOICES = intArrayOf(0, 1, 2, 4)
+        // Route-ahead depth: how many layers early the routing is committed (and read). Each layer
+        // of depth widens the I/O window and the routing perturbation together; 1 is the measured
+        // sweet spot on the host, 4 the edge where damage first showed.
+        val ROUTE_AHEAD_CHOICES = intArrayOf(0, 1, 2, 4)
         // Percent of the uniform share 1/top-k. 100 is the share itself and the useful maximum:
         // above it the threshold could exceed every weight in a routing. The rungs below it are the
         // conservative half of the curve, where the replay already beats a top-k cut on both axes.
@@ -321,6 +339,7 @@ data class AppSettings(
                 prefetchLayers = p.getInt("prefetchLayers", d.prefetchLayers),
                 predictPrefetch = p.getBoolean("predictPrefetch", d.predictPrefetch),
                 predictSpecMax = p.getInt("predictSpecMax", d.predictSpecMax),
+                routeAhead = p.getInt("routeAhead", d.routeAhead),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
                 sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
                 spec = run {

@@ -44,6 +44,11 @@ object MetricFields {
 
         MetricField("loop_overhead_ms", "time between tokens", "everything outside llama_decode: sampling, detokenization, rendering the answer, writing the sinks. It falls outside wall_ms and so outside the reported tok/s, which is why it needs a column — work that moves only this number is paid on every token and shows up nowhere else. On the first token, the gap from the end of prefill to the first decode", Better.LOWER),
 
+        MetricField("drain_ms", "wait on previous batch", "overlap only: eval-thread time waiting for the PREVIOUS layer's reads to finish before reusing their slots — part of compute_ms, named so a large compute residual can be attributed instead of guessed at", Better.LOWER),
+        MetricField("adopt_ms", "wait adopting committed reads", "route-ahead only: the load waiting for its own committed speculative reads to complete before staging — part of mgmt_ms", Better.LOWER),
+        MetricField("ra_issue_ms", "issuing early reads", "route-ahead only: eval-thread time issuing the committed selection's reads (settle, residency, retain, prefetch) — part of compute_ms", Better.LOWER),
+        MetricField("ra_wd_ms", "watchdog control", "route-ahead only: the sampled fresh-gate control's exact GEMV on the eval thread — part of compute_ms", Better.LOWER),
+
         MetricField("mem_available_mib", "device 'available' (it lies)", "what the kernel claims is free — it counts our own mmap'd weights as reclaimable, so it over-states headroom", Better.NEUTRAL),
         MetricField("mem_free_mib", "device free", "truly free RAM, before any reclaim", Better.NEUTRAL),
         MetricField("swap_free_mib", "swap free", "zram space left before the device is truly out of room", Better.NEUTRAL),
@@ -89,6 +94,7 @@ object ConfigFields {
         ConfigField("io_two_wave", "the first projection's reads were published to the lanes as soon as they were staged, rather than after the whole layer"),
         ConfigField("load_all", "every expert was loaded each token, routing ignored. An A/B baseline"),
         ConfigField("prefetch", "temporal prefetch depth in layers, betting this token routes like the last. 0 = off"),
+        ConfigField("route_ahead", "each layer's expert choice was COMMITTED to the prediction made this many layers earlier in the same forward pass, and read that early. Lossy: a fraction of choices differ from the router's own. 0 = off"),
         ConfigField("predict_prefetch", "the next layer's router ran early, and the cache acted on that prediction instead of the previous token's routing"),
         ConfigField("predict_spec_max", "how many predicted, non-resident experts were read ahead. 0 = retention only, which spends no flash and merely protects predicted residents from eviction. Recorded but unused when predict_prefetch is off"),
         ConfigField("predict_log", "prediction-accuracy probe. A diagnostic, not a shipping setting"),

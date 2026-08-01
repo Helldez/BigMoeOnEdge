@@ -46,6 +46,11 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     overlap_ = cfg.overlap;
     two_wave_ = cfg.io_two_wave;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
+    // Under route-ahead the speculated ids of a layer ARE the ids its topk will commit, so the
+    // demand load adopts that layer's in-flight speculation instead of discarding and re-reading
+    // it. Off for every guessing predictor: adopting a wrong guess would make the load wait on
+    // reads it does not need.
+    spec_adopt_ = cfg.route_ahead > 0;
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
     page_ = pio::vm_page(); // the real OS page size, for the dense-residency probe in any cache mode
@@ -165,6 +170,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         cnext_.assign(n_entry, -1);
         cspec_.assign(n_entry, 0);
         spec_remaining_.assign(n_entry, 0);
+        ever_evicted_.assign(n_entry, 0);
         chead_ = ctail_ = -1;
         cresident_ = 0;
         cgen_ = 0;
@@ -393,14 +399,26 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
     staged.clear();
     staged_ids.clear();
     staged_counts.clear();
-    for (int i = 0; i < n_ids; ++i) {
-        const int e = ids[i];
-        if (e < 0 || e >= n_expert_) continue;
-        const int32_t id = il * n_expert_ + e;
-        {
-            std::lock_guard<std::mutex> lk(io_mtx_);
+
+    // Filter under ONE lock, not one per expert. This runs on the eval thread while every I/O lane
+    // is taking the same mutex to pull its next read index, and a blocked eval thread is a
+    // descheduled compute thread: measured on a phone, the per-expert acquisition was part of ~120
+    // acquisitions per token that cost ~600 ms of wall (the same run with a single lane, hence no
+    // contention, spent a quarter of the compute time on identical work).
+    std::vector<int32_t> & cand = spec_cand_;
+    cand.clear();
+    {
+        std::lock_guard<std::mutex> lk(io_mtx_);
+        for (int i = 0; i < n_ids; ++i) {
+            const int e = ids[i];
+            if (e < 0 || e >= n_expert_) continue;
+            const int32_t id = il * n_expert_ + e;
             if (cvalid_[id] || spec_remaining_[id] != 0) continue; // already resident or already queued
+            cand.push_back(e);
         }
+    }
+    for (int e : cand) {
+        const int32_t id = il * n_expert_ + e;
         const size_t mark = staged.size();
         int njobs = 0;
         bool ok = true;
@@ -426,6 +444,7 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
             break;
         }
         if (njobs == 0) continue;
+        if (ever_evicted_[id]) ++rereads_; // same accounting on the speculative path
         staged_ids.push_back(id);
         staged_counts.push_back(njobs);
         any = true;
@@ -451,7 +470,10 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
             const bool ok = read_slice(0, j);
             if (ok && g == spec_gen_) {
                 spec_read_bytes_.fetch_add((long long) j.nbytes);
-                if (--spec_remaining_[j.flag] == 0) spec_done_.push_back(j.flag);
+                if (--spec_remaining_[j.flag] == 0) {
+                    spec_done_.push_back(j.flag);
+                    spec_done_pending_.fetch_add(1, std::memory_order_relaxed);
+                }
             }
             --spec_inflight_;
         }
@@ -480,7 +502,17 @@ void ExpertStreamSource::drain_spec(int lane, uint64_t worker_seen) {
             std::lock_guard<std::mutex> lk(io_mtx_);
             if (ok && g == spec_gen_) { // ignore reads from a cancelled round
                 spec_read_bytes_.fetch_add((long long) j.nbytes);
-                if (--spec_remaining_[j.flag] == 0) spec_done_.push_back(j.flag);
+                if (spec_remaining_[j.flag] > 0 && --spec_remaining_[j.flag] == 0) {
+                    spec_done_.push_back(j.flag);
+                    spec_done_pending_.fetch_add(1, std::memory_order_relaxed);
+                    // The adoption wait watches per-entry counters, not just the in-flight count.
+                    io_cv_done_.notify_all();
+                }
+            } else if (!ok && spec_adopt_) {
+                // Forget-on-failure: zeroing the counter keeps the adoption wait from parking
+                // forever, and !cvalid means a later demand read re-buys the entry.
+                spec_remaining_[j.flag] = 0;
+                io_cv_done_.notify_all();
             }
             if (--spec_inflight_ == 0) io_cv_done_.notify_all();
         }
@@ -490,7 +522,72 @@ void ExpertStreamSource::drain_spec(int lane, uint64_t worker_seen) {
 // Quiesce speculation before real staging: cancel queued reads, wait out in-flight ones, then on
 // this (eval) thread integrate every fully-read entry into the cache and release the rest. All LRU
 // mutation happens here, single-threaded, so it never races the real staging that follows.
-void ExpertStreamSource::quiesce_spec() {
+void ExpertStreamSource::quiesce_spec(int adopt_il) {
+    // Adoption (route-ahead only): the layer about to stage COMMITTED to the ids its speculation
+    // was issued for, so its queued spec reads are not bets to discard — they are the layer's own
+    // demand reads, already staged and possibly partly done. Keep exactly those, drop the rest of
+    // the queue, and FINISH them here (this thread drains alongside any idle lane) before the
+    // normal quiesce below integrates them as resident entries — which the staging then sees as
+    // hits, so no byte is read twice. Without this, a committed layer's in-flight speculation was
+    // released at its own load and re-read on demand: measured on the host at depth 2, every
+    // early read was wasted that way (0% useful, double flash per token). The generation is NOT
+    // bumped before the drain — bumping is what disowns reads, and these are being adopted.
+    // Adoption (route-ahead only): under a committed routing, EVERY job in the spec queue is a
+    // read some layer will demand verbatim — the loading layer's own jobs are its demand reads
+    // already staged, and the other layers' jobs are demand reads a few callbacks early. So
+    // nothing is cancelled: the loading layer's jobs move to the front and are finished now,
+    // completed entries integrate, and everything else stays queued for the idle lanes. The
+    // destructive quiesce below (cancel, disown, release) remains the right treatment for the
+    // guessing predictors, whose queue really is bets. Measured before this branch existed: at
+    // depth 2 every early read was destroyed — by the intervening load's quiesce or by the
+    // settle preceding each issue — for 0% useful and double flash per token.
+    if (spec_adopt_ && adopt_il >= 0) {
+        std::vector<int32_t> & adopt = spec_adopt_ids_;
+        adopt.clear();
+        {
+            std::lock_guard<std::mutex> lk(io_mtx_);
+            std::stable_partition(spec_jobs_.begin() + (ptrdiff_t) spec_next_, spec_jobs_.end(),
+                                  [&](const IoJob & j) { return j.layer == (int16_t) adopt_il; });
+            for (int32_t id : spec_touched_)
+                if (id / n_expert_ == adopt_il && spec_remaining_[id] != 0) adopt.push_back(id);
+            // Without the full quiesce ever running, spec_touched_ would grow for the whole
+            // session; entries fully settled need no release sweep, so drop them here.
+            spec_touched_.erase(std::remove_if(spec_touched_.begin(), spec_touched_.end(),
+                                               [&](int32_t id) { return spec_remaining_[id] == 0; }),
+                                spec_touched_.end());
+        }
+        if (!adopt.empty()) {
+            io_cv_.notify_all(); // idle worker lanes take the queue
+            // Serially, lane 0 belongs to this thread, so it reads its own layer's jobs alongside
+            // the workers; under overlap every lane is a worker and the eval thread must not
+            // touch a reader — doing so raced worker 0 on one reader and fed the matmul
+            // corrupted slices (first symptom: the routing agreeing BETTER with its own
+            // prediction, garbage states drifting toward whatever the perturbed layers produce).
+            //
+            // Then WAIT for the loading layer's own entries, in both modes — measured, not
+            // assumed: a no-wait variant that skipped these entries at staging and published
+            // per-expert readiness from the completing reads was built and benchmarked, and it
+            // LOST (5.8 vs 6.6 tok/s on the host at depth 2). Late integration enters the
+            // entries cold, the eviction churns them, and the per-expert stalls it trades this
+            // wait for cost more than the wait — which is short by construction, because these
+            // jobs started a layer or more ago.
+            if (!overlap_) drain_adopted(adopt_il);
+            const auto tw0 = clock_t_::now();
+            {
+                std::unique_lock<std::mutex> lk(io_mtx_);
+                io_cv_done_.wait(lk, [&] {
+                    if (io_stop_) return true;
+                    for (int32_t id : adopt)
+                        if (spec_remaining_[id] != 0) return false;
+                    return true;
+                });
+            }
+            adopt_wait_ns_ +=
+                (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - tw0).count();
+        }
+        spec_integrate_done();
+        return;
+    }
     std::vector<int32_t> done, touched;
     {
         std::unique_lock<std::mutex> lk(io_mtx_);
@@ -499,6 +596,7 @@ void ExpertStreamSource::quiesce_spec() {
         spec_next_ = 0;
         io_cv_done_.wait(lk, [&] { return spec_inflight_ == 0 || io_stop_; });
         done.swap(spec_done_);
+        spec_done_pending_.store(0, std::memory_order_relaxed);
         touched.swap(spec_touched_);
     }
     // Integrate completed entries (all projections resident) into the LRU cache.
@@ -629,6 +727,8 @@ void ExpertStreamSource::release_entry_pages(int32_t id) {
 }
 void ExpertStreamSource::evict_tail() {
     const int32_t id = ctail_;
+    ++evictions_;
+    ever_evicted_[id] = 1; // the next read of this entry is the cache paying twice
     release_entry_pages(id);
     cvalid_[id] = 0;
     cspec_[id] = 0;
@@ -658,7 +758,92 @@ void ExpertStreamSource::settle_spec() {
     // makes the one inside the load_layer that follows a cheap no-op: nothing left queued, and
     // nothing in flight. The cost is that its time lands outside the mgmt_ns_ window — which is
     // why a traced run is not a benchmark run.
-    if (active_ && cache_max_) quiesce_spec();
+    //
+    // Under route-ahead the destructive settle would be a saboteur, not a bookkeeper: the hook
+    // settles right before every issue, so the full quiesce here cancelled the future layers'
+    // committed reads one callback before their load could adopt them. Integrate-only instead.
+    if (!active_ || cache_max_ == 0) return;
+    if (spec_adopt_) {
+        // Cheap exit without touching the lanes' mutex: this runs before every route-ahead issue
+        // (40 times a token) and usually has nothing to integrate. spec_done_pending_ is the
+        // publisher's own count, so a relaxed read either sees work — and we take the lock — or
+        // races a completion we will pick up at the next issue microseconds later.
+        if (spec_done_pending_.load(std::memory_order_relaxed) != 0) spec_integrate_done();
+    } else {
+        quiesce_spec();
+    }
+}
+
+// Integrate every completed speculative entry into the LRU cache, cancelling nothing — the
+// route-ahead settle. Eval-thread only (LRU mutation), like the quiesce that subsumes it.
+void ExpertStreamSource::spec_integrate_done() {
+    std::vector<int32_t> & done = spec_done_scratch_;
+    done.clear();
+    {
+        // BOTH eligibility guards run under io_mtx_, exactly as the destructive integrate runs
+        // its own, and the remaining check is load-bearing: a completion can land in spec_done_
+        // concurrently with (and just before) an issue that re-stages the same entry, and
+        // integrating that stale completion would push an entry with LIVE queued jobs into the
+        // LRU — the eviction then decommits pages a lane is about to write, which was this
+        // feature's one segfault. The stale id is simply dropped; the new round's own completion
+        // re-pushes it. After this snapshot the check cannot rot: re-staging happens only on
+        // this same (eval) thread.
+        std::lock_guard<std::mutex> lk(io_mtx_);
+        for (int32_t id : spec_done_)
+            if (!cvalid_[id] && spec_remaining_[id] == 0) done.push_back(id);
+        spec_done_.clear();
+        spec_done_pending_.store(0, std::memory_order_relaxed);
+    }
+    for (int32_t id : done) {
+        cvalid_[id] = 1;
+        cspec_[id] = 1;  // speculative until a real lookup hits it (then counted useful)
+        cstamp_[id] = 0; // not used this generation → evictable if the budget is tight
+        cresident_ += entry_bytes(id / n_expert_);
+        // Cold end for a GUESS (a mispredicted expert should be the first thing reclaimed) — but
+        // under route-ahead there are no guesses: every integrated entry is a read some layer
+        // COMMITTED to, at most N layers from being routed. Entering it cold handed it to the
+        // very evictions of the intervening layers' loads, and on a device whose cache runs at
+        // capacity that destroyed the entries before use and re-bought them on demand — a
+        // perfect prefetch paying its bytes twice (measured: +34% read/token, drop off). A
+        // committed read enters HOT; its own routing arrives to promote it within N layers
+        // anyway.
+        if (spec_adopt_)
+            lru_push_front(id);
+        else
+            lru_push_back(id);
+        spec_experts_.fetch_add(1);
+    }
+}
+
+// Serial-mode helper for adoption: this thread owns lane 0, so it reads the loading layer's own
+// adopted jobs — which sit at the front after the partition — and stops at the first job that
+// belongs to a future layer, which stays queued for the worker lanes' idle time.
+void ExpertStreamSource::drain_adopted(int adopt_il) {
+    for (;;) {
+        IoJob j;
+        {
+            std::lock_guard<std::mutex> lk(io_mtx_);
+            if (spec_next_ >= spec_jobs_.size() || spec_jobs_[spec_next_].layer != (int16_t) adopt_il) return;
+            j = spec_jobs_[spec_next_++];
+            ++spec_inflight_;
+        }
+        const bool ok = read_slice(0, j);
+        {
+            std::lock_guard<std::mutex> lk(io_mtx_);
+            if (ok) {
+                spec_read_bytes_.fetch_add((long long) j.nbytes);
+                if (spec_remaining_[j.flag] > 0 && --spec_remaining_[j.flag] == 0) {
+                    spec_done_.push_back(j.flag);
+                    spec_done_pending_.fetch_add(1, std::memory_order_relaxed);
+                }
+            } else {
+                // A failed read forgets the entry: zeroing its counter keeps the adoption wait
+                // from hanging, and !cvalid means the demand path simply re-reads it.
+                spec_remaining_[j.flag] = 0;
+            }
+            if (--spec_inflight_ == 0) io_cv_done_.notify_all();
+        }
+    }
 }
 
 void ExpertStreamSource::query_residency(int il, const int32_t * ids, int n_ids, uint8_t * out) const {
@@ -723,6 +908,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
         if (commit_only_proj >= 0 && p != commit_only_proj) continue;
         if (!commit_proj_pages(il, e, p)) return false;
     }
+    if (ever_evicted_[id]) ++rereads_; // this entry was resident once; the cache is buying it again
     cvalid_[id] = 1;
     cspec_[id] = 0; // a real read, not speculative
     cresident_ += entry_bytes(il);
@@ -746,7 +932,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     // Integrate / discard any speculative prefetch before this layer's real staging touches the
     // cache. After this returns no spec read is in flight and completed ones are resident hits. The
     // budget is fixed for the run (auto sizes it once at init), so there is nothing to resize here.
-    if (cache_max_) quiesce_spec();
+    if (cache_max_) quiesce_spec(spec_adopt_ ? il : -1);
 
     auto stage = [&](int e) -> bool {
         if (cache_max_ == 0) {
@@ -861,8 +1047,11 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     //    safety guarantee (no worker still reading an about-to-be-evicted page) and it covers
     //    load_all, whose surplus jobs no hook ever waits on. Serial's epilogue waited here too.
     {
+        const auto tw0 = clock_t_::now();
         std::unique_lock<std::mutex> lk(io_mtx_);
         io_cv_done_.wait(lk, [&] { return done_cnt_ == batch_njobs_ || io_stop_; });
+        drain_wait_ns_ +=
+            (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - tw0).count();
     }
     if (fatal_.load(std::memory_order_acquire)) return false;
 
@@ -874,7 +1063,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     // Integrate / discard speculative prefetch before this layer's real staging (the previous
     // batch is already drained above, so this only waits on in-flight spec reads). The budget is
     // fixed for the run, so there is nothing to resize here.
-    if (cache_max_) quiesce_spec();
+    if (cache_max_) quiesce_spec(spec_adopt_ ? il : -1);
 
     // 2. New generation for this layer. A flag counts as ready only once its gen matches.
     const uint32_t gen = async_gen_.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1011,14 +1200,22 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
         // Promote every touched expert in raw id order (token-major) so the LRU order reflects
         // the LAST token that used it, not the sorted/first-touch order staged_ imposes — this
         // keeps the prompt tail's experts hot across prefill. This loop is the ONLY promotion on
-        // this path (touch_entry above runs with promote=false); every id staged above is valid
-        // and linked, a miss by its initial push, so unlink here is always legal.
+        // this path (touch_entry above runs with promote=false).
         // Skipped in load_all (everything is resident, so LRU order is meaningless).
+        //
+        // The cvalid guard is load-bearing, not defensive: an ADOPTED-PENDING expert (route-ahead)
+        // was deliberately never staged, so it is not in the LRU — and lru_unlink on a node whose
+        // prev/next are both -1 rewrites chead_/ctail_ to -1, orphaning every linked entry in one
+        // call. That was this feature's second segfault: the next push_front made the pending
+        // entry the LIST, eviction took it (decommitting pages its reads were still filling), and
+        // the orphaned entries could never be evicted again. A pending expert needs no promotion:
+        // it enters the LRU at integration, and its first real hit promotes it then.
         if (!load_all_) {
             for (int i = 0; i < n_ids; ++i) {
                 const int e = ids[i];
                 if (e < 0 || e >= n_expert_) continue;
                 const int32_t id = il * n_expert_ + e;
+                if (!cvalid_[id]) continue;
                 lru_unlink(id);
                 lru_push_front(id);
             }
@@ -1155,6 +1352,10 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.stall_seconds = stall_ns_.load() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
+    s.evictions = evictions_;
+    s.rereads = rereads_;
+    s.drain_wait_seconds = drain_wait_ns_ / 1e9;
+    s.adopt_wait_seconds = adopt_wait_ns_ / 1e9;
     s.dense_resident_frac = dense_.resident_frac();
     s.token_demand_bytes = (uint64_t) token_demand_;
     s.layer_demand_bytes = (uint64_t) layer_demand_;
@@ -1190,6 +1391,7 @@ void ExpertStreamSource::shutdown() {
         if (t.joinable()) t.join();
     io_pool_.clear();
     spec_done_.clear();
+    spec_done_pending_.store(0, std::memory_order_relaxed);
     spec_touched_.clear();
 
     for (int p = 0; p < MoeRecipe::max_exps; ++p)

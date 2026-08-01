@@ -22,6 +22,16 @@ struct TokenMetrics {
     double mgmt_ms = 0.0;    // cache-management time (vm commit + evict + LRU bookkeeping) this token
     double compute_ms = 0.0; // residual: serial wall - io - mgmt; overlap wall - stall - mgmt
     double stall_ms = 0.0;   // overlap only: wall time the FFN kernel blocked on flash (0 when serial)
+    // Named eval-thread costs that otherwise hide inside a residual (all 0 when the feature that
+    // pays them is off). drain_ms sits inside compute_ms: the async load waiting out the previous
+    // layer's batch before reusing its flags. adopt_ms sits inside mgmt_ms: the route-ahead load
+    // waiting for its own committed speculative reads. ra_issue_ms and ra_wd_ms sit inside
+    // compute_ms: issuing the committed early reads, and the sampled fresh-gate watchdog. They
+    // exist because every wrong theory about this feature was a cost deduced from a residual.
+    double drain_ms = 0.0;
+    double adopt_ms = 0.0;
+    double ra_issue_ms = 0.0;
+    double ra_wd_ms = 0.0;
     // Wall time between the PREVIOUS token's decode and this one's: sampling, detokenization,
     // rendering the answer for a UI, this struct, and the sinks. None of it is inside wall_ms, so
     // none of it reaches the reported tok/s — which is exactly why it is worth a column. A change
@@ -125,6 +135,15 @@ struct RunSummary {
     double cache_resident_mib = 0.0;
     double cache_budget_mib = 0.0; // the fixed cache budget the run used (explicit, or auto-sized at load)
     long long cache_resizes = 0;   // runtime budget changes — now only an app's explicit set_cache_budget
+    // Cache churn (see IExpertSource::Stats): entries the budget forced out, and reads that went
+    // to an entry the cache had held before. Any prefetch that raises the byte count while
+    // claiming its reads are useful is doing it here.
+    long long cache_evictions = 0;
+    long long cache_rereads = 0;
+    // The named eval-thread waits (see TokenMetrics): the async load's previous-batch drain (part
+    // of the compute residual) and the route-ahead adoption wait (part of mgmt), per token.
+    double moe_drain_s_per_token = 0.0;
+    double moe_adopt_s_per_token = 0.0;
 
     // What one token actually demands of the cache, measured: the distinct expert bytes routed per
     // token. A cache below this can hold nothing between tokens; a cache far above it is buying
@@ -195,6 +214,25 @@ struct RunSummary {
     PredictorStats predict_stale, predict_stale2, predict_prev, predict_self;
     std::vector<PredictorStats> predict_stale_by_layer, predict_prev_by_layer, predict_self_by_layer;
     long long predict_unscored = 0; // routings the stale-gate probe could not rank (see RouterHook)
+
+    // Route-ahead (all zero unless MoeStreamConfig::route_ahead > 0): how many decode routings had
+    // their selection replaced by the N-layers-early prediction, how many eligible ones had no
+    // prediction to commit and kept the router's choice, and — over the overridden ones — how many
+    // slots the committed selection shared with what the router would have picked. hits/slots is
+    // the routing perturbation the run actually generated under; like the probe's counters these
+    // are session totals, not per-generation deltas.
+    long long route_ahead_overridden = 0;
+    long long route_ahead_passthrough = 0;
+    long long route_ahead_slots = 0;
+    long long route_ahead_hits = 0;
+    // The prediction's own CPU bill: worker nanoseconds spent on the gate GEMV, and how many
+    // rankings it produced. Reported per token because it is the one cost that hides from wall
+    // time wherever a spare core exists — and stops hiding on a phone, where the same core and
+    // the same DRAM serve the decode this is meant to accelerate.
+    long long route_ahead_gemv_ns = 0;
+    long long route_ahead_gemv_jobs = 0;
+    long long route_ahead_issue_ns = 0; // eval-thread cost of issuing the early reads
+    long long route_ahead_wd_ns = 0;    // eval-thread cost of the sampled fresh-gate watchdog
 };
 
 // What this run IS: the model and the configuration every row below it was produced under.
@@ -232,6 +270,7 @@ struct RunInfo {
     bool overlap = false;
     bool io_two_wave = false; // two-wave batch publish (#118): first projection published early
     int prefetch_layers = 0;
+    int route_ahead = 0;                // decode routing committed to the N-layers-early prediction (LOSSY)
     bool predict_prefetch = false;      // stale-gate predictive prefetch (see MoeStreamConfig)
     bool predict_log = false;           // the accuracy probe: costs a barrier and two GEMVs per layer
     int predict_spec_max = 0;           // how many predicted misses a layer may speculate (0 = retention only)

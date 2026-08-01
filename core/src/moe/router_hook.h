@@ -33,6 +33,7 @@
 #include "bmoe/predict_stats.h"
 #include "expert_stream_source.h"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -110,6 +111,46 @@ public:
     // spec_max: how many predicted misses a layer may speculate (0 = retention only). Retention of
     // predicted residents happens at every value — it costs zero bytes.
     void set_predict_prefetch(bool on, int spec_max = 2);
+
+    // ── route-ahead: commit to the stale-gate prediction (lossy; see MoeStreamConfig) ─
+    // With n > 0, the expert selection of MoE layer L is REPLACED, during decode, by the ranking
+    // layer L's own gate matrix produced on the hidden state N layers earlier in the same forward
+    // pass — the prediction the probe scores, acted on as the routing itself. The router still
+    // computes: its logits feed the weight chain (so the substituted experts carry their true,
+    // renormalized routing weights) and the layer's own gate input feeds the prediction for L+N.
+    // Layers 0..N-1, prefill, and any layer whose prediction is unavailable route normally.
+    // The point: the experts of layer L are known a full N layers of compute before L runs, so a
+    // prefetch of them is never late and never wrong — the 100%-hit regime no honest predictor
+    // reaches, bought with a quality perturbation this flag exists to measure.
+    void set_route_ahead(int n);
+
+    // How hard route-ahead actually bit, and how far the committed choice sat from the router's
+    // own: `overridden` routings had their ids rewritten, `passthrough` were eligible (decode,
+    // layer >= N) but had no prediction to commit — the first decode token, plus any layer whose
+    // gate matrix or input the hook could not read. hits/slots is the agreement between the
+    // committed selection and what the router would have chosen, the same slot metric the probe
+    // reports — here it is the measured routing perturbation, not an accuracy claim.
+    long long route_ahead_overridden() const { return ra_overridden_; }
+    long long route_ahead_passthrough() const { return ra_passthrough_; }
+    long long route_ahead_slots() const { return ra_slots_; }
+    long long route_ahead_hits() const { return ra_hits_; }
+
+    // CPU nanoseconds the prediction worker spent ranking, and how many rankings it produced.
+    // This is the feature's own arithmetic — one gate GEMV per MoE layer per token, in this
+    // file's scalar loop rather than ggml's kernels — and it is the one cost that does NOT
+    // appear in wall time on a machine with spare cores, which is exactly why it has to be
+    // reported: on a 4-thread phone the same work competes for cores and DRAM bandwidth with
+    // the decode it is trying to accelerate.
+    long long route_ahead_gemv_ns() const { return ra_gemv_ns_.load(); }
+    long long route_ahead_gemv_jobs() const { return ra_gemv_jobs_.load(); }
+    // Eval-thread nanoseconds spent ISSUING the early reads (settle, residency query, retain,
+    // prefetch — page commits included). Separate from the GEMV because they live on different
+    // threads: the GEMV is off the critical path by construction, this is not, and on a phone the
+    // two are the whole per-layer tax route-ahead adds to the decode.
+    long long route_ahead_issue_ns() const { return ra_issue_ns_; }
+    // Eval-thread nanoseconds the sampled fresh-gate watchdog spent on its exact float GEMV — the
+    // third and last route-ahead cost on the eval thread, metered like the other two.
+    long long route_ahead_wd_ns() const { return ra_wd_ns_; }
 
     // ── route trace (diagnostics; see bmoe/route_trace.h) ────────────────────────────
     // When on, the hook additionally asks for each layer's router-weight node and records one
@@ -263,6 +304,7 @@ private:
         uint64_t seq = 0;
         int nl = 0; // layer the prediction is FOR
         int nu = 0;
+        bool commit = false; // route-ahead: rank for commitment instead of building spec lists
         float drop_frac = 0.0f;
         int spec_max = 2;
         const ggml_tensor * gate = nullptr; // layer nl's gate matrix, snapshotted with the job
@@ -272,6 +314,8 @@ private:
     struct PredictResult {
         uint64_t seq = 0;
         int nl = -1;
+        bool commit = false;       // produced by a commit job; only route-ahead may consume it
+        std::vector<int32_t> ids;  // commit jobs: the full ranking the topk of nl will commit
         std::vector<int32_t> spec; // predicted misses to speculate, confidence-ordered, capped
         std::vector<int32_t> keep; // predicted residents to retain (LRU-protect)
         bool ready = false;
@@ -296,6 +340,48 @@ private:
     static constexpr int wd_interval = 512;         // routings between samples (~13 tokens at 40 layers)
     static constexpr double wd_min_frac = 0.98;     // below this, the read is not trustworthy
     static constexpr long long wd_min_slots = 2048; // do not judge before this many slots
+
+    // Route-ahead (inert unless route_ahead_ > 0). ra_pred_[L] is the ranking committed at layer
+    // L's topk, produced from the gate input of layer L-N in the same forward pass — filled and
+    // consumed within one token, with a seq check so a result the previous token never collected
+    // cannot be committed by this one. It rides the prefetch's whole barrier-less machinery: the
+    // gate matrix and input pointers stashed in the ask pass, the row copied at the topk callback,
+    // the GEMV on the shared prediction worker (predict_prefetch is mutually exclusive, so the
+    // single job slot is never contended), and the same sampled fresh-gate watchdog validating the
+    // read. The one thing a COMMITTED prediction changes is the failure mode: where a corrupt
+    // prefetch wastes a read, a corrupt commit would BE the routing — so on a watchdog trip, and
+    // for any layer whose prediction is not ready in time, the layer keeps the router's own
+    // choice (counted as passthrough), never a stale or suspect one.
+    int route_ahead_ = 0;
+    std::vector<std::vector<int32_t>> ra_pred_;
+    long long ra_overridden_ = 0, ra_passthrough_ = 0, ra_slots_ = 0, ra_hits_ = 0;
+    bool ra_tripped_ = false;                                // watchdog verdict: read not trustworthy
+    std::atomic<long long> ra_gemv_ns_{0}, ra_gemv_jobs_{0}; // the prediction's own CPU cost
+    long long ra_issue_ns_ = 0;                              // eval-thread cost of issuing the reads
+    long long ra_wd_ns_ = 0;                                 // eval-thread cost of the sampled watchdog
+
+    // ── int8 mirror of the gate matrices, for the prediction only ────────────────────
+    // The prediction re-reads a whole gate matrix per layer per token (n_embd x n_expert, ~4 MB
+    // at F32) and only needs to ORDER 256 experts to take the top few. Measured on a phone, that
+    // read is what the GEMV costs: ~160 MB/token of DRAM traffic, ~17-19 ms — bandwidth, not
+    // arithmetic, which is why vectorising the loop three times over bought little. An int8
+    // mirror with one scale per expert quarters the traffic for a ranking that survives it
+    // trivially (the router's own logits differ by far more than an int8 step, and the sampled
+    // fresh-gate watchdog is already the alarm if a model ever proves otherwise). Built lazily,
+    // once per layer, from the same weight leaf the graph uses; ~1 MB per layer of extra RAM.
+    // The graph's own routing never touches this — only the prediction does.
+    std::vector<std::vector<int8_t>> ra_gate_q_; // per layer: n_expert rows of n_embd int8
+    std::vector<std::vector<float>> ra_gate_s_;  // per layer: one dequant scale per expert
+    std::vector<int8_t> ra_qh_;                  // scratch: the activation row, quantized per call
+    bool quantize_gate(int il);                  // build the mirror for layer il; false if unsupported
+    bool gate_scores_q(int il, const std::vector<float> & h, std::vector<float> & out);
+    std::vector<int32_t> ra_ids_, ra_keep_, ra_spec_; // scratch: the committed future, split by residency
+    std::vector<uint8_t> ra_res_;                     // scratch: residency of the committed ids
+    void route_ahead_submit(ggml_tensor * ids, int il, int nu, int nt); // watchdog + row copy + job
+    void apply_route_ahead(ggml_tensor * ids, int il, int nu, int nt);
+    void route_ahead_collect(int il); // pop a finished ranking; issue its reads if still ahead
+    // Start reading layer nl's committed selection — `cand` is the worker's drop-aware issue list.
+    void route_ahead_issue_for(int nl, const std::vector<int32_t> & cand);
 
     bool predict_on() const { return predict_log_ || predict_prefetch_; }
     void predict_reset();

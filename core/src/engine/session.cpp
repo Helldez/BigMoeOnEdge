@@ -109,6 +109,10 @@ struct GenTally {
     double io_seconds = 0.0;
     double mgmt_seconds = 0.0;
     double stall_seconds = 0.0;
+    double drain_seconds = 0.0;
+    double adopt_seconds = 0.0;
+    double prev_drain_s = 0.0;
+    double prev_adopt_s = 0.0;
     uint64_t majflt = 0;
     double cpu_seconds = 0.0;
 
@@ -166,15 +170,21 @@ struct GenTally {
         }
         if (m.compute_ms < 0) m.compute_ms = 0;
         m.cache_hit_pct = st->cache_lookups > 0 ? 100.0 * st->cache_hits / st->cache_lookups : -1.0;
+        m.drain_ms = (st->drain_wait_seconds - prev_drain_s) * 1000.0;
+        m.adopt_ms = (st->adopt_wait_seconds - prev_adopt_s) * 1000.0;
 
         prev_bytes = (long long) st->read_bytes;
         prev_io_s = st->read_seconds;
         prev_mgmt_s = st->mgmt_seconds;
         prev_stall_s = st->stall_seconds;
+        prev_drain_s = st->drain_wait_seconds;
+        prev_adopt_s = st->adopt_wait_seconds;
         read_bytes += m.read_bytes;
         io_seconds += m.io_ms / 1000.0;
         mgmt_seconds += m.mgmt_ms / 1000.0;
         stall_seconds += m.stall_ms / 1000.0;
+        drain_seconds += m.drain_ms / 1000.0;
+        adopt_seconds += m.adopt_ms / 1000.0;
     }
 };
 
@@ -476,6 +486,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
     im.hook->set_predict_log(cfg.moe.predict_log);
     im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
+    im.hook->set_route_ahead(cfg.moe.route_ahead);
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
@@ -759,6 +770,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.io_two_wave = cfg.moe.enabled && cfg.moe.io_two_wave;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
+        ri.route_ahead = cfg.moe.enabled ? cfg.moe.route_ahead : 0;
         ri.predict_prefetch = cfg.moe.enabled && cfg.moe.predict_prefetch;
         ri.predict_log = cfg.moe.enabled && cfg.moe.predict_log;
         ri.predict_spec_max = cfg.moe.enabled ? cfg.moe.predict_spec_max : 0;
@@ -1111,6 +1123,8 @@ RunResult Session::generate(const GenerateRequest & req,
         tally.prev_io_s = st0.read_seconds;
         tally.prev_mgmt_s = st0.mgmt_seconds;
         tally.prev_stall_s = st0.stall_seconds;
+        tally.prev_drain_s = st0.drain_wait_seconds;
+        tally.prev_adopt_s = st0.adopt_wait_seconds;
     }
     const IExpertSource::Stats st_spec0 = moe.enabled ? im.source.stats() : IExpertSource::Stats{};
     long long prev_spec_bytes = (long long) st_spec0.spec_read_bytes;
@@ -1120,6 +1134,10 @@ RunResult Session::generate(const GenerateRequest & req,
     // for and the one the tok/s number is about.
     const long long prev_routed = im.hook->experts_routed();
     const long long prev_dropped = im.hook->experts_dropped();
+    // Per-token cursors for the hook's own eval-thread meters (route-ahead issue + watchdog): the
+    // hook accumulates for the session, the rows want this token's share.
+    long long prev_ra_issue_ns = im.hook->route_ahead_issue_ns();
+    long long prev_ra_wd_ns = im.hook->route_ahead_wd_ns();
 
     // The decode bracket below measures llama_decode and nothing else, which is what makes
     // compute_ms a clean residual — but it also means everything BETWEEN two decodes (sampling,
@@ -1316,6 +1334,18 @@ RunResult Session::generate(const GenerateRequest & req,
         const double wall = secs(s0, s1);
         gen_seconds += wall;
         const IExpertSource::Stats st = moe.enabled ? im.source.stats() : IExpertSource::Stats{};
+        // Route-ahead's eval-thread meters accumulate per DECODE, and one decode can confirm a whole
+        // group, so they are read once here and charged to the group's first row like every other
+        // group cost. Reading them inside the loop would advance the cursors once per token and
+        // credit the second and later rows with a delta of zero for the wrong reason.
+        double ra_issue_ms = 0.0, ra_wd_ms = 0.0;
+        {
+            const long long ri = im.hook->route_ahead_issue_ns(), rw = im.hook->route_ahead_wd_ns();
+            ra_issue_ms = (ri - prev_ra_issue_ns) / 1e6;
+            ra_wd_ms = (rw - prev_ra_wd_ns) / 1e6;
+            prev_ra_issue_ns = ri;
+            prev_ra_wd_ns = rw;
+        }
         for (size_t e = 0; e < confirmed.size() && n_gen < req.n_predict; ++e) {
             const llama_token out = confirmed[e];
             char piece[256];
@@ -1334,6 +1364,8 @@ RunResult Session::generate(const GenerateRequest & req,
             // Charged to the group's first row like every other group cost. This is a SLICE of
             // loop_overhead_ms, not an addition to it: both measure time outside the decode.
             m.mtp_draft_ms = e == 0 ? draft_s * 1000.0 : 0.0;
+            m.ra_issue_ms = e == 0 ? ra_issue_ms : 0.0;
+            m.ra_wd_ms = e == 0 ? ra_wd_ms : 0.0;
             m.piece = delta;
             // Only when someone will read it: the parser cannot resume, so this re-parses everything
             // generated so far on every token, and off the chat path it is a full copy of the same.
@@ -1410,6 +1442,10 @@ RunResult Session::generate(const GenerateRequest & req,
         s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);
         s.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
         s.cache_resizes = st.cache_resizes;
+        s.cache_evictions = st.evictions;
+        s.cache_rereads = st.rereads;
+        s.moe_drain_s_per_token = n_gen ? tally.drain_seconds / n_gen : 0.0;
+        s.moe_adopt_s_per_token = n_gen ? tally.adopt_seconds / n_gen : 0.0;
         s.token_demand_mib = st.token_demand_bytes / (1024.0 * 1024.0);
         s.layer_demand_mib = st.layer_demand_bytes / (1024.0 * 1024.0);
         s.moe_spec_read_mib = ((long long) st.spec_read_bytes - prev_spec_bytes) / (1024.0 * 1024.0);
@@ -1437,6 +1473,18 @@ RunResult Session::generate(const GenerateRequest & req,
         s.predict_prev_by_layer = im.hook->predict_prev_by_layer();
         s.predict_self_by_layer = im.hook->predict_self_by_layer();
         s.predict_unscored = im.hook->predict_unscored();
+    }
+    if (moe.route_ahead > 0) {
+        // Session totals, like the probe's: every overridden routing is an equally valid sample of
+        // the perturbation the flag buys, whichever turn produced it.
+        s.route_ahead_overridden = im.hook->route_ahead_overridden();
+        s.route_ahead_passthrough = im.hook->route_ahead_passthrough();
+        s.route_ahead_slots = im.hook->route_ahead_slots();
+        s.route_ahead_hits = im.hook->route_ahead_hits();
+        s.route_ahead_gemv_ns = im.hook->route_ahead_gemv_ns();
+        s.route_ahead_gemv_jobs = im.hook->route_ahead_gemv_jobs();
+        s.route_ahead_issue_ns = im.hook->route_ahead_issue_ns();
+        s.route_ahead_wd_ns = im.hook->route_ahead_wd_ns();
     }
     if (sink) sink->on_summary(s);
 
