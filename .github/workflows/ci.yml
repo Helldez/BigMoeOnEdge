@@ -30,7 +30,7 @@ jobs:
     outputs:
       code: ${{ steps.decide.outputs.code }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - id: decide
@@ -65,19 +65,22 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: clang-format (our sources only)
+        # Pinned to 18 because AGENTS.md tells contributors to match that version locally. Plain
+        # `clang-format` is whatever the runner image ships, which happens to be 18 today: an image
+        # bump would silently start failing every PR against a version nobody was told about.
         run: |
-          sudo apt-get update && sudo apt-get install -y clang-format
+          sudo apt-get update && sudo apt-get install -y clang-format-18
           find core cli tests -type f \( -name '*.cpp' -o -name '*.h' \) \
-            -print0 | xargs -0 clang-format --dry-run --Werror
+            -print0 | xargs -0 clang-format-18 --dry-run --Werror
 
   host-linux:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Install deps
@@ -96,7 +99,7 @@ jobs:
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Configure & build (compile-check the Win32 I/O paths)
@@ -116,7 +119,7 @@ jobs:
     permissions:
       contents: write   # only used by the tag-triggered release attach step
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
       - name: Set up JDK 17
@@ -128,7 +131,9 @@ jobs:
         uses: nttld/setup-ndk@v1
         id: ndk
         with:
-          ndk-version: r26d
+          # r27c == 27.2.12479018, the NDK release-apk.yml builds published APKs with. These two
+          # must not drift, or CI validates a build nobody installs.
+          ndk-version: r27c
       - name: Cross-compile bmoe-cli (arm64)
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
@@ -137,7 +142,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
             -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF \
-            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF \
+            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_OPENCL=OFF \
             -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" \
             -DLLAMA_CURL=OFF
           cmake --build build-android -j
