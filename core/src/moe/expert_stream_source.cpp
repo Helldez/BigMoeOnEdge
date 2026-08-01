@@ -51,6 +51,22 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     // layer buffers are reserved before the reader opens; if O_DIRECT is then refused and the reader
     // falls back to buffered, the placement is merely unused, never wrong.
     zero_copy_ = cfg.odirect_zero_copy && cfg.o_direct;
+#if defined(_WIN32)
+    // Windows + overlap + in-place produces WRONG BYTES, silently. Measured against a real model:
+    // the same revision, the same gguf and the same flags generate correct text on Android and
+    // garbage on Windows, with no read or commit error reported. Everything on this side is proven
+    // correct (requests, destination arithmetic, commit ranges, alignment, the partial-read retry),
+    // so the fault is below us in the Windows I/O or VM layer and the difference is that here the
+    // DMA target is freshly committed shared memory a compute thread is concurrently reading,
+    // where the bounce path had a private buffer and a CPU copy ordered against the ready flag.
+    // Serial is correct on Windows, so the bounce is only forced for the overlapped path.
+    // Tracked in https://github.com/Helldez/BigMoeOnEdge/issues/149.
+    if (zero_copy_ && overlap_) {
+        zero_copy_ = false;
+        std::fprintf(stderr, "bmoe: odirect-zero-copy disabled on Windows under --overlap (issue #149); "
+                             "reads go through the bounce buffer\n");
+    }
+#endif
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
     page_ = pio::vm_page(); // the real OS page size, for the dense-residency probe in any cache mode
