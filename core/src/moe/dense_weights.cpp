@@ -59,6 +59,10 @@ bool DenseWeights::init(DenseWeightsMode mode,
             if (!readers_.back()->open(p, 1, /*direct=*/true, align_, chunk + 2 * align_)) return false;
         }
         if (!read_anonymous(align_)) return false;
+        // The tensors are copied and rebound; nothing reads through these again. Their fds and
+        // per-lane bounce buffers would otherwise sit allocated for the whole session, next to
+        // the expert cache that is counting every MiB.
+        readers_.clear();
         drop_mmap_copies(pio::vm_page());
     } else if (mode_ == DenseWeightsMode::Warmed) {
         warm();
@@ -176,18 +180,19 @@ void DenseWeights::warm() {
     if (!buf) return;
     const auto t0 = clock_t_::now();
     uint64_t warmed = 0;
-    bool ok = true;
+    bool all_ok = true; // sticky, for the report only: a failed shard must not abort the others
     for (size_t s = 0; s < paths_.size() && s < ranges_.size(); ++s) {
         pio::fd_t fd = pio::open_read(paths_[s].c_str(), false);
         if (!pio::fd_ok(fd)) {
-            ok = false; // best-effort: that shard's pages just stay cold
+            all_ok = false; // best-effort: that shard's pages just stay cold
             continue;
         }
+        bool shard_ok = true;
         for (const auto & r : ranges_[s]) {
-            for (uint64_t a = r.first; a < r.second && ok;) {
+            for (uint64_t a = r.first; a < r.second && shard_ok;) {
                 const long long got = pio::pread_at(fd, buf, (size_t) std::min<uint64_t>(chunk, r.second - a), a);
                 if (got <= 0) {
-                    ok = false;
+                    shard_ok = all_ok = false;
                     break;
                 }
                 a += (uint64_t) got;
@@ -196,6 +201,7 @@ void DenseWeights::warm() {
         }
         pio::close_fd(fd);
     }
+    const bool ok = all_ok;
     pio::aligned_free(buf);
     const double s = std::chrono::duration<double>(clock_t_::now() - t0).count();
     std::fprintf(stderr, "bmoe: dense warm-up — %llu MiB in %.1f s%s\n", (unsigned long long) (warmed >> 20), s,

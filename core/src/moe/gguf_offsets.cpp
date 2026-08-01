@@ -76,7 +76,7 @@ void fill_model_info(const gguf_context * gctx, GgufModelInfo & out) {
 // a plain single-file path. The FIRST shard must be the one asked for — the same rule
 // llama.cpp applies — so downstream shard indices line up with llama.cpp's own mmaps.
 int split_count_from_path(const std::string & path, std::string & prefix) {
-    // <prefix>-DDDDD-of-DDDDD.gguf → 16 chars of suffix after the prefix and the 5-digit index
+    // <prefix>-DDDDD-of-DDDDD.gguf → 19 chars after the separating dash
     static const size_t tail_len = 5 + 4 + 5 + 5; // "DDDDD" "-of-" "DDDDD" ".gguf"
     if (path.size() < tail_len + 1) return 0;
     const size_t tail = path.size() - tail_len;

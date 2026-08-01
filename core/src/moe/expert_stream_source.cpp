@@ -254,8 +254,13 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     for (int lane = first_worker_lane; lane < io_threads_; ++lane)
         io_pool_.emplace_back(&ExpertStreamSource::io_worker, this, lane);
 
+    // Each shard verified O_DIRECT for itself, so report the weakest: a metadata-only first shard
+    // is too short to verify at all and would flatter the number for the shards carrying experts.
+    bool all_direct = true;
+    for (const auto & r : readers_)
+        all_direct = all_direct && r->direct();
     std::fprintf(stderr, "bmoe: expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB shards=%zu\n",
-                 n_expert_, (int) readers_[0]->direct(), io_threads_, cache_max_ >> 20, readers_.size());
+                 n_expert_, (int) all_direct, io_threads_, cache_max_ >> 20, readers_.size());
     return true;
 }
 
@@ -409,8 +414,8 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
                 ok = false;
                 break;
             }
-            staged.push_back({dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, (int8_t) L.proj[p].file_idx, e,
-                              (int16_t) il, (int8_t) p, 1});
+            staged.push_back({dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, (int16_t) L.proj[p].file_idx,
+                              e, (int16_t) il, (int8_t) p, 1});
             ++njobs;
         }
         if (!ok) {
@@ -749,7 +754,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
                 const uint64_t slice = L.proj[p].nb2;
                 if (slice == 0) continue; // absent slot in a fused layout
                 jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
-                                 slice, -1, (int8_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
+                                 slice, -1, (int16_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
             }
             return true;
         }
@@ -763,7 +768,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue; // absent slot in a fused layout
             jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
-                             slice, -1, (int8_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
+                             slice, -1, (int16_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
         }
         return true;
     };
@@ -912,7 +917,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             for (int e : staged_) {
                 const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
                 jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
-                                 slice, flag, (int8_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
+                                 slice, flag, (int16_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
             }
         }
     } else {
@@ -956,8 +961,8 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
                 if (!seen_[e]) continue; // cache hit, already marked ready
                 const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
                 jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice,
-                                 L.proj[p].file_off + (uint64_t) e * slice, slice, flag, (int8_t) L.proj[p].file_idx, e,
-                                 (int16_t) il, (int8_t) p, 0});
+                                 L.proj[p].file_off + (uint64_t) e * slice, slice, flag, (int16_t) L.proj[p].file_idx,
+                                 e, (int16_t) il, (int8_t) p, 0});
             }
         };
         if (!two_wave) {

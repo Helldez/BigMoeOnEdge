@@ -114,7 +114,10 @@ private:
         uint64_t off = 0;
         uint64_t nbytes = 0;
         int32_t flag = -1; // overlap: index into ready_ to publish on completion; -1 = serial
-        int8_t file = 0;   // which shard reader serves this read
+        // Which shard reader serves this read. Wide enough for the whole filename format
+        // (-%05d-of-%05d): an int8_t would wrap a 200-shard model into a negative index that the
+        // init-time bounds check, which sees the untruncated value, could never catch.
+        int16_t file = 0;
         // Which (layer, expert, projection) this read serves. Known at every enqueue site and
         // otherwise thrown away; carried so the I/O trace can attribute a read without the read
         // path having to guess. Inert unless the trace is on.
