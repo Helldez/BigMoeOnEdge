@@ -81,7 +81,24 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         const size_t hard_cap = ceil > 0 ? std::min(ceil, total_expert_bytes_) : total_expert_bytes_;
         const size_t min_budget =
             std::min<size_t>((size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull, hard_cap);
-        const uint64_t avail = pio::mem_available_bytes();
+        uint64_t avail = pio::mem_available_bytes();
+        // Under anon/ahwb the dense weights are ABOUT to move from reclaimable page cache into
+        // buffers the kernel cannot take back (dense_.init runs below). At this moment the kernel
+        // still counts those pages as available, so a budget sized from the raw number plans the
+        // dense set twice and overcommits by its whole size — enough to take the device down on a
+        // model whose dense set is large (DeepSeek V4's is ~6.5 GiB). Budget as if the conversion
+        // had already happened.
+        if (cfg.dense_weights == DenseWeightsMode::Anonymous || cfg.dense_weights == DenseWeightsMode::Pinned) {
+            uint64_t dense_pending = 0;
+            for (const DenseTensorRef & d : dense_tensors_)
+                if (d.tensor) dense_pending += d.size;
+            const uint64_t deduct = std::min(avail, dense_pending);
+            if (deduct > 0) {
+                avail -= deduct;
+                std::fprintf(stderr, "bmoe: cache auto — reserving %llu MiB for the dense-weight conversion\n",
+                             (unsigned long long) (deduct / (1024 * 1024)));
+            }
+        }
         if (avail == 0) {
             cache_max_ = min_budget;
             std::fprintf(stderr, "bmoe: cache auto — available memory unknown, using the %zu MiB floor\n",
