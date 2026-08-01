@@ -185,6 +185,90 @@ int main() {
         expect_fail("a negative n_ubatch is rejected", c);
     }
 
+    // Speculation: lossless only under greedy, and the draft width is bounded on both sides.
+    // These rules are shared by every draft source, so they are checked against the MTP one.
+    {
+        RunConfig c = ok_base();
+        expect_ok("speculation off is the default and valid", c);
+        c.spec.source = DraftSource::mtp;
+        expect_ok("speculation on with the default draft width is valid", c);
+        c.spec.draft_max = SpecConfig::draft_max_limit;
+        expect_ok("the largest allowed draft width is valid", c);
+        c.spec.draft_max = SpecConfig::draft_max_limit + 1;
+        expect_fail("a draft width above the limit is rejected", c);
+        c.spec.draft_max = 0;
+        expect_fail("drafting zero tokens is rejected", c);
+        c.spec.draft_max = 3;
+        // The confidence floor is a probability, so both ends are bounded.
+        c.spec.draft_p_min = 0.0f;
+        expect_ok("no confidence floor is the default and valid", c);
+        c.spec.draft_p_min = 0.6f;
+        expect_ok("a confidence floor inside (0,1) is valid", c);
+        c.spec.draft_p_min = 1.0f;
+        expect_ok("a confidence floor of 1 is valid (draft only what is certain)", c);
+        c.spec.draft_p_min = 1.5f;
+        expect_fail("a confidence floor above 1 is rejected", c);
+        c.spec.draft_p_min = -0.1f;
+        expect_fail("a negative confidence floor is rejected", c);
+        c.spec.draft_p_min = 0.0f;
+        c.sampling.temp = 0.8f;
+        expect_fail("speculation with a sampling chain is rejected", c);
+        // The same temperature is fine once speculation is off: the rejection is about the pair.
+        c.spec.source = DraftSource::none;
+        expect_ok("sampling without speculation stays valid", c);
+    }
+
+    // The n-gram source: the same shared rules, plus its own gate, and no cross-talk with the
+    // MTP-only knob — a flag the chosen source cannot act on is rejected, not silently ignored.
+    {
+        RunConfig c = ok_base();
+        c.spec.source = DraftSource::ngram;
+        expect_ok("the n-gram source with its defaults is valid", c);
+        c.sampling.temp = 0.8f;
+        expect_fail("the n-gram source with a sampling chain is rejected", c);
+        c.sampling.temp = 0.0f;
+        c.spec.draft_max = SpecConfig::draft_max_limit + 1;
+        expect_fail("the draft-width limit applies to the n-gram source too", c);
+        c.spec.draft_max = 3;
+        c.spec.draft_p_min = 0.6f;
+        expect_fail("the MTP confidence floor is rejected with the n-gram source", c);
+        c.spec.draft_p_min = 0.0f;
+        c.spec.ngram_min_match = 1;
+        expect_ok("a minimum match of 1 is valid (draft on any repeated token)", c);
+        c.spec.ngram_min_match = 0;
+        expect_fail("a minimum match of 0 is rejected", c);
+        c.spec.ngram_min_match = c.spec.ngram_max_match + 1;
+        expect_fail("a minimum match above the longest suffix considered is rejected", c);
+        c.spec.ngram_min_match = 3;
+        c.spec.ngram_max_match = SpecConfig::ngram_match_limit + 1;
+        expect_fail("a maximum match above the limit is rejected", c);
+        c.spec.ngram_max_match = 0;
+        expect_fail("a maximum match of 0 is rejected", c);
+        c.spec.ngram_max_match = 12;
+        expect_ok("the n-gram bounds back in range are valid", c);
+        // The n-gram knobs are inert for the MTP source, so asking for both is a caller error.
+        c.spec.source = DraftSource::mtp;
+        c.spec.draft_p_min = 0.6f;
+        expect_ok("the confidence floor is valid for the source that has one", c);
+    }
+
+    // The verify batch must fit in one graph, or the amortisation it exists for is split away.
+    {
+        RunConfig c = ok_base();
+        c.spec.source = DraftSource::mtp;
+        c.spec.draft_max = 3;
+        expect_ok("the default ubatch (0 = as wide as the context) is valid with speculation", c);
+        c.n_ubatch = 4; // exactly 1 + draft_max
+        expect_ok("a ubatch exactly as wide as the verify batch is valid", c);
+        c.n_ubatch = 3;
+        expect_fail("a ubatch narrower than the verify batch is rejected", c);
+        // The rule is about the verify batch, so it binds the n-gram source identically.
+        c.spec.source = DraftSource::ngram;
+        expect_fail("the narrow ubatch is rejected with the n-gram source too", c);
+        c.spec.source = DraftSource::none;
+        expect_ok("the same narrow ubatch is fine without speculation", c);
+    }
+
     if (failures == 0) {
         std::printf("all config checks passed\n");
         return 0;

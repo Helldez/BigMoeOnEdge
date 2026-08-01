@@ -52,6 +52,56 @@ ValidationResult validate(const RunConfig & cfg) {
         }
     }
 
+    // Verification is exact only because greedy acceptance compares argmax against argmax. Under a
+    // sampling chain the accepted prefix would depend on which draws happened to agree, which is a
+    // different distribution from the one the caller asked for. Rejected rather than silently
+    // ignored: a caller who asked for both was promised something the engine cannot give.
+    if (cfg.spec.enabled() && cfg.sampling.temp > 0.0f) {
+        return fail("speculative decoding requires greedy decoding (sampling.temp <= 0): verification is "
+                    "token-identical to single-token decode only under argmax.");
+    }
+    // The floor is 1 (draft one token, verify two positions); at 0 there is nothing to verify and
+    // the loop degenerates into plain decode with the speculative scaffolding attached. The ceiling
+    // is an evidence boundary, not a physical one — see SpecConfig::draft_max.
+    if (cfg.spec.enabled() && (cfg.spec.draft_max < 1 || cfg.spec.draft_max > SpecConfig::draft_max_limit)) {
+        return fail("spec.draft_max must be in [1, " + std::to_string(SpecConfig::draft_max_limit) + "]");
+    }
+    // A probability, so [0,1]. 1 would mean "only draft what the head is certain of", which is a
+    // legitimate (if extreme) setting; above 1 nothing would ever be drafted and the flag would be
+    // an expensive way to decode one token at a time.
+    if (cfg.spec.is_mtp() && (cfg.spec.draft_p_min < 0.0f || cfg.spec.draft_p_min > 1.0f)) {
+        return fail("spec.draft_p_min must be in [0, 1]");
+    }
+    // Both of these are source-specific knobs. Accepting one against the other source would silently
+    // do nothing, which is exactly the class of "the flag was ignored" bug this validation exists to
+    // prevent — the caller asked for a behaviour the chosen source does not have.
+    if (cfg.spec.is_ngram() && cfg.spec.draft_p_min != 0.0f) {
+        return fail("spec.draft_p_min is an MTP knob (the head's own confidence in its proposal) and has "
+                    "no meaning for the n-gram source, which has no probabilities — its confidence gate "
+                    "is spec.ngram_min_match.");
+    }
+    if (cfg.spec.is_ngram() &&
+        (cfg.spec.ngram_max_match < 1 || cfg.spec.ngram_max_match > SpecConfig::ngram_match_limit)) {
+        return fail("spec.ngram_max_match must be in [1, " + std::to_string(SpecConfig::ngram_match_limit) + "]");
+    }
+    if (cfg.spec.is_ngram() && (cfg.spec.ngram_min_match < 1 || cfg.spec.ngram_min_match > cfg.spec.ngram_max_match)) {
+        return fail(
+            "spec.ngram_min_match must be in [1, spec.ngram_max_match=" + std::to_string(cfg.spec.ngram_max_match) +
+            "]: a floor above the longest suffix considered would never draft anything.");
+    }
+    // The verify pass is 1 + draft_max positions and its whole point is that they are computed
+    // TOGETHER. A narrower graph splits it back into single-token passes, which spends the draft
+    // and keeps none of the amortisation — the feature would cost time and buy nothing. Rejected
+    // rather than silently degraded: nothing in the output would show that it happened. 0 means
+    // "as wide as the context" and is always wide enough.
+    if (cfg.spec.enabled() && cfg.n_ubatch > 0 && cfg.n_ubatch < cfg.spec.draft_max + 1) {
+        return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " is narrower than the verify batch (" +
+                    std::to_string(cfg.spec.draft_max + 1) +
+                    " positions): the graph would be split back into single-token passes and speculation "
+                    "would draft at a cost with nothing to show for it. Raise n_ubatch or lower "
+                    "spec.draft_max.");
+    }
+
     // overlap is meaningless without streaming (it gates the streamer's own reads). The
     // hook-availability check is deferred to run(): validate() stays pure (no native).
     if (cfg.moe.overlap && !cfg.moe.enabled) {

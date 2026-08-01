@@ -8,10 +8,10 @@ import android.content.Context
  * pair of switches, which could express the same policy two ways (or contradict each other).
  */
 enum class DenseWeights(val flag: String, val label: String, val blurb: String) {
-    MMAP("mmap", "Mmap (baseline)", "Leave the dense weights mmap'd; the kernel faults them in. Slow first tokens on a >RAM model — the A/B baseline."),
-    WARM("warm", "Warm at load", "Page-cache the dense weights once at load, so the first tokens don't fault them in a page at a time. Best when the model fits in RAM."),
-    ANON("anon", "Anon (O_DIRECT)", "Read the dense weights via O_DIRECT into our own buffers so a reclaim swaps to zram (fast) instead of a slow flash refault. Costs a private copy. The default — it wins on >RAM models."),
-    AHWB("ahwb", "Pinned (dma-buf)", "As Anon, but into dma-buf memory the kernel cannot reclaim at all — not even to zram, which is what Anon still pays for. Measured +17.9% on a long generation; the gain needs a real conversation to appear, since short turns never build up enough reclaim. Off by default: measured on one device."),
+    MMAP("mmap", "Mmap (baseline)", "Leave the always-needed weights to the kernel, which faults them in as they are touched. The plain baseline to compare the others against."),
+    WARM("warm", "Warm at load", "Read them once at load so the first tokens do not fault them in a page at a time. Suits a model that fits in memory comfortably."),
+    ANON("anon", "Anon (O_DIRECT)", "Hold them in the app's own memory instead of the file cache. When the system reclaims, they are compressed rather than dropped and re-read from flash. Costs a private copy; the default."),
+    AHWB("ahwb", "Pinned (dma-buf)", "As Anon, but in memory the system cannot reclaim at all — not even by compressing it, which Anon still pays for. The gain shows up over a long conversation, once reclaim has had time to bite."),
 }
 
 /**
@@ -51,6 +51,35 @@ data class AppSettings(
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
     val dropColdPct: Int = 75,
+    // Which source drafts for self-speculation: "off", "mtp" or "ngram". Both verify the same way —
+    // one wider decode, greedy acceptance — and differ only in what a draft costs.
+    //
+    // "mtp" uses the model's own head, so it needs a gguf carrying the nextn block, which Qwen3.5/3.6
+    // do in their ordinary quantisations — the catalog's Qwen3.6 included, so no special "-MTP-"
+    // download. On anything else the engine refuses to open, so the UI states the requirement rather
+    // than letting the session fail.
+    //
+    // "ngram" drafts by looking the recent tokens up in the prompt and in what has been generated:
+    // no head, no draft context, no expert read, and it works on every model. It also drafts nothing
+    // when it has no confident match, so a step without one costs exactly a plain decode — the
+    // property the head does not have.
+    //
+    // Off by default. The head is a clear win where decode is DRAM-bound (desktop, +15%) and lost on
+    // this phone at every draft width; the lookup exists because the measured reason for that loss
+    // was the widened verify batch, not the drafting — which is what this toggle now lets an A/B
+    // separate.
+    val spec: String = SPEC_OFF,
+    // Tokens drafted per verify pass, shared by both sources. 3 is the measured optimum for the head
+    // on desktop: acceptance falls as the draft widens, and past its horizon the extra drafts are
+    // paid for and thrown away. On this phone the device A/B measured 2 better than 3 and both below
+    // the baseline, which is why the confidence floor below exists.
+    val mtpDraft: Int = 3,
+    // Stop drafting when the head's own probability for what it is proposing drops below this
+    // percentage (0 = never stop, draft the full width however unsure it is). Makes the width
+    // adaptive per step, which on this device pays twice: a draft not made is one fewer pass
+    // through the MTP block AND one fewer independently routed position in the verify batch. 0 is
+    // the setting the desktop numbers were measured at, so it stays the default until the A/B says.
+    val mtpPMinPct: Int = 0,
     val thinking: Boolean = false,      // reasoning; off passes --no-think (enable_thinking=false)
     val metricsCsv: Boolean = true,     // write the engine's per-token CSV for this session (--csv)
 ) {
@@ -121,6 +150,15 @@ data class AppSettings(
             // of the uniform share; the setting is stored as a percentage.
             if (dropColdPct > 0 && cacheOn) a += listOf("--drop-cold-experts", (dropColdPct / 100.0).toString())
         }
+        // Outside the streaming block on purpose: speculation is a decode-loop change, not a
+        // residency policy, so it applies to the mmap baseline too — which is what makes an A/B of
+        // the two against each other meaningful.
+        if (spec == SPEC_MTP) {
+            a += listOf("--mtp", "--draft", mtpDraft.toString())
+            if (mtpPMinPct > 0) a += listOf("--mtp-p-min", (mtpPMinPct / 100.0).toString())
+        } else if (spec == SPEC_NGRAM) {
+            a += listOf("--ngram", "--draft", mtpDraft.toString())
+        }
         return a
     }
 
@@ -132,7 +170,8 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, sessionCtx, oDirect,
-               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct)
+               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct,
+               spec, mtpDraft, mtpPMinPct)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -149,6 +188,7 @@ data class AppSettings(
             .putInt("predictSpecMax", predictSpecMax)
             .putInt("dropColdPct", dropColdPct)
             .putInt("sessionCtx", sessionCtx)
+            .putString("spec", spec).putInt("mtpDraft", mtpDraft).putInt("mtpPMinPct", mtpPMinPct)
             .putBoolean("thinking", thinking)
             .putBoolean("metricsCsv", metricsCsv)
             .apply()
@@ -179,6 +219,22 @@ data class AppSettings(
         // places free to disagree. 128 matches the CLI default (issue #71): shorter budgets
         // truncate most answers mid-sentence, which reads as broken rather than slow.
         const val DEFAULT_N_PREDICT = 128
+
+        // The draft sources, as stored. Strings rather than an enum ordinal: a preference that
+        // survives an app update must not depend on the order this list happens to be written in.
+        const val SPEC_OFF = "off"
+        const val SPEC_MTP = "mtp"
+        const val SPEC_NGRAM = "ngram"
+        val SPEC_CHOICES = arrayOf(SPEC_OFF, SPEC_MTP, SPEC_NGRAM)
+
+        // Draft widths worth offering. The useful range is small and not monotonic: acceptance
+        // falls as the draft widens while tokens-per-decode rises, and on desktop the two cross at
+        // 3 — 4 measured WORSE than 2. Stopping at 5 keeps the picker honest about that.
+        val MTP_DRAFT_CHOICES = intArrayOf(1, 2, 3, 4, 5)
+
+        // Confidence floors worth offering, as percentages. 0 keeps the current behaviour (draft
+        // the full width unconditionally); the rest trade speculative reach for wasted drafts.
+        val MTP_P_MIN_CHOICES = intArrayOf(0, 40, 60, 80)
 
         /**
          * A fresh CSV path for a session about to open, under the app's own external files dir —
@@ -267,6 +323,17 @@ data class AppSettings(
                 predictSpecMax = p.getInt("predictSpecMax", d.predictSpecMax),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
                 sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
+                spec = run {
+                    val saved = p.getString("spec", null)
+                    when {
+                        saved != null && saved in SPEC_CHOICES -> saved
+                        // Migrate the old boolean pref from an install that only had the head.
+                        p.getBoolean("mtp", false) -> SPEC_MTP
+                        else -> d.spec
+                    }
+                },
+                mtpDraft = p.getInt("mtpDraft", d.mtpDraft),
+                mtpPMinPct = p.getInt("mtpPMinPct", d.mtpPMinPct),
                 thinking = p.getBoolean("thinking", d.thinking),
                 metricsCsv = p.getBoolean("metricsCsv", d.metricsCsv),
             )

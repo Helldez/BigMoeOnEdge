@@ -36,6 +36,12 @@ add_executable(bmoe_config_test config_test.cpp)
 target_link_libraries(bmoe_config_test PRIVATE bmoe_core)
 add_test(NAME config_validate COMMAND bmoe_config_test)
 
+# The n-gram draft matcher. Pure policy over token ids (no llama.cpp, no model), so the drafting
+# decision is covered exhaustively here; what it costs is a bench question, not a test.
+add_executable(bmoe_ngram_test ngram_test.cpp)
+target_link_libraries(bmoe_ngram_test PRIVATE bmoe_core)
+add_test(NAME ngram_draft COMMAND bmoe_ngram_test)
+
 find_program(PYTHON3 NAMES python3 python)
 
 if(PYTHON3)

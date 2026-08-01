@@ -43,8 +43,11 @@ public:
                      r.load_all, r.io_threads, r.o_direct, r.overlap, r.io_two_wave, r.prefetch_layers,
                      r.predict_prefetch, r.predict_log, r.predict_spec_max, r.prefetch_sync, r.dense_weights.c_str(),
                      (double) r.drop_cold_frac, r.drop_renorm, r.drop_prefill);
-        std::fprintf(f_, "# temp=%.4g top_k=%d top_p=%.4g seed=%u compute_trace_layers=%d\n", (double) r.temp, r.top_k,
-                     (double) r.top_p, r.seed, r.compute_trace_layers);
+        std::fprintf(f_,
+                     "# temp=%.4g top_k=%d top_p=%.4g seed=%u compute_trace_layers=%d spec=%s "
+                     "spec_draft_max=%d mtp_p_min=%.4g ngram_min_match=%d\n",
+                     (double) r.temp, r.top_k, (double) r.top_p, r.seed, r.compute_trace_layers, r.spec.c_str(),
+                     r.spec_draft_max, (double) r.mtp_p_min, r.ngram_min_match);
         write_header();
     }
 
@@ -52,12 +55,12 @@ public:
         write_header(); // a caller that never sent RunInfo still gets a readable file
         std::fprintf(f_,
                      "%d,%d,%.3f,%.3f,%.3f,%llu,%.2f,%.3f,%.3f,%llu,%.3f,%.3f,%d,%.2f,%.1f,%.1f,%.1f,"
-                     "%.1f,%.1f,%.1f,%.1f,%.1f,%.3f\n",
+                     "%.1f,%.1f,%.1f,%.1f,%.1f,%.3f,%d,%.3f\n",
                      m.step, m.steps, m.wall_ms, m.io_ms, m.compute_ms, (unsigned long long) m.read_bytes,
                      m.cache_hit_pct, m.stall_ms, m.mgmt_ms, (unsigned long long) m.majflt, m.cpu_ms,
                      m.dense_resident_frac, m.turn, m.majflt_mib, m.cache_budget_mib, m.rss_mib, m.rss_anon_mib,
                      m.rss_file_mib, m.swap_mib, m.mem_available_mib, m.mem_free_mib, m.swap_free_mib,
-                     m.loop_overhead_ms);
+                     m.loop_overhead_ms, m.mtp_batch, m.mtp_draft_ms);
         std::fflush(f_);
     }
     void on_summary(const RunSummary & s) override {
@@ -70,14 +73,17 @@ public:
                      "cache_resident_MiB=%.1f cache_budget_MiB=%.1f cache_resizes=%lld "
                      "spec_read_MiB=%.1f spec_experts=%lld spec_useful=%lld "
                      "majflt/tok=%.2f cpu_s/tok=%.4f token_demand_MiB=%.1f layer_demand_MiB=%.1f "
-                     "experts_routed=%lld experts_dropped=%lld loop_overhead_s/tok=%.4f\n",
+                     "experts_routed=%lld experts_dropped=%lld loop_overhead_s/tok=%.4f "
+                     "mtp_drafted=%lld mtp_accepted=%lld mtp_decodes=%lld mtp_draft_s/tok=%.4f "
+                     "drafted_steps=%lld\n",
                      s.n_generated, s.s_per_token, s.tokens_per_second, s.moe_read_mib, s.moe_io_seconds,
                      s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct, s.n_prompt, s.load_seconds,
                      s.prefill_seconds, s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0,
                      s.moe_stall_s_per_token, s.moe_mgmt_s_per_token, s.cache_resident_mib, s.cache_budget_mib,
                      s.cache_resizes, s.moe_spec_read_mib, s.moe_spec_experts, s.moe_spec_useful, s.majflt_per_token,
                      s.cpu_s_per_token, s.token_demand_mib, s.layer_demand_mib, s.experts_routed, s.experts_dropped,
-                     s.loop_overhead_s_per_token);
+                     s.loop_overhead_s_per_token, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token,
+                     s.drafted_steps);
         std::fflush(f_);
     }
 
@@ -93,7 +99,8 @@ private:
         // then the memory block. Consumers read columns by name, so order is not a contract.
         std::fprintf(f_, "step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,"
                          "dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,"
-                         "rss_file_mib,swap_mib,mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms\n");
+                         "rss_file_mib,swap_mib,mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms,"
+                         "mtp_batch,mtp_draft_ms\n");
     }
 
     std::FILE * f_ = nullptr;

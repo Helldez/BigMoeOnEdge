@@ -67,6 +67,18 @@ struct TokenMetrics {
     double cache_budget_mib = 0.0;
     int turn = 0; // session turn this token belongs to (0 for a one-shot run)
 
+    // How many tokens the decode that produced this one confirmed (1 without speculation). Under
+    // --mtp a verify decode confirms a whole group, and the group's entire cost — wall, faults,
+    // CPU, flash bytes — is charged to its FIRST row; the rest carry zeros. Without this field those
+    // zeros read as free tokens. Divide the first row's wall_ms by mtp_batch for the per-token cost.
+    int mtp_batch = 1;
+
+    // Time this group spent drafting and catching the draft context up — everything speculation
+    // adds OUTSIDE the target decode. A SLICE of loop_overhead_ms, not an addition: both measure
+    // the gap between decodes. Charged to the group's first row like every other group cost, and 0
+    // without --mtp. Without it the drafting cost can only be inferred by differencing two runs.
+    double mtp_draft_ms = 0.0;
+
     std::string piece; // text of just this token (delta, for inline streaming)
     std::string text;  // full generated answer so far, reasoning stripped (for UI streaming)
     // The reasoning span so far, when the model is thinking and the chat parser separated it from
@@ -139,6 +151,35 @@ struct RunSummary {
     long long moe_spec_experts = 0;
     long long moe_spec_useful = 0;
 
+    // Self-speculation (zero when SpecConfig::source is none). These are the LOOP's counters, not a
+    // source's: whichever drafted, `mtp_drafted` counts tokens proposed and `mtp_accepted` how many
+    // the target's argmax confirmed. Their ratio is the acceptance on this prompt, the one number
+    // that decides whether the feature can pay. Tokens per verify decode (n_generated / mtp_decodes)
+    // is the amortisation actually achieved — it is what tok/s is bought with, and it is always
+    // below 1 + draft_max. The keys keep the mtp_ prefix they were published under; renaming them
+    // would break every CSV and dashboard already holding measurements.
+    long long mtp_drafted = 0;
+    long long mtp_accepted = 0;
+    long long mtp_decodes = 0; // verify decodes issued; equals n_generated when speculation is off
+    // Steps that drafted anything. Against mtp_decodes this is the n-gram source's match rate: the
+    // fraction of the run where it had evidence, widened the verify batch and could win — the rest
+    // ran as plain decodes at exactly the unspeculated cost. It is the number that says whether a
+    // result is about the source's precision or about how rarely it fired. For the head it is every
+    // step, unless draft_p_min stopped it.
+    long long drafted_steps = 0;
+    // Drafting + catch-up seconds per generated token: the price of speculation, measured rather
+    // than inferred. tok/s is computed from decode time alone, so this is time the caller waits
+    // that the headline rate does not show — compare it against s_per_token before believing a
+    // speculated run is faster.
+    double mtp_draft_s_per_token = 0.0;
+    // Flash MiB the drafting passes streamed, as a subset of moe_read_mib. The MTP block is a MoE
+    // layer of its own, so the head has an I/O cost and not just a compute one. Subtracting this
+    // from the run's total is what splits the growth in bytes/token under speculation into its two
+    // causes — the widened verify union on the trunk, and the head's own routing — which need
+    // completely different fixes. The route trace cannot see it: its framing brackets the target
+    // decode, and the head only ever runs in the draft context.
+    double mtp_draft_read_mib = 0.0;
+
     // Expert-prediction accuracy (all zero unless MoeStreamConfig::predict_log). `predict_stale` is
     // the next layer's routing ranked a layer early, `predict_prev` the previous token's routing —
     // the bet --prefetch already makes — and `predict_self` a zero-staleness control that bounds
@@ -207,6 +248,16 @@ struct RunInfo {
     int top_k = 40;
     float top_p = 0.95f;
     uint32_t seed = 0xFFFFFFFFu;
+
+    // Self-speculation, and which source drafted ("off", "mtp", "ngram"). It changes how many tokens
+    // a decode confirms, so every per-token row in the file was produced under a different
+    // accounting than an unspeculated run — see TokenMetrics::mtp_batch. Recorded so the two are
+    // never averaged together by accident, and so two speculated files are not compared across
+    // sources without noticing.
+    std::string spec = "off";
+    int spec_draft_max = 0;
+    float mtp_p_min = 0.0f;  // mtp: the head's confidence floor for drafting (0 = no floor)
+    int ngram_min_match = 0; // ngram: shortest suffix match allowed to draft
 
     // Diagnostics that perturb what they measure. A traced run is not a benchmark run — recorded so
     // a file cannot be mistaken for one.

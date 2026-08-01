@@ -93,7 +93,8 @@ point is public, not a divergence we intend to maintain.
 ## The chat glue: llama.cpp `common` (not the streaming seam)
 
 Separate from the two streaming hooks above, `session.cpp` links llama.cpp's `common`
-library for one thing: rendering the model's own chat template and parsing reasoning output.
+library for two things: rendering the model's own chat template and parsing reasoning output, and
+(with `--mtp`) driving speculative decoding.
 `common_chat_templates_init` / `common_chat_templates_apply` run the real Jinja template the
 gguf ships (so Gemma's channel format, Qwen ChatML, etc. all format correctly, driven by the
 model rather than hardcoded), and `common_chat_parse` extracts a reasoning model's thinking so
@@ -116,6 +117,32 @@ Whether the continuation is *binding* is read off `common_chat_params::thinking_
 suggestion it can decline (LFM2.5 does), while a model that declares none separates reasoning
 structurally and cannot. Both facts come from the loaded model, never from its name.
 `tests/think_control_test.cpp` pins all of it against the vendored templates, again with no model.
+
+### Speculative decoding
+
+Only the MTP source crosses into `common`. The verify half of the loop — the wide batch, the argmax
+acceptance, the KV rollback — is written against public `llama.h` alone, and so is the n-gram draft
+source, which is why `--ngram` needs nothing from `common` at all. `core/include/bmoe/ngram_draft.h`
+does not even include `llama.h`: it is written over `int32_t` token ids, which is what `llama_token`
+is, so the drafting policy stays on the pure-policy side of the seam and is unit-tested with no model
+and no native backend (`tests/ngram_test.cpp`). See [ngram.md](ngram.md).
+
+`--mtp` reaches `common/speculative.h`, which is a header of the same `common` library and
+includes only `llama.h` and `common.h`. The draft/verify orchestration — running the trained MTP
+head, moving hidden states from the target to it, seeding the next draft from the accepted position
+— is entirely upstream's; the engine supplies the loop around it and the two contexts it works on.
+Worth stating explicitly because the internals it needs (`llama_set_embeddings_nextn` and the
+`nextn` hidden-state getters) live in `src/llama-ext.h`, a *staging* header: they are used **inside**
+`speculative.cpp`, which is already compiled into the `llama-common` the engine links, so nothing in
+`core/` includes a private header and no in-tree patch is involved.
+
+What the engine does own is the pair of contexts. Self-speculation is one model with two contexts
+over it — the target, and a draft created with `ctx_type = LLAMA_CONTEXT_TYPE_MTP` — and the engine
+builds the draft one itself rather than through `common_speculative_init_from_params`, for a reason
+that belongs to this project: **the eval callback is per-context**. The streamer only sees the MTP
+block's expert layer if the draft context carries the same `cb_eval`, and `init_from_params` derives
+its context parameters from a full `common_params` with no way to inject one. See
+[mtp.md](mtp.md).
 
 Unlike the public-C-API streaming seam, `common` is **not a stable API** — it can change
 between upstream versions. So a submodule bump may require updating this chat glue in

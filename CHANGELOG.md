@@ -27,6 +27,145 @@ Semantic Versioning.
   (compressed sparse attention, the lightning indexer and its dedicated KV cache) is dense-side
   llama.cpp code, invisible to the streaming seam. Requires a llama.cpp with DeepSeek V4 support
   (the pinned submodule has it).
+- **`--ngram` — a second draft source for the same verify loop, drafting from repeated text instead
+  of from a trained head (off by default).** It takes the last few tokens, finds where that exact run
+  occurred before in the prompt or in what has been generated, and proposes whatever followed. No
+  head, no draft context, no decode, no expert read — and it works on any model, including the ones
+  `--mtp` refuses for want of a `nextn` block (verified on Qwen3-30B-A3B). Verification is unchanged,
+  so it is exact in the same sense `--mtp` is and carries the same non-bit-reproducibility caveat;
+  neither belongs in a byte-identity gate.
+  It was built because of what the flash-split counter said about MTP, not on a hunch: at draft 3 on
+  the host, **the head's own routing was 2.9% of the extra bytes a speculated run streams — the other
+  97.1% was the widened verify batch**, which every source pays. So a cheaper draft producer is worth
+  almost nothing, and the one property that could matter is that this source can *decline to draft at
+  zero cost*, which the head cannot: below `--ngram-min-match` it proposes nothing, the batch is never
+  widened, and the step is exactly a plain single-token decode.
+  **Measured, that floor holds per step but not per run, and the feature does not win.** Host,
+  Qwen3.6-35B-A3B-MXFP4 streamed, 256 greedy tokens, back-to-back with `off` run twice: on free prose
+  6.51 tok/s against a 5.80/6.59 noise band — inside it, because 92.6% of steps drafted nothing. On a
+  copy-heavy prompt 5.24 against a 5.45/5.65 floor — *below* it, because the 15% of steps that did
+  draft widened the read set to 67.2 MiB/token (48–58 at baseline) and at 44.2% acceptance bought only
+  1.20 tokens per decode. On the same prompt the MTP head accepted 82.4% and gained 15% effective.
+  Acceptance is what pays for the widening, and a trained head has it. Drafting cost measures
+  `0.0000 s/token` in every n-gram cell, exactly as claimed — it was simply never the constraint.
+  A `--ngram-min-match` sweep settles it rather than leaving it open: raising the gate 3 → 5 → 8 lifts
+  acceptance 44% → 75% while coverage collapses 15% → 3.4%, and narrowing to `--draft 1` reaches
+  82.6% acceptance — the head's own figure on this prompt. Every cell climbs toward baseline **from
+  below** and none crosses it; the best configuration found (`--draft 1 --ngram-min-match 5`, 5.56)
+  lands on the floor. A drafting step is net-negative or neutral here, so tightening the knob only
+  shrinks the exposure and its limit is the flag being off. Even at 82.6% a drafted step bought 1.08
+  tokens per decode: a match rare enough to trust carries one or two tokens of evidence, while the
+  batch it widens pays every position's independent routing.
+  The device A/B agrees and adds one cost the host could not show. Test phone, same model streamed on
+  the shipping recipe, cells thermally gated (a 120 s settle, then a battery-temperature gate, so all
+  six start between 35.3 and 36.4 °C): prose 4.90 inside a 4.59–5.17 band, copy-heavy **3.14 against
+  4.43** — a 29% loss, worse than MTP's 18%. The counter that explains it is new: **major faults per
+  token go 126 → 1427** for a source that allocates no draft context at all. Those are the rollback
+  snapshots. `n_rs_seq = draft_max` is asked for by *any* speculation, since rejecting a draft means
+  rewinding the KV, and on a hybrid attention/SSM model that snapshot is a real allocation scaling
+  with the context — so the n-gram source escapes MTP's draft context but not the loop's own memory,
+  and on device that memory is the expert cache's. The prose cell, with a 16-token prompt, barely
+  notices; the copy cell, with 224 tokens to snapshot, storms. The same run also re-measured MTP with
+  the thermal confound removed — 3.64 effective against 4.43, so the earlier device verdict was not an
+  artefact of benching without a cooldown gate — and reproduced the flash split at **3.7%** head
+  against 96.3% widened verify batch, matching the host's 2.9–3.0%.
+  Kept and shipped off: it is the only speculation available on a headless model, the per-step floor
+  is a real property, and `--ngram-min-match` is an untested lever on precisely the failure above.
+  The matcher (`core/include/bmoe/ngram_draft.h`) is pure policy over token ids with **no llama.cpp
+  at all** — not even `llama.h` — so it sits on the clean side of the seam, adds no `common`
+  dependency, and is unit-tested with no model (`tests/ngram_test.cpp`: tie-breaks, clipping,
+  self-match exclusion, gate boundary). See `docs/ngram.md`.
+- **`--mtp` — decode through the model's own MTP head, verifying a whole group per pass (off by
+  default).** Qwen3.5/3.6 ship a trained multi-token-prediction block inside the gguf. With the flag
+  on, that head drafts `--mtp-draft` continuation tokens and the target verifies all of them in one
+  wider decode, confirming the longest prefix whose argmax equals what the target itself would have
+  produced. Nothing is approximated and no weight is skipped, so the quality is the full model's —
+  but it is **not** byte-identical the way `--overlap` and `--prefetch` are, and it must not be used
+  in a byte-identity gate: the verify pass evaluates `1 + N` positions in one batch, and a batched
+  matmul is not bit-identical to N single-token ones, so a near-tie can flip. Measured on
+  Qwen3.6-35B-A3B-MXFP4 over 128 greedy tokens: exactly one token differs from an unspeculated run,
+  draft widths 1 and 3 agree with each other exactly, and a plain-vs-plain control is exact.
+  The prize is that a decode's dominant cost, moving the dense weights and the routed expert slices,
+  is paid once per group instead of once per token; the counterweight is that the verify positions
+  route independently, so a layer's read set widens toward `N × k` wherever adjacent tokens disagree,
+  and the draft pass routes through the MTP block's own expert layer on top. Measured on the desktop
+  host (DRAM-bandwidth-bound, model streamed at ~1.4× RAM): **+15.1%** at draft 3 with the host's
+  best recipe (7.12 → 8.19 tok/s) and **+29%** without the lossy drop knob, with acceptance falling
+  from 71% at draft 2 to 52% at draft 4 and flash bytes per token rising 19.7 → 33.7 MiB as the
+  widening predicts. Draft 3 is the optimum here; 4 is worse than 2. On a flash-I/O-bound phone that
+  balance can invert, so the flag ships off pending the device A/B. The orchestration is llama.cpp's own
+  (`common/speculative.h`, public headers only): no fork, no patch, no submodule bump. The MTP block
+  is streamed like any other layer — the hook and the expert source are sized `n_layer +
+  n_layer_nextn`, the capture warm-up runs on the draft context too (the MTP graph exists nowhere
+  else), and prefill is fed through the driver so the draft context's KV reaches the last prompt
+  position. The loop also accepts **before** catching the draft context up, so the catch-up runs on
+  the accepted prefix instead of the whole verify batch: acceptance depends only on the target's
+  logits, which are already in hand, and the rejected tail was being computed only to be deleted a
+  few statements later. Identical state, `n_draft − n_accepted` fewer positions through the MTP
+  block per group — and since that block carries its own MoE FFN, on a streamed device those are
+  expert reads that no longer happen. New telemetry: `mtp:` summary line, `mtp_batch` per-token column (a verify decode's
+  whole cost is charged to its group's first row), `mtp_drafted` / `mtp_accepted` / `mtp_decodes` in
+  the CSV trailer, and `mtp` / `mtp_draft_max` in the preamble. Needs a gguf carrying the `nextn`
+  block — which Qwen3.6's ordinary quantisations do, verified from their headers, so no `-MTP-`
+  conversion is required — and greedy decoding; both are rejected at load with a message rather than
+  silently ignored. See `docs/mtp.md`.
+- **`--mtp-p-min F` — stop drafting when the head is unsure.** The draft loop already knows the
+  head's confidence in each token it proposes; this makes it stop below a floor instead of always
+  filling the width. On a streamed device a draft not made is a pass through the MTP block — with
+  its own MoE FFN — that never happens, *and* one fewer independently routed position in the verify
+  batch. Default `0` (never stop), which is what the host numbers were measured at.
+
+### Changed
+- **The speculation config generalised to a draft *source*, and the flags with it.** `MtpConfig`
+  became `SpecConfig` with `DraftSource { none, mtp, ngram }`, and `--mtp-draft N` became `--draft N`
+  because the width belongs to the verify batch, not to whoever filled it; `--mtp` and `--ngram`
+  select the source and are rejected together rather than silently resolved by flag order. In the
+  session the gate split in two — `spec_on` (wide batch, acceptance, rollback: both sources) versus
+  `mtp_on` (draft context, `common/speculative.h`, the catch-up: the head only) — which is what lets
+  the n-gram source reuse the whole verify half while allocating nothing. CSV preamble: `mtp=0|1
+  mtp_draft_max=` became `spec=off|mtp|ngram spec_draft_max=` plus `ngram_min_match=`. The per-token
+  and trailer counters keep their `mtp_*` names on purpose: they always described the loop rather than
+  a source, `spec_*` already means the temporal prefetch in that trailer, and renaming would break
+  every CSV already holding a measurement. The Android setting became a three-way "Guess ahead"
+  picker, migrating the old boolean preference.
+- **A speculative step that drafts nothing now takes the plain decode path.** It used to build the
+  wide batch anyway — one token, all-logits, a logits row index of 0 — which was harmless but meant
+  the abstain case was not free. It now falls through to `llama_batch_get_one` with row `-1`, byte
+  for byte the unspeculated path. Required for `--ngram`, whose whole economics rest on it, and it
+  also tightens `--mtp-p-min`'s zero-draft steps for free.
+- **The MTP draft context's graph width drops from 256 to 32.** Compute buffers are reserved for the
+  widest ubatch and the dominant term scales with `ubatch × vocabulary`; on device that reservation
+  measured **493 MiB** for a context that evaluates one token per draft step and is handed at most
+  `1 + draft_max` positions by the catch-up. On this engine memory is the expert cache's, and the
+  device A/B showed exactly what it cost: major faults per token rose from ~69 without speculation
+  to 633 at draft 3 as the kernel swapped and dropped file pages to find the room.
+
+### Fixed
+- **The cost of speculation is now measured rather than inferred.** Drafting happens between decodes,
+  so it never entered `wall_ms` and `tok/s` never included it — a speculated run could report a rate
+  the user was not experiencing. New `mtp_draft_ms` per-token column, `mtp_draft_s/tok` in the CSV
+  trailer, `mtp_draft_s_tok` and `loop_overhead_s_tok` in `BMOE_DONE`, and a second `mtp:` summary
+  line giving the effective rate next to the reported one. The Android app now reads the `mtp_*`
+  keys it was already being sent and shows acceptance, tokens per pass and the real rate — before,
+  the UI could not tell whether speculation had run at all.
+- **The flash cost of drafting is now attributable.** A speculated run reads more bytes per token
+  for two unrelated reasons — the head's own MoE FFN routes on every draft pass, and the verify
+  batch widens the trunk's read set wherever adjacent positions disagree — and the route trace can
+  see neither apart, since its framing brackets the target decode while the head only ever runs in
+  the draft context. A third `mtp:` summary line now splits the run's streamed MiB between the two.
+  They are attacked in opposite ways (a narrower draft shrinks the first, only better agreement
+  shrinks the second), so a single total was not actionable. This is the counter that produced the
+  2.9%/97.1% split `--ngram` was designed against, and it is why that design targets the abstain case
+  rather than the drafting cost.
+- **Coverage is now reported, so a speculative result can be read.** New `drafted_steps` in the CSV
+  trailer and in `BMOE_DONE`, and an `ngram:` summary line giving it as a percentage of the verify
+  decodes. The head drafts on every step, so for `--mtp` this is a constant; for `--ngram` it is the
+  shape of the whole result, since the steps that abstained ran at exactly the unspeculated cost and
+  the same delta means something quite different at 7% coverage than at 100%.
+- The first device A/B is recorded in `docs/mtp.md`: on the test phone MTP **loses** at every draft
+  width (5.59 at draft 2 and 4.38 at draft 3 against 5.82–6.14 baseline) because the shipping
+  configuration is compute-bound — `stall_s/tok` is 0.025–0.027 whether speculation is on or off —
+  while the read set widens 35–54% and CPU per token rises 28–67%. The flag stays off.
 
 ## [0.18.1] - 2026-07-29
 

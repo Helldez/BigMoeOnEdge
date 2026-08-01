@@ -133,6 +133,26 @@ layer's experts before the layer runs. Prediction accuracy is proven; reading ah
 on-device A/B and ships off. [docs/expert-prediction.md](docs/expert-prediction.md) explains why a
 better guess still costs more than it saves.
 
+`--mtp` buys speed without trading quality: on a gguf carrying a trained multi-token-prediction
+head (Qwen3.5/3.6), the model drafts its own next few tokens and the engine verifies them in one
+wider decode, keeping only the prefix the model itself would have produced. Nothing is approximated
+and no weight is skipped, so the weights move once per group instead of once per token — measured
+**+15%** on desktop, where decode is DRAM-bound. Two caveats keep it off by default: the verify
+positions route independently, which widens each layer's expert read set, so a phone (where decode
+is flash-bound) may not win; and unlike `--overlap` it is not *byte*-identical, because batched and
+single-token matmuls differ in the last bits and a near-tie can flip one token.
+[docs/mtp.md](docs/mtp.md).
+
+`--ngram` drafts for the same verify loop without the head: it looks the last few tokens up in the
+prompt and in what has been generated, and proposes whatever followed last time. That costs no
+compute, no memory and no expert read, and it works on any model — including the ones `--mtp`
+refuses. It exists because of what the counters said about MTP: the head's own routing was only
+**3%** of the bytes speculation adds, so making the draft cheaper is not where the prize is. What is
+left is that this source can decline to draft at zero cost. Measured, that floor holds per *step*
+but not per *run*: the steps it does draft widen the expert read set at a lower acceptance than a
+trained head, and on the host that put it slightly **below** baseline while `--mtp` gained 15%.
+Off by default, and honest about it — [docs/ngram.md](docs/ngram.md).
+
 ### Sessions and telemetry
 
 The model stays loaded across chat turns, and every run can account for its own time: `--progress`

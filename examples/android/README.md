@@ -58,6 +58,14 @@ check). Nothing below needs a storage permission except the last option.
 2. **Any other model** — under **Other model**, paste a direct gguf URL (e.g. a Hugging Face
    `…/resolve/main/model.gguf` link), or pick a `.gguf` already on the device to import it.
 
+   You do **not** need a special file for **Guess ahead → Model's own head (MTP)**: the catalog's
+   Qwen3.6 entry already carries the `nextn` block the MTP head lives in, as do Qwen3.6's ordinary
+   quantisations generally. A gguf named `-MTP-` is the same head at a different quantisation.
+   On a model with no head — anything that is not Qwen3.5/3.6 — the engine refuses to open rather
+   than silently decoding one token at a time, so a wrong file fails immediately and says why.
+   **Guess ahead → Repeated text (n-gram)** has no such requirement: it guesses from the text
+   rather than from the weights, so it works on every model in the catalog.
+
    In-app downloads and picker imports both land in the app's internal storage (`filesDir`, a
    real f2fs/ext4 volume), so the streamed expert reads use O_DIRECT at full speed. Only models
    read from the emulated external dirs (adb-pushed to `/sdcard/Download`) fall back to buffered
