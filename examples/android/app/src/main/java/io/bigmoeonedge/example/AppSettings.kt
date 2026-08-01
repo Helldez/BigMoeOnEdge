@@ -35,6 +35,11 @@ data class AppSettings(
     // shorter context hands the difference back to the expert cache and the dense weights.
     val sessionCtx: Int = SESSION_CTX,
     val oDirect: Boolean = true,        // bypass the page cache
+    // Read expert slices straight into the cache instead of through a per-lane bounce buffer.
+    // Needs O_DIRECT (it is what forces the copy in the first place). Lossless by construction —
+    // the same bytes land in the same places — so this is a pure speed knob, unlike the ones
+    // below it. Default off until the on-device A/B is confirmed on a cool phone.
+    val oDirectZeroCopy: Boolean = false,
     val overlap: Boolean = true,        // read the next experts while the current layer computes
     val denseWeights: DenseWeights = DenseWeights.ANON, // dense (non-expert) weight residency policy
     val prefetchLayers: Int = 0,        // temporal prefetch depth K (0 = off); needs the cache
@@ -102,6 +107,7 @@ data class AppSettings(
             }
             a += listOf("--io-threads", ioThreads.toString())
             if (!oDirect) a += "--no-odirect"
+            if (oDirect && oDirectZeroCopy) a += "--odirect-zero-copy"
             if (overlap) a += "--overlap"
             // Dense (non-expert) weight policy — one canonical flag (mmap | warm | anon).
             a += listOf("--dense-weights", denseWeights.flag)
@@ -132,7 +138,8 @@ data class AppSettings(
      */
     fun sessionSignature(modelPath: String): String =
         listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, sessionCtx, oDirect,
-               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, dropColdPct)
+               oDirectZeroCopy, overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax,
+               dropColdPct)
             .joinToString("|")
 
     fun save(ctx: Context) {
@@ -142,6 +149,7 @@ data class AppSettings(
             .putInt("ioThreads", ioThreads).putInt("threads", threads)
             .putInt("nExpertUsed", nExpertUsed)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
+            .putBoolean("oDirectZeroCopy", oDirectZeroCopy)
             .putBoolean("overlap", overlap)
             .putString("denseWeights", denseWeights.name)
             .putInt("prefetchLayers", prefetchLayers)
@@ -250,6 +258,7 @@ data class AppSettings(
                 nExpertUsed = p.getInt("nExpertUsed", d.nExpertUsed),
                 nPredict = p.getInt("nPredict", d.nPredict),
                 oDirect = p.getBoolean("oDirect", d.oDirect),
+                oDirectZeroCopy = p.getBoolean("oDirectZeroCopy", d.oDirectZeroCopy),
                 overlap = p.getBoolean("overlap", d.overlap),
                 denseWeights = run {
                     val saved = p.getString("denseWeights", null)

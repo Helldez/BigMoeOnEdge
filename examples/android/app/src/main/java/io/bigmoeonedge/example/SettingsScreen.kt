@@ -102,6 +102,12 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     current.oDirect, enabled = stream,
                 ) { onChange(current.copy(oDirect = it)) }
                 SwitchRow(
+                    "Zero-copy reads",
+                    "Read expert slices straight into the cache instead of via a bounce buffer. " +
+                        "Needs Direct I/O; same bytes, same output — purely faster",
+                    current.oDirectZeroCopy, enabled = stream && current.oDirect,
+                ) { onChange(current.copy(oDirectZeroCopy = it)) }
+                SwitchRow(
                     "I/O–compute overlap",
                     "Read the next experts while the current layer computes, hiding read latency",
                     current.overlap, enabled = stream,
