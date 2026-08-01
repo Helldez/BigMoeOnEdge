@@ -62,6 +62,5 @@ object RunBus {
         it.copy(telemetry = Telemetry(), answer = "", reasoning = "", summary = "", error = null)
     }
 
-    fun setState(s: EngineState) = _state.update { it.copy(state = s) }
     fun update(block: (UiState) -> UiState) = _state.update(block)
 }

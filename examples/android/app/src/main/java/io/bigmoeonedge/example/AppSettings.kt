@@ -8,10 +8,10 @@ import android.content.Context
  * pair of switches, which could express the same policy two ways (or contradict each other).
  */
 enum class DenseWeights(val flag: String, val label: String, val blurb: String) {
-    MMAP("mmap", "Mmap (baseline)", "Leave the always-needed weights to the kernel, which faults them in as they are touched. The plain baseline to compare the others against."),
-    WARM("warm", "Warm at load", "Read them once at load so the first tokens do not fault them in a page at a time. Suits a model that fits in memory comfortably."),
-    ANON("anon", "Anon (O_DIRECT)", "Hold them in the app's own memory instead of the file cache. When the system reclaims, they are compressed rather than dropped and re-read from flash. Costs a private copy; the default."),
-    AHWB("ahwb", "Pinned (dma-buf)", "As Anon, but in memory the system cannot reclaim at all — not even by compressing it, which Anon still pays for. The gain shows up over a long conversation, once reclaim has had time to bite."),
+    MMAP("mmap", "Leave them to the system", "Let the system bring the always-needed weights in as they are touched, and take them back when it wants the memory. The plain baseline to compare the others against."),
+    WARM("warm", "Read them once at the start", "Read them all when the model opens, so the first tokens do not stop to fetch them a piece at a time. Suits a model that fits in memory comfortably."),
+    ANON("anon", "Held in the app", "Keep them in the app's own memory rather than the system's file cache. When the system wants memory back it compresses them instead of dropping them, so getting them back does not mean reading storage again. Costs a private copy, and is the default."),
+    AHWB("ahwb", "Pinned", "As Held in the app, but in memory the system cannot take back at all, not even by compressing it, which the option above still pays for. The gain shows up over a long conversation, once the system has had time to start taking memory back."),
 }
 
 /**
@@ -181,13 +181,19 @@ data class AppSettings(
      * Identity of the session these settings would open for [modelPath]. Two settings with the
      * same signature can reuse one loaded process (keeping the cache warm); a change means the
      * running session must be torn down and reopened. Per-prompt fields (n_predict, thinking) are
-     * excluded — they vary per request without touching the loaded model.
+     * excluded: they travel per request and never touch the loaded model.
+     *
+     * DERIVED FROM THE ARGV, deliberately, rather than listed by hand. The session's identity IS
+     * the command line it would open, so a setting that changes the argv changes the signature by
+     * construction and one that does not, does not. The hand-written list this replaces had to be
+     * kept in step with [sessionArgv] with nothing enforcing it, and forgetting a field there is a
+     * silent bug: the setting appears to change while the engine keeps running the old one.
+     *
+     * The CSV path is excluded (null) because it carries a timestamp: including it would make
+     * every session unique and defeat warm reuse entirely.
      */
     fun sessionSignature(modelPath: String): String =
-        listOf(modelPath, mmap, cacheMb, cacheCeilMb, ioThreads, threads, nExpertUsed, sessionCtx, oDirect,
-               overlap, denseWeights, prefetchLayers, predictPrefetch, predictSpecMax, routeAhead,
-               dropColdPct, spec, mtpDraft, mtpPMinPct)
-            .joinToString("|")
+        sessionArgv(cliPath = "", modelPath = modelPath, csvPath = null).joinToString("|")
 
     fun save(ctx: Context) {
         ctx.prefs().edit()
@@ -266,14 +272,6 @@ data class AppSettings(
             if (!dir.isDirectory && !dir.mkdirs()) return null
             val ts = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
             return java.io.File(dir, "bmoe-$ts.csv").absolutePath
-        }
-
-        /** The most recent metrics CSV, or null if none was written yet. */
-        fun latestMetricsCsv(ctx: Context): java.io.File? {
-            val root = ctx.getExternalFilesDir(null) ?: return null
-            return java.io.File(root, "metrics")
-                .listFiles { f -> f.name.endsWith(".csv") }
-                ?.maxByOrNull { it.lastModified() }
         }
 
         // -1 (Auto) sizes the cache to the device's free RAM once at load (--cache-mb auto).
