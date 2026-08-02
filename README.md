@@ -36,11 +36,8 @@ files Hugging Face ships, with no merge step and no PC in the loop.
 <p align="center"><em>DeepSeek V4 Flash 0731: 284B parameters, ~91 GB on disk, on a 12 GB phone.
 0.94 tok/s in the demo app, real time.</em></p>
 
-That figure is the app's own reading with cold-expert dropping at full strength, which trades
-quality for flash reads and is the setting this model needs on 12 GB (see
-[expert-dropping.md](docs/expert-dropping.md)). Behind it, **gpt-oss-120b** (~60 GB) generates at
-**1.3 tok/s** losslessly and **2.2 tok/s** with that same knob, against **0.09 tok/s** for the
-same file loaded the ordinary way.
+It is not one model, either. Below: three of them, one after another on the same phone, each past
+what it should be able to hold.
 
 https://github.com/user-attachments/assets/f899b93f-c7c4-4ce9-9fb0-5ed1bae13761
 
@@ -99,9 +96,10 @@ finishes, pick the model and chat. The telemetry panel shows tok/s and the compu
 split live, and every streaming knob below is in Settings.
 
 Models above Hugging Face's 50 GB per-file limit (gpt-oss-120b, DeepSeek V4 Flash 0731) ship as
-multi-shard ggufs. The engine reads split models natively: point it at the first shard
-(`-00001-of-...`) with the siblings alongside; no merge step. gpt-oss-120b still needs a manual
-copy to the device: steps in the [Android example README](examples/android/README.md#gpt-oss-120b).
+multi-shard ggufs, and both are in the catalog: the app fetches the shards one after another,
+resumable, under a single progress bar. The engine reads a split set natively, so there is no merge
+step anywhere. Outside the catalog the rule is the same: put the shards in one directory and point
+at the first (`-00001-of-...`).
 
 ## Features
 
@@ -116,8 +114,8 @@ flash, at the moment they are needed. Everything below tunes that.
 
 | Setting | Flag and values | What it does |
 |---|---|---|
-| Expert cache | `--cache-mb` &nbsp;`auto`, `0`, `500`…`6000` MiB &nbsp;(app default `2000`) | Keeps the most-used experts in RAM. `auto` sizes it once at load from free memory; a fixed value is reproducible, which is why the app ships one. Below the engine's floor it only churns. |
-| Cache ceiling | `--cache-ceil-mb` &nbsp;`0` (no cap), `2000`…`6000` | Caps what `auto` may claim. The OS counts our own mapped weights as free, so uncapped it can ask for more than exists. |
+| Expert cache | `--cache-mb` &nbsp;`auto`, `0`, `500` to `6000` MiB &nbsp;(app default `2000`) | Keeps the most-used experts in RAM. `auto` sizes it once at load from free memory; a fixed value is reproducible, which is why the app ships one. Below the engine's floor it only churns. |
+| Cache ceiling | `--cache-ceil-mb` &nbsp;`0` (no cap), `2000` to `6000` | Caps what `auto` may claim. The OS counts our own mapped weights as free, so uncapped it can ask for more than exists. |
 | Parallel I/O lanes | `--io-threads` &nbsp;`1`, `2`, `4`, `8` &nbsp;(default `4`) | Reads several expert slices at once. Helps until the flash saturates, which this engine's own measurements put at two lanes on the test device. |
 | Direct I/O | `--no-odirect` disables it &nbsp;(on by default) | Bypasses the OS page cache, so the system holds no second copy of what the expert cache already has. Falls back where unsupported. |
 | I/O and compute overlap | `--overlap` &nbsp;(off in the CLI, on in the app) | Issues the next reads while the current layer computes, hiding flash latency behind work. Byte-identical; needs a small optional add-on to llama.cpp ([seam](docs/seam.md)). |
@@ -131,11 +129,25 @@ flash, at the moment they are needed. Everything below tunes that.
 |---|---|---|
 | Drop cold experts | `--drop-cold-experts` &nbsp;`0` (off) to `1.0`; app rungs `50%`, `75%`, `100%` &nbsp;(app default `75%`) | Skips a routed expert only when it is a cache miss *and* the router wanted it less than that share of an even split. Quality is spent only where it buys a read. Lossy and not reproducible: what is skipped depends on what the cache held. |
 | Active experts | `--n-expert-used` &nbsp;`0` (model's own), `6`, `4`, `3`, `2` | Consults fewer experts per token than the model asks for, cutting compute and reads together. Lossy, but reproducible: the same prompt gives the same answer. |
-| Guess ahead *(experimental)* | `--mtp` or `--ngram`, with `--draft` &nbsp;`1`…`5` &nbsp;and, for the head, `--mtp-p-min` &nbsp;`0`, `40%`, `60%`, `80%` | Drafts the next few tokens and verifies the group in one decode, keeping only what the model itself would have produced. Nothing is approximated. Wins when weights move once per group, loses when the wider verify widens each layer's read set ([mtp](docs/mtp.md), [ngram](docs/ngram.md)). |
+| Guess ahead *(experimental)* | `--mtp` or `--ngram`, with `--draft` &nbsp;`1` to `5` &nbsp;and, for the head, `--mtp-p-min` &nbsp;`0`, `40%`, `60%`, `80%` | Drafts the next few tokens and verifies the group in one decode, keeping only what the model itself would have produced. Nothing is approximated. Wins when weights move once per group, loses when the wider verify widens each layer's read set ([mtp](docs/mtp.md), [ngram](docs/ngram.md)). |
 | Route-ahead *(experimental)* | `--route-ahead` &nbsp;`0` (off), `1`, `2`, `4` layers | Commits a layer's routing that many layers early, so its reads start early and can never be wasted. Lossy: some slots route differently. Excludes both prefetchers and Guess ahead ([detail](docs/route-ahead.md)). |
 
-Details and measured numbers for the two lossy levers are in
-[Trading quality for speed](#trading-quality-for-speed).
+Everything under Streaming changes *how* weights are fetched, never the math, so the answer is the
+one the model would have given anyway. The settings in this section are different in kind: they
+change *what* the model computes, and they are here because on a device far past its memory the
+alternative is often not a slower answer but no answer at all.
+
+They are not interchangeable. Reducing the active experts cuts the routing tail whether or not
+those experts were already free to run from memory, and it does so identically every time. Dropping
+cold experts spends quality only where it buys back a flash read, which is more surgical but makes
+the answer depend on what the cache happened to hold, so the same prompt can come out differently.
+Guessing ahead gives up nothing at all: it changes how many tokens a pass confirms, not what the
+model computes.
+
+Each one is measured rather than assumed, and the numbers live with the method that produced them:
+[expert-dropping.md](docs/expert-dropping.md), [mtp.md](docs/mtp.md),
+[ngram.md](docs/ngram.md), [route-ahead.md](docs/route-ahead.md). Judge any of them on your own
+task before relying on it.
 
 ### Sessions and telemetry
 
@@ -187,7 +199,7 @@ reads served from RAM instead of flash. Bold marks the best configuration for th
 
 ### gpt-oss-120b (Q4_K_M): ~60 GB on a 12 GB phone
 
-| Setup | k | Cache | Lanes | tok/s | Flash/token | Cache hit |
+| Setup | Active experts | Cache | Lanes | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|---:|---:|---:|
 | mmap baseline | 4 | n/a | n/a | 0.09 | n/a | n/a |
 | streamed | 4 | off | 4 | 0.7 | 1817 MiB | n/a |
@@ -208,7 +220,7 @@ A hybrid attention/SSM MoE (256 experts, top-8, 41 blocks): most layers are line
 `qwen3moe`. At ~2× device RAM the mmap baseline collapses into a fault storm; streaming with the
 dense weights kept out of the page cache (`--dense-weights anon`) runs it stably.
 
-| Setup | k | Cache | Lanes | tok/s | Flash/token | Cache hit |
+| Setup | Active experts | Cache | Lanes | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|---:|---:|---:|
 | mmap baseline | 8 | n/a | n/a | 0.1 unstable | n/a | n/a |
 | streamed | 8 | 2000 MiB | 4 | 4.3 | 206 MiB | 56% |
@@ -227,7 +239,7 @@ worth a further ~16% by routing to six experts instead of eight. The lossless be
 
 ### Qwen3-30B-A3B (Q4_K_M): 18.5 GB
 
-| Setup | k | Cache | Lanes | tok/s | Flash/token | Cache hit |
+| Setup | Active experts | Cache | Lanes | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|---:|---:|---:|
 | streamed | 8 | off | 4 | 1.7 | 1051 MiB | n/a |
 | mmap baseline | 8 | n/a | n/a | 2.0 unstable | n/a | n/a |
@@ -243,7 +255,7 @@ a little quality for a further +24% over the model's own width.
 
 ### Gemma-4-26B-A4B (Q4_K_M): 17.0 GB
 
-| Setup | k | Cache | Lanes | tok/s | Flash/token | Cache hit |
+| Setup | Active experts | Cache | Lanes | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|---:|---:|---:|
 | mmap baseline | 8 | n/a | n/a | 0.4 | n/a | n/a |
 | streamed | 8 | off | 4 | 1.6 | 904 MiB | n/a |
@@ -256,28 +268,6 @@ Gemma keeps more of itself permanently resident, so the 4000 MiB cache fits only
 free at launch; cache 2000 + overlap is the dependable everyday setting on this device. Turbo top-k
 (k=6) is the fastest here (+22%) but changes the output.
 
-### Trading quality for speed
-
-Every other benchmarked setting changes *how* weights are fetched, never the math. Two knobs change
-*what* the model computes, and both are measured:
-
-**Turbo top-k** (`--n-expert-used N`) forces the routing width below the model's own (8 for the
-Qwen and Gemma models, 4 for gpt-oss), cutting compute and flash reads together: **+22-24%** on
-the Qwen and Gemma models, and gpt-oss goes from 1.3 to **2.2 tok/s** at k=2. It is deterministic,
-which is why its `k=6` rows sit in the tables above. But it spends quality indiscriminately: the
-routing tail is cut whether or not those experts were already free to run from RAM.
-
-**Cache-aware dropping** (`--drop-cold-experts F`) fixes that: it skips a routed expert only when
-it would cost a flash read *and* the router barely weighted it, so quality is spent only where it
-buys I/O. Measured at **+55%** on Qwen3.6-35B-A3B at `F = 0.75` (**+84%** at `F = 1.0`), bootstrap
-intervals disjoint ([data](docs/bench-data/2026-07-22-drop-cold-experts/findings.md)). Its output
-is **not reproducible**, because what gets skipped depends on what the cache held, so it has no
-rows in the deterministic tables above. Details: [docs/expert-dropping.md](docs/expert-dropping.md).
-
-On quality itself: a 15-question GSM8K check found no loss from dropping at any threshold
-([data](docs/bench-data/2026-07-22-drop-quality/findings.md)); a sample that size rules out a
-collapse, not a subtle cost. Judge either knob on your own task before relying on it.
-
 ### What to expect in the app
 
 The tables above are a benchmark protocol over `adb`, not a chat session. The demo app lands close:
@@ -288,25 +278,28 @@ telemetry panel reports the same fields as the CLI, so you can see it directly. 
 
 ### Desktop
 
-The same engine builds and runs unmodified on desktop, and a >RAM model streams out of the box.
+**Not the primary target, for now.** The engine builds and runs unmodified on desktop and a model
+past RAM streams from the SSD out of the box, but the tuning, the defaults and the measurement
+protocol are all aimed at phones, because that is where memory is tightest and where the problem
+this engine exists for actually bites. What follows is a snapshot, not a tuned configuration.
+
 Measured on a Windows x86 laptop (8 cores, 16 GB RAM, dual-channel DDR4, NVMe SSD) with
 Qwen3.6-35B-A3B at ~1.5× RAM, 256-token generations:
 
-| Setup | k | Cache | Lanes | tok/s | Flash/token | Cache hit |
+| Setup | Active experts | Cache | Lanes | tok/s | Flash/token | Cache hit |
 |---|---:|---:|---:|---:|---:|---:|
 | streamed | 8 | auto | 4 | 4.8 | 74 MiB | 84% |
 | streamed, drop 75% | 8 | auto | 4 | 6.8 | 23 MiB | 92% |
 | **streamed, overlap, drop 75%** | **8** | **auto** | **4** | **7.3** | **24 MiB** | **92%** |
 
 The interesting part is that the bottleneck **flips**: on the phone streamed decode is I/O-bound,
-on this laptop it is DRAM-bandwidth-bound in compute (~0.11 s/token in every cell → a ~9 tok/s
+on this laptop it is DRAM-bandwidth-bound in compute (~0.11 s/token in every cell, so a ~9 tok/s
 ceiling even at zero I/O). More io lanes, more compute threads and the ~3 GB/s NVMe are all
 neutral; the levers that pay are the cache budget, cache-aware dropping and `--overlap`. Full
 campaign, including the cache-auto confound that round 1 had to unwind:
 [docs/bench-data/2026-07-24-desktop-qwen36](docs/bench-data/2026-07-24-desktop-qwen36/findings.md).
 
-Mobile stays the target and desktop is not tuned beyond this. If the model fits in RAM, just run
-it resident.
+If the model fits in RAM, just run it resident.
 
 ### How this is tested, and where the numbers come from
 
