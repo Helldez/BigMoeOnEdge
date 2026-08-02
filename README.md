@@ -105,55 +105,37 @@ copy to the device: steps in the [Android example README](examples/android/READM
 
 ## Features
 
-Grouped the way the demo app groups them in Settings.
+Grouped the way the demo app groups them in Settings. Each row is one setting: the name the app
+uses, the flag it maps to, and what it does. The app folds the experimental ones into a collapsed
+group; here they are marked.
+
+Streaming itself is the engine (`--moe-stream`): only the experts a token routes to are read, from
+flash, at the moment they are needed. Everything below tunes that.
 
 ### Streaming
 
-The core of the engine: `--moe-stream` reads only the experts each token routes to, straight from
-flash, bypassing the OS page cache with direct parallel reads (`--io-threads N`). An expert cache
-(`--cache-mb N|auto`) keeps the most-used experts in RAM, sized by hand or automatically to the
-device; when the model's working set fits it, this is the single biggest speed lever. The
-dense-weight policy (`--dense-weights mmap|warm|anon|ahwb`) decides how the always-needed
-non-expert weights are held, which becomes the decisive setting far past RAM, where leaving them
-to the page cache means the OS keeps re-reading them from flash mid-answer. On Android, `ahwb`
-puts them in memory the kernel cannot reclaim at all
-([data](docs/bench-data/2026-07-21-pinned-dense-ab/findings.md)). Finally `--overlap` hides flash
-latency behind compute, byte-identical output, at the cost of a small optional add-on to llama.cpp
-(see [docs/seam.md](docs/seam.md)).
+| Setting | Flag and values | What it does |
+|---|---|---|
+| Expert cache | `--cache-mb` &nbsp;`auto`, `0`, `500`…`6000` MiB &nbsp;(app default `2000`) | Keeps the most-used experts in RAM. `auto` sizes it once at load from free memory; a fixed value is reproducible, which is why the app ships one. Below the engine's floor it only churns. |
+| Cache ceiling | `--cache-ceil-mb` &nbsp;`0` (no cap), `2000`…`6000` | Caps what `auto` may claim. The OS counts our own mapped weights as free, so uncapped it can ask for more than exists. |
+| Parallel I/O lanes | `--io-threads` &nbsp;`1`, `2`, `4`, `8` &nbsp;(default `4`) | Reads several expert slices at once. Helps until the flash saturates, which this engine's own measurements put at two lanes on the test device. |
+| Direct I/O | `--no-odirect` disables it &nbsp;(on by default) | Bypasses the OS page cache, so the system holds no second copy of what the expert cache already has. Falls back where unsupported. |
+| I/O and compute overlap | `--overlap` &nbsp;(off in the CLI, on in the app) | Issues the next reads while the current layer computes, hiding flash latency behind work. Byte-identical; needs a small optional add-on to llama.cpp ([seam](docs/seam.md)). |
+| Dense weights | `--dense-weights` &nbsp;`mmap`, `warm`, `anon`, `ahwb` &nbsp;(default `anon`) | How the always-needed non-expert weights are held. Decisive far past RAM. `ahwb` is Android-only and puts them where the kernel cannot reclaim them at all ([data](docs/bench-data/2026-07-21-pinned-dense-ab/findings.md)). |
+| Temporal prefetch *(experimental)* | `--prefetch` &nbsp;`0` (off), `1`, `2`, `4` layers | Bets a layer reuses the previous token's experts and fetches them on idle lanes. Needs the cache. |
+| Predictive prefetch *(experimental)* | `--predict-prefetch`, with `--predict-spec-max` &nbsp;`0` (retention only), `1`, `2`, `4` | Runs the next layer's own router early and fetches what it names. More accurate than the bet above; reading ahead on it still lost its on-device A/B ([why](docs/expert-prediction.md)). |
 
 ### Speed and quality
 
-Everything above changes *how* weights are fetched, never the math. Two knobs deliberately trade
-output quality for speed, and both are measured rather than assumed. `--n-expert-used N` narrows
-how many experts each token consults, which cuts compute and reads together. `--drop-cold-experts F`
-is more surgical: it skips an expert only when fetching it would cost a flash read *and* the
-router barely wanted it, so quality is spent only where it buys I/O. Details and numbers in
+| Setting | Flag and values | What it does |
+|---|---|---|
+| Drop cold experts | `--drop-cold-experts` &nbsp;`0` (off) to `1.0`; app rungs `50%`, `75%`, `100%` &nbsp;(app default `75%`) | Skips a routed expert only when it is a cache miss *and* the router wanted it less than that share of an even split. Quality is spent only where it buys a read. Lossy and not reproducible: what is skipped depends on what the cache held. |
+| Active experts | `--n-expert-used` &nbsp;`0` (model's own), `6`, `4`, `3`, `2` | Consults fewer experts per token than the model asks for, cutting compute and reads together. Lossy, but reproducible: the same prompt gives the same answer. |
+| Guess ahead *(experimental)* | `--mtp` or `--ngram`, with `--draft` &nbsp;`1`…`5` &nbsp;and, for the head, `--mtp-p-min` &nbsp;`0`, `40%`, `60%`, `80%` | Drafts the next few tokens and verifies the group in one decode, keeping only what the model itself would have produced. Nothing is approximated. Wins when weights move once per group, loses when the wider verify widens each layer's read set ([mtp](docs/mtp.md), [ngram](docs/ngram.md)). |
+| Route-ahead *(experimental)* | `--route-ahead` &nbsp;`0` (off), `1`, `2`, `4` layers | Commits a layer's routing that many layers early, so its reads start early and can never be wasted. Lossy: some slots route differently. Excludes both prefetchers and Guess ahead ([detail](docs/route-ahead.md)). |
+
+Details and measured numbers for the two lossy levers are in
 [Trading quality for speed](#trading-quality-for-speed).
-
-There is also a routing predictor (`--predict-log`, `--predict-prefetch`) that can guess most of a
-layer's experts before the layer runs. Prediction accuracy is proven; reading ahead on it lost its
-on-device A/B and ships off. [docs/expert-prediction.md](docs/expert-prediction.md) explains why a
-better guess still costs more than it saves.
-
-`--mtp` buys speed without trading quality: on a gguf carrying a trained multi-token-prediction
-head (Qwen3.5/3.6), the model drafts its own next few tokens and the engine verifies them in one
-wider decode, keeping only the prefix the model itself would have produced. Nothing is approximated
-and no weight is skipped, so the weights move once per group instead of once per token — measured
-**+15%** on desktop, where decode is DRAM-bound. Two caveats keep it off by default: the verify
-positions route independently, which widens each layer's expert read set, so a phone (where decode
-is flash-bound) may not win; and unlike `--overlap` it is not *byte*-identical, because batched and
-single-token matmuls differ in the last bits and a near-tie can flip one token.
-[docs/mtp.md](docs/mtp.md).
-
-`--ngram` drafts for the same verify loop without the head: it looks the last few tokens up in the
-prompt and in what has been generated, and proposes whatever followed last time. That costs no
-compute, no memory and no expert read, and it works on any model — including the ones `--mtp`
-refuses. It exists because of what the counters said about MTP: the head's own routing was only
-**3%** of the bytes speculation adds, so making the draft cheaper is not where the prize is. What is
-left is that this source can decline to draft at zero cost. Measured, that floor holds per *step*
-but not per *run*: the steps it does draft widen the expert read set at a lower acceptance than a
-trained head, and on the host that put it slightly **below** baseline while `--mtp` gained 15%.
-Off by default, and honest about it — [docs/ngram.md](docs/ngram.md).
 
 ### Sessions and telemetry
 
@@ -205,13 +187,13 @@ reads served from RAM instead of flash. Bold marks the best configuration for th
 
 ### gpt-oss-120b (Q4_K_M): ~60 GB on a 12 GB phone
 
-| Configuration | tok/s | Flash/token | Cache hit |
-|---|---:|---:|---:|
-| mmap baseline (no streaming) | 0.09 | n/a | n/a |
-| streamed, k=4 (default), no cache, 4 lanes | 0.7 | 1817 MiB | n/a |
-| streamed, k=4 (default), cache 2000 MiB, 8 lanes | 1.3 | 1292 MiB | 27% |
-| streamed, k=2, no cache, 4 lanes | 1.8 | 909 MiB | n/a |
-| **streamed, k=2, cache 2000 MiB, 8 lanes** | **2.2** | 590 MiB | 32% |
+| Setup | k | Cache | Lanes | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|
+| mmap baseline | 4 | n/a | n/a | 0.09 | n/a | n/a |
+| streamed | 4 | off | 4 | 0.7 | 1817 MiB | n/a |
+| streamed | 4 | 2000 MiB | 8 | 1.3 | 1292 MiB | 27% |
+| streamed | 2 | off | 4 | 1.8 | 909 MiB | n/a |
+| **streamed** | **2** | **2000 MiB** | **8** | **2.2** | **590 MiB** | **32%** |
 
 All streamed rows use `--overlap --dense-weights anon --no-think`. The setting that unlocked this
 model is `--dense-weights anon`: this far past RAM the phone keeps reclaiming the always-used
@@ -226,13 +208,13 @@ A hybrid attention/SSM MoE (256 experts, top-8, 41 blocks): most layers are line
 `qwen3moe`. At ~2× device RAM the mmap baseline collapses into a fault storm; streaming with the
 dense weights kept out of the page cache (`--dense-weights anon`) runs it stably.
 
-| Configuration | tok/s | Flash/token | Cache hit |
-|---|---:|---:|---:|
-| mmap baseline (no streaming) | 0.1 (unstable) | n/a | n/a |
-| streamed, k=8 (default), cache 2000 MiB, 4 lanes, overlap | 4.3 | 206 MiB | 56% |
-| streamed, k=8 (default), cache 3000 MiB, 4 lanes, overlap | 5.0 | 144 MiB | 65% |
-| streamed, k=6, cache 2000 MiB, 4 lanes, overlap | 5.4 | 137 MiB | 60% |
-| **streamed, k=6, cache 3000 MiB, 4 lanes, overlap** | **5.8** | 91 MiB | 68% |
+| Setup | k | Cache | Lanes | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|
+| mmap baseline | 8 | n/a | n/a | 0.1 unstable | n/a | n/a |
+| streamed | 8 | 2000 MiB | 4 | 4.3 | 206 MiB | 56% |
+| streamed | 8 | 3000 MiB | 4 | 5.0 | 144 MiB | 65% |
+| streamed | 6 | 2000 MiB | 4 | 5.4 | 137 MiB | 60% |
+| **streamed** | **6** | **3000 MiB** | **4** | **5.8** | **91 MiB** | **68%** |
 
 All streamed rows use `--overlap --dense-weights anon`. A larger cache is the main lossless lever
 (cache 3000 is worth +16% over 2000); the k=6 rows are the measured lossy option (turbo top-k, below),
@@ -245,14 +227,14 @@ worth a further ~16% by routing to six experts instead of eight. The lossless be
 
 ### Qwen3-30B-A3B (Q4_K_M): 18.5 GB
 
-| Configuration | tok/s | Flash/token | Cache hit |
-|---|---:|---:|---:|
-| streamed, k=8 (default), no cache, 4 lanes | 1.7 | 1051 MiB | n/a |
-| mmap baseline (no streaming) | 2.0 (unstable) | n/a | n/a |
-| streamed, k=8 (default), cache 2000 MiB, 4 lanes | 2.4 | 480 MiB | 53% |
-| streamed, k=8 (default), cache 4000 MiB, 4 lanes | 4.0 | 225 MiB | 76% |
-| streamed, k=6, cache 4000 MiB, 4 lanes | 5.0 | 165 MiB | 77% |
-| **streamed, k=8 (default), auto cache (cap 4000 MiB), 4 lanes, overlap** | **5.2** | 225 MiB | 76% |
+| Setup | k | Cache | Lanes | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|
+| streamed | 8 | off | 4 | 1.7 | 1051 MiB | n/a |
+| mmap baseline | 8 | n/a | n/a | 2.0 unstable | n/a | n/a |
+| streamed | 8 | 2000 MiB | 4 | 2.4 | 480 MiB | 53% |
+| streamed | 8 | 4000 MiB | 4 | 4.0 | 225 MiB | 76% |
+| streamed | 6 | 4000 MiB | 4 | 5.0 | 165 MiB | 77% |
+| **streamed** | **8** | **auto, cap 4000** | **4** | **5.2** | **225 MiB** | **76%** |
 
 Cache size is the dominant lever here, and the auto-sized cache with a ceiling
 ([docs/cache-sizing.md](docs/cache-sizing.md)) is the winning recipe. The mmap baseline
@@ -261,14 +243,14 @@ a little quality for a further +24% over the model's own width.
 
 ### Gemma-4-26B-A4B (Q4_K_M): 17.0 GB
 
-| Configuration | tok/s | Flash/token | Cache hit |
-|---|---:|---:|---:|
-| mmap baseline (no streaming) | 0.4 | n/a | n/a |
-| streamed, k=8 (default), no cache, 4 lanes | 1.6 | 904 MiB | n/a |
-| streamed, k=8 (default), cache 2000 MiB, 4 lanes | 2.2 | 366 MiB | 58% |
-| streamed, k=8 (default), cache 2000 MiB, 4 lanes, overlap | 2.8 | 365 MiB | 58% |
-| streamed, k=8 (default), cache 4000 MiB, 4 lanes | 4.1 | 144 MiB | 82% |
-| **streamed, k=6, cache 4000 MiB, 4 lanes** | **5.0** | 98 MiB | 83% |
+| Setup | k | Cache | Lanes | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|
+| mmap baseline | 8 | n/a | n/a | 0.4 | n/a | n/a |
+| streamed | 8 | off | 4 | 1.6 | 904 MiB | n/a |
+| streamed | 8 | 2000 MiB | 4 | 2.2 | 366 MiB | 58% |
+| streamed, overlap | 8 | 2000 MiB | 4 | 2.8 | 365 MiB | 58% |
+| streamed | 8 | 4000 MiB | 4 | 4.1 | 144 MiB | 82% |
+| **streamed** | **6** | **4000 MiB** | **4** | **5.0** | **98 MiB** | **83%** |
 
 Gemma keeps more of itself permanently resident, so the 4000 MiB cache fits only when enough RAM is
 free at launch; cache 2000 + overlap is the dependable everyday setting on this device. Turbo top-k
@@ -310,11 +292,11 @@ The same engine builds and runs unmodified on desktop, and a >RAM model streams 
 Measured on a Windows x86 laptop (8 cores, 16 GB RAM, dual-channel DDR4, NVMe SSD) with
 Qwen3.6-35B-A3B at ~1.5× RAM, 256-token generations:
 
-| Configuration | tok/s | Flash/token | Cache hit |
-|---|---:|---:|---:|
-| streamed, default k=8, cache auto, 4 lanes | 4.8 | 74 MiB | 84% |
-| streamed + `--drop-cold-experts 0.75` | 6.8 | 23 MiB | 92% |
-| **streamed + `--overlap` + `--drop-cold-experts 0.75`** | **7.3** | 24 MiB | 92% |
+| Setup | k | Cache | Lanes | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|
+| streamed | 8 | auto | 4 | 4.8 | 74 MiB | 84% |
+| streamed, drop 75% | 8 | auto | 4 | 6.8 | 23 MiB | 92% |
+| **streamed, overlap, drop 75%** | **8** | **auto** | **4** | **7.3** | **24 MiB** | **92%** |
 
 The interesting part is that the bottleneck **flips**: on the phone streamed decode is I/O-bound,
 on this laptop it is DRAM-bandwidth-bound in compute (~0.11 s/token in every cell → a ~9 tok/s

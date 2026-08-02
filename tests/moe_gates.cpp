@@ -41,6 +41,15 @@
 //
 //   G10 streaming + --predict-prefetch == streaming (speculating on the prediction only warms the
 //       cache), and the run must actually have speculated — an inert predictor passes vacuously.
+//   G8  streaming + --drop-cold-experts, plumbing vs policy: an inert threshold drops nothing, the
+//       top-weighted expert is never dropped, and full strength survives a constantly evicting cache
+//   G13 the speculative decode loop, via the n-gram source on a prompt with nothing to match: it
+//       abstains, so every step takes the plain path and the output must be identical
+//   G14 --route-ahead, in two halves: a horizon past every layer overrides nothing and must be
+//       identical, and a horizon of one must commit real routings and still generate
+//
+// Gate numbers are allocated once and never reused: a failing label has to name one thing. G11 and
+// G12 are reserved for the zero-copy branch (PR #143) and must not be taken here.
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
@@ -542,6 +551,131 @@ int main(int argc, char ** argv) {
                         r.summary.moe_spec_experts, r.summary.moe_spec_useful,
                         r.summary.moe_spec_experts > 0 ? 100.0 * r.summary.moe_spec_useful / r.summary.moe_spec_experts
                                                        : 0.0);
+        }
+    }
+
+    // G13 — the speculative decode loop, gated for real rather than declared untestable.
+    //
+    // Speculation is documented as not byte-identical, and for the MTP head that is true: its verify
+    // decode evaluates several positions in one batch, and a batched matmul is not bit-identical to
+    // that many single-token ones, so a near-tie can flip. The N-GRAM source escapes that on a
+    // prompt with nothing to match. It abstains, every step takes the plain one-token path, and the
+    // output must therefore equal the unspeculated run EXACTLY. That is a genuine gate over the
+    // whole loop: the wider batch is built, the draft source is asked, the accept pass runs, the KV
+    // is rewound at the end of the turn. Those are ~240 lines that touch the KV cache and had no
+    // runtime coverage at all before this.
+    // Abstention is forced rather than assumed. The first draft of this gate left the matcher at its
+    // default and expected a synthetic model's output to repeat nothing; it drafted anyway (20
+    // decodes for 24 tokens). The identity still held, but a gate must not rest on that: a verify
+    // batch evaluates several positions at once, and the docs are explicit that a near-tie can then
+    // order differently. Requiring a match longer than the whole generation makes the source unable
+    // to fire, so the plain path is taken by construction and the identity is structural.
+    RunConfig spec_ngram = base(model);
+    spec_ngram.moe.enabled = true;
+    spec_ngram.moe.cache_mb = 0;
+    spec_ngram.moe.io_threads = 4;
+    spec_ngram.spec.source = DraftSource::ngram;
+    spec_ngram.spec.draft_max = 3;
+    // Both bounds, because validate() rejects a floor above the longest suffix considered. A match
+    // this long cannot exist inside a generation this short, so the source can never fire.
+    spec_ngram.spec.ngram_max_match = SpecConfig::ngram_match_limit;
+    spec_ngram.spec.ngram_min_match = SpecConfig::ngram_match_limit;
+    std::string s_spec_ngram;
+    if (!gen(spec_ngram, s_spec_ngram, err)) {
+        std::fprintf(stderr, "ngram speculative run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G13a ngram speculation (forced to abstain) == streaming(cache off)", s_s0, s_spec_ngram);
+    // And the loop really ran, rather than the source being disabled somewhere and the identity
+    // holding for the boring reason. One verify decode per generated token, and zero drafting steps,
+    // is exactly what a source that cannot fire produces.
+    {
+        RunResult r = run(spec_ngram);
+        if (!r || r.summary.mtp_decodes != r.summary.n_generated || r.summary.drafted_steps != 0) {
+            std::printf("[FAIL] G13b forced-abstain ngram must cost one decode per token and draft none "
+                        "(decodes=%lld tokens=%d drafted=%lld)\n",
+                        r ? r.summary.mtp_decodes : -1, r ? r.summary.n_generated : -1,
+                        r ? r.summary.drafted_steps : -1);
+            ++fails;
+        } else {
+            std::printf("[PASS] G13b forced-abstain ngram ran the verify loop at one decode per token (%lld)\n",
+                        r.summary.mtp_decodes);
+        }
+    }
+
+    // G13c — and the loop with drafting ACTUALLY ON. There is no reference output here (a batched
+    // verify may order a near-tie differently), so the assertion is the one G8b makes for the lossy
+    // drop policy: the machinery survives. Drafts are proposed, a wider batch is decoded, a prefix
+    // is accepted, the rest is rolled back and the KV is trimmed at the end of the turn. A mistake
+    // in any of those corrupts the context rather than the arithmetic, and shows up as empty or
+    // truncated output.
+    RunConfig spec_live = spec_ngram;
+    spec_live.spec.ngram_min_match = 1; // fire on the shortest possible match, so it drafts often
+    spec_live.spec.ngram_max_match = 12;
+    std::string s_spec_live;
+    if (!gen(spec_live, s_spec_live, err)) {
+        std::fprintf(stderr, "ngram speculative (drafting) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    {
+        RunResult r = run(spec_live);
+        if (!r || s_spec_live.empty() || r.summary.drafted_steps <= 0 ||
+            r.summary.mtp_decodes >= r.summary.n_generated) {
+            std::printf("[FAIL] G13c drafting ngram must draft, amortise decodes and still generate "
+                        "(drafted=%lld decodes=%lld tokens=%d empty=%d)\n",
+                        r ? r.summary.drafted_steps : -1, r ? r.summary.mtp_decodes : -1,
+                        r ? r.summary.n_generated : -1, (int) s_spec_live.empty());
+            ++fails;
+        } else {
+            std::printf("[PASS] G13c drafting ngram: %lld steps drafted, %d tokens in %lld decodes\n",
+                        r.summary.drafted_steps, r.summary.n_generated, r.summary.mtp_decodes);
+        }
+    }
+
+    // G14 — route-ahead: it is lossy by construction, so there is no reference output to compare
+    // against. Two things can still be asserted, and together they are what a gate is for.
+    //
+    // First, the passthrough path. Layers before the horizon route normally, so with the horizon set
+    // to the full layer count NOTHING can be overridden and the run must be byte-identical to the
+    // unmodified stream. That covers the plumbing: the hook is attached, the gate matrices are
+    // mirrored, the watchdog runs, and none of it perturbs a routing it declined to replace.
+    RunConfig ra_all_passthrough = base(model);
+    ra_all_passthrough.moe.enabled = true;
+    ra_all_passthrough.moe.cache_mb = 0;
+    ra_all_passthrough.moe.io_threads = 4;
+    ra_all_passthrough.moe.route_ahead = MoeStreamConfig::route_ahead_max;
+    std::string s_ra_pass;
+    if (!gen(ra_all_passthrough, s_ra_pass, err)) {
+        std::fprintf(stderr, "route-ahead passthrough run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G14a route-ahead(horizon past every layer) == streaming (all passthrough)", s_s0, s_ra_pass);
+
+    // Second, the committed path survives and actually commits. A horizon of one on a cached run
+    // must override real routings and still produce output: the committed ids are handed to the
+    // speculative read path and adopted by the demand load, so a mistake there reads an expert slot
+    // the cache never filled. Asserting the override COUNT is what stops an inert policy passing
+    // this vacuously, the same trap G10b guards for the prefetch.
+    RunConfig ra_live = base(model);
+    ra_live.moe.enabled = true;
+    ra_live.moe.cache_mb = 2;
+    ra_live.moe.force_cache = true;
+    ra_live.moe.io_threads = 4;
+    ra_live.moe.route_ahead = 1;
+    std::string s_ra_live;
+    if (!gen(ra_live, s_ra_live, err)) {
+        std::fprintf(stderr, "route-ahead(1) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    {
+        RunResult r = run(ra_live);
+        if (!r || s_ra_live.empty() || r.summary.route_ahead_overridden <= 0) {
+            std::printf("[FAIL] G14b route-ahead(1) must commit routings and generate (committed=%lld, empty=%d)\n",
+                        r ? r.summary.route_ahead_overridden : -1, (int) s_ra_live.empty());
+            ++fails;
+        } else {
+            std::printf("[PASS] G14b route-ahead(1) committed %lld routings (%lld passed through) and generated\n",
+                        r.summary.route_ahead_overridden, r.summary.route_ahead_passthrough);
         }
     }
 
