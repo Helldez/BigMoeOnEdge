@@ -147,6 +147,14 @@ Semantic Versioning.
   NDK r27c, the same release that produces published APKs, so CI stops validating a build nobody
   installs; and it passes `-DGGML_OPENCL=OFF`, the flag whose absence once shipped a stray backend
   into two releases. `actions/checkout` moves to v5 (v4 pins a deprecated Node runtime).
+- **Third-party actions are pinned by commit SHA.** `nttld/setup-ndk` and `softprops/action-gh-release`
+  ran from mutable major tags inside the APK job, which holds a `contents: write` token: whoever
+  controls those tags upstream could have pointed them at unreviewed code with permission to rewrite
+  this repo's release assets. Both now resolve to a fixed commit, with the human-readable version in a
+  trailing comment. GitHub-owned actions stay on major tags, since pinning them would mean an SHA bump
+  on every upstream release for a materially smaller risk. The signing keystore was never exposed to
+  this: it lives only in `release-apk.yml`, which runs no third-party action and triggers only on
+  events that already require write access.
 - **`--help` lists every flag the CLI accepts.** `--io-trace` in particular was a fully documented,
   guarded diagnostic that the usage text never mentioned; `--version`, `-h`, `--prefetch-sync` and
   the two deprecated `--dense-weights` aliases are named now too. A flag that works but is not
