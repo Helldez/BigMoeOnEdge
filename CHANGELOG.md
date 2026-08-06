@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **`bmoe-server` — HTTP server mode.** A new `bmoe-server` binary (alongside `bmoe-cli`) that
+  loads a model once and serves it over HTTP on a configurable port. Exposes an OpenAI-compatible
+  REST API: `GET /v1/models`, `POST /v1/completions`, and `POST /v1/chat/completions`, with
+  server-sent events (SSE) streaming via `stream: true`. The model and expert cache persist between
+  requests, amortising model load and cache warm-up just like `bmoe-cli --session`. All bmoe-cli
+  streaming flags are supported (`--moe-stream`, `--cache-mb`, `--prefetch`, etc.). Usage:
+  `bmoe-server -m <model.gguf> [--port N] [--host ADDR] [--chat]`.
+
 ## [0.19.0] - 2026-08-01
 
 ### Added
