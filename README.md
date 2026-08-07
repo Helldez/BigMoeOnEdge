@@ -380,8 +380,11 @@ It exposes an OpenAI-compatible REST API:
 | `/v1/completions` | POST | Text completion (raw `prompt` field) |
 | `/v1/chat/completions` | POST | Chat completion (`messages` array) |
 
-Both POST endpoints accept `stream: true` for server-sent events (SSE) token streaming. All
-`bmoe-cli` streaming flags (`--moe-stream`, `--cache-mb`, `--prefetch`, etc.) are supported. The
+Both POST endpoints accept `stream: true` for server-sent events (SSE) token streaming, using
+`Transfer-Encoding: chunked` for compatibility with OpenAI-compatible SDKs (OpenAI/JS,
+OpenAI/Python). The server also accepts `max_completion_tokens` in addition to `max_tokens`, and
+handles `content` as either a plain string or an array of `{"type":"text","text":"..."}` objects.
+All `bmoe-cli` streaming flags (`--moe-stream`, `--cache-mb`, `--prefetch`, etc.) are supported. The
 model's chat template is always applied to `messages` (chatml mode), matching how OpenAI-compatible
 clients format conversations. Use `--no-think` to disable model thinking on reasoning-capable models.
 On Android/Termux, run it with `LD_LIBRARY_PATH` pointing at the `build/bin` directory where the
