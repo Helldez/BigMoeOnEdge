@@ -29,6 +29,11 @@ Semantic Versioning.
   eliminating the O(n²) per-token parsing overhead that made streaming with large prompts extremely
   slow. Only token deltas (`piece`) are sent as SSE chunks, which is all OpenAI-compatible clients
   need for incremental rendering.
+- **`bmoe-server` SSE streaming with chunked transfer encoding.** SSE responses now use
+  `Transfer-Encoding: chunked` (with proper hex size prefixes per chunk and a terminating zero-size
+  chunk) instead of bare `Connection: close`. OpenAI-compatible SDKs (OpenAI/JS, OpenAI/Python)
+  use `fetch()` and expect chunked encoding for streaming; without it, the SDK buffers the entire
+  response body before parsing, which deadlocks on streaming responses.
 
 ## [0.19.0] - 2026-08-01
 
