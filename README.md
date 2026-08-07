@@ -362,6 +362,34 @@ The model must live on a real filesystem (on Android `/data/local/tmp/...`, not 
 `--moe-stream` for the plain mmap baseline. The byte-identity gates (streamed == resident) run with
 `cd build && ctest --output-on-failure` (needs `python3` with the `gguf` package).
 
+#### Server mode
+
+`bmoe-server` is a separate binary that loads a model once and serves it over HTTP, keeping the
+expert cache warm across requests:
+
+```bash
+build/cli/bmoe-server -m Qwen3-30B-A3B-Q4_K_M.gguf --moe-stream \
+  --cache-mb auto --io-threads 4 -t 4 --port 8080 --host 127.0.0.1 --no-think
+```
+
+It exposes an OpenAI-compatible REST API:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/v1/models` | GET | List the loaded model and its metadata |
+| `/v1/completions` | POST | Text completion (raw `prompt` field) |
+| `/v1/chat/completions` | POST | Chat completion (`messages` array) |
+
+Both POST endpoints accept `stream: true` for server-sent events (SSE) token streaming, using
+`Transfer-Encoding: chunked` for compatibility with OpenAI-compatible SDKs (OpenAI/JS,
+OpenAI/Python). The server also accepts `max_completion_tokens` in addition to `max_tokens`, and
+handles `content` as either a plain string or an array of `{"type":"text","text":"..."}` objects.
+All `bmoe-cli` streaming flags (`--moe-stream`, `--cache-mb`, `--prefetch`, etc.) are supported. The
+model's chat template is always applied to `messages` (chatml mode), matching how OpenAI-compatible
+clients format conversations. Use `--no-think` to disable model thinking on reasoning-capable models.
+On Android/Termux, run it with `LD_LIBRARY_PATH` pointing at the `build/bin` directory where the
+shared libraries live.
+
 Platform status: Linux is exercised by CI (build + gates) and Windows is where the
 [desktop numbers](#desktop) were measured. On Windows, build with CMake directly (Visual Studio
 Build Tools); the script above is bash, and MSVC puts the binary in `build\cli\Release\bmoe-cli.exe`.
