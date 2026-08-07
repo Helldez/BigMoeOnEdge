@@ -410,8 +410,13 @@ static void send_response(int fd,
 
 // Send SSE response headers (no Content-Length — streamed body).
 static void send_sse_headers(int fd) {
+    // OpenAI-compatible SDKs (OpenAI/JS, OpenAI/Python) use fetch() and expect
+    // Transfer-Encoding: chunked for streaming. Connection: close without
+    // chunked encoding causes the SDK to read the entire body before parsing,
+    // which deadlocks on single-token streams.
     std::string resp = "HTTP/1.1 200 OK\r\n"
                        "Connection: close\r\n"
+                       "Transfer-Encoding: chunked\r\n"
                        "Content-Type: text/event-stream\r\n"
                        "Cache-Control: no-cache\r\n"
                        "Access-Control-Allow-Origin: *\r\n"
@@ -421,14 +426,20 @@ static void send_sse_headers(int fd) {
     http_write(fd, resp);
 }
 
-// Send an SSE data chunk.
+// Send an SSE data chunk with proper HTTP chunked transfer encoding.
 static void send_sse(int fd, const std::string & data) {
     std::string chunk = "data: " + data + "\n\n";
+    char size_buf[16];
+    std::snprintf(size_buf, sizeof(size_buf), "%zx\r\n", chunk.size());
+    http_write(fd, size_buf);
     http_write(fd, chunk);
+    http_write(fd, "\r\n");
 }
 
+// Send the terminating zero-size chunk.
 static void send_sse_done(int fd) {
     send_sse(fd, "[DONE]");
+    http_write(fd, "0\r\n\r\n");
 }
 
 static void send_json_error(int fd, int status, const char * msg, bool ka) {
