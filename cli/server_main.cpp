@@ -164,6 +164,8 @@ static bool json_extract_bool(const std::string & json, const char * key, bool d
 }
 
 // Extract the last user message content from a chat messages array.
+// Handles both string content ("content":"text") and array content
+// ("content":[{"type":"text","text":"..."}] as used by the OpenAI SDK / pi).
 static std::string extract_last_user_message(const std::string & body) {
     size_t msgs = body.find("\"messages\"");
     if (msgs == std::string::npos) return "";
@@ -192,48 +194,106 @@ static std::string extract_last_user_message(const std::string & body) {
             ++cp;
             while (cp < body.size() && (body[cp] == ' ' || body[cp] == '\t' || body[cp] == '\n'))
                 ++cp;
-            if (cp < body.size() && body[cp] == '"') {
-                ++cp;
-                std::string raw;
-                for (; cp < body.size(); ++cp) {
-                    if (body[cp] == '\\' && cp + 1 < body.size()) {
-                        raw += body[cp];
-                        raw += body[cp + 1];
-                        ++cp;
-                    } else if (body[cp] == '"') {
-                        break;
-                    } else {
-                        raw += body[cp];
-                    }
-                }
-                std::string content;
-                for (size_t i = 0; i < raw.size(); ++i) {
-                    if (raw[i] == '\\' && i + 1 < raw.size()) {
-                        switch (raw[++i]) {
-                        case 'n':
-                            content += '\n';
+            if (cp < body.size()) {
+                if (body[cp] == '"') {
+                    // String content
+                    ++cp;
+                    std::string raw;
+                    for (; cp < body.size(); ++cp) {
+                        if (body[cp] == '\\' && cp + 1 < body.size()) {
+                            raw += body[cp];
+                            raw += body[cp + 1];
+                            ++cp;
+                        } else if (body[cp] == '"') {
                             break;
-                        case 'r':
-                            content += '\r';
-                            break;
-                        case 't':
-                            content += '\t';
-                            break;
-                        case '"':
-                            content += '"';
-                            break;
-                        case '\\':
-                            content += '\\';
-                            break;
-                        default:
-                            content += raw[i];
-                            break;
+                        } else {
+                            raw += body[cp];
                         }
-                    } else {
-                        content += raw[i];
+                    }
+                    std::string content;
+                    for (size_t i = 0; i < raw.size(); ++i) {
+                        if (raw[i] == '\\' && i + 1 < raw.size()) {
+                            switch (raw[++i]) {
+                            case 'n':
+                                content += '\n';
+                                break;
+                            case 'r':
+                                content += '\r';
+                                break;
+                            case 't':
+                                content += '\t';
+                                break;
+                            case '"':
+                                content += '"';
+                                break;
+                            case '\\':
+                                content += '\\';
+                                break;
+                            default:
+                                content += raw[i];
+                                break;
+                            }
+                        } else {
+                            content += raw[i];
+                        }
+                    }
+                    if (is_user) last_content = content;
+                } else if (body[cp] == '[') {
+                    // Array content — find the "text" field inside
+                    size_t text_pos = body.find("\"text\"", cp + 1);
+                    if (text_pos != std::string::npos && (next_role == std::string::npos || text_pos < next_role)) {
+                        size_t text_colon = body.find(':', text_pos + 6);
+                        if (text_colon != std::string::npos) {
+                            size_t text_start = text_colon + 1;
+                            while (text_start < body.size() &&
+                                   (body[text_start] == ' ' || body[text_start] == '\t' || body[text_start] == '\n'))
+                                ++text_start;
+                            if (text_start < body.size() && body[text_start] == '"') {
+                                ++text_start;
+                                std::string raw;
+                                for (; text_start < body.size(); ++text_start) {
+                                    if (body[text_start] == '\\' && text_start + 1 < body.size()) {
+                                        raw += body[text_start];
+                                        raw += body[text_start + 1];
+                                        ++text_start;
+                                    } else if (body[text_start] == '"') {
+                                        break;
+                                    } else {
+                                        raw += body[text_start];
+                                    }
+                                }
+                                std::string content;
+                                for (size_t i = 0; i < raw.size(); ++i) {
+                                    if (raw[i] == '\\' && i + 1 < raw.size()) {
+                                        switch (raw[++i]) {
+                                        case 'n':
+                                            content += '\n';
+                                            break;
+                                        case 'r':
+                                            content += '\r';
+                                            break;
+                                        case 't':
+                                            content += '\t';
+                                            break;
+                                        case '"':
+                                            content += '"';
+                                            break;
+                                        case '\\':
+                                            content += '\\';
+                                            break;
+                                        default:
+                                            content += raw[i];
+                                            break;
+                                        }
+                                    } else {
+                                        content += raw[i];
+                                    }
+                                }
+                                if (is_user) last_content = content;
+                            }
+                        }
                     }
                 }
-                if (is_user) last_content = content;
             }
         }
 
@@ -386,6 +446,7 @@ struct ServerConfig {
     std::string host = "127.0.0.1";
     int port = 8080;
     int max_connections = 32;
+    bool disable_think = false;
 };
 
 struct ServerState {
@@ -450,15 +511,15 @@ static void handle_request(int fd, const HttpRequest & req, ServerState & state)
         return;
     }
 
-    // POST /v1/completions
-    if (req.method == "POST" && req.path == "/v1/completions") {
-        handle_completions(fd, req, state, false);
-        return;
-    }
-
     // POST /v1/chat/completions
     if (req.method == "POST" && req.path == "/v1/chat/completions") {
         handle_completions(fd, req, state, true);
+        return;
+    }
+
+    // POST /v1/completions
+    if (req.method == "POST" && req.path == "/v1/completions") {
+        handle_completions(fd, req, state, false);
         return;
     }
 
@@ -471,37 +532,28 @@ static void handle_completions(int fd, const HttpRequest & req, ServerState & st
         return;
     }
 
-    // Build the prompt
+    // Build the prompt — accept both `messages` (chat) and `prompt` (completion) formats
     std::string prompt;
-    int n_predict = 128;
-    double temp = 0.0;
-    bool stream = false;
-
-    if (chat) {
+    if (req.body.find("\"messages\"") != std::string::npos) {
         prompt = extract_last_user_message(req.body);
-        if (prompt.empty()) {
-            send_json_error(fd, 400, "No user message found", false);
-            return;
-        }
-        n_predict = json_extract_int(req.body, "max_tokens", 128);
-        temp = json_extract_double(req.body, "temperature", 0.0);
-        stream = json_extract_bool(req.body, "stream", false);
     } else {
         prompt = json_extract_string(req.body, "prompt", "");
-        if (prompt.empty()) {
-            send_json_error(fd, 400, "Missing or empty prompt", false);
-            return;
-        }
-        n_predict = json_extract_int(req.body, "max_tokens", 128);
-        temp = json_extract_double(req.body, "temperature", 0.0);
-        stream = json_extract_bool(req.body, "stream", false);
     }
+    if (prompt.empty()) {
+        send_json_error(fd, 400, "No user message or prompt found", false);
+        return;
+    }
+    int n_predict = json_extract_int(req.body, "max_tokens", 0);
+    if (n_predict == 0) n_predict = json_extract_int(req.body, "max_completion_tokens", 128);
+    double temp = json_extract_double(req.body, "temperature", 0.0);
+    bool stream = json_extract_bool(req.body, "stream", false);
 
     // Build generate request
     GenerateRequest greq;
     greq.prompt = prompt;
     greq.n_predict = n_predict;
-    greq.render_text = true;
+    greq.render_text = false; // Only piece deltas are sent; parsing overhead would be O(n²) per token
+    greq.think = !state.srv_cfg.disable_think;
     long created = static_cast<long>(std::time(nullptr));
 
     if (!stream) {
@@ -754,7 +806,7 @@ static void print_usage(const char * argv0) {
                 "  --temp, --top-k, --top-p, --seed,\n"
                 "  --mtp, --ngram, --draft, --mtp-p-min, --ngram-min-match,\n"
                 "  --n-expert-used, --load-all\n"
-                "  --no-think, --chat\n"
+                "  --no-think           disable model thinking\n"
                 "\n"
                 "  -h, --help              show this text and exit\n"
                 "      --version           print the engine version and exit\n"
@@ -829,10 +881,11 @@ int main(int argc, char ** argv) {
             cfg.spec.draft_p_min = (float) std::atof(next("--mtp-p-min"));
         else if (a == "--ngram-min-match")
             cfg.spec.ngram_min_match = std::atoi(next("--ngram-min-match"));
-        else if (a == "--no-think")
+        else if (a == "--no-think") {
             cfg.think = false;
-        else if (a == "--chat")
-            cfg.chatml = true;
+            srv.disable_think = true;
+        }
+        // --chat is now always enabled (chat template applied to messages)
         else if (a == "--moe-stream")
             cfg.moe.enabled = true;
         else if (a == "--cache-mb") {
@@ -925,6 +978,11 @@ int main(int argc, char ** argv) {
         print_usage(argv[0]);
         return 1;
     }
+
+    // OpenAI-compatible servers always serve chat-format requests (pi sends
+    // messages arrays). Always enable chatml so the model's chat template is
+    // applied to the conversation, regardless of whether --chat was passed.
+    cfg.chatml = true;
 
     ValidationResult vr = validate(cfg);
     if (!vr) {

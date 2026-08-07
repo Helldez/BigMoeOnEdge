@@ -13,7 +13,22 @@ Semantic Versioning.
   server-sent events (SSE) streaming via `stream: true`. The model and expert cache persist between
   requests, amortising model load and cache warm-up just like `bmoe-cli --session`. All bmoe-cli
   streaming flags are supported (`--moe-stream`, `--cache-mb`, `--prefetch`, etc.). Usage:
-  `bmoe-server -m <model.gguf> [--port N] [--host ADDR] [--chat]`.
+  `bmoe-server -m <model.gguf> [--port N] [--host ADDR] [--no-think]`.
+
+### Fixed
+- **`bmoe-server` handles OpenAI SDK request formats.** Accepts `max_completion_tokens` (sent by the
+  OpenAI/Node SDK as `max_completion_tokens`) in addition to `max_tokens`.
+- **`bmoe-server` handles `content` as a message content array.** Some OpenAI-compatible SDKs
+  (including pi) send `"content":[{"type":"text","text":"..."}]` instead of a plain string; the
+  message extractor now handles both formats.
+- **`bmoe-server` always applies the model's chat template.** Chatml mode is now always enabled for
+  HTTP requests (the model's Jinja chat template wraps the messages array), matching how OpenAI API
+  consumers expect prompts to be formatted. The `--chat` flag is accepted for backward compatibility
+  but is a no-op.
+- **`bmoe-server` streaming performance.** `render_text` is now disabled for streaming requests,
+  eliminating the O(n²) per-token parsing overhead that made streaming with large prompts extremely
+  slow. Only token deltas (`piece`) are sent as SSE chunks, which is all OpenAI-compatible clients
+  need for incremental rendering.
 
 ## [0.19.0] - 2026-08-01
 

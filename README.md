@@ -369,7 +369,7 @@ expert cache warm across requests:
 
 ```bash
 build/cli/bmoe-server -m Qwen3-30B-A3B-Q4_K_M.gguf --moe-stream \
-  --cache-mb auto --io-threads 4 -t 4 --port 8080 --host 127.0.0.1 --chat
+  --cache-mb auto --io-threads 4 -t 4 --port 8080 --host 127.0.0.1 --no-think
 ```
 
 It exposes an OpenAI-compatible REST API:
@@ -377,13 +377,15 @@ It exposes an OpenAI-compatible REST API:
 | Endpoint | Method | Description |
 |---|---|---|
 | `/v1/models` | GET | List the loaded model and its metadata |
-| `/v1/completions` | POST | Text completion (raw prompt) |
-| `/v1/chat/completions` | POST | Chat completion (message array) |
+| `/v1/completions` | POST | Text completion (raw `prompt` field) |
+| `/v1/chat/completions` | POST | Chat completion (`messages` array) |
 
 Both POST endpoints accept `stream: true` for server-sent events (SSE) token streaming. All
-`bmoe-cli` streaming flags (`--moe-stream`, `--cache-mb`, `--prefetch`, etc.) are supported. Use
-`--chat` to enable the model's chat template. On Android/Termux, run it with `LD_LIBRARY_PATH`
-pointing at the `build/bin` directory where the shared libraries live.
+`bmoe-cli` streaming flags (`--moe-stream`, `--cache-mb`, `--prefetch`, etc.) are supported. The
+model's chat template is always applied to `messages` (chatml mode), matching how OpenAI-compatible
+clients format conversations. Use `--no-think` to disable model thinking on reasoning-capable models.
+On Android/Termux, run it with `LD_LIBRARY_PATH` pointing at the `build/bin` directory where the
+shared libraries live.
 
 Platform status: Linux is exercised by CI (build + gates) and Windows is where the
 [desktop numbers](#desktop) were measured. On Windows, build with CMake directly (Visual Studio
