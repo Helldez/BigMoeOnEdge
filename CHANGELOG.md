@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **`bmoe-server` — HTTP server mode.** A new `bmoe-server` binary (alongside `bmoe-cli`) that
+  loads a model once and serves it over HTTP on a configurable port. Exposes an OpenAI-compatible
+  REST API: `GET /v1/models`, `POST /v1/completions`, and `POST /v1/chat/completions`, with
+  server-sent events (SSE) streaming via `stream: true`. The model and expert cache persist between
+  requests, amortising model load and cache warm-up just like `bmoe-cli --session`. All bmoe-cli
+  streaming flags are supported (`--moe-stream`, `--cache-mb`, `--prefetch`, etc.). Usage:
+  `bmoe-server -m <model.gguf> [--port N] [--host ADDR] [--no-think]`.
+
+### Fixed
+- **`bmoe-server` handles OpenAI SDK request formats.** Accepts `max_completion_tokens` (sent by the
+  OpenAI/Node SDK as `max_completion_tokens`) in addition to `max_tokens`.
+- **`bmoe-server` handles `content` as a message content array.** Some OpenAI-compatible SDKs
+  (including pi) send `"content":[{"type":"text","text":"..."}]` instead of a plain string; the
+  message extractor now handles both formats.
+- **`bmoe-server` always applies the model's chat template.** Chatml mode is now always enabled for
+  HTTP requests (the model's Jinja chat template wraps the messages array), matching how OpenAI API
+  consumers expect prompts to be formatted. The `--chat` flag is accepted for backward compatibility
+  but is a no-op.
+- **`bmoe-server` streaming performance.** `render_text` is now disabled for streaming requests,
+  eliminating the O(n²) per-token parsing overhead that made streaming with large prompts extremely
+  slow. Only token deltas (`piece`) are sent as SSE chunks, which is all OpenAI-compatible clients
+  need for incremental rendering.
+- **`bmoe-server` SSE streaming with chunked transfer encoding.** SSE responses now use
+  `Transfer-Encoding: chunked` (with proper hex size prefixes per chunk and a terminating zero-size
+  chunk) instead of bare `Connection: close`. OpenAI-compatible SDKs (OpenAI/JS, OpenAI/Python)
+  use `fetch()` and expect chunked encoding for streaming; without it, the SDK buffers the entire
+  response body before parsing, which deadlocks on streaming responses.
+- **`bmoe-server` vision/multimodal support via mmproj.** New `--mmproj` flag loads a multimodal
+  projector (mmproj.gguf) enabling vision models (Qwen-VL, LLaVA, MiniCPM-V, etc.). The server
+  accepts OpenAI-compatible image input: `messages[].content[]` with
+  `{"type":"image_url","image_url":{"url":"data:.../https://..."}}`. The MTMD context is
+  initialized at load time and processes images per-request. Usage: `bmoe-server -m model.gguf
+  --mmproj mmproj.gguf`.
+
 ## [0.19.0] - 2026-08-01
 
 ### Added
