@@ -312,6 +312,10 @@ struct RunConfig {
     //
     // Decode is unaffected: a decode graph is one token wide whatever this says. The cost is
     // prefill throughput, which processes a long prompt in more, smaller passes.
+    int n_batch = 0;    // prefill chunk size; 0 = default (512). Larger = faster prefill, more compute buffer.
+    // Largest batch computed in one graph, i.e. the prefill chunk size. 0 (the default) means
+    // "follow n_batch default", which uses 512. Smaller values trade prefill speed for
+    // lower compute buffer reservation, which is the memory this engine is always short of.
     int n_ubatch = 0;
     bool chatml = false;   // wrap the prompt in the model family's chat turn (arch-aware)
     bool progress = false; // emit machine telemetry (one JSON line per token)

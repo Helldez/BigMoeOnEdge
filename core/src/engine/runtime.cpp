@@ -12,8 +12,8 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.mmproj_path = cfg.mmproj_path;
     sc.n_threads = cfg.n_threads;
     sc.n_ctx = cfg.n_ctx;
-    sc.n_batch = cfg.n_ctx;     // one-batch prefill for any prompt that fits the context
-    sc.n_ubatch = cfg.n_ubatch; // 0 = follow n_batch; smaller trades prefill speed for memory
+    sc.n_batch = cfg.n_batch > 0 ? cfg.n_batch : 512;       // prefill chunk size; smaller = less compute buffer
+    sc.n_ubatch = cfg.n_ubatch > 0 ? cfg.n_ubatch : 512; // max graph width; limits compute buffer
     sc.chatml = cfg.chatml;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.compute_trace_layers = cfg.compute_trace_layers;

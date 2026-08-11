@@ -866,7 +866,7 @@ static void print_usage(const char * argv0) {
                 "                          remote access)\n"
                 "\n"
                 "  All bmoe-cli streaming and decoding flags are supported:\n"
-                "  -t, --threads, -c, --ctx-size, --ubatch\n"
+                "  -t, --threads, -c, --ctx-size, --ubatch, --batch-size\n"
                 "  --moe-stream, --cache-mb, --cache-floor-mb, --cache-ceil-mb,\n"
                 "  --io-threads, --no-odirect, --dense-weights,\n"
                 "  --prefetch, --predict-prefetch, --drop-cold-experts,\n"
@@ -928,6 +928,8 @@ int main(int argc, char ** argv) {
             cfg.n_ctx = std::atoi(next("-c"));
         else if (a == "--ubatch")
             cfg.n_ubatch = std::atoi(next("--ubatch"));
+        else if (a == "--batch-size")
+            cfg.n_batch = std::atoi(next("--batch-size"));
         else if (a == "--n-expert-used")
             cfg.n_expert_used = std::atoi(next("--n-expert-used"));
         else if (a == "--temp")
