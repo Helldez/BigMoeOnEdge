@@ -384,6 +384,9 @@ Both POST endpoints accept `stream: true` for server-sent events (SSE) token str
 `Transfer-Encoding: chunked` for compatibility with OpenAI-compatible SDKs (OpenAI/JS,
 OpenAI/Python). The server also accepts `max_completion_tokens` in addition to `max_tokens`, and
 handles `content` as either a plain string or an array of `{"type":"text","text":"..."}` objects.
+For vision models, load a multimodal projector with `--mmproj <mmproj.gguf>` and send images via
+OpenAI-compatible format: `messages[].content[]` with
+`{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}` or HTTPS URLs.
 All `bmoe-cli` streaming flags (`--moe-stream`, `--cache-mb`, `--prefetch`, etc.) are supported. The
 model's chat template is always applied to `messages` (chatml mode), matching how OpenAI-compatible
 clients format conversations. Use `--no-think` to disable model thinking on reasoning-capable models.

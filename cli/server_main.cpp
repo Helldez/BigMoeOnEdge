@@ -302,6 +302,58 @@ static std::string extract_last_user_message(const std::string & body) {
     return last_content;
 }
 
+// Extract image URLs from the messages array (OpenAI-compatible format).
+// Returns a vector of image URLs (data URLs or HTTPS URLs).
+static std::vector<std::string> extract_images(const std::string & body) {
+    std::vector<std::string> images;
+    size_t msgs = body.find("\"messages\"");
+    if (msgs == std::string::npos) return images;
+
+    size_t pos = msgs;
+    while (true) {
+        // Find "type":"image_url"
+        size_t type_pos = body.find("\"type\"", pos);
+        if (type_pos == std::string::npos) break;
+        size_t type_val = type_pos + 7; // skip "type"
+        while (type_val < body.size() &&
+               (body[type_val] == ' ' || body[type_val] == ':' || body[type_val] == '\t' || body[type_val] == '\n'))
+            ++type_val;
+
+        bool is_image = body.compare(type_val, 12, "\"image_url\"") == 0;
+
+        if (is_image) {
+            // Find the "url" field within this image_url object
+            size_t url_pos = body.find("\"url\"", type_pos);
+            if (url_pos != std::string::npos) {
+                size_t url_val = url_pos + 6; // skip "url"
+                while (url_val < body.size() &&
+                       (body[url_val] == ' ' || body[url_val] == ':' || body[url_val] == '\t' || body[url_val] == '\n'))
+                    ++url_val;
+                if (url_val < body.size() && body[url_val] == '"') {
+                    ++url_val;
+                    std::string url;
+                    for (; url_val < body.size(); ++url_val) {
+                        if (body[url_val] == '\\' && url_val + 1 < body.size()) {
+                            url += body[url_val];
+                            url += body[url_val + 1];
+                            ++url_val;
+                        } else if (body[url_val] == '"') {
+                            break;
+                        } else {
+                            url += body[url_val];
+                        }
+                    }
+                    if (!url.empty()) {
+                        images.push_back(url);
+                    }
+                }
+            }
+        }
+        pos = type_pos + 7;
+    }
+    return images;
+}
+
 // ── HTTP primitives ──────────────────────────────────────────────────────────
 
 struct HttpRequest {
@@ -458,6 +510,7 @@ struct ServerConfig {
     int port = 8080;
     int max_connections = 32;
     bool disable_think = false;
+    std::string mmproj_path;  // path to multimodal projector (mmproj.gguf) for vision models
 };
 
 struct ServerState {
@@ -545,8 +598,10 @@ static void handle_completions(int fd, const HttpRequest & req, ServerState & st
 
     // Build the prompt — accept both `messages` (chat) and `prompt` (completion) formats
     std::string prompt;
+    std::vector<std::string> images;
     if (req.body.find("\"messages\"") != std::string::npos) {
         prompt = extract_last_user_message(req.body);
+        images = extract_images(req.body);
     } else {
         prompt = json_extract_string(req.body, "prompt", "");
     }
@@ -562,6 +617,7 @@ static void handle_completions(int fd, const HttpRequest & req, ServerState & st
     // Build generate request
     GenerateRequest greq;
     greq.prompt = prompt;
+    greq.images = images;
     greq.n_predict = n_predict;
     greq.render_text = false; // Only piece deltas are sent; parsing overhead would be O(n²) per token
     greq.think = !state.srv_cfg.disable_think;
@@ -804,6 +860,7 @@ static void print_usage(const char * argv0) {
     std::printf("usage: %s -m <model.gguf> [options]\n"
                 "\n"
                 "  -m, --model PATH        gguf model (required)\n"
+                "      --mmproj PATH       multimodal projector (mmproj.gguf) for vision models\n"
                 "      --port N            HTTP server port (default 8080)\n"
                 "      --host ADDR         bind address (default 127.0.0.1; use 0.0.0.0 for\n"
                 "                          remote access)\n"
@@ -855,6 +912,8 @@ int main(int argc, char ** argv) {
 
         if (a == "-m" || a == "--model")
             cfg.model_path = next("-m");
+        else if (a == "--mmproj")
+            cfg.mmproj_path = next("--mmproj");
         else if (a == "--port")
             srv.port = std::atoi(next("--port"));
         else if (a == "--host")

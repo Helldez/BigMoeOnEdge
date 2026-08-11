@@ -34,6 +34,12 @@ Semantic Versioning.
   chunk) instead of bare `Connection: close`. OpenAI-compatible SDKs (OpenAI/JS, OpenAI/Python)
   use `fetch()` and expect chunked encoding for streaming; without it, the SDK buffers the entire
   response body before parsing, which deadlocks on streaming responses.
+- **`bmoe-server` vision/multimodal support via mmproj.** New `--mmproj` flag loads a multimodal
+  projector (mmproj.gguf) enabling vision models (Qwen-VL, LLaVA, MiniCPM-V, etc.). The server
+  accepts OpenAI-compatible image input: `messages[].content[]` with
+  `{"type":"image_url","image_url":{"url":"data:.../https://..."}}`. The MTMD context is
+  initialized at load time and processes images per-request. Usage: `bmoe-server -m model.gguf
+  --mmproj mmproj.gguf`.
 
 ## [0.19.0] - 2026-08-01
 

@@ -9,6 +9,7 @@ namespace bmoe {
 SessionConfig session_config_from(const RunConfig & cfg) {
     SessionConfig sc;
     sc.model_path = cfg.model_path;
+    sc.mmproj_path = cfg.mmproj_path;
     sc.n_threads = cfg.n_threads;
     sc.n_ctx = cfg.n_ctx;
     sc.n_batch = cfg.n_ctx;     // one-batch prefill for any prompt that fits the context

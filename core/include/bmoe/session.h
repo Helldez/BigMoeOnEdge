@@ -33,6 +33,7 @@ class IIoTraceSink;
 // the longest prompt+generation the session will serve.
 struct SessionConfig {
     std::string model_path;
+    std::string mmproj_path;   // path to multimodal projector (mmproj.gguf) for vision models
     int n_threads = 4;
     int n_ctx = 2048;
     int n_batch = 512; // prefill chunk capacity; longer prompts are prefilled in n_batch slices
@@ -86,6 +87,10 @@ struct GenerateRequest {
     int n_predict = 32;
     bool think = true;
     bool clear_kv = true;
+    // Optional images for vision models. Each image can be a base64 data URL
+    // ("data:image/png;base64,...") or an HTTPS URL. The MTMD context will
+    // download/decode and encode them into embeddings that are prepended to the prompt.
+    std::vector<std::string> images;
     // Populate TokenMetrics::text / ::reasoning on every token. Building them means parsing the
     // WHOLE generation so far — the chat parser cannot resume — so it is O(n) per token and O(n²)
     // over a turn, and in chat mode it also allocates a copy of everything generated. A UI that
