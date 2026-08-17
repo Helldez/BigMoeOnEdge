@@ -59,6 +59,22 @@ What follows from that:
   bandwidth**, and is not yet honestly sized: the ceiling itself falls by a third once the device
   is hot, so engine and microbench must be measured interleaved at matched entry state. Owed.
 
+## CPU placement of the compute threads: open, and unmeasured
+
+The engine picks a thread count and leaves placement to the kernel. Since decode on the reference
+device is compute-bound, the one axis that acts on compute deserves an answer rather than an
+assumption: every ggml node ends in a barrier, so a thread placed on a slow core sets the pace for
+all of them. Pinning the *read* workers is already measured at under 2% and closed; the compute
+threadpool is a different subsystem, and nothing measured so far speaks to it.
+
+The mechanism needs no engine change to test, since the pinned llama.cpp already exposes
+`--cpu-mask`, `--cpu-strict` and `--poll` through the public threadpool API. It also cannot ship as
+a mask, because the contents of one are not portable across Android devices. There are three
+distinct hypotheses behind the word, and one of them (reserving a core for the reader rather than
+claiming the fast ones) inverts the intervention. That one is covered by no published prior art,
+because none of it streams its weights. [thread-affinity.md](thread-affinity.md) states the three,
+the runtime-discoverable policy that could ship instead of a mask, and the order the cells run in.
+
 ## Warm-up
 
 Dense weights default to `--dense-weights anon` — read once through O_DIRECT into anonymous

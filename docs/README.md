@@ -12,6 +12,7 @@ for the idea the project is built on.
 | [seam.md](seam.md) | The exact contract with llama.cpp's public API, and how to upgrade the submodule. |
 | [limitations.md](limitations.md) | What this does not do, what it cannot do, and the prior art it builds on. |
 | [roadmap.md](roadmap.md) | Themes worth exploring next. |
+| [thread-affinity.md](thread-affinity.md) | Whether to take CPU placement away from the kernel: the three mechanisms hiding behind one word, why a core mask cannot be a shipped constant on Android, and the cells that would settle it. A design note; nothing in it is implemented. |
 
 ## Using and extending it
 
