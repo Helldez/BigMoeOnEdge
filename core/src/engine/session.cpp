@@ -404,9 +404,14 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
     // q4_K buffer would break the rebind), experts on CPU.
     llama_model_params mparams = llama_model_default_params();
-    mparams.use_mmap = true;
+    mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
     mparams.use_extra_bufts = false;
     mparams.n_gpu_layers = 0;
+    // The nextn/MTP block is skipped at load unless asked for: llama.cpp marks its tensors
+    // TENSOR_SKIP by default, and only --mtp builds a graph over them. n_layer_nextn comes from
+    // the gguf metadata either way, so the "this model has no trained head" check below is
+    // unaffected by this flag.
+    mparams.load_mtp = cfg.spec.is_mtp();
 
     // Optional active-expert override: reduce the model's top-k routing (e.g. 8 -> 6) to cut
     // per-token compute and — under streaming — flash I/O, at a quality cost. Applied purely

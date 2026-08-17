@@ -132,10 +132,11 @@ int main() {
             expect_span_closed("lfm2.5: the prefill would close the span correctly", t.get(), "</think>");
         }
 
-        // gpt-oss / harmony. Its template ignores the flag too, and it declares NO thinking tags:
-        // reasoning is a channel the format separates structurally, so priming past it is not
-        // something the model can decline. This is the case the engine used to carry as two
-        // hardcoded harmony marker strings in the decode path.
+        // gpt-oss / harmony. Its template ignores the flag too, and it declares thinking tags —
+        // but reasoning is a channel the format separates structurally: the prefilled render closes
+        // the analysis channel and opens the final one, so priming past it is not something the
+        // model can decline. This is the case the engine used to carry as two hardcoded harmony
+        // marker strings in the decode path.
         {
             auto t = load(BMOE_TMPL_GPTOSS);
             expect("gpt-oss: probed as prefill",

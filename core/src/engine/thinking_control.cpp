@@ -77,13 +77,31 @@ ThinkControl probe_think_control(const common_chat_templates * tmpls) {
         const bool owns_span =
             !off_p.thinking_start_tag.empty() && src.find(off_p.thinking_start_tag) != std::string::npos;
 
-        // It does, and the flag is inert: the request cannot be honoured. Closing the span in the
-        // prompt is only a suggestion to a model that opens its own — LFM2.5 reasons straight past a
-        // pre-closed empty one and emits the reasoning untagged into the answer (issue #82), worse
-        // than leaving it alone. Say so instead of making it worse.
-        if (owns_span) return ThinkControl::None;
-
         const std::string prefilled = apply_probe(tmpls, /*enable_thinking=*/false, /*prefill=*/true).prompt;
+
+        // It does, and the flag is inert. Whether the request can still be honoured depends on WHO
+        // closes the span. If the prefilled render moves past the closed span into further structure
+        // of the format itself — harmony ends the analysis channel and then opens the final one —
+        // the model is placed in its answer section and cannot decline. If the render just ends at
+        // the closing tag, closing it was only a suggestion to a model that opens its own — LFM2.5
+        // reasons straight past a pre-closed empty span and emits the reasoning untagged into the
+        // answer (issue #82), worse than leaving it alone. Say so instead of making it worse.
+        if (owns_span) {
+            if (prefilled != off) {
+                size_t close_end = std::string::npos;
+                for (const std::string & tag : off_p.thinking_end_tags) {
+                    const size_t at = tag.empty() ? std::string::npos : prefilled.rfind(tag);
+                    if (at != std::string::npos && (close_end == std::string::npos || at + tag.size() > close_end)) {
+                        close_end = at + tag.size();
+                    }
+                }
+                if (close_end != std::string::npos &&
+                    prefilled.find_first_not_of(" \t\r\n", close_end) != std::string::npos) {
+                    return ThinkControl::Prefill;
+                }
+            }
+            return ThinkControl::None;
+        }
 
         // No span of its own, and the prefill lands: reasoning is structural — a channel the format
         // itself separates — so starting the turn past that section is not something the model can
