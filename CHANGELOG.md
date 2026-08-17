@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Documentation
+- **`docs/thread-affinity.md`: the CPU-placement axis written down before anything is built.** The
+  engine chooses a thread count and leaves placement to the kernel, and since decode is compute-bound
+  this is the one open axis that acts on compute rather than on flash. The note separates the three
+  mechanisms that hide behind the single word "affinity" (barrier skew, migration deflating the
+  governor's per-core utilisation, and the reader as a co-tenant), because they predict *opposite*
+  masks: the first two say take the fast cores, the third says leave one free for the O_DIRECT
+  workers, and a cell that reports only tok/s cannot tell them apart. The verdict metric is therefore
+  `compute` in the decode breakdown, and a gain landing in `stall` means the opposite conclusion. It
+  also records why a core mask cannot be a shipped constant on Android: cgroup cpusets, vendor
+  userspace re-affinitising threads, topology that varies by part, and per-cluster caps that move
+  *during* a run, so a startup-computed "fastest cores" mask can describe a machine that no longer
+  exists. What is discoverable at runtime instead (`sched_getaffinity` as the granted universe,
+  `cpu_capacity`, `related_cpus`) makes the shippable unit a policy rather than a mask. Prior art is
+  surveyed: the pinned llama.cpp already exposes `--cpu-mask`, `--cpu-strict` and `--poll` through
+  the public threadpool API, and upstream's own Snapdragon bench script excludes the low-power cores;
+  ncnn has shipped a three-value policy enum across the Android fleet for years; MNN-AECS selects
+  cores adaptively at runtime. Every one of them assumes resident weights, so the co-tenant
+  hypothesis is covered nowhere. The first two cells need no engine change and can close the axis
+  outright: per-thread user times from `/proc` during a real decode, then an upstream `llama-bench`
+  sweep on a resident model. Pinning the *read* workers is separately already closed at under 2%, and
+  the note exists partly so the two results are never quoted for each other.
+
 ## [0.19.0] - 2026-08-01
 
 ### Added
