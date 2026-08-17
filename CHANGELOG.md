@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.20.0] - 2026-08-17
+
+### Added
+- **Ling 3.0 (`bailingmoe3`) recipe.** Ling-3.0-flash (127B total, ~5B active) routes over 512
+  experts with a per-expert bias (the `lfm2moe` pattern) plus one always-on shared expert that
+  stays resident; the experts name the standard split suffixes, so streaming is one registry row.
+  The leading dense blocks never bind, and the trailing NextN/MTP block names expert tensors but
+  is not even loaded (llama.cpp defaults `load_mtp=false`), so it never streams. The hybrid
+  KDA/MLA attention stack is dense-side llama.cpp code, invisible to the streaming seam.
+
+### Changed
+- **llama.cpp submodule bumped** to upstream `3733366` (BailingMoE3 support) with the expert-ready
+  hook rebased on top, still a single-commit delta over stock upstream. Byte-identity gates pass
+  on the new base. App version 0.20.0 (versionCode 35).
+
+### Fixed
+- **`--mtp` kept working across the bump.** Upstream now skips the nextn/MTP tensors at load
+  unless `load_mtp` is set, and the flag defaults to off, so the second context `--mtp` builds
+  over that block would have found its tensors missing. Worse as a failure mode: `n_layer_nextn`
+  is read from the gguf metadata and stays non-zero regardless, so the "this model has no trained
+  MTP head" check would have passed and the trouble surfaced later. The block is now requested
+  exactly when speculation asks for it. Verified on Qwen3.6-35B-A3B: 17/19 drafts accepted,
+  3.43 tokens per verify decode.
+
 ## [0.19.0] - 2026-08-01
 
 ### Added

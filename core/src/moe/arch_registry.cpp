@@ -49,6 +49,14 @@ static const MoeRecipe k_recipes[] = {
     // inside llama.cpp and invisible to the streaming seam. Models this size ship as multi-shard
     // ggufs; the streamer resolves each expert tensor to its (shard, offset) — see gguf_offsets.
     {"deepseek4", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    // bailingmoe3 (Ling 3.0, e.g. Ling-3.0-flash 127B-A5B) combines every pattern above and adds
+    // nothing new to the seam: 512 routed experts with the standard split suffixes (one row),
+    // top-k with a per-expert bias (exp_probs_b, the lfm2moe pattern), an always-on shared expert
+    // (ffn_*_shexp) that stays mmap-resident, leading dense blocks that never bind, and a trailing
+    // NextN/MTP block that names expert tensors but is not even loaded (llama.cpp defaults
+    // load_mtp=false), so its layer simply never streams. The hybrid KDA/MLA attention stack is
+    // dense-side machinery inside llama.cpp and invisible to the seam.
+    {"bailingmoe3", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
 };
 
 static const int k_n_recipes = (int) (sizeof(k_recipes) / sizeof(k_recipes[0]));
