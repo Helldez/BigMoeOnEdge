@@ -39,7 +39,22 @@ strictly better than a cache: same reads, none of the RAM, none of the managemen
 Fixing this by changing the eviction policy was tried and rejected — a per-layer partition is
 immune to the cliff by construction but costs ~30 % throughput
 ([bench-data/2026-07-20-cache-replay/layer-lfu-verdict.md](bench-data/2026-07-20-cache-replay/layer-lfu-verdict.md)).
-The cheap fix is a guard: the worst-case cycle is computable at init from model shape alone.
+The cheap fix was a guard, and it is in: the worst-case cycle is priced at init from the model's
+shape alone — every bound layer's expert-entry bytes times `min(top_k, n_expert)`, at the top-k the
+run actually applies. The engine records it in every metrics preamble as `cache_cycle_mb` next to
+the budget it is being compared against, and prints one line to stderr at load when the budget is
+under it:
+
+```
+bmoe: WARNING expert cache 1500 MiB is below this model's worst-case token cycle of 1815 MiB
+at top-k 4 — no entry can survive to the next token, so expect a hit rate near zero.
+```
+
+It states the fact and stops there; the advice above — that `--cache-mb 0` is strictly better below
+the cliff — stays here rather than in the engine's output. Note this is the *worst case* (a disjoint
+routed set at every layer), so it is an upper bound on the measured `token_demand_MiB`, and a budget
+above it is safe for any routing. Recording it matters as much as the warning: a committed CSV whose
+budget sat under the cycle now says so, without needing a run of the same model to compare against.
 
 ## What it does
 

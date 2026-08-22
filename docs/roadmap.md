@@ -116,11 +116,13 @@ than merged — a measured regression does not belong in the engine.
 The transferable lesson: a hit-rate curve is not a throughput argument. Any future policy has to
 be measured on device, however good its simulation.
 
-What is still worth doing here is **not** a policy but a guard. Global LRU's recency order is
-anti-correlated with the deterministic layer cycle, so below one token cycle it evicts precisely
-what it is about to read and the hit rate goes to **exactly 0 %** — reproduced on device at a
-budget the CLI accepts today. The worst-case cycle is computable at init from model shape alone,
-so refusing or warning on a budget under it costs almost nothing.
+What was still worth doing here was **not** a policy but a guard, and it has shipped. Global LRU's
+recency order is anti-correlated with the deterministic layer cycle, so below one token cycle it
+evicts precisely what it is about to read and the hit rate goes to **exactly 0 %** — reproduced on
+device at a budget the CLI accepts today. Since the worst-case cycle is computable at init from
+model shape alone, the engine now prices it there, records it as `cache_cycle_mb`, and warns when
+the resolved budget falls under it. It warns rather than refuses: the budget is legal and the run is
+byte-correct, it just cannot hit. See [cache-sizing.md](cache-sizing.md).
 
 ## More architectures
 
