@@ -283,9 +283,15 @@ data class AppSettings(
         // per token and returns an 8-13% hit rate from a 2000-3000 MiB budget, so its cache may
         // already be below the floor's intent while sitting well above its number. These rungs are
         // here to measure where the cache stops earning the memory pressure it creates.
+        //
+        // The rungs are dense below 2000 and coarse above it, because that is where the choice is
+        // sharp: on an 8 GB phone 1000 MiB runs and 2000 MiB gets the app killed by the OS, so a
+        // x2 step there hands the user a cliff instead of a setting. Above 2000 a 1000 MiB step is
+        // a small fraction of the budget and needs no refining.
         // See docs/android-memory.md.
         const val CACHE_AUTO = -1
-        val CACHE_CHOICES = intArrayOf(CACHE_AUTO, 0, 500, 1000, 2000, 3000, 4000, 5000, 6000)
+        val CACHE_CHOICES =
+            intArrayOf(CACHE_AUTO, 0, 500, 1000, 1250, 1500, 1750, 2000, 3000, 4000, 5000, 6000)
 
         /** True for a fixed budget the engine would reject without --force-cache. */
         fun cacheNeedsForce(mb: Int) = mb in 1 until CACHE_MIN_MB
