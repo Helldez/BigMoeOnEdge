@@ -21,7 +21,8 @@ Semantic Versioning.
   36.0 % at 650 MiB). By @gjjkbssg (#165, #167).
 - **`cache_cycle_mb` in the metrics preamble.** The same number, recorded next to the budget it
   should be judged against, so a committed CSV says on its own whether its cache could ever have
-  hit — no second run of the same model and top-k to compare with. See
+  hit — no second run of the same model and top-k to compare with. Named and explained in the app's
+  metrics view like every other cache field, rather than falling through as a raw key. See
   [docs/telemetry.md](docs/telemetry.md) and [docs/cache-sizing.md](docs/cache-sizing.md).
 
 ### Changed

@@ -87,6 +87,7 @@ object ConfigFields {
         ConfigField("cache_auto", "the budget was sized from free RAM once at load, then held for the run"),
         ConfigField("cache_floor_mb", "RAM auto-sizing leaves free for the rest of the system. Applies only with cache_auto"),
         ConfigField("cache_ceil_mb", "upper bound on the auto budget; 0 caps only at the full expert-set size"),
+        ConfigField("cache_cycle_mb", "one token's worst-case routed bytes for this model at the applied top-k, priced at load. A cache_mb under it cannot hold a token cycle, so the hit rate is near zero however legal the budget looks against the engine's floor"),
         ConfigField("force_cache", "a budget below the engine's floor was permitted. Such a cache thrashes by design and is slower than no cache — reserved for probing where the floor lies"),
         ConfigField("io_threads", "parallel flash read lanes, including the calling thread. 1 is the serial baseline"),
         ConfigField("o_direct", "expert reads bypassed the page cache"),
