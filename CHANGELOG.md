@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.21.0] - 2026-08-25
+
+### Changed
+- **Finer expert-cache rungs below 2000 MiB in the app.** The ladder went 500 → 1000 → 2000, and
+  that x2 is where the choice is sharp: on an 8 GB phone 1000 MiB runs and 2000 MiB gets the app
+  killed by the OS, so the step handed the user a cliff instead of a setting. 1250, 1500 and 1750
+  fill it; above 2000 the existing 1000 MiB step is a small fraction of the budget and is unchanged.
+  Reported by @eiffel31 (#146).
+
+### Fixed
+- **The build reports its own version again.** `project(VERSION)` in the top-level `CMakeLists.txt`
+  still said `0.19.0` after 0.20.0 was cut, and since that is the single source of `BMOE_VERSION`,
+  every 0.20.0 build self-reports as 0.19.0 — in `bmoe-cli --version` and in the `engine=` line of
+  every metrics CSV it wrote. Any CSV committed between 2026-08-17 and this release names the wrong
+  engine; nothing else was affected. Reported by @gjjkbssg (#163).
+
 ## [0.20.0] - 2026-08-17
 
 ### Added
