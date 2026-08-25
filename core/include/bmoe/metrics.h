@@ -263,6 +263,12 @@ struct RunInfo {
     bool cache_auto = false;
     int cache_floor_mb = 0; // the RAM auto-sizing was told to leave free — the input behind cache_mb
     int cache_ceil_mb = 0;
+    // One token's WORST-CASE routed bytes, priced at load from the model's shape and the effective
+    // top-k. A cache_mb under this cannot hold a token cycle, so the run's hit rate is near zero by
+    // construction — and that is invisible in a committed CSV unless the cycle is recorded next to
+    // the budget, because the cliff is a property of the MODEL, not of the number that was typed.
+    // 0 when streaming is off.
+    int cache_cycle_mb = 0;
     bool force_cache = false;
     bool load_all = false; // whole-expert-set baseline: reads everything, so its bytes mean something else
     int io_threads = 0;

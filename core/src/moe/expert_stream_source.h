@@ -99,6 +99,14 @@ public:
     // and exercised by the shrink gate. This is the only thing that moves the budget after init.
     void set_cache_budget(size_t bytes);
 
+    // The cliff from cache-sizing.md, computed at init from model shape alone: the bytes one
+    // token's pass over the layer stack demands in the worst case, i.e. every bound layer's top_k
+    // most expensive experts. A global-LRU budget below this thrashes to exactly 0% hits — it
+    // reads as much as no cache while still paying management and RAM — so the runtime warns
+    // when it sees one. Worst case, not the measured demand: the router picks at runtime, and
+    // the measured token_demand_ needs a decode before it exists.
+    size_t worst_cycle_bytes(int top_k) const;
+
     // ── I/O trace (diagnostics; see bmoe/decode_trace.h) ────────────────────────────
     // When on, every read_slice records one row. Rows are appended under a dedicated leaf mutex
     // (reads happen on N lanes at once), so this costs a lock per read and is off by default.

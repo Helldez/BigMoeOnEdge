@@ -803,6 +803,11 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 if (ri.n_expert_used <= 0) ri.n_expert_used = mi.n_expert_used;
             }
         }
+        // Last, because it needs both numbers above: the budget the streamer settled on and the
+        // width that was actually applied. Rounded UP — a cycle reported as smaller than it is
+        // would put a budget on the wrong side of the cliff in exactly the borderline case.
+        ri.cache_cycle_mb =
+            (int) ((im.source.worst_cycle_bytes(ri.n_expert_used) + 1024ull * 1024ull - 1) / (1024ull * 1024ull));
     }
 
     // The effective routing width, resolved once: an override IS the applied width, otherwise the
@@ -829,6 +834,23 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                          "routing here, against 12.5%% at the top-k 8 this was measured on. Expect it to discard "
                          "much more, and check output quality on your own task.\n",
                          (double) cfg.moe.drop_cold_frac, k, 100.0 * cfg.moe.drop_cold_frac / k);
+    }
+
+    // A cache budget below one token's worst-case cycle: say so once, at load.
+    //
+    // The number is computable from the model's shape alone, so this costs nothing and is available
+    // at the only moment it can still be acted on. It is a warning, not a rejection: the budget is
+    // legal, the run is byte-correct, and cache_min_mb already rejects the band it was drawn for.
+    // What this catches is the case that number cannot see — a budget comfortably above the fixed
+    // floor and still under THIS model's cycle, which --n-expert-used widens without touching the
+    // budget. Below the cycle no entry survives to the next token, so the run pays management and
+    // RAM for a cache that cannot hit. The engine states the fact; what to do about it is
+    // docs/cache-sizing.md's business, not a knob the engine should editorialize about.
+    if (im.info.cache_mb > 0 && im.info.cache_cycle_mb > 0 && im.info.cache_mb < im.info.cache_cycle_mb) {
+        std::fprintf(stderr,
+                     "bmoe: WARNING expert cache %d MiB is below this model's worst-case token cycle of %d MiB "
+                     "at top-k %d — no entry can survive to the next token, so expect a hit rate near zero.\n",
+                     im.info.cache_mb, im.info.cache_cycle_mb, im.info.n_expert_used);
     }
 
     im.load_seconds = secs(t_load0, clock_t_::now());

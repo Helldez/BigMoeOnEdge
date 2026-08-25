@@ -672,6 +672,17 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
         evict_tail();
 }
 
+size_t ExpertStreamSource::worst_cycle_bytes(int top_k) const {
+    // entry_bytes prices a layer's experts uniformly (one entry = every projection of one expert
+    // of that layer), so the worst token demands top_k entries from every bound layer. Clamped
+    // at n_expert_: a top_k wider than the bank asks for entries that do not exist.
+    if (top_k <= 0) return 0;
+    size_t cycle = 0;
+    for (int il = 0; il < (int) layers_.size(); ++il)
+        if (layers_[il].bound) cycle += entry_bytes(il) * (size_t) std::min(top_k, n_expert_);
+    return cycle;
+}
+
 // ── LRU plumbing ────────────────────────────────────────────────────────────────────
 void ExpertStreamSource::lru_unlink(int32_t id) {
     int32_t pv = cprev_[id], nx = cnext_[id];

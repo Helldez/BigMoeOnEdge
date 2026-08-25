@@ -217,7 +217,8 @@ prints just the summary lines.
 # model=<file> arch=<arch> n_layer=<n> n_expert=<n> n_expert_used=<k> threads=<n>
   n_ctx=<n> n_ubatch=<n> chatml=<0|1>
 # moe_stream=<0|1> cache_mb=<n> cache_auto=<0|1> cache_floor_mb=<n> cache_ceil_mb=<n>
-  force_cache=<0|1> load_all=<0|1> io_threads=<n> o_direct=<0|1> overlap=<0|1> io_two_wave=<0|1> prefetch=<n>
+  cache_cycle_mb=<n> force_cache=<0|1> load_all=<0|1> io_threads=<n> o_direct=<0|1>
+  overlap=<0|1> io_two_wave=<0|1> prefetch=<n>
   route_ahead=<n> predict_prefetch=<0|1> predict_log=<0|1> predict_spec_max=<n> prefetch_sync=<0|1>
   dense_weights=<mmap|warm|anon|ahwb> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
 # temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n> spec=<off|mtp|ngram>
@@ -240,6 +241,11 @@ effective top-k after any override. Fields to read carefully:
   reader finds a run's name.
 - `n_ubatch` sets the compute-buffer reservation, so it moves the very memory columns below;
   `0` means it follows `n_batch`.
+- `cache_cycle_mb` is one token's **worst-case** routed bytes for this model at this `n_expert_used`,
+  priced at load from tensor shapes. It is here so a budget can be judged without a second run: a
+  `cache_mb` under it cannot hold a token cycle, so the hit rate is near zero however legal the
+  number looks against `cache_min_mb`. The engine warns once at load when that is the case. See
+  [cache-sizing.md](cache-sizing.md).
 - `predict_log=1`, `prefetch_sync=1` or `compute_trace_layers>0` mean **the run was instrumented**.
   A probed or traced run is not a benchmark run — see the warning under [Decode
   traces](#decode-traces).

@@ -6,6 +6,24 @@ Semantic Versioning.
 
 ## [0.21.0] - 2026-08-25
 
+### Added
+- **The expert cache says when it cannot hit.** One token's worst-case routed bytes are priced at
+  load from the model's shape alone — every bound layer's expert-entry bytes times
+  `min(top_k, n_expert)`, at the top-k the run actually applies — and the engine prints one stderr
+  line when the resolved budget falls under it. Below that cycle global LRU evicts precisely what
+  it is about to read, so the hit rate is 0 % while the run still pays the management and the RAM.
+  It warns rather than refuses: the budget is legal and the output byte-identical, so the engine
+  states the fact and leaves the choice alone. The number is not the fixed `cache_min_mb` floor,
+  which is what made this invisible: a budget can clear the floor and still sit under *this* model's
+  cycle, and `--n-expert-used` widens the cycle without touching the budget. Validated on device on
+  Gemma 4 26B (cycle 902 MiB: 800 MiB measures a 0.0 % hit against 26.8 % at 950 MiB, decode
+  1.42 → 2.01 tok/s across that gap) and Qwen3.6-35B (cycle 582 MiB: 500 MiB measures 0.0 % against
+  36.0 % at 650 MiB). By @gjjkbssg (#165, #167).
+- **`cache_cycle_mb` in the metrics preamble.** The same number, recorded next to the budget it
+  should be judged against, so a committed CSV says on its own whether its cache could ever have
+  hit — no second run of the same model and top-k to compare with. See
+  [docs/telemetry.md](docs/telemetry.md) and [docs/cache-sizing.md](docs/cache-sizing.md).
+
 ### Changed
 - **Finer expert-cache rungs below 2000 MiB in the app.** The ladder went 500 → 1000 → 2000, and
   that x2 is where the choice is sharp: on an 8 GB phone 1000 MiB runs and 2000 MiB gets the app
