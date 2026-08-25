@@ -69,6 +69,17 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   near 100% is genuinely compute-bound, well below means the cores were throttled, preempted, or
   blocked (a low-clock frequency cap or a co-resident process), not doing more math. Both are `0`
   when the platform can't report them (the Windows host build); treat `0` as "unmeasured".
+- `minflt` / `minflt_mib` are the **expert cache's own page cost**, and they are invisible in
+  `mgmt_ms` by construction. Evicting an entry releases its pages, so the next miss reads into an
+  address the kernel must hand back and zero before the read can land, and that happens inside the
+  reader, long after `vm_commit` returned (on POSIX it is a no-op; pages arrive on first touch).
+  Read `minflt_mib` against `read_bytes`: a ratio near 1 means every streamed byte lands in a page
+  that was zeroed for it first, and the zeroing is pure waste. `--cache-slot-bank` drives this to
+  zero by committing the bank once and overwriting slots instead of releasing them. Measured on the
+  host on Qwen3.6-35B at `--cache-mb 2000`: 61 323 faults and 239.7 MiB re-faulted per token against
+  239.7 MiB read, going to 0 with a 32-slot bank. `0` when unmeasured. Note that the Windows host
+  reports this one (as soft+hard `PageFaultCount`) even though `majflt`/`cpu_ms` stay unmeasured
+  there, because the host cache really does decommit and recommit.
 - `dense_resident_frac` is the sampled fraction of the DENSE (non-expert) weights still in RAM (by
   `mincore`, throttled). Under `--dense-weights anon` it samples our own buffers (is zram holding
   them?); under mmap/warm the model's mmap (is the kernel dropping it?). A diagnostic read alongside
@@ -270,7 +281,7 @@ next to the `turn` column.
 step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,
 dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,
 mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms,mtp_batch,mtp_draft_ms,drain_ms,
-adopt_ms,ra_issue_ms,ra_wd_ms
+adopt_ms,ra_issue_ms,ra_wd_ms,minflt,minflt_mib
 ```
 
 `stall_ms`, `mgmt_ms`, `majflt`, `cpu_ms` and `dense_resident_frac` are trailing columns appended
@@ -280,7 +291,8 @@ dense-residency probe); `majflt`/`cpu_ms` are the fault + CPU-time decomposition
 residual (see the `BMOE_PROGRESS` notes above), `0` when unmeasured; `dense_resident_frac` is the
 sampled dense-weight residency, `-1` when unmeasured. All are additive: older CSVs have fewer columns,
 so consumers must read by column NAME (from the header row) and treat any as optional. The `# summary`
-line likewise gains `stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>`, `cpu_s/tok=<s>`,
+line likewise gains `stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>`, `minflt/tok=<f>`,
+`cpu_s/tok=<s>`,
 `token_demand_MiB=<f>` (the expert bytes one token routes, measured — where cache hits start, NOT a
 floor to defend; see [pressure.md](pressure.md)), `experts_routed=<n>` / `experts_dropped=<n>` (what
 [cache-aware dropping](expert-dropping.md) actually discarded during generation — the flag sets a

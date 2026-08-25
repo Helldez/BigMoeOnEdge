@@ -240,6 +240,9 @@ private:
     void flush_pending();
     bool drop_armed() const;
     void apply_drop(ggml_tensor * weights);
+    void apply_slot_remap(int il); // expert ids → slot indices, at the terminal weight node only
+    bool bank_unsafe_ = false;     // graph reads the ids after the matmul (per-expert bias/scale)
+    int bank_graphs_ = 0;          // graphs walked; the bank arms only once one is fully seen
     void close_drop_layer();
     void ctrace_close_segment(int interval_layer, const char * tail_name);
 

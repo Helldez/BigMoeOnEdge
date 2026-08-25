@@ -174,6 +174,28 @@ bool RouterHook::drop_armed() const {
 //     matmul, which is the right trade on a decode bound by flash rather than arithmetic.
 // The top-weighted expert is never dropped, so a routing always keeps at least one live expert
 // whatever the threshold — the guarantee does not rest on frac <= 1 alone.
+// Rewrite layer `il`'s selected-expert ids from expert index to slot index, so mul_mat_id reads the
+// bank. Nothing else in the graph consumes these ids: the weight gather has already run (this is
+// its terminal node), and the architectures that would read them again after the matmul — those
+// with a per-expert bias (ggml_add_id) or a per-expert scale (get_rows inside build_lora_mm_id) —
+// are rejected at init, precisely because there is no seam left to fix them up at.
+//
+// An expert with no slot is left alone. That cannot normally happen (load_layer banked every routed
+// id a moment ago) but a stale or dropped id would otherwise index the bank out of bounds, and the
+// cost of the check is one compare per routed slot.
+void RouterHook::apply_slot_remap(int il) {
+    if (!source_ || !source_->slot_bank_on()) return;
+    ggml_tensor * ids = drop_.ids;
+    if (!ids || !ids->data || drop_.nu <= 0 || drop_.nt <= 0) return;
+    for (int j = 0; j < drop_.nt; ++j) {
+        for (int k = 0; k < drop_.nu; ++k) {
+            int32_t * p = id_at(ids, j, k);
+            const int slot = source_->slot_of_expert(il, *p);
+            if (slot >= 0) *p = (int32_t) slot;
+        }
+    }
+}
+
 void RouterHook::apply_drop(ggml_tensor * wt) {
     PendingDrop & D = drop_;
     const int nu = D.nu, nt = D.nt;
@@ -1242,13 +1264,32 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // One prefix test decides whether any of the three matchers below can possibly fire. The vast
     // majority of a graph's nodes fail it and leave having done nothing else.
     const bool moe_node = is_moe_node(t->name);
+    // Slot-bank safety, decided from the graph rather than from a list of architecture names. Two
+    // node families read the selected-expert ids AFTER the matmul has consumed them: a per-expert
+    // bias (ggml_add_id → "ffn_moe_*_biased") and a per-expert scale (a get_rows inside
+    // build_lora_mm_id → "ffn_moe_*_scaled"). Both would index their small resident tensor by slot
+    // and silently apply the wrong row, so seeing either one disarms the bank for the run.
+    //
+    // Because a node is offered immediately before it is computed, a graph cannot be judged until
+    // it has been walked once — hence the bank arms only from the SECOND graph on. In any real run
+    // the first is the prompt's prefill, which never banks anyway.
+    if (moe_node && !bank_unsafe_ && (std::strstr(t->name, "_biased-") || std::strstr(t->name, "_scaled-"))) {
+        bank_unsafe_ = true;
+        if (source_ && source_->slot_bank_on())
+            std::fprintf(stderr,
+                         "bmoe: slot bank off — this model's experts carry a per-expert bias or scale (%s),\n"
+                         "      which reads the routing ids after the matmul the remap is for\n",
+                         t->name);
+    }
     const int il = moe_node ? match_layer_node(t->name, "ffn_moe_topk-") : -1;
     const bool is_topk = il >= 0;
     // The weight nodes are asked for by a traced run, and by the drop policy, which decides on the
     // weights the matmul will actually apply. Each extra ask is another barrier — a handful per MoE
     // layer, on tensors of a few floats — so neither is on by default.
     int wl = -1;
-    const bool want_weights = trace_on_ || drop_armed();
+    // The slot bank joins the trace and the drop policy in needing the weight chain: its remap has
+    // exactly one legal node, and that node has to be identified before it can be used.
+    const bool want_weights = trace_on_ || drop_armed() || (source_ && source_->slot_bank_on());
     const int weight_variant = (moe_node && want_weights) ? match_weights(t->name, wl) : -1;
     const bool is_weights = weight_variant >= 0;
     // Which of them is worth a BARRIER is a narrower question than which of them we recognise. The
@@ -1323,6 +1364,13 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         chain_last_ = (int8_t) weight_variant;
         if (drop_.deferred && wl >= 0 && wl < (int) term_variant_.size() && term_variant_[wl] == weight_variant)
             apply_drop(t);
+        // The slot-bank remap, and this is the ONLY node in the graph where it is legal. The ids
+        // feed two consumers: ggml_get_rows(probs, ids), which produced the very tensor being
+        // offered here and so is already done with them, and the mul_mat_ids that have not run yet.
+        // Rewriting between the two swaps the expert's ADDRESS without touching which expert the
+        // router picked or what weight it carries. Doing it at the topk instead would corrupt the
+        // weights; doing it later is impossible, there is no node in between.
+        if (wl >= 0 && wl < (int) term_variant_.size() && term_variant_[wl] == weight_variant) apply_slot_remap(wl);
     }
 
     if (source_ && is_topk && t->data && t->type == GGML_TYPE_I32) {
@@ -1334,6 +1382,12 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         close_drop_layer();
 
         const int nu = (int) t->ne[0], nt = (int) t->ne[1];
+        // Tell the source which home the expert bytes must have for THIS graph, before anything
+        // asks it to load or to report residency. nt is the constraint itself, not a proxy for it:
+        // one mul_mat_id serves the whole batch, so a multi-token graph would need every expert it
+        // touches banked at once. Idempotent, and cheap enough to repeat per layer.
+        if (il == 0) ++bank_graphs_;
+        if (source_->slot_bank_on()) source_->set_decode_graph(nt == 1 && bank_graphs_ > 1 && !bank_unsafe_);
         // Route-ahead, in submission order: first the watchdog sample and the ranking job for
         // layer il+N (both need the ROUTER's ids, still untouched here), then the commit — BEFORE
         // the ids are gathered, so everything downstream — the trace, the drop policy, load_layer,

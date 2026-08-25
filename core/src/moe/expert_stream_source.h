@@ -81,6 +81,10 @@ public:
     void settle_spec() override;
     void query_residency(int il, const int32_t * ids, int n_ids, uint8_t * out) const override;
     uint64_t expert_bytes(int il) const override;
+
+    bool slot_bank_on() const override { return bank_ready_; }
+    void set_decode_graph(bool single_token) override;
+    int slot_of_expert(int il, int e) const override;
     Stats stats() const override;
 
     // Register the process-global expert-ready hook so the CPU matmul blocks per expert
@@ -276,6 +280,28 @@ private:
     int last_il_ = -1;
     std::vector<void *> lbuf_[MoeRecipe::max_exps];
     std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];
+
+    // ── decode-only slot bank (cfg.moe.cache_slot_bank; see config.h for why it exists) ──
+    // A second, separate home for expert bytes, used only when a graph decodes a single token. Its
+    // pages are allocated and faulted in ONCE at init and never released: an eviction here is a
+    // reassignment, so a miss overwrites bytes instead of asking the kernel for a zeroed page. That
+    // is legal only because the router's ids are rewritten to slot indices before mul_mat_id runs.
+    //
+    // Residency is tracked independently of the LRU cache above: prefill fills lbuf_, decode fills
+    // the bank, and neither can see the other's bytes. So the bank is cold on the first generated
+    // token — a one-off cost the measurement has to amortize, not a steady-state property.
+    int slot_bank_ = 0;                             // slots per layer; 0 = off (the shipping path)
+    std::vector<void *> bank_[MoeRecipe::max_exps]; // per layer: slot_bank_ contiguous slices
+    std::vector<int16_t> slot_of_;                  // [il*n_expert_+e] → slot holding it, or -1
+    std::vector<int32_t> bank_owner_;               // [il*slot_bank_+s] → expert in that slot, or -1
+    std::vector<uint32_t> bank_stamp_;              // [il*slot_bank_+s] → cgen_ of last use (LRU)
+    bool bank_active_ = false;                      // this layer's reads target the bank, not lbuf_
+    bool bank_ready_ = false;                       // init succeeded and the arch allows remapping
+    int bank_assign(int il, int e, bool & hit);     // slot for an expert, evicting the layer's coldest
+    void * bank_base(int il, int p) const;          // layer's bank for one projection (null if none)
+    void * canonical_base(int il, int p) const;     // where the same tensor points outside the bank
+    std::vector<int16_t> bank_slot_;                // scratch: staged expert → its slot, this layer
+
     std::vector<uint8_t> cvalid_;
     std::vector<int32_t> cprev_, cnext_;
     std::vector<uint32_t> cstamp_;

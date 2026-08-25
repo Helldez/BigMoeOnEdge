@@ -134,7 +134,14 @@ number needs the device, the model and the day beside it to be worth anything. T
 CLI flags and the evidence behind each one lives in the docs, and the **metrics screen** keeps the
 flag names so a reading there can be matched against a CSV column.
 
-Two worth knowing before you turn them on:
+Three worth knowing before you turn them on:
+
+- **"Slot-bank cache"** (`--cache-slot-bank`) gives each layer a fixed set of expert slots whose
+  memory is claimed once and reused, so evicting stops handing pages back to the system and taking
+  them again. It applies while a reply is being written, not while the prompt is being read, and it
+  leaves the reply itself byte-identical. On the host it was worth +8.2 %, but the reason it won
+  there (the page work the system was doing on our behalf) behaves differently on a phone, which is
+  exactly why it ships off. See `../../docs/cache-sizing.md`.
 
 - **"Ask the next layer what it wants"** (`--predict-prefetch`) predicts each layer's experts one
   layer early and fetches or retains what the prediction names. It is markedly more accurate than

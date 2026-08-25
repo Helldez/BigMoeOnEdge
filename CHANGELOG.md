@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The expert cache's page cost is now measurable, and optionally removable.** Two changes that
+  belong together.
+
+  `minflt` / `minflt_mib` join the per-token CSV and the run summary. Minor faults were the one
+  large cost in the streaming path that no metric could see. Evicting an entry releases its pages,
+  so the next miss reads into an address the kernel must hand back and zero before the read lands,
+  and none of that is billed to `mgmt_ms`: on POSIX `vm_commit` is a no-op, so the page arrives
+  later, inside the reader, and surfaces as I/O or compute. Read against `read_bytes`, the ratio is
+  the finding. On Qwen3.6-35B at a 2000 MiB budget it is 1.00, meaning every streamed byte lands in
+  a page zeroed for it first. Measured on the Windows host too, where the cache decommits and
+  recommits explicitly.
+
+  `--cache-slot-bank N` is the lever that answers it. Each layer gets N slots whose pages are
+  claimed once at load and never released, so eviction is a reassignment and a miss overwrites
+  bytes already ours. It works by rewriting the router's selected-expert ids to slot indices, which
+  is legal because `mul_mat_id` addresses `src0` as `data + id*nb2` and never asks what the id
+  means. The rewrite happens at the single node where no other consumer is left to mislead: the
+  terminal of the layer's weight chain, after the routing weights have been gathered and before the
+  first expert matmul. Decode only, since one `mul_mat_id` serves a whole batch. N is capped at the
+  model's expert count. Architectures whose experts carry a per-expert bias or scale read the same
+  ids after the matmul, so the engine detects them from the graph's node names and disarms itself.
+  Off by default, and off in the app.
+
+  Host result on Qwen3.6-35B, three A/B pairs: 2.805 to 3.035 tok/s (+8.2 %), minor faults 61 323
+  to 0 per token, `mgmt_ms` 31.1 to 0.9 ms, generated text byte-identical. The attribution is not
+  the one the mechanism suggests, and is documented as such: ms per MiB read did not move, so the
+  zeroing was already hidden behind that machine's SSD wait. What paid was the eviction syscalls
+  disappearing, plus a hit-rate rise (54.9 to 57.5 %) that falls out of the bank's per-layer LRU
+  giving every layer a floor. A phone inverts both halves of that balance, which is why nothing is
+  turned on until it has been measured there. See `docs/cache-sizing.md` and `docs/telemetry.md`.
+
 ## [0.21.0] - 2026-08-25
 
 ### Added

@@ -119,17 +119,28 @@ uint64_t mem_available_bytes();
 
 // Process-wide compute-decomposition counters, cumulative since process start; the caller deltas
 // them across a single decode to split the per-token "compute" residual into its real causes.
-// Both return 0 when the platform cannot report them (Windows host build), which the metrics treat
-// as "unmeasured" rather than "zero work".
+// They return 0 when the platform cannot report them, which the metrics treat as "unmeasured"
+// rather than "zero work". minor_faults() is the exception that IS measured on the Windows host:
+// there the cache decommits and recommits explicitly (MEM_DECOMMIT/MEM_COMMIT), so the same refault
+// cost exists and PageFaultCount sees it. That count is soft+hard rather than minor-only — coarser
+// than ru_minflt, but the quantity being sized here is the refault volume, and it reports that.
 //
 //   * major_faults(): hard page faults served from backing store (getrusage ru_majflt). A non-zero
 //     per-token delta means a mmap-resident weight was re-faulted from flash *inside* the decode —
 //     the >RAM residency stall that would otherwise masquerade as compute.
+//   * minor_faults(): faults served without touching backing store — the expert cache's own cost.
+//     Evicting decommits the entry's pages; the next miss reads into that same address, so the
+//     kernel must hand back a page and ZERO it before the read can land, and the read then
+//     overwrites every byte of that zeroing. Nothing charges this to the cache: on POSIX vm_commit
+//     is a no-op (pages arrive on first touch, inside the reader), so `mgmt_ms` misses it entirely
+//     and the cost surfaces as io/stall/compute. A per-token delta near read_bytes/fault_bytes()
+//     means essentially every streamed byte is landing in a freshly zeroed page.
 //   * process_cpu_seconds(): CPU time summed across all threads (CLOCK_PROCESS_CPUTIME_ID). Compared
 //     against wall×threads it reveals occupancy: cpu≈wall×threads is genuine compute-bound work;
 //     cpu≪wall×threads means the threads were descheduled or blocked (frequency cap, preemption,
 //     fault wait) rather than computing.
 uint64_t major_faults();
+uint64_t minor_faults();
 double process_cpu_seconds();
 
 // Bytes one major fault moves: the page size. Faults are counted, but what a reader wants to know is

@@ -45,6 +45,14 @@ struct TokenMetrics {
     // from flash inside the decode; cpu_ms vs wall_ms×threads = how CPU-bound the decode really was
     // (low occupancy ⇒ throttled/preempted, not heavy math). See docs/telemetry.md.
     uint64_t majflt = 0; // major page faults during this decode (backing-store reads)
+    // Minor faults: served without backing store, and on a streaming run these are overwhelmingly
+    // the expert cache paying for its own eviction. Evict decommits the entry, the next miss reads
+    // into that same address, and the kernel must hand back a page and zero it before the read can
+    // land — zeroing the reader then overwrites whole. `mgmt_ms` cannot see this: on POSIX vm_commit
+    // is a no-op, so the page arrives on first touch inside the reader and bills io/stall/compute
+    // instead. Read minflt_mib against read_bytes: if they track, every streamed byte is landing in
+    // a freshly zeroed page and the zeroing is pure waste. See docs/telemetry.md.
+    uint64_t minflt = 0; // minor page faults during this decode (no backing-store read)
     double cpu_ms = 0.0; // CPU time summed across all threads during this decode
     // Fraction of the DENSE (non-expert) weights the kernel still had in RAM at the last sample, or -1
     // when unmeasured (throttled, streaming off, or the platform can't report). Under the anon policy
@@ -57,6 +65,10 @@ struct TokenMetrics {
     // token is immediately comparable to `read_bytes` — the reads we chose against the reads the
     // kernel forced on us. 0 when faults are unmeasured.
     double majflt_mib = 0.0;
+    // The same conversion for minor faults, and the one that makes the comparison legible: this is
+    // the memory the kernel zeroed for us this token. Next to `read_bytes` it answers whether the
+    // cache is re-paying for every byte it streams.
+    double minflt_mib = 0.0;
 
     // ── where memory is, per token (0 when the platform cannot report) ──
     // The split is the point: the expert cache is anonymous, the model's weights are file-backed,
@@ -127,6 +139,9 @@ struct RunSummary {
     // stall hiding in "compute"; cpu_util = cpu_s/token ÷ (s/token × threads) near 1 is compute-bound,
     // well below 1 is a throttled/preempted core. 0 when the platform can't measure them.
     double majflt_per_token = 0.0;
+    // Minor faults per token. On a streaming run, compare against moe_read_mib × 1 MiB ÷ page size:
+    // a ratio near 1 means the expert cache refaults essentially everything it reads.
+    double minflt_per_token = 0.0;
     double cpu_s_per_token = 0.0;
     // Everything between the decodes, per token: the region gen_seconds (and so tok/s) excludes.
     // Includes the tail after the last token, which no row can carry. Read next to s_per_token: the

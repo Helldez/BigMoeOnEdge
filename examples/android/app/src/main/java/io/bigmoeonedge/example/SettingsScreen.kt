@@ -119,6 +119,17 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
 
                 ExperimentalGroup {
                     IntSetting(
+                        "Slot-bank cache (slots/layer)", AppSettings.SLOT_BANK_CHOICES, current.cacheSlotBank,
+                        format = { if (it == 0) "off" else "$it" },
+                        enabled = stream && cacheOn,
+                    ) { onChange(current.copy(cacheSlotBank = it)) }
+                    Hint(
+                        "Gives each layer a fixed set of expert slots whose memory is claimed once and " +
+                            "reused. Evicting then costs nothing instead of handing pages back to the " +
+                            "system and taking them again. Decode only; the prompt still uses the normal " +
+                            "cache, so the bank starts cold on the first word of a reply."
+                    )
+                    IntSetting(
                         "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
                         format = { if (it == 0) "off" else "$it" },
                         // Mutually exclusive with predictive prefetch: two predictors would speculate

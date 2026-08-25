@@ -130,6 +130,44 @@ see the ordering warning below.
 
 `auto` is a real LRU cache, so it satisfies the cache requirement of `--prefetch`.
 
+## `--cache-slot-bank N` (experimental, decode only)
+
+The cache above is *direct-mapped*: `mul_mat_id` reads expert `e` at `data + e*nb2`, so every
+expert has one fixed address, and the only way to bound the budget is to physically release the
+pages of whatever is evicted. That makes eviction cost a syscall, and it makes the next miss read
+into an address the kernel must hand back and zero first, a zeroing the read then overwrites whole.
+Neither cost is billed to `mgmt_ms`: on POSIX `vm_commit` is a no-op, so the page arrives later,
+inside the reader. `minflt` (see [telemetry.md](telemetry.md)) is what makes it visible.
+
+`--cache-slot-bank N` gives each layer `N` slots whose pages are claimed once at load and never
+released. Eviction becomes a reassignment, and a miss overwrites bytes that are already ours. What
+buys that is rewriting the router's selected-expert ids to slot indices, which is legal because the
+kernel addresses `src0` by `data + id*nb2` and never asks what the id means. The rewrite happens at
+exactly one node, the terminal of the layer's weight chain: after `ggml_get_rows(probs, ids)` has
+taken the routing weights, before the first `mul_mat_id` reads the same ids. There is no other seam.
+
+Two limits follow from the mechanism, and the engine enforces both rather than documenting them:
+
+- **Decode only.** Every token of a batch goes through one `mul_mat_id`, so a prefill batch would
+  need its whole expert set banked at once. Prefill keeps the canonical buffers and the normal LRU;
+  the bank serves single-token graphs. The two hold separate residency, so the bank starts cold on
+  the first generated token of a turn.
+- **`N` at most `n_expert`,** because a slot index is handed to `mul_mat_id` in an expert index's
+  place and the kernel sizes its per-expert scratch from the tensor's expert count.
+
+Architectures whose experts carry a per-expert bias (`ggml_add_id`) or scale read the same ids
+*after* the matmul, where no seam is left to fix them up. The engine detects those from the graph's
+own node names and disarms the bank for the run, printing why.
+
+Measured on the host on Qwen3.6-35B at `--cache-mb 2000`, three pairs: 2.805 to 3.035 tok/s
+(+8.2 %), minor faults 61 323 to 0 per token, `mgmt_ms` 31.1 to 0.9 ms, output byte-identical.
+Read the attribution before assuming it transfers: **ms per MiB read did not move** (1.487 vs
+1.480), so on that machine the zeroing was already hidden behind the SSD wait. The gain came from
+the eviction syscalls disappearing and from a hit-rate rise (54.9 to 57.5 %) that falls out of the
+bank's per-layer LRU, where each layer keeps a floor of slots instead of competing in one global
+list. The balance differs on a phone, where `vm_commit` costs nothing but the cores are far weaker,
+so the flag stays off by default and off in the app until a device A/B says otherwise.
+
 ## Explicit control
 
 Embedders that link the engine can also resize the cache directly with

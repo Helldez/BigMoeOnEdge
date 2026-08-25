@@ -64,6 +64,26 @@ public:
     // Flash bytes one expert of layer `il` occupies across its projections — what a miss costs.
     virtual uint64_t expert_bytes(int /*il*/) const { return 0; }
 
+    // ── decode-only slot bank (optional; see MoeStreamConfig::cache_slot_bank) ──
+    // A source may keep expert bytes somewhere other than the expert's canonical offset, so that
+    // eviction can overwrite a slot instead of releasing pages the kernel would have to re-zero.
+    // That only works if the caller rewrites the router's ids to slot indices and repoints the
+    // weight tensor at the bank, which is why the seam is here and not private to the source: the
+    // hook owns the ids, the source owns the bytes, and neither can do it alone.
+    //
+    // Default: no bank. slot_bank_on() false means every other method here is never consulted.
+    virtual bool slot_bank_on() const { return false; }
+
+    // Tell the source whether the graph now being evaluated is a single-token decode. Only then may
+    // it target the bank; a multi-token batch would need its whole expert set resident at once.
+    // Called once per graph, before the first load_layer of that graph.
+    virtual void set_decode_graph(bool /*single_token*/) {}
+
+    // Slot holding expert `e` of layer `il`, valid only after load_layer(il, ...) has returned and
+    // only while slot_bank_on() and the current graph is a decode. -1 if the expert is not banked,
+    // which the caller must treat as "do not rewrite this id".
+    virtual int slot_of_expert(int /*il*/, int /*e*/) const { return -1; }
+
     // Cumulative streaming statistics, for telemetry and the end-of-run summary.
     struct Stats {
         uint64_t read_bytes = 0;           // bytes pulled from flash (aligned windows)

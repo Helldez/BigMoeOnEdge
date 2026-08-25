@@ -53,6 +53,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     spec_adopt_ = cfg.route_ahead > 0;
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
+    slot_bank_ = std::max(0, cfg.cache_slot_bank);
     page_ = pio::vm_page(); // the real OS page size, for the dense-residency probe in any cache mode
 
     // Largest full-tensor byte size per projection, over all bound layers → shared-slot
@@ -163,6 +164,50 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                 L.proj[p].tensor->data = lbuf_[p][il];
             }
         }
+        // Decode-only slot bank, alongside (never instead of) the reserved buffers above. Allocated
+        // and FAULTED IN here, once: the whole point is that no page of it is ever released, so a
+        // miss overwrites bytes the kernel has already given us rather than asking for a zeroed page
+        // it must find and clear. See config.h for the measurement that motivates it.
+        if (slot_bank_ > 0) {
+            bool ok = slot_bank_ <= n_expert_; // a slot index is fed to mul_mat_id in an expert's place
+            if (!ok)
+                std::fprintf(stderr, "bmoe: --cache-slot-bank %d exceeds n_expert %d; slot bank off\n", slot_bank_,
+                             n_expert_);
+            for (int p = 0; ok && p < MoeRecipe::max_exps; ++p)
+                bank_[p].assign(n_layer_, nullptr);
+            for (int il = 0; ok && il < n_layer_; ++il) {
+                LayerExperts & L = layers_[il];
+                if (!L.bound) continue;
+                for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                    if (!L.proj[p].tensor) continue;
+                    const size_t sz = (size_t) L.proj[p].nb2 * (size_t) slot_bank_;
+                    bank_[p][il] = pio::alloc_aligned(align_, sz);
+                    if (!bank_[p][il]) {
+                        std::fprintf(stderr, "bmoe: slot-bank alloc %zu failed (layer %d); slot bank off\n", sz, il);
+                        ok = false;
+                        break;
+                    }
+                    // Touch every page now. Without this the first miss into each slot still takes
+                    // the fault this mode exists to remove, and the warm-up would look like the cost.
+                    std::memset(bank_[p][il], 0, sz);
+                }
+            }
+            bank_ready_ = ok;
+            if (ok) {
+                slot_of_.assign((size_t) n_layer_ * n_expert_, (int16_t) -1);
+                bank_owner_.assign((size_t) n_layer_ * slot_bank_, -1);
+                bank_stamp_.assign((size_t) n_layer_ * slot_bank_, 0u);
+                bank_slot_.assign((size_t) n_expert_, (int16_t) -1);
+            } else {
+                for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                    for (void * b : bank_[p])
+                        if (b) pio::aligned_free(b);
+                    bank_[p].clear();
+                }
+                slot_bank_ = 0;
+            }
+        }
+
         const size_t n_entry = (size_t) n_layer_ * n_expert_;
         cvalid_.assign(n_entry, 0);
         cstamp_.assign(n_entry, 0);
@@ -377,7 +422,11 @@ void ExpertStreamSource::io_worker(int lane) {
 // Prefetch: on the eval thread, commit pages and enqueue speculative per-projection reads for the
 // given experts of layer il. LRU-safe (same thread as load_layer); workers only read the bytes.
 void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
-    if (!active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return;
+    // bank_active_: speculation lands in lbuf_, which a banked decode never reads — it would spend
+    // flash on bytes nothing can consume.
+    if (!active_ || bank_active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids ||
+        n_ids <= 0)
+        return;
     const LayerExperts & L = layers_[il];
     bool any = false;
 
@@ -753,7 +802,9 @@ void ExpertStreamSource::evict_tail() {
 // prediction is not a routing — inflating the hit rate from here would corrupt the one metric
 // every cache decision in this project is argued from. Eval-thread only (LRU mutation).
 void ExpertStreamSource::retain(int il, const int32_t * ids, int n_ids) {
-    if (!active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids) return;
+    // bank_active_: the bank has its own recency (bank_stamp_), and the LRU list below orders
+    // entries a banked decode does not read.
+    if (!active_ || bank_active_ || cache_max_ == 0 || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids) return;
     for (int i = 0; i < n_ids; ++i) {
         const int e = ids[i];
         if (e < 0 || e >= n_expert_) continue;
@@ -861,6 +912,15 @@ void ExpertStreamSource::query_residency(int il, const int32_t * ids, int n_ids,
     for (int i = 0; i < n_ids; ++i)
         out[i] = 0;
     if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids) return;
+    if (bank_active_) {
+        // Bank mode: residency is "does this expert hold a slot", and there is no speculation here,
+        // so the answer is only ever 0 or 1.
+        for (int i = 0; i < n_ids; ++i) {
+            const int e = ids[i];
+            if (e >= 0 && e < n_expert_ && slot_of_[(size_t) il * n_expert_ + (size_t) e] >= 0) out[i] = 1;
+        }
+        return;
+    }
     if (cache_max_ == 0) return; // shared-slot mode: nothing is kept, so every routing re-reads
     for (int i = 0; i < n_ids; ++i) {
         const int e = ids[i];
@@ -890,6 +950,89 @@ bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
         return false;
     }
     return true;
+}
+
+// ── decode-only slot bank ───────────────────────────────────────────────────────────
+// The bank's whole reason to exist is that eviction here costs nothing: a slot is reassigned and
+// its bytes are overwritten in place. No vm_commit, no vm_evict, and above all no page handed back
+// by the kernel with a zero-fill the reader is about to obliterate. Everything below runs on the
+// eval thread, under the same eval-callback barrier as the LRU cache.
+
+// Point every bound layer's expert tensors at the home this graph will address. mul_mat_id reads
+// `src0->data + id*nb2`, so moving the base and rewriting the ids are two halves of one change and
+// must not be applied separately: with the base moved and the ids left alone, the kernel would read
+// past the bank; with the ids rewritten and the base left alone, it would read the wrong expert.
+// The hook calls this before the first load of a graph and never mid-graph.
+void ExpertStreamSource::set_decode_graph(bool single_token) {
+    const bool want = bank_ready_ && single_token;
+    if (want == bank_active_) return; // the common case: nothing moved since the last graph
+    bank_active_ = want;
+    for (int il = 0; il < n_layer_; ++il) {
+        LayerExperts & L = layers_[il];
+        if (!L.bound) continue;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            if (!L.proj[p].tensor) continue;
+            void * base = want ? bank_base(il, p) : canonical_base(il, p);
+            if (base) L.proj[p].tensor->data = base;
+        }
+    }
+}
+
+int ExpertStreamSource::slot_of_expert(int il, int e) const {
+    if (!bank_active_ || il < 0 || il >= n_layer_ || e < 0 || e >= n_expert_) return -1;
+    return slot_of_[(size_t) il * n_expert_ + (size_t) e];
+}
+
+void * ExpertStreamSource::bank_base(int il, int p) const {
+    if (!bank_ready_ || il < 0 || il >= n_layer_ || p < 0 || p >= MoeRecipe::max_exps) return nullptr;
+    return bank_[p].empty() ? nullptr : bank_[p][il];
+}
+
+void * ExpertStreamSource::canonical_base(int il, int p) const {
+    if (il < 0 || il >= n_layer_ || p < 0 || p >= MoeRecipe::max_exps) return nullptr;
+    if (!lbuf_[p].empty()) return lbuf_[p][il]; // LRU mode: one reserved buffer per (layer, proj)
+    return slot_[p];                            // cache-off mode: one shared buffer per projection
+}
+
+// Give expert `e` of layer `il` a slot, evicting this layer's coldest if the bank is full. Returns
+// the slot, or -1 if the layer has no bank. `hit` is true when the expert was already banked, which
+// is the only case where no read is needed.
+int ExpertStreamSource::bank_assign(int il, int e, bool & hit) {
+    const size_t key = (size_t) il * n_expert_ + (size_t) e;
+    const int16_t cur = slot_of_[key];
+    if (cur >= 0) {
+        hit = true;
+        bank_stamp_[(size_t) il * slot_bank_ + (size_t) cur] = cgen_;
+        return cur;
+    }
+    hit = false;
+    // Free slot first, then the coldest. Linear over slot_bank_ (tens), once per miss — cheaper
+    // than threading an LRU list through a structure this small.
+    int victim = -1;
+    uint32_t oldest = 0xffffffffu;
+    for (int s = 0; s < slot_bank_; ++s) {
+        const size_t bs = (size_t) il * slot_bank_ + (size_t) s;
+        if (bank_owner_[bs] < 0) {
+            victim = s;
+            break;
+        }
+        if (bank_stamp_[bs] < oldest) {
+            oldest = bank_stamp_[bs];
+            victim = s;
+        }
+    }
+    if (victim < 0) return -1;
+    const size_t vs = (size_t) il * slot_bank_ + (size_t) victim;
+    const int32_t prev = bank_owner_[vs];
+    if (prev >= 0) {
+        slot_of_[(size_t) il * n_expert_ + (size_t) prev] = -1;
+        ++evictions_;
+        ++rereads_; // the displaced expert will be bought again if it routes; same meaning as the LRU's
+    }
+    bank_owner_[vs] = e;
+    bank_stamp_[vs] = cgen_;
+    slot_of_[key] = (int16_t) victim;
+    return victim;
 }
 
 bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, int commit_only_proj) {
@@ -946,6 +1089,27 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (cache_max_) quiesce_spec(spec_adopt_ ? il : -1);
 
     auto stage = [&](int e) -> bool {
+        if (bank_active_) {
+            // Slot bank: the destination is the expert's slot, not its canonical offset, because the
+            // hook has rewritten this layer's ids to slot indices. No commit, no evict — a displaced
+            // slot is simply overwritten. Serial drains everything below, so no ready flag is needed.
+            bool hit = false;
+            const int slot = bank_assign(il, e, hit);
+            if (slot < 0) return false;
+            clookups_++;
+            if (hit) {
+                chits_++;
+                return true;
+            }
+            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                const uint64_t slice = L.proj[p].nb2;
+                if (slice == 0) continue;
+                jobs_.push_back({(char *) bank_[p][il] + (uint64_t) slot * slice,
+                                 L.proj[p].file_off + (uint64_t) e * slice, slice, -1, (int16_t) L.proj[p].file_idx, e,
+                                 (int16_t) il, (int8_t) p, 0});
+            }
+            return true;
+        }
         if (cache_max_ == 0) {
             for (int p = 0; p < MoeRecipe::max_exps; ++p) {
                 const uint64_t slice = L.proj[p].nb2;
@@ -1108,7 +1272,44 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
 
     bool published = false; // a two-wave batch publishes inside the staging branch
 
-    if (cache_max_ == 0) {
+    if (bank_active_) {
+        // Slot bank (single-token graphs only). Same shape as the cache-on branch below, minus
+        // every page-management syscall: a miss is handed a slot whose pages are already ours, so
+        // there is nothing to commit here and nothing to release when it is displaced.
+        //
+        // The kernel will address src0 by SLOT, because the hook rewrites the ids before mul_mat_id
+        // reads them — so the ready flag and the job's wait key are keyed by slot too, and
+        // on_expert_ready needs no notion of the bank at all: it is handed the same index we
+        // published. Slots are < n_expert_, so the existing flag array still fits.
+        for (int e : staged_) {
+            bool hit = false;
+            const int slot = bank_assign(il, e, hit);
+            if (slot < 0) { // no bank for this layer — cannot serve the graph we already promised
+                fatal_.store(true, std::memory_order_release);
+                return false;
+            }
+            clookups_++;
+            if (hit) {
+                chits_++;
+                for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                    if (L.proj[p].nb2) mark_ready(p, slot);
+            }
+            bank_slot_[e] = (int16_t) slot;
+            seen_[e] = hit ? 0 : 1; // reuse as the miss marker, as the cache-on branch does
+        }
+        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            const uint64_t slice = L.proj[p].nb2;
+            if (slice == 0) continue;
+            for (int e : staged_) {
+                if (!seen_[e]) continue; // already banked
+                const int slot = bank_slot_[e];
+                const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) slot);
+                jobs_.push_back({(char *) bank_[p][il] + (uint64_t) slot * slice,
+                                 L.proj[p].file_off + (uint64_t) e * slice, slice, flag, (int16_t) L.proj[p].file_idx,
+                                 e, (int16_t) il, (int8_t) p, 0});
+            }
+        }
+    } else if (cache_max_ == 0) {
         // Cache off: every (projection, expert) is a fresh read into the shared full-size slot
         // at its canonical offset e*slice. Emit projection-major.
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
@@ -1416,6 +1617,13 @@ void ExpertStreamSource::shutdown() {
         lbuf_[p].clear();
         lbuf_sz_[p].clear();
     }
+    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (void * b : bank_[p])
+            if (b) pio::aligned_free(b);
+        bank_[p].clear();
+    }
+    bank_ready_ = false;
+    bank_active_ = false;
     // The dense-weights module frees its own anon buffers here. Safe: the context (whose rebound
     // dense tensors point at them) is torn down after the source, and no decode is in flight — same
     // contract as the slot and LRU buffers freed above.

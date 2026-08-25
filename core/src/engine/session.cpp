@@ -114,6 +114,7 @@ struct GenTally {
     double prev_drain_s = 0.0;
     double prev_adopt_s = 0.0;
     uint64_t majflt = 0;
+    uint64_t minflt = 0;
     double cpu_seconds = 0.0;
 
     // Fill in everything a generated token is measured by — its wall/fault/CPU decomposition, the
@@ -121,18 +122,27 @@ struct GenTally {
     // above — then advance those cursors and the run totals. The token's TEXT stays with the
     // caller: what a token says depends on chat state, what it cost does not.
     //
-    // `wall` is the decode's wall time in seconds and `faults`/`cpu_s` the deltas measured around
-    // that same decode; `st` is the expert source's stats, or null when streaming is off.
-    void
-    record(TokenMetrics & m, double wall, uint64_t faults, double cpu_s, int turn, const IExpertSource::Stats * st) {
+    // `wall` is the decode's wall time in seconds and `faults`/`soft_faults`/`cpu_s` the deltas
+    // measured around that same decode; `st` is the expert source's stats, or null when streaming
+    // is off.
+    void record(TokenMetrics & m,
+                double wall,
+                uint64_t faults,
+                uint64_t soft_faults,
+                double cpu_s,
+                int turn,
+                const IExpertSource::Stats * st) {
         m.wall_ms = wall * 1000.0;
         // Fault/CPU decomposition is independent of streaming — dense-weight faults show up in the
         // mmap baseline too — so record it for every token before the moe/no-moe split below.
         m.majflt = faults;
+        m.minflt = soft_faults;
         m.cpu_ms = cpu_s * 1000.0;
         m.majflt_mib = (double) m.majflt * (double) pio::fault_bytes() / (1024.0 * 1024.0);
+        m.minflt_mib = (double) m.minflt * (double) pio::fault_bytes() / (1024.0 * 1024.0);
         m.turn = turn;
         majflt += m.majflt;
+        minflt += m.minflt;
         cpu_seconds += cpu_s;
 
         // Read the memory picture AFTER the decode, outside the caller's timing bracket: two /proc
@@ -1271,6 +1281,7 @@ RunResult Session::generate(const GenerateRequest & req,
         // Bracket ONLY the decode: major faults and CPU-time deltas here decompose this token's
         // compute residual into flash-fault stalls vs. genuine (or throttled) computation.
         const uint64_t f0 = pio::major_faults();
+        const uint64_t sf0 = pio::minor_faults();
         const double c0 = pio::process_cpu_seconds();
         auto s0 = clock_t_::now();
         const double overhead = secs(loop_mark, s0); // everything since the previous decode returned
@@ -1280,6 +1291,7 @@ RunResult Session::generate(const GenerateRequest & req,
         auto s1 = clock_t_::now();
         loop_mark = s1; // the next token's overhead is measured from here
         const uint64_t f1 = pio::major_faults();
+        const uint64_t sf1 = pio::minor_faults();
         const double c1 = pio::process_cpu_seconds();
         if (dec != 0) {
             if (im.cancel_requested.load(std::memory_order_relaxed)) {
@@ -1402,9 +1414,9 @@ RunResult Session::generate(const GenerateRequest & req,
                 m.reasoning = std::move(sv.reasoning);
             }
             if (e == 0)
-                tally.record(m, wall, f1 - f0, c1 - c0, im.turn, moe.enabled ? &st : nullptr);
+                tally.record(m, wall, f1 - f0, sf1 - sf0, c1 - c0, im.turn, moe.enabled ? &st : nullptr);
             else
-                tally.record(m, 0.0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr);
+                tally.record(m, 0.0, 0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr);
             if (on_token) on_token(m);
             if (sink) sink->on_token(m);
         }
@@ -1454,6 +1466,7 @@ RunResult Session::generate(const GenerateRequest & req,
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
     s.majflt_per_token = n_gen ? (double) tally.majflt / n_gen : 0.0;
+    s.minflt_per_token = n_gen ? (double) tally.minflt / n_gen : 0.0;
     s.cpu_s_per_token = n_gen ? tally.cpu_seconds / n_gen : 0.0;
     if (moe.enabled) {
         IExpertSource::Stats st = im.source.stats();

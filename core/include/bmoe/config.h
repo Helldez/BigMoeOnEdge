@@ -57,6 +57,30 @@ struct MoeStreamConfig {
                                // expert-set size); useful to keep the cache from taking all the
                                // headroom when the marginal hit-rate gain no longer justifies the RAM
 
+    // EXPERIMENT — decode-only slot-bank cache, N slots per layer (0 = off, the shipping path).
+    //
+    // What it removes: with the normal cache, an expert lives at its canonical offset e*nb2 and
+    // eviction physically releases those pages, so the next miss reads into an address the kernel
+    // must first hand back and ZERO. Measured on the host at cache_mb=2000: 63128 minor faults and
+    // 246.6 MiB of kernel zeroing per token, against 246.8 MiB actually read — a ratio of 1.00, i.e.
+    // every streamed byte lands in a freshly zeroed page. None of it is billed to mgmt_ms, because
+    // vm_commit is a no-op on POSIX and the page arrives later, inside the reader.
+    //
+    // How it removes it: the bank's pages are committed once and never released; a miss overwrites
+    // the slot it is given. That needs the expert's ADDRESS to be free to change, which means
+    // rewriting the router's ids from expert index to slot index before mul_mat_id reads them —
+    // legal because the kernel addresses src0 as `data + id*nb2` and never checks the id's identity.
+    //
+    // Why decode only: every token of a batch goes through ONE mul_mat_id, so at prefill the whole
+    // batch's expert set would have to be resident at once. Prefill therefore keeps the canonical
+    // buffers and the normal cache untouched; the bank is used when n_tokens == 1. The two hold
+    // separate residency, so the bank starts cold on the first generated token.
+    //
+    // Hard ceiling: a slot index is fed to mul_mat_id in place of an expert index, and the kernel
+    // sizes its per-expert scratch by ne02, so N must stay <= n_expert. Archs whose experts carry a
+    // per-expert bias or scale (those read the ids AFTER the matmul) are rejected at init.
+    int cache_slot_bank = 0;
+
     // Parallel expert-slice read lanes (incl. the calling thread). 1 = serial baseline.
     // Clamped to [1, io_threads_max]. 4 is the measured sweet spot on UFS4 phones.
     int io_threads = 4;

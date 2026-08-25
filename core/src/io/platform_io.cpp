@@ -5,6 +5,7 @@
 // ::abs is not visible (GCC hard-errors; MSVC happened to tolerate it).
 #if defined(_WIN32)
 #include <windows.h>
+#include <psapi.h> // PROCESS_MEMORY_COUNTERS; the K32* entry points live in kernel32, so no extra link
 #include <malloc.h>
 #include <cstring>
 #else
@@ -133,6 +134,19 @@ uint64_t mem_available_bytes() {
 uint64_t major_faults() {
     return 0;
 }
+
+// Measured here, unlike the rest: the host cache really does MEM_DECOMMIT on evict and MEM_COMMIT on
+// the next miss, so the refault-and-zero cost this counter exists to size is present on the host too.
+// PageFaultCount is soft+hard together — coarser than ru_minflt, but the delta across a decode is
+// dominated by the cache's own recommits, which is the quantity being sized.
+uint64_t minor_faults() {
+    PROCESS_MEMORY_COUNTERS pmc;
+    std::memset(&pmc, 0, sizeof(pmc));
+    pmc.cb = sizeof(pmc);
+    // K32GetProcessMemoryInfo lives in kernel32 (Vista+), so this needs no psapi link.
+    return K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)) ? (uint64_t) pmc.PageFaultCount : 0;
+}
+
 double process_cpu_seconds() {
     return 0.0;
 }
@@ -267,6 +281,14 @@ uint64_t major_faults() {
     // RUSAGE_SELF aggregates every thread of the process, matching the multi-threaded decode.
     struct rusage ru;
     return getrusage(RUSAGE_SELF, &ru) == 0 ? (uint64_t) ru.ru_majflt : 0;
+}
+
+uint64_t minor_faults() {
+    // ru_minflt counts faults served without backing store. The expert cache's evict decommits
+    // (MADV_DONTNEED) and vm_commit is a no-op here, so every byte the reader writes into an evicted
+    // entry costs one of these plus the kernel zeroing a page we are about to overwrite whole.
+    struct rusage ru;
+    return getrusage(RUSAGE_SELF, &ru) == 0 ? (uint64_t) ru.ru_minflt : 0;
 }
 
 double process_cpu_seconds() {
