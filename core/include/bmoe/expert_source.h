@@ -72,7 +72,10 @@ public:
         long long cache_hits = 0;          // expert lookups served from the cache
         long long cache_lookups = 0;       // total expert lookups (hits + misses)
         uint64_t cache_resident_bytes = 0; // currently resident cached slice bytes
-        double stall_seconds = 0.0;        // overlap: summed across compute threads (0 when serial)
+        double stall_seconds = 0.0;        // overlap: cumulative wall time during which at least one compute
+                                           // thread was stalled on a streamed expert — the UNION of stalled
+                                           // intervals, not a per-thread sum (0 when serial). Includes an
+                                           // interval still open at the snapshot.
         uint64_t spec_read_bytes = 0;      // bytes read speculatively by prefetch (subset of read_bytes)
         long long spec_experts = 0;        // experts fully prefetched
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit

@@ -555,8 +555,10 @@ private fun TelemetryCard(ui: UiState, threads: Int, overlap: Boolean, ioThreads
                 // The compute-vs-flash split and cache hit rate only mean anything with the streamer
                 // running. Under mmap the model faults in through the OS page cache, invisible here.
                 // The split itself — live last token vs run average, and which term is measured
-                // rather than residual — is derived in breakdown(); this only draws it.
-                val b = breakdown(t, overlap, busyThreads = threads + if (overlap) ioThreads else 0)
+                // rather than residual — is derived in breakdown(); this only draws it. The busy
+                // denominator counts the I/O lanes; the compute one does not (see breakdown()).
+                val b = breakdown(t, overlap,
+                    busyThreads = threads + if (overlap) ioThreads else 0, computeThreads = threads)
                 val suffix = if (b.isAverage) " avg" else ""
 
                 // Headline: token time and its inverse, so no mental arithmetic to get tok/s.
@@ -567,6 +569,10 @@ private fun TelemetryCard(ui: UiState, threads: Int, overlap: Boolean, ioThreads
                 MeterRow("compute$suffix", b.computeMs, b.totalMs, MaterialTheme.colorScheme.primary)
                 MeterRow("flash wait$suffix", b.flashWaitMs, b.totalMs, MaterialTheme.colorScheme.tertiary)
                 MeterRow("cache mgmt$suffix", b.mgmtMs, b.totalMs, MaterialTheme.colorScheme.secondary)
+                // The fourth bar is the wall time nobody claims: off-CPU cost (zram, preemption,
+                // frequency caps) the residual `compute_ms` used to absorb silently. Muted color —
+                // it is a question mark, not a workload.
+                MeterRow("unattributed$suffix", b.unattributedMs, b.totalMs, MaterialTheme.colorScheme.outline)
 
                 // Diagnostic line: WHY compute is what it is, plus cache hit. Near 100% busy is
                 // genuinely compute-bound, well below means a throttled/preempted core (a frequency

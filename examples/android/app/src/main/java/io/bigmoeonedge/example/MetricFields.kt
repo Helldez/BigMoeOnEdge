@@ -24,7 +24,7 @@ object MetricFields {
         MetricField("wall_ms", "token time", "the whole time this token took — the one number measured directly; tok/s = 1000/wall_ms", Better.LOWER),
         MetricField("compute_ms", "compute (a residual!)", "with streaming on, what is left after io/stall and mgmt are subtracted — NOT measured, so it also absorbs faults and scheduler stalls, and is clamped at 0. With streaming off it is just wall_ms", Better.LOWER),
         MetricField("io_ms", "flash read time", "time reading experts from flash. In serial it is part of wall_ms; under overlap it is per-lane busy time summed, so it can exceed wall_ms", Better.LOWER),
-        MetricField("stall_ms", "wait on flash", "overlap only: the wall time compute actually sat idle waiting for a read (already divided per thread)", Better.LOWER),
+        MetricField("stall_ms", "wait on flash", "overlap only: the wall time during which at least one compute thread was blocked on a streamed read — the UNION of stalled intervals, not a per-thread mean, so overlapping waits count once", Better.LOWER),
         MetricField("mgmt_ms", "cache bookkeeping", "time committing, evicting and reordering the LRU cache this token — plus the periodic dense-residency probe, which the engine folds in here", Better.LOWER),
 
         MetricField("read_bytes", "flash read", "bytes of experts pulled from flash THIS token (not cumulative)", Better.LOWER),

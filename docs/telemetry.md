@@ -26,17 +26,21 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   mgmt_ms` in serial, `wall_ms − stall_ms − mgmt_ms` under overlap. When that residual is the
   number in question, `--compute-trace` measures it directly instead (see [Decode
   traces](#decode-traces)) — at a cost that makes it a diagnostic, not telemetry.
-  `compute_ms` is **clamped at 0**: the subtraction can go slightly negative under overlap (where
-  `stall_ms` is a per-thread mean, not a critical path), and a negative compute would be nonsense.
-  That clamp means the wall-additive identity is not exact in the pathological case — a consumer
-  that recovers the flash-wait term as `wall_ms − compute_ms − mgmt_ms` gets `wall_ms − mgmt_ms`
-  when the clamp fires, over-attributing to flash. Read the wall-additive flash term straight from
-  `io_ms` (serial) / `stall_ms` (overlap) instead of inverting the residual.
-  Precisely: `stall_ms` is the summed per-thread block time divided by `n_threads`, which equals the
-  wall stall only if every compute thread blocks together. When one thread waits on an expert while
-  the others keep working it **under**-states the stall, and `compute_ms` — being the residual —
-  absorbs the difference. Read an attribution between compute and flash as approximate, and reach
-  for `--compute-trace` when the split itself is the question.
+  `compute_ms` is **clamped at 0** — a negative compute would be nonsense. That clamp means the
+  wall-additive identity is not exact in the pathological case — a consumer that recovers the
+  flash-wait term as `wall_ms − compute_ms − mgmt_ms` gets `wall_ms − mgmt_ms` when the clamp
+  fires, over-attributing to flash. Read the wall-additive flash term straight from `io_ms`
+  (serial) / `stall_ms` (overlap) instead of inverting the residual.
+  `stall_ms` is the **union of stalled intervals**: the cumulative wall time during which at least
+  one compute thread was blocked on a streamed expert. Overlapping waits count once, so it is the
+  critical-path quantity — one blocked thread already means the graph is not progressing. (It was
+  previously the summed per-thread block time divided by `n_threads`, a mean that equaled the wall
+  stall only if every compute thread blocked together and understated it whenever a minority of
+  threads did the waiting — with the difference silently landing in `compute_ms`.) The interval
+  opens the moment a thread finds its expert unready — including the short pre-block spin — and a
+  stats snapshot taken mid-stall includes the open interval up to now. Attribution between compute
+  and flash is still approximate (see `--compute-trace` when the split itself is the question), but
+  the flash term no longer depends on how the waiting was distributed across threads.
   In serial mode `io_ms` is the wall time blocked on reads (a subset of `wall_ms`). Under
   `--overlap` its meaning changes: it is the **sum of per-lane busy time**, so it can exceed
   `wall_ms` because lanes read in parallel with compute. Use `stall_ms` for the wall time
@@ -62,6 +66,22 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   `experts_dropped` next to it.
 - `majflt` / `cpu_ms` **decompose the `compute_ms` residual** — the whole point being that "compute"
   above is a catch-all that silently absorbs page faults and scheduler stalls, not just matmul.
+- **The app panel never reads the residual as compute.** Its four bars are attribution components,
+  not a partition of wall time: **compute** = `cpu_ms ÷ compute threads` — an attribution *proxy*
+  (process CPU time, which includes the I/O lanes' work, divided down to a per-compute-thread
+  figure; it is not a direct measurement of matrix-kernel execution), and because process CPU also
+  covers the I/O lanes and other process threads, it is an **upper bound** on compute-thread
+  CPU-equivalent time rather than a disjoint share of the token. Under heavy streaming the lanes'
+  CPU is large enough to matter: compute + flash wait + mgmt can exceed `wall_ms`, and the panel
+  clamps the unattributed remainder at 0 in that case instead of displaying the overlap.
+  **Flash wait** = `io_ms` (serial) / `stall_ms` (overlap) read as
+  measured in both the live and the end-of-run summary views (`io_s_tok` / `stall_s_tok` in
+  `BMOE_DONE`), **cache mgmt** = `mgmt_ms`, and **unattributed** = the non-negative wall-time
+  remainder — the off-CPU time (zram swap-in, preemption, frequency caps) the residual used to
+  paint as compute. The bars are deliberately not rescaled to total 100 %: measurement noise is
+  preferred to a fabricated normalization. The CPU-busy diagnostic keeps its own denominator —
+  `cpu ÷ (wall × busy threads)`, busy threads including the I/O lanes under overlap — which is a
+  different quantity from the compute bar's and must not be "simplified" into it.
   They are measured directly around `llama_decode` (no submodule patch needed): `majflt` is the
   major page faults served this token — a non-zero count means a mmap-resident (dense) weight was
   re-faulted from flash *inside* the decode, i.e. a >RAM residency stall masquerading as compute.
