@@ -403,6 +403,7 @@ private val CONFIG_ORDER = listOf(
     "cache_auto" to "Cache auto-size",
     "cache_floor_mb" to "Cache floor (MiB)",
     "cache_ceil_mb" to "Cache ceiling (MiB)",
+    "cache_cycle_mb" to "Token cycle (MiB)",
     "force_cache" to "Force cache",
     "io_threads" to "I/O lanes",
     "o_direct" to "Direct I/O",
