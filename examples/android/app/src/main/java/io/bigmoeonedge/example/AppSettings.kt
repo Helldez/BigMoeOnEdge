@@ -26,14 +26,15 @@ data class AppSettings(
     val mmap: Boolean = false,          // baseline: no streaming — llama.cpp mmap loads the whole model
     val cacheMb: Int = 2000,            // LRU expert cache budget; Auto / 0 / 500..6000 (see CACHE_CHOICES)
     val cacheCeilMb: Int = 3000,        // with cacheMb=Auto: upper bound on the auto budget (0 = no cap)
-    // Slot-bank cache (experimental, decode only). Off by default until the device A/B says
-    // otherwise. The bank's pages are committed once and overwritten rather than released, so
-    // eviction stops costing a syscall and a miss stops landing in a page the kernel had to zero
-    // first. On the host it removed all 61323 minor faults per token and 30 of 31 ms of cache
-    // management, for +8.2% tok/s on Qwen3.6-35B — but the fault half of that was free there
-    // (ms per MiB read did not move), so the phone is a genuinely different question.
-    // 0 = off; otherwise slots per layer, and it must not exceed the model's expert count.
-    val cacheSlotBank: Int = 0,
+    // Slot-bank cache (experimental, decode only). A plain switch: how many slots per layer it
+    // buys is the engine's arithmetic, not a number to pick — it divides the budget above rather
+    // than adding to it, giving prefill one token cycle of LRU and turning the rest into slots.
+    // The bank's pages are claimed once and overwritten rather than released, so eviction stops
+    // costing a syscall and a miss stops landing in a page the kernel had to zero first. On the
+    // host it removed all 61323 minor faults per token and 30 of 31 ms of cache management, for
+    // +8.2% tok/s on Qwen3.6-35B — but the fault half of that was free there (ms per MiB read did
+    // not move), so the phone is a genuinely different question. Off until the device A/B says.
+    val cacheSlotBank: Boolean = false,
     val ioThreads: Int = 4,             // parallel expert-read lanes
     val threads: Int = 4,               // compute threads (-t)
     val nExpertUsed: Int = 0,           // top-k override (0 = model default); lower = faster, changes output
@@ -146,8 +147,7 @@ data class AppSettings(
             }
             // Needs a live cache to sit alongside: the bank serves decode, the LRU still serves
             // prefill, and with no LRU there is no prefill home for the bytes.
-            if (cacheSlotBank > 0 && (cacheMb == CACHE_AUTO || cacheMb > 0))
-                a += listOf("--cache-slot-bank", cacheSlotBank.toString())
+            if (cacheSlotBank && (cacheMb == CACHE_AUTO || cacheMb > 0)) a += "--cache-slot-bank"
             a += listOf("--io-threads", ioThreads.toString())
             if (!oDirect) a += "--no-odirect"
             if (overlap) a += "--overlap"
@@ -211,7 +211,7 @@ data class AppSettings(
         ctx.prefs().edit()
             .putBoolean("mmap", mmap)
             .putInt("cacheMb", cacheMb).putInt("cacheCeilMb", cacheCeilMb)
-            .putInt("cacheSlotBank", cacheSlotBank)
+            .putBoolean("cacheSlotBank", cacheSlotBank)
             .putInt("ioThreads", ioThreads).putInt("threads", threads)
             .putInt("nExpertUsed", nExpertUsed)
             .putInt("nPredict", nPredict).putBoolean("oDirect", oDirect)
@@ -313,9 +313,6 @@ data class AppSettings(
         // memory pressure on devices where free RAM is tight.
         val CACHE_CEIL_CHOICES = intArrayOf(0, 2000, 3000, 4000, 5000, 6000)
         val IO_CHOICES = intArrayOf(1, 2, 4, 8)
-        // Slots per layer for the decode-only bank. The rungs bracket what a 2000 MiB budget holds
-        // on the test model (~32/layer over 40 layers); the engine caps anything above n_expert.
-        val SLOT_BANK_CHOICES = intArrayOf(0, 16, 24, 32, 48, 64)
         // 0 = model default (top-k as trained). 6/4/3/2 trade output quality for tok/s (fewer routed experts).
         val N_EXPERT_CHOICES = intArrayOf(0, 6, 4, 3, 2)
         val PREFETCH_CHOICES = intArrayOf(0, 1, 2, 4)
@@ -341,7 +338,7 @@ data class AppSettings(
                 mmap = p.getBoolean("mmap", d.mmap),
                 cacheMb = p.getInt("cacheMb", d.cacheMb),
                 cacheCeilMb = p.getInt("cacheCeilMb", d.cacheCeilMb),
-                cacheSlotBank = p.getInt("cacheSlotBank", d.cacheSlotBank),
+                cacheSlotBank = p.getBoolean("cacheSlotBank", d.cacheSlotBank),
                 ioThreads = p.getInt("ioThreads", d.ioThreads),
                 threads = p.getInt("threads", d.threads),
                 nExpertUsed = p.getInt("nExpertUsed", d.nExpertUsed),

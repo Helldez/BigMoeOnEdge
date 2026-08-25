@@ -685,7 +685,11 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             im.source.set_dense_tensors(std::move(dense));
         }
 
-        if (!im.source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
+        // The effective top-k: an override IS the applied width, otherwise the model's own. The
+        // slot bank needs it to price a token cycle while sizing itself; 0 (not MoE metadata)
+        // simply leaves the bank off.
+        const int top_k = cfg.n_expert_used > 0 ? cfg.n_expert_used : (gguf().ok ? gguf().n_expert_used : 0);
+        if (!im.source.init(offs.shard_paths, n_expert, top_k, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
 
@@ -818,6 +822,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // would put a budget on the wrong side of the cliff in exactly the borderline case.
         ri.cache_cycle_mb =
             (int) ((im.source.worst_cycle_bytes(ri.n_expert_used) + 1024ull * 1024ull - 1) / (1024ull * 1024ull));
+        // The RESOLVED slot count, not the request: the flag is a switch, the engine derives the
+        // number, and it can refuse outright. A CSV that recorded the request would have said
+        // "bank on" for runs where the bank never armed.
+        ri.cache_slot_bank = im.source.slot_bank_slots();
     }
 
     // The effective routing width, resolved once: an override IS the applied width, otherwise the

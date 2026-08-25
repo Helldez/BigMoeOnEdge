@@ -432,11 +432,11 @@ static void print_usage(const char * argv0) {
         "                          `--dense-weights anon`, --no-warm-dense means `--dense-weights mmap`\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
-        "      --cache-slot-bank N EXPERIMENT: decode-only slot-bank cache, N slots per layer\n"
-        "                          (0=off). The bank's pages are committed once and overwritten\n"
-        "                          instead of released, so a miss stops re-faulting a page the\n"
-        "                          kernel had to zero first. Rewrites the router ids to slot\n"
-        "                          indices; N must be <= n_expert. Prefill is unaffected.\n"
+        "      --cache-slot-bank   EXPERIMENT: decode-only slot-bank cache. Claims its pages once\n"
+        "                          and overwrites slots instead of releasing them, so evicting\n"
+        "                          costs no syscall and a miss stops re-faulting a page the kernel\n"
+        "                          had to zero first. Sized from the budget: prefill keeps one\n"
+        "                          token cycle of LRU, the rest becomes slots. Decode only.\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
         "      --io-two-wave       publish a layer's first-projection reads before committing the\n"
         "                          rest, so the lanes start sooner (needs --overlap and the cache;\n"
@@ -623,7 +623,7 @@ int main(int argc, char ** argv) {
             else
                 cfg.moe.cache_mb = std::atoi(v.c_str());
         } else if (a == "--cache-slot-bank")
-            cfg.moe.cache_slot_bank = std::atoi(next("--cache-slot-bank"));
+            cfg.moe.cache_slot_bank = true;
         else if (a == "--cache-floor-mb")
             cfg.moe.cache_floor_mb = std::atoi(next("--cache-floor-mb"));
         else if (a == "--cache-ceil-mb")

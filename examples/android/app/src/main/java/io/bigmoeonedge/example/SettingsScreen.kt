@@ -118,17 +118,14 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 Hint(current.denseWeights.blurb)
 
                 ExperimentalGroup {
-                    IntSetting(
-                        "Slot-bank cache (slots/layer)", AppSettings.SLOT_BANK_CHOICES, current.cacheSlotBank,
-                        format = { if (it == 0) "off" else "$it" },
-                        enabled = stream && cacheOn,
-                    ) { onChange(current.copy(cacheSlotBank = it)) }
-                    Hint(
+                    SwitchRow(
+                        "Slot-bank cache",
                         "Gives each layer a fixed set of expert slots whose memory is claimed once and " +
-                            "reused. Evicting then costs nothing instead of handing pages back to the " +
-                            "system and taking them again. Decode only; the prompt still uses the normal " +
-                            "cache, so the bank starts cold on the first word of a reply."
-                    )
+                            "reused, so evicting costs nothing instead of handing pages back to the system " +
+                            "and taking them again. It divides the cache size you already chose, it does " +
+                            "not add to it. Applies while a reply is written, not while the prompt is read.",
+                        current.cacheSlotBank, enabled = stream && cacheOn,
+                    ) { onChange(current.copy(cacheSlotBank = it)) }
                     IntSetting(
                         "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
                         format = { if (it == 0) "off" else "$it" },

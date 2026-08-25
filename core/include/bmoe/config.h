@@ -57,7 +57,7 @@ struct MoeStreamConfig {
                                // expert-set size); useful to keep the cache from taking all the
                                // headroom when the marginal hit-rate gain no longer justifies the RAM
 
-    // EXPERIMENT — decode-only slot-bank cache, N slots per layer (0 = off, the shipping path).
+    // EXPERIMENT — decode-only slot-bank cache (off = the shipping path).
     //
     // What it removes: with the normal cache, an expert lives at its canonical offset e*nb2 and
     // eviction physically releases those pages, so the next miss reads into an address the kernel
@@ -76,10 +76,25 @@ struct MoeStreamConfig {
     // buffers and the normal cache untouched; the bank is used when n_tokens == 1. The two hold
     // separate residency, so the bank starts cold on the first generated token.
     //
-    // Hard ceiling: a slot index is fed to mul_mat_id in place of an expert index, and the kernel
-    // sizes its per-expert scratch by ne02, so N must stay <= n_expert. Archs whose experts carry a
-    // per-expert bias or scale (those read the ids AFTER the matmul) are rejected at init.
-    int cache_slot_bank = 0;
+    // MEASURED NEGATIVE ON ANDROID — kept for the seam it demonstrates, not as a lever. The bank is
+    // permanently dirty anonymous memory whose slots are mostly untouched at any instant, which is
+    // what swappiness 160 compresses into zram: major faults per token went from 4-116 to
+    // 1676-5484 and swap from ~100 to 155-393 MiB, with throughput tracking the swap. The decommit
+    // this removes turns out to be the cache's way of telling the kernel it truly does not need
+    // those pages, which is what kept it out of reclaim. See docs/cache-sizing.md.
+    //
+    // How many slots per layer is not a question for the caller: the engine knows the budget, the
+    // per-expert bytes and the routing width, which is everything the answer depends on. It gives
+    // the LRU one worst-case token cycle (the floor below which a cache measurably cannot hit at
+    // all, see docs/cache-sizing.md) and turns the rest into slots, so the bank comes OUT of
+    // cache_mb rather than sitting on top of it. A budget that cannot cover the cycle plus one slot
+    // per layer leaves the bank off, and says so.
+    //
+    // Hard ceiling on the derived count: a slot index is fed to mul_mat_id in place of an expert
+    // index, and the kernel sizes its per-expert scratch by ne02, so it stays <= n_expert. Archs
+    // whose experts carry a per-expert bias or scale (they read the ids AFTER the matmul) disarm
+    // the bank at run time, detected from the graph's own node names.
+    bool cache_slot_bank = false;
 
     // Parallel expert-slice read lanes (incl. the calling thread). 1 = serial baseline.
     // Clamped to [1, io_threads_max]. 4 is the measured sweet spot on UFS4 phones.

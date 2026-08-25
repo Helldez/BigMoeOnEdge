@@ -19,24 +19,31 @@ Semantic Versioning.
   a page zeroed for it first. Measured on the Windows host too, where the cache decommits and
   recommits explicitly.
 
-  `--cache-slot-bank N` is the lever that answers it. Each layer gets N slots whose pages are
-  claimed once at load and never released, so eviction is a reassignment and a miss overwrites
-  bytes already ours. It works by rewriting the router's selected-expert ids to slot indices, which
-  is legal because `mul_mat_id` addresses `src0` as `data + id*nb2` and never asks what the id
-  means. The rewrite happens at the single node where no other consumer is left to mislead: the
-  terminal of the layer's weight chain, after the routing weights have been gathered and before the
-  first expert matmul. Decode only, since one `mul_mat_id` serves a whole batch. N is capped at the
-  model's expert count. Architectures whose experts carry a per-expert bias or scale read the same
-  ids after the matmul, so the engine detects them from the graph's node names and disarms itself.
-  Off by default, and off in the app.
+  `--cache-slot-bank` is the lever that answers it, and it ships **off, as a measured negative on
+  Android**. Each layer gets a set of slots whose pages are claimed once at load and never
+  released, so eviction is a reassignment and a miss overwrites bytes already ours. It works by
+  rewriting the router's selected-expert ids to slot indices, which is legal because `mul_mat_id`
+  addresses `src0` as `data + id*nb2` and never asks what the id means. The rewrite happens at the
+  single node where no other consumer is left to mislead: the terminal of the layer's weight chain,
+  after the routing weights have been gathered and before the first expert matmul. Decode only,
+  since one `mul_mat_id` serves a whole batch. How many slots is derived from the budget, not asked
+  of the caller. Architectures whose experts carry a per-expert bias or scale read the same ids
+  after the matmul, so the engine detects them from the graph's node names and disarms itself.
 
-  Host result on Qwen3.6-35B, three A/B pairs: 2.805 to 3.035 tok/s (+8.2 %), minor faults 61 323
-  to 0 per token, `mgmt_ms` 31.1 to 0.9 ms, generated text byte-identical. The attribution is not
-  the one the mechanism suggests, and is documented as such: ms per MiB read did not move, so the
-  zeroing was already hidden behind that machine's SSD wait. What paid was the eviction syscalls
-  disappearing, plus a hit-rate rise (54.9 to 57.5 %) that falls out of the bank's per-layer LRU
-  giving every layer a floor. A phone inverts both halves of that balance, which is why nothing is
-  turned on until it has been measured there. See `docs/cache-sizing.md` and `docs/telemetry.md`.
+  The mechanism works, on both platforms: minor faults per 4 KiB of streamed data go from 1.04 to
+  0.04 on device, and `mgmt_ms` from 6.4 to 0.9. It does not pay, for a reason specific to Android
+  and worth recording. The bank is permanently dirty anonymous memory, and at any moment most of
+  its slots are untouched, which is exactly the profile `swappiness 160` compresses into zram. So
+  **major** faults went from 4-116 per token to 1 676-5 484, and swap from ~100 MiB to 155-393 MiB,
+  with throughput tracking the swap (8.06 tok/s at 155 MiB, 4.35 at 393). The decommit the bank
+  removes was not waste: it is how the cache tells the kernel it genuinely does not need those
+  pages, which is what keeps it out of reclaim. Net on Qwen3.6-35B: +2.2 % on a good run, with a
+  tail that loses 44 %. Generated text stays byte-identical throughout.
+
+  Kept because the telemetry above is only half readable without something to compare against, and
+  because the ids-to-slots seam is now demonstrated rather than assumed. See `docs/cache-sizing.md`
+  for the numbers and the two design faults still in it (uniform slots per layer cost 3.4 points of
+  hit rate; the disarm check is broader than the danger it guards).
 
 ## [0.21.0] - 2026-08-25
 

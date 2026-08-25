@@ -1277,7 +1277,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         bank_unsafe_ = true;
         if (source_ && source_->slot_bank_on())
             std::fprintf(stderr,
-                         "bmoe: slot bank off — this model's experts carry a per-expert bias or scale (%s),\n"
+                         "bmoe: slot bank off, this model's experts carry a per-expert bias or scale (%s),\n"
                          "      which reads the routing ids after the matmul the remap is for\n",
                          t->name);
     }

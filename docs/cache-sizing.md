@@ -130,7 +130,7 @@ see the ordering warning below.
 
 `auto` is a real LRU cache, so it satisfies the cache requirement of `--prefetch`.
 
-## `--cache-slot-bank N` (experimental, decode only)
+## `--cache-slot-bank` (experimental, decode only, measured negative on Android)
 
 The cache above is *direct-mapped*: `mul_mat_id` reads expert `e` at `data + e*nb2`, so every
 expert has one fixed address, and the only way to bound the budget is to physically release the
@@ -139,12 +139,21 @@ into an address the kernel must hand back and zero first, a zeroing the read the
 Neither cost is billed to `mgmt_ms`: on POSIX `vm_commit` is a no-op, so the page arrives later,
 inside the reader. `minflt` (see [telemetry.md](telemetry.md)) is what makes it visible.
 
-`--cache-slot-bank N` gives each layer `N` slots whose pages are claimed once at load and never
+`--cache-slot-bank` gives each layer a set of slots whose pages are claimed once at load and never
 released. Eviction becomes a reassignment, and a miss overwrites bytes that are already ours. What
 buys that is rewriting the router's selected-expert ids to slot indices, which is legal because the
 kernel addresses `src0` by `data + id*nb2` and never asks what the id means. The rewrite happens at
 exactly one node, the terminal of the layer's weight chain: after `ggml_get_rows(probs, ids)` has
 taken the routing weights, before the first `mul_mat_id` reads the same ids. There is no other seam.
+
+It is a switch, not a size. The slot count is derived at load from the budget and the per-expert
+bytes, because those are the only inputs the answer depends on and the engine has both. The bank
+comes out of `--cache-mb` rather than adding to it: it IS the decode cache, and the LRU it replaces
+keeps only one token cycle for prefill, released the moment generation starts. An earlier revision
+split the budget between the two and simply starved decode, which measured as a 13 % loss against
+an untouched baseline and as an exact tie against a baseline given the same smaller budget. The
+bank was never slower there; it was smaller. That is the trap this flag makes easy to fall into,
+so: compare at equal memory, always.
 
 Two limits follow from the mechanism, and the engine enforces both rather than documenting them:
 
@@ -159,14 +168,48 @@ Architectures whose experts carry a per-expert bias (`ggml_add_id`) or scale rea
 *after* the matmul, where no seam is left to fix them up. The engine detects those from the graph's
 own node names and disarms the bank for the run, printing why.
 
-Measured on the host on Qwen3.6-35B at `--cache-mb 2000`, three pairs: 2.805 to 3.035 tok/s
-(+8.2 %), minor faults 61 323 to 0 per token, `mgmt_ms` 31.1 to 0.9 ms, output byte-identical.
-Read the attribution before assuming it transfers: **ms per MiB read did not move** (1.487 vs
-1.480), so on that machine the zeroing was already hidden behind the SSD wait. The gain came from
-the eviction syscalls disappearing and from a hit-rate rise (54.9 to 57.5 %) that falls out of the
-bank's per-layer LRU, where each layer keeps a floor of slots instead of competing in one global
-list. The balance differs on a phone, where `vm_commit` costs nothing but the cores are far weaker,
-so the flag stays off by default and off in the app until a device A/B says otherwise.
+### What it measured
+
+The mechanism does what it claims, on both platforms. Host, Qwen3.6-35B at `--cache-mb 2000`:
+minor faults 61 323 to 0 per token, `mgmt_ms` 31.1 to 1.1, +1.8 % tok/s at matched decode capacity.
+Device, Qwen3.6-35B Q4_0 at 3000 MiB: minor faults per 4 KiB streamed go from **1.04 to 0.04**,
+`mgmt_ms` from 6.4 to 0.9, +2.2 % on a good run. Generated text byte-identical throughout.
+
+**It still does not pay on Android, and the reason is the interesting part.** Read `majflt` next to
+`minflt`, because either alone lies:
+
+| | minflt/tok | majflt/tok | swap | tok/s |
+|---|---:|---:|---:|---:|
+| baseline | 14 454 | **4-116** | ~100 MiB | 7.69-7.73 |
+| slot bank | 615 | **1 676-5 484** | 155-393 MiB | 4.35-8.06 |
+
+The bank is permanently dirty anonymous memory, and with a working set of `top_k` slots out of
+however many it holds, most of it is untouched at any moment. That is precisely the profile
+Android's `swappiness 160` compresses into zram, so the pages we refused to give back get taken
+anyway, and come back as major faults. Throughput tracks the swap: 8.06 tok/s at 155 MiB of swap,
+4.35 at 393 MiB. Note `rss_anon` was *lower* with the bank (2875-2949 vs 3073), so this is not
+about asking for too much memory. It is about offering the kernel a large pool of lukewarm pages.
+
+Which inverts the premise: **the decommit the bank removes is not waste.** It is how the cache
+tells the kernel it genuinely does not need those pages, and that is what keeps it out of reclaim.
+The baseline's 14 454 cheap minor faults per token buy 4 major ones. The bank trades them for a few
+thousand expensive ones.
+
+Two design faults remain, both visible in the numbers above and neither fixed:
+
+- **Uniform slots per layer is a worse policy than a global LRU.** Every layer gets the same count
+  whether or not it reuses experts, where the global list lets layers that benefit take more. Hit
+  rate falls 73.4 % to 70.0 % on device, which is 17 % more flash read, eating most of the saving.
+- **The disarm check is broader than the danger.** It matches any MoE node named `_biased`/`_scaled`,
+  which catches the harmless router bias (`ffn_moe_probs_biased`) and routing-weight scale as well
+  as the genuinely unsafe per-expert ones. Combined with a graph counter that waits for layer 0's
+  top-k, which never appears on architectures with leading dense blocks, the bank silently never
+  arms on DeepSeek V4, Ling 3.0 and LFM2, so a run there measures nothing at all.
+
+The regime where the axis might still have room is the one that was not tested properly: heavily
+I/O-bound decode. On DeepSeek V4 Flash the same device reads 1300 MiB per token with 360 ms of
+stall and 335 000 minor faults, against Qwen3.6's 64 MiB and 24 ms. That run needs the two faults
+above fixed first, and a budget above the token cycle.
 
 ## Explicit control
 

@@ -64,8 +64,12 @@ public:
     // I/O pool. `layers` is indexed by layer id (unbound entries are skipped); each tensor's
     // file_idx indexes `shard_paths` (a single-file model passes one path). Returns false on
     // any allocation/open failure or an inconsistent tensor.
+    // `top_k` is the run's EFFECTIVE routing width (an --n-expert-used override, else the model's
+    // own). Only the slot bank reads it, to price one worst-case token cycle while sizing itself;
+    // pass 0 when it is unknown and the bank simply stays off.
     bool init(const std::vector<std::string> & shard_paths,
               int n_expert,
+              int top_k,
               std::vector<LayerExperts> layers,
               const MoeStreamConfig & cfg);
 
@@ -83,6 +87,10 @@ public:
     uint64_t expert_bytes(int il) const override;
 
     bool slot_bank_on() const override { return bank_ready_; }
+
+    // Slots per layer the bank actually got, 0 when it is off for any reason. What telemetry must
+    // record: the request is a switch, this is the number a reader can compare two runs by.
+    int slot_bank_slots() const { return bank_ready_ ? slot_bank_ : 0; }
     void set_decode_graph(bool single_token) override;
     int slot_of_expert(int il, int e) const override;
     Stats stats() const override;
@@ -297,10 +305,15 @@ private:
     std::vector<uint32_t> bank_stamp_;              // [il*slot_bank_+s] → cgen_ of last use (LRU)
     bool bank_active_ = false;                      // this layer's reads target the bank, not lbuf_
     bool bank_ready_ = false;                       // init succeeded and the arch allows remapping
-    int bank_assign(int il, int e, bool & hit);     // slot for an expert, evicting the layer's coldest
-    void * bank_base(int il, int p) const;          // layer's bank for one projection (null if none)
-    void * canonical_base(int il, int p) const;     // where the same tensor points outside the bank
-    std::vector<int16_t> bank_slot_;                // scratch: staged expert → its slot, this layer
+    // With a bank, the LRU below serves prefill only, so it is budgeted separately and released the
+    // moment generation starts: from there on nothing can read it, and every byte it still holds is
+    // a byte the bank could have been. lru_budget() is the one place that difference lives.
+    size_t prefill_max_ = 0;
+    size_t lru_budget() const { return bank_ready_ ? prefill_max_ : cache_max_; }
+    int bank_assign(int il, int e, bool & hit); // slot for an expert, evicting the layer's coldest
+    void * bank_base(int il, int p) const;      // layer's bank for one projection (null if none)
+    void * canonical_base(int il, int p) const; // where the same tensor points outside the bank
+    std::vector<int16_t> bank_slot_;            // scratch: staged expert → its slot, this layer
 
     std::vector<uint8_t> cvalid_;
     std::vector<int32_t> cprev_, cnext_;

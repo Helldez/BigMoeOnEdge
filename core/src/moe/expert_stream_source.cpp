@@ -27,6 +27,7 @@ ExpertStreamSource::~ExpertStreamSource() {
 // ── init: allocate buffers, rebind expert tensors, start the read pool ──────────────
 bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                               int n_expert,
+                              int top_k,
                               std::vector<LayerExperts> layers,
                               const MoeStreamConfig & cfg) {
     if (active_) return false;
@@ -53,7 +54,6 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     spec_adopt_ = cfg.route_ahead > 0;
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
-    slot_bank_ = std::max(0, cfg.cache_slot_bank);
     page_ = pio::vm_page(); // the real OS page size, for the dense-residency probe in any cache mode
 
     // Largest full-tensor byte size per projection, over all bound layers → shared-slot
@@ -164,15 +164,46 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                 L.proj[p].tensor->data = lbuf_[p][il];
             }
         }
-        // Decode-only slot bank, alongside (never instead of) the reserved buffers above. Allocated
-        // and FAULTED IN here, once: the whole point is that no page of it is ever released, so a
-        // miss overwrites bytes the kernel has already given us rather than asking for a zeroed page
-        // it must find and clear. See config.h for the measurement that motivates it.
-        if (slot_bank_ > 0) {
-            bool ok = slot_bank_ <= n_expert_; // a slot index is fed to mul_mat_id in an expert's place
-            if (!ok)
-                std::fprintf(stderr, "bmoe: --cache-slot-bank %d exceeds n_expert %d; slot bank off\n", slot_bank_,
-                             n_expert_);
+        // Decode-only slot bank, alongside the reserved buffers above and paid for out of the same
+        // budget. Allocated and FAULTED IN here, once: the whole point is that no page of it is
+        // ever released, so a miss overwrites bytes the kernel has already given us rather than
+        // asking for a zeroed page it must find and clear. See config.h for the measurement.
+        if (cfg.cache_slot_bank) {
+            // Size the bank here, from what only the engine knows: the resolved budget, the bytes
+            // one expert occupies, and the routing width. The split is mechanical rather than
+            // tuned. Prefill keeps one worst-case token cycle, which is the floor the cache-cycle
+            // guard already names as the point below which a cache cannot hit at all; everything
+            // above that is dead weight during decode, because a banked decode never reads it. So
+            // the rest becomes slots, and the bank comes OUT of cache_mb instead of sitting on top
+            // of it: the two residencies both live for the whole run, and on a device already past
+            // its RAM the difference is a measurement versus a swap storm.
+            size_t per_slot = 0; // bytes one slot costs across every bound layer
+            for (int il = 0; il < n_layer_; ++il)
+                if (layers_[il].bound) per_slot += entry_bytes(il);
+            const size_t cycle = worst_cycle_bytes(top_k);
+            bool ok = per_slot > 0 && cache_max_ >= per_slot;
+            if (!ok) {
+                std::fprintf(stderr, "bmoe: slot bank off, a %zu MiB budget cannot hold one slot per layer (%zu MiB)\n",
+                             cache_max_ / (1024 * 1024), per_slot / (1024 * 1024));
+            } else {
+                // The bank IS the decode cache and takes the whole budget. It is not shared with the
+                // LRU below, because the two are never live at the same moment: prefill reads the
+                // LRU and never the bank, decode reads the bank and never the LRU. Splitting the
+                // budget between them, as the first version did, simply starved decode by whatever
+                // prefill was holding (measured: 1380 MiB of bank against a 2000 MiB baseline lost
+                // 13%, and matched a 1380 MiB baseline exactly — the bank was not slower, it was
+                // smaller). So the LRU keeps only what prefill genuinely needs, one worst-case token
+                // cycle, and hands it back the moment the first token is generated.
+                //
+                // Clamped at n_expert_: past that the slots outnumber the experts that could fill
+                // them, and a slot index would no longer be a legal expert index for mul_mat_id.
+                slot_bank_ = (int) std::min((size_t) n_expert_, cache_max_ / per_slot);
+                prefill_max_ = cycle ? std::min(cache_max_, cycle) : cache_max_;
+                std::fprintf(stderr,
+                             "bmoe: slot bank: %d slots/layer (%zu MiB) for decode, %zu MiB of prefill LRU "
+                             "released once generation starts\n",
+                             slot_bank_, (size_t) slot_bank_ * per_slot / (1024 * 1024), prefill_max_ / (1024 * 1024));
+            }
             for (int p = 0; ok && p < MoeRecipe::max_exps; ++p)
                 bank_[p].assign(n_layer_, nullptr);
             for (int il = 0; ok && il < n_layer_; ++il) {
@@ -717,7 +748,7 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
     ++cache_resizes_;
     // No cstamp guard: with no decode in flight, nothing is staged for the current generation, so
     // every resident entry (coldest first) is a valid eviction target.
-    while (cresident_ > cache_max_ && ctail_ != -1)
+    while (cresident_ > lru_budget() && ctail_ != -1)
         evict_tail();
 }
 
@@ -967,6 +998,18 @@ void ExpertStreamSource::set_decode_graph(bool single_token) {
     const bool want = bank_ready_ && single_token;
     if (want == bank_active_) return; // the common case: nothing moved since the last graph
     bank_active_ = want;
+    if (want) {
+        // Generation starts here, so the prefill LRU is now unreachable: the tensors below are
+        // about to point at the bank, and nothing will read those pages again until the next
+        // prompt. Hand them back rather than hold them for the whole reply. Safe at this point for
+        // the same reason eviction ever is: the previous graph is complete, so no lane is mid-write
+        // into a page being released.
+        const auto te0 = clock_t_::now();
+        while (ctail_ != -1)
+            evict_tail();
+        mgmt_ns_.fetch_add(
+            (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - te0).count());
+    }
     for (int il = 0; il < n_layer_; ++il) {
         LayerExperts & L = layers_[il];
         if (!L.bound) continue;
@@ -1199,7 +1242,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
 
     if (cache_max_) {
         const auto te0 = clock_t_::now();
-        while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
+        while (cresident_ > lru_budget() && ctail_ != -1 && cstamp_[ctail_] != cgen_)
             evict_tail();
         mgmt_ns_.fetch_add(
             (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - te0).count());
@@ -1454,7 +1497,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     //    guaranteed no stale in-flight jobs, and current-gen entries (cstamp_ == cgen_) — the
     //    ones just staged — are never chosen, so eviction only releases pages nobody is reading.
     if (cache_max_) {
-        while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
+        while (cresident_ > lru_budget() && ctail_ != -1 && cstamp_[ctail_] != cgen_)
             evict_tail();
     }
     mgmt_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - tm0).count());

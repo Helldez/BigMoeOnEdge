@@ -278,6 +278,12 @@ struct RunInfo {
     bool cache_auto = false;
     int cache_floor_mb = 0; // the RAM auto-sizing was told to leave free — the input behind cache_mb
     int cache_ceil_mb = 0;
+    // Slots per layer the decode-only bank was given, or 0 when it is off (including when it asked
+    // to be on and the engine refused: the budget was too small, or the graph reads the routing ids
+    // after the matmul). Recording the RESOLVED count rather than the request is the point — the
+    // flag is a switch and the number is derived, so the request says nothing a reader can compare.
+    // Two CSVs that differ only in this column are the A/B; without it they are indistinguishable.
+    int cache_slot_bank = 0;
     // One token's WORST-CASE routed bytes, priced at load from the model's shape and the effective
     // top-k. A cache_mb under this cannot hold a token cycle, so the run's hit rate is near zero by
     // construction — and that is invisible in a committed CSV unless the cycle is recorded next to
