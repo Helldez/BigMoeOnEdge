@@ -55,3 +55,21 @@ Per-question predictions and choice log-probabilities in `tinymmlu_L0.json` and
 
 94 identical predictions; lost 5 (high_school_statistics, professional_law,
 professional_accounting, elementary_mathematics, human_aging), won 1 (professional_law).
+
+## HumanEval, first 50 problems (`--session`, greedy, `n_predict` 256, `-c 1024`)
+
+`scripts/humaneval-bench.py` on `HumanEval.jsonl.gz` (github.com/openai/human-eval). Per-problem
+completions, verdicts and per-generation telemetry in `humaneval50_L0.jsonl` and
+`humaneval50_L0.15.jsonl`.
+
+| `--expert-substitute` | pass@1 | mean tok/s | mean flash per token | mean cache hit |
+|---|---:|---:|---:|---:|
+| off | 42 / 50 | 2.36 | 292 MiB | 45.5 % |
+| 0.15 | 42 / 50 | 5.53 | 69 MiB | 81.5 % |
+
+34 byte-identical completions; lost HumanEval/24, won HumanEval/41. Mean generation ~190 tokens.
+
+Observation unrelated to the setting: the baseline cell's first attempt stalled on its 8th
+problem, the engine busy for hours without returning `BMOE_DONE`; killed and resumed, the same
+problem completed at once and the run finished. Not reproduced since; recorded here as the only
+anomaly of the session.

@@ -118,6 +118,26 @@ it is still the largest byte saving measured on this engine at that cost. The ab
 below the model's published one (quantized, zero-shot, no reasoning); what the table measures is
 the difference between the two cells on the same questions, deterministically.
 
+### A generation, not one token: HumanEval
+
+tinyMMLU scores a single token after a teacher-forced prompt. A reply is a generation, where a
+perturbed routing feeds the next token's routing, so the same two cells were run on the first 50
+problems of [HumanEval](https://github.com/openai/human-eval) (`scripts/humaneval-bench.py`):
+greedy completion of the function body, cut at the usual stop sequences, graded by the canonical
+tests, one `--session` per cell so the cache stays warm between problems as it does in a
+conversation.
+
+| `L` | pass@1 | mean decode | flash per token | cache hit |
+|---|---:|---:|---:|---:|
+| 0 (off) | 42 / 50 | 2.36 tok/s | 292 MiB | 45.5 % |
+| 0.15 | 42 / 50 | **5.53 tok/s** | **69 MiB** | 81.5 % |
+
+34 of the 50 completions are byte-identical; one problem flips each way. On ~190 generated tokens
+per problem, a quarter of the routing steered toward resident experts leaves pass@1 where it was,
+cuts the flash traffic by 4x, and more than doubles decode. The throughput gain is larger than in
+the 64-token one-shot above because a warm cache is what this lever feeds on: across 50 problems
+the hit rate sits at 81 % instead of 69 %.
+
 ### The two negatives, kept on purpose
 
 - **`L = 0.60` destroys the model and the text does not show it.** Perplexity 31 against 4.2, the
@@ -158,6 +178,6 @@ behind them is worse.
 Every number above is from a desktop, where flash is a large share of a token. On the phone that
 share is between 15 % and 56 % depending on the model and the budget, so the throughput column will
 compress, and by how much is the device A/B this feature is owed before it earns a default or a
-place outside Experimental. Also owed: a generation-based task (code, or arithmetic with the
-answer checked) at `L = 0.15`, since tinyMMLU scores a single token after a teacher-forced prompt
-and a long generation compounds the perturbation.
+place outside Experimental. The quality evidence is two held-out texts, 100 tinyMMLU questions and
+50 HumanEval problems, on one model; a second architecture (Gemma 4, gpt-oss) is the obvious next
+cell.
