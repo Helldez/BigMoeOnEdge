@@ -153,6 +153,37 @@ object ModelCatalog {
                 ),
             ),
         ),
+        Entry(
+            title = "Qwen3.8-Flash-Next",
+            quant = "UD-IQ3_XXS",
+            fileName = "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+            approxBytes = 81_961_823_936L,
+            url = null,
+            // The dense side is 4.3 GB and is walked every token, so on a 12 GB phone this one
+            // runs only with the dense weights pinned (dma-buf); anon swaps, mmap refaults. The
+            // 51B n-gram table stays mmap'd on its own — see docs/android-memory.md.
+            blurb = "6B active of 125B, the Qwen4 preview. ~82 GB on disk; needs Pinned dense weights.",
+            shards = listOf(
+                Shard(
+                    "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+                    "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ3_XXS/" +
+                        "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf?download=true",
+                    10_946_624L,
+                ),
+                Shard(
+                    "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf",
+                    "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ3_XXS/" +
+                        "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf?download=true",
+                    49_567_921_344L,
+                ),
+                Shard(
+                    "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
+                    "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ3_XXS/" +
+                        "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf?download=true",
+                    32_382_955_968L,
+                ),
+            ),
+        ),
     )
 
     /**
