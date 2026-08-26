@@ -474,6 +474,12 @@ static void print_usage(const char * argv0) {
         "                          F x (1/top-k) of the routing's weight. F in (0, 1]; 1.0 is the\n"
         "                          uniform share and the useful maximum. LOSSY and cache-dependent:\n"
         "                          it changes the output, and not reproducibly. Off by default.\n"
+        "      --expert-substitute L  LOSSY: before committing a decode routing, raise the score of\n"
+        "                          every expert already in the cache by L x this token's score range\n"
+        "                          and re-rank. A resident expert wins a slot only when it was within\n"
+        "                          that margin of the one it displaces; weights are the router's own.\n"
+        "                          Runs the same NUMBER of experts, fewer of which cost a read.\n"
+        "                          L in [0, 1]; 0 is off. Needs the LRU cache. Measured best: 0.15\n"
         "      --ppl FILE          measure teacher-forced perplexity of FILE instead of generating.\n"
         "                          Every cell scores the SAME fixed token sequence, so the number is\n"
         "                          a scale: comparing GENERATED text cannot price a lossy setting,\n"
@@ -707,6 +713,8 @@ int main(int argc, char ** argv) {
             cfg.moe.prefetch_sync = true;
         else if (a == "--drop-cold-experts")
             cfg.moe.drop_cold_frac = (float) std::atof(next("--drop-cold-experts"));
+        else if (a == "--expert-substitute")
+            cfg.moe.substitute_lambda = (float) std::atof(next("--expert-substitute"));
         else if (a == "--ppl")
             ppl_path = next("--ppl");
         else if (a == "--ppl-skip")
@@ -849,7 +857,8 @@ int main(int argc, char ** argv) {
                     pres.n_scored, pres.n_scored > 0 ? 100.0 * pres.n_top1 / pres.n_scored : 0.0, pres.seconds);
         // Say what the policy did, always. A lossy flag that touched nothing scored the baseline,
         // and a table of identical perplexities is the least obvious way to be told so.
-        std::printf("ppl-policy: %lld/%lld routed experts dropped\n", pres.experts_dropped, pres.experts_routed);
+        std::printf("ppl-policy: %lld/%lld routed experts dropped, %lld/%lld reranked slots substituted\n",
+                    pres.experts_dropped, pres.experts_routed, pres.experts_substituted, pres.experts_reranked);
         return 0;
     }
 
@@ -987,6 +996,12 @@ int main(int argc, char ** argv) {
                         s.experts_dropped, s.experts_routed,
                         s.experts_routed > 0 ? 100.0 * s.experts_dropped / s.experts_routed : 0.0,
                         (double) cfg.moe.drop_cold_frac);
+        if (cfg.moe.substitute_lambda > 0.0f)
+            std::printf("moe-substitute: %lld/%lld reranked slots went to a resident expert (%.1f%%), margin %.2f x "
+                        "score range\n",
+                        s.experts_substituted, s.experts_reranked,
+                        s.experts_reranked > 0 ? 100.0 * s.experts_substituted / s.experts_reranked : 0.0,
+                        (double) cfg.moe.substitute_lambda);
         // The agreement is the honest label for what the run just generated under: 100% minus it
         // is the fraction of routed slots that went to an expert the router did not choose.
         if (cfg.moe.route_ahead > 0) {

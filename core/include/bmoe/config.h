@@ -149,6 +149,24 @@ struct MoeStreamConfig {
     // compute-bound, so there is little to win.
     bool drop_prefill = false;
 
+    // ── cache-aware substitution (lossy; opt-in) ─────────────────────────────────────
+    // Dropping decides whether to PAY for a missing expert. This decides whether to NEED one:
+    // before a routing is committed, every expert's router score is raised by
+    // substitute_lambda × (this token's score range) if that expert is already resident, and the
+    // top-k is taken again. A resident expert therefore wins a slot only when it was within that
+    // margin of the one it displaces — a confident routing is untouched, a near-tie resolves
+    // toward RAM.
+    //
+    // The margin is a fraction of the RANGE, so one value means the same thing whatever scale a
+    // model's router scores live on: no per-model constant, and no calibration state. The weights
+    // are not touched: the graph applies whatever the router itself gives the selected experts.
+    //
+    // It runs the same NUMBER of experts, just cheaper ones. It is still lossy — they are not the
+    // experts the router asked for — and, like dropping, state-dependent. 0 (the default) disables
+    // it and the engine is bit-exact as before. Decode only; needs a live cache to report
+    // residency. See docs/cache-aware-substitution.md.
+    float substitute_lambda = 0.0f;
+
     // Diagnostics: measure how predictable the routing is, without acting on it. For every decoded
     // token the engine ranks each layer's experts a layer early — running the NEXT layer's gate
     // matrix on the CURRENT layer's gate input, which the residual stream keeps nearly unchanged —

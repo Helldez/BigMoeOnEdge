@@ -217,6 +217,29 @@ int main() {
         expect_fail("a NaN threshold is rejected", c);
     }
 
+    // Cache-aware substitution: the same shape of contract as dropping — it needs a cache to have
+    // residency to prefer, and a margin outside [0, 1] has no meaning.
+    {
+        RunConfig c = ok_base();
+        c.moe.enabled = true;
+        c.moe.substitute_lambda = 0.15f;
+        expect_fail("substitution without a cache is rejected (nothing resident to prefer)", c);
+
+        c.moe.cache_mb = MoeStreamConfig::cache_min_mb;
+        c.moe.substitute_lambda = 0.0f;
+        expect_ok("substitution off is the default and valid", c);
+        c.moe.substitute_lambda = 0.15f;
+        expect_ok("a margin inside the range is valid", c);
+        c.moe.substitute_lambda = 1.0f;
+        expect_ok("the full range is valid", c);
+        c.moe.substitute_lambda = 1.01f;
+        expect_fail("a margin above the full range is rejected", c);
+        c.moe.substitute_lambda = -0.1f;
+        expect_fail("a negative margin is rejected", c);
+        c.moe.substitute_lambda = std::numeric_limits<float>::quiet_NaN();
+        expect_fail("a NaN margin is rejected", c);
+    }
+
     // n_ubatch: 0 follows the context; a value above it would reserve compute buffers for a batch
     // that cannot occur, which inverts the memory saving the knob exists for.
     {

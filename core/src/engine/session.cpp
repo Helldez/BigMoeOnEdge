@@ -444,6 +444,8 @@ PplResult Session::perplexity(const PplRequest & req) {
     }
     const long long routed0 = im.hook->experts_routed();
     const long long dropped0 = im.hook->experts_dropped();
+    const long long reranked0 = im.hook->experts_reranked();
+    const long long substituted0 = im.hook->experts_substituted();
 
     // Logits at EVERY position, so one pass scores every token — llama_batch_get_one would ask for
     // the last position only.
@@ -525,6 +527,8 @@ PplResult Session::perplexity(const PplRequest & req) {
     r.n_top1 = top1;
     r.experts_routed = im.hook->experts_routed() - routed0;
     r.experts_dropped = im.hook->experts_dropped() - dropped0;
+    r.experts_reranked = im.hook->experts_reranked() - reranked0;
+    r.experts_substituted = im.hook->experts_substituted() - substituted0;
     r.seconds = secs(t0, clock_t_::now());
     r.ok = true;
     return r;
@@ -661,6 +665,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.hook = std::make_unique<RouterHook>(recipe ? *recipe : MoeRecipe{}, n_layer_streamed);
     im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
+    im.hook->set_expert_substitute(cfg.moe.substitute_lambda);
     im.hook->set_predict_log(cfg.moe.predict_log);
     im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
     im.hook->set_route_ahead(cfg.moe.route_ahead);
@@ -967,6 +972,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.drop_cold_frac = cfg.moe.enabled ? cfg.moe.drop_cold_frac : 0.0f;
         ri.drop_renorm = cfg.moe.drop_renorm;
         ri.drop_prefill = cfg.moe.drop_prefill;
+        ri.substitute_lambda = cfg.moe.enabled ? cfg.moe.substitute_lambda : 0.0f;
         // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
         ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"
                            : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"
@@ -1356,6 +1362,8 @@ RunResult Session::generate(const GenerateRequest & req,
     // for and the one the tok/s number is about.
     const long long prev_routed = im.hook->experts_routed();
     const long long prev_dropped = im.hook->experts_dropped();
+    const long long prev_reranked = im.hook->experts_reranked();
+    const long long prev_substituted = im.hook->experts_substituted();
     // Per-token cursors for the hook's own eval-thread meters (route-ahead issue + watchdog): the
     // hook accumulates for the session, the rows want this token's share.
     long long prev_ra_issue_ns = im.hook->route_ahead_issue_ns();
@@ -1689,6 +1697,8 @@ RunResult Session::generate(const GenerateRequest & req,
     }
     s.experts_routed = im.hook->experts_routed() - prev_routed;
     s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
+    s.experts_reranked = im.hook->experts_reranked() - prev_reranked;
+    s.experts_substituted = im.hook->experts_substituted() - prev_substituted;
     // Per-turn deltas, like every other generation figure here: a warm session's counters are
     // cumulative, and an acceptance rate averaged over earlier prompts would describe none of them.
     s.mtp_drafted = im.mtp_drafted - mtp0_drafted;

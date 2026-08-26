@@ -189,6 +189,13 @@ struct RunSummary {
     // the flag. Both cover generation only — prefill drops nothing unless armed for it.
     long long experts_routed = 0;
     long long experts_dropped = 0;
+    // Cache-aware substitution (both zero when --expert-substitute is off): reranked is every slot
+    // the policy examined — its own denominator, since experts_routed above is the drop policy's —
+    // and substituted the slots whose expert it changed for a resident one. Same caveat as dropped:
+    // the flag sets a margin, not a rate, and how often a resident stand-in falls inside it depends
+    // on the cache.
+    long long experts_reranked = 0;
+    long long experts_substituted = 0;
 
     // Temporal prefetch (zero when --prefetch is off): speculative bytes read during generation,
     // experts successfully prefetched, and how many of those a later routing actually used.
@@ -311,6 +318,7 @@ struct RunInfo {
     float drop_cold_frac = 0.0f;        // cache-aware expert dropping threshold (0 = off)
     bool drop_renorm = true;            // survivors rescaled to keep the routing's total mass
     bool drop_prefill = false;          // dropping armed during prefill too, where it discards far more
+    float substitute_lambda = 0.0f;     // cache-aware substitution margin, a fraction of the score range (0 = off)
 
     // Sampling. Greedy (temp <= 0) is the default and the only deterministic one; the byte-identity
     // gates depend on it. A stochastic run and a greedy one are not comparable, and until these were

@@ -118,6 +118,8 @@ struct PplResult {
     // exactly how a measurement quietly says nothing.
     long long experts_routed = 0;
     long long experts_dropped = 0;
+    long long experts_reranked = 0; // slots the substitution examined (its own denominator)
+    long long experts_substituted = 0;
 };
 
 struct PplRequest {
