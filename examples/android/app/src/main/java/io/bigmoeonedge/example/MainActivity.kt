@@ -482,6 +482,7 @@ private fun configSummary(s: AppSettings): String {
             if (s.prefetchLayers > 0) parts += "prefetch ${s.prefetchLayers}"
             else if (s.predictPrefetch) parts += "predict" + if (s.predictSpecMax > 0) " ${s.predictSpecMax}" else ""
             if (s.dropColdPct > 0) parts += "drop ${s.dropColdPct}%"
+            if (s.substitutePct > 0) parts += "prefer-cached ${s.substitutePct}%"
         }
     }
     parts += "${s.threads} threads"

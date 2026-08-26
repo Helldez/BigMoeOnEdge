@@ -202,6 +202,28 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 )
 
                 ExperimentalGroup {
+                    // Measured on the desktop only; the phone A/B is what decides whether it earns a
+                    // default, so it sits with the other levers still owed one.
+                    IntSetting(
+                        "Prefer cached experts (% of score range)", AppSettings.SUBSTITUTE_CHOICES,
+                        current.substitutePct,
+                        format = { if (it == 0) "off" else "$it%" },
+                        // Needs the streamer and a live cache, for the same reason dropping does: with
+                        // nothing resident there is nothing to prefer.
+                        enabled = stream && cacheOn,
+                    ) { onChange(current.copy(substitutePct = it)) }
+                    Hint(
+                        "When two experts score close, picks the one already in RAM. Same number of " +
+                            "experts, fewer flash reads, faster decode. Changes the reply; 15% is the " +
+                            "measured sweet spot."
+                    )
+                    if (current.substitutePct >= 20) {
+                        Text(
+                            "Past 15% the model degrades faster than its replies show. Judge it on " +
+                                "answers you can check, not on how fluent it sounds.",
+                            fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     LabeledDropdown(
                         "Guess ahead",
                         listOf("Off", "Model's own head (MTP)", "Repeated text (n-gram)"),
