@@ -95,7 +95,7 @@ check). Nothing below needs a storage permission except the last option.
    adb shell mv /data/local/tmp/shardllm /data/local/tmp/bmoe
    ```
 
-### Sharded models (gpt-oss-120b, DeepSeek V4 Flash)
+### Sharded models (gpt-oss-120b, DeepSeek V4 Flash, Qwen3.8-Flash-Next)
 
 Models above Hugging Face's 50 GB per-file limit ship as several shard files
 (`-00001-of-0000N.gguf`). The engine streams a split set natively, so these download in-app
@@ -111,7 +111,13 @@ the first one:
 adb push DeepSeek-V4-Flash-0731-UD-IQ2_M-0000*-of-00003.gguf /data/local/tmp/bmoe/
 ```
 
-Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk.
+Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk, Qwen3.8-Flash-Next UD-IQ3_XXS ~82 GB.
+
+Qwen3.8-Flash-Next needs **Dense weights = Pinned (dma-buf)** in Settings. Its dense side is 4.3 GB
+and every token walks it: with Anon the kernel swaps it to zram and single tokens stall for 10-20 s,
+with Mmap it is refaulted from flash every token. Its 51B n-gram table is held back automatically and
+stays mmap'd whatever the setting; the engine says so on stderr at load. Keep the expert cache at
+1000-1500 MiB on a 12 GB phone: the pinned dense set leaves no room for more.
 
 ## Expected numbers
 

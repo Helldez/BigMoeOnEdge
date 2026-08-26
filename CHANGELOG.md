@@ -15,8 +15,15 @@ Semantic Versioning.
   resident tensor: `per_layer_token_embd`, the n-gram embedding table, a single 2-D tensor of
   320,001,536 rows carrying 51.2 B parameters (~28.8 GB at IQ4_NL, about 43 % of a released
   file), read sixteen 160-wide rows per token. Not indexed by expert, so not streamed; see the
-  guard below for why it no longer kills the run. Proven against the released gguf's header and
-  the host gates; not yet run on a device, the smallest released quant being 67.56 GiB.
+  guard below for why it no longer kills the run. Runs on the 12 GB test phone at 1.79 tok/s
+  (UD-IQ3_XXS, dense weights pinned, 1250 MiB cache): the first model this engine has met that is
+  compute-bound on device, 81 % of a token in compute against 11 % waiting on flash, because its
+  4.3 GB dense side is walked every token. Pinned dense weights are a requirement here, not a
+  tuning: `anon` swaps 6 GB to zram and stalls for 12-20 s on single tokens, `mmap` refaults the
+  whole dense set every token (0.05 tok/s). Listed in the app catalog as a three-shard download
+  (~82 GB on disk).
+- **Engine reports 0.22.0.** `project(VERSION)` in `CMakeLists.txt` is moved with the app version
+  this time, so no metrics CSV from this release names the previous engine.
 - **Dense tensors larger than available memory stay mmap'd.** The dense policy assumed the
   largest dense tensor was an embedding or lm_head and read every dense tensor whole into its
   own buffer. On `qwen4exp` that meant Anonymous asked for a 28.8 GB allocation and Pinned hit
