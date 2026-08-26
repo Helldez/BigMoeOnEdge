@@ -36,6 +36,14 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   like `qwen3moe`. The same applies to architectures whose first blocks are dense by design
   (`lfm2moe` has a `leading_dense_block_count`): those blocks name no expert tensors, so they
   are never streamed.
+- **A resident tensor can be larger than RAM, and then it is only ever mmap'd.** `qwen4exp`
+  (Qwen3.8-Flash-Next) carries a 51B n-gram embedding table (`per_layer_token_embd`, ~28.8 GB at
+  IQ4_NL) that the graph reads sixteen rows at a time through `get_rows`. It is not indexed by
+  expert, so the streamer does not bind it, and it is bigger than any phone's memory, so no dense
+  policy can make it resident: such a tensor stays mmap'd whatever `--dense-weights` asks, and
+  the engine says so at load. The streamed fraction of this architecture is therefore unusually
+  low, and its per-token cost on that table is page faults on kilobyte reads rather than
+  streamed expert bytes. That cost has not been measured on a device yet.
 - **Streaming does not help a model that fits.** The engine's reason to exist is a model
   larger than RAM. Registering an architecture says the layout streams losslessly, not that
   streaming is the fast way to run every model using it — a small MoE that fits in memory is

@@ -45,6 +45,37 @@ bool DenseWeights::init(DenseWeightsMode mode,
 
     if (mode_ == DenseWeightsMode::Anonymous || mode_ == DenseWeightsMode::Pinned) {
         if (tensors_.empty()) return true; // nothing captured to rebind — behave as Mmap
+        // A dense tensor bigger than the memory the kernel says is available cannot be made
+        // resident by any policy: the read either fails or succeeds and takes the process with it.
+        // Such a tensor stays mmap'd and leaves the set entirely, so neither the read below nor
+        // drop_mmap_copies touches it, and the rest of the dense weights still get the policy the
+        // run asked for. Until qwen4exp this could not happen — the largest dense tensor was an
+        // embedding or lm_head — but its n-gram table (`per_layer_token_embd`, ~28.8 GB at IQ4_NL)
+        // exceeds any phone's RAM while being read a kilobyte at a time, so mmap is the only policy
+        // it can have. The bound is the kernel's own MemAvailable rather than a constant: it is the
+        // one number that already accounts for what this device can still hand out.
+        if (const uint64_t avail = pio::mem_available_bytes()) {
+            std::vector<DenseTensorRef> keep;
+            keep.reserve(tensors_.size());
+            uint64_t left_mapped = 0;
+            for (const DenseTensorRef & d : tensors_) {
+                if (d.size > avail) {
+                    left_mapped += d.size;
+                } else {
+                    keep.push_back(d);
+                }
+            }
+            const size_t n_left = tensors_.size() - keep.size();
+            tensors_ = std::move(keep);
+            if (left_mapped) {
+                std::fprintf(stderr,
+                             "bmoe: dense-weights=%s — %llu MiB in %zu tensor(s) exceeds the %llu MiB "
+                             "available and stays mmap'd\n",
+                             mode_ == DenseWeightsMode::Pinned ? "ahwb" : "anon",
+                             (unsigned long long) (left_mapped >> 20), n_left, (unsigned long long) (avail >> 20));
+            }
+            if (tensors_.empty()) return true; // all of it stayed mapped — behave as Mmap
+        }
         if (mode_ == DenseWeightsMode::Pinned && pio::pinned_max_bytes() == 0) {
             std::fprintf(stderr, "bmoe: --dense-weights ahwb needs reclaim-exempt memory, which this "
                                  "platform does not provide (Android only)\n");

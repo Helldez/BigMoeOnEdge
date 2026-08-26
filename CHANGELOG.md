@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.22.0] - 2026-08-26
+
+### Added
+- **Qwen3.8-Flash-Next (`qwen4exp`) recipe.** The Qwen4 architecture preview (125B total, ~6B
+  active) routes over 512 experts at top-10 plus one always-on shared expert that stays resident;
+  the experts name the standard split suffixes, so streaming is one registry row. The hybrid
+  gated-delta SSM / sparse attention stack, its indexer and the per-block hyper-connection
+  tensors are dense-side llama.cpp code, invisible to the streaming seam. What is new is one
+  resident tensor: `per_layer_token_embd`, the n-gram embedding table, a single 2-D tensor of
+  320,001,536 rows carrying 51.2 B parameters (~28.8 GB at IQ4_NL, about 43 % of a released
+  file), read sixteen 160-wide rows per token. Not indexed by expert, so not streamed; see the
+  guard below for why it no longer kills the run. Proven against the released gguf's header and
+  the host gates; not yet run on a device, the smallest released quant being 67.56 GiB.
+- **Dense tensors larger than available memory stay mmap'd.** The dense policy assumed the
+  largest dense tensor was an embedding or lm_head and read every dense tensor whole into its
+  own buffer. On `qwen4exp` that meant Anonymous asked for a 28.8 GB allocation and Pinned hit
+  the dma-buf ceiling, either way dying at load, for a table the graph touches a kilobyte at a
+  time. A dense tensor larger than the kernel's `MemAvailable` now leaves the resident set and
+  stays mmap'd, the rest of the dense weights still get the policy the run asked for, and one
+  stderr line names what stayed mapped and why. Inert on every other supported model: Qwen3.6-35B
+  reads the same 1785 MiB into the same 613 buffers as before.
+
+### Changed
+- **llama.cpp submodule bumped** to `035e22731`, the head of upstream PR
+  [ggml-org/llama.cpp#27742](https://github.com/ggml-org/llama.cpp/pull/27742) (Qwen3.8-Flash-Next
+  support), with the expert-ready hook cherry-picked on top, still a single-commit delta. The pin
+  is provisional: that PR is not merged, so when it lands the hook is re-applied onto master and
+  the pin moves again. Byte-identity gates pass on the new base and, unlike the previous bump,
+  nothing on our side needed adapting. App version 0.22.0 (versionCode 37).
+
 ## [0.21.0] - 2026-08-25
 
 ### Added
