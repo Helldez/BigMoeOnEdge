@@ -28,10 +28,16 @@ Semantic Versioning.
   largest dense tensor was an embedding or lm_head and read every dense tensor whole into its
   own buffer. On `qwen4exp` that meant Anonymous asked for a 28.8 GB allocation and Pinned hit
   the dma-buf ceiling, either way dying at load, for a table the graph touches a kilobyte at a
-  time. A dense tensor larger than the kernel's `MemAvailable` now leaves the resident set and
-  stays mmap'd, the rest of the dense weights still get the policy the run asked for, and one
-  stderr line names what stayed mapped and why. Inert on every other supported model: Qwen3.6-35B
-  reads the same 1785 MiB into the same 613 buffers as before.
+  time. A dense tensor larger than the kernel's `MemAvailable` is now held back under every mode:
+  it stays mmap'd, leaves the warm sweep and the residency sensor (which would otherwise report a
+  dense set that can never be resident), is not counted by the auto cache budget as a conversion
+  to reserve for, and gets `MADV_RANDOM` so a fault maps one page instead of a readahead window
+  the gather never touches. The rest of the dense weights still get the mode the run asked for,
+  and one stderr line names what was held back and why. The bound is size, not access shape: a
+  row-gathered table that fits keeps its mode, because demand-faulting one that fits measured
+  −16 % decode (#135). Inert on every other supported model: Qwen3.6-35B reads the same 1785 MiB
+  into the same 613 buffers under `anon`, and `warm` and `mmap` match their baselines to the
+  decimal. See [docs/android-memory.md](docs/android-memory.md).
 
 ### Changed
 - **llama.cpp submodule bumped** to `035e22731`, the head of upstream PR

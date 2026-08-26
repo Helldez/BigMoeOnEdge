@@ -651,12 +651,13 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         std::vector<uint64_t> dense_bytes;
         if (route_trace) dense_bytes = dense_bytes_per_layer(offs, layers, n_layer_streamed);
 
-        // Anonymous dense-weights mode: hand the streamer the dense (non-expert) model weights to
-        // read into anon buffers. The list is every captured weight leaf that IS a gguf tensor
-        // (dropping graph inputs and KV, which share the leaf shape) and is NOT one of the streamed
-        // experts. Built before init consumes `layers`. Only this mode needs them; the others ignore
-        // an empty list.
-        if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous || cfg.moe.dense_weights == DenseWeightsMode::Pinned) {
+        // Hand the streamer the dense (non-expert) model weights: every captured weight leaf that IS
+        // a gguf tensor (dropping graph inputs and KV, which share the leaf shape) and is NOT one of
+        // the streamed experts. Built before init consumes `layers`. Anonymous/Pinned read these into
+        // their own buffers; every mode needs the list to hold back a tensor too large to be
+        // resident at all (qwen4exp's n-gram table), which must also leave the warm sweep and the
+        // residency sensor — see DenseWeights::hold_back_oversized.
+        {
             const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
             std::vector<DenseTensorRef> dense;
             for (const auto & kv : im.hook->captured_weights()) {

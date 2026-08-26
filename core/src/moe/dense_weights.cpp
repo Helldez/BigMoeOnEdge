@@ -43,38 +43,12 @@ bool DenseWeights::init(DenseWeightsMode mode,
         basenames_.push_back(slash == std::string::npos ? p : p.substr(slash + 1));
     }
 
+    hold_back_oversized();
+
     if (mode_ == DenseWeightsMode::Anonymous || mode_ == DenseWeightsMode::Pinned) {
-        if (tensors_.empty()) return true; // nothing captured to rebind — behave as Mmap
-        // A dense tensor bigger than the memory the kernel says is available cannot be made
-        // resident by any policy: the read either fails or succeeds and takes the process with it.
-        // Such a tensor stays mmap'd and leaves the set entirely, so neither the read below nor
-        // drop_mmap_copies touches it, and the rest of the dense weights still get the policy the
-        // run asked for. Until qwen4exp this could not happen — the largest dense tensor was an
-        // embedding or lm_head — but its n-gram table (`per_layer_token_embd`, ~28.8 GB at IQ4_NL)
-        // exceeds any phone's RAM while being read a kilobyte at a time, so mmap is the only policy
-        // it can have. The bound is the kernel's own MemAvailable rather than a constant: it is the
-        // one number that already accounts for what this device can still hand out.
-        if (const uint64_t avail = pio::mem_available_bytes()) {
-            std::vector<DenseTensorRef> keep;
-            keep.reserve(tensors_.size());
-            uint64_t left_mapped = 0;
-            for (const DenseTensorRef & d : tensors_) {
-                if (d.size > avail) {
-                    left_mapped += d.size;
-                } else {
-                    keep.push_back(d);
-                }
-            }
-            const size_t n_left = tensors_.size() - keep.size();
-            tensors_ = std::move(keep);
-            if (left_mapped) {
-                std::fprintf(stderr,
-                             "bmoe: dense-weights=%s — %llu MiB in %zu tensor(s) exceeds the %llu MiB "
-                             "available and stays mmap'd\n",
-                             mode_ == DenseWeightsMode::Pinned ? "ahwb" : "anon",
-                             (unsigned long long) (left_mapped >> 20), n_left, (unsigned long long) (avail >> 20));
-            }
-            if (tensors_.empty()) return true; // all of it stayed mapped — behave as Mmap
+        if (tensors_.empty()) { // nothing (left) to rebind — behave as Mmap
+            advise_random_mapped();
+            return true;
         }
         if (mode_ == DenseWeightsMode::Pinned && pio::pinned_max_bytes() == 0) {
             std::fprintf(stderr, "bmoe: --dense-weights ahwb needs reclaim-exempt memory, which this "
@@ -98,7 +72,94 @@ bool DenseWeights::init(DenseWeightsMode mode,
     } else if (mode_ == DenseWeightsMode::Warmed) {
         warm();
     }
+    advise_random_mapped();
     return true;
+}
+
+static const char * mode_flag(DenseWeightsMode m) {
+    switch (m) {
+    case DenseWeightsMode::Mmap:
+        return "mmap";
+    case DenseWeightsMode::Warmed:
+        return "warm";
+    case DenseWeightsMode::Anonymous:
+        return "anon";
+    case DenseWeightsMode::Pinned:
+        return "ahwb";
+    }
+    return "?";
+}
+
+// Remove [a, b) from a sorted list of disjoint [first, second) ranges, splitting the one it falls in.
+static void subtract_range(std::vector<std::pair<uint64_t, uint64_t>> & ranges, uint64_t a, uint64_t b) {
+    std::vector<std::pair<uint64_t, uint64_t>> out;
+    out.reserve(ranges.size() + 1);
+    for (const auto & r : ranges) {
+        if (b <= r.first || a >= r.second) {
+            out.push_back(r); // disjoint
+            continue;
+        }
+        if (r.first < a) out.push_back({r.first, a});
+        if (b < r.second) out.push_back({b, r.second});
+    }
+    ranges.swap(out);
+}
+
+// ── Oversized dense tensors: mmap'd under every mode ─────────────────────────────────
+//
+// A dense tensor bigger than the memory the kernel says is available cannot be resident under any
+// mode: Anonymous/Pinned would ask for an allocation that fails or takes the process with it, and
+// Warmed would sweep it through a page cache it cannot fit in, evicting itself as it goes. Until
+// qwen4exp this could not happen — the largest dense tensor was an embedding or lm_head — but its
+// n-gram table (`per_layer_token_embd`, ~28.8 GB at IQ4_NL) exceeds any phone's RAM while the graph
+// gathers a few rows from it per token, so mmap is the only residency it can have. Such a tensor
+// leaves the set entirely: not read, not rebound, not dropped, not warmed, and not sampled — a
+// sensor that counted it would report a dense set that can never be resident. The rest of the
+// dense weights still get the mode the run asked for.
+//
+// The bound is the kernel's own MemAvailable rather than a constant, because it is the one number
+// that already accounts for what this device can still hand out; a tensor that FITS keeps its
+// mode even when it is row-gathered, since demand-faulting a table that fits costs more in prefill
+// than reading it once sequentially at load (measured: token_embd left mmap'd lost 16 % decode).
+void DenseWeights::hold_back_oversized() {
+    mapped_.clear();
+    const uint64_t avail = pio::mem_available_bytes();
+    if (!avail) return; // unmeasured on this platform: hold nothing back, as before
+    std::vector<DenseTensorRef> keep;
+    keep.reserve(tensors_.size());
+    uint64_t held = 0;
+    for (const DenseTensorRef & d : tensors_) {
+        if (d.size <= avail) {
+            keep.push_back(d);
+            continue;
+        }
+        mapped_.push_back(d);
+        held += d.size;
+        if (d.file_idx >= 0 && (size_t) d.file_idx < ranges_.size())
+            subtract_range(ranges_[(size_t) d.file_idx], d.file_off, d.file_off + d.size);
+    }
+    tensors_ = std::move(keep);
+    if (held)
+        std::fprintf(stderr,
+                     "bmoe: dense-weights=%s — %llu MiB in %zu tensor(s) exceeds the %llu MiB available: left "
+                     "mmap'd with random-access advice, outside the warm sweep and the residency sensor\n",
+                     mode_flag(mode_), (unsigned long long) (held >> 20), mapped_.size(),
+                     (unsigned long long) (avail >> 20));
+}
+
+void DenseWeights::advise_random_mapped() {
+    if (mapped_.empty()) return;
+    resolve_vmas();
+    const size_t page = pio::vm_page();
+    for (const DenseTensorRef & d : mapped_) {
+        const char * a = addr_of(d.file_idx, d.file_off);
+        if (!a) continue;
+        // Inward to whole pages, as drop_mmap_copies does: the edge pages are shared with neighbours
+        // that keep their own access pattern, and on a table this size two pages are nothing.
+        uintptr_t a0 = ((uintptr_t) a + page - 1) & ~(uintptr_t) (page - 1);
+        uintptr_t a1 = ((uintptr_t) a + d.size) & ~(uintptr_t) (page - 1);
+        if (a1 > a0) pio::vm_advise_random((void *) a0, (size_t) (a1 - a0));
+    }
 }
 
 // ── Anonymous / Pinned: read each dense tensor whole into our own buffer and rebind onto it ──
