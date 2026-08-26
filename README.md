@@ -174,6 +174,7 @@ Defaults are the measured winning recipe for a model near RAM.
 | `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
 | `deepseek4` | DeepSeek V4 Flash (284B-A13B), validated on the 0731 release | V3.2-style routing (256 experts + shared); compressed attention is dense-side; ships multi-shard |
 | `bailingmoe3` | Ling 3.0 (e.g. Ling-3.0-flash, 127B-A5B) | 512 routed experts + shared, biased top-k; hybrid KDA/MLA attention is dense-side |
+| `qwen4exp` | Qwen3.8-Flash-Next (125B-A6B), the Qwen4 architecture preview | 512 routed experts + shared; a 51B n-gram embedding table stays mmap'd (see limitations). Registry row and gates only, not yet run on device; pinned to the upstream PR until it merges |
 
 Adding an architecture is one row in the registry; expert counts and layouts are discovered from
 the model file at runtime, so nothing about a specific model is hardcoded in the streaming path.

@@ -57,6 +57,20 @@ static const MoeRecipe k_recipes[] = {
     // load_mtp=false), so its layer simply never streams. The hybrid KDA/MLA attention stack is
     // dense-side machinery inside llama.cpp and invisible to the seam.
     {"bailingmoe3", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    // qwen4exp (Qwen3.8-Flash-Next, 125B-A6B, the Qwen4 architecture preview) names its 512
+    // routed experts with the standard split suffixes, so the streaming path is one row. Its
+    // novelties all sit on the resident side of the seam: an always-on shared expert
+    // (ffn_*_shexp), a hybrid stack of gated-delta SSM blocks and sparse attention with its own
+    // indexer, and per-block hyper-connection tensors (hc_*).
+    //
+    // One resident tensor is worth naming because it dominates the model rather than the usual
+    // handful of megabytes: `per_layer_token_embd`, the n-gram embedding table, is a single 2-D
+    // tensor of 320,001,536 rows that carries 51.2 B of the model's parameters (~28.8 GB at
+    // IQ4_NL, about 43 % of a released quant). It matches no expert suffix and is not indexed by
+    // expert, so the streamer does not bind it and the dense policy maps it like any other
+    // non-expert weight. That makes the streamed fraction of this architecture unusually low —
+    // see docs/limitations.md.
+    {"qwen4exp", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
 };
 
 static const int k_n_recipes = (int) (sizeof(k_recipes) / sizeof(k_recipes[0]));
