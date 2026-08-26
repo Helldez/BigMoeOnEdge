@@ -43,6 +43,34 @@ Semantic Versioning.
   port `bmoe/row_source.h`, adapter `core/src/moe/row_stream.cpp`, docs in
   `docs/row-gathered-tables.md`, app switch **Stream row-gathered tables**.
 
+### Added
+- **`--expert-substitute L`: cache-aware expert substitution.** Before a decode routing is
+  committed, every expert already in the LRU cache gets its score raised by `L` times this token's
+  score range and the top-k is taken again, so a resident expert takes a slot only when the router
+  scored it within that margin of the one it displaces. The same number of experts runs; fewer of
+  them cost a flash read, and the weights are the router's own. The mechanism is the
+  cache-conditional rerouting of Skliar et al. (arXiv:2412.00099) with the cache in front of flash
+  instead of DRAM and the range taken per token, so there is no calibration state. The scores are
+  read from the tensor the graph itself sorted, which is exact for any gating function and alive at
+  the callback by construction; the gate input is not (on Gemma 4 the allocator had recycled it),
+  and a new gate cell caught that. Measured on the desktop on Qwen3.6-35B at `0.15`: 258 → 119 MiB
+  of flash per token, 2.37 → 3.84 tok/s, perplexity up 1 to 4 % on two held-out texts; `0.30`
+  costs 25 %, `0.60` destroys the model (perplexity 31) while its prose still reads well. Off by
+  default, decode only, refused without a cache and outside `[0, 1]`. The run summary, the CSV
+  (`experts_reranked`, `experts_substituted`, `substitute_lambda`) and the app's metrics view carry
+  its actual bite. See [docs/cache-aware-substitution.md](docs/cache-aware-substitution.md).
+- **`--ppl FILE`: teacher-forced perplexity, and `--ppl-step` for the decode regime.** Scores a
+  fixed text instead of generating one, with the mean NLL, the perplexity and the next-token hit
+  rate, so a lossy setting gets a scale instead of a coin flip: greedy output only moves when a
+  perturbation crosses an argmax boundary, whatever its size. `--ppl-step` scores one token per
+  decode. A wide batch routes every position of a layer before reading any of it, so a policy that
+  consults the cache barely fires there (1 to 3 % of the slots it examined, against 26 to 28 % in
+  decode) and the number says nothing about it; stepping is the regime the policy acts in. Both
+  policies report what they did (`ppl-policy:`), so an inert flag cannot pass unnoticed.
+- **"Prefer cached experts" in the app**, under Speed / quality → Experimental, as a percentage of
+  the score range (10 to 30, default off, disabled with the cache off), with a warning from 20 % up.
+  App 0.22.0 (versionCode 37).
+
 ### Changed
 - The CSV summary trailer gains `row_table_MiB`, `row_resident_MiB`, `row_rows`, `row_reads`,
   `row_read_MiB`, `row_evictions` and `row_io_errors`, and a `moe-rows:` end-of-run line appears

@@ -33,12 +33,14 @@ Two optional jobs ask for more: the route trace and
 which is another barrier per node but no new kind of access — same public struct, same read of
 `->data`.
 
-Dropping does go one step further, and it is the only place the engine **writes into** a graph
-tensor's contents rather than repointing `->data` at its own buffer: at the terminal node of the
-weight chain it zeroes a dropped slot's weight and repoints that slot's expert id. Both tensors are
-scratch the graph produced and has not yet consumed, so this alters the values flowing through the
-run — deliberately, that is what the lossy policy *is* — and never llama.cpp's own state, its
-weights, or its control flow. It stays inside the same callback contract; nothing is patched.
+The two lossy routing policies go one step further, and they are the only places the engine
+**writes into** a graph tensor's contents rather than repointing `->data` at its own buffer.
+Dropping, at the terminal node of the weight chain, zeroes a dropped slot's weight and repoints
+that slot's expert id; [substitution](cache-aware-substitution.md), at the `ffn_moe_topk` node,
+rewrites the selected ids toward resident experts. In both cases the tensors are scratch the graph
+produced and has not yet consumed, so this alters the values flowing through the run —
+deliberately, that is what a lossy policy *is* — and never llama.cpp's own state, its weights, or
+its control flow. It stays inside the same callback contract; nothing is patched.
 
 ## 2. gguf offsets
 

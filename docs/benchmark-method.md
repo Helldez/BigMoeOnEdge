@@ -67,6 +67,7 @@ Fine to measure, not fine to publish as the engine's number.
 | `--io-two-wave` | off | publishes a layer's first-projection reads early so the lanes start sooner |
 | `--prefetch K` | off | temporally prefetches the next K layers' experts; needs the cache |
 | `--mtp`, `--ngram` | off | speculative decode. Not byte-identical to a plain run, so it is its own comparison |
+| `--expert-substitute L` | off | re-ranks each routing toward experts already in the cache ([details](cache-aware-substitution.md)). Lossy and cache-dependent, like dropping: report `experts_substituted` / `experts_reranked` with the tok/s, and never judge it by reading the text |
 
 The rest of this section takes them in turn.
 

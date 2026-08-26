@@ -143,6 +143,7 @@ flash, at the moment they are needed. Everything below tunes that.
 | Setting | Flag and values | What it does |
 |---|---|---|
 | Drop cold experts | `--drop-cold-experts` &nbsp;`0` (off) to `1.0`; app rungs `50%`, `75%`, `100%` &nbsp;(app default `75%`) | Skips a routed expert only when it is a cache miss *and* the router wanted it less than that share of an even split. Quality is spent only where it buys a read. Lossy and not reproducible: what is skipped depends on what the cache held. |
+| Prefer cached experts *(experimental)* | `--expert-substitute` &nbsp;`0` (off) to `1.0`; app rungs `10%` to `30%` &nbsp;(default off) | Nudges each routing toward experts already in the cache: a resident expert takes a slot only when the router scored it within that margin of the one it displaces. Same number of experts, fewer reads. Lossy and cache-dependent, like dropping ([detail](docs/cache-aware-substitution.md)). |
 | Active experts | `--n-expert-used` &nbsp;`0` (model's own), `6`, `4`, `3`, `2` | Consults fewer experts per token than the model asks for, cutting compute and reads together. Lossy, but reproducible: the same prompt gives the same answer. |
 | Guess ahead *(experimental)* | `--mtp` or `--ngram`, with `--draft` &nbsp;`1` to `5` &nbsp;and, for the head, `--mtp-p-min` &nbsp;`0`, `40%`, `60%`, `80%` | Drafts the next few tokens and verifies the group in one decode, keeping only what the model itself would have produced. Nothing is approximated. Wins when weights move once per group, loses when the wider verify widens each layer's read set ([mtp](docs/mtp.md), [ngram](docs/ngram.md)). |
 | Route-ahead *(experimental)* | `--route-ahead` &nbsp;`0` (off), `1`, `2`, `4` layers | Commits a layer's routing that many layers early, so its reads start early and can never be wasted. Lossy: some slots route differently. Excludes both prefetchers and Guess ahead ([detail](docs/route-ahead.md)). |
@@ -156,11 +157,14 @@ They are not interchangeable. Reducing the active experts cuts the routing tail 
 those experts were already free to run from memory, and it does so identically every time. Dropping
 cold experts spends quality only where it buys back a flash read, which is more surgical but makes
 the answer depend on what the cache happened to hold, so the same prompt can come out differently.
+Preferring cached experts is dropping's upstream sibling: instead of deciding whether to pay for a
+missing expert it decides whether to need one, and it keeps the routing's width.
 Guessing ahead gives up nothing at all: it changes how many tokens a pass confirms, not what the
 model computes.
 
 Each one is measured rather than assumed, and the numbers live with the method that produced them:
-[expert-dropping.md](docs/expert-dropping.md), [mtp.md](docs/mtp.md),
+[expert-dropping.md](docs/expert-dropping.md),
+[cache-aware-substitution.md](docs/cache-aware-substitution.md), [mtp.md](docs/mtp.md),
 [ngram.md](docs/ngram.md), [route-ahead.md](docs/route-ahead.md). Judge any of them on your own
 task before relying on it.
 
@@ -470,6 +474,9 @@ and EdgeMoE, not a novel technique. The closest recent work is
 397B MoE from SSD on Apple Silicon, and on an iPhone through a community fork. BigMoeOnEdge takes
 the other side of that problem: CPU-only, on Android, on llama.cpp's public API (bar one optional
 ~25-line hook, above), across architectures. See [docs/limitations.md](docs/limitations.md).
+The cache-aware routing under *Prefer cached experts* is the cache-conditional rerouting of
+Skliar et al. ([arXiv:2412.00099](https://arxiv.org/abs/2412.00099)), applied to a RAM cache in
+front of flash.
 
 ## License
 

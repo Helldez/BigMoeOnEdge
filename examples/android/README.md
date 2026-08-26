@@ -159,3 +159,7 @@ Two worth knowing before you turn them on:
 - **"Stream row-gathered tables"** (`--row-stream`) serves the token embedding table out of flash
   instead of RAM. Lossless, and which tables it applies to is read off the model's own graph, so
   on a model where none qualify it does nothing. See `../../docs/row-gathered-tables.md`.
+- **"Prefer cached experts"** (`--expert-substitute`) steers each routing toward experts already
+  in RAM, so the same number of experts runs but fewer are read from flash. It changes the reply,
+  and past 20% the reply keeps reading well while the model behind it is much worse: judge it on
+  answers you can check. See `../../docs/cache-aware-substitution.md`.
