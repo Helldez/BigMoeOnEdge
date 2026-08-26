@@ -84,6 +84,14 @@ void vm_release(void * p, size_t sz);
 // VirtualFree-able, and the host build never streams). The range must be page-aligned by the caller.
 void vm_drop_file_pages(void * p, size_t sz);
 
+// Tell the kernel a FILE-BACKED range will be touched at random, so a fault brings in the page that
+// faulted and nothing around it. The default is sequential readahead sized in the hundreds of KiB
+// per fault, which is right for a weight that is read whole and wrong by two orders of magnitude for
+// a table the graph gathers a few rows from per token: the neighbours are never used, and they
+// occupy page cache the expert cache is competing for. A no-op on the Windows host (no streaming
+// there). The range must be page-aligned by the caller.
+void vm_advise_random(void * p, size_t sz);
+
 // How many of a committed range's pages the kernel still has in RAM. Counts only the pages fully
 // inside [p, p+sz) — the same clipping vm_evict's callers apply — and ADDS to *sampled/*resident,
 // so several ranges can be summed into one fraction (the caller zeroes them first).

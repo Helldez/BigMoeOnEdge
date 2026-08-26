@@ -54,9 +54,10 @@ public:
     byte_ranges(std::vector<std::pair<uint64_t, uint64_t>> expert_ranges, uint64_t file_size);
 
     // Apply `mode` for the model files `paths` (per-shard dense `ranges` precomputed via byte_ranges;
-    // `tensors` needed only for Anonymous/Pinned). `align` is the O_DIRECT block size. Runs once at
-    // load, before the streamer's workers start (Anonymous rebinds tensor->data on the caller's
-    // thread). Returns false only on a hard Anonymous failure (alloc/read); Mmap and Warmed cannot fail.
+    // `tensors` is what Anonymous/Pinned read, and what every mode checks for a tensor too large to
+    // be resident — see hold_back_oversized). `align` is the O_DIRECT block size. Runs once at load,
+    // before the streamer's workers start (Anonymous rebinds tensor->data on the caller's thread).
+    // Returns false only on a hard Anonymous failure (alloc/read); Mmap and Warmed cannot fail.
     bool init(DenseWeightsMode mode,
               const std::vector<std::string> & paths,
               size_t align,
@@ -74,6 +75,13 @@ public:
     static constexpr int sample_pages = 256; // stratified probe points across the dense bytes
 
 private:
+    // A dense tensor larger than the memory the kernel says is available cannot be resident under
+    // any mode. Moves such tensors from `tensors_` to `mapped_`, carves their bytes out of `ranges_`
+    // (so neither the warm sweep nor the sensor treats them as dense the run could hold), and says so.
+    void hold_back_oversized();
+    // Random-access advice on the mmap of every held-back tensor: a fault brings in one page, not a
+    // readahead window the gather will never touch.
+    void advise_random_mapped();
     bool read_anonymous(size_t align);
     void warm();
     void drop_mmap_copies(size_t page);
@@ -93,6 +101,7 @@ private:
     // one of which is populated for a given run.
     std::vector<std::unique_ptr<FileReader>> readers_;
     std::vector<DenseTensorRef> tensors_;
+    std::vector<DenseTensorRef> mapped_; // held back by hold_back_oversized: mmap'd under every mode
     std::vector<void *> bases_;
     std::vector<void *> bufs_;
     std::vector<pio::PinnedAlloc> pinned_;

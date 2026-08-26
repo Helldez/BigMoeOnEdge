@@ -110,6 +110,10 @@ void vm_drop_file_pages(void * /*p*/, size_t /*sz*/) {
     // and the host build never mmaps the model for streaming — so there is nothing to drop.
 }
 
+void vm_advise_random(void * /*p*/, size_t /*sz*/) {
+    // No readahead to tame on a host build that never streams; the gates do not measure I/O.
+}
+
 // Unmeasured on the host build, like the fault counters below and for the same reason: the gates
 // prove byte-identity, they do not size a cache against a phone's reclaim. QueryWorkingSetEx could
 // answer this, but nothing here consumes it.
@@ -216,6 +220,12 @@ void vm_drop_file_pages(void * p, size_t sz) {
     // next access refaults them from the file. The tensor was rebound onto its anon copy, so nothing
     // touches this range again — the drop just reclaims the double residency, it does not lose data.
     if (sz) madvise(p, sz, MADV_DONTNEED);
+}
+
+void vm_advise_random(void * p, size_t sz) {
+    // MADV_RANDOM disables readahead for the range: each fault maps exactly the page that faulted.
+    // Advice only, so a failure changes nothing but the readahead and is not worth reporting.
+    if (sz) madvise(p, sz, MADV_RANDOM);
 }
 
 bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * resident) {
