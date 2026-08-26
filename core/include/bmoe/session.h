@@ -95,6 +95,51 @@ struct GenerateRequest {
     bool render_text = true;
 };
 
+// Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token
+// sequence and no cell can fork onto its own trajectory — which is what makes the number a scale
+// rather than a coin flip. Comparing generated text instead does not work: measured on this
+// engine, capping one layer's routing to 1 expert of 8 left the greedy output byte-identical while
+// capping it to 7 changed it, because greedy only moves when a perturbation happens to cross an
+// argmax boundary, and whether it does is unrelated to how large the perturbation was.
+struct PplResult {
+    bool ok = false;
+    std::string error;
+    double nll = 0.0; // mean negative log-likelihood per scored token, in nats
+    double ppl = 0.0; // exp(nll)
+    int n_scored = 0; // tokens that contributed (the first `skip` and the last are not scored)
+    // Scored positions where the model's most likely token WAS the one that follows. Perplexity is
+    // the sensitive metric and this is the legible one: it says how often the model would have
+    // written the text itself, which a reader can picture without knowing what a nat is.
+    int n_top1 = 0;
+    int n_tokens = 0; // tokens in the text
+    double seconds = 0.0;
+    // What the routing policy actually did during the scoring pass. A lossy setting that reports
+    // 0 touched slots was inert, and the perplexity it produced is the baseline's — which is
+    // exactly how a measurement quietly says nothing.
+    long long experts_routed = 0;
+    long long experts_dropped = 0;
+};
+
+struct PplRequest {
+    std::string text;
+    // Tokens at the start of the text whose prediction is made from too little context to be
+    // informative. They are evaluated (the KV needs them) but not scored.
+    int skip = 8;
+    // Score with the routing policies armed as they are during DECODE. A perplexity pass is one
+    // wide batch, which the engine would otherwise label prefill — and the lossy routing policies
+    // are decode-only by default, so the measurement would run with the very policy it is meant
+    // to price switched off.
+    bool as_decode = true;
+    // Score one token per decode instead of the whole text in one batch. A wide batch routes
+    // every position of a layer before any of it is read, so the cache holds whatever the previous
+    // layers left and a policy that consults residency (dropping, substitution) barely fires: on a
+    // 2000 MiB budget it touched 1-3% of the slots it examined, against 30% and more in
+    // generation. Stepping reproduces the decode regime exactly — one token, a warm cache shaped
+    // by the previous tokens of the same text — at the cost of one decode per token. The first
+    // `skip` tokens are fed as one prefill batch, and are not scored either way.
+    bool step = false;
+};
+
 class Session {
 public:
     ~Session();
@@ -147,6 +192,9 @@ public:
     // flight — call it between generations (e.g. from an app's memory-pressure callback). A no-op
     // when the cache is off. The only way the budget moves after init sizes it.
     void set_cache_budget_mb(int mib);
+
+    // Score a fixed text under teacher forcing. Clears the KV; leaves no conversation state behind.
+    PplResult perplexity(const PplRequest & req);
 
 private:
     Session();

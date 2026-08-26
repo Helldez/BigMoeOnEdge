@@ -22,10 +22,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -472,6 +474,16 @@ static void print_usage(const char * argv0) {
         "                          F x (1/top-k) of the routing's weight. F in (0, 1]; 1.0 is the\n"
         "                          uniform share and the useful maximum. LOSSY and cache-dependent:\n"
         "                          it changes the output, and not reproducibly. Off by default.\n"
+        "      --ppl FILE          measure teacher-forced perplexity of FILE instead of generating.\n"
+        "                          Every cell scores the SAME fixed token sequence, so the number is\n"
+        "                          a scale: comparing GENERATED text cannot price a lossy setting,\n"
+        "                          because greedy output only moves when a perturbation happens to\n"
+        "                          cross an argmax boundary, whatever its size\n"
+        "      --ppl-skip N        leading tokens evaluated but not scored (default 8)\n"
+        "      --ppl-step          score one token per decode, so a cache-dependent policy (dropping,\n"
+        "                          substitution) is priced in the regime where it acts. A wide batch\n"
+        "                          routes a layer before reading any of it, and finds almost nothing\n"
+        "                          resident. Slower: one decode per token\n"
         "      --drop-no-renorm    do not rescale the surviving weights after a drop (A/B)\n"
         "      --drop-in-prefill   drop during prefill too (off: the cold cache makes it expensive)\n"
         "      --route-ahead N     EXPERIMENTAL, LOSSY: commit decode routing to the prediction made\n"
@@ -562,6 +574,9 @@ int main(int argc, char ** argv) {
     RunConfig cfg;
     std::string csv_path;
     std::string route_trace_path;
+    std::string ppl_path;
+    int ppl_skip = 8;
+    bool ppl_step = false;
     std::string compute_trace_path;
     std::string io_trace_path;
     bool session_mode = false;
@@ -692,6 +707,12 @@ int main(int argc, char ** argv) {
             cfg.moe.prefetch_sync = true;
         else if (a == "--drop-cold-experts")
             cfg.moe.drop_cold_frac = (float) std::atof(next("--drop-cold-experts"));
+        else if (a == "--ppl")
+            ppl_path = next("--ppl");
+        else if (a == "--ppl-skip")
+            ppl_skip = std::atoi(next("--ppl-skip"));
+        else if (a == "--ppl-step")
+            ppl_step = true;
         else if (a == "--drop-no-renorm")
             cfg.moe.drop_renorm = false;
         else if (a == "--drop-in-prefill")
@@ -795,6 +816,42 @@ int main(int argc, char ** argv) {
     // model loaded and the expert cache warm between them. Prompts arrive as JSON requests, not
     // via -p. This is a superset of --progress output (BMOE_* lines), so it never streams inline.
     if (session_mode) return run_session_loop(cfg, sink.get(), route_trace.get(), compute_trace.get(), io_trace.get());
+
+    // Perplexity mode: score a fixed text instead of generating one. It opens the same session
+    // with the same flags, so a lossy setting is priced under exactly the configuration it ships
+    // with — and every cell scores the same tokens, which is the whole point.
+    if (!ppl_path.empty()) {
+        std::ifstream tf(ppl_path, std::ios::binary);
+        if (!tf) {
+            std::fprintf(stderr, "bmoe: cannot open --ppl file '%s'\n", ppl_path.c_str());
+            return 2;
+        }
+        std::ostringstream ts;
+        ts << tf.rdbuf();
+        std::string error;
+        const SessionConfig sc = session_config_from(cfg);
+        std::unique_ptr<Session> session =
+            Session::open(sc, error, route_trace.get(), compute_trace.get(), io_trace.get());
+        if (!session) {
+            std::fprintf(stderr, "bmoe: %s\n", error.c_str());
+            return 1;
+        }
+        PplRequest pr;
+        pr.text = ts.str();
+        pr.skip = ppl_skip;
+        pr.step = ppl_step;
+        const PplResult pres = session->perplexity(pr);
+        if (!pres.ok) {
+            std::fprintf(stderr, "bmoe: perplexity failed: %s\n", pres.error.c_str());
+            return 1;
+        }
+        std::printf("ppl: %.4f  nll: %.5f  next-token hits: %d/%d (%.1f%%)  %.2f s\n", pres.ppl, pres.nll, pres.n_top1,
+                    pres.n_scored, pres.n_scored > 0 ? 100.0 * pres.n_top1 / pres.n_scored : 0.0, pres.seconds);
+        // Say what the policy did, always. A lossy flag that touched nothing scored the baseline,
+        // and a table of identical perplexities is the least obvious way to be told so.
+        std::printf("ppl-policy: %lld/%lld routed experts dropped\n", pres.experts_dropped, pres.experts_routed);
+        return 0;
+    }
 
     if (!cfg.progress) {
         std::printf("%s", cfg.prompt.c_str());

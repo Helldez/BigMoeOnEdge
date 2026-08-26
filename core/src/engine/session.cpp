@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -395,6 +396,140 @@ ThinkControl Session::think_control() const {
 void Session::set_cache_budget_mb(int mib) {
     impl_->source.set_cache_budget((size_t) std::max(0, mib) * 1024ull * 1024ull);
 }
+// Teacher-forced perplexity. See PplRequest for why the batch is labelled decode.
+PplResult Session::perplexity(const PplRequest & req) {
+    auto & im = *impl_;
+    PplResult r;
+    const auto t0 = clock_t_::now();
+    llama_context * ctx = im.ctx.get();
+
+    std::vector<llama_token> tokens(req.text.size() + 8);
+    int n = llama_tokenize(im.vocab, req.text.c_str(), (int) req.text.size(), tokens.data(), (int) tokens.size(),
+                           /*add_special*/ true, /*parse_special*/ false);
+    if (n < 0) {
+        tokens.resize(-n);
+        n = llama_tokenize(im.vocab, req.text.c_str(), (int) req.text.size(), tokens.data(), (int) tokens.size(), true,
+                           false);
+    }
+    if (n < 2) {
+        r.error = "text too short to score";
+        return r;
+    }
+    tokens.resize(n);
+    if (n > im.cfg.n_ctx) {
+        r.error =
+            "text of " + std::to_string(n) + " tokens exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) + ")";
+        return r;
+    }
+    r.n_tokens = n;
+
+    llama_memory_clear(llama_get_memory(ctx), true);
+    im.kv_tokens.clear();
+
+    // Warm-up graph, discarded. Both routing policies decide at the terminal node of each layer's
+    // weight chain, and which node that is gets LEARNED from the first graph of a run — so on a
+    // single-batch pass they would never fire at all, and every cell would score the baseline. One
+    // throwaway decode teaches the hook the shape; the scoring pass then runs with the policy live.
+    {
+        llama_batch warm = llama_batch_init(1, 0, 1);
+        batch_fill(warm, tokens.data(), 1, 0, false);
+        im.hook->set_batch_phase(req.as_decode ? 1 : 0);
+        const int rc = llama_decode(ctx, warm);
+        llama_batch_free(warm);
+        if (rc != 0) {
+            r.error = "warm-up decode failed";
+            return r;
+        }
+        llama_memory_clear(llama_get_memory(ctx), true);
+    }
+    const long long routed0 = im.hook->experts_routed();
+    const long long dropped0 = im.hook->experts_dropped();
+
+    // Logits at EVERY position, so one pass scores every token — llama_batch_get_one would ask for
+    // the last position only.
+    llama_batch b = llama_batch_init(im.cfg.n_batch, /*embd*/ 0, /*n_seq_max*/ 1);
+    struct BatchGuard {
+        llama_batch & b;
+        ~BatchGuard() { llama_batch_free(b); }
+    } guard{b};
+
+    double nll = 0.0;
+    int scored = 0, top1 = 0;
+    // Score the logits at row `row` of the last decode against the token at `pos + 1`.
+    auto score = [&](int row, int pos) -> bool {
+        const float * lg = llama_get_logits_ith(ctx, row);
+        if (!lg) {
+            r.error = "no logits at position " + std::to_string(pos);
+            return false;
+        }
+        // log softmax at the token that actually follows, in a numerically safe order.
+        float max = lg[0];
+        for (int v = 1; v < im.n_vocab; ++v)
+            if (lg[v] > max) max = lg[v];
+        double sum = 0.0;
+        for (int v = 0; v < im.n_vocab; ++v)
+            sum += std::exp((double) (lg[v] - max));
+        const double logp = (double) (lg[tokens[pos + 1]] - max) - std::log(sum);
+        nll -= logp;
+        ++scored;
+        if (argmax(lg, im.n_vocab) == tokens[pos + 1]) ++top1;
+        return true;
+    };
+
+    if (req.step) {
+        // The decode regime, token by token (see PplRequest::step). The unscored prefix goes in as
+        // one prefill batch — labelled as such, so a decode-only policy stays out of it exactly as
+        // it does in generation — and every scored position is its own one-token decode.
+        const int prefix = std::max(1, std::min(req.skip, n - 1));
+        batch_fill(b, tokens.data(), prefix, /*pos0*/ 0, /*all_logits*/ false);
+        im.hook->set_batch_phase(0);
+        if (llama_decode(ctx, b) != 0) {
+            r.error = "prefill decode failed";
+            return r;
+        }
+        for (int pos = prefix; pos + 1 < n; ++pos) {
+            batch_fill(b, tokens.data() + pos, 1, pos, /*all_logits*/ true);
+            im.hook->set_batch_phase(1);
+            if (llama_decode(ctx, b) != 0) {
+                r.error = "decode failed at position " + std::to_string(pos);
+                return r;
+            }
+            if (pos < req.skip) continue;
+            if (!score(0, pos)) return r;
+        }
+    } else {
+        for (int i = 0; i < n; i += im.cfg.n_batch) {
+            const int chunk = std::min(im.cfg.n_batch, n - i);
+            batch_fill(b, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ true);
+            im.hook->set_batch_phase(req.as_decode ? 1 : 0);
+            if (llama_decode(ctx, b) != 0) {
+                r.error = "decode failed at position " + std::to_string(i);
+                return r;
+            }
+            // Position p predicts token p+1, so the last token of the whole text is never scored
+            // and the last row of a chunk predicts the first token of the next one.
+            for (int j = 0; j < chunk; ++j) {
+                const int pos = i + j;
+                if (pos + 1 >= n || pos < req.skip) continue;
+                if (!score(j, pos)) return r;
+            }
+        }
+    }
+    if (scored == 0) {
+        r.error = "nothing scored — text shorter than skip + 1";
+        return r;
+    }
+    r.nll = nll / scored;
+    r.ppl = std::exp(r.nll);
+    r.n_scored = scored;
+    r.n_top1 = top1;
+    r.experts_routed = im.hook->experts_routed() - routed0;
+    r.experts_dropped = im.hook->experts_dropped() - dropped0;
+    r.seconds = secs(t0, clock_t_::now());
+    r.ok = true;
+    return r;
+}
+
 void Session::cancel() {
     impl_->cancel_requested.store(true, std::memory_order_relaxed);
 }
