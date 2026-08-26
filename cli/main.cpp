@@ -30,6 +30,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -490,6 +491,10 @@ static void print_usage(const char * argv0) {
         "                          substitution) is priced in the regime where it acts. A wide batch\n"
         "                          routes a layer before reading any of it, and finds almost nothing\n"
         "                          resident. Slower: one decode per token\n"
+        "      --ppl-list FILE     score every text named in FILE (one path per line) in one session,\n"
+        "                          so a benchmark of many short texts loads the model once\n"
+        "      --ppl-choices A,B   after the text, report the log-probability of each choice's first\n"
+        "                          token: the multiple-choice comparison, one pass per question\n"
         "      --drop-no-renorm    do not rescale the surviving weights after a drop (A/B)\n"
         "      --drop-in-prefill   drop during prefill too (off: the cold cache makes it expensive)\n"
         "      --route-ahead N     EXPERIMENTAL, LOSSY: commit decode routing to the prediction made\n"
@@ -583,6 +588,8 @@ int main(int argc, char ** argv) {
     std::string ppl_path;
     int ppl_skip = 8;
     bool ppl_step = false;
+    std::string ppl_list;                 // --ppl-list: one text path per line, scored in one session
+    std::vector<std::string> ppl_choices; // --ppl-choices: strings whose first-token log-prob is reported
     std::string compute_trace_path;
     std::string io_trace_path;
     bool session_mode = false;
@@ -721,7 +728,18 @@ int main(int argc, char ** argv) {
             ppl_skip = std::atoi(next("--ppl-skip"));
         else if (a == "--ppl-step")
             ppl_step = true;
-        else if (a == "--drop-no-renorm")
+        else if (a == "--ppl-list")
+            ppl_list = next("--ppl-list");
+        else if (a == "--ppl-choices") {
+            std::string cs = next("--ppl-choices");
+            size_t start = 0;
+            while (start <= cs.size()) {
+                const size_t comma = cs.find(',', start);
+                ppl_choices.push_back(cs.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+        } else if (a == "--drop-no-renorm")
             cfg.moe.drop_renorm = false;
         else if (a == "--drop-in-prefill")
             cfg.moe.drop_prefill = true;
@@ -828,14 +846,22 @@ int main(int argc, char ** argv) {
     // Perplexity mode: score a fixed text instead of generating one. It opens the same session
     // with the same flags, so a lossy setting is priced under exactly the configuration it ships
     // with — and every cell scores the same tokens, which is the whole point.
-    if (!ppl_path.empty()) {
-        std::ifstream tf(ppl_path, std::ios::binary);
-        if (!tf) {
-            std::fprintf(stderr, "bmoe: cannot open --ppl file '%s'\n", ppl_path.c_str());
-            return 2;
+    if (!ppl_path.empty() || !ppl_list.empty()) {
+        std::vector<std::string> paths;
+        if (!ppl_path.empty()) paths.push_back(ppl_path);
+        if (!ppl_list.empty()) {
+            std::ifstream lf(ppl_list);
+            if (!lf) {
+                std::fprintf(stderr, "bmoe: cannot open --ppl-list file '%s'\n", ppl_list.c_str());
+                return 2;
+            }
+            std::string line;
+            while (std::getline(lf, line)) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+                    line.pop_back();
+                if (!line.empty() && line[0] != '#') paths.push_back(line);
+            }
         }
-        std::ostringstream ts;
-        ts << tf.rdbuf();
         std::string error;
         const SessionConfig sc = session_config_from(cfg);
         std::unique_ptr<Session> session =
@@ -844,21 +870,40 @@ int main(int argc, char ** argv) {
             std::fprintf(stderr, "bmoe: %s\n", error.c_str());
             return 1;
         }
-        PplRequest pr;
-        pr.text = ts.str();
-        pr.skip = ppl_skip;
-        pr.step = ppl_step;
-        const PplResult pres = session->perplexity(pr);
-        if (!pres.ok) {
-            std::fprintf(stderr, "bmoe: perplexity failed: %s\n", pres.error.c_str());
-            return 1;
+        for (const std::string & path : paths) {
+            std::ifstream tf(path, std::ios::binary);
+            if (!tf) {
+                std::fprintf(stderr, "bmoe: cannot open --ppl file '%s'\n", path.c_str());
+                return 2;
+            }
+            std::ostringstream ts;
+            ts << tf.rdbuf();
+            PplRequest pr;
+            pr.text = ts.str();
+            pr.skip = ppl_skip;
+            pr.step = ppl_step;
+            pr.choices = ppl_choices;
+            const PplResult pres = session->perplexity(pr);
+            if (!pres.ok) {
+                std::fprintf(stderr, "bmoe: perplexity failed on '%s': %s\n", path.c_str(), pres.error.c_str());
+                return 1;
+            }
+            if (paths.size() > 1) std::printf("ppl-file: %s\n", path.c_str());
+            std::printf("ppl: %.4f  nll: %.5f  next-token hits: %d/%d (%.1f%%)  %.2f s\n", pres.ppl, pres.nll,
+                        pres.n_top1, pres.n_scored, pres.n_scored > 0 ? 100.0 * pres.n_top1 / pres.n_scored : 0.0,
+                        pres.seconds);
+            if (!pres.choice_logp.empty()) {
+                std::printf("ppl-choices:");
+                for (size_t k = 0; k < pres.choice_logp.size(); ++k)
+                    std::printf(" %s=%.4f", ppl_choices[k].c_str(), pres.choice_logp[k]);
+                std::printf("\n");
+            }
+            // Say what the policy did, always. A lossy flag that touched nothing scored the
+            // baseline, and a table of identical perplexities is the least obvious way to be told so.
+            std::printf("ppl-policy: %lld/%lld routed experts dropped, %lld/%lld reranked slots substituted\n",
+                        pres.experts_dropped, pres.experts_routed, pres.experts_substituted, pres.experts_reranked);
+            std::fflush(stdout);
         }
-        std::printf("ppl: %.4f  nll: %.5f  next-token hits: %d/%d (%.1f%%)  %.2f s\n", pres.ppl, pres.nll, pres.n_top1,
-                    pres.n_scored, pres.n_scored > 0 ? 100.0 * pres.n_top1 / pres.n_scored : 0.0, pres.seconds);
-        // Say what the policy did, always. A lossy flag that touched nothing scored the baseline,
-        // and a table of identical perplexities is the least obvious way to be told so.
-        std::printf("ppl-policy: %lld/%lld routed experts dropped, %lld/%lld reranked slots substituted\n",
-                    pres.experts_dropped, pres.experts_routed, pres.experts_substituted, pres.experts_reranked);
         return 0;
     }
 

@@ -457,6 +457,7 @@ PplResult Session::perplexity(const PplRequest & req) {
 
     double nll = 0.0;
     int scored = 0, top1 = 0;
+    int last_row = 0; // logits row of the text's final position, for the choices
     // Score the logits at row `row` of the last decode against the token at `pos + 1`.
     auto score = [&](int row, int pos) -> bool {
         const float * lg = llama_get_logits_ith(ctx, row);
@@ -489,14 +490,17 @@ PplResult Session::perplexity(const PplRequest & req) {
             r.error = "prefill decode failed";
             return r;
         }
-        for (int pos = prefix; pos + 1 < n; ++pos) {
+        // With choices the last token is fed too, so the final distribution exists.
+        const int last = req.choices.empty() ? n - 1 : n;
+        for (int pos = prefix; pos < last; ++pos) {
             batch_fill(b, tokens.data() + pos, 1, pos, /*all_logits*/ true);
             im.hook->set_batch_phase(1);
             if (llama_decode(ctx, b) != 0) {
                 r.error = "decode failed at position " + std::to_string(pos);
                 return r;
             }
-            if (pos < req.skip) continue;
+            last_row = 0;
+            if (pos < req.skip || pos + 1 >= n) continue;
             if (!score(0, pos)) return r;
         }
     } else {
@@ -515,13 +519,37 @@ PplResult Session::perplexity(const PplRequest & req) {
                 if (pos + 1 >= n || pos < req.skip) continue;
                 if (!score(j, pos)) return r;
             }
+            last_row = chunk - 1;
         }
     }
-    if (scored == 0) {
+    if (!req.choices.empty()) {
+        const float * lg = llama_get_logits_ith(ctx, last_row);
+        if (!lg) {
+            r.error = "no logits after the text";
+            return r;
+        }
+        float max = lg[0];
+        for (int v = 1; v < im.n_vocab; ++v)
+            if (lg[v] > max) max = lg[v];
+        double sum = 0.0;
+        for (int v = 0; v < im.n_vocab; ++v)
+            sum += std::exp((double) (lg[v] - max));
+        const double lse = (double) max + std::log(sum);
+        for (const std::string & c : req.choices) {
+            llama_token ct[8];
+            const int nc = llama_tokenize(im.vocab, c.c_str(), (int) c.size(), ct, 8, false, false);
+            if (nc < 1) {
+                r.error = "choice '" + c + "' does not tokenize";
+                return r;
+            }
+            r.choice_logp.push_back((double) lg[ct[0]] - lse);
+        }
+    }
+    if (scored == 0 && req.choices.empty()) {
         r.error = "nothing scored — text shorter than skip + 1";
         return r;
     }
-    r.nll = nll / scored;
+    r.nll = scored > 0 ? nll / scored : 0.0;
     r.ppl = std::exp(r.nll);
     r.n_scored = scored;
     r.n_top1 = top1;

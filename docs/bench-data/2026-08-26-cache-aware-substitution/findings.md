@@ -41,3 +41,17 @@ measurement the feature's first write-up was based on; the stepped table above s
 
 Both cells produced the same opening (a reasoning trace analysing the prompt); the text diverges
 after a few lines, as any routing change under greedy decoding does.
+
+## tinyMMLU (100 questions, zero-shot, `--ppl-step --ppl-choices " A, B, C, D"`, `-c 2048`)
+
+`scripts/tinymmlu-bench.py` on `tinyBenchmarks/tinyMMLU` (`data/test-00000-of-00001.parquet`).
+Per-question predictions and choice log-probabilities in `tinymmlu_L0.json` and
+`tinymmlu_L0.15.json`.
+
+| `--expert-substitute` | correct | substituted / reranked |
+|---|---:|---:|
+| off | 88 / 100 | 0 |
+| 0.15 | 84 / 100 | 27.9 % |
+
+94 identical predictions; lost 5 (high_school_statistics, professional_law,
+professional_accounting, elementary_mathematics, human_aging), won 1 (professional_law).

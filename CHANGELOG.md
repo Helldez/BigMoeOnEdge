@@ -54,8 +54,9 @@ Semantic Versioning.
   read from the tensor the graph itself sorted, which is exact for any gating function and alive at
   the callback by construction; the gate input is not (on Gemma 4 the allocator had recycled it),
   and a new gate cell caught that. Measured on the desktop on Qwen3.6-35B at `0.15`: 258 → 119 MiB
-  of flash per token, 2.37 → 3.84 tok/s, perplexity up 1 to 4 % on two held-out texts; `0.30`
-  costs 25 %, `0.60` destroys the model (perplexity 31) while its prose still reads well. Off by
+  of flash per token, 2.37 → 3.84 tok/s, perplexity up 1 to 4 % on two held-out texts and
+  tinyMMLU 88 → 84 of 100 (94 identical predictions); `0.30` costs 25 % in perplexity, `0.60`
+  destroys the model (perplexity 31) while its prose still reads well. Off by
   default, decode only, refused without a cache and outside `[0, 1]`. The run summary, the CSV
   (`experts_reranked`, `experts_substituted`, `substitute_lambda`) and the app's metrics view carry
   its actual bite. See [docs/cache-aware-substitution.md](docs/cache-aware-substitution.md).
@@ -67,6 +68,9 @@ Semantic Versioning.
   consults the cache barely fires there (1 to 3 % of the slots it examined, against 26 to 28 % in
   decode) and the number says nothing about it; stepping is the regime the policy acts in. Both
   policies report what they did (`ppl-policy:`), so an inert flag cannot pass unnoticed.
+  `--ppl-list FILE` scores many texts in one session and `--ppl-choices A,B,...` reports each
+  choice's log-probability after the text, which is what a multiple-choice benchmark compares;
+  `scripts/tinymmlu-bench.py` runs tinyMMLU on top of them, one cell per setting.
 - **"Prefer cached experts" in the app**, under Speed / quality → Experimental, as a percentage of
   the score range (10 to 30, default off, disabled with the cache off), with a warning from 20 % up.
   App 0.22.0 (versionCode 37).

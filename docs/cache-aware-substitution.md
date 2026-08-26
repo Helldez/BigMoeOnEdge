@@ -96,6 +96,28 @@ is 62 % faster, and perplexity rises 1 to 4 %. That is the band the paper report
 strongest single lever measured on this engine at that quality cost. At `0.30` the cost is 25 % and
 the win in bytes is no longer worth it.
 
+### A task, not only prose: tinyMMLU
+
+Perplexity on prose is the kindest metric a routing perturbation can face, so the same cells were
+run on [tinyMMLU](https://huggingface.co/datasets/tinyBenchmarks/tinyMMLU) (tinyBenchmarks,
+[arXiv:2402.14992](https://arxiv.org/abs/2402.14992)): 100 MMLU questions chosen so that accuracy
+on them estimates accuracy on the full 14k. Zero-shot, plain prompt, no chat template, no
+thinking; each question is one `--ppl-step --ppl-choices` pass, so the question and its options
+are decoded token by token under the policy and the answer is the letter with the highest
+log-probability at the end (`scripts/tinymmlu-bench.py`).
+
+| `L` | tinyMMLU | slots substituted |
+|---|---:|---:|
+| 0 (off) | 88 / 100 | 0 |
+| 0.15 | 84 / 100 | 27.9 % |
+
+94 of the 100 predictions are identical; 5 flip from right to wrong and 1 the other way. Four
+points on a 100-item set is at the edge of what the sample can resolve, and it is in the same
+direction as the perplexity. Read together: at `L = 0.15` the lever costs something measurable, and
+it is still the largest byte saving measured on this engine at that cost. The absolute score is
+below the model's published one (quantized, zero-shot, no reasoning); what the table measures is
+the difference between the two cells on the same questions, deterministically.
+
 ### The two negatives, kept on purpose
 
 - **`L = 0.60` destroys the model and the text does not show it.** Perplexity 31 against 4.2, the
@@ -136,5 +158,6 @@ behind them is worse.
 Every number above is from a desktop, where flash is a large share of a token. On the phone that
 share is between 15 % and 56 % depending on the model and the budget, so the throughput column will
 compress, and by how much is the device A/B this feature is owed before it earns a default or a
-place outside Experimental. Also owed: a task-level check (code, arithmetic) at `L = 0.15`, since
-perplexity on prose is the kindest metric a routing perturbation can face.
+place outside Experimental. Also owed: a generation-based task (code, or arithmetic with the
+answer checked) at `L = 0.15`, since tinyMMLU scores a single token after a teacher-forced prompt
+and a long generation compounds the perturbation.

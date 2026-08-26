@@ -21,6 +21,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace bmoe {
 
@@ -112,6 +113,11 @@ struct PplResult {
     // written the text itself, which a reader can picture without knowing what a nat is.
     int n_top1 = 0;
     int n_tokens = 0; // tokens in the text
+    // Log-probability of each PplRequest::choices entry (its first token) at the position after
+    // the whole text, in the request's order. Empty unless choices were given. This is what a
+    // multiple-choice benchmark compares: the text is the question with its options, and the
+    // choices are the answer letters.
+    std::vector<double> choice_logp;
     double seconds = 0.0;
     // What the routing policy actually did during the scoring pass. A lossy setting that reports
     // 0 touched slots was inert, and the perplexity it produced is the baseline's — which is
@@ -140,6 +146,10 @@ struct PplRequest {
     // by the previous tokens of the same text — at the cost of one decode per token. The first
     // `skip` tokens are fed as one prefill batch, and are not scored either way.
     bool step = false;
+    // Strings whose first token's log-probability is reported at the end of the text. The text is
+    // fed in full (its last token too), so the reported distribution is the one a generation
+    // would sample its first token from.
+    std::vector<std::string> choices;
 };
 
 class Session {
