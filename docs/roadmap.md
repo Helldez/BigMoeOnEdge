@@ -10,6 +10,24 @@ So the streaming path has already recovered most of what streaming can recover, 
 below are ordered by that fact: read bandwidth still matters for the models that do not fit a
 useful cache, but throughput on the ones that do now depends on compute.
 
+## Prefill, and the half of the run nobody measured
+
+Every lever on this page was chosen, built and judged against decode. Prefill got the defaults:
+`n_batch = n_ctx`, `--ubatch 512` in the app, dropping armed for generation only. Nothing here was
+ever sized against it.
+
+That is a gap in the product, not only in the docs. What a user waits for is
+`load_seconds + prefill_seconds`, and on a >RAM MoE the second term runs in minutes: a 1334 token
+prompt on Qwen3.6-35B-A3B measured 11.4 tok/s on the reference device, roughly two minutes before
+the first token appears. A run that then generates at 5 tok/s spends most of its wall clock before
+it has said anything.
+
+The goal of this theme is to make that number small. The first obligation is to be able to state it
+honestly, and today the engine cannot: `Metrics` carries `prefill_seconds` and `n_prompt`, but the
+stall and byte counters that separate compute from flash are per decode token, so prefill's cost is
+unattributed. The two figures the repo does hold disagree about which of the two binds, and until
+that is settled no lever here deserves to be picked.
+
 ## Read bandwidth — measured, and mostly not the lever it looked like
 
 This section used to open by asserting that effective O_DIRECT bandwidth sits well below the
