@@ -249,6 +249,11 @@ class RunService : Service() {
             val nPast = o.optInt("n_past", -1)
             val avgComputeMs = o.optDouble("compute_s_tok", -0.001) * 1000.0
             val avgMgmtMs = o.optDouble("mgmt_s_tok", -0.001) * 1000.0
+            // The measured flash terms for the summary panel — serial reads io, overlap reads
+            // stall — so end-of-run attribution uses the same measured numbers the live panel
+            // does instead of inverting the clamped compute residual (issue #98).
+            val avgIoMs = o.optDouble("io_s_tok", -0.001) * 1000.0
+            val avgStallMs = o.optDouble("stall_s_tok", -0.001) * 1000.0
             val prefillTps = o.optDouble("prefill_tps", -1.0)
             val loadS = o.optDouble("load_s", -1.0)
             val readMib = o.optDouble("read_mib", -1.0)
@@ -319,7 +324,7 @@ class RunService : Service() {
             }
             val tel = telemetry.current.copy(
                 avgTokensPerSecond = tokS, avgComputeMs = avgComputeMs,
-                avgMgmtMs = avgMgmtMs,
+                avgMgmtMs = avgMgmtMs, avgIoMs = avgIoMs, avgStallMs = avgStallMs,
                 prefillTps = prefillTps, ttftS = ttft, readMib = readMib,
                 cacheResidentMib = cacheResidentMib, cacheBudgetMib = cacheBudgetMib,
                 avgMajfltPerTok = majfltPerTok, avgCpuSPerTok = cpuSPerTok,

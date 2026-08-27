@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.23.0] - 2026-08-27
+
+### Changed
+- **Telemetry attribution stops calling unmeasured runtime "compute".** Overlap `stall` is now the
+  **union of stalled intervals** — the cumulative wall time during which at least one compute thread
+  was blocked on a streamed expert — instead of the summed per-thread block time divided by the
+  thread count, a mean that understated the stall whenever a minority of threads did the waiting and
+  quietly dumped the difference into the `compute_ms` residual. The residual `compute_ms` /
+  `compute_s_tok` fields keep their existing meaning for protocol compatibility. The app panel now
+  draws four bars — compute (process CPU time over the compute threads, an attribution proxy),
+  flash wait (measured `io`/`stall`, in the end-of-run summary too: `io_s_tok`/`stall_s_tok` instead
+  of inverting the clamped residual), cache mgmt, and **unattributed** (the off-CPU wall time — zram,
+  preemption, faults — the residual used to absorb).
+- **Compatibility note:** under `--overlap`, `stall_ms` and `stall_s_tok` changed meaning — they are
+  the critical-path union now — so these columns are **not comparable with CSVs produced by older
+  releases**; compare them only within one engine version. Fixes #98.
+
 ## [0.21.0] - 2026-08-25
 
 ### Added

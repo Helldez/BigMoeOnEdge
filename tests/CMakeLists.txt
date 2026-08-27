@@ -42,6 +42,13 @@ add_executable(bmoe_ngram_test ngram_test.cpp)
 target_link_libraries(bmoe_ngram_test PRIVATE bmoe_core)
 add_test(NAME ngram_draft COMMAND bmoe_ngram_test)
 
+# The interval-union stall clock. Injected timestamps, no wall clock, so overlap/nesting/
+# separation and the open-interval snapshot rule are verified exactly (issue #98).
+add_executable(bmoe_stall_union_test stall_union_test.cpp)
+target_link_libraries(bmoe_stall_union_test PRIVATE bmoe_core)
+target_include_directories(bmoe_stall_union_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
+add_test(NAME stall_union COMMAND bmoe_stall_union_test)
+
 find_program(PYTHON3 NAMES python3 python)
 
 if(PYTHON3)

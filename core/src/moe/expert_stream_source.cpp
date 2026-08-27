@@ -214,7 +214,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         async_gen_.store(0);
         cur_il_.store(-1);
         fatal_.store(false);
-        stall_ns_.store(0);
+        stall_union_.reset();
         batch_flag_gen_ = 0;
         staged_.reserve(n_expert_);
         texp_.clear();
@@ -1305,15 +1305,17 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
     const uint32_t want = async_gen_.load(std::memory_order_relaxed);
     if (ready_[idx].gen.load(std::memory_order_acquire) == want) return; // already resident
 
-    const auto t0 = clock_t_::now();
+    // The stall interval opens the moment the need is unmet — before the spin, since the spin is
+    // already waiting — and closes on whichever exit this thread takes. Union accounting, not a
+    // per-thread sum: see StallUnion.
+    stall_union_.enter();
     // Short spin first: a slice usually lands within microseconds, cheaper than a syscall. The
     // beat is a pause instruction, not yield() — 2048 yields burnt up to a millisecond of
     // sched_yield churn per genuinely slow slice, stealing CPU from the I/O lanes and the
     // sibling compute threads that would have finished the slice sooner.
     for (int s = 0; s < 256; ++s) {
         if (ready_[idx].gen.load(std::memory_order_acquire) == want || fatal_.load(std::memory_order_acquire)) {
-            stall_ns_.fetch_add(
-                (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
+            stall_union_.exit();
             return;
         }
         cpu_relax();
@@ -1331,7 +1333,7 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
         });
     }
     ready_waiters_.fetch_sub(1, std::memory_order_seq_cst);
-    stall_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
+    stall_union_.exit();
 }
 
 void ExpertStreamSource::enable_overlap_hook() {
@@ -1360,7 +1362,7 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.cache_hits = chits_;
     s.cache_lookups = clookups_;
     s.cache_resident_bytes = (uint64_t) cresident_;
-    s.stall_seconds = stall_ns_.load() / 1e9;
+    s.stall_seconds = stall_union_.total_ns() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
     s.evictions = evictions_;

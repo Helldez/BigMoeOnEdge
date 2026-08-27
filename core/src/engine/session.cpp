@@ -98,7 +98,6 @@ llama_token argmax(const float * logits, int n_vocab) {
 struct GenTally {
     // Fixed for the run; kept here so record() needs only the token's own measurements.
     bool overlap = false;
-    int n_threads = 1;
 
     long long prev_bytes = 0;
     double prev_io_s = 0.0;
@@ -163,7 +162,11 @@ struct GenTally {
         m.io_ms = (st->read_seconds - prev_io_s) * 1000.0;
         m.mgmt_ms = (st->mgmt_seconds - prev_mgmt_s) * 1000.0;
         if (overlap) {
-            m.stall_ms = (st->stall_seconds - prev_stall_s) * 1000.0 / n_threads;
+            // stall is already wall-additive (the union of stalled intervals), so no thread-count
+            // normalization: dividing summed thread time by n_threads was a mean that understated
+            // the stall whenever a minority of threads did the waiting, and the difference quietly
+            // became "compute".
+            m.stall_ms = (st->stall_seconds - prev_stall_s) * 1000.0;
             m.compute_ms = m.wall_ms - m.stall_ms - m.mgmt_ms;
         } else {
             m.compute_ms = m.wall_ms - m.io_ms - m.mgmt_ms;
@@ -1143,7 +1146,6 @@ RunResult Session::generate(const GenerateRequest & req,
     // counters carry the prior prompts' totals; the deltas make each prompt self-relative.
     GenTally tally;
     tally.overlap = moe.overlap;
-    tally.n_threads = im.cfg.n_threads;
     if (moe.enabled) {
         const IExpertSource::Stats st0 = im.source.stats();
         tally.prev_bytes = (long long) st0.read_bytes;

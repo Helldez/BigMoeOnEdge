@@ -17,6 +17,7 @@
 #include "bmoe/expert_source.h"
 #include "bmoe/config.h"
 #include "bmoe/decode_trace.h"
+#include "stall_union.h"
 #include "bmoe/recipe.h"
 #include "../io/platform_io.h"
 #include "../io/file_reader.h"
@@ -342,7 +343,10 @@ private:
     // re-check a predicate that was almost never its own. Registration and publication are both
     // seq_cst so the two cannot miss each other — see on_expert_ready.
     std::atomic<int> ready_waiters_{0};
-    std::atomic<long long> stall_ns_{0}; // summed across all stalling compute threads
+    // Overlap stall as the UNION of stalled-thread wall intervals (see stall_union.h),
+    // not the sum of per-thread waits: one blocked thread already means the graph is not
+    // progressing, and sum/n_threads understates whenever a minority of threads waits.
+    StallUnion stall_union_;
     // expert tensor* -> (il<<8)|p. Sorted by pointer and static after init, and probed by every
     // compute thread for every routed expert — a flat binary search beats hashing the pointer.
     std::vector<std::pair<const void *, uint32_t>> texp_;
