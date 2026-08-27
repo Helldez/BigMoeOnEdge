@@ -6,6 +6,17 @@ Semantic Versioning.
 
 ## [0.23.0] - 2026-08-27
 
+### Added
+- **Community benchmarks.** `scripts/bench-report.sh MODEL.gguf` runs the fixed README protocol on
+  any Linux/macOS host (256 greedy tokens, the reference prompt, auto cache, 4 lanes, overlap,
+  dense weights out of the page cache), records CPU / RAM / drive and the drive's measured
+  O_DIRECT rate at 512 KiB requests from the model file itself, and prints the two markdown tables
+  a report needs, every column read from the CSV `# summary` trailer by name. A `benchmark-report`
+  issue form collects them and [docs/community-benchmarks.md](docs/community-benchmarks.md) holds
+  the protocol, the hardware wanted and the results table, seeded with the README rows. Any
+  supported MoE in any quantization is a row; the catalog models are listed as the ones that line
+  up with the README, not as a requirement.
+
 ### Changed
 - **Telemetry attribution stops calling unmeasured runtime "compute".** Overlap `stall` is now the
   **union of stalled intervals** — the cumulative wall time during which at least one compute thread

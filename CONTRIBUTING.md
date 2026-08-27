@@ -23,6 +23,10 @@ cd build && ctest --output-on-failure
 
 ## Good first contributions
 
+- **A benchmark on hardware we do not have.** No code needed: `scripts/bench-report.sh MODEL.gguf`
+  runs the fixed protocol and prints the tables; open a
+  [benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
+  See `docs/community-benchmarks.md` for the hardware list and what a row needs.
 - A new MoE architecture recipe + its gate (`docs/adding-a-model.md`).
 - Read coalescing / expert-contiguous layout experiments (see `docs/roadmap.md`).
 
