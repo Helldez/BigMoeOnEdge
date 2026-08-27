@@ -1,0 +1,139 @@
+# Builds bmoe-cli for desktop hosts when a release is published and attaches the archives to it,
+# so a benchmark contributor can download one file and run scripts/bench-report.sh without a
+# toolchain (docs/community-benchmarks.md). Same clean-checkout rule as release-apk.yml: nothing
+# from a developer machine rides into a published artifact.
+#
+# Portability over speed: GGML_NATIVE=OFF so the binary is not tuned to the runner's CPU. The
+# x86_64 builds assume AVX2 (every desktop CPU since 2013, every N100/Ryzen mini PC); aarch64
+# assumes armv8.2-a with dotprod and fp16, the same floor the Android build uses. Anything older
+# builds from source in one command, and the archive's README says so.
+name: release-host
+
+on:
+  release:
+    types: [published]
+  # A PR that edits this workflow builds all four targets as workflow artifacts: the dry run.
+  pull_request:
+    paths: ['.github/workflows/release-host.yml']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (or any ref) to build; assets are named after it"
+        required: true
+      upload:
+        description: "Attach to the release (true) or keep as workflow artifacts (false, a dry run)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x86_64
+            cmake_extra: -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+          - os: ubuntu-22.04-arm
+            target: linux-aarch64
+            cmake_extra: -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16
+          - os: macos-14
+            target: macos-arm64
+            cmake_extra: ""
+          - os: windows-latest
+            target: windows-x86_64
+            cmake_extra: -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          # `tag` names the archives; `ref` is what gets checked out. On a PR the ref stays empty,
+          # which actions/checkout reads as "this PR's merge commit".
+          case "${{ github.event_name }}" in
+            release)           T="${{ github.event.release.tag_name }}"; R="$T" ;;
+            workflow_dispatch) T="${{ inputs.tag }}"; R="$T" ;;
+            *)                 T="pr-${{ github.event.pull_request.number }}"; R="" ;;
+          esac
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
+          echo "ref=$R" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          submodules: recursive
+
+      - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      # Static: one file to download, no libggml/libllama next to it to get wrong.
+      - name: Configure & build
+        shell: bash
+        run: |
+          GEN=""
+          if [ "${{ runner.os }}" != "Windows" ]; then GEN="-G Ninja"; fi
+          cmake -S . -B build $GEN \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBMOE_BUILD_TESTS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DGGML_OPENMP=OFF \
+            -DLLAMA_CURL=OFF \
+            ${{ matrix.cmake_extra }}
+          cmake --build build --config Release -j --target bmoe-cli
+
+      - name: Package
+        id: pkg
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          NAME="bmoe-cli-$TAG-${{ matrix.target }}"
+          mkdir -p "$NAME"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp build/cli/Release/bmoe-cli.exe "$NAME/"
+          else
+            cp build/cli/bmoe-cli "$NAME/"
+            strip "$NAME/bmoe-cli" || true
+          fi
+          cp LICENSE "$NAME/"
+          cat > "$NAME/README.txt" <<EOF
+          bmoe-cli $TAG, ${{ matrix.target }} (portable build: x86_64 assumes AVX2, aarch64 assumes
+          armv8.2-a+dotprod+fp16). If it fails to start on your CPU, build from source:
+          scripts/build-host.sh in the repository, one command.
+
+          Benchmark on this machine, printing the tables for a benchmark-report issue:
+            BMOE_CLI=\$PWD/bmoe-cli scripts/bench-report.sh /path/to/model.gguf
+          from a checkout of https://github.com/Helldez/BigMoeOnEdge (docs/community-benchmarks.md).
+          EOF
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "$NAME.zip" "$NAME" > /dev/null
+            echo "asset=$NAME.zip" >> "$GITHUB_OUTPUT"
+          else
+            tar czf "$NAME.tar.gz" "$NAME"
+            echo "asset=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The binary must at least start on the runner it was built on.
+      - name: Smoke
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then build/cli/Release/bmoe-cli.exe --version; else build/cli/bmoe-cli --version; fi
+
+      - name: Upload asset to the release
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ steps.tag.outputs.tag }}" "${{ steps.pkg.outputs.asset }}" --clobber
+
+      - name: Keep as workflow artifact (dry run)
+        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.upload)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.asset }}
+          path: ${{ steps.pkg.outputs.asset }}

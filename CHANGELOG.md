@@ -16,6 +16,11 @@ Semantic Versioning.
   the protocol, the hardware wanted and the results table, seeded with the README rows. Any
   supported MoE in any quantization is a row; the catalog models are listed as the ones that line
   up with the README, not as a requirement.
+- **Prebuilt `bmoe-cli` on every release.** A `release-host` workflow builds a static, portable
+  CLI for Linux x86_64 / aarch64, macOS arm64 and Windows x86_64 from a clean checkout of the tag
+  and attaches the archives to the release, so a benchmark contributor downloads one file and runs
+  `BMOE_CLI=... scripts/bench-report.sh` with no toolchain. Portability over speed: `GGML_NATIVE=OFF`,
+  x86_64 assumes AVX2, aarch64 assumes armv8.2-a+dotprod+fp16; anything older builds from source.
 
 ### Changed
 - **Telemetry attribution stops calling unmeasured runtime "compute".** Overlap `stall` is now the

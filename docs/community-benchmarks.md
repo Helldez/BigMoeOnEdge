@@ -33,6 +33,17 @@ cd BigMoeOnEdge
 scripts/bench-report.sh /path/to/any-moe-model.gguf
 ```
 
+No toolchain? Each release attaches a prebuilt `bmoe-cli` for Linux x86_64 / aarch64, macOS arm64
+and Windows x86_64 (`bmoe-cli-<tag>-<target>.tar.gz` / `.zip`). Unpack it and point the script at
+it instead of building:
+
+```bash
+BMOE_CLI=/path/to/bmoe-cli scripts/bench-report.sh /path/to/any-moe-model.gguf
+```
+
+The x86_64 binaries assume AVX2 and the aarch64 one armv8.2-a with dotprod; if the binary does not
+start on your CPU, drop `BMOE_CLI=` and the script builds from source.
+
 The script builds the CLI if needed, records CPU / RAM / drive, measures the drive's O_DIRECT
 read rate at 512 KiB requests **from the model file itself** (the request size the expert stream
 issues), runs the protocol and prints two markdown tables ready to paste. Defaults:
