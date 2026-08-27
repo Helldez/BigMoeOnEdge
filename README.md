@@ -336,6 +336,21 @@ Anything not measured is named as unmeasured. That is the rule the roadmap's
 [recorded negative results](docs/roadmap.md) exist to enforce: a simulation that predicted a win and
 a device that then delivered a 30% loss is why nothing here is published on an argument alone.
 
+### Measure it on your hardware
+
+Every row above comes from one phone and one laptop. NVMe mini PCs, ARM boards with a PCIe slot,
+other phones and unified-memory desktops are the machines we have not measured, and on Linux or
+macOS one command runs the fixed protocol on any supported MoE, in any quant, and prints the
+tables to paste into a
+[benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml):
+
+```bash
+scripts/bench-report.sh /path/to/any-moe-model.gguf
+```
+
+Accepted rows land in [docs/community-benchmarks.md](docs/community-benchmarks.md) with your name,
+next to the stall, cache-hit and flash-per-token columns that make a tok/s figure comparable.
+
 ## Quickstart
 
 ### Host (Linux, macOS, Windows)
@@ -426,6 +441,8 @@ or reproduce the measurements. Most-wanted entry points:
 - [docs/adding-a-model.md](docs/adding-a-model.md): supporting a new MoE architecture.
 - [docs/benchmarks.md](docs/benchmarks.md): measured results and
   [how they were produced](docs/benchmark-method.md).
+- [docs/community-benchmarks.md](docs/community-benchmarks.md): results on hardware we do not own,
+  and how to add yours.
 - [docs/telemetry.md](docs/telemetry.md): the per-token line protocol, the CSV schema and the traces.
 - [docs/android-memory.md](docs/android-memory.md): what reclaims the engine's memory on a phone.
 

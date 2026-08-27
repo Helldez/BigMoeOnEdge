@@ -1,0 +1,71 @@
+name: Benchmark report
+description: Share a measured run of the engine on your hardware (phone, SBC, mini PC, laptop, desktop).
+title: "[bench] <hardware> / <model>"
+labels: ["benchmark"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for measuring. The protocol and the results table are in
+        [docs/community-benchmarks.md](../blob/main/docs/community-benchmarks.md). On Linux/macOS,
+        `scripts/bench-report.sh MODEL.gguf` runs the fixed protocol and prints the two tables below
+        for you; on Android use the app's telemetry panel or the CSV from `scripts/bench-run.sh`.
+        Every accepted row lands in the table with your GitHub handle.
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: Device or board, CPU, RAM, storage. Phones as a class is fine ("12 GB, UFS 4.x phone").
+      placeholder: "Mini PC, Intel N100 4C, 16 GB LPDDR5-4800, NVMe PCIe 3.0 x4 (WD SN770 1 TB)"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / kernel
+      placeholder: "Ubuntu 24.04, Linux 6.8"
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and quantization
+      description: Any MoE the engine supports (`bmoe-cli --list-archs`), in any quant. Name, quant, file size, and where it came from.
+      placeholder: "Qwen3.6-35B-A3B Q4_K_M, 22.3 GB, bartowski/Qwen_Qwen3.6-35B-A3B-GGUF"
+    validations:
+      required: true
+  - type: input
+    id: engine
+    attributes:
+      label: Engine version or commit
+      placeholder: "0.21.0 (release APK)" or "7ad04fa"
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: Measured result
+      description: |
+        Paste the block `scripts/bench-report.sh` prints (both tables), or the `=== perf ===` lines
+        plus the `# summary` trailer of the CSV. tok/s alone is not enough: stall, cache hit and
+        flash/token are what make the number comparable.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command
+      description: If you changed anything from the script's defaults (threads, cache, lanes, extra flags), say so here.
+      render: shell
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything unusual
+      description: Thermal throttling, other load on the machine, storage rate lower than expected, build problems on your platform.
+  - type: checkboxes
+    id: attach
+    attributes:
+      label: Raw data
+      options:
+        - label: I attached the CSV the run wrote (drag it into the issue). Optional, but it lets the row be checked.
