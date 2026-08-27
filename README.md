@@ -36,7 +36,17 @@ files Hugging Face ships, with no merge step and no PC in the loop.
 <p align="center"><em>DeepSeek V4 Flash 0731: 284B parameters, ~91 GB on disk, on a 12 GB phone.
 0.94 tok/s in the demo app, real time.</em></p>
 
-It is not one model, either. Below: three of them, one after another on the same phone, each past
+The newest thing it can do: **Qwen3.8-Flash-Next**, the Qwen4 architecture preview, a
+125B-parameter MoE (~82 GB on disk at 3-bit expert quantization), generating on the same 12 GB
+phone at about **2 tok/s**, the evening it was released and before llama.cpp itself had merged
+support for it. A third of that file is a 51B-parameter n-gram embedding table that never leaves
+flash: the engine holds it back on its own and reads the sixteen rows each token asks for.
+
+<p align="center"><img src="docs/assets/hero-qwen38.gif" width="360" alt="Qwen3.8-Flash-Next (125B, ~82 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
+<p align="center"><em>Qwen3.8-Flash-Next: 125B parameters, ~82 GB on disk, on a 12 GB phone.
+2.03 tok/s in the demo app, real time.</em></p>
+
+It is not one model, either. Below: three more, one after another on the same phone, each past
 what it should be able to hold.
 
 https://github.com/user-attachments/assets/f899b93f-c7c4-4ce9-9fb0-5ed1bae13761
@@ -95,10 +105,10 @@ shortcut: the downloader takes any direct gguf URL, so any model from the
 finishes, pick the model and chat. The telemetry panel shows tok/s and the compute-vs-flash
 split live, and every streaming knob below is in Settings.
 
-Models above Hugging Face's 50 GB per-file limit (gpt-oss-120b, DeepSeek V4 Flash 0731) ship as
-multi-shard ggufs, and both are in the catalog: the app fetches the shards one after another,
-resumable, under a single progress bar. The engine reads a split set natively, so there is no merge
-step anywhere. Outside the catalog the rule is the same: put the shards in one directory and point
+Models above Hugging Face's 50 GB per-file limit (gpt-oss-120b, DeepSeek V4 Flash 0731,
+Qwen3.8-Flash-Next) ship as multi-shard ggufs, and all three are in the catalog: the app fetches
+the shards one after another, resumable, under a single progress bar. The engine reads a split set
+natively, so there is no merge step anywhere. Outside the catalog the rule is the same: put the shards in one directory and point
 at the first (`-00001-of-...`).
 
 ## Features
@@ -174,7 +184,7 @@ Defaults are the measured winning recipe for a model near RAM.
 | `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
 | `deepseek4` | DeepSeek V4 Flash (284B-A13B), validated on the 0731 release | V3.2-style routing (256 experts + shared); compressed attention is dense-side; ships multi-shard |
 | `bailingmoe3` | Ling 3.0 (e.g. Ling-3.0-flash, 127B-A5B) | 512 routed experts + shared, biased top-k; hybrid KDA/MLA attention is dense-side |
-| `qwen4exp` | Qwen3.8-Flash-Next (125B-A6B), the Qwen4 architecture preview | 512 routed experts + shared; a 51B n-gram embedding table stays mmap'd (see limitations). Registry row and gates only, not yet run on device; pinned to the upstream PR until it merges |
+| `qwen4exp` | Qwen3.8-Flash-Next (125B-A6B), the Qwen4 architecture preview | 512 routed experts + shared; a 51B n-gram embedding table stays mmap'd (see limitations). Runs on the 12 GB test phone at ~2 tok/s with pinned dense weights; pinned to the upstream PR until it merges |
 
 Adding an architecture is one row in the registry; expert counts and layouts are discovered from
 the model file at runtime, so nothing about a specific model is hardcoded in the streaming path.

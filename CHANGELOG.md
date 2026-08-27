@@ -21,7 +21,8 @@ Semantic Versioning.
   4.3 GB dense side is walked every token. Pinned dense weights are a requirement here, not a
   tuning: `anon` swaps 6 GB to zram and stalls for 12-20 s on single tokens, `mmap` refaults the
   whole dense set every token (0.05 tok/s). Listed in the app catalog as a three-shard download
-  (~82 GB on disk).
+  (~82 GB on disk). The README hero clip is a later in-app run of the same file: 2.03 tok/s over
+  a 72-token answer, cache 1000 MiB, cold experts dropped at 100 %, 54 % cache hit, real time.
 - **Engine reports 0.22.0.** `project(VERSION)` in `CMakeLists.txt` is moved with the app version
   this time, so no metrics CSV from this release names the previous engine.
 - **Dense tensors larger than available memory stay mmap'd.** The dense policy assumed the
