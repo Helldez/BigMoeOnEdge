@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.22.0] - 2026-08-26
+## [0.22.0] - 2026-08-28
 
 ### Added
 - **Qwen3.8-Flash-Next (`qwen4exp`) recipe.** The Qwen4 architecture preview (125B total, ~6B
@@ -35,12 +35,14 @@ Semantic Versioning.
   reads the same 1785 MiB into the same 613 buffers as before.
 
 ### Changed
-- **llama.cpp submodule bumped** to `035e22731`, the head of upstream PR
+- **llama.cpp submodule bumped** to upstream `4e97ac8` (tag `b10666`), the first master with
   [ggml-org/llama.cpp#27742](https://github.com/ggml-org/llama.cpp/pull/27742) (Qwen3.8-Flash-Next
-  support), with the expert-ready hook cherry-picked on top, still a single-commit delta. The pin
-  is provisional: that PR is not merged, so when it lands the hook is re-applied onto master and
-  the pin moves again. Byte-identity gates pass on the new base and, unlike the previous bump,
-  nothing on our side needed adapting. App version 0.22.0 (versionCode 37).
+  support) merged, with the expert-ready hook rebased on top, still a single-commit delta over
+  stock upstream. The recipe was written against the PR head and needed nothing changed for the
+  merged form: same `qwen4exp` architecture string, same expert suffixes, same
+  `per_layer_token_embd` tensor, and the Unsloth ggufs the catalog points at are the files
+  converted on release day. Byte-identity gates pass on the new base. App version 0.22.0
+  (versionCode 37).
 - **Telemetry attribution stops calling unmeasured runtime "compute".** Overlap `stall` is now the
   **union of stalled intervals** — the cumulative wall time during which at least one compute thread
   was blocked on a streamed expert — instead of the summed per-thread block time divided by the
