@@ -95,8 +95,12 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // had already happened.
         if (cfg.dense_weights == DenseWeightsMode::Anonymous || cfg.dense_weights == DenseWeightsMode::Pinned) {
             uint64_t dense_pending = 0;
+            // The same rule dense_.init applies below: a tensor larger than what is available is
+            // never converted, it stays mmap'd (qwen4exp's ~28.8 GB n-gram table). Counting it here
+            // would reserve the whole of RAM for a conversion that will not happen and size the
+            // cache to nothing.
             for (const DenseTensorRef & d : dense_tensors_)
-                if (d.tensor) dense_pending += d.size;
+                if (d.tensor && d.size <= avail) dense_pending += d.size;
             const uint64_t deduct = std::min(avail, dense_pending);
             if (deduct > 0) {
                 avail -= deduct;
