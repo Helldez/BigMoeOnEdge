@@ -50,6 +50,16 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   faster loaded resident, and the registry rows are about coverage, not a recommendation.
 - **Repack must stay off.** Loading uses `use_extra_bufts=false`; you cannot combine
   streaming with weight repacking.
+- **macOS does not bypass the page cache, and the telemetry does not say so.** Apple has no
+  `O_DIRECT`; `platform_io` compiles it away to `0`, and the `fcntl(F_NOCACHE)` equivalent is not
+  called, so expert reads on a Mac go through the page cache the whole design exists to avoid.
+  Worse, `o_direct` in the metrics records the requested configuration rather than what the open
+  actually did, so a macOS run reports `o_direct=1` while running buffered. macOS builds and
+  produces correct output; its cache-hit and flash-per-token columns are not comparable with a
+  Linux or Android row until this is fixed.
+- **No iOS target.** The core is portable C++ and the streaming path has no Android dependency, but
+  there is no Xcode project here and iOS does not run command-line binaries, so there is no
+  supported way to run or benchmark the engine on an iPhone or iPad.
 - **Windows throughput.** The cache's reserve-then-commit-per-slice path is heavier on
   Windows than the POSIX lazy-commit path. The gates run on Windows; the throughput
   targets are stated for Android/Linux.

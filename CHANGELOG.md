@@ -85,6 +85,27 @@ Semantic Versioning.
 - **Compatibility note:** under `--overlap`, `stall_ms` and `stall_s_tok` changed meaning — they are
   the critical-path union now — so these columns are **not comparable with CSVs produced by older
   releases**; compare them only within one engine version. Fixes #98.
+- **The benchmark docs are a guide now, not a lab notebook.**
+  [`community-benchmarks.md`](docs/community-benchmarks.md) opens with a "start here" for the three
+  cases a contributor is actually in — PC or laptop, Android phone, Apple hardware — each with the
+  command and what to paste back, plus the settings-override table that used to be one buried
+  sentence and an explicit adb protocol for phones. "Hardware we want to see" moved to the end and
+  became open questions: as the second section it read as a shopping list, when the point is that
+  any hardware is a useful row. [`benchmark-method.md`](docs/benchmark-method.md) drops the
+  reference device from its opening (named once at the end, as the provenance of the published
+  numbers) and gains the section it was missing: what each knob does, when to move it, and which
+  telemetry field says whether moving it worked. The issue form asks for the RAM regime explicitly.
+- **The community protocol pins `--ubatch 512`**, which the Android app has always done and
+  `scripts/bench-report.sh` never did. Prefill width costs resident memory (320 MiB reserved at a
+  2048 context against 80 MiB at 512) and every reserved MiB is one the expert cache does not get,
+  so a host row was quietly running a different configuration from the app it is compared against.
+  Override with `UBATCH=`; `UBATCH=0` restores the old full-width behaviour. The five maintainer
+  rows in the table predate this and are marked as such.
+- **Two platform limits written down** in [`limitations.md`](docs/limitations.md). macOS has no
+  `O_DIRECT` and the engine does not call the `F_NOCACHE` equivalent, so expert reads there go
+  through the page cache — while the metrics still say `o_direct=1`, because that field records the
+  requested configuration rather than what the open did. And there is no iOS target, so there is no
+  supported way to run the engine on an iPhone or iPad. Both were already true and undocumented.
 
 ## [0.21.0] - 2026-08-25
 

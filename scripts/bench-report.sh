@@ -11,11 +11,12 @@
 #      request size the expert stream issues, so the number is the ceiling this engine can see;
 #   3. runs the fixed protocol from docs/benchmark-method.md: 256 greedy tokens, the same prompt
 #      every table in the README uses, streaming with an auto-sized cache, 4 read lanes,
-#      intra-layer overlap and the dense weights kept out of the page cache;
+#      intra-layer overlap, the dense weights kept out of the page cache, and the same 512-wide
+#      prefill batch the Android app pins (the reservation is memory the expert cache does not get);
 #   4. parses the CSV trailer the engine writes and prints one markdown block.
 #
 # Env overrides: THREADS (default: min(8, online cores)), N_PREDICT (256), IO_THREADS (4),
-# CACHE_MB (auto), BENCH_OUT (.bench-report), BMOE_CLI (build/cli/bmoe-cli).
+# CACHE_MB (auto), UBATCH (512), BENCH_OUT (.bench-report), BMOE_CLI (build/cli/bmoe-cli).
 # Anything after the model path is passed to bmoe-cli verbatim (e.g. --no-think for gpt-oss,
 # --n-expert-used 6 for the turbo top-k rows).
 set -euo pipefail
@@ -34,6 +35,7 @@ THREADS="${THREADS:-$(( NPROC < 8 ? NPROC : 8 ))}"
 N_PREDICT="${N_PREDICT:-256}"
 IO_THREADS="${IO_THREADS:-4}"
 CACHE_MB="${CACHE_MB:-auto}"
+UBATCH="${UBATCH:-512}"   # matches the app: a wider graph reserves buffers the expert cache wants
 BENCH_OUT="${BENCH_OUT:-$ROOT/.bench-report}"
 BMOE_CLI="${BMOE_CLI:-$ROOT/build/cli/bmoe-cli}"
 PROMPT="Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field"
@@ -86,8 +88,8 @@ mkdir -p "$BENCH_OUT"
 TAG="$(basename "$MODEL" .gguf)"
 CSV="$BENCH_OUT/$TAG.csv"
 LOG="$BENCH_OUT/$TAG.log"
-echo "running: $TAG, $THREADS threads, $IO_THREADS lanes, cache $CACHE_MB, $N_PREDICT tokens" >&2
-"$BMOE_CLI" -m "$MODEL" --chatml -n "$N_PREDICT" -t "$THREADS" \
+echo "running: $TAG, $THREADS threads, $IO_THREADS lanes, cache $CACHE_MB, ubatch $UBATCH, $N_PREDICT tokens" >&2
+"$BMOE_CLI" -m "$MODEL" --chatml -n "$N_PREDICT" -t "$THREADS" --ubatch "$UBATCH" \
     --moe-stream --cache-mb "$CACHE_MB" --io-threads "$IO_THREADS" --overlap --dense-weights anon \
     --csv "$CSV" "$@" -p "$PROMPT" > "$LOG" 2>&1 || { echo "bmoe-cli failed, see $LOG" >&2; exit 1; }
 
@@ -114,9 +116,9 @@ cat <<EOF
 
 **Run** — engine $ENGINE_VERSION ($GIT_REV), model \`$(basename "$MODEL")\` ($MODEL_GIB GiB, arch \`$ARCH\`), $N_PREDICT tokens
 
-| Model | k | Cache | Lanes | Decode tok/s | Prefill tok/s | Stall s/tok | Compute s/tok | Flash/token | Cache hit | majflt/tok | Load s |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| $TAG | $TOPK | $BUDGET MiB | $IO_THREADS | $TOKS | $PREFILL | $STALL | $COMPUTE | $MIB_PER_TOK MiB | $HIT% | $MAJFLT | $LOAD_S |
+| Model | k | Cache | Lanes | ubatch | Decode tok/s | Prefill tok/s | Stall s/tok | Compute s/tok | Flash/token | Cache hit | majflt/tok | Load s |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| $TAG | $TOPK | $BUDGET MiB | $IO_THREADS | $UBATCH | $TOKS | $PREFILL | $STALL | $COMPUTE | $MIB_PER_TOK MiB | $HIT% | $MAJFLT | $LOAD_S |
 
 Extra flags: \`${*:-none}\`. Experts dropped: ${DROPPED:-0}. Raw CSV: \`$CSV\` (attach it to the issue).
 EOF

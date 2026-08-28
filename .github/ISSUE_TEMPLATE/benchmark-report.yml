@@ -9,8 +9,9 @@ body:
         Thanks for measuring. The protocol and the results table are in
         [docs/community-benchmarks.md](../blob/main/docs/community-benchmarks.md). On Linux/macOS,
         `scripts/bench-report.sh MODEL.gguf` runs the fixed protocol and prints the two tables below
-        for you; on Android use the app's telemetry panel or the CSV from `scripts/bench-run.sh`.
-        Every accepted row lands in the table with your GitHub handle.
+        for you; on Android use the app's telemetry panel, or `bmoe-cli` over adb with the command
+        that page lists. macOS rows are welcome with a caveat (no page-cache bypass yet); iPhone is
+        not supported. Every accepted row lands in the table with your GitHub handle.
   - type: input
     id: hardware
     attributes:
@@ -32,6 +33,16 @@ body:
       label: Model and quantization
       description: Any MoE the engine supports (`bmoe-cli --list-archs`), in any quant. Name, quant, file size, and where it came from.
       placeholder: "Qwen3.6-35B-A3B Q4_K_M, 22.3 GB, bartowski/Qwen_Qwen3.6-35B-A3B-GGUF"
+    validations:
+      required: true
+  - type: dropdown
+    id: regime
+    attributes:
+      label: Regime
+      description: The model file's size against this machine's RAM. The script prints both side by side.
+      options:
+        - "Larger than RAM (streaming is the only way to run it)"
+        - "Fits in RAM (measures what streaming costs against running resident)"
     validations:
       required: true
   - type: input
