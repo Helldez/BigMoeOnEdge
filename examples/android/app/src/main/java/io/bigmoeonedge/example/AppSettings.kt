@@ -58,6 +58,13 @@ data class AppSettings(
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
     val dropColdPct: Int = 75,
+    // Serve the dense tables the graph only GATHERS ROWS from - a token embedding - out of flash
+    // instead of RAM. Which tables qualify is decided by the graph at load, so this is one switch
+    // for every model rather than a per-model list; on a model where nothing qualifies it does
+    // nothing at all. Lossless by construction (the rows read are the rows the graph asks for),
+    // so the only question it raises is whether the reads cost more than the RAM is worth - which
+    // is why it is off until the on-device A/B says otherwise.
+    val rowStream: Boolean = false,
     // Which source drafts for self-speculation: "off", "mtp" or "ngram". Both verify the same way —
     // one wider decode, greedy acceptance — and differ only in what a draft costs.
     //
@@ -164,6 +171,10 @@ data class AppSettings(
             // same cacheOn condition that guards prefetch guards this. The engine takes a fraction
             // of the uniform share; the setting is stored as a percentage.
             if (dropColdPct > 0 && cacheOn) a += listOf("--drop-cold-experts", (dropColdPct / 100.0).toString())
+            // Row-gathered dense tables. Inside the streaming block because the tables are
+            // discovered by the streamer's capture pass; independent of the cache and of the
+            // dense-weight mode, since what it changes is which tensors that mode applies to.
+            if (rowStream) a += "--row-stream"
         }
         // Outside the streaming block on purpose: speculation is a decode-loop change, not a
         // residency policy, so it applies to the mmap baseline too — which is what makes an A/B of
@@ -209,6 +220,7 @@ data class AppSettings(
             .putInt("predictSpecMax", predictSpecMax)
             .putInt("routeAhead", routeAhead)
             .putInt("dropColdPct", dropColdPct)
+            .putBoolean("rowStream", rowStream)
             .putInt("sessionCtx", sessionCtx)
             .putString("spec", spec).putInt("mtpDraft", mtpDraft).putInt("mtpPMinPct", mtpPMinPct)
             .putBoolean("thinking", thinking)
@@ -347,6 +359,7 @@ data class AppSettings(
                 predictSpecMax = p.getInt("predictSpecMax", d.predictSpecMax),
                 routeAhead = p.getInt("routeAhead", d.routeAhead),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
+                rowStream = p.getBoolean("rowStream", d.rowStream),
                 sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
                 spec = run {
                     val saved = p.getString("spec", null)

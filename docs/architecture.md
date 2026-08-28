@@ -15,6 +15,7 @@ core/
   include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
     config.h        RunConfig + validate()
     expert_source.h IExpertSource — the residency strategy port
+    row_source.h    IRowSource - the row-gathered residency port
     recipe.h        MoeRecipe + registry
     metrics.h       TokenMetrics / RunSummary + IMetricsSink
     runtime.h       run() entry point
@@ -24,6 +25,7 @@ core/
     moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), arch_registry,
                 expert_stream_source (one reader per shard), router_hook
                 dense_weights — non-expert weight policy + the residency sensor
+                row_stream - row-gathered tables served from flash (see row-gathered-tables.md)
     engine/     session — composition + the generation loop (open/generate/close)
                 runtime — the one-shot run() wrapper over a Session
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)

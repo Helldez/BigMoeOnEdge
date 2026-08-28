@@ -451,6 +451,13 @@ static void print_usage(const char * argv0) {
         "                          Android-only; measured +17.9%% on a long generation, off by default)\n"
         "                          Deprecated aliases kept for old scripts: --dense-odirect means\n"
         "                          `--dense-weights anon`, --no-warm-dense means `--dense-weights mmap`\n"
+        "      --row-stream        serve dense tables the graph only GATHERS ROWS from (a token\n"
+        "                          embedding) from flash instead of RAM: the tensor is bound to\n"
+        "                          reserved address space and only the rows a token needs are\n"
+        "                          read. Which tables qualify comes from the graph, not from a\n"
+        "                          name list, so a model that also multiplies by its embedding\n"
+        "                          table is left alone, on any architecture\n"
+        "      --row-stream-mb N   resident window for those tables in MiB (default 64)\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -646,6 +653,10 @@ int main(int argc, char ** argv) {
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
             cfg.moe.o_direct = false;
+        else if (a == "--row-stream")
+            cfg.moe.row_stream = true;
+        else if (a == "--row-stream-mb")
+            cfg.moe.row_stream_mb = std::atoi(next("--row-stream-mb"));
         else if (a == "--dense-weights") {
             const std::string m = next("--dense-weights");
             if (m == "mmap")
@@ -884,6 +895,16 @@ int main(int argc, char ** argv) {
                             "already paid for once\n",
                             s.cache_evictions, s.cache_rereads,
                             s.n_generated ? (double) s.cache_rereads / s.n_generated : 0.0);
+        }
+        // The row policy's own line: what it took out of RAM, what it holds instead, and what
+        // that cost in reads. Printed only when a table qualified, so a run that discovered
+        // none says nothing rather than printing a row of zeroes.
+        if (s.row_table_mib > 0.0) {
+            std::printf("moe-rows: %.0f MiB of row-gathered table(s) off the resident set, %.1f MiB resident, "
+                        "%lld rows gathered, %lld reads (%.1f MiB)\n",
+                        s.row_table_mib, s.row_resident_mib, s.row_rows, s.row_slab_reads, s.row_read_mib);
+            if (s.row_io_errors > 0)
+                std::printf("moe-rows: %lld FAILED reads — this run's output is not trustworthy\n", s.row_io_errors);
         }
         if (cfg.moe.overlap)
             std::printf("moe-overlap: stall %.3f s/token (flash reads overlapped with FFN compute)\n",

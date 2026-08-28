@@ -1,6 +1,7 @@
 #include "dense_weights.h"
 
 #include "ggml.h"
+#include "row_stream.h"
 
 #include <algorithm>
 #include <chrono>
@@ -9,6 +10,8 @@
 namespace bmoe {
 
 using clock_t_ = std::chrono::steady_clock;
+
+DenseWeights::DenseWeights() = default;
 
 DenseWeights::~DenseWeights() {
     shutdown();
@@ -44,6 +47,7 @@ bool DenseWeights::init(DenseWeightsMode mode,
     }
 
     hold_back_oversized();
+    take_row_gathered();
 
     if (mode_ == DenseWeightsMode::Anonymous || mode_ == DenseWeightsMode::Pinned) {
         if (tensors_.empty()) { // nothing (left) to rebind — behave as Mmap
@@ -145,6 +149,72 @@ void DenseWeights::hold_back_oversized() {
                      "mmap'd with random-access advice, outside the warm sweep and the residency sensor\n",
                      mode_flag(mode_), (unsigned long long) (held >> 20), mapped_.size(),
                      (unsigned long long) (avail >> 20));
+}
+
+void DenseWeights::set_row_gathered(std::vector<DenseTensorRef> tables, uint64_t budget_bytes) {
+    row_pending_ = std::move(tables);
+    row_budget_ = budget_bytes;
+}
+
+IRowSource * DenseWeights::row_source() const {
+    return rows_ && !rows_->empty() ? rows_.get() : nullptr;
+}
+
+RowSourceStats DenseWeights::row_stats() const {
+    return rows_ ? rows_->stats() : RowSourceStats{};
+}
+
+// ── Row-gathered tables: bound to reserved space, served from flash ──────────────────
+//
+// Runs after hold_back_oversized, which is what restricts this to tables that COULD have been
+// resident. That is deliberate rather than incidental: materialize() — the fallback for a graph
+// shape the capture pass never saw — has to be able to pull the whole table in, and a table larger
+// than memory could not honour it. An oversized row-gathered table keeps the mmap policy that was
+// measured for it.
+//
+// A table only leaves the resident set once the takeover has actually succeeded, so a failed
+// reservation or a reader that will not open costs nothing but the log line.
+void DenseWeights::take_row_gathered() {
+    if (row_pending_.empty()) return;
+    // Intersect with what is still resident-eligible, by tensor identity: the caller's list was
+    // built from the same capture, but hold_back_oversized may have taken some of it already.
+    std::vector<DenseTensorRef> take;
+    for (const DenseTensorRef & want : row_pending_)
+        for (const DenseTensorRef & have : tensors_)
+            if (have.tensor == want.tensor) {
+                take.push_back(have);
+                break;
+            }
+    row_pending_.clear();
+    if (take.empty()) return;
+
+    rows_.reset(new RowStream());
+    if (!rows_->init(take, paths_, align_, row_budget_) || rows_->empty()) {
+        rows_.reset();
+        return; // the tables keep the mode the run asked for
+    }
+
+    std::vector<DenseTensorRef> keep;
+    keep.reserve(tensors_.size());
+    uint64_t freed = 0;
+    for (const DenseTensorRef & d : tensors_) {
+        bool taken = false;
+        for (const DenseTensorRef & t : take)
+            if (t.tensor == d.tensor) {
+                taken = true;
+                break;
+            }
+        if (!taken) {
+            keep.push_back(d);
+            continue;
+        }
+        freed += d.size;
+        if (d.file_idx >= 0 && (size_t) d.file_idx < ranges_.size())
+            subtract_range(ranges_[(size_t) d.file_idx], d.file_off, d.file_off + d.size);
+    }
+    tensors_ = std::move(keep);
+    std::fprintf(stderr, "bmoe: dense-weights=%s — %llu MiB of row-gathered table(s) left out of the resident set\n",
+                 mode_flag(mode_), (unsigned long long) (freed >> 20));
 }
 
 void DenseWeights::advise_random_mapped() {
@@ -377,6 +447,8 @@ void DenseWeights::sample_mmap(size_t page) {
 }
 
 void DenseWeights::shutdown() {
+    if (rows_) rows_->shutdown();
+    rows_.reset();
     for (void * b : bufs_)
         if (b) pio::aligned_free(b);
     for (pio::PinnedAlloc & p : pinned_)

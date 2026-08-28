@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.24.0] - unreleased
+
+### Added
+- **`--row-stream`: dense tables the graph only gathers rows from, served from flash.** The dense
+  policy has one shape for every non-expert weight, and it is the right shape for a weight that is
+  multiplied: read it whole, keep it resident. A token embedding table is not that. The graph
+  gathers one row of it per decoded token out of a vocabulary of hundreds of thousands, and on a
+  big model that is hundreds of MiB of RAM bought for a kilobyte of use. With this flag such a
+  table is bound to reserved address space and only the rows the graph is about to read are pulled
+  in, in 16 KiB slabs, inside a bounded LRU window (`--row-stream-mb`, default 64). The
+  reservation mirrors the tensor's own byte layout, so ggml's address arithmetic is unchanged and
+  the gather kernel is untouched: the trick the expert cache plays on `mul_mat_id`, at row
+  granularity.
+
+  Which tables qualify is not a list and not a name pattern. During the capture decode every
+  reference to a dense weight is classified by how the node used it, and a table is served only if
+  every reference was a row gather taking it as the table, with an index that is materialized
+  before the node runs. Both are properties of the graph, so a model with tied embeddings, where
+  the table is also the output head, fails the first test on that matmul and is left alone on any
+  architecture without a special case; Qwen3.8-Flash-Next's 51B n-gram table is row-gathered but by
+  hashes computed inside the graph, so it fails the second and keeps the size guard measured for it
+  in 0.22.0. `IRowSource::materialize()` is the fallback if some later graph reads a served table
+  any other way: the whole table is pulled in and the run says so on stderr.
+
+  Measured, byte-identical to the resident reference in every cell. On the 12 GB test phone via
+  adb: Qwen3.8-Flash-Next UD-IQ3_XXS, pinned dense **4313 to 3816 MiB** (-497), and
+  Qwen3.6-35B-A3B UD-Q3_K_XL, pinned dense **2436 to 1921 MiB** (-515), for 0.3 MiB resident and
+  0.4 MiB of flash read across the generation, against 4.5 GB of expert reads on the same run.
+  Expert bytes, cache hit rate, evictions and re-reads are identical to the digit with the flag on
+  and off. Throughput is neutral so far: interleaved host cells on Qwen3.6-35B-A3B Q4_K_M gave 2.22
+  and 2.30 tok/s off against 2.27 and 2.31 on, a spread smaller than the one between the two
+  baselines, so the flag ships off by default and the claim it makes is about RAM, not speed. The
+  RAM is the point: on the model whose 4.3 GB pinned dense set is invisible to the kernel's reclaim
+  accounting, half a gigabyte handed back goes straight to the cause of the 2 to 7 second tokens
+  documented in 0.22.0. Gates `G15a`/`G15b` prove identity on all three tiny models, the second
+  with a window of one slab so nearly every gather re-reads what the last one handed back. New
+  port `bmoe/row_source.h`, adapter `core/src/moe/row_stream.cpp`, docs in
+  `docs/row-gathered-tables.md`, app switch **Stream row-gathered tables**.
+
+### Changed
+- The CSV summary trailer gains `row_table_MiB`, `row_resident_MiB`, `row_rows`, `row_reads`,
+  `row_read_MiB`, `row_evictions` and `row_io_errors`, and a `moe-rows:` end-of-run line appears
+  when a table qualified. All are absent from the per-token rows, which the policy does not touch.
+- `--cache-mb auto` no longer reserves the size of a row-streamed table for a conversion that will
+  not happen. It deducts the window instead, so the cache gets the RAM the policy freed rather than
+  the engine planning for both.
 ## [0.23.0] - 2026-08-29
 
 ### Fixed

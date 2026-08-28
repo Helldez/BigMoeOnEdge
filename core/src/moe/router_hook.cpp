@@ -134,11 +134,42 @@ static int32_t * id_at(ggml_tensor * t, int j, int k) {
     return (int32_t *) ((char *) t->data + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]);
 }
 
+// Is `t` readable the moment the node that consumes it is offered to the callback? A graph input is
+// (llama.cpp fills it before the graph runs), and so is a pure view of one — a view shares its
+// source's memory, so no computation stands between the two. Anything else is produced by a node
+// that may not have run yet, and reading it would be reading uninitialized memory.
+static bool index_materialized(const ggml_tensor * t) {
+    for (int guard = 0; t && guard < 8; ++guard) {
+        switch (t->op) {
+        case GGML_OP_NONE:
+            return t->type == GGML_TYPE_I32; // an index we can actually read as row numbers
+        case GGML_OP_VIEW:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+            t = t->src[0];
+            break;
+        default:
+            return false;
+        }
+    }
+    return false;
+}
+
+std::unordered_set<std::string> RouterHook::row_gathered_weights() const {
+    std::unordered_set<std::string> out;
+    for (const std::string & n : row_gathered_)
+        if (!row_disqualified_.count(n)) out.insert(n);
+    return out;
+}
+
 void RouterHook::begin_capture() {
     capturing_ = true;
     for (auto & L : captured_)
         L = LayerExperts{};
     captured_weights_.clear();
+    row_gathered_.clear();
+    row_disqualified_.clear();
 }
 void RouterHook::end_capture() {
     capturing_ = false;
@@ -1232,10 +1263,43 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 // A weight LEAF (op NONE, named) that is not an expert: the persistent dense weights
                 // --dense-weights anon may rebind. Graph inputs and KV tensors share this shape but are
                 // filtered out downstream by the gguf tensor set, so recording them here is harmless.
-                if (src->op == GGML_OP_NONE) captured_weights_[src->name] = src;
+                if (src->op != GGML_OP_NONE) continue;
+                captured_weights_[src->name] = src;
+                // …and HOW this node used it, which is what decides whether its residency can be
+                // reduced to the rows the graph asks for. Only the table position of a row gather
+                // counts, and only when the index is already in memory when the node runs.
+                if (t->op == GGML_OP_GET_ROWS && s == 0 && index_materialized(t->src[1]))
+                    row_gathered_.insert(src->name);
+                else
+                    row_disqualified_.insert(src->name);
             }
         }
         return false; // capture never isolates a node
+    }
+
+    // ── row-gathered dense tables: put the rows in place before the node reads them ──
+    //
+    // No barrier and no isolation: unlike the routing nodes, nothing here needs the node's OUTPUT —
+    // only to act before it runs, which the ask pass already offers for free. The op test rejects
+    // every node but the handful of gathers a graph contains; the scan in the other arm is the
+    // safety net for a graph shape the capture pass never saw, and it costs a few pointer compares
+    // against the one or two tables a policy actually serves.
+    if (row_source_ && ask) {
+        if (t->op == GGML_OP_GET_ROWS) {
+            ggml_tensor * table = t->src[0];
+            ggml_tensor * ids = t->src[1];
+            if (table && row_source_->serves(table)) {
+                if (ids && ids->data && ids->type == GGML_TYPE_I32)
+                    row_source_->gather(table, (const int32_t *) ids->data, (int) ggml_nelements(ids));
+                else
+                    row_source_->materialize(table); // an index we cannot read: take the whole table
+            }
+        } else {
+            for (int s = 0; s < GGML_MAX_SRC; ++s) {
+                ggml_tensor * src = t->src[s];
+                if (src && row_source_->serves(src)) row_source_->materialize(src);
+            }
+        }
     }
 
     // ── stream: the routing nodes get the single-node barrier so we see the selected ids ──

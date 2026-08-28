@@ -117,6 +117,16 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 ) { onChange(current.copy(denseWeights = DenseWeights.values()[it])) }
                 Hint(current.denseWeights.blurb)
 
+                SwitchRow(
+                    "Stream row-gathered tables",
+                    "A dense table the model only reads a few ROWS from per token (the token " +
+                        "embedding) does not need to be in RAM: only the rows are read, from flash. " +
+                        "Lossless - the output is identical. Which tables qualify is read off the " +
+                        "graph at load, so on a model where none do this does nothing.",
+                    current.rowStream,
+                    enabled = stream,
+                ) { onChange(current.copy(rowStream = it)) }
+
                 ExperimentalGroup {
                     IntSetting(
                         "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,

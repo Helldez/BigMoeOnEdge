@@ -696,7 +696,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // residency sensor — see DenseWeights::hold_back_oversized.
         {
             const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
-            std::vector<DenseTensorRef> dense;
+            // The subset the graph only row-gathers, when the run asked for the row policy. Their
+            // membership is the hook's verdict on what the graph did, and this is a filter over the
+            // dense list rather than a second list, so a table cannot be both resident and streamed.
+            const std::unordered_set<std::string> row_names =
+                cfg.moe.row_stream ? im.hook->row_gathered_weights() : std::unordered_set<std::string>();
+            std::vector<DenseTensorRef> dense, rows;
             for (const auto & kv : im.hook->captured_weights()) {
                 const std::string & name = kv.first;
                 if (expert_names.count(name)) continue;
@@ -709,13 +714,19 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 d.size = sz->second;
                 d.file_idx = offs.file_by_name.at(name);
                 dense.push_back(d);
+                if (row_names.count(name)) rows.push_back(d);
             }
+            const uint64_t row_budget = (uint64_t) std::max(0, cfg.moe.row_stream_mb) * 1024ull * 1024ull;
             im.source.set_dense_tensors(std::move(dense));
+            im.source.set_row_tensors(std::move(rows), row_budget);
         }
 
         if (!im.source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
+        // The row policy exists only once dense_.init has taken the tables over; null means nothing
+        // qualified or the takeover declined, and the hook then costs exactly nothing per node.
+        im.hook->set_row_source(im.source.row_source());
 
         if (route_trace) {
             im.route_trace = route_trace;
@@ -1525,6 +1536,14 @@ RunResult Session::generate(const GenerateRequest & req,
         s.cache_resizes = st.cache_resizes;
         s.cache_evictions = st.evictions;
         s.cache_rereads = st.rereads;
+        const RowSourceStats rs = im.source.row_stats();
+        s.row_table_mib = rs.table_bytes / (1024.0 * 1024.0);
+        s.row_resident_mib = rs.resident_bytes / (1024.0 * 1024.0);
+        s.row_read_mib = rs.bytes_read / (1024.0 * 1024.0);
+        s.row_rows = (long long) rs.rows;
+        s.row_slab_reads = (long long) rs.slab_reads;
+        s.row_evictions = (long long) rs.evictions;
+        s.row_io_errors = (long long) rs.io_errors;
         s.moe_drain_s_per_token = n_gen ? tally.drain_seconds / n_gen : 0.0;
         s.moe_adopt_s_per_token = n_gen ? tally.adopt_seconds / n_gen : 0.0;
         s.token_demand_mib = st.token_demand_bytes / (1024.0 * 1024.0);

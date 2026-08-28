@@ -119,6 +119,12 @@ with Mmap it is refaulted from flash every token. Its 51B n-gram table is held b
 stays mmap'd whatever the setting; the engine says so on stderr at load. Keep the expert cache at
 1000-1500 MiB on a 12 GB phone: the pinned dense set leaves no room for more.
 
+**Stream row-gathered tables** takes ~500 MiB more off that pinned set on this model, and 515 MiB
+on Qwen3.6: the token embedding table is read one row per token, so it does not need to be in
+RAM at all. The reply is identical either way. It is off by default until a long run on a phone
+says whether the RAM it hands back is worth the reads, which is exactly the kind of thing this
+app exists to find out.
+
 ## Expected numbers
 
 On a phone with UFS 4.x storage and ~12 GB RAM, streaming Qwen3-30B-A3B-Q4_K_M with the
@@ -150,3 +156,6 @@ Two worth knowing before you turn them on:
 - **"Decide the experts early"** (`--route-ahead`) commits each layer's routing before that layer
   runs, so the reads can never be wasted. It changes the reply, and it is refused alongside guessing
   ahead. See `../../docs/route-ahead.md`.
+- **"Stream row-gathered tables"** (`--row-stream`) serves the token embedding table out of flash
+  instead of RAM. Lossless, and which tables it applies to is read off the model's own graph, so
+  on a model where none qualify it does nothing. See `../../docs/row-gathered-tables.md`.
