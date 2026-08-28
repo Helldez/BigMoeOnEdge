@@ -52,13 +52,17 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   faster loaded resident, and the registry rows are about coverage, not a recommendation.
 - **Repack must stay off.** Loading uses `use_extra_bufts=false`; you cannot combine
   streaming with weight repacking.
-- **macOS does not bypass the page cache, and the telemetry does not say so.** Apple has no
-  `O_DIRECT`; `platform_io` compiles it away to `0`, and the `fcntl(F_NOCACHE)` equivalent is not
-  called, so expert reads on a Mac go through the page cache the whole design exists to avoid.
-  Worse, `o_direct` in the metrics records the requested configuration rather than what the open
-  actually did, so a macOS run reports `o_direct=1` while running buffered. macOS builds and
-  produces correct output; its cache-hit and flash-per-token columns are not comparable with a
-  Linux or Android row until this is fixed.
+- **macOS reads uncached, and `o_direct` says so — but it is not `O_DIRECT`.** A direct request on
+  Apple is served by `fcntl(F_NOCACHE)` on each descriptor: the kernel stops caching that file's
+  pages, which is the property the design wants. It is a caching hint, not an I/O mode — no
+  alignment contract, no DMA promise — so reads keep ordinary `pread` semantics and the raw-read
+  ceiling can sit below Linux `O_DIRECT`'s. Measured on one 16 GB Apple-silicon Mac with the model
+  on an external volume (256-token protocol, buffered vs `F_NOCACHE`, interleaved A B B A A B):
+  decode 0.94 vs 0.61 tok/s (+56 %, arm ranges non-overlapping), with the byte stream
+  bit-identical between arms (40 822.8 MiB read by both) and cache-hit equal — the gain is not
+  fewer reads but the buffered arm's page-cache pollution doubling the compute residual
+  (1.22 → 0.60 s/tok) while stall stays flat (0.43 → 0.46 s/tok). The `o_direct` field records
+  the open's real outcome on every platform, so a refused or downgraded run reports `0`.
 - **No iOS target.** The core is portable C++ and the streaming path has no Android dependency, but
   there is no Xcode project here and iOS does not run command-line binaries, so there is no
   supported way to run or benchmark the engine on an iPhone or iPad.

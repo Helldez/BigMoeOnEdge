@@ -401,8 +401,9 @@ The model must live on a real filesystem (on Android `/data/local/tmp/...`, not 
 Platform status: Linux is exercised by CI (build + gates) and Windows is where the
 [desktop numbers](#desktop) were measured. On Windows, build with CMake directly (Visual Studio
 Build Tools); the script above is bash, and MSVC puts the binary in `build\cli\Release\bmoe-cli.exe`.
-macOS builds from the same sources (the platform branches exist) but is not validated, and it has
-no O_DIRECT, so direct reads fall back to buffered I/O there.
+macOS builds from the same sources (the platform branches exist) but is not exercised by CI. It has
+no O_DIRECT; a direct request is served with `F_NOCACHE` instead (uncached, but not alignment-constrained),
+and `o_direct` in the telemetry reports what the open actually achieved.
 
 ### Android
 

@@ -51,9 +51,10 @@ bool fd_ok(fd_t fd) {
     return fd != (void *) INVALID_HANDLE_VALUE;
 }
 
-fd_t open_read(const char * path, bool direct) {
+fd_t open_read(const char * path, bool direct, bool * effective_direct) {
     DWORD flags = FILE_ATTRIBUTE_NORMAL | (direct ? FILE_FLAG_NO_BUFFERING : 0);
     HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, flags, nullptr);
+    if (effective_direct) *effective_direct = direct && fd_ok((fd_t) h);
     return (fd_t) h;
 }
 
@@ -166,8 +167,21 @@ bool fd_ok(fd_t fd) {
     return fd >= 0;
 }
 
-fd_t open_read(const char * path, bool direct) {
-    return open(path, O_RDONLY | O_CLOEXEC | (direct ? O_DIRECT : 0));
+fd_t open_read(const char * path, bool direct, bool * effective_direct) {
+#if defined(__APPLE__)
+    // No O_DIRECT here (the shim above leaves it 0), so a direct request is an ordinary open plus
+    // F_NOCACHE: ask the kernel not to keep this descriptor's pages. That is the whole of Apple's
+    // uncached mode — a caching hint on the fd, not an I/O mode — so a refusal is a downgrade to
+    // buffered for the caller to report, never a reason to fail a perfectly good descriptor.
+    const fd_t fd = open(path, O_RDONLY | O_CLOEXEC);
+    const bool ok = fd_ok(fd) && direct && fcntl(fd, F_NOCACHE, 1) == 0;
+    if (effective_direct) *effective_direct = ok;
+    return fd;
+#else
+    const fd_t fd = open(path, O_RDONLY | O_CLOEXEC | (direct ? O_DIRECT : 0));
+    if (effective_direct) *effective_direct = direct && fd_ok(fd);
+    return fd;
+#endif
 }
 
 void close_fd(fd_t fd) {
@@ -373,6 +387,15 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
 }
 
 #endif
+
+// ── Cache-bypass read semantics ─────────────────────────────────────────────────────────
+bool direct_needs_alignment() {
+#if defined(__APPLE__)
+    return false; // F_NOCACHE is a caching hint, not an I/O mode: plain preads stay fully general
+#else
+    return true; // O_DIRECT / FILE_FLAG_NO_BUFFERING reject unaligned windows
+#endif
+}
 
 // ── Reclaim-exempt allocation ────────────────────────────────────────────────────────────
 // Shared across platforms because only Android has one: everywhere else this reports "unsupported"

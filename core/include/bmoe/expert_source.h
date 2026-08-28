@@ -81,6 +81,11 @@ public:
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
         uint64_t cache_budget_bytes = 0;   // cache budget in force; fixed for the run once init sizes it
         long long cache_resizes = 0;       // explicit set_cache_budget_mb() calls that moved the budget
+        // Whether cache-bypassing reads are actually in effect for the expert shards — every shard
+        // reader's request honoured by the platform (O_DIRECT open succeeded, F_NOCACHE applied on
+        // Apple), after the open-time downgrades. NOT the config flag: a run can ask for direct and
+        // be served buffered, and the telemetry must say which one it got.
+        bool o_direct = false;
         // Cache churn. `evictions` is how many entries the budget forced out; `rereads` how many
         // reads went to an entry that had been resident before — the cache paying for the same
         // bytes twice. A prefetch cannot reduce what a routing needs (the ideal is the same

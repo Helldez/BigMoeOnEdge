@@ -947,7 +947,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         st.n_layer = im.n_layer;
         st.n_threads = cfg.n_threads;
         st.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
-        st.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
+        st.o_direct = cfg.moe.enabled && im.source.stats().o_direct; // the open's outcome, not the request
         st.overlap = cfg.moe.enabled && cfg.moe.overlap;
         if (compute_trace) {
             im.compute_trace = compute_trace;
@@ -988,7 +988,6 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.force_cache = cfg.moe.force_cache;
         ri.load_all = cfg.moe.enabled && cfg.moe.load_all;
         ri.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
-        ri.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.io_two_wave = cfg.moe.enabled && cfg.moe.io_two_wave;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
@@ -1009,6 +1008,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         if (cfg.moe.enabled) {
             const IExpertSource::Stats st = im.source.stats();
             ri.cache_mb = (int) (st.cache_budget_bytes / (1024ull * 1024ull));
+            // o_direct from the same sample: whether the shard readers actually got cache bypass
+            // (O_DIRECT honoured, or F_NOCACHE applied on Apple), never what the flag asked for.
+            ri.o_direct = st.o_direct;
         }
         // The EFFECTIVE top-k: an override IS the applied width, otherwise the model's own. Same
         // resolution the route trace does, and worth a header read — a run whose top-k is unknown

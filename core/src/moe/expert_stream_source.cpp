@@ -205,6 +205,14 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
         if (!readers_.back()->open(sp, io_threads_, cfg.o_direct, align_, bounce_cap)) return false;
     }
+    // Each shard resolved direct for itself at open — the platform's answer plus the open-time
+    // verify — so the run-level fact is the weakest shard: a mixed run must not be advertised as
+    // fully direct, and a metadata-only first shard that never carried an expert read must not
+    // flatter the shards that do. Settled here, before any worker thread exists; stats() reads it
+    // cross-thread for the rest of the run.
+    effective_direct_ = true;
+    for (const auto & r : readers_)
+        effective_direct_ = effective_direct_ && r->direct();
     for (const LayerExperts & L : layers_) {
         if (!L.bound) continue;
         for (int p = 0; p < MoeRecipe::max_exps; ++p)
@@ -278,13 +286,9 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     for (int lane = first_worker_lane; lane < io_threads_; ++lane)
         io_pool_.emplace_back(&ExpertStreamSource::io_worker, this, lane);
 
-    // Each shard verified O_DIRECT for itself, so report the weakest: a metadata-only first shard
-    // is too short to verify at all and would flatter the number for the shards carrying experts.
-    bool all_direct = true;
-    for (const auto & r : readers_)
-        all_direct = all_direct && r->direct();
+    // effective_direct_ (set where the readers opened) is the run's o_direct fact — see above.
     std::fprintf(stderr, "bmoe: expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB shards=%zu\n",
-                 n_expert_, (int) all_direct, io_threads_, cache_max_ >> 20, readers_.size());
+                 n_expert_, (int) effective_direct_, io_threads_, cache_max_ >> 20, readers_.size());
     return true;
 }
 
@@ -1383,6 +1387,7 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.stall_seconds = stall_union_.total_ns() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
+    s.o_direct = effective_direct_;
     s.evictions = evictions_;
     s.rereads = rereads_;
     s.drain_wait_seconds = drain_wait_ns_ / 1e9;
