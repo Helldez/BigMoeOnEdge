@@ -31,20 +31,21 @@ tokenizer and chat template llama.cpp supports works out of the box, because lla
 doing that part: MXFP4 and Q4_K_M stream through the same code. Supporting a new MoE architecture
 is one row in a registry, and following a new llama.cpp release is a routine submodule bump.
 
-The most extreme thing it can do today: **DeepSeek V4 Flash 0731**, a 284B-parameter MoE
-(~91 GB on disk at 2-bit expert quantization), generating on a phone with 12 GB of RAM at about
-**1 tok/s**. More than seven times more model than memory, streamed from flash as the three shard
-files Hugging Face ships, with no merge step and no PC in the loop.
+**DeepSeek V4 Flash 0731** is the largest model run this way so far. It generates on a phone with
+12 GB of RAM, streamed from flash as the three shard files Hugging Face ships, with no merge step
+and no PC in the loop.
 
 <p align="center"><img src="docs/assets/hero-dsv4.gif" width="360" alt="DeepSeek V4 Flash 0731 (284B, ~91 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
 <p align="center"><em>DeepSeek V4 Flash 0731: 284B parameters, ~91 GB on disk, on a 12 GB phone.
 0.94 tok/s in the demo app, real time.</em></p>
 
-The newest thing it can do: **Qwen3.8-Flash-Next**, the Qwen4 architecture preview, a
-125B-parameter MoE (~82 GB on disk at 3-bit expert quantization), generating on the same 12 GB
-phone at about **2 tok/s**, the evening it was released and before llama.cpp itself had merged
-support for it. A third of that file is a 51B-parameter n-gram embedding table that never leaves
-flash: the engine holds it back on its own and reads the sixteen rows each token asks for.
+**Qwen3.8-Flash-Next**, the Qwen4 architecture preview, ran on the same phone the day the weights
+appeared, before upstream support for it existed, because adding an architecture here is a
+registry row and not a change to the streaming path. A large part of that model is a lookup table,
+and the engine never loads it: it leaves the table on storage and reads only the sixteen entries
+each word actually needs. That is the direction architectures are moving in, and it is the
+direction this engine was built for: the more of a model that is there to be consulted rather than
+held, the less it matters that it does not fit.
 
 <p align="center"><img src="docs/assets/hero-qwen38.gif" width="360" alt="Qwen3.8-Flash-Next (125B, ~82 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
 <p align="center"><em>Qwen3.8-Flash-Next: 125B parameters, ~82 GB on disk, on a 12 GB phone.
