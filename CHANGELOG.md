@@ -4,7 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.23.0] - 2026-08-27
+## [0.22.0] - 2026-08-28
+
+### Added
+- **Qwen3.8-Flash-Next (`qwen4exp`) recipe.** The Qwen4 architecture preview (125B total, ~6B
+  active) routes over 512 experts at top-10 plus one always-on shared expert that stays resident;
+  the experts name the standard split suffixes, so streaming is one registry row. The hybrid
+  gated-delta SSM / sparse attention stack, its indexer and the per-block hyper-connection
+  tensors are dense-side llama.cpp code, invisible to the streaming seam. What is new is one
+  resident tensor: `per_layer_token_embd`, the n-gram embedding table, a single 2-D tensor of
+  320,001,536 rows carrying 51.2 B parameters (~28.8 GB at IQ4_NL, about 43 % of a released
+  file), read sixteen 160-wide rows per token. Not indexed by expert, so not streamed; see the
+  guard below for why it no longer kills the run. Runs on the 12 GB test phone at 1.79 tok/s
+  (UD-IQ3_XXS, dense weights pinned, 1250 MiB cache): the first model this engine has met that is
+  compute-bound on device, 81 % of a token in compute against 11 % waiting on flash, because its
+  4.3 GB dense side is walked every token. Pinned dense weights are a requirement here, not a
+  tuning: `anon` swaps 6 GB to zram and stalls for 12-20 s on single tokens, `mmap` refaults the
+  whole dense set every token (0.05 tok/s). Listed in the app catalog as a three-shard download
+  (~82 GB on disk). The README hero clip is a later in-app run of the same file: 2.03 tok/s over
+  a 72-token answer, cache 1000 MiB, cold experts dropped at 100 %, 54 % cache hit, real time.
+- **Engine reports 0.22.0.** `project(VERSION)` in `CMakeLists.txt` is moved with the app version
+  this time, so no metrics CSV from this release names the previous engine.
+- **Dense tensors larger than available memory stay mmap'd.** The dense policy assumed the
+  largest dense tensor was an embedding or lm_head and read every dense tensor whole into its
+  own buffer. On `qwen4exp` that meant Anonymous asked for a 28.8 GB allocation and Pinned hit
+  the dma-buf ceiling, either way dying at load, for a table the graph touches a kilobyte at a
+  time. A dense tensor larger than the kernel's `MemAvailable` now leaves the resident set and
+  stays mmap'd, the rest of the dense weights still get the policy the run asked for, and one
+  stderr line names what stayed mapped and why. Inert on every other supported model: Qwen3.6-35B
+  reads the same 1785 MiB into the same 613 buffers as before.
 
 ### Added
 - **Community benchmarks.** `scripts/bench-report.sh MODEL.gguf` runs the fixed README protocol on
@@ -23,6 +51,14 @@ Semantic Versioning.
   x86_64 assumes AVX2, aarch64 assumes armv8.2-a+dotprod+fp16; anything older builds from source.
 
 ### Changed
+- **llama.cpp submodule bumped** to upstream `4e97ac8` (tag `b10666`), the first master with
+  [ggml-org/llama.cpp#27742](https://github.com/ggml-org/llama.cpp/pull/27742) (Qwen3.8-Flash-Next
+  support) merged, with the expert-ready hook rebased on top, still a single-commit delta over
+  stock upstream. The recipe was written against the PR head and needed nothing changed for the
+  merged form: same `qwen4exp` architecture string, same expert suffixes, same
+  `per_layer_token_embd` tensor, and the Unsloth ggufs the catalog points at are the files
+  converted on release day. Byte-identity gates pass on the new base. App version 0.22.0
+  (versionCode 37).
 - **Telemetry attribution stops calling unmeasured runtime "compute".** Overlap `stall` is now the
   **union of stalled intervals** — the cumulative wall time during which at least one compute thread
   was blocked on a streamed expert — instead of the summed per-thread block time divided by the
