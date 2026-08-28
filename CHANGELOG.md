@@ -23,6 +23,13 @@ Semantic Versioning.
   whole dense set every token (0.05 tok/s). Listed in the app catalog as a three-shard download
   (~82 GB on disk). The README hero clip is a later in-app run of the same file: 2.03 tok/s over
   a 72-token answer, cache 1000 MiB, cold experts dropped at 100 %, 54 % cache hit, real time.
+  On the final pin (`b10666`) three in-app runs of that prompt averaged 2.5-2.6 tok/s (second-half
+  median 2.6-2.7), and the same argv over `adb shell` produced byte-identical output at 2.2 tok/s
+  under the shell's lower CPU frequency cap. The one slow token each run shows (2-7 s, tens of
+  thousands of major faults, RSS falling and zram swap rising by the same 200-500 MiB) is the
+  kernel reclaiming the anonymous expert cache under the ~0.9 GB the pinned dense set leaves
+  free; it does not appear over adb, where the app's own footprint is absent and 1.3 GB stays
+  free. Freeing dense RAM (requantizing the dense side offline) is the lever, not the cache.
 - **Engine reports 0.22.0.** `project(VERSION)` in `CMakeLists.txt` is moved with the app version
   this time, so no metrics CSV from this release names the previous engine.
 - **Dense tensors larger than available memory stay mmap'd.** The dense policy assumed the
