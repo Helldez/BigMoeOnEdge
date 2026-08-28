@@ -37,9 +37,14 @@ engine actually issues, runs the protocol, prints two markdown tables. Paste bot
 ### Android phone
 
 - **Easy path:** install the release APK, load a model from its catalog, generate at least 256
-  tokens, screenshot the telemetry panel. That is a valid row.
+  tokens, screenshot the telemetry panel. Change three settings first, or the row is measuring
+  something else: **cold-expert dropping Off** (it defaults to 75 %, which is a lossy speedup),
+  **cache Auto**, **context 2048**. Everything else already matches the protocol.
 - **Exact path** (comparable with the PC rows): push `bmoe-cli` and run it over adb, see
   [On a phone](#on-a-phone).
+
+Either way the app cannot measure your drive's raw read rate, so a phone row leaves that column
+empty unless you run the storage probe yourself.
 
 ### Apple hardware
 
@@ -90,10 +95,15 @@ adb shell /data/local/tmp/bmoe-cli -m /data/local/tmp/MODEL.gguf --chatml -n 256
   -p "Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field"
 ```
 
+This command is already the protocol: no dropping, cache auto, the default 2048 context. Three
+things to get right around it:
+
 - Stage the model on `/data/local/tmp` or `/sdcard/Download`. **Not** the app's external files dir
   under `/storage/emulated`: it is FUSE-backed and `O_DIRECT` silently falls back to buffered.
 - Check `o_direct=1` in the telemetry before trusting the number.
 - Phones throttle: run twice, report the second, say if the two differ by more than a few percent.
+- The shell runs under a lower CPU frequency cap than a foreground app on some devices, so an adb
+  row can read a little slower than the same configuration in the app. Say which one you used.
 
 ### Models that line up with the README
 

@@ -101,6 +101,11 @@ Semantic Versioning.
   so a host row was quietly running a different configuration from the app it is compared against.
   Override with `UBATCH=`; `UBATCH=0` restores the old full-width behaviour. The five maintainer
   rows in the table predate this and are marked as such.
+- **The app path says which settings to change.** An in-app row was being invited without saying
+  that the app ships cold-expert dropping at 75 %, a lossy speedup the CLI protocol does not use, so
+  a telemetry screenshot was not the configuration it was being compared against. The page now names
+  the three settings to match (dropping off, cache auto, context 2048) and says that a phone row
+  cannot fill the storage-rate column.
 - **Two platform limits written down** in [`limitations.md`](docs/limitations.md). macOS has no
   `O_DIRECT` and the engine does not call the `F_NOCACHE` equivalent, so expert reads there go
   through the page cache — while the metrics still say `o_direct=1`, because that field records the
