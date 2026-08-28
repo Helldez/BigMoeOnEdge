@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.23.0] - 2026-08-28
+
+### Added
+- **Prefill-phase attribution in `BMOE_DONE` and the CSV `# summary`.** `prefill_cpu_s` /
+  `prefill_read_mib` / `prefill_io_s` / `prefill_stall_s` / `prefill_mgmt_s`: the prompt phase's
+  own split of the same cumulative counters the decode fields come from, as session-level deltas
+  across the prefill chunks — the streamer is untouched. On a >RAM model the prompt is what the
+  user actually waits for before the first token, and until now the phase carried a single bare
+  wall number (`prefill_s`) with no compute/flash split; these keys are what settles which of
+  the two binds at a given prompt length (#173). The CSV `# summary` trailer carries the same
+  five raw fields under the same names and units — appended keys, so existing readers ignore
+  them. Host measurements in the PR.
+
 ## [0.22.0] - 2026-08-28
 
 ### Added

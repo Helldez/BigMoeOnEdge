@@ -320,6 +320,12 @@ average the two wait columns below, and `evictions` / `rereads` are the cache-ch
 the `moe-cache:` line — a read of an entry the cache had already held once is the only way a
 prefetch whose reads are all "useful" can still raise the byte count.
 
+The prefill phase's own split rides the trailer too: `prefill_cpu_s=<s>`, `prefill_read_mib=<f>`,
+`prefill_io_s=<s>`, `prefill_stall_s=<s>`, `prefill_mgmt_s=<s>` — the same raw values, names and
+units as the `BMOE_DONE` keys of those names (see the protocol notes above), appended keys so
+existing readers ignore them. A recorded run can now answer "what did the prompt cost, and in
+what" without the protocol line.
+
 The trailing block is the memory picture, added so a run can be diagnosed from its own file:
 
 | column | meaning |
@@ -474,6 +480,8 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
             "stall_s_tok":<float>,"mgmt_s_tok":<float>,"majflt_tok":<float>,"cpu_s_tok":<float>,
+            "prefill_cpu_s":<float>,"prefill_read_mib":<float>,"prefill_io_s":<float>,
+            "prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
             "token_demand_mib":<float>,"mtp_drafted":<int>,"mtp_accepted":<int>,"mtp_decodes":<int>,
             "mtp_draft_s_tok":<float>,"drafted_steps":<int>,"loop_overhead_s_tok":<float>,
             "reasoning":"<string>","text":"<string>"}
@@ -488,6 +496,16 @@ excludes both, so `1 / (1/tok_s + loop_overhead_s_tok)` is the rate a user actua
 `drafted_steps` is how many passes drafted at all: it equals `mtp_decodes` for the head and is lower
 for `--ngram`, which decodes plainly when it has no match. See [mtp.md](mtp.md) and
 [ngram.md](ngram.md).
+
+The `prefill_*` keys are the prompt phase's own attribution (#173): `prefill_read_mib` / `_io_s` /
+`_stall_s` / `_mgmt_s` are deltas of the same cumulative streamer counters the decode fields come
+from, taken across this turn's prefill chunks, and `prefill_cpu_s` is process CPU over the same
+window (an upper bound on compute-thread CPU-equivalent time, as everywhere). Read them with the
+same per-phase rules: `prefill_io_s` is summed lane busy time under overlap and can exceed the
+wall; `prefill_stall_s` is the union of stalled intervals. On a >RAM model the prompt is what the
+user actually waits for before the first token, and until these keys it had exactly one number
+(`prefill_s`) with no compute/flash split at all — the phase the decode-oriented counters could
+not see. They are `0` with streaming off (`prefill_cpu_s` still reported).
 
 `BMOE_READY`'s `n_expert_used` is the **effective** routing width, after any `--n-expert-used`
 override (`0` on a non-MoE model). A UI needs it to say anything sensible about
