@@ -191,6 +191,40 @@ struct GenTally {
     }
 };
 
+// The prompt phase's measurement, the prefill counterpart of GenTally above: the source's
+// counters are cumulative across a warm session, so begin() pins them (with the process CPU
+// clock) just above the prompt chunk loop and end() closes the deltas just after it — the same
+// wall-additive terms the decode fields report, read with the same rules. end()'s sample is the
+// phase boundary itself: the decode baseline below seeds its cursors from it, so prefill's end
+// and decode's start are one reading of the counters, not two that could drift apart.
+struct PrefillTally {
+    IExpertSource::Stats pre;
+    double cpu0 = 0.0;
+
+    // Deltas across this turn's prefill chunks — valid after end().
+    double cpu_seconds = 0.0;
+    double read_mib = 0.0;
+    double io_seconds = 0.0;
+    double stall_seconds = 0.0;
+    double mgmt_seconds = 0.0;
+
+    // The stats sample end() closed on, for the decode baseline to start from.
+    IExpertSource::Stats post;
+
+    void begin(bool moe_on, const IExpertSource & src) {
+        pre = moe_on ? src.stats() : IExpertSource::Stats{};
+        cpu0 = pio::process_cpu_seconds();
+    }
+    void end(bool moe_on, const IExpertSource & src) {
+        post = moe_on ? src.stats() : IExpertSource::Stats{};
+        cpu_seconds = pio::process_cpu_seconds() - cpu0;
+        read_mib = (double) ((long long) post.read_bytes - (long long) pre.read_bytes) / (1024.0 * 1024.0);
+        io_seconds = post.read_seconds - pre.read_seconds;
+        stall_seconds = post.stall_seconds - pre.stall_seconds;
+        mgmt_seconds = post.mgmt_seconds - pre.mgmt_seconds;
+    }
+};
+
 // The names of the expert weight tensors the streamer rebinds. "Dense" is defined by subtraction —
 // everything the model has that is NOT one of these — so both consumers below start by asking this
 // same question, and used to answer it with their own copy of the same triple loop.
@@ -1089,6 +1123,11 @@ RunResult Session::generate(const GenerateRequest & req,
     };
 
     // ── prefill (chunked by n_batch; positions auto-continue from the reused prefix) ──
+    // Prefill attribution (#173): the cumulative counters are pinned before the prompt chunks so
+    // their deltas across prefill carry the same wall-additive terms the decode phase reports.
+    // The session layer already holds everything needed; the streamer is untouched.
+    PrefillTally prefill_tally;
+    prefill_tally.begin(moe.enabled, im.source);
     const auto t_prefill0 = clock_t_::now();
     // Two predicates, deliberately distinct. spec_on is "the verify loop runs" — a wide batch, an
     // accept pass, a rollback — and both sources need all of it. mtp_on is "the draft comes from the
@@ -1133,6 +1172,11 @@ RunResult Session::generate(const GenerateRequest & req,
     // has actually got, so calling it before prefill would warn about a gap that is about to close.
     if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
     const double prefill_seconds = secs(t_prefill0, clock_t_::now());
+    // Prefill attribution, closed here (the begin() snapshot sits above the chunk loop): deltas
+    // of the cumulative counters across the prompt, the quantities the decode phase reports per
+    // token. Read with the same rules: io is summed lane busy time under overlap, stall is the
+    // union of stalled intervals, cpu is whole-process (upper bound on compute-thread time).
+    prefill_tally.end(moe.enabled, im.source);
     const float * logits = llama_get_logits_ith(ctx, -1);
 
     // ── greedy generation ──
@@ -1141,14 +1185,16 @@ RunResult Session::generate(const GenerateRequest & req,
     int n_gen = 0;
     double gen_seconds = 0.0;
 
-    // Baseline snapshot taken AFTER prefill: the summary reports the generation phase only,
-    // from real per-token deltas (prefill routes near the whole bank, so folding it into a
-    // per-token average would badly inflate the flash-I/O figure). In a warm session these
-    // counters carry the prior prompts' totals; the deltas make each prompt self-relative.
+    // Baseline seeded from prefill's closing sample: the summary reports the generation phase
+    // only, from real per-token deltas (prefill routes near the whole bank, so folding it into a
+    // per-token average would badly inflate the flash-I/O figure). Nothing runs between the two
+    // phases, so end()'s snapshot IS the decode baseline — one reading of the counters at the
+    // boundary instead of two that could drift apart. In a warm session these counters carry the
+    // prior prompts' totals; the deltas make each prompt self-relative.
     GenTally tally;
     tally.overlap = moe.overlap;
     if (moe.enabled) {
-        const IExpertSource::Stats st0 = im.source.stats();
+        const IExpertSource::Stats & st0 = prefill_tally.post;
         tally.prev_bytes = (long long) st0.read_bytes;
         tally.prev_io_s = st0.read_seconds;
         tally.prev_mgmt_s = st0.mgmt_seconds;
@@ -1456,6 +1502,11 @@ RunResult Session::generate(const GenerateRequest & req,
     s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
+    s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
+    s.prefill_read_mib = prefill_tally.read_mib;
+    s.prefill_io_seconds = prefill_tally.io_seconds;
+    s.prefill_stall_seconds = prefill_tally.stall_seconds;
+    s.prefill_mgmt_seconds = prefill_tally.mgmt_seconds;
     s.majflt_per_token = n_gen ? (double) tally.majflt / n_gen : 0.0;
     s.cpu_s_per_token = n_gen ? tally.cpu_seconds / n_gen : 0.0;
     if (moe.enabled) {

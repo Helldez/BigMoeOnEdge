@@ -80,7 +80,9 @@ public:
                      "drafted_steps=%lld "
                      "ra_committed=%lld ra_passthrough=%lld ra_agree_pct=%.1f ra_gemv_ms/tok=%.2f "
                      "ra_issue_ms/tok=%.2f ra_wd_ms/tok=%.2f drain_s/tok=%.3f adopt_s/tok=%.3f "
-                     "evictions=%lld rereads=%lld\n",
+                     "evictions=%lld rereads=%lld "
+                     "prefill_cpu_s=%.3f prefill_read_mib=%.1f prefill_io_s=%.3f "
+                     "prefill_stall_s=%.3f prefill_mgmt_s=%.3f\n",
                      s.n_generated, s.s_per_token, s.tokens_per_second, s.moe_read_mib, s.moe_io_seconds,
                      s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_hit_pct, s.n_prompt, s.load_seconds,
                      s.prefill_seconds, s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0,
@@ -93,7 +95,8 @@ public:
                      s.n_generated ? s.route_ahead_gemv_ns / 1e6 / s.n_generated : 0.0,
                      s.n_generated ? s.route_ahead_issue_ns / 1e6 / s.n_generated : 0.0,
                      s.n_generated ? s.route_ahead_wd_ns / 1e6 / s.n_generated : 0.0, s.moe_drain_s_per_token,
-                     s.moe_adopt_s_per_token, s.cache_evictions, s.cache_rereads);
+                     s.moe_adopt_s_per_token, s.cache_evictions, s.cache_rereads, s.prefill_cpu_seconds,
+                     s.prefill_read_mib, s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds);
         std::fflush(f_);
     }
 

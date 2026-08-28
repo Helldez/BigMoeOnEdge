@@ -113,6 +113,20 @@ struct RunSummary {
     double load_seconds = 0.0;
     double prefill_seconds = 0.0;
 
+    // Prefill-phase attribution (#173): the same wall-additive quantities the decode phase
+    // reports, as deltas of the streamer's cumulative counters across THIS turn's prefill
+    // chunks (plus process CPU). Before #169-style attribution existed prefill was a single
+    // bare wall number, so the phase a >RAM prompt actually waits on had no compute/flash
+    // split at all. Zero when streaming is off (prefill_cpu_seconds still reported: CPU is
+    // measured regardless). Same reading rules as the decode fields: io is the summed lane
+    // busy time under overlap, stall is the union of stalled intervals, and cpu covers the
+    // whole process — an upper bound on compute-thread CPU-equivalent time.
+    double prefill_cpu_seconds = 0.0;
+    double prefill_read_mib = 0.0;
+    double prefill_io_seconds = 0.0;
+    double prefill_stall_seconds = 0.0;
+    double prefill_mgmt_seconds = 0.0;
+
     // MoE streaming totals (zero when streaming is off)
     double moe_read_mib = 0.0;
     double moe_io_seconds = 0.0;
