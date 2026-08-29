@@ -28,9 +28,20 @@ Semantic Versioning.
 
   With the flag, once nothing reads through the mapping any more the engine unmaps the file,
   closes its section and reopens the reader lanes. Safety is decided by the session, not the
-  module: the dense policy must have copied its weights out (`anon` or `ahwb`, no tensor held back
-  as oversized) and, with the MTP draft on, every file tensor must be owned by some policy;
-  either condition failing skips the release and says why on stderr. llama.cpp is not patched and
+  module, and conservatively, because the release is correct only while *nothing* in the process
+  still dereferences the mapping and llama.cpp exposes no way to enumerate a loaded model's tensors
+  and prove it. The session declines on every shape where a surviving pointer is known: a dense
+  policy that keeps the weights mmap'd, an unowned file tensor under the MTP draft, and a **tied
+  output head**.
+
+  That last one had to be found the hard way and is why the flag stays opt-in. When a gguf carries
+  no `output.weight`, llama.cpp builds the head from the token embedding table and the model then
+  holds a second tensor over the same mapped bytes; the engine rebinds the tensor the gguf names,
+  the tied twin is not a gguf tensor, and no name-based accounting can see it. Releasing under it
+  faults inside the embedding table on the first decode — caught by the gemma4 byte-identity gate,
+  whose model has no `output.weight`, and now declined with a message. It is a blacklist of
+  known-unsafe shapes, not a proof of safety: a future architecture can invent another tensor the
+  gguf does not name, which is the reason this is not on by default. llama.cpp is not patched and
   still believes it owns its mapping, so what it will unmap and close at teardown is left in place
   as an inert placeholder. Off by default.
 

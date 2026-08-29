@@ -74,9 +74,19 @@ full rate. A lane opened while the section existed stays serialised after it is 
 the recovery needs both halves.
 
 `--release-mmap` does exactly that inside the engine: after load, once nothing reads through the
-mapping any more, the file is unmapped, its section closed and the reader lanes reopened. It needs
-`--dense-weights anon` or `ahwb` (the mapping may not be released while a dense tensor still reads
-through it) and it skips itself, loudly, if any file tensor is left unowned. Worth +46% decode on
+mapping any more, the file is unmapped, its section closed and the reader lanes reopened.
+
+It is opt-in, and it will stay opt-in until the safety question has a positive answer. Releasing is
+correct only while nothing in the process still dereferences the mapping, and llama.cpp offers no
+way to enumerate a loaded model's tensors and prove that, so the engine declines on each shape where
+a surviving pointer is known: a dense policy that keeps the weights mmap'd (`mmap`, `warm`, or a
+tensor held back as oversized), an unowned file tensor under the MTP draft, and a model whose gguf
+has no `output.weight`. That last case is a **tied output head**: llama.cpp then builds the head
+from the token embedding table, the model holds a second tensor over the same mapped bytes, and
+because the twin is not a gguf tensor no name-based check can see it — releasing under it faults
+inside the embedding table on the first decode. Every architecture that ties its embeddings is in
+that case, Gemma among them. A blacklist of known-unsafe shapes is not a proof of safety, which is
+exactly why the default is off. Worth +46% decode on
 the desktop host, byte-identical.
 
 Android is a different story with the same conclusion. The iobench cells above are flat there — f2fs

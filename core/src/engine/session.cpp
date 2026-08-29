@@ -917,12 +917,28 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         im.hook->set_row_source(im.source.row_source());
 
         // Drop the model file's mapping once nothing reads through it (core/src/io/mapping_release.h).
-        // Safety is decided here, not in the module: the dense policy must have copied its tensors
-        // out and no file tensor may be left unowned. Either condition failing skips the release and
-        // says why, so a run that asked for it and did not get it is never silent about the fact.
+        // Safety is decided here, not in the module, and it is decided conservatively: the release
+        // is only correct while NOTHING in the process still dereferences the mapping, and llama.cpp
+        // exposes no way to enumerate a loaded model's tensors and prove it. So each condition below
+        // is a case where a pointer into the mapping is known to survive, and any of them declines.
+        //
+        // The tied output head is the one that had to be found the hard way. When a gguf carries no
+        // `output.weight`, llama.cpp builds the head from the token embedding table, and the model
+        // then holds a SECOND tensor over the same mapped bytes. The engine rebinds the tensor the
+        // gguf names; the tied twin is not a gguf tensor, so no name-based accounting can see it, and
+        // it keeps pointing at the mapping. Releasing under it faults inside the embedding table on
+        // the first decode — reproduced on the gemma4 gate, whose model has no `output.weight`.
+        //
+        // This is a blacklist of known-unsafe shapes, not a proof of safety, which is why the flag
+        // stays opt-in: a future architecture can invent another tensor the gguf does not name.
+        const bool tied_output_head = offs.off_by_name.find("output.weight") == offs.off_by_name.end();
         if (cfg.moe.release_mmap) {
             if (im.source.dense_file_mapping_in_use()) {
                 std::fprintf(stderr, "bmoe: release-mmap skipped: dense weights still read through the mapping\n");
+            } else if (tied_output_head) {
+                std::fprintf(stderr,
+                             "bmoe: release-mmap skipped: no output.weight, so the head is tied to the embedding "
+                             "table and a tensor the gguf does not name still reads the mapping\n");
             } else if (!unaccounted.empty() && cfg.spec.is_mtp()) {
                 std::fprintf(stderr, "bmoe: release-mmap skipped: %zu file tensor(s) no policy owns (first: %s)\n",
                              unaccounted.size(), unaccounted.front().c_str());

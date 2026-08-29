@@ -112,6 +112,36 @@ applies `F_NOCACHE` to the descriptor instead of falling back to a buffered read
 caching hint rather than an I/O mode, so whether a live mapping of the same file interacts with it
 at all is an open question, and the answer is one `bmoe-iobench --mmap` cell on a Mac.
 
+## What the gates caught: a tied output head keeps a pointer nobody can see
+
+Turning the flag on by default failed the `moe_gates_gemma4` byte-identity gate with a segfault, and
+the reason is worth recording because it bounds what this feature can ever promise.
+
+A bisect of the release (unmap the view but keep the section; close the section but keep the view)
+put the fault on **unmapping**, so something still dereferenced the mapping. A vectored exception
+handler reported the faulting addresses as file offsets 12192 and 79264, both inside
+`token_embd.weight`. But the accounting said every gguf tensor was owned by a policy, and it was
+right: the tiny gemma4 model has **no `output.weight`**, so llama.cpp builds the output head from
+the embedding table and the model carries a *second* tensor over the same mapped bytes. The engine
+rebinds the tensor the gguf names; the twin is not a gguf tensor, so no name-based accounting can
+ever see it. The qwen3moe model, which has a separate `output.weight`, passes.
+
+The engine now declines when the gguf has no `output.weight`, which covers every architecture that
+ties its embeddings. That is a blacklist, not a proof: nothing stops a future architecture from
+holding another pointer the gguf does not name, and llama.cpp exposes no way to enumerate a loaded
+model's tensors and settle it. This is the whole reason the flag is opt-in.
+
+Two alternatives were measured and refuted while looking for a design that could not fail this way:
+
+- **Close the section handle and keep the view mapped.** Would be safe by construction — no pointer
+  can dangle — but it does not lift the serialisation: 792 MiB/s against 790 with the mapping fully
+  alive. It is the view, not the handle.
+- **Read buffered instead of unbuffered while the mapping is alive.** Buffered reads do escape the
+  serialisation, but the microbenchmark cannot price it honestly: `--buffered --mmap` measures
+  3406 MiB/s precisely because it is being served from the page cache the mapping populated, which
+  is the pollution O_DIRECT exists to avoid on a model many times larger than RAM. Answering it
+  properly needs an engine-level A/B on Windows, not an iobench cell.
+
 ## Two things that are NOT this, checked because they looked like it
 
 **The expert-cache stall accounting is not a hot-path cost.** `StallUnion` (0.23.0) takes a
