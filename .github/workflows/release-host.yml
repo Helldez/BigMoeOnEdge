@@ -45,7 +45,8 @@ jobs:
             cmake_extra: ""
           - os: windows-latest
             target: windows-x86_64
-            cmake_extra: -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+            # Static MSVC runtime: the exe must not depend on the VC++ Redistributable being installed.
+            cmake_extra: -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
     runs-on: ${{ matrix.os }}
     steps:
       - name: Resolve tag
@@ -101,12 +102,26 @@ jobs:
             strip "$NAME/bmoe-cli" || true
           fi
           cp LICENSE "$NAME/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            EXE='.\bmoe-cli.exe'; SHELL_NAME='PowerShell or cmd'
+          else
+            EXE='./bmoe-cli'; SHELL_NAME='a terminal'
+          fi
           cat > "$NAME/README.txt" <<EOF
-          bmoe-cli $TAG, ${{ matrix.target }} (portable build: x86_64 assumes AVX2, aarch64 assumes
-          armv8.2-a+dotprod+fp16). If it fails to start on your CPU, build from source:
+          bmoe-cli $TAG, ${{ matrix.target }}
+
+          This is a command-line program. Double-clicking it opens a console that closes again at
+          once, because it was given no model. Open $SHELL_NAME in this folder and run:
+
+            $EXE -m path/to/model.gguf --moe-stream --overlap --dense-weights anon --cache-mb 2000 --io-threads 4 -t 8 -n 64 --chatml --no-think -p "Explain MoE routing."
+
+          -m is the only required flag; $EXE --help lists the rest and $EXE --list-archs the
+          supported MoE architectures. Portable build: x86_64 assumes AVX2, aarch64 assumes
+          armv8.2-a+dotprod+fp16. If it fails to start on your CPU, build from source with
           scripts/build-host.sh in the repository, one command.
 
-          Benchmark on this machine, printing the tables for a benchmark-report issue:
+          Benchmark on this machine, printing the tables for a benchmark-report issue (Linux and
+          macOS; on Windows run the protocol command from docs/community-benchmarks.md by hand):
             BMOE_CLI=\$PWD/bmoe-cli scripts/bench-report.sh /path/to/model.gguf
           from a checkout of https://github.com/Helldez/BigMoeOnEdge (docs/community-benchmarks.md).
           EOF
