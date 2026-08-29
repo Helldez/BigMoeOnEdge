@@ -83,6 +83,17 @@ Semantic Versioning.
 - `--cache-mb auto` no longer reserves the size of a row-streamed table for a conversion that will
   not happen. It deducts the window instead, so the cache gets the RAM the policy freed rather than
   the engine planning for both.
+- **macOS reads uncached (`F_NOCACHE`), and `o_direct` reports the open's real outcome everywhere.**
+  A direct request on Apple applies `fcntl(F_NOCACHE, 1)` to every reader descriptor — the kernel
+  stops caching that file's pages — instead of silently returning a buffered fd (Apple has no
+  `O_DIRECT`). It is a caching hint, not an I/O mode: no alignment contract, no DMA promise, so a
+  direct reader on Apple keeps ordinary `pread` semantics and skips the O_DIRECT bounce path rather
+  than inheriting Linux-only alignment requirements. Independently, the `o_direct` telemetry field
+  (CSV preamble, decode-trace header, streaming banner) now comes from what the shard opens
+  achieved — the AND across shards, after every platform refusal and open-time downgrade — instead
+  of from the requested configuration, so a run served buffered says `0` on every platform. Host
+  measurements in the PR (#179).
+
 ## [0.23.0] - 2026-08-29
 
 ### Fixed

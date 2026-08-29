@@ -247,6 +247,10 @@ private:
     // them; the dense-weights loader constructs its own, so their O_DIRECT choices are independent
     // (see docs/architecture.md). FileReader is not movable, hence the unique_ptr.
     std::vector<std::unique_ptr<FileReader>> readers_;
+    // Whether every shard reader actually got cache bypass (see FileReader::direct) — the AND over
+    // shards, settled at init before any worker thread exists and reported verbatim by stats(). The
+    // run-level o_direct fact: what the platform served, not what the flag asked for.
+    bool effective_direct_ = false;
 
     std::vector<LayerExperts> layers_;
 

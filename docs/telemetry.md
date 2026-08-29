@@ -291,6 +291,11 @@ effective top-k after any override. Fields to read carefully:
   not reproducible except through `seed`.
 - `load_all=1` reads the whole expert set, so its `read_bytes` means something different from a
   selective run's.
+- `o_direct=<0|1>` is what the shard opens **achieved**, not what the flag asked for: a platform can
+  refuse the request, and the open-time verify can downgrade a shard that mis-serves it to buffered.
+  On a Mac the request is served with `F_NOCACHE` — it turns data caching off for the descriptor
+  without imposing any of Linux `O_DIRECT`'s alignment or DMA semantics — so `o_direct=1` there
+  means "uncached descriptor", never "O_DIRECT".
 - `mtp=1` means the run used the model's MTP head to draft and verified a whole group per decode.
   No weight is skipped and nothing is approximated, but the text is **not** guaranteed identical to
   an unspeculated greedy run: a verify decode is a wide batch, and batch width moves the last bits on

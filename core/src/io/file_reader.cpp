@@ -19,8 +19,8 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
     direct_ = direct;
     const int n = lanes < 1 ? 1 : lanes;
 
-    pio::fd_t primary = pio::open_read(path.c_str(), direct_);
-    if (!pio::fd_ok(primary) && direct_) { // the platform refused O_DIRECT outright — try buffered
+    pio::fd_t primary = pio::open_read(path.c_str(), direct, &direct_); // direct_ := the open's real outcome
+    if (!pio::fd_ok(primary) && direct) { // the platform refused the direct open outright — try buffered
         direct_ = false;
         primary = pio::open_read(path.c_str(), false);
     }
@@ -30,12 +30,17 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
     }
     fsize_ = pio::file_size(primary);
 
+    // The read mechanics follow the platform's direct MODE, not the direct FACT: O_DIRECT and
+    // FILE_FLAG_NO_BUFFERING reject unaligned windows and need the bounce and the buffered tail fd;
+    // Apple's F_NOCACHE is a caching hint, so an uncached reader there keeps plain preads.
+    aligned_reads_ = direct_ && pio::direct_needs_alignment();
+
     // Verify O_DIRECT actually returns correct bytes on this storage. On some emulated / FUSE-backed
     // volumes (e.g. an app-private dir under /storage/emulated) the open SUCCEEDS but direct reads
     // return garbage, silently corrupting weights → nonsense output. Compare one aligned block read
     // directly against the same block read buffered; on any mismatch, fall back to buffered I/O for
     // this file. On real filesystems (adb-pushed models, desktop) the two match and O_DIRECT is kept.
-    if (direct_ && fsize_ >= (uint64_t) align_) {
+    if (aligned_reads_ && fsize_ >= (uint64_t) align_) {
         uint64_t voff = (fsize_ / 2) & ~(uint64_t) (align_ - 1);
         if (voff + align_ > fsize_) voff = 0;
         void * dbuf = pio::alloc_aligned(align_, align_);
@@ -59,6 +64,7 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
             std::fprintf(stderr, "bmoe: reopen after O_DIRECT check failed\n");
             return false;
         }
+        aligned_reads_ = aligned_reads_ && direct_; // a verify downgrade reverts the mechanics too
     }
 
     // A private fd + bounce per lane so concurrent reads never contend. Lane 0 inherits the fd already
@@ -69,7 +75,7 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
     bounce_sz_.assign(n, 0);
     for (int lane = 0; lane < n; ++lane) {
         fds_[lane] = (lane == 0) ? primary : pio::open_read(path.c_str(), direct_);
-        fds_buf_[lane] = direct_ ? pio::open_read(path.c_str(), false) : pio::fd_invalid;
+        fds_buf_[lane] = aligned_reads_ ? pio::open_read(path.c_str(), false) : pio::fd_invalid;
         if (!pio::fd_ok(fds_[lane])) {
             std::fprintf(stderr, "bmoe: lane %d open failed\n", lane);
             close();
@@ -78,15 +84,17 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
         // Not fatal — the buffered fd is only needed for a read that runs into a sub-alignment EOF
         // tail, which expert slices never do. But say so here, where the cause (fd pressure) is still
         // visible, rather than leaving a later tail read to fail with an unexplained EINVAL.
-        if (direct_ && !pio::fd_ok(fds_buf_[lane]))
+        if (aligned_reads_ && !pio::fd_ok(fds_buf_[lane]))
             std::fprintf(stderr, "bmoe: lane %d buffered tail fd unavailable — EOF-tail reads will fail\n", lane);
-        bounces_[lane] = pio::alloc_aligned(align_, bounce_cap);
-        if (!bounces_[lane]) {
+        // No bounce where reads stay plain (Apple F_NOCACHE): a per-lane aligned reservation next to
+        // the expert cache would buy nothing there.
+        bounces_[lane] = aligned_reads_ ? pio::alloc_aligned(align_, bounce_cap) : nullptr;
+        if (aligned_reads_ && !bounces_[lane]) {
             std::fprintf(stderr, "bmoe: lane %d bounce alloc failed\n", lane);
             close();
             return false;
         }
-        bounce_sz_[lane] = bounce_cap;
+        bounce_sz_[lane] = aligned_reads_ ? bounce_cap : 0;
     }
     return true;
 }
@@ -95,12 +103,12 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
     if (nbytes == 0) return 0;
     const pio::fd_t fd = fds_[lane];
 
-    // Buffered mode: no alignment constraint, so the bounce buys nothing. Read straight into the
-    // caller's memory. This is the fallback path (the platform refused O_DIRECT, or the open-time
-    // verify caught storage that mis-serves it) and is already the slow mode — it must not also pay
-    // an extra copy of every byte plus a leading partial-block over-read just to share the mechanics
-    // O_DIRECT needs.
-    if (!direct_) {
+    // Plain reads: no alignment constraint, so the bounce buys nothing. Read straight into the
+    // caller's memory. This is the path for any reader whose direct mode imposes no alignment — the
+    // fallback after a refused open or a failed open-time verify, and Apple's F_NOCACHE, which is
+    // uncached without being an I/O mode. It must not also pay an extra copy of every byte plus a
+    // leading partial-block over-read just to share the mechanics O_DIRECT needs.
+    if (!aligned_reads_) {
         const uint64_t end = (fsize_ && off + nbytes > fsize_) ? fsize_ : off + nbytes;
         const auto t0 = clock_t_::now();
         for (uint64_t a = off; a < end;) {
