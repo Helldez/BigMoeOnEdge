@@ -162,6 +162,9 @@ jobs:
       - name: Build debug APK (dev flavor — sideloaded, all-files access)
         working-directory: examples/android
         run: ./gradlew assembleDevDebug --no-daemon
+      - name: App unit tests
+        working-directory: examples/android
+        run: ./gradlew testDevDebugUnitTest --no-daemon
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:

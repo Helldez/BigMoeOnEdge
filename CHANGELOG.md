@@ -94,6 +94,14 @@ Semantic Versioning.
   of from the requested configuration, so a run served buffered says `0` on every platform. Host
   measurements in the PR (#179).
 
+### Fixed
+- A sharded catalog entry (DeepSeek V4 Flash, Qwen3.8-Flash-Next) read as on-device as soon as its
+  first shard landed, which is the smallest file of the set and arrives seconds into the download:
+  the row lost its progress bar, a Run on the incomplete set failed at load, and if the download
+  chain died there was no Download button left to resume it. The legacy-merged-file rule, meant for
+  a single-file gpt-oss from an earlier release, now applies only when the entry's file name is not
+  one of its shards. The app module gains its first JVM unit test for the rule, run in CI.
+
 ## [0.23.0] - 2026-08-29
 
 ### Fixed

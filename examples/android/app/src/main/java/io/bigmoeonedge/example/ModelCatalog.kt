@@ -207,7 +207,11 @@ object ModelCatalog {
         // still in flight makes the whole entry DOWNLOADING: the set is downloaded sequentially,
         // so exactly one transfers at a time but the entry is one unit of progress to the user.
         e.shards.isNotEmpty() -> when {
-            e.fileName in present || e.shards.all { it.fileName in present } -> Status.ON_DEVICE
+            // The legacy-name branch must not fire when fileName IS the first shard: that file
+            // lands in seconds and would mark the whole set on-device while shards 2..N are still
+            // in flight (Run on an incomplete set, and no Download button left to resume it).
+            (e.fileName in present && e.shards.none { it.fileName == e.fileName }) ||
+                e.shards.all { it.fileName in present } -> Status.ON_DEVICE
             e.shards.any { it.fileName in downloading } -> Status.DOWNLOADING
             else -> Status.AVAILABLE
         }

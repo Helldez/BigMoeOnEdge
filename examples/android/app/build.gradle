@@ -128,6 +128,9 @@ dependencies {
     // resumes multi-GB transfers (see DownloadWorker). Brings kotlinx-coroutines-android too.
     implementation 'androidx.work:work-runtime-ktx:2.9.1'
 
+    // Pure-Kotlin rules (catalog status, ...) get JVM unit tests: ./gradlew testDevDebugUnitTest
+    testImplementation 'junit:junit:4.13.2'
+
     def composeBom = platform('androidx.compose:compose-bom:2024.09.02')
     implementation composeBom
     implementation 'androidx.compose.ui:ui'
