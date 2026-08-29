@@ -82,6 +82,11 @@ Flags after the model path reach `bmoe-cli` verbatim (`--no-think` for gpt-oss,
 default row rather than replacing it. To understand the knobs first, see
 [benchmark-method.md](benchmark-method.md).
 
+Whatever you run, check the `mode:` line before reporting a number. It says `expert streaming` when
+the run measured this engine; if it says `mmap`, `--moe-stream` was missing and the run measured
+stock llama.cpp instead. A row like that is still welcome as a baseline, it just has to be labelled
+as one.
+
 ### On a phone
 
 `bench-report.sh` is Linux and macOS only. On Android, push `bmoe-cli` (from
