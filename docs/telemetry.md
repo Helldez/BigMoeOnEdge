@@ -141,6 +141,21 @@ tag, where the useful fraction sits at ~100% by construction: the "speculated" i
 committed routing itself (see [route-ahead.md](route-ahead.md)). The CSV preamble records which
 was active (`prefetch=` / `predict_prefetch=` / `route_ahead=`).
 
+With `--row-stream` a `moe-rows:` line is added, and only when a table actually qualified:
+
+```
+moe-rows: <mib> MiB of row-gathered table(s) off the resident set, <mib> MiB resident,
+<n> rows gathered, <n> reads (<mib> MiB)
+```
+
+The first two numbers are the trade: what those tables would have occupied under the ordinary
+dense policy, and what they occupy now. The last three are what buying it cost in flash - read
+them against the `moe-stream:` byte count on the same run. A second line appears only on failure
+(`<n> FAILED reads - this run's output is not trustworthy`); since the tables are bound to
+reserved address space, a fetch that did not happen is memory that was never written, so that line
+means the generated text is garbage rather than merely slow. See
+[row-gathered-tables.md](row-gathered-tables.md).
+
 With `--route-ahead N` a `moe-route-ahead:` line is added:
 
 ```
@@ -305,7 +320,7 @@ line likewise gains `stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>`, `cpu_
 floor to defend; see [pressure.md](pressure.md)), `experts_routed=<n>` / `experts_dropped=<n>` (what
 [cache-aware dropping](expert-dropping.md) actually discarded during generation — the flag sets a
 threshold, not a rate, so this is the only record of the trade a run made) and
-`layer_demand_MiB=<f>` (the widest layer's routed
+`row_table_MiB=<f>` / `row_resident_MiB=<f>` / `row_rows=<n>` / `row_reads=<n>` / `row_read_MiB=<f>` / `row_evictions=<n>` / `row_io_errors=<n>` (the row-gathered tables described above; all zero when `--row-stream` is off or nothing qualified) and `layer_demand_MiB=<f>` (the widest layer's routed
 bytes: the mechanical floor the cache must be able to stage) and `loop_overhead_s/tok=<s>` (see
 [below](#what-toks-does-not-include)) and, under `--mtp` or `--ngram`, `mtp_drafted=<n>` /
 `mtp_accepted=<n>` / `mtp_decodes=<n>` (the acceptance rate and how many decodes the generation

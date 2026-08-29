@@ -1,5 +1,7 @@
 #include "expert_stream_source.h"
 
+#include "row_stream.h"
+
 #include "ggml.h"
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
 #include "ggml-cpu.h" // ggml_cpu_set_expert_ready_hook (fork-only)
@@ -99,8 +101,19 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             // never converted, it stays mmap'd (qwen4exp's ~28.8 GB n-gram table). Counting it here
             // would reserve the whole of RAM for a conversion that will not happen and size the
             // cache to nothing.
-            for (const DenseTensorRef & d : dense_tensors_)
-                if (d.tensor && d.size <= avail) dense_pending += d.size;
+            for (const DenseTensorRef & d : dense_tensors_) {
+                if (!d.tensor || d.size > avail) continue;
+                // Nor is a row-gathered table converted: it costs its window, not its size, and
+                // reserving the difference would hand the cache back exactly what this policy freed.
+                bool row = false;
+                for (const DenseTensorRef & r : row_tensors_)
+                    if (r.tensor == d.tensor) {
+                        row = true;
+                        break;
+                    }
+                dense_pending += row ? 0 : d.size;
+            }
+            if (!row_tensors_.empty()) dense_pending += row_budget_ ? row_budget_ : RowStream::default_budget_bytes;
             const uint64_t deduct = std::min(avail, dense_pending);
             if (deduct > 0) {
                 avail -= deduct;
@@ -250,6 +263,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges(readers_.size());
         for (size_t s = 0; s < readers_.size(); ++s)
             ranges[s] = DenseWeights::byte_ranges(std::move(exp[s]), readers_[s]->file_size());
+        dense_.set_row_gathered(std::move(row_tensors_), row_budget_);
         if (!dense_.init(cfg.dense_weights, shard_paths, align_, std::move(ranges), std::move(dense_tensors_))) {
             std::fprintf(stderr, "bmoe: dense-weights init failed\n");
             return false;
@@ -1427,6 +1441,7 @@ void ExpertStreamSource::shutdown() {
     // contract as the slot and LRU buffers freed above.
     dense_.shutdown();
     dense_tensors_.clear();
+    row_tensors_.clear();
     readers_.clear(); // closes every shard's lane fds and frees the bounces
     jobs_.clear();
     layers_.clear();

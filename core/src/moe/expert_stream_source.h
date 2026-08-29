@@ -75,6 +75,19 @@ public:
     // The runtime builds the list from the captured weight leaves and the gguf offsets.
     void set_dense_tensors(std::vector<DenseTensorRef> dense) { dense_tensors_ = std::move(dense); }
 
+    // Supply the subset of those weights the graph only ROW-GATHERS, which the dense policy serves
+    // from flash inside a `budget_bytes` window instead of making resident (see bmoe/row_source.h).
+    // Call BEFORE init, like set_dense_tensors; an empty list turns the policy off.
+    void set_row_tensors(std::vector<DenseTensorRef> rows, uint64_t budget_bytes) {
+        row_tensors_ = std::move(rows);
+        row_budget_ = budget_bytes;
+    }
+
+    // The row policy after init, for the graph adapter that must make rows present before a gather
+    // node runs; null when nothing qualified. Its accounting, for telemetry, is row_stats().
+    IRowSource * row_source() const { return dense_.row_source(); }
+    RowSourceStats row_stats() const { return dense_.row_stats(); }
+
     // IExpertSource
     bool load_layer(int il, const int32_t * ids, int n_ids) override;
     void prefetch(int il, const int32_t * ids, int n_ids) override;
@@ -256,6 +269,8 @@ private:
     static constexpr unsigned dense_probe_every = 128; // load_layer calls between dense samples (~2-3 tokens)
     unsigned dense_probe_tick_ = 0;
     std::vector<DenseTensorRef> dense_tensors_; // pending, set before init; moved into dense_
+    std::vector<DenseTensorRef> row_tensors_;   // pending row-gathered subset; moved into dense_
+    uint64_t row_budget_ = 0;
     DenseWeights dense_;
 
     // Two measured demands. Both are pure telemetry now that the governor is gone — nothing here

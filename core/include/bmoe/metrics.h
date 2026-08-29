@@ -154,6 +154,18 @@ struct RunSummary {
     // claiming its reads are useful is doing it here.
     long long cache_evictions = 0;
     long long cache_rereads = 0;
+
+    // Row-gathered dense tables served from flash (MoeStreamConfig::row_stream). The pair that says
+    // whether the policy paid: row_table_mib is what those tables would have occupied resident,
+    // row_resident_mib what they occupy now, and row_read_mib what buying that cost in flash. Zero
+    // throughout when the policy is off or no table qualified.
+    double row_table_mib = 0.0;
+    double row_resident_mib = 0.0;
+    double row_read_mib = 0.0;
+    long long row_rows = 0;       // row indices gathered, duplicates included
+    long long row_slab_reads = 0; // gather misses that went to flash
+    long long row_evictions = 0;
+    long long row_io_errors = 0; // non-zero means a decode read bytes that were never fetched
     // The named eval-thread waits (see TokenMetrics): the async load's previous-batch drain (part
     // of the compute residual) and the route-ahead adoption wait (part of mgmt), per token.
     double moe_drain_s_per_token = 0.0;

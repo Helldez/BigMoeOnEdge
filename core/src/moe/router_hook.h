@@ -31,6 +31,7 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/predict_stats.h"
+#include "bmoe/row_source.h"
 #include "expert_stream_source.h"
 
 #include <atomic>
@@ -72,7 +73,23 @@ public:
     // against the gguf tensor set, which those do not belong to. Only .tensor is meaningful here.
     const std::unordered_map<std::string, ggml_tensor *> & captured_weights() const { return captured_weights_; }
 
+    // After capture, the subset of those weights the graph only ever GATHERS ROWS from — the shape a
+    // token embedding table has, and the one residency policy can exploit (see IRowSource). A name is
+    // in this set only if EVERY node that referenced the tensor was a row gather taking it as the
+    // table, and every such gather's index was materialized before the node ran (a graph input, or a
+    // view of one). One reference of any other kind — a matmul over the same tensor, which is what
+    // tied embeddings used as the output head look like — disqualifies it, because the whole tensor
+    // is then read and row residency would be a fault per row.
+    //
+    // Derived from what the graph did, not from tensor names: no architecture appears in this rule,
+    // and a model whose embedding table is multiplied simply never qualifies.
+    std::unordered_set<std::string> row_gathered_weights() const;
+
     void set_source(IExpertSource * src) { source_ = src; } // non-null → stream mode
+
+    // Install the row-gathered residency policy (see bmoe/row_source.h). Non-null makes the stream
+    // pass check every gather node against it and make the rows present before the node runs.
+    void set_row_source(IRowSource * src) { row_source_ = src; }
 
     // Temporal prefetch depth K: while streaming layer l, hint the source to read ahead the
     // experts the previous token used at layers l+1..l+K. 0 (default) disables it.
@@ -250,10 +267,15 @@ private:
     MoeRecipe recipe_;
     int n_layer_ = 0;
     bool capturing_ = false;
-    IExpertSource * source_ = nullptr; // non-null → stream mode
+    IExpertSource * source_ = nullptr;  // non-null → stream mode
+    IRowSource * row_source_ = nullptr; // row-gathered dense tables, when the policy is on
     std::vector<LayerExperts> captured_;
-    std::unordered_map<std::string, ggml_tensor *> captured_weights_; // non-expert weight leaves (see captured_weights)
-    std::vector<int32_t> gathered_;                                   // reused scratch for stream-mode id gather
+    std::unordered_map<std::string, ggml_tensor *> captured_weights_;
+    // Capture-time evidence for row_gathered_weights(): every weight seen as the TABLE of a row
+    // gather, and every weight seen in any way that rules that out. The verdict is the difference.
+    std::unordered_set<std::string> row_gathered_;
+    std::unordered_set<std::string> row_disqualified_; // non-expert weight leaves (see captured_weights)
+    std::vector<int32_t> gathered_;                    // reused scratch for stream-mode id gather
 
     // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
     // during prefill). Empty when prefetch is off or a layer has not been seen yet.

@@ -103,6 +103,23 @@ struct MoeStreamConfig {
     //             and the policy the Android app ships by default — the CLI matches it here.
     DenseWeightsMode dense_weights = DenseWeightsMode::Anonymous;
 
+    // ── row-gathered dense tables served from flash (see bmoe/row_source.h) ──────────
+    // A dense weight the graph only ever GATHERS ROWS from — a token embedding table is the pure
+    // case — is resident for nothing: one row of it is read per decoded token and the rest of the
+    // hundreds of MiB sits in RAM the expert cache is competing for. With this on, such a table is
+    // bound to reserved address space and only the rows the graph asks for are pulled from flash,
+    // inside a bounded window.
+    //
+    // WHICH tables qualify is decided by the graph at capture time and by nothing else: every
+    // reference to the tensor must be a row gather with a readable index. No architecture, tensor
+    // name or size threshold appears in the rule, so a model whose embeddings are also used as the
+    // output head simply never qualifies, on any architecture, without a special case for it.
+    //
+    // Off by default: it trades residency for a read per gather miss, and which way that trade goes
+    // is a measurement per device class, not a foregone conclusion.
+    bool row_stream = false;
+    int row_stream_mb = 64; // resident window across all row-streamed tables, in MiB
+
     // ── cache-aware expert dropping (lossy; opt-in) ──────────────────────────────────
     // Skip a routed expert when it is a cache MISS *and* the router weighted it below
     // drop_cold_frac × (1 / n_expert_used) — i.e. below that fraction of the uniform share a

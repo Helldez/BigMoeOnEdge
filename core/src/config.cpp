@@ -123,6 +123,17 @@ ValidationResult validate(const RunConfig & cfg) {
                     "streamer isolates, and off the streaming path there is nothing to commit to");
     }
 
+    // The row policy is discovered during the streamer's capture decode and acted on in its eval
+    // callback; without streaming neither exists. It is also not a dense-mode variant — it applies
+    // under every DenseWeightsMode, because what it changes is which tensors the mode is applied to.
+    if (cfg.moe.row_stream && !cfg.moe.enabled) {
+        return fail("moe.row_stream requires moe.enabled: the tables it serves are discovered by the "
+                    "capture pass and fed by the eval callback, neither of which runs off the streaming path");
+    }
+    if (cfg.moe.row_stream_mb < 0) {
+        return fail("moe.row_stream_mb must be >= 0 (0 = the built-in window)");
+    }
+
     if (cfg.moe.enabled) {
         const MoeStreamConfig & m = cfg.moe;
         if (m.io_threads < 1 || m.io_threads > MoeStreamConfig::io_threads_max) {
