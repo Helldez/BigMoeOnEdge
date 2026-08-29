@@ -75,6 +75,12 @@ Semantic Versioning.
 - **"Prefer cached experts" in the app**, under Speed / quality → Experimental, as a percentage of
   the score range (10 to 30, default off, disabled with the cache off), with a warning from 20 % up.
   Listed under the app's Experimental group.
+- **Qwen3.8-Flash-Next Q2_K in the app catalog**, next to the UD-IQ3_XXS. Its dense side is at
+  2-4 bit: 2.4 GB pinned instead of 4.3, on a phone where that set is walked every token and is what
+  caps the expert cache. A plain `llama-quantize` build without an importance matrix, so the experts
+  are coarser than the UD file's; the row says so. Six shards, ~80 GB, downloaded and resumed like
+  the other sharded entries. Every published dynamic quant of this model keeps the dense side at
+  5-8 bit whatever its overall size; this is the one file that does not.
 
 ### Changed
 - The CSV summary trailer gains `row_table_MiB`, `row_resident_MiB`, `row_rows`, `row_reads`,

@@ -184,6 +184,57 @@ object ModelCatalog {
                 ),
             ),
         ),
+        Entry(
+            title = "Qwen3.8-Flash-Next",
+            quant = "Q2_K",
+            fileName = "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00001-of-00006.gguf",
+            approxBytes = 80_447_449_856L,
+            url = null,
+            // The same model with the DENSE side at 2-4 bit: 2.4 GB pinned instead of the UD file's
+            // 4.3 GB, on a phone where that set is walked every token and is what caps the expert
+            // cache. A plain llama-quantize build (no importance matrix), so its experts are coarser
+            // than the UD-IQ3_XXS ones; the trade is RAM for the cache against expert quality. The
+            // published dynamic quants all keep the dense side at 5-8 bit, whatever their size.
+            blurb = "Same model, dense side at 2-4 bit: 2.4 GB pinned instead of 4.3. ~80 GB on disk.",
+            shards = listOf(
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00001-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00001-of-00006.gguf?download=true",
+                    535_376_896L,
+                ),
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00002-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00002-of-00006.gguf?download=true",
+                    28_800_138_432L,
+                ),
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00003-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00003-of-00006.gguf?download=true",
+                    13_998_686_336L,
+                ),
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00004-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00004-of-00006.gguf?download=true",
+                    13_809_369_312L,
+                ),
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00005-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00005-of-00006.gguf?download=true",
+                    13_782_644_992L,
+                ),
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00006-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00006-of-00006.gguf?download=true",
+                    9_521_233_888L,
+                ),
+            ),
+        ),
     )
 
     /**

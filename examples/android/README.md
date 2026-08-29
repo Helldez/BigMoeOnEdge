@@ -111,13 +111,21 @@ the first one:
 adb push DeepSeek-V4-Flash-0731-UD-IQ2_M-0000*-of-00003.gguf /data/local/tmp/bmoe/
 ```
 
-Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk, Qwen3.8-Flash-Next UD-IQ3_XXS ~82 GB.
+Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk, Qwen3.8-Flash-Next UD-IQ3_XXS ~82 GB
+and its Q2_K build ~80 GB.
 
 Qwen3.8-Flash-Next needs **Dense weights = Pinned (dma-buf)** in Settings. Its dense side is 4.3 GB
 and every token walks it: with Anon the kernel swaps it to zram and single tokens stall for 10-20 s,
 with Mmap it is refaulted from flash every token. Its 51B n-gram table is held back automatically and
 stays mmap'd whatever the setting; the engine says so on stderr at load. Keep the expert cache at
 1000-1500 MiB on a 12 GB phone: the pinned dense set leaves no room for more.
+
+The catalog also offers a **Q2_K build of Qwen3.8-Flash-Next** (DevQuasar) whose dense side is at
+2-4 bit: 2.4 GB pinned instead of 4.3, which is ~2 GB the expert cache can have back. It is a plain
+`llama-quantize` build without an importance matrix, so its experts are coarser than the UD-IQ3_XXS
+ones; pick it when the cache, not expert precision, is what limits the phone. Every published dynamic
+quant of this model keeps the dense side at 5-8 bit whatever its overall size, which is why the two
+builds sit side by side.
 
 **Stream row-gathered tables** takes ~500 MiB more off that pinned set on this model, and 515 MiB
 on Qwen3.6: the token embedding table is read one row per token, so it does not need to be in
