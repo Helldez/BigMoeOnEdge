@@ -4,7 +4,9 @@
 the routing is committed, every resident expert's score is raised by `L × (this token's score
 range)` and the top-k is taken again. A resident expert wins a slot only when it was within that
 margin of the one it displaces: a confident routing is untouched, a near-tie goes to the expert
-already in RAM. The same number of experts runs; fewer of them cost a flash read. Off by default.
+already in RAM. The same number of experts runs; fewer of them cost a flash read. Off by default,
+and **experimental**: everything below was measured on one model on the desktop, and the
+thermally matched on-device A/B is still owed before it earns a default.
 
 It is the third lossy knob in the engine, after [turbo top-k](../README.md#speed-and-quality) and
 [cache-aware dropping](expert-dropping.md), and it sits one step upstream of the second: dropping

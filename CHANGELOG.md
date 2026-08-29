@@ -42,10 +42,8 @@ Semantic Versioning.
   with a window of one slab so nearly every gather re-reads what the last one handed back. New
   port `bmoe/row_source.h`, adapter `core/src/moe/row_stream.cpp`, docs in
   `docs/row-gathered-tables.md`, app switch **Stream row-gathered tables**.
-
-### Added
-- **`--expert-substitute L`: cache-aware expert substitution.** Before a decode routing is
-  committed, every expert already in the LRU cache gets its score raised by `L` times this token's
+- **`--expert-substitute L`: cache-aware expert substitution (experimental).** Before a decode
+  routing is committed, every expert already in the LRU cache gets its score raised by `L` times this token's
   score range and the top-k is taken again, so a resident expert takes a slot only when the router
   scored it within that margin of the one it displaces. The same number of experts runs; fewer of
   them cost a flash read, and the weights are the router's own. The mechanism is the
@@ -58,8 +56,8 @@ Semantic Versioning.
   tinyMMLU 88 → 84 of 100 (94 identical predictions), HumanEval (first 50) 42 → 42 with 69 instead
   of 292 MiB of flash per token and 2.36 → 5.53 tok/s across a warm session; `0.30` costs 25 % in
   perplexity, `0.60`
-  destroys the model (perplexity 31) while its prose still reads well. Off by
-  default, decode only, refused without a cache and outside `[0, 1]`. The run summary, the CSV
+  destroys the model (perplexity 31) while its prose still reads well. Experimental: one model,
+  desktop numbers, the on-device A/B still owed. Off by default, decode only, refused without a cache and outside `[0, 1]`. The run summary, the CSV
   (`experts_reranked`, `experts_substituted`, `substitute_lambda`) and the app's metrics view carry
   its actual bite. See [docs/cache-aware-substitution.md](docs/cache-aware-substitution.md).
 - **`--ppl FILE`: teacher-forced perplexity, and `--ppl-step` for the decode regime.** Scores a
@@ -76,7 +74,7 @@ Semantic Versioning.
   `scripts/humaneval-bench.py` runs HumanEval over `--session` and grades the completions.
 - **"Prefer cached experts" in the app**, under Speed / quality → Experimental, as a percentage of
   the score range (10 to 30, default off, disabled with the cache off), with a warning from 20 % up.
-  App 0.22.0 (versionCode 37).
+  Listed under the app's Experimental group.
 
 ### Changed
 - The CSV summary trailer gains `row_table_MiB`, `row_resident_MiB`, `row_rows`, `row_reads`,
