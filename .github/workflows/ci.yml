@@ -107,6 +107,29 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF
           cmake --build build --config Release -j
 
+  host-macos:
+    # Compile-check the Apple path on PRs; release-host was previously
+    # the only workflow that built __APPLE__ code.
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      # Keep this in sync with the macos-arm64 release-host configuration.
+      - name: Configure & build (compile-check the Apple I/O paths)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBMOE_BUILD_TESTS=OFF \
+            -DGGML_NATIVE=OFF \
+            -DGGML_OPENMP=OFF \
+            -DLLAMA_CURL=OFF
+          cmake --build build --config Release -j --target bmoe-cli
+      - name: Smoke
+        run: build/cli/bmoe-cli --version
+
   # Cross-compiles the arm64 engine (the native compile gate) and packages the example
   # APK around it, uploading the APK as an artifact — and attaching it to the release on a
   # tag push. Debug-signed: for on-device validation, not Play distribution.
