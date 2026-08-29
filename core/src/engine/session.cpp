@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -395,6 +396,172 @@ ThinkControl Session::think_control() const {
 void Session::set_cache_budget_mb(int mib) {
     impl_->source.set_cache_budget((size_t) std::max(0, mib) * 1024ull * 1024ull);
 }
+// Teacher-forced perplexity. See PplRequest for why the batch is labelled decode.
+PplResult Session::perplexity(const PplRequest & req) {
+    auto & im = *impl_;
+    PplResult r;
+    const auto t0 = clock_t_::now();
+    llama_context * ctx = im.ctx.get();
+
+    std::vector<llama_token> tokens(req.text.size() + 8);
+    int n = llama_tokenize(im.vocab, req.text.c_str(), (int) req.text.size(), tokens.data(), (int) tokens.size(),
+                           /*add_special*/ true, /*parse_special*/ false);
+    if (n < 0) {
+        tokens.resize(-n);
+        n = llama_tokenize(im.vocab, req.text.c_str(), (int) req.text.size(), tokens.data(), (int) tokens.size(), true,
+                           false);
+    }
+    if (n < 2) {
+        r.error = "text too short to score";
+        return r;
+    }
+    tokens.resize(n);
+    if (n > im.cfg.n_ctx) {
+        r.error =
+            "text of " + std::to_string(n) + " tokens exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) + ")";
+        return r;
+    }
+    r.n_tokens = n;
+
+    llama_memory_clear(llama_get_memory(ctx), true);
+    im.kv_tokens.clear();
+
+    // Warm-up graph, discarded. Both routing policies decide at the terminal node of each layer's
+    // weight chain, and which node that is gets LEARNED from the first graph of a run — so on a
+    // single-batch pass they would never fire at all, and every cell would score the baseline. One
+    // throwaway decode teaches the hook the shape; the scoring pass then runs with the policy live.
+    {
+        llama_batch warm = llama_batch_init(1, 0, 1);
+        batch_fill(warm, tokens.data(), 1, 0, false);
+        im.hook->set_batch_phase(req.as_decode ? 1 : 0);
+        const int rc = llama_decode(ctx, warm);
+        llama_batch_free(warm);
+        if (rc != 0) {
+            r.error = "warm-up decode failed";
+            return r;
+        }
+        llama_memory_clear(llama_get_memory(ctx), true);
+    }
+    const long long routed0 = im.hook->experts_routed();
+    const long long dropped0 = im.hook->experts_dropped();
+    const long long reranked0 = im.hook->experts_reranked();
+    const long long substituted0 = im.hook->experts_substituted();
+
+    // Logits at EVERY position, so one pass scores every token — llama_batch_get_one would ask for
+    // the last position only.
+    llama_batch b = llama_batch_init(im.cfg.n_batch, /*embd*/ 0, /*n_seq_max*/ 1);
+    struct BatchGuard {
+        llama_batch & b;
+        ~BatchGuard() { llama_batch_free(b); }
+    } guard{b};
+
+    double nll = 0.0;
+    int scored = 0, top1 = 0;
+    int last_row = 0; // logits row of the text's final position, for the choices
+    // Score the logits at row `row` of the last decode against the token at `pos + 1`.
+    auto score = [&](int row, int pos) -> bool {
+        const float * lg = llama_get_logits_ith(ctx, row);
+        if (!lg) {
+            r.error = "no logits at position " + std::to_string(pos);
+            return false;
+        }
+        // log softmax at the token that actually follows, in a numerically safe order.
+        float max = lg[0];
+        for (int v = 1; v < im.n_vocab; ++v)
+            if (lg[v] > max) max = lg[v];
+        double sum = 0.0;
+        for (int v = 0; v < im.n_vocab; ++v)
+            sum += std::exp((double) (lg[v] - max));
+        const double logp = (double) (lg[tokens[pos + 1]] - max) - std::log(sum);
+        nll -= logp;
+        ++scored;
+        if (argmax(lg, im.n_vocab) == tokens[pos + 1]) ++top1;
+        return true;
+    };
+
+    if (req.step) {
+        // The decode regime, token by token (see PplRequest::step). The unscored prefix goes in as
+        // one prefill batch — labelled as such, so a decode-only policy stays out of it exactly as
+        // it does in generation — and every scored position is its own one-token decode.
+        const int prefix = std::max(1, std::min(req.skip, n - 1));
+        batch_fill(b, tokens.data(), prefix, /*pos0*/ 0, /*all_logits*/ false);
+        im.hook->set_batch_phase(0);
+        if (llama_decode(ctx, b) != 0) {
+            r.error = "prefill decode failed";
+            return r;
+        }
+        // With choices the last token is fed too, so the final distribution exists.
+        const int last = req.choices.empty() ? n - 1 : n;
+        for (int pos = prefix; pos < last; ++pos) {
+            batch_fill(b, tokens.data() + pos, 1, pos, /*all_logits*/ true);
+            im.hook->set_batch_phase(1);
+            if (llama_decode(ctx, b) != 0) {
+                r.error = "decode failed at position " + std::to_string(pos);
+                return r;
+            }
+            last_row = 0;
+            if (pos < req.skip || pos + 1 >= n) continue;
+            if (!score(0, pos)) return r;
+        }
+    } else {
+        for (int i = 0; i < n; i += im.cfg.n_batch) {
+            const int chunk = std::min(im.cfg.n_batch, n - i);
+            batch_fill(b, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ true);
+            im.hook->set_batch_phase(req.as_decode ? 1 : 0);
+            if (llama_decode(ctx, b) != 0) {
+                r.error = "decode failed at position " + std::to_string(i);
+                return r;
+            }
+            // Position p predicts token p+1, so the last token of the whole text is never scored
+            // and the last row of a chunk predicts the first token of the next one.
+            for (int j = 0; j < chunk; ++j) {
+                const int pos = i + j;
+                if (pos + 1 >= n || pos < req.skip) continue;
+                if (!score(j, pos)) return r;
+            }
+            last_row = chunk - 1;
+        }
+    }
+    if (!req.choices.empty()) {
+        const float * lg = llama_get_logits_ith(ctx, last_row);
+        if (!lg) {
+            r.error = "no logits after the text";
+            return r;
+        }
+        float max = lg[0];
+        for (int v = 1; v < im.n_vocab; ++v)
+            if (lg[v] > max) max = lg[v];
+        double sum = 0.0;
+        for (int v = 0; v < im.n_vocab; ++v)
+            sum += std::exp((double) (lg[v] - max));
+        const double lse = (double) max + std::log(sum);
+        for (const std::string & c : req.choices) {
+            llama_token ct[8];
+            const int nc = llama_tokenize(im.vocab, c.c_str(), (int) c.size(), ct, 8, false, false);
+            if (nc < 1) {
+                r.error = "choice '" + c + "' does not tokenize";
+                return r;
+            }
+            r.choice_logp.push_back((double) lg[ct[0]] - lse);
+        }
+    }
+    if (scored == 0 && req.choices.empty()) {
+        r.error = "nothing scored — text shorter than skip + 1";
+        return r;
+    }
+    r.nll = scored > 0 ? nll / scored : 0.0;
+    r.ppl = std::exp(r.nll);
+    r.n_scored = scored;
+    r.n_top1 = top1;
+    r.experts_routed = im.hook->experts_routed() - routed0;
+    r.experts_dropped = im.hook->experts_dropped() - dropped0;
+    r.experts_reranked = im.hook->experts_reranked() - reranked0;
+    r.experts_substituted = im.hook->experts_substituted() - substituted0;
+    r.seconds = secs(t0, clock_t_::now());
+    r.ok = true;
+    return r;
+}
+
 void Session::cancel() {
     impl_->cancel_requested.store(true, std::memory_order_relaxed);
 }
@@ -526,6 +693,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.hook = std::make_unique<RouterHook>(recipe ? *recipe : MoeRecipe{}, n_layer_streamed);
     im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
+    im.hook->set_expert_substitute(cfg.moe.substitute_lambda);
     im.hook->set_predict_log(cfg.moe.predict_log);
     im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
     im.hook->set_route_ahead(cfg.moe.route_ahead);
@@ -832,6 +1000,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.drop_cold_frac = cfg.moe.enabled ? cfg.moe.drop_cold_frac : 0.0f;
         ri.drop_renorm = cfg.moe.drop_renorm;
         ri.drop_prefill = cfg.moe.drop_prefill;
+        ri.substitute_lambda = cfg.moe.enabled ? cfg.moe.substitute_lambda : 0.0f;
         // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
         ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"
                            : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"
@@ -1221,6 +1390,8 @@ RunResult Session::generate(const GenerateRequest & req,
     // for and the one the tok/s number is about.
     const long long prev_routed = im.hook->experts_routed();
     const long long prev_dropped = im.hook->experts_dropped();
+    const long long prev_reranked = im.hook->experts_reranked();
+    const long long prev_substituted = im.hook->experts_substituted();
     // Per-token cursors for the hook's own eval-thread meters (route-ahead issue + watchdog): the
     // hook accumulates for the session, the rows want this token's share.
     long long prev_ra_issue_ns = im.hook->route_ahead_issue_ns();
@@ -1554,6 +1725,8 @@ RunResult Session::generate(const GenerateRequest & req,
     }
     s.experts_routed = im.hook->experts_routed() - prev_routed;
     s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
+    s.experts_reranked = im.hook->experts_reranked() - prev_reranked;
+    s.experts_substituted = im.hook->experts_substituted() - prev_substituted;
     // Per-turn deltas, like every other generation figure here: a warm session's counters are
     // cumulative, and an acceptance rate averaged over earlier prompts would describe none of them.
     s.mtp_drafted = im.mtp_drafted - mtp0_drafted;

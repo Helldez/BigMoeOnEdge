@@ -1,0 +1,19 @@
+The Byzantine Empire survived the collapse of its western counterpart by nearly a thousand years, and the reasons are less mysterious than they are often made to sound. Constantinople sat on a peninsula defended by water on two sides and by the Theodosian walls on the third, and those walls were not breached by an attacker until gunpowder artillery arrived. The empire also kept a monetary economy and a functioning tax administration long after the west had reverted to payment in kind, which meant it could hire soldiers rather than granting them land.
+
+Trade mattered as much as walls. The city stood at the junction of the routes running from the Black Sea to the Mediterranean and from Anatolia into the Balkans, so customs revenue arrived whether or not the harvest had been good.
+
+When we compute the sum of a geometric series with ratio r strictly between minus one and one, the partial sums converge to a over one minus r. The proof is short: multiply the partial sum by r, subtract it from the original, and every interior term cancels, leaving a minus a times r to the n. Letting n grow without bound sends that last term to zero.
+
+class RingBuffer:
+    def __init__(self, capacity):
+        self.buf = [None] * capacity
+        self.head = 0
+        self.size = 0
+
+    def push(self, item):
+        idx = (self.head + self.size) % len(self.buf)
+        self.buf[idx] = item
+        if self.size == len(self.buf):
+            self.head = (self.head + 1) % len(self.buf)
+        else:
+            self.size += 1

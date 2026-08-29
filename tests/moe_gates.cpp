@@ -499,6 +499,56 @@ int main(int argc, char ** argv) {
     }
     fails += check("G8c drop(full strength, top-k=1) == top-k=1 undropped (top expert pinned)", s_k1, s_k1_drop);
 
+    // G8d — cache-aware substitution with a margin too small to move any routing must be
+    // byte-identical to the same cached run, and must have examined routings while changing none.
+    // Like G8a it runs against the small forced budget, so residency is a real mix of hits and
+    // misses and the re-ranking has something to prefer — it just may not prefer it at this margin.
+    RunConfig sub_inert = base(model);
+    sub_inert.moe.enabled = true;
+    sub_inert.moe.cache_mb = 2;
+    sub_inert.moe.force_cache = true;
+    sub_inert.moe.io_threads = 4;
+    sub_inert.moe.substitute_lambda = 1e-6f;
+    std::string s_sub_inert;
+    if (!gen(sub_inert, s_sub_inert, err)) {
+        std::fprintf(stderr, "substitute(inert margin) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G8d substitute(margin below any gap) == streaming(cached, unsubstituted)", s_sc, s_sub_inert);
+    {
+        RunResult r = run(sub_inert);
+        if (!r || r.summary.experts_substituted != 0 || r.summary.experts_reranked <= 0) {
+            std::printf("[FAIL] G8d' inert margin must examine routings and substitute none (reranked=%lld "
+                        "substituted=%lld)\n",
+                        r.summary.experts_reranked, r.summary.experts_substituted);
+            ++fails;
+        } else {
+            std::printf("[PASS] G8d' inert margin examined %lld slots, substituted none\n", r.summary.experts_reranked);
+        }
+    }
+
+    // G8e — at the full margin a resident expert outranks every non-resident one, so against a
+    // cache that holds some of the layer the re-ranking MUST fire. There is no reference output (it
+    // is lossy by design); the gate is that generation completes and that the policy demonstrably
+    // acted: a count of zero here would mean the flag is inert, which is the failure mode that a
+    // lossy knob with a plausible-looking output can hide indefinitely.
+    RunConfig sub_full = sub_inert;
+    sub_full.moe.substitute_lambda = 1.0f;
+    {
+        RunResult r = run(sub_full);
+        if (!r || r.summary.experts_substituted <= 0 || r.generated_text.empty()) {
+            std::printf("[FAIL] G8e substitute(full margin) must generate and substitute (reranked=%lld "
+                        "substituted=%lld, %zu bytes)\n",
+                        r ? r.summary.experts_reranked : 0LL, r ? r.summary.experts_substituted : 0LL,
+                        r ? r.generated_text.size() : (size_t) 0);
+            ++fails;
+        } else {
+            std::printf("[PASS] G8e substitute(full margin) generated, %lld/%lld reranked slots went to a resident "
+                        "expert\n",
+                        r.summary.experts_substituted, r.summary.experts_reranked);
+        }
+    }
+
     // G9 — the expert-prediction probe observes and nothing more.
     //
     // It isolates an extra node per layer and reads the router's inputs, which puts it inside the

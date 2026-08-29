@@ -185,6 +185,18 @@ void RouterHook::set_drop_policy(float frac, bool renorm, bool in_prefill) {
     experts_routed_ = experts_dropped_ = 0;
 }
 
+void RouterHook::set_expert_substitute(float lambda) {
+    sub_lambda_ = lambda > 0.0f ? lambda : 0.0f;
+    experts_reranked_ = experts_substituted_ = 0;
+}
+
+// Substitution is decode-only, unconditionally: a prefill batch runs against a cold cache, where
+// nearly everything is a miss and there is little resident to prefer, and it is compute-bound
+// anyway, so the reads it would save are not the reads that cost.
+bool RouterHook::substitute_armed() const {
+    return sub_lambda_ > 0.0f && source_ != nullptr && batch_phase_ == 1;
+}
+
 // Is dropping live for the batch being decoded? Needs a source to ask about residency, a non-zero
 // threshold, and — unless armed for prefill — a decode batch: with a cold cache the same threshold
 // discards several times the weight mass for a phase that is not I/O-bound anyway.
@@ -625,6 +637,108 @@ bool RouterHook::quantize_gate(int il) {
 // phone: a quarter of the bytes off the memory bus, and integer MACs instead of float ones.
 // Ranking only needs the ORDER of the scores, and both scales are positive, so the per-expert
 // scale is applied at the end where it costs one multiply per expert instead of one per element.
+// Cache-aware substitution: re-rank one layer's routing toward the experts already resident.
+//
+// The scores come from the tensor the graph itself sorted — the source of the argsort / top_k
+// that produced these ids (ffn_moe_probs, or its biased / group-masked variant where the
+// architecture has one). Two things make it the right one. It is EXACT: whatever gating function,
+// selection bias or group mask the model applies is already in it, so the re-ranking starts from
+// the router's real order rather than an approximation of it. And it is ALIVE: the graph reads it
+// again after the top-k (ggml_get_rows gathers the weights from it), so the allocator cannot have
+// recycled its buffer by the time this callback runs. The gate INPUT does not have that property —
+// on Gemma 4 it is a private intermediate of the logits matmul, freed the moment that matmul is
+// done, and re-scoring from it read another node's bytes (measured: two layers' inputs at the
+// same address).
+//
+// When that tensor is a softmax, the scores are taken in log space: log-softmax differs from the
+// logits by a per-token constant, so its range IS the logit range and the margin means what it
+// does in the paper below. Anything else (sigmoid probabilities, raw logits, biased probabilities)
+// is ranked on the values as they are.
+//
+// Each resident expert then gets its score raised by lambda × (max − min) of that token's scores,
+// and the top-k is taken again. The margin is a fraction of the token's own range, so the same
+// lambda means the same thing on a model whose router scores span 2 and one whose scores span 20 —
+// that is what keeps it free of per-model tuning and of calibration state. An expert only wins a
+// slot if it is resident AND within the margin of the one it displaces, so a confident routing is
+// left alone and a near-tie is resolved in favour of the one already in RAM.
+//
+// The weights are NOT touched. The graph gathers them from the router's own scores for whatever
+// ids end up here, so a substituted expert is applied with the weight the router would have given
+// it — the routing changes, the arithmetic that follows does not.
+//
+// The mechanism is the one Skliar et al. describe for DRAM-cached experts (arXiv:2412.00099);
+// here the cache is RAM in front of flash, and the range is the token's own rather than a running
+// average, so nothing has to warm up.
+void RouterHook::apply_substitute(ggml_tensor * ids, int il, int nu, int nt) {
+    if (il < 0 || il >= n_layer_ || nu <= 0 || nt <= 0) return;
+
+    // Walk from the ids to what was sorted: a view of an argsort, or a top_k node, depending on
+    // the ggml the graph was built with. Anything else (a cast, a scale) is an architecture this
+    // does not understand, and it declines rather than guess.
+    const ggml_tensor * sc = ids;
+    while (sc && (sc->op == GGML_OP_VIEW || sc->op == GGML_OP_ARGSORT || sc->op == GGML_OP_TOP_K))
+        sc = sc->src[0];
+    if (!sc || !sc->data || sc->type != GGML_TYPE_F32 || sc->ne[1] != nt) return;
+    const int ne = (int) sc->ne[0];
+    if (ne <= nu) return; // every expert is already selected: nothing to substitute FROM
+    const bool log_space = sc->op == GGML_OP_SOFT_MAX;
+
+    // Residency is a property of the layer, not of a token, so it is queried once for the whole
+    // batch — but the scores are per token, so every row is re-ranked on its own.
+    if ((int) sub_all_.size() != ne) {
+        sub_all_.resize((size_t) ne);
+        for (int e = 0; e < ne; ++e)
+            sub_all_[(size_t) e] = e;
+    }
+    sub_res_.assign((size_t) ne, (uint8_t) 0);
+    source_->settle_spec();
+    source_->query_residency(il, sub_all_.data(), ne, sub_res_.data());
+
+    sub_scores_.resize((size_t) ne);
+    for (int j = 0; j < nt; ++j) {
+        const float * row = (const float *) ((const char *) sc->data + (size_t) j * sc->nb[1]);
+        // A masked-out expert (group routing) sits at -inf: it stays there, and it is not part of
+        // the range.
+        float lo = 0.0f, hi = 0.0f;
+        bool any = false;
+        for (int e = 0; e < ne; ++e) {
+            float v = row[e];
+            if (log_space) v = v > 0.0f ? std::log(v) : -INFINITY;
+            sub_scores_[(size_t) e] = v;
+            if (!std::isfinite(v)) continue;
+            if (!any || v < lo) lo = v;
+            if (!any || v > hi) hi = v;
+            any = true;
+        }
+        const float boost = any ? sub_lambda_ * (hi - lo) : 0.0f;
+        if (!(boost > 0.0f)) continue;
+        for (int e = 0; e < ne; ++e)
+            if (sub_res_[(size_t) e] != route_miss && std::isfinite(sub_scores_[(size_t) e]))
+                sub_scores_[(size_t) e] += boost;
+
+        rank_top_k(sub_scores_, nu, sub_pick_);
+        if ((int) sub_pick_.size() != nu) continue;
+        experts_reranked_ += nu;
+
+        // Compare as SETS. The graph's ids and this ranking can list the same experts in a
+        // different order (a numerical tie resolved differently), and rewriting the ids for that
+        // would change nothing the matmul computes while counting a substitution that did not
+        // happen. Only a routing whose membership moved is written.
+        int changed = 0;
+        for (int k = 0; k < nu; ++k) {
+            const int32_t e = sub_pick_[(size_t) k];
+            bool had = false;
+            for (int q = 0; q < nu && !had; ++q)
+                had = *id_at(ids, j, q) == e;
+            if (!had) ++changed;
+        }
+        if (changed == 0) continue;
+        experts_substituted_ += changed;
+        for (int k = 0; k < nu; ++k)
+            *id_at(ids, j, k) = sub_pick_[(size_t) k];
+    }
+}
+
 bool RouterHook::gate_scores_q(int il, const std::vector<float> & h, std::vector<float> & out) {
     if (il < 0 || il >= (int) ra_gate_q_.size() || ra_gate_q_[il].empty()) return false;
     const ggml_tensor * w = gate_w_[il];
@@ -1403,6 +1517,13 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         // the ids are gathered, so everything downstream — the trace, the drop policy, load_layer,
         // the weight chain the graph is about to run — sees the committed routing, not the
         // router's, and nothing disagrees about which experts this layer used.
+        //
+        // Substitution runs FIRST, before route-ahead and before the gather, for the same reason:
+        // everything downstream — the trace, the drop policy, load_layer, the weight chain — must
+        // see the routing that will actually run, and this is the last point where the ids are
+        // still ours to change.
+        if (substitute_armed()) apply_substitute(t, il, nu, nt);
+
         if (route_ahead_ > 0 && batch_phase_ == 1) {
             // Collect FIRST: the ranking racing this topk is keyed to the seq of the job the
             // PREVIOUS topk submitted, and the submit below bumps that seq — collecting after it

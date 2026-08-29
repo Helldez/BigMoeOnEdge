@@ -184,6 +184,12 @@ public:
     // total mass. Off (frac == 0) the hook behaves exactly as before, bit for bit.
     void set_drop_policy(float frac, bool renorm, bool in_prefill);
 
+    // ── cache-aware substitution (lossy; see MoeStreamConfig::substitute_lambda) ──────
+    // `lambda` > 0 arms it: at every decode routing, resident experts get their router score
+    // raised by lambda × the token's score range and the top-k is re-ranked, so a near-tie goes
+    // to the expert already in RAM. Off (lambda == 0) the hook behaves exactly as before.
+    void set_expert_substitute(float lambda);
+
     // Which phase the batch being decoded belongs to (0 = prefill, 1 = decode). The drop policy
     // is decode-only unless armed for prefill, and unlike the traces it must know this on every
     // run, so it cannot ride on begin_trace_batch.
@@ -191,6 +197,12 @@ public:
 
     long long experts_routed() const { return experts_routed_; }
     long long experts_dropped() const { return experts_dropped_; }
+    // Substitution's own ledger. Reranked counts every slot the policy examined (its denominator —
+    // experts_routed above is the drop policy's, and stays 0 with dropping off); substituted counts
+    // the slots whose expert it actually changed for one the router had not selected. A re-ranking
+    // that returns the router's own SET, in whatever order, changes nothing and is not counted.
+    long long experts_reranked() const { return experts_reranked_; }
+    long long experts_substituted() const { return experts_substituted_; }
 
     // Prediction accuracy, aggregate and per layer (index = layer). Empty/zero unless the probe
     // was armed. `predict_unscored` counts routings the probe had to skip: the first token, whose
@@ -257,6 +269,8 @@ private:
     void flush_pending();
     bool drop_armed() const;
     void apply_drop(ggml_tensor * weights);
+    bool substitute_armed() const;
+    void apply_substitute(ggml_tensor * ids, int il, int nu, int nt);
     void close_drop_layer();
     void ctrace_close_segment(int interval_layer, const char * tail_name);
 
@@ -457,6 +471,20 @@ private:
     bool drop_prefill_ = false;
     int batch_phase_ = 1; // 0 prefill, 1 decode
     long long experts_routed_ = 0, experts_dropped_ = 0;
+
+    // Cache-aware substitution. Inert unless sub_lambda_ > 0.
+    //
+    // Where dropping decides whether to PAY for a missing expert, this decides whether to need it
+    // at all: a resident expert whose router score is close enough is run in its place. It costs
+    // no flash read and no extra matmul, and the weights the graph applies still come from the
+    // router's own scores for whichever experts end up selected. The scratch below is sized once
+    // per layer width and reused for every token, so the steady state allocates nothing.
+    float sub_lambda_ = 0.0f;
+    std::vector<float> sub_scores_; // this token's scores as the graph ranked them, boosted for residents
+    std::vector<int32_t> sub_all_;  // 0..n_expert-1, for the whole-layer residency query
+    std::vector<uint8_t> sub_res_;  // residency of every expert in the layer
+    std::vector<int32_t> sub_pick_; // the re-ranked selection
+    long long experts_reranked_ = 0, experts_substituted_ = 0;
 
     struct PendingDrop {
         int layer = -1;

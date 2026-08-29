@@ -132,6 +132,17 @@ routed) are supported; other `build_moe_ffn` models are one recipe row each. The
 frontier is architectures whose routing node is not the shared `ffn_moe_topk` — custom gating,
 which the capture/stream hook would need to learn. See [adding-a-model.md](adding-a-model.md).
 
+## Steering the routing toward what is resident — built, measured on the desktop
+
+`--expert-substitute` ([cache-aware-substitution.md](cache-aware-substitution.md)) re-ranks each
+decode routing toward the experts already in the cache, by a margin that is a fraction of the
+token's own score range. It is the mechanism of Skliar et al. (arXiv:2412.00099) with the cache in
+front of flash instead of DRAM, and on the desktop it is the strongest lever measured at its
+quality cost: half the flash bytes per token and +62% decode for a 1 to 4% perplexity increase at
+`0.15`. What it owes is the same device A/B as dropping, and a task-level quality check, since the
+desktop's flash share of a token is larger than the phone's and the throughput column will
+compress.
+
 ## Skipping reads the router barely wants — built, unmeasured
 
 `--drop-cold-experts` ([expert-dropping.md](expert-dropping.md)) is the first lever that treats

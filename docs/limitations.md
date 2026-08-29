@@ -18,11 +18,13 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
 
 ## Limitations
 
-- **One setting makes output non-reproducible.** Every other knob is deterministic given a
+- **Two settings make output non-reproducible.** Every other knob is deterministic given a
   configuration: `--n-expert-used` changes the output, but changes it the same way on every run.
-  [`--drop-cold-experts`](expert-dropping.md) decides per routing from live cache state, so the
-  same prompt and the same flags can decode differently run to run, and the byte-identity gates
-  cannot cover its output — only its machinery. Off by default in the CLI.
+  [`--drop-cold-experts`](expert-dropping.md) and
+  [`--expert-substitute`](cache-aware-substitution.md) decide per routing from live cache state,
+  so the same prompt and the same flags can decode differently run to run, and the byte-identity
+  gates cannot cover their output — only their machinery. Both off by default in the CLI, and
+  neither can be priced by a wide scoring batch: use `--ppl --ppl-step`.
 - **n=1 only.** The expert sparsity exists only for single-token decode, so streaming is
   incompatible with speculative decoding or batching. Prefill streams the union of the
   prompt's routed experts (still far below the full bank, but larger than one token's).

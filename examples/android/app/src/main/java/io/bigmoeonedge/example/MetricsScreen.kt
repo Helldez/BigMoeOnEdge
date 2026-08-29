@@ -420,6 +420,7 @@ private val CONFIG_ORDER = listOf(
     "drop_cold_frac" to "Drop cold experts",
     "drop_renorm" to "Drop renormalise",
     "drop_prefill" to "Drop in prefill",
+    "substitute_lambda" to "Prefer cached experts",
     "temp" to "Temperature",
     "top_k" to "top-k",
     "top_p" to "top-p",
@@ -463,7 +464,7 @@ private fun prettyConfigValue(key: String, v: String, info: Map<String, String>)
     // dropping happened" is exactly the misreading this display exists to prevent. The drop
     // fraction is shown as the engine took it (a fraction of the uniform share 1/top-k, not of the
     // routing) so it matches --drop-cold-experts and the settings screen.
-    (key == "prefetch" || key == "route_ahead" || key == "drop_cold_frac") && v.toFloatOrNull() == 0f -> "off"
+    (key == "prefetch" || key == "route_ahead" || key == "drop_cold_frac" || key == "substitute_lambda") && v.toFloatOrNull() == 0f -> "off"
     key == "predict_spec_max" && v == "0" -> "0 (retention only)"
     else -> v
 }

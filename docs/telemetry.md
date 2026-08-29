@@ -63,7 +63,9 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   **Under [`--drop-cold-experts`](expert-dropping.md) read it with care:** a dropped routing is a
   miss that is never looked up, so it leaves both sides of the ratio and the reported hit rate
   rises without the cache having served anything more. Compare runs at the same drop rate, or read
-  `experts_dropped` next to it.
+  `experts_dropped` next to it. Under [`--expert-substitute`](cache-aware-substitution.md) the
+  hit rate rises for a real reason — the routing was steered toward what is resident — and
+  `experts_substituted` says how much of it was steered.
 - `majflt` / `cpu_ms` **decompose the `compute_ms` residual** — the whole point being that "compute"
   above is a catch-all that silently absorbs page faults and scheduler stalls, not just matmul.
 - **The app panel never reads the residual as compute.** Its four bars are attribution components,
@@ -256,6 +258,7 @@ prints just the summary lines.
   overlap=<0|1> io_two_wave=<0|1> prefetch=<n>
   route_ahead=<n> predict_prefetch=<0|1> predict_log=<0|1> predict_spec_max=<n> prefetch_sync=<0|1>
   dense_weights=<mmap|warm|anon|ahwb> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
+  substitute_lambda=<f>
 # temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n> spec=<off|mtp|ngram>
   spec_draft_max=<n> mtp_p_min=<f> ngram_min_match=<n>
 ```
@@ -319,7 +322,10 @@ line likewise gains `stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>`, `cpu_
 `token_demand_MiB=<f>` (the expert bytes one token routes, measured — where cache hits start, NOT a
 floor to defend; see [pressure.md](pressure.md)), `experts_routed=<n>` / `experts_dropped=<n>` (what
 [cache-aware dropping](expert-dropping.md) actually discarded during generation — the flag sets a
-threshold, not a rate, so this is the only record of the trade a run made) and
+threshold, not a rate, so this is the only record of the trade a run made),
+`experts_reranked=<n>` / `experts_substituted=<n>` (the same ledger for
+[cache-aware substitution](cache-aware-substitution.md): slots the re-ranking examined, and slots
+it moved to a resident expert),
 `row_table_MiB=<f>` / `row_resident_MiB=<f>` / `row_rows=<n>` / `row_reads=<n>` / `row_read_MiB=<f>` / `row_evictions=<n>` / `row_io_errors=<n>` (the row-gathered tables described above; all zero when `--row-stream` is off or nothing qualified) and `layer_demand_MiB=<f>` (the widest layer's routed
 bytes: the mechanical floor the cache must be able to stage) and `loop_overhead_s/tok=<s>` (see
 [below](#what-toks-does-not-include)) and, under `--mtp` or `--ngram`, `mtp_drafted=<n>` /
