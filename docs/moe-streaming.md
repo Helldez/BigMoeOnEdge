@@ -76,17 +76,17 @@ the recovery needs both halves.
 `--release-mmap` does exactly that inside the engine: after load, once nothing reads through the
 mapping any more, the file is unmapped, its section closed and the reader lanes reopened.
 
-It is opt-in, and it will stay opt-in until the safety question has a positive answer. Releasing is
-correct only while nothing in the process still dereferences the mapping, and llama.cpp offers no
-way to enumerate a loaded model's tensors and prove that, so the engine declines on each shape where
-a surviving pointer is known: a dense policy that keeps the weights mmap'd (`mmap`, `warm`, or a
-tensor held back as oversized), an unowned file tensor under the MTP draft, and a model whose gguf
-has no `output.weight`. That last case is a **tied output head**: llama.cpp then builds the head
-from the token embedding table, the model holds a second tensor over the same mapped bytes, and
-because the twin is not a gguf tensor no name-based check can see it — releasing under it faults
-inside the embedding table on the first decode. Every architecture that ties its embeddings is in
-that case, Gemma among them. A blacklist of known-unsafe shapes is not a proof of safety, which is
-exactly why the default is off. Worth +46% decode on
+Whether releasing is safe is decided by looking, not by reasoning about which tensors ought to have
+been rebound: the engine asks the OS whether any weight the capture pass observed still points inside
+a mapping of the model files, and declines if any does. That one question covers every residency
+policy — a dense set left mmap'd under `mmap` or `warm`, a table held back as oversized, or a tensor
+no name-based accounting could have found. Run with `--dense-weights mmap` and the engine reports the
+count and stands down.
+
+It is still opt-in, because the check answers for the pointers the capture pass saw and for no
+others. A graph shape this session never builds could hold another one, and llama.cpp exposes no way
+to enumerate a loaded model's tensors and settle it. The MTP draft is the concrete case: it builds a
+second graph, so a gguf tensor no policy owns blocks the release there as well. Worth +46% decode on
 the desktop host, byte-identical.
 
 Android is a different story with the same conclusion. The iobench cells above are flat there — f2fs

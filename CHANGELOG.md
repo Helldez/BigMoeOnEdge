@@ -6,6 +6,28 @@ Semantic Versioning.
 
 ## [0.24.0] - unreleased
 
+### Fixed
+- **A tied output head left half the biggest dense weight reading the model's mmap.** When a gguf
+  carries no `output.weight`, llama.cpp builds the output head from the token embedding table, and
+  the model then holds **two** `ggml_tensor` objects, identically named, over the same file bytes.
+  The capture pass recorded weights in a map keyed by name, so it kept one of them, and
+  `--dense-weights anon` / `ahwb` rebound that one: the twin went on reading the mmap for the whole
+  run. On a model past RAM that is the output projection — a tensor whose per-token cost rivals all
+  the routed experts together — served by page faults from flash, which is precisely what those two
+  policies exist to prevent. Gemma is in this case, and so is any architecture that ties its
+  embeddings.
+
+  The capture now records every distinct leaf object, deduplicated by address, and the dense policy
+  folds tensors over one file range into a single entry with an alias list, rebinding them all onto
+  the same buffer. Bytes are still read once and memory is still allocated once — on the gemma4
+  gate, the same 70 anon buffers as before — and every byte-identity gate passes unchanged. The
+  same fix is what makes the mapping releasable on those models rather than a crash.
+
+  What this is worth in throughput is **not measured**. The mechanism is certain, the size of it is
+  not: it depends on how much of the mapped table the kernel was still holding, which on a phone
+  under reclaim is a different story from a desktop with room to spare. Gemma-4-26B on the test
+  phone is the cell that would price it, and it is owed.
+
 ### Added
 - **`--release-mmap`: hand back the model file's mapping after load, which on Windows is worth
   +46% decode.** llama.cpp maps every gguf it loads and keeps the mapping for the model's
@@ -27,21 +49,15 @@ Semantic Versioning.
   different reason — see below.
 
   With the flag, once nothing reads through the mapping any more the engine unmaps the file,
-  closes its section and reopens the reader lanes. Safety is decided by the session, not the
-  module, and conservatively, because the release is correct only while *nothing* in the process
-  still dereferences the mapping and llama.cpp exposes no way to enumerate a loaded model's tensors
-  and prove it. The session declines on every shape where a surviving pointer is known: a dense
-  policy that keeps the weights mmap'd, an unowned file tensor under the MTP draft, and a **tied
-  output head**.
+  closes its section and reopens the reader lanes. Whether that is safe is decided by looking rather
+  than by reasoning: the engine asks the OS whether any weight the capture pass observed still points
+  inside a mapping of the model files, and declines if any does. One check covers every residency
+  policy at once — a dense set deliberately left mmap'd, a table held back as oversized, or a tensor
+  no name-based accounting could have found.
 
-  That last one had to be found the hard way and is why the flag stays opt-in. When a gguf carries
-  no `output.weight`, llama.cpp builds the head from the token embedding table and the model then
-  holds a second tensor over the same mapped bytes; the engine rebinds the tensor the gguf names,
-  the tied twin is not a gguf tensor, and no name-based accounting can see it. Releasing under it
-  faults inside the embedding table on the first decode — caught by the gemma4 byte-identity gate,
-  whose model has no `output.weight`, and now declined with a message. It is a blacklist of
-  known-unsafe shapes, not a proof of safety: a future architecture can invent another tensor the
-  gguf does not name, which is the reason this is not on by default. llama.cpp is not patched and
+  It stays opt-in because the check answers for the pointers the capture pass saw and for no others:
+  a graph shape this session never built could hold another one. That residue, plus the gguf tensors
+  no policy owns once the MTP draft adds a second graph, is the remaining unknown. llama.cpp is not patched and
   still believes it owns its mapping, so what it will unmap and close at teardown is left in place
   as an inert placeholder. Off by default.
 

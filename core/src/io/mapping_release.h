@@ -66,4 +66,11 @@ private:
 // placeholders; it must outlive the model.
 MappingReleaseReport release_file_mappings(const std::vector<std::string> & paths, MappingPlaceholders * out);
 
+// How many of `addresses` still point inside a mapping of one of `paths`. This is what makes a
+// release decidable rather than guessed: releasing is correct only while nothing dereferences the
+// mapping, and the caller can ask about every pointer it knows instead of reasoning about which
+// tensor names ought to have been rebound. It answers for the pointers it is given and for no
+// others, so a caller that cannot enumerate everything still has to keep the flag opt-in.
+size_t addresses_in_file_mappings(const std::vector<std::string> & paths, const std::vector<const void *> & addresses);
+
 } // namespace bmoe::pio

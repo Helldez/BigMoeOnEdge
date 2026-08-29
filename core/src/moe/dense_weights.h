@@ -40,6 +40,13 @@ struct DenseTensorRef {
     uint64_t file_off = 0;
     uint64_t size = 0;
     int file_idx = 0; // which shard file holds the bytes (0 for a single-file model)
+    // Other tensor objects over the SAME file bytes, which a residency policy must rebind together
+    // with `tensor` or leave together where they are. A tied output head is the case that produces
+    // them: llama.cpp builds the head from the token embedding table, so the model holds two
+    // ggml_tensors, identically named, over one range. Rebinding one and not the other leaves the
+    // graph reading the model's mmap every token, and makes the range unsafe to release. Empty for
+    // every ordinary weight, so the common path allocates nothing.
+    std::vector<ggml_tensor *> aliases;
 };
 
 class DenseWeights {

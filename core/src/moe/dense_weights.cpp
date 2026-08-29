@@ -291,6 +291,8 @@ bool DenseWeights::read_anonymous(size_t align) {
             done += n;
         }
         d.tensor->data = buf; // rebind the model weight onto its private copy
+        for (ggml_tensor * alias : d.aliases)
+            alias->data = buf; // and every twin over the same bytes, onto the same copy
         total += d.size;
     }
     std::fprintf(stderr, "bmoe: dense-weights=%s — %llu MiB in %zu %s buffers\n", pinned ? "ahwb" : "anon",

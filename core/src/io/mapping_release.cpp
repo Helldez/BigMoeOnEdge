@@ -210,6 +210,26 @@ HANDLE plug_handle_slot(HANDLE value) {
 
 } // namespace
 
+size_t addresses_in_file_mappings(const std::vector<std::string> & paths, const std::vector<const void *> & addresses) {
+    HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
+    auto mapped_fn = k32 ? (GetMappedFileNameW_t) (void *) GetProcAddress(k32, "K32GetMappedFileNameW") : nullptr;
+    if (!mapped_fn) return 0; // cannot tell; the caller's other conditions still apply
+    std::vector<std::wstring> targets;
+    for (const std::string & p : paths) {
+        std::wstring nt = nt_path_of(widen(p));
+        if (!nt.empty()) targets.push_back(std::move(nt));
+    }
+    size_t hits = 0;
+    for (const void * a : addresses) {
+        if (!a) continue;
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery(a, &mbi, sizeof(mbi)) != sizeof(mbi)) continue;
+        if (mbi.Type != MEM_MAPPED) continue;
+        if (is_target(targets, mapped_name(mapped_fn, (void *) a))) ++hits;
+    }
+    return hits;
+}
+
 MappingReleaseReport release_file_mappings(const std::vector<std::string> & paths, MappingPlaceholders * out) {
     MappingReleaseReport rep;
     rep.supported = true;
@@ -290,6 +310,27 @@ MappingReleaseReport release_file_mappings(const std::vector<std::string> & path
 // else, and no allocation can land there in between. Offered for measurement: Android (f2fs) was
 // measured NOT to serialise direct reads against a live mapping, so there is no throughput to
 // gain there; what a release buys on a given POSIX system is a bench question.
+size_t addresses_in_file_mappings(const std::vector<std::string> & paths, const std::vector<const void *> & addresses) {
+    std::vector<MappedRegion> regs;
+    std::vector<MappedRegion> all;
+    for (const std::string & p : paths) {
+        const size_t slash = p.find_last_of('/');
+        const std::string base = slash == std::string::npos ? p : p.substr(slash + 1);
+        regs.clear();
+        if (file_mapped_regions(base.c_str(), regs)) all.insert(all.end(), regs.begin(), regs.end());
+    }
+    size_t hits = 0;
+    for (const void * a : addresses) {
+        const uintptr_t x = (uintptr_t) a;
+        for (const MappedRegion & r : all)
+            if (x >= r.start && x < r.end) {
+                ++hits;
+                break;
+            }
+    }
+    return hits;
+}
+
 MappingReleaseReport release_file_mappings(const std::vector<std::string> & paths, MappingPlaceholders * out) {
     MappingReleaseReport rep;
     rep.supported = true;

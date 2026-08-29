@@ -73,6 +73,14 @@ public:
     // against the gguf tensor set, which those do not belong to. Only .tensor is meaningful here.
     const std::unordered_map<std::string, ggml_tensor *> & captured_weights() const { return captured_weights_; }
 
+    // Every distinct weight leaf OBJECT the graph read, deduplicated by address rather than by
+    // name. The map above cannot answer this: a model whose output head is tied to its token
+    // embedding table has two ggml_tensor objects carrying the same name over the same file
+    // bytes, and a name-keyed map keeps one of them. Rebinding only that one leaves the twin
+    // reading the model's mmap for the life of the run, which is what --dense-weights anon and
+    // ahwb exist to prevent. Order is first-seen, so a run is reproducible.
+    const std::vector<ggml_tensor *> & captured_weight_objects() const { return captured_weight_objects_; }
+
     // After capture, the subset of those weights the graph only ever GATHERS ROWS from — the shape a
     // token embedding table has, and the one residency policy can exploit (see IRowSource). A name is
     // in this set only if EVERY node that referenced the tensor was a row gather taking it as the
@@ -285,6 +293,8 @@ private:
     IRowSource * row_source_ = nullptr; // row-gathered dense tables, when the policy is on
     std::vector<LayerExperts> captured_;
     std::unordered_map<std::string, ggml_tensor *> captured_weights_;
+    std::vector<ggml_tensor *> captured_weight_objects_; // same leaves, deduplicated by address
+    std::unordered_set<const ggml_tensor *> captured_weight_seen_;
     // Capture-time evidence for row_gathered_weights(): every weight seen as the TABLE of a row
     // gather, and every weight seen in any way that rules that out. The verdict is the difference.
     std::unordered_set<std::string> row_gathered_;

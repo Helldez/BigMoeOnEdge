@@ -126,10 +126,18 @@ the embedding table and the model carries a *second* tensor over the same mapped
 rebinds the tensor the gguf names; the twin is not a gguf tensor, so no name-based accounting can
 ever see it. The qwen3moe model, which has a separate `output.weight`, passes.
 
-The engine now declines when the gguf has no `output.weight`, which covers every architecture that
-ties its embeddings. That is a blacklist, not a proof: nothing stops a future architecture from
-holding another pointer the gguf does not name, and llama.cpp exposes no way to enumerate a loaded
-model's tensors and settle it. This is the whole reason the flag is opt-in.
+The first fix was a blacklist — decline when the gguf has no `output.weight` — and it was the wrong
+shape of answer. The twin is not a special case to route around, it is a weight the engine failed to
+rebind: under `--dense-weights anon` the output projection was being served by page faults from the
+mmap on every tied model, which is exactly what that policy exists to prevent. So the capture now
+records every distinct leaf object rather than one per name, the dense policy rebinds every tensor
+over a file range onto the same buffer, and the release decision became a question asked of the OS:
+does any weight the capture observed still point inside the mapping? With that, gemma4 releases
+cleanly, `--dense-weights mmap` reports 39 weights still mapped and stands down, and every gate
+passes.
+
+What is left is a residue, and it is why the flag is opt-in: the check answers for pointers the
+capture pass observed, and a graph shape the session never builds could hold another.
 
 Two alternatives were measured and refuted while looking for a design that could not fail this way:
 
