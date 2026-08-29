@@ -81,6 +81,15 @@ public:
     // The row policy, once init has run: null when no table qualified or the takeover failed. The
     // engine's graph adapter needs it to make rows present before a gather node runs.
     IRowSource * row_source() const;
+
+    // Whether any tensor this module was given still reads through the model file's mapping once
+    // init has run: every tensor under Mmap/Warmed, and under Anonymous/Pinned the ones held back
+    // as oversized. Row-gathered tables are served from our own reader, not the mapping.
+    bool file_mapping_in_use() const;
+
+    // Reopen the readers still in service after init: the row policy's, if any (the dense copy's
+    // own readers have done their one job). See FileReader::reopen for why this exists.
+    bool reopen_readers();
     RowSourceStats row_stats() const;
 
     // Sample how much of the dense set the kernel still has in RAM (mincore), setting resident_frac().

@@ -70,6 +70,8 @@ public:
     RowSourceStats stats() const override;
 
     void shutdown();
+    // Reopen the per-shard readers (see FileReader::reopen). No gather may be in flight.
+    bool reopen_readers();
 
     // A row is far below any device's request floor, so a slab is the unit actually read: large
     // enough that the read costs what the floor costs anyway, small enough that a scattered

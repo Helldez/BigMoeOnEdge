@@ -156,6 +156,15 @@ void DenseWeights::set_row_gathered(std::vector<DenseTensorRef> tables, uint64_t
     row_budget_ = budget_bytes;
 }
 
+bool DenseWeights::reopen_readers() {
+    return rows_ ? rows_->reopen_readers() : true;
+}
+
+bool DenseWeights::file_mapping_in_use() const {
+    if (!mapped_.empty()) return true;
+    return (mode_ == DenseWeightsMode::Mmap || mode_ == DenseWeightsMode::Warmed) && !tensors_.empty();
+}
+
 IRowSource * DenseWeights::row_source() const {
     return rows_ && !rows_->empty() ? rows_.get() : nullptr;
 }

@@ -10,6 +10,7 @@
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
 #include "../io/platform_io.h"
+#include "../io/mapping_release.h"
 
 #include "llama.h"
 #include "ggml.h"
@@ -321,6 +322,9 @@ struct Session::Impl {
     // (the fail-open default) means the flag alone does the job and generate() adds nothing.
     ThinkControl think_ctl = ThinkControl::Template;
     bool backend_inited = false;
+    // What release_file_mappings left behind on purpose; released only after `model` is gone
+    // (its teardown still unmaps/closes what it believes is its mapping; see mapping_release.h).
+    pio::MappingPlaceholders mapping_placeholders;
 
     // Sampling chain, built once at open() only when sampling is requested (temp > 0); null on the
     // greedy default, where the decode loop stays on the argmax fast path. See open()/generate().
@@ -371,6 +375,7 @@ struct Session::Impl {
         ctx.reset();
         hook.reset();
         model.reset();
+        mapping_placeholders.release();
         if (backend_inited) llama_backend_free();
     }
 };
@@ -862,6 +867,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // their own buffers; every mode needs the list to hold back a tensor too large to be
         // resident at all (qwen4exp's n-gram table), which must also leave the warm sweep and the
         // residency sensor — see DenseWeights::hold_back_oversized.
+        std::vector<std::string> unaccounted; // file tensors no policy owns; decides release-mmap below
         {
             const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
             // The subset the graph only row-gathers, when the run asked for the row policy. Their
@@ -884,6 +890,20 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 dense.push_back(d);
                 if (row_names.count(name)) rows.push_back(d);
             }
+            // Every gguf tensor that is neither streamed nor in the dense list is one the capture
+            // decode never touched. With speculation off that is a tensor llama.cpp did not even load
+            // (load_mtp is off, so the MTP block stays in the file): nothing in this session can
+            // reach it. With the MTP draft on, a second context builds a second graph, and a tensor
+            // the capture missed may be one that graph reads, so the list then blocks release-mmap.
+            // Only release-mmap reads this list, so only a run that asked for it pays to build it.
+            if (cfg.moe.release_mmap) {
+                std::unordered_set<std::string> owned;
+                owned.reserve(dense.size());
+                for (const DenseTensorRef & d : dense)
+                    if (d.tensor) owned.insert(d.tensor->name);
+                for (const auto & kv : offs.off_by_name)
+                    if (!expert_names.count(kv.first) && !owned.count(kv.first)) unaccounted.push_back(kv.first);
+            }
             const uint64_t row_budget = (uint64_t) std::max(0, cfg.moe.row_stream_mb) * 1024ull * 1024ull;
             im.source.set_dense_tensors(std::move(dense));
             im.source.set_row_tensors(std::move(rows), row_budget);
@@ -895,6 +915,32 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // The row policy exists only once dense_.init has taken the tables over; null means nothing
         // qualified or the takeover declined, and the hook then costs exactly nothing per node.
         im.hook->set_row_source(im.source.row_source());
+
+        // Drop the model file's mapping once nothing reads through it (core/src/io/mapping_release.h).
+        // Safety is decided here, not in the module: the dense policy must have copied its tensors
+        // out and no file tensor may be left unowned. Either condition failing skips the release and
+        // says why, so a run that asked for it and did not get it is never silent about the fact.
+        if (cfg.moe.release_mmap) {
+            if (im.source.dense_file_mapping_in_use()) {
+                std::fprintf(stderr, "bmoe: release-mmap skipped: dense weights still read through the mapping\n");
+            } else if (!unaccounted.empty() && cfg.spec.is_mtp()) {
+                std::fprintf(stderr, "bmoe: release-mmap skipped: %zu file tensor(s) no policy owns (first: %s)\n",
+                             unaccounted.size(), unaccounted.front().c_str());
+            } else {
+                const pio::MappingReleaseReport r =
+                    pio::release_file_mappings(offs.shard_paths, &im.mapping_placeholders);
+                // Lanes opened while the section was alive stay serialised against it even once it
+                // is gone (measured: iobench S3 vs S4), so the readers are reopened after the release.
+                if (r.supported && (r.views_unmapped || r.sections_closed) && !im.source.reopen_readers())
+                    std::fprintf(stderr, "bmoe: release-mmap: reader reopen failed; reads stay serialised\n");
+                if (r.supported) // POSIX has nothing to undo and says nothing
+                    std::fprintf(stderr,
+                                 "bmoe: release-mmap: %d view(s) unmapped (%llu MiB), %d section(s) closed%s%s%s\n",
+                                 r.views_unmapped, (unsigned long long) (r.bytes >> 20), r.sections_closed,
+                                 r.plugs_missed ? ", handle slot not reclaimed" : "", r.error.empty() ? "" : "; ",
+                                 r.error.c_str());
+            }
+        }
 
         if (route_trace) {
             im.route_trace = route_trace;

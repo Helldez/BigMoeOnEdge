@@ -86,6 +86,11 @@ public:
     // The row policy after init, for the graph adapter that must make rows present before a gather
     // node runs; null when nothing qualified. Its accounting, for telemetry, is row_stats().
     IRowSource * row_source() const { return dense_.row_source(); }
+    bool dense_file_mapping_in_use() const { return dense_.file_mapping_in_use(); }
+    // Reopen every reader that will serve decode (expert lanes and row tables). Only legal between
+    // init and the first decode, when the workers are idle and nothing is queued; checked under the
+    // queue lock. See FileReader::reopen.
+    bool reopen_readers();
     RowSourceStats row_stats() const { return dense_.row_stats(); }
 
     // IExpertSource
