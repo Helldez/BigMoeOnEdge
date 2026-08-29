@@ -29,6 +29,11 @@
 #include <string>
 #include <thread>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 using namespace bmoe;
 
 static int env_int(const char * k, int dflt) {
@@ -351,6 +356,18 @@ static int run_session_loop(const RunConfig & cfg,
     // it has usually already returned). Detach so process exit is not held up by a blocking read.
     if (reader.joinable()) reader.detach();
     return rc;
+}
+
+// True when Explorer (a double click) created this console for us alone, so it will vanish the
+// instant we return and nothing we printed gets read. A terminal the user already had open also
+// holds the console and stays; the process count tells the two apart.
+static bool console_is_ours_alone() {
+#if defined(_WIN32)
+    DWORD pid;
+    return GetConsoleProcessList(&pid, 1) == 1;
+#else
+    return false;
+#endif
 }
 
 static void print_usage(const char * argv0) {
@@ -709,6 +726,13 @@ int main(int argc, char ** argv) {
 
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);
+        // Double-clicked: without this the window closes before the usage can be read, and the
+        // program looks like it failed to start.
+        if (console_is_ours_alone()) {
+            std::fprintf(stderr, "\nbmoe-cli is a command-line program: run it from a terminal with -m <model.gguf>.\n"
+                                 "Press Enter to close this window.\n");
+            std::getchar();
+        }
         return 1;
     }
 

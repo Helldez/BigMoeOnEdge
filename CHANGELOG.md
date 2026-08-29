@@ -4,7 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.23.0] - 2026-08-28
+## [0.23.0] - 2026-08-29
+
+### Fixed
+- **Windows `bmoe-cli.exe` looked broken when double-clicked (#181).** A console program started
+  from Explorer gets a console of its own, prints its usage because no model was given, exits,
+  and the console vanishes with it: a window that flashes and disappears, indistinguishable from a
+  crash. Now, when the console was created for this process alone, the no-model path says it is a
+  command-line program and waits for Enter before closing; from a terminal nothing changes. The
+  release archive's README.txt opens with the same fact and a complete Windows command, and no
+  longer points a Windows user at a bash script as the only instruction. The Windows build also
+  links the MSVC runtime statically, so the exe no longer needs the VC++ Redistributable to start.
+
 
 ### Added
 - **Prefill-phase attribution in `BMOE_DONE` and the CSV `# summary`.** `prefill_cpu_s` /
