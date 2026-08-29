@@ -116,9 +116,16 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
 === perf ===
 generation: <n> tokens, <s> s/token (<t> tok/s)
 compute: <pct>% CPU occupancy (<c> cpu-s/token over <n> threads), <f> major faults/token
+mode: expert streaming, cache <auto|<n> MiB|off>, dense <mmap|warm|anon|ahwb>[, overlap]
 moe-stream: read <mib> MiB (<mib/tok> MiB/token), decode <s> s/token (compute <c> + cache mgmt <m> + flash I/O <i> s/token, <bw> MiB/s)
 moe-cache: <pct>% hit, resident <mib> MiB
 ```
+
+The `mode:` line is printed on every run, streaming or not, and is the first thing to read: without
+`--moe-stream` the engine is plain llama.cpp on mmap and every `moe-*` line below is absent, so a
+report missing them is a baseline and not a measurement of this engine. On a MoE architecture the
+build has a recipe for, that case names the flag; on any other model it says the architecture is not
+one this build streams.
 
 The `compute:` line decomposes the residual: low CPU occupancy points at a throttled/preempted
 core (a frequency cap, a co-resident process) rather than heavy math, and non-zero major

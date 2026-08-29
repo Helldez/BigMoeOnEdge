@@ -441,6 +441,7 @@ static void print_usage(const char * argv0) {
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
         "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
+        "                          (default: auto whenever --moe-stream is on)\n"
         "      --cache-floor-mb N  with --cache-mb auto: RAM to leave free (default 1536)\n"
         "      --cache-ceil-mb N   with --cache-mb auto: upper bound on the budget (0 = no cap)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
@@ -782,6 +783,13 @@ int main(int argc, char ** argv) {
     if (!seen.count("--predict-log")) cfg.moe.predict_log = env_int("BMOE_PREDICT_LOG", 0) != 0;
     if (!seen.count("--predict-prefetch")) cfg.moe.predict_prefetch = env_int("BMOE_PREDICT_PREFETCH", 0) != 0;
 
+    // A default the CLI resolves rather than the library, so an embedder's explicit 0 keeps meaning
+    // "no cache". With streaming on, a budget of 0 re-reads every routed expert from flash every
+    // token, which is never what someone who just typed --moe-stream wanted (#186). An explicit
+    // --cache-mb or BMOE_CACHE_MB still wins, including an explicit 0.
+    if (cfg.moe.enabled && !cfg.moe.cache_auto && !seen.count("--cache-mb") && std::getenv("BMOE_CACHE_MB") == nullptr)
+        cfg.moe.cache_auto = true;
+
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);
         // Double-clicked: without this the window closes before the usage can be read, and the
@@ -983,6 +991,35 @@ int main(int argc, char ** argv) {
         double prefill_tps = s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0;
         std::printf("prefill: %d tokens, %.3f s (%.1f tok/s) | model load %.3f s | TTFT %.3f s\n", s.n_prompt,
                     s.prefill_seconds, prefill_tps, s.load_seconds, s.load_seconds + s.prefill_seconds);
+    }
+    // What this run actually was. Printed unconditionally, because its absence was the defect: with
+    // streaming off the engine is plain llama.cpp on mmap, every line below is silent, and a report
+    // that only ever describes streaming let a baseline run read as a measurement of this project
+    // (#186). Naming the flag here is cheaper than a doc nobody reaches from a terminal.
+    {
+        const char * dense = cfg.moe.dense_weights == DenseWeightsMode::Mmap     ? "mmap"
+                             : cfg.moe.dense_weights == DenseWeightsMode::Warmed ? "warm"
+                             : cfg.moe.dense_weights == DenseWeightsMode::Pinned ? "ahwb"
+                                                                                 : "anon";
+        if (cfg.moe.enabled) {
+            char cache[64];
+            if (cfg.moe.cache_auto)
+                std::snprintf(cache, sizeof(cache), "cache auto");
+            else if (cfg.moe.cache_mb > 0)
+                std::snprintf(cache, sizeof(cache), "cache %d MiB", cfg.moe.cache_mb);
+            else
+                std::snprintf(cache, sizeof(cache), "cache off");
+            std::printf("mode: expert streaming, %s, dense %s%s\n", cache, dense, cfg.moe.overlap ? ", overlap" : "");
+        } else if (!s.arch.empty() && find_moe_recipe(s.arch.c_str())) {
+            std::printf("mode: mmap. Expert streaming is OFF on a MoE model (%s), so this run is a "
+                        "baseline, not this engine: add --moe-stream --overlap to stream the routed "
+                        "experts from flash.\n",
+                        s.arch.c_str());
+        } else {
+            std::printf("mode: mmap (%s is not a MoE architecture this build streams; --list-archs "
+                        "lists the supported ones)\n",
+                        s.arch.empty() ? "the model" : s.arch.c_str());
+        }
     }
     if (cfg.moe.enabled) {
         std::printf("moe-stream: read %.1f MiB (%.2f MiB/token), decode %.3f s/token "

@@ -1675,6 +1675,7 @@ RunResult Session::generate(const GenerateRequest & req,
 
     // ── summary ──
     RunSummary & s = res.summary;
+    s.arch = im.arch;
     s.n_generated = n_gen;
     s.gen_seconds = gen_seconds;
     s.s_per_token = n_gen ? gen_seconds / n_gen : 0.0;

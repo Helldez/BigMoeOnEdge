@@ -99,6 +99,11 @@ struct TokenMetrics {
 };
 
 struct RunSummary {
+    // The loaded model's architecture, as gguf reports it. Carried here so a caller can tell what
+    // the run was capable of and not only what it did: a MoE arch that ran without streaming is the
+    // baseline, not a measurement of this engine (see the CLI's mode line).
+    std::string arch;
+
     int n_generated = 0;
     double gen_seconds = 0.0;
     double s_per_token = 0.0;

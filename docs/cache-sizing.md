@@ -123,7 +123,7 @@ see the ordering warning below.
 
 | Flag | Meaning |
 |---|---|
-| `--cache-mb auto` | size the cache to the device instead of a fixed MiB (mutually exclusive with a numeric `--cache-mb`) |
+| `--cache-mb auto` | size the cache to the device instead of a fixed MiB (mutually exclusive with a numeric `--cache-mb`). **The CLI's default whenever `--moe-stream` is on**: pass a number, or `0` for no cache, to override it. The library's own default is still no cache, so an embedder passing 0 keeps meaning it |
 | `--cache-floor-mb N` | RAM to leave free for the rest of the system when auto-sizing (default 1536) |
 | `--cache-ceil-mb N` | upper bound on the auto-sized budget (0 = no cap). Use it — uncapped `auto` over-asks |
 | `--dense-weights mmap\|warm\|anon` | the dense (non-expert) weight policy. `warm` is the load-time page-cache sweep described above; `mmap` skips it; `anon` (default) reads the dense set via O_DIRECT into anonymous buffers instead, which is the right answer well past RAM — see [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md). `--no-warm-dense` and `--dense-odirect` are deprecated aliases for `mmap` and `anon` |

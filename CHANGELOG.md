@@ -77,6 +77,17 @@ Semantic Versioning.
   Listed under the app's Experimental group.
 
 ### Changed
+- **Every run says which mode it ran in, and `--moe-stream` now brings a cache with it.** A first
+  command with nothing but `-m`, `-p` and `-t` ran plain llama.cpp on mmap: no streaming, no cache,
+  and a dense policy that only applies once streaming is on. The report said none of this, because
+  the `moe-stream:` block only prints when streaming is enabled, so a baseline run read as a
+  measurement of this engine. Two changes: a `mode:` line is printed unconditionally, naming the
+  flag when a MoE model ran without streaming, and `--cache-mb` defaults to `auto` whenever
+  `--moe-stream` is on, since the previous default of 0 meant the cache was off. On a 16 GB host
+  streaming Qwen3.6-35B-A3B Q4_K_M, the cache default alone is 1.16 to 2.35 tok/s and 585 to 238
+  MiB read per token, same output. An explicit `--cache-mb` or `BMOE_CACHE_MB` still wins,
+  including an explicit 0, and the library's own default is unchanged: the CLI resolves this, so an
+  embedder passing 0 still means no cache. Reported by @eiffel31 (#186).
 - The CSV summary trailer gains `row_table_MiB`, `row_resident_MiB`, `row_rows`, `row_reads`,
   `row_read_MiB`, `row_evictions` and `row_io_errors`, and a `moe-rows:` end-of-run line appears
   when a table qualified. All are absent from the per-token rows, which the policy does not touch.
