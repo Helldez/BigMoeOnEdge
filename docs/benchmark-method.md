@@ -22,7 +22,8 @@ bmoe-cli -m MODEL.gguf --moe-stream --cache-mb auto --io-threads 4 -t 4 -n 256 \
 - **Check `o_direct=1` before trusting anything.** On Android the app's external files dir under
   `/storage/emulated` is FUSE-backed: the `O_DIRECT` open succeeds but reads can return wrong data,
   so the engine falls back to buffered and you are no longer measuring the path this page assumes.
-  `/data/local/tmp` and `/sdcard/Download` are real filesystems. On macOS the flag is a no-op today
+  `/data/local/tmp` and `/sdcard/Download` are real filesystems. On macOS `o_direct=1` means
+  `F_NOCACHE` was applied, which is uncached but carries no alignment or DMA contract
   (see [limitations.md](limitations.md)).
 - **Report** `s/token`, the `compute + flash I/O` split from the `moe-stream:` line, and the
   `moe-cache:` hit rate.
@@ -212,8 +213,8 @@ free-RAM-floor table alongside the throughput one.
   dev host, identical output. Too large for CI.
 
 The streamer works on Linux, macOS and Windows, but the throughput targets are stated for Android
-and Linux on flash: Windows `VirtualAlloc` commit-per-slice is heavier, and macOS does not bypass
-the page cache today ([limitations.md](limitations.md)).
+and Linux on flash: Windows `VirtualAlloc` commit-per-slice is heavier, and macOS leaves the page
+cache through `F_NOCACHE`, a caching hint rather than an I/O mode ([limitations.md](limitations.md)).
 
 ## Where the published numbers come from
 
