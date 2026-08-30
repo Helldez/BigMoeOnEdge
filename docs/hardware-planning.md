@@ -164,41 +164,95 @@ the capacity tier is nearly inert on an integrated GPU and only the bandwidth ti
 
 ## Architecture
 
+The logical flow, as implemented. Diamonds are decisions; the two bracketed boxes in the session
+are designed and not yet active.
+
 ```
-                    CLI / app / API          --auto  --plan-explain  --plan-only
-                    pins = everything the caller typed
-                                  |
-        +-------------------------v-----------------------------+
-        |  PROBES  core/src/plan/*_probe.cpp                    |   the only place with
-        |  model (gguf header) | machine | storage | devices     |   platform names and
-        +----------+-----------+---------+---------+------------+   backend calls
-                   |           |         |         |
-            ModelProfile  HardwareProfile  StorageFacts  ComputeDevice[]
-                   |           |         |         |
-        +----------v-----------v---------v---------v------------+
-        |  STAGE 1  llama.cpp capacity fitter (placement_probe) |   VRAM -> RAM, per class
-        |  out: n_gpu_layers, split, overrides, n_ctx, KV+compute|   inside each layer
-        +---------------------------+---------------------------+
-                                    | Placement: experts left on host, host residual
-        +---------------------------v---------------------------+
-        |  STAGE 2  pure planner (planner.cpp: no llama.cpp,    |   RAM -> flash
-        |  no OS): regime, dense policy, cache >= token cycle,   |   every decision tagged
-        |  lanes, O_DIRECT, mapping release, lossy only if armed |   measured/derived/...
-        +---------------------------+---------------------------+
-                                    | Plan = RunConfig + rationale
-        +---------------------------v---------------------------+
-        |  SESSION  loads with the fitter's placement; dense     |
-        |  anon/dma-buf/mmap; host experts -> streamer + LRU    |
-        +---------------------------+---------------------------+
-                                    |
-        +---------------------------v---------------------------+
-        |  llama.cpp + ggml, stock submodule: CPU CUDA Metal    |
-        |  Vulkan ROCm SYCL OpenCL                              |
-        +-------------------------------------------------------+
+ INPUT
+   model.gguf              machine                  caller
+   (never loaded)          (as it is right now)     (flags typed by hand = PINS)
+        |                      |                         |
+        v                      v                         |
+ +--------------+   +--------------------+               |
+ | MODEL PROBE  |   | MACHINE PROBE      |               |
+ | experts/layer|   | available memory   |               |
+ | slice, token |   | overflow: compress |               |
+ | cycle, dense,|   |  / swap / kill     |               |
+ | MTP, tied    |   | reclaim-exempt     |               |
+ | head         |   | ggml devices+quant |               |
+ +------+-------+   +---------+----------+               |
+        |                     |                          |
+        |           +---------v----------+               |
+        |           | STORAGE PROBE ~0.6s|               |
+        |           | rate(size, lanes)  |               |
+        |           | O_DIRECT ok?       |               |
+        |           | mapping serialises?|  <- Yes or Unknown, never No
+        |           +---------+----------+               |
+        v                     v                          v
+ ==================================================================
+ | STAGE 1 . llama.cpp CAPACITY FITTER        (VRAM -> RAM)       |
+ | per layer: attention -> up -> gate -> sparse experts last      |
+ | on every backend ggml sees                                     |
+ | in:  context pinned by us (never 0 -> "model max")             |
+ | out: n_gpu_layers . split . overrides . KV+compute reservation |
+ ================================+=================================
+                                | Placement:
+                                |  which layers keep experts on the HOST
+                                |  what stays resident on the host
+                                v
+        <> everything on devices?  -- yes --> done: nothing to stream
+        | no
+        v
+        <> host residual FITS in RAM? -- yes --> experts resident,
+        | no                                      no streaming
+        v                                         (= -ot exps=CPU)
+ ==================================================================
+ | STAGE 2 . PURE PLANNER                     (RAM -> flash)      |
+ | 0 llama.cpp symbols . 0 platform names                         |
+ |                                                                |
+ |  DENSE policy  <-- overflow + reclaim-exempt store + who bills |
+ |      compress & dma-buf         -> pinned (ahwb)               |
+ |      kill & file pages uncounted -> mmap                       |
+ |      otherwise                  -> anon                        |
+ |                                                                |
+ |  CACHE budget = usable - host dense - fitter reservations      |
+ |      cap: only the expert share left on the host               |
+ |      <> >= token cycle?  no -> DECLINE and say why             |
+ |                            (caller pin -> proceed + warning)    |
+ |                                                                |
+ |  I/O   <-- curve: smallest lane count within 5% of peak        |
+ |        <-- O_DIRECT verified on the path                       |
+ |        <-- mapping release: only if measured Yes AND the shape |
+ |            is safe (head not tied, MTP not in use)             |
+ |                                                                |
+ |  LOSSY = off. Always. Unless the caller armed it.              |
+ ================================+=================================
+                                | Plan = RunConfig + rationale
+                                | every line: [measured|derived|policy|operator|unprobed]
+                                v
+ +----------------------------------------------------------------+
+ | SESSION                                                        |
+ | loads with the fitter's n_gpu_layers + overrides               |
+ | dense -> anon | dma-buf | mmap                                 |
+ | host experts -> streamer: LRU cache, lanes, mul_mat_id overlap |
+ | [NOT ACTIVE] experts in the device's host buffer (Spark, Mac)  |
+ | [NOT ACTIVE] prefill on the device over streamed experts       |
+ +--------------------------------+-------------------------------+
+                                  v
+ +----------------------------------------------------------------+
+ | llama.cpp + ggml (stock submodule)                             |
+ | CPU . CUDA . Metal . Vulkan . ROCm . SYCL . OpenCL             |
+ +----------------------------------------------------------------+
+
+ OUTPUT: tok/s + the printed plan (--plan-explain) + the plan in the CSV header
 ```
 
-Above the probes there is no platform name; below them everything goes through public API,
-plus `common/fit.h` in one file.
+Three things to read off it. One knowledge boundary: above the probes there is no platform name;
+below them, public API plus `common/fit.h` in one file. Two stages in sequence, not merged: the
+fitter answers *how much fits where* (exact, computed), the planner answers *how to read what does
+not fit* (measured, or declared unknown). Four early exits, and every one of them is a plan: a
+dense model, everything on devices, a host residual that fits, a budget under the token cycle.
+None is an error; each says why.
 
 ## Levers llama.cpp already has that this planner does not use yet
 
