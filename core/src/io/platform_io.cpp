@@ -132,6 +132,12 @@ uint64_t mem_available_bytes() {
     return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullAvailPhys : 0;
 }
 
+uint64_t mem_total_bytes() {
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullTotalPhys : 0;
+}
+
 // The host build exists for the byte-identity gates, not perf measurement, so these stay
 // unmeasured (0) rather than pulling in the imperfect Windows equivalents (PageFaultCount counts
 // soft faults too; GetProcessTimes would work but there is no consumer for it here).
@@ -260,6 +266,26 @@ bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * re
         a += want * page;
     }
     return true;
+}
+
+uint64_t mem_total_bytes() {
+    if (FILE * f = std::fopen("/proc/meminfo", "re")) {
+        char line[256];
+        while (std::fgets(line, sizeof(line), f)) {
+            unsigned long long kb = 0;
+            if (std::sscanf(line, "MemTotal: %llu kB", &kb) == 1) {
+                std::fclose(f);
+                return (uint64_t) kb * 1024ull;
+            }
+        }
+        std::fclose(f);
+    }
+#if defined(_SC_PHYS_PAGES)
+    const long total = sysconf(_SC_PHYS_PAGES);
+    const long psz = sysconf(_SC_PAGESIZE);
+    if (total > 0 && psz > 0) return (uint64_t) total * (uint64_t) psz;
+#endif
+    return 0;
 }
 
 uint64_t mem_available_bytes() {

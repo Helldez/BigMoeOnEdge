@@ -173,6 +173,7 @@ HardwareProfile probe_hardware(const char * model_path) {
     HardwareProfile h;
 
     h.residency_budget = pio::mem_available_bytes();
+    h.memory_total = pio::mem_total_bytes();
     h.anon_overflow = probe_anon_overflow();
     h.reclaim_exempt_max = pio::pinned_max_bytes();
     h.file_pages_counted = probe_file_pages_counted();
@@ -198,7 +199,7 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.storage.mapping_serialises_reads = Tri::Unknown;
 
     h.label = std::to_string(h.n_cores) + " cores, " + std::to_string((unsigned long long) (h.residency_budget >> 20)) +
-              " MiB available";
+              " MiB available of " + std::to_string((unsigned long long) (h.memory_total >> 20)) + " MiB";
     return h;
 }
 

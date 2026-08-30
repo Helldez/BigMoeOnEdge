@@ -29,6 +29,19 @@ Semantic Versioning.
   phone is the cell that would price it, and it is owed.
 
 ### Added
+- **The machine's total memory was never read.** `HardwareProfile::memory_total` existed, was
+  documented as what margins are expressed against, and no probe ever filled it: only per-device
+  totals were. It is now read (`pio::mem_total_bytes`) and the plan's machine line says "6438 MiB
+  available of 15182 MiB", because those are two different claims and a phone with 12 GB and 6 GB
+  available is the case that makes the difference matter.
+
+- **`scripts/rented-box.sh`**, one session on a machine we do not own: record what the box is,
+  build, run the gates, print the plan three ways (free facts, with the storage probe, with the
+  headroom measured), then settle the plan's own predictions against the engine with interleaved
+  A/Bs on the lane count and on `--auto` versus the historical fixed knobs. The rules are unit-tested
+  against synthetic machines, which is what lets them claim anything about hardware nobody here has;
+  what that cannot tell us is whether the PROBES are faithful somewhere none of them has run.
+
 - **A headroom probe: what this machine will let us KEEP, not what it reports available.** Every
   sizing rule here was reading `MemAvailable`, which answers a different question. Where a reclaim
   compresses, that figure is wrong in both directions at once: it is a floor, because the kernel
