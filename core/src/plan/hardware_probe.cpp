@@ -9,6 +9,9 @@
 #include "ggml.h"
 
 #include <cstdio>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 #include <cstring>
 #include <string>
 #include <thread>
@@ -40,26 +43,30 @@ Overflow probe_anon_overflow() {
     return Overflow::Compress; // the VM compressor, not a swap device
 #endif
 #else
-    // /proc/swaps lists the backing devices. A zram device compresses in RAM (cheap to lose, and
-    // invisible to every I/O counter); a partition or file writes out (slow, survivable); nothing
-    // at all means anonymous memory cannot be evicted, so pressure ends in a kill.
-    FILE * f = std::fopen("/proc/swaps", "re");
-    if (!f) return Overflow::Unknown;
-    char line[512];
-    bool any = false, zram = false;
-    bool first = true;
-    while (std::fgets(line, sizeof(line), f)) {
-        if (first) { // header row
-            first = false;
-            continue;
+    // What the machine reclaims INTO. /proc/swaps would say directly, but an unprivileged process
+    // on Android may not read it (nor /sys/block/zram0's contents). Two things it CAN see suffice:
+    // whether a zram block device EXISTS (the directory entry is visible even where its files are
+    // not) and whether /proc/meminfo reports any swap at all. A zram device means anonymous memory
+    // is compressed in RAM; swap without zram means it is written out; no swap at all means it
+    // cannot be evicted, and pressure ends in a kill.
+    struct stat st {};
+    const bool has_zram = ::stat("/sys/block/zram0", &st) == 0;
+    uint64_t swap_total_kb = 0;
+    if (FILE * f = std::fopen("/proc/meminfo", "re")) {
+        char line[256];
+        while (std::fgets(line, sizeof(line), f)) {
+            unsigned long long v = 0;
+            if (std::sscanf(line, "SwapTotal: %llu kB", &v) == 1) {
+                swap_total_kb = v;
+                break;
+            }
         }
-        if (line[0] == '\n' || line[0] == '\0') continue;
-        any = true;
-        if (std::strstr(line, "zram")) zram = true;
+        std::fclose(f);
+    } else {
+        return Overflow::Unknown;
     }
-    std::fclose(f);
-    if (zram) return Overflow::Compress;
-    if (any) return Overflow::Swap;
+    if (has_zram && swap_total_kb > 0) return Overflow::Compress;
+    if (swap_total_kb > 0) return Overflow::Swap;
     return Overflow::Kill;
 #endif
 }

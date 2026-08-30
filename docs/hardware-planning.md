@@ -146,6 +146,13 @@ measure `--release-mmap` yourself.
 - **Threads and `--ubatch`** have no rule at all: nothing relates core topology to decode
   throughput here, and the compute-buffer reservation's crossover against the cache is unmeasured.
 
+The residency budget is `MemAvailable` on every platform that reports it, and on a machine whose
+reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set
+plus cache with 3.6 GB "available", because the kernel compressed other processes' idle memory to
+make room, and reported 5.6 GB available afterwards. The honest budget there is the compressible
+headroom, which is a measurement this planner does not yet take; until it does, an unpinned plan
+on a phone under pressure declines and says why, and a pinned `--cache-mb` wins over the floor.
+
 One caveat on the budget itself: it is a one-shot reading of a quantity that moves. The same
 machine and model planned twice minutes apart produced 4.3 GB and 8.2 GB of available memory, and
 therefore two different cache budgets. The plan quotes the number it used, which is what makes the

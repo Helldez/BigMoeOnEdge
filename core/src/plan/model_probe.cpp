@@ -75,9 +75,26 @@ ModelProfile probe_model(const char * model_path) {
     bool saw_output_weight = false;
     bool saw_token_embd = false;
 
+    // First pass: which blocks carry a multi-token-prediction head. llama.cpp does not load that
+    // block at all unless asked, experts AND dense alike, so nothing of it may count toward what
+    // the run holds. (Measured: counting its dense tensors overstated the pinned set by ~850 MiB.)
+    for (const auto & kv : meta.offsets.size_by_name) {
+        int layer = 0;
+        std::string suffix;
+        if (kv.first.find("nextn") != std::string::npos) {
+            m.has_mtp = true;
+            if (split_block_tensor(kv.first, layer, suffix)) mtp_layers.insert(layer);
+        }
+    }
+
     for (const auto & kv : meta.offsets.size_by_name) {
         const std::string & name = kv.first;
         const uint64_t size = kv.second;
+        {
+            int layer = 0;
+            std::string suffix;
+            if (split_block_tensor(name, layer, suffix) && mtp_layers.count(layer)) continue; // never loaded
+        }
         m.file_bytes += size;
 
         if (name == "output.weight") saw_output_weight = true;
@@ -86,13 +103,6 @@ ModelProfile probe_model(const char * model_path) {
         int layer = 0;
         std::string suffix;
         const bool in_block = split_block_tensor(name, layer, suffix);
-        if (name.find("nextn") != std::string::npos) {
-            m.has_mtp = true;
-            // The MTP block lives at its own block index and names expert tensors like any other,
-            // but llama.cpp does not load it by default — so those experts are never routed and
-            // never streamed. Counting them would inflate the cache floor by a whole layer.
-            if (in_block) mtp_layers.insert(layer);
-        }
 
         const bool is_expert = recipe && m.n_expert > 0 && in_block && recipe_names(*recipe, suffix);
         if (is_expert) {

@@ -29,6 +29,24 @@ Semantic Versioning.
   phone is the cell that would price it, and it is owed.
 
 ### Added
+- **Planned on the phone, and three things the phone corrected.** The same rules, with no line
+  written for Android, derived the shipped Android recipe from facts: the pinned dense allocation
+  from a reclaim that compresses plus a reclaim-exempt store, four read lanes from the measured UFS
+  curve, uncached reads from the per-path check. At equal cache the plan and the shipped recipe
+  coincide; unpinned, the derived budget (2453-2659 MiB) buys fewer re-reads per token (21-24
+  against 34) at parity in tok/s, since decode there is compute-bound and the reads already
+  overlap. What the phone corrected: `/proc/swaps` is unreadable to an unprivileged process there,
+  so the reclaim-cost probe now reads what it can — whether `/sys/block/zram0` exists and whether
+  `/proc/meminfo` reports swap; the MTP block's *dense* tensors are never loaded either, so they
+  no longer count (the pinned set is 1786 MiB, which is what the engine pins, not 2642); and an
+  operator-pinned `--cache-mb` now wins over the derived floor with a warning instead of a decline.
+
+  One thing the phone showed that is NOT fixed, deliberately: under a reclaim that compresses,
+  `MemAvailable` is a floor rather than a cap — the shipped recipe held 3.8 GB with 3.6 GB
+  "available" because the kernel compressed other processes' idle memory to make room. The honest
+  budget there is the compressible headroom, which is a measurement not yet taken; until it is,
+  the unpinned plan on a phone under memory pressure declines and says why rather than guessing.
+
 - **`--auto` now runs llama.cpp's own capacity fitter first, and plans the flash tier on what it
   leaves behind.** The planner had been built as the second stage without the first: it could decide
   how to stream when everything was on the CPU, and nothing else — which is the phone, i.e. Android

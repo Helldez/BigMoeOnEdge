@@ -354,7 +354,12 @@ Plan plan_run(const RunConfig & base,
         note("moe-stream", "off", Source::Unprobed, "expert slice size unknown");
         return p;
     }
-    if (budget < cycle) {
+    if (budget < cycle && req.is_pinned("cache-mb")) {
+        note("cache-floor", u64s(mib(cycle)) + " MiB", Source::Derived,
+             "the derived budget (" + u64s(mib(budget)) +
+                 " MiB) is under this model's token cycle, but the caller "
+                 "pinned cache-mb and a pin is the caller's authority: proceeding with the pinned value");
+    } else if (budget < cycle) {
         decline("a cache of " + u64s(mib(budget)) + " MiB is below this model's worst-case token cycle of " +
                 u64s(mib(cycle)) +
                 " MiB: under that floor the cache evicts what the same token still needs, "
@@ -370,7 +375,7 @@ Plan plan_run(const RunConfig & base,
              : "neither set fits, so the experts stream and the dense policy degrades with them "
                "(a tensor larger than this budget is left mapped rather than made resident)");
 
-    if (!pinned("cache-mb", u64s(mib(p.config.moe.cache_mb)))) {
+    if (!pinned("cache-mb", u64s((uint64_t) std::max(0, p.config.moe.cache_mb)))) {
         p.config.moe.cache_auto = false;
         p.config.moe.cache_mb = (int) mib(budget);
         note("cache-mb", u64s(mib(budget)), Source::Derived,
