@@ -119,16 +119,36 @@ bool PlanRequest::is_pinned(const char * knob) const {
 }
 
 Plan plan_run(const RunConfig & base, const HardwareProfile & hw, const ModelProfile & model, const PlanRequest & req) {
-    return plan_run(base, hw, model, req, PlannerPolicy::defaults());
+    return plan_run(base, hw, model, Placement{}, req, PlannerPolicy::defaults());
 }
 
 Plan plan_run(const RunConfig & base,
               const HardwareProfile & hw,
               const ModelProfile & model,
+              const Placement & placement,
+              const PlanRequest & req) {
+    return plan_run(base, hw, model, placement, req, PlannerPolicy::defaults());
+}
+
+Plan plan_run(const RunConfig & base,
+              const HardwareProfile & hw,
+              const ModelProfile & model,
+              const Placement & placement,
               const PlanRequest & req,
               const PlannerPolicy & pol) {
     Plan p;
     p.config = base;
+    p.placement = placement;
+
+    // What the first stage left for the second. Without a placement every layer's experts are on
+    // the host and nothing of the model sits on a device; with one, only the host share of the
+    // experts is the streamer's to serve, and the dense set the fitter kept on the host is what it
+    // costs the residency budget.
+    const uint32_t n_layer = model.n_layer;
+    const uint32_t host_layers = placement.fitted ? (uint32_t) placement.host_expert_layers.size() : n_layer;
+    const uint64_t host_expert_bytes = (placement.fitted && n_layer)
+                                           ? (uint64_t) ((double) model.expert_bytes * host_layers / n_layer)
+                                           : model.expert_bytes;
 
     auto note = [&](const char * knob, std::string value, Source src, std::string reason) {
         Decision d;
@@ -175,24 +195,58 @@ Plan plan_run(const RunConfig & base,
     const uint64_t margin = margin_bytes(hw, pol);
     const uint64_t usable = hw.residency_budget > margin ? hw.residency_budget - margin : 0;
 
-    if (model.file_bytes <= usable) {
+    // The bytes that would have to be resident on the host if nothing were streamed: with a
+    // placement, what the fitter left here; without one, the whole file.
+    const uint64_t host_all = placement.fitted ? placement.host_resident_bytes + host_expert_bytes : model.file_bytes;
+    const uint64_t host_dense = placement.fitted ? placement.host_resident_bytes : model.dense_bytes;
+    if (host_all <= usable) {
         p.regime = Regime::Fits;
-    } else if (model.dense_bytes <= usable) {
+    } else if (host_dense <= usable) {
         p.regime = Regime::ExpertsStream;
     } else {
         p.regime = Regime::DenseOversized;
     }
 
+    if (placement.fitted) {
+        note("placement", u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers on devices", Source::Measured,
+             placement.outcome + "; " + u64s(host_layers) + " of " + u64s(n_layer) +
+                 " layers keep their experts on the host, host-resident " + u64s(mib(placement.host_resident_bytes)) +
+                 " MiB, on devices " + u64s(mib(placement.device_bytes)) + " MiB, context " + u64s(placement.n_ctx) +
+                 " (fitter's host breakdown: model " + u64s(mib(placement.raw_host_model_bytes)) + ", context " +
+                 u64s(mib(placement.raw_host_context_bytes)) + ", compute " +
+                 u64s(mib(placement.raw_host_compute_bytes)) + " MiB; file " + u64s(mib(model.file_bytes)) +
+                 ", experts " + u64s(mib(model.expert_bytes)) + ")");
+        if (placement.n_ctx && !req.is_pinned("ctx-size")) {
+            p.config.n_ctx = (int) placement.n_ctx;
+            note("ctx-size", u64s(placement.n_ctx), Source::Measured,
+                 "the capacity fitter shrinks context before it moves weights; this is where it settled");
+        }
+        p.config.n_gpu_layers = placement.n_gpu_layers;
+        p.config.buft_overrides = placement.override_patterns;
+    } else {
+        note("placement", "none", Source::Unprobed,
+             "the capacity fitter was not run, so no layer is placed on a device: everything is on the host");
+    }
+
     note("regime", regime_name(p.regime), Source::Derived,
-         "model " + u64s(mib(model.file_bytes)) + " MiB (dense " + u64s(mib(model.dense_bytes)) + ") against " +
+         "on the host " + u64s(mib(host_all)) + " MiB (dense " + u64s(mib(host_dense)) + ") against " +
              u64s(mib(usable)) + " MiB usable, which is the " + u64s(mib(hw.residency_budget)) +
              " MiB this process may hold less a " + u64s(mib(margin)) + " MiB margin (" +
              overflow_name(hw.anon_overflow) + ")");
 
+    if (placement.fitted && host_layers == 0) {
+        p.regime = Regime::Fits;
+        decline("the capacity fitter placed every layer's experts on a device; nothing is left on the host for "
+                "the streamer to serve");
+        note("moe-stream", "off", Source::Measured, "no expert tensor remains on the host");
+        return p;
+    }
     if (p.regime == Regime::Fits) {
-        decline("the whole model fits in this machine's residency budget; streaming it from flash "
+        decline("what is left on the host fits in this machine's residency budget; streaming it from flash "
                 "would only add reads that resident weights do not need");
-        note("moe-stream", "off", Source::Derived, "the model fits: hand the placement to llama.cpp instead");
+        note("moe-stream", "off", Source::Derived,
+             placement.fitted ? "the host residual fits: llama.cpp's placement is the whole plan"
+                              : "the model fits: hand the placement to llama.cpp instead");
         return p;
     }
 
@@ -282,7 +336,7 @@ Plan plan_run(const RunConfig & base,
     // own rule: a tensor bigger than what this process may hold is never converted, it stays mapped.
     const bool converts_dense = p.config.moe.dense_weights == DenseWeightsMode::Anonymous ||
                                 p.config.moe.dense_weights == DenseWeightsMode::Pinned;
-    uint64_t dense_pending = converts_dense ? model.dense_bytes : 0;
+    uint64_t dense_pending = converts_dense ? host_dense : 0;
     if (converts_dense && model.largest_dense_tensor > hw.residency_budget)
         dense_pending = dense_pending > model.largest_dense_tensor ? dense_pending - model.largest_dense_tensor : 0;
     p.dense_pending_bytes = dense_pending;
@@ -292,7 +346,7 @@ Plan plan_run(const RunConfig & base,
     p.token_cycle_bytes = cycle;
 
     const uint64_t for_cache_raw = usable > dense_pending ? usable - dense_pending : 0;
-    const uint64_t budget = std::min(for_cache_raw, model.expert_bytes);
+    const uint64_t budget = std::min(for_cache_raw, host_expert_bytes);
     p.cache_budget_bytes = budget;
 
     if (cycle == 0) {

@@ -12,6 +12,7 @@
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 
+#include "ggml-backend.h"
 #include "llama.h"
 #include "ggml.h"
 
@@ -611,11 +612,25 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     auto gguf = [&]() -> const GgufModelInfo & { return meta().info; };
 
     // Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
-    // q4_K buffer would break the rebind), experts on CPU.
+    // q4_K buffer would break the rebind), and every expert the streamer serves in host memory.
+    //
+    // Layers on devices are the first stage's decision (llama.cpp's capacity fitter, via the
+    // planner), carried in as n_gpu_layers plus the override patterns it wrote. Every pattern is
+    // routed to the CPU buffer type: that is what the fitter itself does for the experts it leaves
+    // on the host, and it is the one placement the streamer can serve. With nothing planned this
+    // is the historical behaviour, everything on the host.
     llama_model_params mparams = llama_model_default_params();
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
     mparams.use_extra_bufts = false;
-    mparams.n_gpu_layers = 0;
+    mparams.n_gpu_layers = cfg.n_gpu_layers;
+    std::vector<llama_model_tensor_buft_override> buft_overrides;
+    if (!cfg.buft_overrides.empty()) {
+        buft_overrides.reserve(cfg.buft_overrides.size() + 1);
+        for (const std::string & pat : cfg.buft_overrides)
+            buft_overrides.push_back({pat.c_str(), ggml_backend_cpu_buffer_type()});
+        buft_overrides.push_back({nullptr, nullptr}); // terminator
+        mparams.tensor_buft_overrides = buft_overrides.data();
+    }
     // The nextn/MTP block is skipped at load unless asked for: llama.cpp marks its tensors
     // TENSOR_SKIP by default, and only --mtp builds a graph over them. n_layer_nextn comes from
     // the gguf metadata either way, so the "this model has no trained head" check below is

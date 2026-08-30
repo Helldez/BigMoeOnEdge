@@ -29,6 +29,34 @@ Semantic Versioning.
   phone is the cell that would price it, and it is owed.
 
 ### Added
+- **`--auto` now runs llama.cpp's own capacity fitter first, and plans the flash tier on what it
+  leaves behind.** The planner had been built as the second stage without the first: it could decide
+  how to stream when everything was on the CPU, and nothing else — which is the phone, i.e. Android
+  as the implicit reference once more. `common_fit_params` sees every backend through ggml and
+  places weights by capacity, per class inside each layer (attention first, sparse experts last);
+  its own comment says it "assumes system memory is unlimited", and that line is where the second
+  stage begins. It is now called behind a single adapter (`core/src/plan/placement_probe.cpp`, the
+  one file that touches llama.cpp's `common/`), the planner reads off which layers kept their
+  experts on the host and what the placed model reserves there, and the session loads with the
+  fitter's `n_gpu_layers` and override patterns instead of a hard-coded zero.
+
+  Three things the fitter does that had to be read rather than trusted: left at 0 it picks the
+  model's full training context (262144 on the 35B, because system memory is "unlimited"), so our
+  context is always the pin; on a machine with no GPU it leaves `n_gpu_layers` at its default,
+  which means "all", so devices are counted rather than the number believed; and its host `model`
+  term is neither the file nor the dense set (5724 MiB for a 21242 MiB file whose dense set is
+  2642), so the dense bytes come from our own profile and only the context and compute
+  reservations come from it. Those reservations are the new information: 605 MiB on the desktop
+  that the previous budget had silently overcommitted. Measured through both stages on the 35B:
+  cache 4384 instead of 5362 MiB, 3.72 tok/s, 0.8 re-reads per token — the honest budget.
+
+  Where the fitter's host residual fits in RAM, the plan now says so and declines to stream: that
+  is the classic `-ot exps=CPU` offload, and streaming there would only add reads. Where every
+  layer's experts land on a device, it declines too, because nothing is left for the streamer.
+  Both are tested against synthetic placements. What is NOT yet exercised is a machine where the
+  fitter actually places layers on a device: this desktop has none, so the device-side path is
+  built, typed and tested on synthetic input, and unmeasured.
+
 - **`--auto` measures this storage before planning, in about a second.** The rate curve around
   the model's own expert slice at one, two and four lanes, from which the plan picks the smallest
   lane count within 5% of the best rate — the cheaper of two equal answers, and stable against the

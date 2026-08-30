@@ -275,6 +275,45 @@ int main() {
         }
     }
 
+    // ── composed over a first stage: the fitter placed half the layers' experts on a device ─
+    {
+        Placement pl;
+        pl.fitted = true;
+        pl.outcome = "synthetic";
+        pl.n_gpu_layers = 24;
+        pl.n_ctx = 4096;
+        for (uint32_t il = 0; il < 24; ++il)
+            pl.host_expert_layers.push_back(il);
+        pl.host_resident_bytes = 4 * GiB; // the dense set the fitter left here, plus host KV/compute
+        pl.device_bytes = 8 * GiB;
+        const Plan p = plan_run(base_cfg(), desktop(), model, pl, PlanRequest{});
+        // 4 GiB dense + 9 GiB of host-side experts does not fit the desktop's budget, the dense part
+        // alone does: the host half streams.
+        check(p.config.moe.enabled, "placed: streaming still on for the host half");
+        check(p.config.n_gpu_layers == 24, "placed: n_gpu_layers carried into the config");
+        check(p.config.n_ctx == 4096, "placed: the fitter's context is honoured");
+        // The cache is capped at the HOST share of the experts, not the whole set.
+        check((uint64_t) p.config.moe.cache_mb * MiB <= model.expert_bytes / 2 + MiB,
+              "placed: cache capped at the host share of the experts", std::to_string(p.config.moe.cache_mb));
+        const Decision * d = find(p, "placement");
+        check(d && d->source == Source::Measured, "placed: the placement is recorded as measured");
+        check(validate(p.config).ok, "placed: the plan is a valid config", validate(p.config).error);
+
+        // When the fitter's host residual FITS in RAM, the right answer is the classic offload -
+        // experts resident on the host, no streaming - and the plan must say so rather than stream.
+        Placement small = pl;
+        small.host_resident_bytes = 1 * GiB;
+        const Plan r = plan_run(base_cfg(), desktop(), model, small, PlanRequest{});
+        check(r.regime == Regime::Fits && !r.config.moe.enabled,
+              "placed, residual fits: experts stay resident, streaming declined (the -ot exps=CPU case)");
+
+        Placement all_dev = pl;
+        all_dev.host_expert_layers.clear();
+        all_dev.n_gpu_layers = 48;
+        const Plan q = plan_run(base_cfg(), desktop(), model, all_dev, PlanRequest{});
+        check(!q.config.moe.enabled && q.streaming_declined, "all on devices: nothing left to stream, declined");
+    }
+
     // ── the rationale exists and names its confidence ──────────────────────────────
     {
         const Plan p = plan_run(base_cfg(), phone(), model, PlanRequest{});

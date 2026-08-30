@@ -155,6 +155,23 @@ trade-off is deliberate and is also noted at the link site in the root `CMakeLis
 gates themselves run with the template off (raw prompt), so they stay deterministic and are
 unaffected by this dependency.
 
+### The capacity fitter: `common/fit.h`
+
+The third and newest consumer of `common` is the hardware planner's first stage. `--auto` calls
+`common_fit_params` — llama.cpp's own capacity fitter, the one behind its `--fit` flag — to place
+weights across the registered devices by projected memory, and reads back which layers kept their
+routed experts on the host and what the placed model reserves there for context and compute. That
+is everything the second stage (the flash tier) needs, and it is the only thing taken from the
+fitter: its host `model` term is not our dense set and is not used for it.
+
+The call lives in exactly one file, `core/src/plan/placement_probe.cpp`, and returns a pure-policy
+struct (`bmoe/placement.h`) with no llama.cpp types in it. The planner accepts `fitted = false` and
+then plans as if there were no devices at all, so if a submodule bump moves the fitter's signature
+the blast radius is that one file and the device axis declines rather than the build failing.
+Note that the fitter refuses to run when `tensor_buft_overrides` is already set, so the
+experts-on-host constraint is not passed in: it is read out of the overrides the fitter writes, and
+enforced by the session, which routes every pattern to the CPU buffer type at load.
+
 ## The one ggml behaviour we depend on
 
 That a node marked "needed" is computed and synchronized **before** the non-ask callback,

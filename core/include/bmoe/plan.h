@@ -13,6 +13,7 @@
 #pragma once
 
 #include "bmoe/config.h"
+#include "bmoe/placement.h"
 
 #include <string>
 #include <vector>
@@ -69,7 +70,8 @@ enum class Regime {
 const char * regime_name(Regime r);
 
 struct Plan {
-    RunConfig config; // the resolved run, ready to hand to the engine
+    RunConfig config;    // the resolved run, ready to hand to the engine
+    Placement placement; // what the first stage decided, for the session to apply at load
     Regime regime = Regime::Unknown;
     std::vector<Decision> decisions;
 

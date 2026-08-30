@@ -13,12 +13,32 @@ bmoe-cli -m model.gguf --auto --no-probe-io     # plan from free facts only, tou
 
 It is opt-in. Without it nothing changes.
 
-## What it is not
+## Two stages, one composer
 
-It does not place tensors across compute devices. That is a capacity problem, it is exactly
-solvable from tensor sizes, and llama.cpp already solves it (`--fit`, on by default upstream). The
-comment above its solver reads *"assumes system memory is unlimited"*, and everything below that
-line is what this plans: what to do when the bytes fit nowhere and have to come off flash.
+Placing tensors across compute devices is a capacity problem, exactly solvable from tensor sizes,
+and llama.cpp already solves it: `common_fit_params` loads the model with `no_alloc`, measures the
+projected memory per device, and if it does not fit first shrinks the context, then moves weights
+from device memory into system memory — per class inside each layer, attention first and the
+sparse expert tensors last. It sees every backend through ggml. The comment above it reads
+*"assumes system memory is unlimited"*, and that line is where this planner begins.
+
+So `--auto` runs in two stages. The **first** is the fitter, called behind one adapter
+(`core/src/plan/placement_probe.cpp`, the only file that touches llama.cpp's `common/`), which
+answers: which layers keep their experts on the host, and what the placed model reserves there for
+context and compute. The **second** is this planner, sizing the flash tier on what is left. The
+session then loads with the fitter's `n_gpu_layers` and override patterns rather than a hard-coded
+zero.
+
+Three of the fitter's answers are read rather than trusted. Left at 0 it picks the model's full
+training context, so our context is always the pin. On a machine with no GPU it leaves
+`n_gpu_layers` at its default, which means "all", so devices are counted instead. And its host
+`model` term is neither the file nor the dense set, so dense bytes come from the gguf profile and
+only the context and compute reservations come from the fitter — the one thing it knows that the
+profile does not, and 605 MiB the earlier budget had overcommitted on the desktop.
+
+Two outcomes of the first stage end the plan early, and both are stated: if the host residual
+fits in RAM the experts stay resident and nothing streams (the classic `-ot exps=CPU` offload);
+if every layer's experts land on a device, nothing is left for the streamer.
 
 ## The two invariants
 

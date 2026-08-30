@@ -8,6 +8,7 @@
 
 #include "bmoe/hardware_profile.h"
 #include "bmoe/model_profile.h"
+#include "bmoe/placement.h"
 
 namespace bmoe {
 
@@ -43,5 +44,12 @@ void probe_device_support(HardwareProfile & hw, const ModelProfile & model);
 // real I/O — a few tens of MiB and well under a second — which is why it is separate from the free
 // facts above and runs only when asked. Fills hw.storage; leaves what it could not measure Unknown.
 void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice_bytes);
+
+// The first stage: run llama.cpp's own capacity fitter on this model and read off what the second
+// stage needs — which layers kept their experts on the host, and how much host memory the placed
+// model takes. `n_ctx` 0 lets the fitter choose (it shrinks context before moving weights); a set
+// value is a pin. Returns fitted=false where the fitter could not run, and the planner then plans
+// as if there were no devices at all.
+Placement probe_placement(const char * model_path, const ModelProfile & model, uint32_t n_ctx);
 
 } // namespace bmoe

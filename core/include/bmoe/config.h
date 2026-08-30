@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace bmoe {
 
@@ -387,6 +388,15 @@ struct RunConfig {
     // to an untraced run. Only meaningful when a compute-trace sink is attached; see
     // bmoe/decode_trace.h for what the layer-mode rows contain.
     bool compute_trace_layers = false;
+
+    // ── what the first stage (llama.cpp's capacity fitter) decided ─────────────────
+    // Layers stored on devices, counted from the top the way llama.cpp fills them, and the
+    // per-tensor buffer-type override patterns the fitter wrote. 0 and empty — the defaults — mean
+    // everything on the host, which is what the engine did before any planner existed. The
+    // patterns are llama.cpp's own regexes over tensor names; the session maps each to the CPU
+    // buffer type, since the streamer can only serve experts that live in host memory.
+    int n_gpu_layers = 0;
+    std::vector<std::string> buft_overrides;
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;

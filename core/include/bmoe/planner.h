@@ -22,6 +22,7 @@
 
 #include "bmoe/hardware_profile.h"
 #include "bmoe/model_profile.h"
+#include "bmoe/placement.h"
 #include "bmoe/plan.h"
 
 namespace bmoe {
@@ -32,6 +33,16 @@ namespace bmoe {
 Plan plan_run(const RunConfig & base,
               const HardwareProfile & hw,
               const ModelProfile & model,
+              const PlanRequest & request);
+
+// As above, composed over the first stage: `placement` is what llama.cpp's capacity fitter decided
+// (which layers keep experts on the host, how much host memory the placed model takes). The
+// second stage sizes itself on what is left. A placement with fitted=false is the four-argument
+// form: everything on the host, nothing placed.
+Plan plan_run(const RunConfig & base,
+              const HardwareProfile & hw,
+              const ModelProfile & model,
+              const Placement & placement,
               const PlanRequest & request);
 
 // Margins the planner applies as POLICY rather than measurement — how much of the machine to leave
@@ -56,6 +67,7 @@ struct PlannerPolicy {
 Plan plan_run(const RunConfig & base,
               const HardwareProfile & hw,
               const ModelProfile & model,
+              const Placement & placement,
               const PlanRequest & request,
               const PlannerPolicy & policy);
 

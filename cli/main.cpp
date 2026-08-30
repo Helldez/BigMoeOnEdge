@@ -18,6 +18,8 @@
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
 
+#include "llama.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -847,7 +849,14 @@ int main(int argc, char ** argv) {
         // default that hides a measured gain behind a flag nobody knows to pass is a bad default.
         // --no-probe-io opts out for a caller that must not touch the drive.
         if (probe_io) probe_storage(hw, cfg.model_path.c_str(), mp.expert_slice_bytes);
-        const Plan plan = plan_run(cfg, hw, mp, req);
+        // The first stage: llama.cpp's own capacity fitter, on every backend it knows. Devices are
+        // only registered once the backend is initialised, so it is brought up here — the session
+        // does the same and the call is reference counted.
+        llama_backend_init();
+        // Our context is the pin, typed or defaulted: the fitter's own default is a different
+        // number, and left unpinned it would pick the model's full training context.
+        const Placement placement = probe_placement(cfg.model_path.c_str(), mp, (uint32_t) cfg.n_ctx);
+        const Plan plan = plan_run(cfg, hw, mp, placement, req);
         cfg = plan.config;
 
         if (plan_explain) {
