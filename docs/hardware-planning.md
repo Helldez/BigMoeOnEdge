@@ -5,9 +5,10 @@ the machine rather than on taste. `--auto` derives them instead of asking, and p
 behind each choice so a run can still be explained afterwards.
 
 ```
-bmoe-cli -m model.gguf --auto --plan-explain
-bmoe-cli -m model.gguf --plan-only              # print the plan and exit, without loading anything
-bmoe-cli -m model.gguf --probe-io --plan-only   # measure the storage first (implies --auto)
+bmoe-cli -m model.gguf --auto                   # measures, plans, runs. Nothing else to do
+bmoe-cli -m model.gguf --auto --plan-explain    # ...and print why it chose what it chose
+bmoe-cli -m model.gguf --plan-only              # print the plan and exit, without loading the model
+bmoe-cli -m model.gguf --auto --no-probe-io     # plan from free facts only, touching no storage
 ```
 
 It is opt-in. Without it nothing changes.
@@ -87,10 +88,12 @@ Because the floor is per-model, it also overrides the generic `cache_min_mb` gua
 this model's cycle is not pathological however small it looks, and the plan says so when it forces
 past it.
 
-## The storage probe (`--probe-io`)
+## The storage probe
 
-Under a second, a few tens of MiB read. It is a separate opt-in rather than part of `--auto`,
-because a caller that wants a plan without touching the drive should get one.
+**Nothing to run beforehand.** The probe is part of `--auto`, happens once inside the load, and
+asks the caller nothing. It costs about a second of a load already measured in seconds - 6.3 to 6.9
+on the desktop it was validated on - against a lane count worth 12% of every token afterwards.
+`--no-probe-io` opts out for a caller that must not touch the drive at all.
 
 It measures the rate curve around the model's own expert slice, at one, two and four lanes, and
 picks the **smallest** lane count that reaches within 5% of the best rate: where two lane counts

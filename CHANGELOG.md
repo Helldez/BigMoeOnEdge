@@ -29,12 +29,14 @@ Semantic Versioning.
   phone is the cell that would price it, and it is owed.
 
 ### Added
-- **`--probe-io`: measure this storage before planning, in under a second.** The rate curve around
+- **`--auto` measures this storage before planning, in about a second.** The rate curve around
   the model's own expert slice at one, two and four lanes, from which the plan picks the smallest
   lane count within 5% of the best rate — the cheaper of two equal answers, and stable against the
   probe's own noise. On the desktop the probe picked **two** lanes and the engine agreed: 3.400 /
   3.969 / 3.535 tok/s at one, two and four, against a shipped default of four. A 12% gain nobody
-  had measured, on a knob that had been a constant since it was first tuned on a phone.
+  had measured, on a knob that had been a constant since it was first tuned on a phone. It runs
+  inside the load and asks nothing of the caller: a second on a load of six or seven, against a gain
+  on every token after it. `--no-probe-io` opts out for a caller that must not touch the drive.
 
   The same probe also asks whether a live mapping of the model serialises concurrent uncached reads,
   and **reports `Yes` or nothing, never `No`**. On the very machine where the engine gains 24% of
