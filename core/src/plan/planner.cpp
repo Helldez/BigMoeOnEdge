@@ -382,11 +382,20 @@ Plan plan_run(const RunConfig & base,
         } else if (hw.storage.mapping_serialises_reads == Tri::Yes) {
             p.config.moe.release_mmap = true;
             note("release-mmap", "on", Source::Measured,
-                 "a live mapping of the model serialises this storage's concurrent uncached reads, and this "
-                 "model's shape has no pointer that would survive the release (the session checks again)");
+                 "a live mapping of the model serialises this storage's concurrent uncached reads (" +
+                     u64s((uint64_t) hw.storage.rate_mapped_mibs) + " vs " +
+                     u64s((uint64_t) hw.storage.rate_unmapped_mibs) +
+                     " MiB/s), and this model's shape keeps no pointer that would survive the release "
+                     "(the session checks again before doing it)");
         } else {
             note("release-mmap", p.config.moe.release_mmap ? "on" : "off", Source::Unprobed,
-                 "whether a live mapping serialises reads was not measured on this machine");
+                 hw.storage.rate_unmapped_mibs > 0.0
+                     ? "the storage probe did not see a live mapping slow its reads here (" +
+                           u64s((uint64_t) hw.storage.rate_mapped_mibs) + " vs " +
+                           u64s((uint64_t) hw.storage.rate_unmapped_mibs) +
+                           " MiB/s), but it is an instrument validated only in the positive direction, so "
+                           "that is not evidence there is nothing to gain: try --release-mmap and measure"
+                     : "whether a live mapping serialises reads was not measured on this machine");
         }
     }
 

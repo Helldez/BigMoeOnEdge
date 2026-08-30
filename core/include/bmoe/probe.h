@@ -38,4 +38,10 @@ ModelProfile probe_model(const char * model_path);
 // asked (no devices registered yet, or an unknown expert type) — which every rule declines on.
 void probe_device_support(HardwareProfile & hw, const ModelProfile & model);
 
+// Measure this storage with the reads this engine issues: the rate curve around `slice_bytes` for
+// one, two and four lanes, and whether a live mapping of the model serialises those reads. Costs
+// real I/O — a few tens of MiB and well under a second — which is why it is separate from the free
+// facts above and runs only when asked. Fills hw.storage; leaves what it could not measure Unknown.
+void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice_bytes);
+
 } // namespace bmoe

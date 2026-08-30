@@ -29,6 +29,21 @@ Semantic Versioning.
   phone is the cell that would price it, and it is owed.
 
 ### Added
+- **`--probe-io`: measure this storage before planning, in under a second.** The rate curve around
+  the model's own expert slice at one, two and four lanes, from which the plan picks the smallest
+  lane count within 5% of the best rate — the cheaper of two equal answers, and stable against the
+  probe's own noise. On the desktop the probe picked **two** lanes and the engine agreed: 3.400 /
+  3.969 / 3.535 tok/s at one, two and four, against a shipped default of four. A 12% gain nobody
+  had measured, on a knob that had been a constant since it was first tuned on a phone.
+
+  The same probe also asks whether a live mapping of the model serialises concurrent uncached reads,
+  and **reports `Yes` or nothing, never `No`**. On the very machine where the engine gains 24% of
+  decode from `--release-mmap` (871 → 1680 MiB/s of its own read rate) this probe sees the two arms
+  within 2% of each other, so its fidelity is established in the positive direction only. Rather
+  than print that miss as `measured`, the plan prints both rates, says the probe saw nothing, and
+  says to measure the flag directly. An instrument that missed a known positive does not get to
+  claim a negative.
+
 - **`--auto`: derive the streaming knobs from the machine and the model, and print why.** Every
   knob the engine exposes has a right answer that depends on the hardware, and until now the only
   way to get it was to already know it. `--auto` resolves them from what the machine reports and

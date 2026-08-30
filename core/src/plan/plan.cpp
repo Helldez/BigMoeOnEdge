@@ -28,17 +28,23 @@ double StorageFacts::rate_at(uint32_t request_bytes, uint32_t lanes) const {
 }
 
 uint32_t StorageFacts::best_lanes(uint32_t request_bytes) const {
-    uint32_t best = 0;
     double best_rate = 0.0;
-    // Collect the lane counts present in the curve, then score each at this request size.
+    for (const RateSample & s : rate_curve)
+        best_rate = std::max(best_rate, rate_at(request_bytes, s.lanes));
+    if (best_rate <= 0.0) return 0;
+
+    // The SMALLEST lane count that reaches within a few percent of the best rate, not the argmax.
+    // Two reasons, and neither is aesthetic: a difference inside the probe's own noise would
+    // otherwise flip the answer between runs, and where two lane counts deliver the same throughput
+    // the cheaper one is strictly better - fewer threads, less queueing, less contention with the
+    // compute the reads are supposed to be overlapping.
+    const double good_enough = best_rate * 0.95;
+    uint32_t pick = 0;
     for (const RateSample & s : rate_curve) {
-        const double r = rate_at(request_bytes, s.lanes);
-        if (r > best_rate) {
-            best_rate = r;
-            best = s.lanes;
-        }
+        if (rate_at(request_bytes, s.lanes) < good_enough) continue;
+        if (!pick || s.lanes < pick) pick = s.lanes;
     }
-    return best;
+    return pick;
 }
 
 uint64_t HardwareProfile::device_local_memory() const {

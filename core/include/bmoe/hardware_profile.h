@@ -105,6 +105,11 @@ struct StorageFacts {
 
     std::vector<RateSample> rate_curve; // empty when unprobed
 
+    // The two comparable points behind mapping_serialises_reads, in MiB/s, 0 when not measured.
+    // Kept so the rationale can quote them: a verdict a reader can check beats one to be believed.
+    double rate_mapped_mibs = 0.0;
+    double rate_unmapped_mibs = 0.0;
+
     // Best measured rate at or near `request_bytes` for `lanes`, or 0 when the curve says nothing
     // about that point. Nearest-sample lookup on purpose: interpolating a curve whose whole shape
     // is a latency floor would invent throughput between the samples.

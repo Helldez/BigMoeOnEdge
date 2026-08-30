@@ -608,6 +608,7 @@ int main(int argc, char ** argv) {
     bool auto_plan = false;
     bool plan_explain = false;
     bool plan_only = false;
+    bool probe_io = false;
 
     // Which flags the user actually typed. The env overrides below consult this rather than
     // comparing against the default, so passing a flag its default value still wins.
@@ -684,7 +685,10 @@ int main(int argc, char ** argv) {
             auto_plan = true;
         else if (a == "--plan-explain")
             plan_explain = true;
-        else if (a == "--plan-only") {
+        else if (a == "--probe-io") {
+            auto_plan = true;
+            probe_io = true;
+        } else if (a == "--plan-only") {
             auto_plan = true;
             plan_explain = true;
             plan_only = true;
@@ -836,6 +840,9 @@ int main(int argc, char ** argv) {
         HardwareProfile hw = probe_hardware(cfg.model_path.c_str());
         const ModelProfile mp = probe_model(cfg.model_path.c_str());
         probe_device_support(hw, mp);
+        // The storage measurement costs real I/O, so it is a separate opt-in rather than part of
+        // --auto: a caller that wants a plan without touching the drive should get one.
+        if (probe_io) probe_storage(hw, cfg.model_path.c_str(), mp.expert_slice_bytes);
         const Plan plan = plan_run(cfg, hw, mp, req);
         cfg = plan.config;
 

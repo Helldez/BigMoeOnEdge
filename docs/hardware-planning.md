@@ -6,7 +6,8 @@ behind each choice so a run can still be explained afterwards.
 
 ```
 bmoe-cli -m model.gguf --auto --plan-explain
-bmoe-cli -m model.gguf --plan-only     # print the plan and exit, without loading anything
+bmoe-cli -m model.gguf --plan-only              # print the plan and exit, without loading anything
+bmoe-cli -m model.gguf --probe-io --plan-only   # measure the storage first (implies --auto)
 ```
 
 It is opt-in. Without it nothing changes.
@@ -86,17 +87,46 @@ Because the floor is per-model, it also overrides the generic `cache_min_mb` gua
 this model's cycle is not pathological however small it looks, and the plan says so when it forces
 past it.
 
+## The storage probe (`--probe-io`)
+
+Under a second, a few tens of MiB read. It is a separate opt-in rather than part of `--auto`,
+because a caller that wants a plan without touching the drive should get one.
+
+It measures the rate curve around the model's own expert slice, at one, two and four lanes, and
+picks the **smallest** lane count that reaches within 5% of the best rate: where two lane counts
+deliver the same throughput the cheaper one is strictly better, and a difference inside the probe's
+own noise would otherwise flip the answer between runs.
+
+That prediction is falsifiable, and on the desktop it was checked against the engine: the probe
+picked two lanes, and a real run at the same cache budget gave 3.400 / **3.969** / 3.535 tok/s at
+one, two and four lanes. Two is right, and it is not the four the CLI ships as its default.
+
+### What it will not tell you
+
+The same probe tries to answer whether a live mapping of the model serialises concurrent uncached
+reads, by reading with a mapping alive and again after releasing it. **It reports `Yes` or nothing,
+never `No`**, and that is a deliberate limitation rather than an oversight.
+
+On the desktop where the engine gains 24% of decode from `--release-mmap` — its own read rate goes
+from 871 to 1680 MiB/s — this probe sees the two arms within 2% of each other. Whatever it is
+failing to reproduce (most likely the access pattern: it reads uniformly at random where the engine
+walks expert slices layer by layer against a warm cache), its fidelity is established in the
+positive direction only. A negative from an instrument that missed a known positive is not evidence
+of absence, and printing one as `measured` would be exactly the confident wrong answer this design
+exists to avoid. So the plan prints the two rates, says the probe saw nothing, and tells you to
+measure `--release-mmap` yourself.
+
 ## What is not probed yet
 
-Two facts cost real I/O and are left `Unknown` on purpose, which is why `--io-threads` and
-`--release-mmap` currently report `[unprobed]` and keep their defaults:
+- **Device memory bandwidth.** It is the number that decides an offload, and nothing here measures
+  it, so a machine with a discrete GPU gets a plan that says exactly that.
+- **Threads and `--ubatch`** have no rule at all: nothing relates core topology to decode
+  throughput here, and the compute-buffer reservation's crossover against the cache is unmeasured.
 
-- the read-rate curve for this storage, at the model's expert slice size;
-- whether a live mapping serialises concurrent uncached reads here.
-
-Both are a measurement, not a rule change. Two more knobs have no rule at all yet and say so:
-compute threads (no measured relation to core topology) and `--ubatch` (the compute-buffer
-reservation trades against the cache, but the crossover is unmeasured).
+One caveat on the budget itself: it is a one-shot reading of a quantity that moves. The same
+machine and model planned twice minutes apart produced 4.3 GB and 8.2 GB of available memory, and
+therefore two different cache budgets. The plan quotes the number it used, which is what makes the
+difference visible rather than mysterious.
 
 Compute devices are enumerated through `ggml_backend_dev_*` and recorded, but no rule reads them
 yet; a device whose memory is host memory frees nothing when a tensor moves off it, which is why
