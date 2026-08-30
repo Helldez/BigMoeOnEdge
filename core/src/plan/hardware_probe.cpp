@@ -146,7 +146,8 @@ void probe_devices(HardwareProfile & h) {
             d.memory_total = props.memory_total;
             // An integrated device's memory IS host memory: moving a tensor off it frees nothing,
             // which is the fact that makes the capacity tier nearly inert on such a machine.
-            d.host_memory = props.type == GGML_BACKEND_DEVICE_TYPE_CPU || props.type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+            d.is_cpu = props.type == GGML_BACKEND_DEVICE_TYPE_CPU;
+            d.host_memory = d.is_cpu || props.type == GGML_BACKEND_DEVICE_TYPE_IGPU;
             // Whether this device will execute over memory the host owns. Asking the backend for a
             // host buffer type is the question; a device that answers is one we can read flash into
             // and it can compute out of, which is exactly the pair of properties a streamed expert

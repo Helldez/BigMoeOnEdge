@@ -60,6 +60,11 @@ struct ComputeDevice {
     std::string description; //
     uint64_t memory_free = 0;
     uint64_t memory_total = 0;
+    // True when this device IS the CPU backend. Kept separate from `host_memory` on purpose: an
+    // integrated accelerator also reads host memory, and treating the two as one is how an iGPU
+    // gets silently excluded from a question that was only ever meant to exclude the CPU.
+    bool is_cpu = false;
+
     // True when the device's memory IS host memory (an integrated GPU, unified memory). Moving a
     // tensor off such a device frees nothing, which is why the capacity tier is nearly inert there
     // and only the bandwidth tier is left.

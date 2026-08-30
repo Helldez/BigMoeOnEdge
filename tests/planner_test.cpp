@@ -325,6 +325,56 @@ int main() {
         check(d && d->source == Source::Unprobed, "unreported core classes: the default stands, unprobed");
     }
 
+    // ── an integrated accelerator is not the CPU ───────────────────────────────────
+    // Its memory IS the host's, so the capacity tier is inert - that much is arithmetic. Whether it
+    // reaches more of the same bus than the cores do is a measurement, and treating "shared memory"
+    // as "nothing to win" is the assumption this checks against.
+    {
+        HardwareProfile igpu = desktop();
+        igpu.devices.clear();
+        ComputeDevice cpu;
+        cpu.name = "CPU";
+        cpu.is_cpu = true;
+        cpu.host_memory = true;
+        igpu.devices.push_back(cpu);
+        ComputeDevice ig;
+        ig.name = "integrated";
+        ig.is_cpu = false;
+        ig.host_memory = true; // no memory of its own
+        ig.host_buffer = Tri::Yes;
+        ig.runs_expert_op = Tri::Yes;
+        ig.needs_repack = Tri::No;
+        igpu.devices.push_back(ig);
+
+        // Unmeasured: the capacity claim is made, the bandwidth claim is not.
+        const Plan un = plan_run(base_cfg(), igpu, model, PlanRequest{});
+        const Decision * d = find(un, "extra-offload");
+        check(d && d->source == Source::Unprobed && d->reason.find("capacity tier is inert") != std::string::npos,
+              "integrated, unmeasured: capacity stated, bandwidth admitted unknown",
+              d ? d->reason.substr(0, 70) : "none");
+
+        // Faster than the host on the same memory: that is a real finding, not a contradiction.
+        igpu.host_bandwidth_gibs = 30.0;
+        igpu.devices.back().memory_bandwidth_gibs = 60.0;
+        const Plan fast = plan_run(base_cfg(), igpu, model, PlanRequest{});
+        d = find(fast, "extra-offload");
+        check(d && d->source == Source::Measured && d->reason.find("has more of it") != std::string::npos,
+              "integrated, faster than the host: the plan says so", d ? d->reason.substr(0, 70) : "none");
+
+        // Slower, which is the ordinary desktop APU case: nothing to win, and it is measured.
+        igpu.devices.back().memory_bandwidth_gibs = 22.0;
+        const Plan slow = plan_run(base_cfg(), igpu, model, PlanRequest{});
+        d = find(slow, "extra-offload");
+        check(d && d->source == Source::Measured && d->reason.find("no more of it") != std::string::npos,
+              "integrated, no faster: measured, not assumed", d ? d->reason.substr(0, 70) : "none");
+
+        // And it is a candidate for the experts rule at all, which a host_memory test excluded.
+        d = find(fast, "experts");
+        check(d && d->reason.find("could compute them on paper") != std::string::npos,
+              "an integrated device is considered for the streamed experts, not skipped as if it were the CPU",
+              d ? d->reason.substr(0, 70) : "none");
+    }
+
     // ── streamed experts may be COMPUTED on a device that reads host memory ─────────
     // The property is one device's answer, not a class of hardware: a host buffer it executes over
     // means the bytes we read from flash are readable by it without a copy and without a repack.

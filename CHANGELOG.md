@@ -78,6 +78,17 @@ Semantic Versioning.
   one, the plan says there is nothing to improve; where the machine does not publish them, the
   default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
 
+- **An integrated accelerator was being treated as if it were the CPU, and told it wins nothing.**
+  Two mistakes in one branch. The rule that discards a device whose memory is the host's made two
+  claims and only one was provable: that moving a weight there frees nothing is arithmetic, and that
+  it "wins no bandwidth" was an assumption contradicted by our own reading — on shared memory an
+  accelerator can reach roughly twice the bus the cores do, because a core count is not a memory
+  controller. The capacity half is now stated and the bandwidth half is compared against the
+  measured host figure, or admitted unknown. Separately, the rule that picks a device for the
+  streamed experts skipped every host-memory device with the comment "the CPU is where they already
+  are" — which is true of the CPU and false of an integrated GPU. `ComputeDevice::is_cpu` now says
+  which is which, and an integrated device is considered like any other.
+
 - **`offload: host` renamed, because it read as a refusal.** A machine with an accelerator uses it:
   the first stage is llama.cpp's capacity fitter, and whatever it places on a device is placed and
   computed there — the plan carries its `n_gpu_layers` and override patterns straight into the load,

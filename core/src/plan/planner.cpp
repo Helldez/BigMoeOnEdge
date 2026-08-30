@@ -345,10 +345,35 @@ Plan plan_run(const RunConfig & base,
                  "no compute devices were enumerated (the backends register at load), so there was nothing "
                  "to consider beyond what the fitter already placed");
         } else if (device_local == 0) {
-            note("extra-offload", "none", Source::Derived,
-                 "every device here reads the host's own memory, so moving a weight onto one beyond the "
-                 "fitter's own placement frees no memory and wins no bandwidth: batch-1 decode is bound by "
-                 "bandwidth, not by arithmetic");
+            // Two claims used to be made here and only one of them was provable. That moving a
+            // weight onto a device whose memory IS the host's frees nothing is arithmetic. That it
+            // "wins no bandwidth" was an assumption, and a wrong one: on shared memory an
+            // accelerator can still reach more of the bus than the cores do - which is measured
+            // elsewhere at roughly twice - because a CPU core count is not a memory controller. So
+            // the capacity half is stated and the bandwidth half is compared, or admitted unknown.
+            const ComputeDevice * fastest = nullptr;
+            for (const ComputeDevice & d : hw.devices) {
+                if (d.is_cpu || d.memory_bandwidth_gibs <= 0.0) continue;
+                if (!fastest || d.memory_bandwidth_gibs > fastest->memory_bandwidth_gibs) fastest = &d;
+            }
+            const std::string capacity = "every device here reads the host's own memory, so moving a weight onto "
+                                         "one frees nothing: the capacity tier is inert. ";
+            if (fastest && hw.host_bandwidth_gibs > 0.0 && fastest->memory_bandwidth_gibs > hw.host_bandwidth_gibs)
+                note("extra-offload", "none", Source::Measured,
+                     capacity + "What is left is bandwidth, and here the device has more of it (" +
+                         u64s((uint64_t) fastest->memory_bandwidth_gibs) + " against " +
+                         u64s((uint64_t) hw.host_bandwidth_gibs) +
+                         " GiB/s): what the fitter placed is worth having there, and the streamed experts "
+                         "would be too if they could be handed over");
+            else if (fastest && hw.host_bandwidth_gibs > 0.0)
+                note("extra-offload", "none", Source::Measured,
+                     capacity + "What is left is bandwidth, and here the device has no more of it (" +
+                         u64s((uint64_t) fastest->memory_bandwidth_gibs) + " against " +
+                         u64s((uint64_t) hw.host_bandwidth_gibs) + " GiB/s), so there is nothing to win");
+            else
+                note("extra-offload", "none", Source::Unprobed,
+                     capacity + "What is left is bandwidth, and no device's own figure was measured here - "
+                                "which is the number that would say whether an offload pays at all");
         } else if (candidate && candidate->memory_bandwidth_gibs <= 0.0) {
             note("extra-offload", "none", Source::Unprobed,
                  "a device with " + u64s(mib(device_local)) +
@@ -378,7 +403,7 @@ Plan plan_run(const RunConfig & base,
         // is unified, is the whole of the difference between an idle accelerator and a used one.
         const ComputeDevice * host_capable = nullptr;
         for (const ComputeDevice & d : hw.devices) {
-            if (d.host_memory) continue; // the CPU is where they already are
+            if (d.is_cpu) continue; // the CPU is where they already are
             if (!is_yes(d.host_buffer) || d.runs_expert_op != Tri::Yes || d.needs_repack == Tri::Yes) continue;
             host_capable = &d;
             break;
