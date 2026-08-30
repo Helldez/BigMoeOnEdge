@@ -206,9 +206,11 @@ on a compressing machine, which is why the two were one piece of work rather tha
 
 ## What is not probed yet
 
-- **Device memory bandwidth.** The number that decides an offload. The host's own is measured here;
-  a device's needs a device, so on such a machine the plan states the mechanism and declines the
-  decision rather than assuming which way it goes.
+- **A machine with a device to try it on.** The bandwidth probe runs on every backend that
+  registers, and the routing that acts on its answer is in the session. Neither has met an
+  accelerator: this machine registers only the CPU, so the probe measures the host's figure, the
+  rule finds nothing to compare it against, and the plan says so. The mechanism is complete and
+  unverified, which is a different thing from missing, and the plan distinguishes them.
 - **`--ubatch`** has no rule at all: the compute-buffer reservation's crossover against the cache is
   unmeasured on every machine here.
 
@@ -257,6 +259,13 @@ are designed and not yet active.
         |           |  ratio x reclaimable                |
         |           | --probe-mem: hold  |               |
         |           |  until pages go    |               |
+        |           +---------+----------+               |
+        |                     |                          |
+        |           +---------v----------+               |
+        |           | BANDWIDTH PROBE    |               |
+        |           | one GEMV, every     |               |
+        |           |  backend: host vs   |               |
+        |           |  device, same units |               |
         |           +---------+----------+               |
         |                     |                          |
         |           +---------v----------+               |
@@ -312,7 +321,7 @@ are designed and not yet active.
  | loads with the fitter's n_gpu_layers + overrides               |
  | dense -> anon | dma-buf | mmap                                 |
  | host experts -> streamer: LRU cache, lanes, mul_mat_id overlap |
- | [NOT ACTIVE] experts in the device's host buffer (Spark, Mac)  |
+ | experts -> the planned device's HOST buffer when one wins     |
  | [NOT ACTIVE] prefill on the device over streamed experts       |
  +--------------------------------+-------------------------------+
                                   v
@@ -337,12 +346,12 @@ Each row is a gap here paired with the public facility that closes it. None need
 
 | gap | facility | what it would allow |
 |---|---|---|
-| ~~streamed experts compute on the CPU wherever memory is unified~~ — **detection done**, routing and its justification outstanding | `ggml_backend_dev_host_buffer_type()` (asked of every device), `ggml_backend_dev_supports_op` on the model's own `mul_mat_id` | a device that offers a host buffer AND runs the file's native layout can compute experts we read from flash, with no copy and no repack. The profile now records both; what is left is the session-side routing and a device bandwidth figure to justify arming it |
-| a unified-memory CUDA device looks discrete to the profile | `prop.integrated` in the CUDA backend, currently disabled upstream (`ggml-cuda.cu:308`) | a free fact once re-enabled; until then it needs a bandwidth measurement |
+| ~~streamed experts compute on the CPU wherever memory is unified~~ — **built end to end**, never yet run on a device | `ggml_backend_dev_host_buffer_type()` (asked of every device), `ggml_backend_dev_supports_op` on the model's own `mul_mat_id`, and on the bandwidth graph | detection, decision and routing are in: a device that offers a host buffer and runs the file's native layout has the experts bound to that buffer, still rebindable by the streamer and executed by it. What is missing is a machine with such a device |
 | prefill on the device over streamed experts (designed, not built) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
 | KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
 | device selection | `mparams.devices[]`, `split_mode`, `main_gpu` | tell the fitter which devices to use, e.g. exclude one that demands a repack |
+| ~~a unified-memory device looks discrete~~ — **no longer decides anything** | the bandwidth probe, not the `integrated` flag | what the flag would have told us cheaply is now measured directly, and measured beats reported: the rule compares the device's figure to the host's on the same graph |
 | ~~the budget under a compressing reclaim~~ — **in** (`--probe-mem`, and a free estimate always) | nothing in llama.cpp: a kernel fact | the headroom probe stays ours, and is the one measurement no other engine takes |
 
 ### DGX Spark, as a worked case
@@ -352,11 +361,13 @@ streamed from NVMe: exactly the `experts-stream` regime, and the machine upstrea
 streaming PR benchmarked on. This planner used to misread it twice over. ggml reports the GB10 as a GPU
 with memory of its own, because the CUDA backend's `integrated` flag is disabled; and the profile
 called a weight rebindable only where the memory was the host's, so the rule that streamed experts
-must live in a rebindable buffer put every expert matmul on the ARM cores with the GPU idle. The
-second half is fixed: rebindability is now asked of the device — does it offer a host buffer type,
-does it execute this model's own layout — rather than inferred from where its memory is. What is
-left is the number that says the move is worth making, its memory bandwidth against the host's, and
-the session-side routing that acts on it.
+must live in a rebindable buffer put every expert matmul on the ARM cores with the GPU idle. Both halves are fixed. Rebindability is asked of the device — does it offer a host buffer type, does
+it execute this model's own layout — rather than inferred from where its memory is; and the
+`integrated` flag is no longer needed for anything, because what it would have hinted at is now
+measured: the same GEMV is scheduled on every backend, and the rule compares the device's rate to
+the host's. Where the device wins, the plan names it and the session binds the overridden experts to
+that device's host buffer type instead of the CPU's — the same memory, pinned, that we still read
+flash into and rebind. What is missing is a machine of this kind to run it on.
 
 The measurement to beat is public: on the same GB10, llama.cpp's own expert-streaming PR reports
 0.87 tok/s of decode with the experts on the CPU against 2.20 with them on the GPU, and 1.06

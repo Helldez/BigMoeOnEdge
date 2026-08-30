@@ -384,12 +384,16 @@ Plan plan_run(const RunConfig & base,
                  "layout, so streamed experts could be computed on it - but what that is worth is the ratio of "
                  "its bandwidth to the host's, and its own is unmeasured here");
         else if (host_capable && hw.host_bandwidth_gibs > 0.0 &&
-                 host_capable->memory_bandwidth_gibs > hw.host_bandwidth_gibs)
+                 host_capable->memory_bandwidth_gibs > hw.host_bandwidth_gibs) {
+            // The decision, carried rather than merely printed: the session resolves this name and
+            // routes the overridden weights to that device's host buffer type instead of the CPU's.
+            // It verifies again before acting, because a plan describes the machine it was made on.
+            p.config.expert_compute_device = host_capable->name;
             note("experts", "device", Source::Measured,
                  "this device offers a host buffer, executes the model's own layout, and reaches " +
                      u64s((uint64_t) host_capable->memory_bandwidth_gibs) + " GiB/s against the host's " +
                      u64s((uint64_t) hw.host_bandwidth_gibs) + ": the experts stay rebindable and are computed there");
-        else
+        } else
             note("experts", "host", Source::Derived,
                  repack_blocks ? "a streamed expert must keep the file's native layout so its pointer can be "
                                  "rebound, and the device here executes only a repacked layout"

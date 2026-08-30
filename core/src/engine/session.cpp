@@ -615,19 +615,40 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // q4_K buffer would break the rebind), and every expert the streamer serves in host memory.
     //
     // Layers on devices are the first stage's decision (llama.cpp's capacity fitter, via the
-    // planner), carried in as n_gpu_layers plus the override patterns it wrote. Every pattern is
-    // routed to the CPU buffer type: that is what the fitter itself does for the experts it leaves
-    // on the host, and it is the one placement the streamer can serve. With nothing planned this
-    // is the historical behaviour, everything on the host.
+    // planner), carried in as n_gpu_layers plus the override patterns it wrote. With nothing
+    // planned this is the historical behaviour, everything on the host.
+    //
+    // Each pattern is routed to a HOST buffer type, which is the streamer's one hard requirement:
+    // it serves a tensor by rebinding `data` onto bytes it read itself, and only a host address can
+    // be rebound. Which host buffer type is the second stage's decision. The CPU's is the default
+    // and the only answer on a machine with nothing else. A named device means that device's own
+    // host buffer - the same memory, pinned, that the device reads directly - so the weight stays
+    // rebindable by us and becomes executable by it, without a copy and without a repack.
     llama_model_params mparams = llama_model_default_params();
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
     mparams.use_extra_bufts = false;
     mparams.n_gpu_layers = cfg.n_gpu_layers;
     std::vector<llama_model_tensor_buft_override> buft_overrides;
     if (!cfg.buft_overrides.empty()) {
+        // Resolve the plan's device by name, and verify rather than trust: a plan describes the
+        // machine it was made on, and a device that is gone, or that no longer offers a host
+        // buffer, must fall back to the CPU's rather than take the load down with it.
+        ggml_backend_buffer_type_t host_buft = ggml_backend_cpu_buffer_type();
+        if (!cfg.expert_compute_device.empty()) {
+            ggml_backend_dev_t dev = ggml_backend_dev_by_name(cfg.expert_compute_device.c_str());
+            ggml_backend_buffer_type_t dev_host = dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
+            if (dev_host && ggml_backend_buft_is_host(dev_host)) {
+                host_buft = dev_host;
+                std::fprintf(stderr, "bmoe: experts in %s's host buffer, computed there\n",
+                             cfg.expert_compute_device.c_str());
+            } else {
+                std::fprintf(stderr, "bmoe: %s offers no host buffer here; experts stay on the CPU buffer type\n",
+                             cfg.expert_compute_device.c_str());
+            }
+        }
         buft_overrides.reserve(cfg.buft_overrides.size() + 1);
         for (const std::string & pat : cfg.buft_overrides)
-            buft_overrides.push_back({pat.c_str(), ggml_backend_cpu_buffer_type()});
+            buft_overrides.push_back({pat.c_str(), host_buft});
         buft_overrides.push_back({nullptr, nullptr}); // terminator
         mparams.tensor_buft_overrides = buft_overrides.data();
     }

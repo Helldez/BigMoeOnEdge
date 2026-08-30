@@ -866,6 +866,10 @@ int main(int argc, char ** argv) {
         llama_backend_init();
         // Our context is the pin, typed or defaulted: the fitter's own default is a different
         // number, and left unpinned it would pick the model's full training context.
+        // What each engine can pull out of memory, on one graph so the figures compare. It is the
+        // number an offload turns on, and it needs the backends registered, so it waits for the
+        // init above rather than joining the free facts.
+        probe_bandwidth(hw);
         const Placement placement = probe_placement(cfg.model_path.c_str(), mp, (uint32_t) cfg.n_ctx);
         const Plan plan = plan_run(cfg, hw, mp, placement, req);
         cfg = plan.config;

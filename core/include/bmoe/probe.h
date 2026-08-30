@@ -39,6 +39,14 @@ ModelProfile probe_model(const char * model_path);
 // asked (no devices registered yet, or an unknown expert type) — which every rule declines on.
 void probe_device_support(HardwareProfile & hw, const ModelProfile & model);
 
+// What each compute engine can pull out of the memory it reads weights from, in GiB/s. One graph -
+// the same GEMV - scheduled on every backend, so the figures are comparable: the rules only ever use
+// the ratio of two of them, and a ratio between two different experiments would mean nothing. The
+// CPU backend's result is also the host's figure. Devices are only registered after
+// llama_backend_init(), and a device that will not allocate or has no kernel for the op keeps its
+// unmeasured 0, which every rule declines on rather than reading as "slow".
+void probe_bandwidth(HardwareProfile & hw);
+
 // How much memory this process can hold and expect to keep, which is not what the machine reports
 // as available: where a reclaim compresses, that figure is a floor for what could be taken and an
 // over-promise for what could be kept. Fills hw.holdable_bytes, or leaves it 0 where this machine

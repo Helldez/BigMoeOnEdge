@@ -191,17 +191,14 @@ because a barrier waits for its slowest participant.
 What is still owed is measurement rather than design, and every knob the plan cannot decide prints
 `[unprobed]`.
 
-- **Device memory bandwidth.** The one number a decode offload turns on. Batch-1 decode is a chain
-  of GEMVs that reads every weight once, so the question is not whose arithmetic is faster but who
-  pulls bytes faster out of the same DRAM — and where the memory is shared, the ratio of the host's
-  figure to the device's IS the offload's value. The host half is measured; the device half needs a
-  machine with a device. Until it exists, a plan on such a machine states the mechanism and declines
-  the decision.
-- **Routing streamed experts to a device that reads host memory.** The detection is in: a device is
-  asked whether it offers a host buffer type and whether it executes this model's own expert matmul
-  on the file's native layout, which together mean the bytes we read from flash are computable there
-  without a copy and without a repack. What remains is the session-side routing and the measurement
-  above to justify arming it.
+- **A machine with an accelerator to run the device path on.** It is built end to end and has never
+  met one. A device is asked whether it offers a host buffer type and whether it runs this model's
+  own expert matmul on the file's native layout; the bandwidth probe schedules one GEMV on every
+  backend so the host's figure and the device's are the same measurement; where the device wins, the
+  session binds the overridden experts to that device's host buffer — the same memory, pinned, that
+  the streamer still reads flash into and rebinds. On a machine that registers only a CPU all of
+  this runs and finds nothing to compare, which is what the plan says. Complete and unverified is
+  not the same as missing, and the two should not be reported as if they were.
 - **A prefill-aware cache floor.** Each expert is already read at most once per ubatch (the `seen_`
   guard in the streamer), so the read-once property that wave-partitioned prefill exists to provide
   is not missing. What is missing is a guarantee that the cache can hold one layer's ubatch working

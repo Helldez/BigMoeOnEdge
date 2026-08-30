@@ -17,6 +17,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.n_gpu_layers = cfg.n_gpu_layers;   // the first stage's placement; 0 = everything on the host
     sc.buft_overrides = cfg.buft_overrides;
+    sc.expert_compute_device = cfg.expert_compute_device;
     sc.compute_trace_layers = cfg.compute_trace_layers;
     sc.sampling = cfg.sampling; // greedy by default; opt-in stochastic decoding
     sc.moe = cfg.moe;

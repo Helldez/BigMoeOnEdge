@@ -125,27 +125,6 @@ void probe_core_classes(HardwareProfile & h) {
 #endif
 }
 
-// What the host can pull out of memory, in GiB/s. Measured rather than looked up: the same
-// processor reaches a different figure with a different memory configuration, and the number is
-// only ever used as one half of a ratio against a device's, so an absolute from a datasheet would
-// be worse than useless. Deliberately small and short - a working set past the last level of cache,
-// read a few times - because it runs inside a load already measured in seconds.
-double measure_host_bandwidth() {
-    const size_t bytes = 64u << 20; // past any last-level cache in current use
-    std::vector<uint64_t> buf(bytes / sizeof(uint64_t), 1);
-    const auto t0 = std::chrono::steady_clock::now();
-    uint64_t acc = 0;
-    const int passes = 3;
-    for (int p = 0; p < passes; ++p)
-        for (size_t i = 0; i < buf.size(); ++i)
-            acc += buf[i];
-    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    if (secs <= 0.0) return 0.0;
-    volatile uint64_t sink = acc;
-    (void) sink;
-    return ((double) bytes * passes) / secs / (1024.0 * 1024.0 * 1024.0);
-}
-
 void probe_devices(HardwareProfile & h) {
     // Nothing is registered before llama_backend_init(); an empty list here simply means the caller
     // probed early, and every rule that reads devices treats it as "no device-local memory".
@@ -194,7 +173,6 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.file_pages_counted = probe_file_pages_counted();
     h.n_cores = std::thread::hardware_concurrency();
     probe_core_classes(h);
-    h.host_bandwidth_gibs = measure_host_bandwidth();
 
     probe_devices(h);
 

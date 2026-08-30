@@ -51,6 +51,22 @@ Semantic Versioning.
   one, the plan says there is nothing to improve; where the machine does not publish them, the
   default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
 
+- **The device path, built end to end.** A bandwidth probe schedules **one graph on every backend**
+  — the same GEMV, the same buffer — so the host's figure and a device's are the same measurement in
+  the same units. That matters more than which graph it is: the rules only ever use the ratio, and a
+  ratio between a hand-rolled loop on one side and a vendor kernel on the other would compare the
+  two implementations rather than the two paths to memory. It skips a device that has no room to
+  spare, and a device that will not allocate or has no kernel keeps its unmeasured 0. Where a device
+  offers a host buffer, runs the model's own layout and reads memory faster than the host does, the
+  plan now **names it** rather than only describing the possibility, and the session binds the
+  overridden experts to that device's host buffer type instead of the CPU's — the same pinned memory
+  the streamer reads flash into and rebinds, so the weights stay ours to serve and become the
+  device's to compute. The session resolves the name and verifies again before acting, falling back
+  to the CPU buffer type if the device or its host buffer is not there, because a plan describes the
+  machine it was made on. On this machine, which registers only a CPU, all of it runs, measures 32
+  GiB/s for the host, finds nothing to compare it against and says so: complete and unverified,
+  which the plan reports differently from missing.
+
 - **A device is asked what it can do, not where its memory is.** The profile called a weight
   rebindable only where the memory was the host's. That is the wrong test, and on a machine with
   unified memory that reports itself as discrete it is wrong in the expensive direction: every

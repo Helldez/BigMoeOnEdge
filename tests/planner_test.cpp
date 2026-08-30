@@ -349,12 +349,17 @@ int main() {
         d = find(p, "experts");
         check(d && d->value == "device" && d->source == Source::Measured,
               "host-buffer device, faster than the host: experts computed there", d ? d->value : "none");
+        check(p.config.expert_compute_device == "accelerator",
+              "the decision is carried in the config, not only printed", p.config.expert_compute_device);
+        check(unmeasured.config.expert_compute_device.empty(),
+              "an unmeasured device leaves the config on the CPU buffer type");
 
         // A device that needs a repack is excluded by that property alone, however fast it is.
         acc.devices.back().needs_repack = Tri::Yes;
         const Plan r = plan_run(base_cfg(), acc, model, PlanRequest{});
         d = find(r, "experts");
         check(d && d->value == "host", "repacking device: excluded whatever its bandwidth");
+        check(r.config.expert_compute_device.empty(), "repacking device: nothing carried into the config");
     }
 
     // ── a dense model has nothing to stream ────────────────────────────────────────

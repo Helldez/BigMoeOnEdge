@@ -398,6 +398,16 @@ struct RunConfig {
     int n_gpu_layers = 0;
     std::vector<std::string> buft_overrides;
 
+    // Where the overridden weights are COMPUTED, which is a separate question from where they live.
+    // Empty - the default - means the CPU buffer type, the historical behaviour and the only answer
+    // on a machine with nothing else. A device name here means that device's HOST buffer type
+    // instead: memory we can still read flash into and rebind, that the device reads directly. The
+    // pair of properties is what lets an accelerator execute a streamed expert at all, and it is
+    // asked of the device rather than assumed from what kind of device it is. The session resolves
+    // the name and falls back to the CPU buffer type if the device or its host buffer is gone,
+    // because a plan is advice about a machine and the machine is what has the last word.
+    std::string expert_compute_device;
+
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
     SpecConfig spec; // self-speculative decoding (MTP head or n-gram lookup); off by default
