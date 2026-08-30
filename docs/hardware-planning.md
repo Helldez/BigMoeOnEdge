@@ -139,6 +139,20 @@ of absence, and printing one as `measured` would be exactly the confident wrong 
 exists to avoid. So the plan prints the two rates, says the probe saw nothing, and tells you to
 measure `--release-mmap` yourself.
 
+## Next steps, noted and not built
+
+**The "fits" exits need headroom, not a threshold.** Two of the early exits — everything on
+devices, and a host residual that fits in RAM — currently hand the run to plain residency the
+moment the bytes fit under a margin. That margin is set by what a reclaim costs and is a fixed
+fraction; it is not the question. A model that fits *just barely* does not run well resident: it
+lives under continuous reclaim, and the measured case is stark — the 35B fully resident through
+mmap decoded at 0.1 tok/s where streaming it decoded at 5.0. The right rule is a *dynamic* delta:
+stream unless residency leaves enough air that the working set is not being fought over, where
+"enough" comes from the overflow behaviour (compress, swap, kill) and from what else the machine
+is holding, not from a constant. Until that delta exists, a caller who knows better pins
+`--moe-stream` and the plan honours it; the exit stays as it is, and this note is the reason it
+is not to be trusted near the boundary.
+
 ## What is not probed yet
 
 - **Device memory bandwidth.** It is the number that decides an offload, and nothing here measures
