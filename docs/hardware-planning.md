@@ -161,3 +161,66 @@ difference visible rather than mysterious.
 Compute devices are enumerated through `ggml_backend_dev_*` and recorded, but no rule reads them
 yet; a device whose memory is host memory frees nothing when a tensor moves off it, which is why
 the capacity tier is nearly inert on an integrated GPU and only the bandwidth tier is left.
+
+## Architecture
+
+```
+                    CLI / app / API          --auto  --plan-explain  --plan-only
+                    pins = everything the caller typed
+                                  |
+        +-------------------------v-----------------------------+
+        |  PROBES  core/src/plan/*_probe.cpp                    |   the only place with
+        |  model (gguf header) | machine | storage | devices     |   platform names and
+        +----------+-----------+---------+---------+------------+   backend calls
+                   |           |         |         |
+            ModelProfile  HardwareProfile  StorageFacts  ComputeDevice[]
+                   |           |         |         |
+        +----------v-----------v---------v---------v------------+
+        |  STAGE 1  llama.cpp capacity fitter (placement_probe) |   VRAM -> RAM, per class
+        |  out: n_gpu_layers, split, overrides, n_ctx, KV+compute|   inside each layer
+        +---------------------------+---------------------------+
+                                    | Placement: experts left on host, host residual
+        +---------------------------v---------------------------+
+        |  STAGE 2  pure planner (planner.cpp: no llama.cpp,    |   RAM -> flash
+        |  no OS): regime, dense policy, cache >= token cycle,   |   every decision tagged
+        |  lanes, O_DIRECT, mapping release, lossy only if armed |   measured/derived/...
+        +---------------------------+---------------------------+
+                                    | Plan = RunConfig + rationale
+        +---------------------------v---------------------------+
+        |  SESSION  loads with the fitter's placement; dense     |
+        |  anon/dma-buf/mmap; host experts -> streamer + LRU    |
+        +---------------------------+---------------------------+
+                                    |
+        +---------------------------v---------------------------+
+        |  llama.cpp + ggml, stock submodule: CPU CUDA Metal    |
+        |  Vulkan ROCm SYCL OpenCL                              |
+        +-------------------------------------------------------+
+```
+
+Above the probes there is no platform name; below them everything goes through public API,
+plus `common/fit.h` in one file.
+
+## Levers llama.cpp already has that this planner does not use yet
+
+Each row is a gap here paired with the public facility that closes it. None needs a fork.
+
+| gap | facility | what it would allow |
+|---|---|---|
+| streamed experts compute on the CPU wherever memory is unified (a Mac, a DGX Spark) | `ggml_backend_dev_host_buffer_type()`, `caps.host_buffer` (`ggml-backend.h:152,189`; CUDA impl `ggml-cuda.cu:1310`) | experts in pinned host memory the GPU reads directly: still rebindable, computed on the device. The hook is `session.cpp` where overrides are routed to the CPU buffer type |
+| a unified-memory CUDA device looks discrete to the profile | `prop.integrated` in the CUDA backend, currently disabled upstream (`ggml-cuda.cu:308`) | a free fact once re-enabled; until then it needs a bandwidth measurement |
+| prefill on the device over streamed experts (designed, not built) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
+| no thread rule | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | different counts for decode and prefill; NUMA on workstations |
+| KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
+| device selection | `mparams.devices[]`, `split_mode`, `main_gpu` | tell the fitter which devices to use, e.g. exclude one that demands a repack |
+| the budget under a compressing reclaim | nothing in llama.cpp: a kernel fact | the compressible-headroom probe stays ours |
+
+### DGX Spark, as a worked case
+
+128 GB of unified LPDDR5x at roughly 273 GB/s, twenty ARM cores, a Blackwell GPU, models
+streamed from NVMe: exactly the `experts-stream` regime, and the machine upstream's own expert
+streaming PR benchmarked on. Today this planner would misread it — ggml reports the GB10 as a GPU
+with memory of its own, because the CUDA backend's `integrated` flag is disabled — and, worse,
+the "experts must live in a rebindable host buffer" rule would put every expert matmul on the ARM
+cores. The first lever above is the way out, and it is the first thing to measure on such a
+machine: experts in the CUDA host buffer type, rebound by the streamer as today, executed by the
+GPU. Until measured it is a hypothesis, not a plan.
