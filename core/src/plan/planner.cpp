@@ -36,6 +36,14 @@ std::string dense_mode_name(DenseWeightsMode m) {
     return "?";
 }
 
+// What this process may hold. The measured figure wins where it exists, because it answers the
+// question the rules are actually asking - what can be KEPT - while the reported one answers what
+// could be allocated at this instant. They differ by more than rounding wherever a reclaim
+// compresses: the reported number is a floor there, and sizing from it leaves memory unused.
+uint64_t budget_bytes(const HardwareProfile & hw) {
+    return hw.holdable_bytes ? hw.holdable_bytes : hw.residency_budget;
+}
+
 // How much of the residency budget to leave for everything that is not us. The fraction is chosen
 // by what losing memory costs here, which is the honest axis: it is cheap where a reclaim only
 // compresses, and fatal where exceeding the share ends the process.
@@ -56,7 +64,7 @@ uint64_t margin_bytes(const HardwareProfile & hw, const PlannerPolicy & pol) {
     case Overflow::Unknown:
         break;
     }
-    const uint64_t by_frac = (uint64_t) ((double) hw.residency_budget * frac);
+    const uint64_t by_frac = (uint64_t) ((double) budget_bytes(hw) * frac);
     return std::max(by_frac, pol.margin_min_bytes);
 }
 
@@ -81,6 +89,20 @@ bool reclaim_is_cheap(Overflow o) {
         break;
     }
     return false;
+}
+
+// Where the budget came from, in the words the rationale prints. The distinction matters to a
+// reader deciding how much to trust a plan: an estimate and a measurement are not the same claim.
+const char * headroom_name(Headroom h) {
+    switch (h) {
+    case Headroom::Compressible:
+        return "estimated from what this machine's compressor is achieving";
+    case Headroom::Measured:
+        return "measured by holding memory until the machine took some back";
+    case Headroom::Unknown:
+        break;
+    }
+    return "as reported available, unmeasured";
 }
 
 const char * overflow_name(Overflow o) {
@@ -216,7 +238,8 @@ Plan plan_run(const RunConfig & base,
     }
 
     const uint64_t margin = margin_bytes(hw, pol);
-    const uint64_t usable = hw.residency_budget > margin ? hw.residency_budget - margin : 0;
+    const uint64_t holdable = budget_bytes(hw);
+    const uint64_t usable = holdable > margin ? holdable - margin : 0;
 
     // The bytes that would have to be resident on the host if nothing were streamed: with a
     // placement, what the fitter left here; without one, the whole file.
@@ -265,8 +288,8 @@ Plan plan_run(const RunConfig & base,
 
     note("regime", regime_name(p.regime), Source::Derived,
          "on the host " + u64s(mib(host_all)) + " MiB (dense " + u64s(mib(host_dense)) + ") against " +
-             u64s(mib(usable)) + " MiB usable, which is the " + u64s(mib(hw.residency_budget)) +
-             " MiB this process may hold less a " + u64s(mib(margin)) + " MiB margin (" +
+             u64s(mib(usable)) + " MiB usable, which is the " + u64s(mib(holdable)) + " MiB this process may hold (" +
+             headroom_name(hw.holdable_from) + ") less a " + u64s(mib(margin)) + " MiB margin (" +
              overflow_name(hw.anon_overflow) + ")");
 
     if (air_short)
@@ -332,13 +355,46 @@ Plan plan_run(const RunConfig & base,
                  "solves; this planner owns the tier below it and does not duplicate it");
         }
 
-        // Stated whatever the outcome above, because it is the condition this engine exists under.
+        // Where the streamed experts are COMPUTED, which is a different question from where they
+        // live. They must live in a host buffer - that is absolute, since serving one means rebinding
+        // its pointer onto the file's native layout, and a repack replaces exactly that layout. But a
+        // device that offers a host buffer reads that same memory directly, so it can execute over
+        // the bytes we read from flash without a copy and without a repack, and the pair of
+        // properties is one device's answer rather than a class of hardware.
+        //
+        // Whether it is worth doing is a second question, and the honest gate is not "is there a
+        // device" but "is compute even on the critical path". Reading an expert costs far more than
+        // multiplying by it, so where the stall dominates the engine that computes is irrelevant and
+        // moving the work buys nothing. Where the cache is large enough that most tokens hit, the
+        // compute emerges and the faster engine is worth having. Both halves of that comparison need
+        // a bandwidth figure for the device, and until one is measured this stays a stated unknown
+        // rather than a decision - which on the machines where it matters most, the ones whose memory
+        // is unified, is the whole of the difference between an idle accelerator and a used one.
+        const ComputeDevice * host_capable = nullptr;
+        for (const ComputeDevice & d : hw.devices) {
+            if (d.host_memory) continue; // the CPU is where they already are
+            if (!is_yes(d.host_buffer) || d.runs_expert_op != Tri::Yes || d.needs_repack == Tri::Yes) continue;
+            host_capable = &d;
+            break;
+        }
         const bool repack_blocks = candidate && candidate->needs_repack == Tri::Yes;
-        note("experts", "host", Source::Derived,
-             repack_blocks ? "a streamed expert must keep the file's native layout so its pointer can be "
-                             "rebound, and the device here executes only a repacked layout"
-                           : "a streamed expert must live in a host buffer whose pointer we may rebind onto "
-                             "the file's native layout");
+        if (host_capable && host_capable->memory_bandwidth_gibs <= 0.0)
+            note("experts", "host", Source::Unprobed,
+                 "this device offers a host buffer and executes this model's expert matmul on the file's own "
+                 "layout, so streamed experts could be computed on it - but what that is worth is the ratio of "
+                 "its bandwidth to the host's, and its own is unmeasured here");
+        else if (host_capable && hw.host_bandwidth_gibs > 0.0 &&
+                 host_capable->memory_bandwidth_gibs > hw.host_bandwidth_gibs)
+            note("experts", "device", Source::Measured,
+                 "this device offers a host buffer, executes the model's own layout, and reaches " +
+                     u64s((uint64_t) host_capable->memory_bandwidth_gibs) + " GiB/s against the host's " +
+                     u64s((uint64_t) hw.host_bandwidth_gibs) + ": the experts stay rebindable and are computed there");
+        else
+            note("experts", "host", Source::Derived,
+                 repack_blocks ? "a streamed expert must keep the file's native layout so its pointer can be "
+                                 "rebound, and the device here executes only a repacked layout"
+                               : "a streamed expert must live in a host buffer whose pointer we may rebind onto "
+                                 "the file's native layout");
     }
 
     // ── the dense policy: decided by what a reclaim COSTS here, nothing else ────────
@@ -376,6 +432,9 @@ Plan plan_run(const RunConfig & base,
 
     // Bytes the dense policy is about to take out of reclaimable page cache. Mirrors the runtime's
     // own rule: a tensor bigger than what this process may hold is never converted, it stays mapped.
+    // The comparison stays on the REPORTED figure rather than the measured headroom, because it is
+    // mirroring a decision the runtime makes from the reported one - a plan that predicted a
+    // conversion the engine will then refuse would be worse than one that is merely conservative.
     const bool converts_dense = p.config.moe.dense_weights == DenseWeightsMode::Anonymous ||
                                 p.config.moe.dense_weights == DenseWeightsMode::Pinned;
     uint64_t dense_pending = converts_dense ? host_dense : 0;
@@ -520,10 +579,33 @@ Plan plan_run(const RunConfig & base,
              "exists yet, so spending it would be a guess");
     }
 
-    // ── knobs with no rule yet: named, so the missing measurement stays visible ─────
-    if (!req.is_pinned("threads"))
-        note("threads", u64s((uint64_t) p.config.n_threads), Source::Unprobed,
-             "no measured rule relates core topology to decode throughput here; keeping the default");
+    // ── threads: a barrier waits for the slowest participant ───────────────────────
+    // The rule reads the classes, not the count. Every thread in a ggml graph meets at the same
+    // barrier, so a thread on a slower core does not add its throughput - it sets the pace for all
+    // of them, and the ones that finished wait. On a machine with one class this changes nothing
+    // and says so; on a heterogeneous one it is the difference between filling the fast cores and
+    // spilling onto the slow ones. Where the classes could not be read, the default stands.
+    if (!pinned("threads", u64s((uint64_t) p.config.n_threads))) {
+        if (hw.core_classes.size() > 1) {
+            const uint32_t fast = hw.core_classes.front();
+            p.config.n_threads = (int) fast;
+            std::string shape;
+            for (size_t i = 0; i < hw.core_classes.size(); ++i)
+                shape += (i ? " + " : "") + u64s(hw.core_classes[i]);
+            note("threads", u64s(fast), Source::Derived,
+                 "this machine's cores are not alike (" + shape +
+                     " by reported maximum frequency), and every thread meets the same barrier: a thread on a "
+                     "slower core sets the pace rather than adding to it, so the fast class is the count");
+        } else if (hw.core_classes.size() == 1) {
+            note("threads", u64s((uint64_t) p.config.n_threads), Source::Derived,
+                 "every core here is alike, so there is no slower class to spill onto and the count is not "
+                 "the planner's to improve");
+        } else {
+            note("threads", u64s((uint64_t) p.config.n_threads), Source::Unprobed,
+                 "this machine does not report per-core maximum frequencies, so its core classes are unknown "
+                 "and a thread count derived from a bare core count would be a guess");
+        }
+    }
     if (!req.is_pinned("ubatch"))
         note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
              "the compute-buffer reservation trades against the cache, but the crossover is unmeasured on "

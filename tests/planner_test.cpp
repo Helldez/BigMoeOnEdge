@@ -208,6 +208,46 @@ int main() {
         check(p.streaming_declined && !p.decline_reason.empty(), "roomy machine: the refusal is explained");
     }
 
+    // ── the budget is what we can KEEP, not what is reported available ──────────────
+    // On a machine whose reclaim compresses, the reported figure is a floor: the kernel will
+    // compress other processes' idle pages to make room. Sizing from it leaves memory unused, and
+    // the whole point of measuring is that the plan then spends what is really there.
+    {
+        const Plan reported = plan_run(base_cfg(), phone(), model, PlanRequest{});
+        HardwareProfile measured = phone();
+        measured.holdable_bytes = 8 * GiB; // more than the 6 GiB it reports available
+        measured.holdable_from = Headroom::Measured;
+        const Plan p = plan_run(base_cfg(), measured, model, PlanRequest{});
+        check(p.config.moe.cache_mb > reported.config.moe.cache_mb,
+              "measured headroom: the cache grows with what the machine will actually let us keep",
+              std::to_string(reported.config.moe.cache_mb) + " -> " + std::to_string(p.config.moe.cache_mb));
+        const Decision * d = find(p, "regime");
+        check(d && d->reason.find("measured by holding memory") != std::string::npos,
+              "measured headroom: the rationale says the budget was measured", d ? d->reason : "no decision");
+    }
+
+    // An estimate is still better than the reported floor, and is labelled as an estimate so a
+    // reader can weigh it: the two are not the same claim.
+    {
+        HardwareProfile est = phone();
+        est.holdable_bytes = 7 * GiB;
+        est.holdable_from = Headroom::Compressible;
+        const Plan p = plan_run(base_cfg(), est, model, PlanRequest{});
+        const Decision * d = find(p, "regime");
+        check(d && d->reason.find("estimated from") != std::string::npos,
+              "estimated headroom: the rationale says the budget was estimated", d ? d->reason : "no decision");
+    }
+
+    // An unmeasured machine falls back to the reported figure and says which one it used, rather
+    // than pretending the question was answered.
+    {
+        const Plan p = plan_run(base_cfg(), phone(), model, PlanRequest{});
+        const Decision * d = find(p, "regime");
+        check(d && d->reason.find("unmeasured") != std::string::npos,
+              "unmeasured headroom: the rationale admits the budget is the reported one",
+              d ? d->reason : "no decision");
+    }
+
     // ── fitting is not being left alone: the same model, two machines that both "fit" ──
     // A phone whose reclaim compresses, holding a model that fits with little beyond itself. It is
     // the common case, not the exotic one, and residency there is reclaimed from underneath.
@@ -254,6 +294,67 @@ int main() {
         check(!p.config.moe.enabled, "tight machine: streaming declined rather than thrashing");
         check(p.decline_reason.find("token cycle") != std::string::npos,
               "tight machine: the reason names the derived floor", p.decline_reason);
+    }
+
+    // ── threads: the classes decide, not the count ─────────────────────────────────
+    {
+        HardwareProfile het = desktop();
+        het.n_cores = 20;
+        het.core_classes = {10, 10}; // ten fast, ten slow: a barrier waits for the slow ones
+        const Plan p = plan_run(base_cfg(), het, model, PlanRequest{});
+        check(p.config.n_threads == 10, "heterogeneous cores: threads are the fast class",
+              std::to_string(p.config.n_threads));
+        const Decision * d = find(p, "threads");
+        check(d && d->source == Source::Derived, "heterogeneous cores: the thread count is derived");
+    }
+    {
+        HardwareProfile uniform = desktop();
+        uniform.core_classes = {8};
+        const Plan p = plan_run(base_cfg(), uniform, model, PlanRequest{});
+        const Decision * d = find(p, "threads");
+        check(d && d->source == Source::Derived && d->reason.find("alike") != std::string::npos,
+              "uniform cores: nothing to improve, and the plan says why");
+    }
+    {
+        const Plan p = plan_run(base_cfg(), desktop(), model, PlanRequest{}); // no classes reported
+        const Decision * d = find(p, "threads");
+        check(d && d->source == Source::Unprobed, "unreported core classes: the default stands, unprobed");
+    }
+
+    // ── streamed experts may be COMPUTED on a device that reads host memory ─────────
+    // The property is one device's answer, not a class of hardware: a host buffer it executes over
+    // means the bytes we read from flash are readable by it without a copy and without a repack.
+    {
+        HardwareProfile acc = desktop();
+        acc.host_bandwidth_gibs = 50.0;
+        ComputeDevice gpu;
+        gpu.name = "accelerator";
+        gpu.memory_total = 16 * GiB;
+        gpu.host_memory = false;
+        gpu.host_buffer = Tri::Yes;
+        gpu.rebindable = true;
+        gpu.runs_expert_op = Tri::Yes;
+        gpu.needs_repack = Tri::No;
+        acc.devices.push_back(gpu);
+
+        // Unmeasured bandwidth: the mechanism is stated, the decision is not taken.
+        const Plan unmeasured = plan_run(base_cfg(), acc, model, PlanRequest{});
+        const Decision * d = find(unmeasured, "experts");
+        check(d && d->source == Source::Unprobed, "host-buffer device, no bandwidth: stated, not decided");
+
+        // Measured and faster than the host: the experts stay rebindable and go there. (back(), not
+        // [0]: this fixture already carries a plain discrete device, and the one under test is ours.)
+        acc.devices.back().memory_bandwidth_gibs = 200.0;
+        const Plan p = plan_run(base_cfg(), acc, model, PlanRequest{});
+        d = find(p, "experts");
+        check(d && d->value == "device" && d->source == Source::Measured,
+              "host-buffer device, faster than the host: experts computed there", d ? d->value : "none");
+
+        // A device that needs a repack is excluded by that property alone, however fast it is.
+        acc.devices.back().needs_repack = Tri::Yes;
+        const Plan r = plan_run(base_cfg(), acc, model, PlanRequest{});
+        d = find(r, "experts");
+        check(d && d->value == "host", "repacking device: excluded whatever its bandwidth");
     }
 
     // ── a dense model has nothing to stream ────────────────────────────────────────

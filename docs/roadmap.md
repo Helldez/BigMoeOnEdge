@@ -175,32 +175,40 @@ more budget — which `--cache-mb auto` now takes automatically, capped by `--ca
 ([cache-sizing.md](cache-sizing.md)). Admission policies and a persistent cross-run cache
 remain unexplored.
 
-## Hardware planning — the rules are in, the probes are not
+## Hardware planning — what is measured, and what is still owed
 
 `--auto` derives the streaming knobs from the machine and the model instead of from flags, and
 prints the fact behind each choice ([hardware-planning.md](hardware-planning.md)). The rules carry
 no platform names, so the same rule reaches a different answer on a desktop, a phone and a
 kill-on-resident platform from the facts alone.
 
-What is left is measurement rather than design, and the plan already names it: every knob it cannot
-decide prints `[unprobed]`.
+In: the read-rate probe (request size against lane count, about a second at load, the only honest
+source of `--io-threads`); the mapping-interference probe; llama.cpp's own capacity fitter as a
+first stage; the headroom probe, which answers what this process can hold rather than what the
+machine reports available; and a thread rule that reads core classes rather than a core count,
+because a barrier waits for its slowest participant.
 
-- **A read-rate probe**, about a second at load, sweeping request size against lane count. It is the
-  only honest source of `--io-threads`, because the same expert slice sits at a different point of a
-  desktop SSD's curve and a phone's UFS curve — 4 KiB returns 2% of peak on one and 6.8% on the
-  other.
-- **A mapping-interference probe.** Whether a live mapping serialises concurrent uncached reads is
-  measurable in one second and is worth 46% of decode on the storage where it is true; today it is
-  the one thing keeping `--release-mmap` opt-in rather than derived.
-- **The compute-device axis.** Devices are enumerated and recorded but no rule reads them yet. The
-  cheapest first question is whether llama.cpp's own capacity fitter (`common_fit_params`, which
-  assumes system memory is unlimited) and our residency sensors agree on the same model — the
-  planner's cache budget consumes that projection as fact, so a disagreement changes the design
-  rather than a constant. It buys nothing on an integrated GPU, where moving a tensor off the
-  device frees no memory at all.
-- **Threads and `--ubatch`** have no rule because they have no measurement: nothing here relates
-  core topology to decode throughput, and the compute-buffer reservation's crossover against the
-  cache is unmeasured.
+What is still owed is measurement rather than design, and every knob the plan cannot decide prints
+`[unprobed]`.
+
+- **Device memory bandwidth.** The one number a decode offload turns on. Batch-1 decode is a chain
+  of GEMVs that reads every weight once, so the question is not whose arithmetic is faster but who
+  pulls bytes faster out of the same DRAM — and where the memory is shared, the ratio of the host's
+  figure to the device's IS the offload's value. The host half is measured; the device half needs a
+  machine with a device. Until it exists, a plan on such a machine states the mechanism and declines
+  the decision.
+- **Routing streamed experts to a device that reads host memory.** The detection is in: a device is
+  asked whether it offers a host buffer type and whether it executes this model's own expert matmul
+  on the file's native layout, which together mean the bytes we read from flash are computable there
+  without a copy and without a repack. What remains is the session-side routing and the measurement
+  above to justify arming it.
+- **A prefill-aware cache floor.** Each expert is already read at most once per ubatch (the `seen_`
+  guard in the streamer), so the read-once property that wave-partitioned prefill exists to provide
+  is not missing. What is missing is a guarantee that the cache can hold one layer's ubatch working
+  set: the derived floor is the *decode* token cycle, and a wide prefill batch touches many more
+  experts per layer than a token does.
+- **`--ubatch`** has no rule because it has no measurement: the compute-buffer reservation's
+  crossover against the cache is unmeasured on every machine here.
 
 ## Not on this list
 

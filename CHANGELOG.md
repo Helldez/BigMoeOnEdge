@@ -29,6 +29,61 @@ Semantic Versioning.
   phone is the cell that would price it, and it is owed.
 
 ### Added
+- **A headroom probe: what this machine will let us KEEP, not what it reports available.** Every
+  sizing rule here was reading `MemAvailable`, which answers a different question. Where a reclaim
+  compresses, that figure is wrong in both directions at once: it is a floor, because the kernel
+  compresses other processes' idle pages to make room for us — the test phone held 3.8 GB while
+  reporting 3.6 available, and 5.6 afterwards — and it is an over-promise, because the same cheap
+  reclaim takes ours back. `probe_headroom` answers it two ways. The free estimate reads what this
+  machine's own compressor is currently achieving and applies it to the set the kernel would
+  compress first; both numbers come from this machine's accounting and neither is a constant.
+  `--probe-mem` measures instead: hold memory in steps and watch for the moment the first of it is
+  taken back. It grows in steps, stops at the first sign of loss, releases everything on every path
+  out, and never runs unasked, because it is the one probe here that puts a live machine under real
+  pressure. Where neither can answer, the fact stays unknown, the plan falls back to the reported
+  budget, and the rationale says which of the three it used.
+
+- **Threads from core classes, not from a core count.** Every thread in a ggml graph meets the same
+  barrier, so on a machine whose cores are not alike a thread on a slower core does not add its
+  throughput — it sets the pace, and the fast cores wait. The profile now carries the classes,
+  grouped by the maximum frequency the kernel publishes per CPU, which needs no table of processor
+  names to interpret. Where there is more than one class the count is the fast one; where there is
+  one, the plan says there is nothing to improve; where the machine does not publish them, the
+  default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
+
+- **A device is asked what it can do, not where its memory is.** The profile called a weight
+  rebindable only where the memory was the host's. That is the wrong test, and on a machine with
+  unified memory that reports itself as discrete it is wrong in the expensive direction: every
+  streamed expert's matmul was routed to the CPU cores with the accelerator idle. A device is now
+  asked whether it offers a host buffer type — memory we can read flash into and it can execute out
+  of — and whether it runs this model's own `mul_mat_id` on the file's native layout, and the
+  repack question is asked of the buffer the weight would actually live in rather than of the
+  device's default. Where both hold, the plan states that streamed experts could be computed there;
+  what it will not do yet is decide it, because the value of the move is the ratio of that device's
+  memory bandwidth to the host's, and only the host's is measured here.
+
+- **A clustered, warmed mapping-interference probe, and a median where the answer was noise.** The
+  probe that asks whether a live mapping serialises our uncached reads drew both arms uniformly at
+  random over the whole file, against a mapping it had never touched — and on a desktop where the
+  engine gains 24% from releasing the mapping, it saw the two arms within 2% of each other. It now
+  warms the mapping before reading it, because an untouched mapping holds no pages and cannot
+  interfere with anything, and both arms walk clustered windows that advance through the file the
+  way the streamer walks a layer's expert slices. Separately, the lane count is now the median of
+  three samples at the model's own slice size, because one sample was flipping the answer between
+  one lane and two across runs on the same drive.
+
+  Both changes were measured on the desktop where the effect is known. The mapping arms now read
+  1151 against 2806 MiB/s, stable across runs, where the old probe saw them within 2% of each other.
+  And the lane pick moved from two to four - which is not a regression but a correction, confirmed
+  by three interleaved 64-token runs against the engine: **4.648 tok/s at two lanes, 5.261 at four**,
+  +13%, no overlap between the groups. The earlier validation that made two lanes right was taken
+  with the model's mapping alive, and a machine holding the model mapped does not have a fourth
+  lane: it serialises them. The lane count was never a property of the drive alone.
+
+  The mapping verdict stays `Yes`-or-nothing all the same. What is now established is that the
+  instrument can see the effect where it exists; nothing yet establishes that its silence means
+  absence, because no machine with a known negative has been put in front of it.
+
 - **Fitting is not the same as being left alone.** The plan's "this model fits, stream nothing"
   exit used to fire the moment the bytes cleared a margin. On a machine whose reclaim is cheap for
   the kernel — it compresses the page, or drops a clean one — that is the wrong question: a model

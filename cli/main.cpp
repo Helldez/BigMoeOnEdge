@@ -448,6 +448,9 @@ static void print_usage(const char * argv0) {
         "                          left exactly as you set it, and nothing lossy is ever armed\n"
         "      --plan-explain      print the resolved plan and the fact behind each choice, then run\n"
         "      --plan-only         print the plan and exit, without loading the model\n"
+        "      --probe-mem         measure how much memory this machine will let us KEEP, by holding\n"
+        "                          it until the kernel takes some back. Off by default: it is the one\n"
+        "                          probe that puts a live machine under real pressure\n"
         "\n"
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
@@ -611,6 +614,7 @@ int main(int argc, char ** argv) {
     bool plan_explain = false;
     bool plan_only = false;
     bool probe_io = true;
+    bool probe_mem = false; // off by default: it is the one probe that puts the machine under real pressure
 
     // Which flags the user actually typed. The env overrides below consult this rather than
     // comparing against the default, so passing a flag its default value still wins.
@@ -692,7 +696,10 @@ int main(int argc, char ** argv) {
             probe_io = true;
         } else if (a == "--no-probe-io")
             probe_io = false;
-        else if (a == "--plan-only") {
+        else if (a == "--probe-mem") {
+            auto_plan = true;
+            probe_mem = true;
+        } else if (a == "--plan-only") {
             auto_plan = true;
             plan_explain = true;
             plan_only = true;
@@ -849,6 +856,10 @@ int main(int argc, char ** argv) {
         // default that hides a measured gain behind a flag nobody knows to pass is a bad default.
         // --no-probe-io opts out for a caller that must not touch the drive.
         if (probe_io) probe_storage(hw, cfg.model_path.c_str(), mp.expert_slice_bytes);
+        // How much of this machine we can hold and keep. The free half reads accounting and always
+        // runs; the measuring half holds memory until the kernel takes some back, which is real
+        // pressure on a live machine, so it waits to be asked with --probe-mem.
+        probe_headroom(hw, probe_mem);
         // The first stage: llama.cpp's own capacity fitter, on every backend it knows. Devices are
         // only registered once the backend is initialised, so it is brought up here — the session
         // does the same and the call is reference counted.

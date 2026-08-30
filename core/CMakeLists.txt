@@ -31,6 +31,7 @@ if(BMOE_HAVE_LLAMA)
         src/moe/row_stream.cpp
         src/moe/gguf_offsets.cpp
         src/plan/hardware_probe.cpp
+        src/plan/headroom_probe.cpp
         src/plan/storage_probe.cpp
         src/plan/placement_probe.cpp
         src/plan/model_probe.cpp

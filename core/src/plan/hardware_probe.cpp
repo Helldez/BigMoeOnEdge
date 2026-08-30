@@ -12,9 +12,13 @@
 #if !defined(_WIN32)
 #include <sys/stat.h>
 #endif
+#include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -84,6 +88,64 @@ Tri probe_file_pages_counted() {
 #endif
 }
 
+// The core classes this machine has, fastest first, as counts. A barrier waits for its slowest
+// participant, so a thread rule that reads a core COUNT on a heterogeneous processor is reading the
+// wrong number: on one twenty-core machine the tenth thread is the last fast core and the eleventh
+// costs throughput. Where the classes cannot be read the vector stays empty, which every rule reads
+// as "this machine did not say" rather than as "every core is alike".
+void probe_core_classes(HardwareProfile & h) {
+#if defined(__linux__)
+    // Group the CPUs by the maximum frequency the kernel reports for each. It is a fact about this
+    // machine, published per CPU, and it needs no table of processor names to interpret.
+    std::vector<uint64_t> khz;
+    for (uint32_t cpu = 0; cpu < h.n_cores; ++cpu) {
+        char path[128];
+        std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_max_freq", cpu);
+        FILE * f = std::fopen(path, "re");
+        if (!f) return; // partial information about a heterogeneous machine is worse than none
+        unsigned long long v = 0;
+        const int n = std::fscanf(f, "%llu", &v);
+        std::fclose(f);
+        if (n != 1 || v == 0) return;
+        khz.push_back((uint64_t) v);
+    }
+    if (khz.empty()) return;
+    std::sort(khz.begin(), khz.end(), std::greater<uint64_t>());
+    for (size_t i = 0; i < khz.size();) {
+        size_t j = i;
+        while (j < khz.size() && khz[j] == khz[i])
+            ++j;
+        h.core_classes.push_back((uint32_t) (j - i));
+        i = j;
+    }
+#else
+    // Nothing here reports classes for free. A machine whose cores are alike is still describable,
+    // but claiming that without evidence is exactly the guess this design refuses to make.
+    (void) h;
+#endif
+}
+
+// What the host can pull out of memory, in GiB/s. Measured rather than looked up: the same
+// processor reaches a different figure with a different memory configuration, and the number is
+// only ever used as one half of a ratio against a device's, so an absolute from a datasheet would
+// be worse than useless. Deliberately small and short - a working set past the last level of cache,
+// read a few times - because it runs inside a load already measured in seconds.
+double measure_host_bandwidth() {
+    const size_t bytes = 64u << 20; // past any last-level cache in current use
+    std::vector<uint64_t> buf(bytes / sizeof(uint64_t), 1);
+    const auto t0 = std::chrono::steady_clock::now();
+    uint64_t acc = 0;
+    const int passes = 3;
+    for (int p = 0; p < passes; ++p)
+        for (size_t i = 0; i < buf.size(); ++i)
+            acc += buf[i];
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (secs <= 0.0) return 0.0;
+    volatile uint64_t sink = acc;
+    (void) sink;
+    return ((double) bytes * passes) / secs / (1024.0 * 1024.0 * 1024.0);
+}
+
 void probe_devices(HardwareProfile & h) {
     // Nothing is registered before llama_backend_init(); an empty list here simply means the caller
     // probed early, and every rule that reads devices treats it as "no device-local memory".
@@ -106,10 +168,16 @@ void probe_devices(HardwareProfile & h) {
             // An integrated device's memory IS host memory: moving a tensor off it frees nothing,
             // which is the fact that makes the capacity tier nearly inert on such a machine.
             d.host_memory = props.type == GGML_BACKEND_DEVICE_TYPE_CPU || props.type == GGML_BACKEND_DEVICE_TYPE_IGPU;
-            // Only a host buffer can have its tensor `data` repointed at bytes we read ourselves,
-            // which is the condition the expert streamer exists under. A device-local buffer's
-            // pointer is not a host address.
-            d.rebindable = d.host_memory;
+            // Whether this device will execute over memory the host owns. Asking the backend for a
+            // host buffer type is the question; a device that answers is one we can read flash into
+            // and it can compute out of, which is exactly the pair of properties a streamed expert
+            // needs. Host memory has it by definition, and a device with memory of its own may still
+            // offer it - which is the difference between an accelerator that can serve streamed
+            // experts and one that can only be handed a copy it repacks.
+            d.host_buffer = d.host_memory || ggml_backend_dev_host_buffer_type(dev) != nullptr ? Tri::Yes : Tri::No;
+            // Only a host address can be repointed at bytes we read ourselves, which is the
+            // condition the expert streamer exists under. A device-local buffer's pointer is not one.
+            d.rebindable = is_yes(d.host_buffer);
             h.devices.push_back(std::move(d));
         }
     }
@@ -125,6 +193,8 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.reclaim_exempt_max = pio::pinned_max_bytes();
     h.file_pages_counted = probe_file_pages_counted();
     h.n_cores = std::thread::hardware_concurrency();
+    probe_core_classes(h);
+    h.host_bandwidth_gibs = measure_host_bandwidth();
 
     probe_devices(h);
 
@@ -190,7 +260,13 @@ void probe_device_support(HardwareProfile & hw, const ModelProfile & model) {
                 // weight converted at load. For a streamed expert that is fatal rather than merely
                 // costly: the streamer's whole mechanism is rebinding `data` onto the file's native
                 // layout, and a repack is precisely what replaces that layout.
-                ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
+                // Ask about the buffer type this weight would ACTUALLY live in. For a streamed
+                // expert that is the host buffer where one is offered, not the device's default:
+                // a discrete accelerator's own buffer needs a repack and its host buffer does not,
+                // and reading the wrong one of the two is the difference between "this device
+                // cannot serve streamed experts" and the truth.
+                ggml_backend_buffer_type_t buft = ggml_backend_dev_host_buffer_type(dev);
+                if (!buft) buft = ggml_backend_dev_buffer_type(dev);
                 d.needs_repack = (buft && !ggml_backend_buft_is_host(buft)) ? Tri::Yes : Tri::No;
             }
         }

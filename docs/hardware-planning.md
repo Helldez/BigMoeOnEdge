@@ -9,6 +9,7 @@ bmoe-cli -m model.gguf --auto                   # measures, plans, runs. Nothing
 bmoe-cli -m model.gguf --auto --plan-explain    # ...and print why it chose what it chose
 bmoe-cli -m model.gguf --plan-only              # print the plan and exit, without loading the model
 bmoe-cli -m model.gguf --auto --no-probe-io     # plan from free facts only, touching no storage
+bmoe-cli -m model.gguf --auto --probe-mem      # ...and measure what this machine will let us KEEP
 ```
 
 It is opt-in. Without it nothing changes.
@@ -74,6 +75,10 @@ and `BMOE_*` env overrides both count as the caller speaking.
 | fact | decides |
 |---|---|
 | residency budget: how much this process may hold | the regime, and the cache budget |
+| headroom: how much of it can be KEPT | the same two, when it has been measured rather than reported |
+| core classes, fastest first | `--threads`: a barrier waits for its slowest participant |
+| whether a device executes over a host buffer | whether streamed experts could be computed on it |
+| host memory bandwidth, and a device's | whether moving that compute is worth anything |
 | what happens to anonymous memory under pressure | the dense policy, and the margin |
 | whether a reclaim-exempt allocation exists | whether the dense set can be pinned |
 | whether mapped file pages count against the fatal limit | whether leaving the dense set mapped is free |
@@ -108,6 +113,26 @@ Because the floor is per-model, it also overrides the generic `cache_min_mb` gua
 this model's cycle is not pathological however small it looks, and the plan says so when it forces
 past it.
 
+## The headroom probe
+
+`MemAvailable` and its equivalents answer "how much could be allocated right now". Every sizing
+rule here is asking something else: how much can be held and *kept*. On a machine whose reclaim
+compresses, the two differ in both directions at once. The reported figure is a floor, because the
+kernel will compress other processes' idle pages to make room — the test phone held 3.8 GB of
+pinned dense set plus cache while reporting 3.6 GB available, and reported 5.6 GB afterwards. And
+it is an over-promise, because that same cheap reclaim takes our pages back just as readily, which
+is why a model that merely fits is not a model that survives.
+
+Two answers, and the caller chooses what to spend. The **estimate** is free: what the machine's own
+compressor is currently achieving, applied to the set the kernel would compress first. Both numbers
+are read from this machine's accounting; neither is a constant, and where the accounting is not
+readable — an unprivileged process may not read the compressor's statistics on some systems — the
+fact stays unknown and every rule falls back to the reported budget and says which one it used. The
+**measurement** is `--probe-mem`: hold memory in steps and watch for the moment the kernel takes the
+first of it back. It is the real answer and it is intrusive by nature, so it never runs unasked; it
+grows in steps and stops at the first sign of loss, so it usually never reaches its ceiling, and it
+releases everything on every path out.
+
 ## The storage probe
 
 **Nothing to run beforehand.** The probe is part of `--auto`, happens once inside the load, and
@@ -120,9 +145,20 @@ picks the **smallest** lane count that reaches within 5% of the best rate: where
 deliver the same throughput the cheaper one is strictly better, and a difference inside the probe's
 own noise would otherwise flip the answer between runs.
 
-That prediction is falsifiable, and on the desktop it was checked against the engine: the probe
-picked two lanes, and a real run at the same cache budget gave 3.400 / **3.969** / 3.535 tok/s at
-one, two and four lanes. Two is right, and it is not the four the CLI ships as its default.
+That prediction is falsifiable, and on the desktop it has been checked against the engine twice,
+with opposite answers - which turned out to be the interesting part.
+
+The first check was taken with the model's mapping alive. The probe picked two lanes, and a real run
+gave 3.400 / **3.969** / 3.535 tok/s at one, two and four: two was right, and four was worse. The
+second was taken after the mapping-interference probe was fixed (below) and the lane point was made
+a median of three samples. The probe picked **four**, and three interleaved runs of 64 tokens each
+gave **4.648 tok/s at two lanes against 5.261 at four**, +13%, with no overlap between the groups.
+
+Both are correct measurements of different machines, in the only sense that matters here: a machine
+that holds the model mapped serialises its concurrent uncached reads, so its fourth lane is not a
+lane at all, and a machine that has released the mapping has four real ones. The lane count was
+never a property of the drive alone. It is why the two knobs are decided from the same probe, and
+why a rate curve measured under the wrong mapping state answers the wrong question.
 
 ### What it will not tell you
 
@@ -139,9 +175,9 @@ of absence, and printing one as `measured` would be exactly the confident wrong 
 exists to avoid. So the plan prints the two rates, says the probe saw nothing, and tells you to
 measure `--release-mmap` yourself.
 
-## Next steps, noted and not built
+## Where a rule is still cruder than the fact it stands in for
 
-**The "fits" exit asks for air, and still owes a measurement.** The case is the phone, and it is
+**The "fits" exit asks for air, and the ratio is still policy.** The case is the phone, and it is
 the common one rather than the exotic one: an 8B-class MoE that fits in 12 GB *just barely*. It
 fits on paper. In practice the system, the app and the kernel's own page cache sit on top of it,
 and what the last few hundred MiB go to is decided by whoever touched memory last — so a resident
@@ -162,17 +198,19 @@ entitle a rule to generalise past it.
 
 That ratio is policy, not measurement, and it is deliberately crude because the error it guards is
 asymmetric by two orders of magnitude — streaming a model that would have fitted costs some reads,
-residency on one that does not costs fifty times the throughput. What replaces it is the headroom
-probe: how much this process can actually hold on a machine whose reclaim compresses, where
-`MemAvailable` is a floor rather than a cap. The same measurement fixes the budget under-reading
-described below, which is why they are one piece of work and not two.
+residency on one that does not costs fifty times the throughput. What narrows it is the headroom
+probe above, which the air test already reads through the budget: where the headroom is measured,
+the air being counted is real spare capacity rather than an accounting figure, and only the
+multiplier is still policy. The same measurement is what stops the budget being read as a floor
+on a compressing machine, which is why the two were one piece of work rather than two.
 
 ## What is not probed yet
 
-- **Device memory bandwidth.** It is the number that decides an offload, and nothing here measures
-  it, so a machine with a discrete GPU gets a plan that says exactly that.
-- **Threads and `--ubatch`** have no rule at all: nothing relates core topology to decode
-  throughput here, and the compute-buffer reservation's crossover against the cache is unmeasured.
+- **Device memory bandwidth.** The number that decides an offload. The host's own is measured here;
+  a device's needs a device, so on such a machine the plan states the mechanism and declines the
+  decision rather than assuming which way it goes.
+- **`--ubatch`** has no rule at all: the compute-buffer reservation's crossover against the cache is
+  unmeasured on every machine here.
 
 The residency budget is `MemAvailable` on every platform that reports it, and on a machine whose
 reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set
@@ -207,8 +245,19 @@ are designed and not yet active.
  | slice, token |   | overflow: compress |               |
  | cycle, dense,|   |  / swap / kill     |               |
  | MTP, tied    |   | reclaim-exempt     |               |
- | head         |   | ggml devices+quant |               |
+ | head         |   | core classes       |               |
+ |              |   | host bandwidth     |               |
+ |              |   | devices: host buf? |               |
+ |              |   |  runs our layout?  |               |
  +------+-------+   +---------+----------+               |
+        |                     |                          |
+        |           +---------v----------+               |
+        |           | HEADROOM PROBE     |               |
+        |           | free: compressor   |               |
+        |           |  ratio x reclaimable                |
+        |           | --probe-mem: hold  |               |
+        |           |  until pages go    |               |
+        |           +---------+----------+               |
         |                     |                          |
         |           +---------v----------+               |
         |           | STORAGE PROBE ~0.6s|               |
@@ -288,21 +337,30 @@ Each row is a gap here paired with the public facility that closes it. None need
 
 | gap | facility | what it would allow |
 |---|---|---|
-| streamed experts compute on the CPU wherever memory is unified (a Mac, a DGX Spark) | `ggml_backend_dev_host_buffer_type()`, `caps.host_buffer` (`ggml-backend.h:152,189`; CUDA impl `ggml-cuda.cu:1310`) | experts in pinned host memory the GPU reads directly: still rebindable, computed on the device. The hook is `session.cpp` where overrides are routed to the CPU buffer type |
+| ~~streamed experts compute on the CPU wherever memory is unified~~ — **detection done**, routing and its justification outstanding | `ggml_backend_dev_host_buffer_type()` (asked of every device), `ggml_backend_dev_supports_op` on the model's own `mul_mat_id` | a device that offers a host buffer AND runs the file's native layout can compute experts we read from flash, with no copy and no repack. The profile now records both; what is left is the session-side routing and a device bandwidth figure to justify arming it |
 | a unified-memory CUDA device looks discrete to the profile | `prop.integrated` in the CUDA backend, currently disabled upstream (`ggml-cuda.cu:308`) | a free fact once re-enabled; until then it needs a bandwidth measurement |
 | prefill on the device over streamed experts (designed, not built) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
-| no thread rule | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | different counts for decode and prefill; NUMA on workstations |
+| ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
 | KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
 | device selection | `mparams.devices[]`, `split_mode`, `main_gpu` | tell the fitter which devices to use, e.g. exclude one that demands a repack |
-| the budget under a compressing reclaim | nothing in llama.cpp: a kernel fact | the compressible-headroom probe stays ours |
+| ~~the budget under a compressing reclaim~~ — **in** (`--probe-mem`, and a free estimate always) | nothing in llama.cpp: a kernel fact | the headroom probe stays ours, and is the one measurement no other engine takes |
 
 ### DGX Spark, as a worked case
 
 128 GB of unified LPDDR5x at roughly 273 GB/s, twenty ARM cores, a Blackwell GPU, models
 streamed from NVMe: exactly the `experts-stream` regime, and the machine upstream's own expert
-streaming PR benchmarked on. Today this planner would misread it — ggml reports the GB10 as a GPU
-with memory of its own, because the CUDA backend's `integrated` flag is disabled — and, worse,
-the "experts must live in a rebindable host buffer" rule would put every expert matmul on the ARM
-cores. The first lever above is the way out, and it is the first thing to measure on such a
-machine: experts in the CUDA host buffer type, rebound by the streamer as today, executed by the
-GPU. Until measured it is a hypothesis, not a plan.
+streaming PR benchmarked on. This planner used to misread it twice over. ggml reports the GB10 as a GPU
+with memory of its own, because the CUDA backend's `integrated` flag is disabled; and the profile
+called a weight rebindable only where the memory was the host's, so the rule that streamed experts
+must live in a rebindable buffer put every expert matmul on the ARM cores with the GPU idle. The
+second half is fixed: rebindability is now asked of the device — does it offer a host buffer type,
+does it execute this model's own layout — rather than inferred from where its memory is. What is
+left is the number that says the move is worth making, its memory bandwidth against the host's, and
+the session-side routing that acts on it.
+
+The measurement to beat is public: on the same GB10, llama.cpp's own expert-streaming PR reports
+0.87 tok/s of decode with the experts on the CPU against 2.20 with them on the GPU, and 1.06
+against 5.69 in prefill. The counter-argument — that shared memory means both are bound by the same
+DRAM, so the move buys nothing — has no measurement behind it anywhere, and the Apple evidence runs
+the other way: token generation there peaks at about six CPU threads and gets slower with more,
+which is what saturating below the fabric's limit looks like.

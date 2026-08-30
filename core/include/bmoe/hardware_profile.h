@@ -44,6 +44,15 @@ enum class Overflow {
     Kill,     // the process is terminated for exceeding its share (iOS jetsam)
 };
 
+// Where a headroom figure came from. Carried for the rationale, so a reader can weigh the number:
+// an estimate from what the compressor is currently achieving is worth less than a measurement, and
+// both are worth more than the reported budget. No rule branches on this; rules read the bytes.
+enum class Headroom {
+    Unknown,      // not probed: rules fall back to the reported residency budget
+    Compressible, // derived from the machine's own compression ratio and its reclaimable set
+    Measured,     // held until the kernel took pages back, and the boundary observed
+};
+
 // A compute device the graph could run on, as ggml reports it. Kept deliberately thin: the planner
 // only ever asks "how much memory does it have of its own, and can we address it from the host".
 struct ComputeDevice {
@@ -55,9 +64,17 @@ struct ComputeDevice {
     // tensor off such a device frees nothing, which is why the capacity tier is nearly inert there
     // and only the bandwidth tier is left.
     bool host_memory = false;
-    // True when a weight placed here can still have its `data` pointer rebound by us. False for a
-    // device-local buffer, whose pointer is not a host address; the streamer can only serve tensors
-    // for which this is true.
+    // True when this device can execute over a HOST buffer - pinned memory it reads directly rather
+    // than a buffer of its own. It is the property that decides whether streamed experts can be
+    // computed here at all, and it is not the same as having host memory: a discrete accelerator
+    // across a link can offer one too, and then a weight we read from flash is both writable by us
+    // and readable by it. Unknown until asked.
+    Tri host_buffer = Tri::Unknown;
+
+    // True when a weight placed here can still have its `data` pointer rebound by us — the whole
+    // mechanism of the expert streamer. Host memory qualifies, and so does a host buffer offered by
+    // a device with memory of its own; a device-local buffer does not, because its pointer is not a
+    // host address and nothing we read can be written into it.
     bool rebindable = false;
 
     // Whether this device can execute the model's own expert matmul on the model's own quantized
@@ -132,6 +149,15 @@ struct HardwareProfile {
     // What happens to our anonymous buffers under pressure. Decides the dense policy on its own.
     Overflow anon_overflow = Overflow::Unknown;
 
+    // How many bytes this process can hold and expect to KEEP. It is a different question from
+    // `residency_budget`, and on a machine whose reclaim compresses it has a different answer in
+    // both directions: the kernel will compress other processes' idle pages to make room for us, so
+    // the reported figure is a floor rather than a cap; and it will just as readily take ours back,
+    // so a set that merely fits is not a set that survives. 0 means unmeasured, and every rule that
+    // would read it then falls back to the reported budget and says which one it used.
+    uint64_t holdable_bytes = 0;
+    Headroom holdable_from = Headroom::Unknown;
+
     // Largest single reclaim-exempt allocation available, 0 where the platform has none. A store
     // the kernel may not take back is the only way to keep the dense set out of a compressed swap.
     uint64_t reclaim_exempt_max = 0;
@@ -143,6 +169,19 @@ struct HardwareProfile {
 
     // ── compute ─────────────────────────────────────────────────────────────────────
     uint32_t n_cores = 0; // 0 when unknown
+
+    // The core classes this machine has, fastest first, as counts. A heterogeneous processor is not
+    // described by a core count: a barrier waits for the slowest participant, so adding cores from a
+    // slower class can cost throughput rather than add it. One entry means every core is alike.
+    std::vector<uint32_t> core_classes;
+
+    // What the HOST can actually reach from memory, in GiB/s, 0 when unmeasured. Paired with a
+    // device's own figure it answers the only question that decides an offload on shared memory:
+    // batch-1 decode is a chain of GEMVs that reads every weight once, so what matters is not who
+    // has the faster arithmetic but who can pull bytes faster out of the same DRAM. Where the two
+    // are the same memory, the ratio of these two numbers IS the offload's value.
+    double host_bandwidth_gibs = 0.0;
+
     std::vector<ComputeDevice> devices;
 
     // ── storage ─────────────────────────────────────────────────────────────────────

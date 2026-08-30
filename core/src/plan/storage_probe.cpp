@@ -51,6 +51,13 @@ public:
     bool ok() const { return ok_; }
     void close();
 
+    // Make part of the mapping resident, the way a loaded model's mapping is where the engine has
+    // been reading. The pathology being reproduced is an interaction between a WARM mapping and
+    // concurrent uncached reads; a mapping that has never been touched holds no pages and cannot
+    // interact with anything. Bounded on purpose - the file is larger than memory, and the point is
+    // to look like a working set, not to fault the whole model in.
+    void warm(uint64_t bytes);
+
 private:
     void open(const char * path);
     bool ok_ = false;
@@ -98,6 +105,19 @@ void ScopedMapping::close() {
     }
     ok_ = false;
 }
+
+void ScopedMapping::warm(uint64_t bytes) {
+    if (!ok_ || !view_) return;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(view_, &mbi, sizeof(mbi)) == 0) return;
+    const uint64_t len = (uint64_t) mbi.RegionSize;
+    const uint64_t want = std::min<uint64_t>(bytes, len);
+    volatile const char * p = (volatile const char *) view_;
+    volatile char sink = 0;
+    for (uint64_t off = 0; off < want; off += 4096)
+        sink = p[off];
+    (void) sink;
+}
 #else
 void ScopedMapping::open(const char * path) {
     fd_ = ::open(path, O_RDONLY);
@@ -124,12 +144,34 @@ void ScopedMapping::close() {
     }
     ok_ = false;
 }
+
+void ScopedMapping::warm(uint64_t bytes) {
+    if (!ok_ || !addr_) return;
+    const uint64_t want = std::min<uint64_t>(bytes, (uint64_t) len_);
+    volatile const char * p = (volatile const char *) addr_;
+    volatile char sink = 0;
+    for (uint64_t off = 0; off < want; off += 4096)
+        sink = p[off];
+    (void) sink;
+}
 #endif
 
-// Read `per_lane` blocks of `block` bytes per lane, at pseudo-random aligned offsets, and return
-// the aggregate rate in MiB/s. Offsets are drawn from a stream seeded by the caller so two points
-// of the curve do not read the same bytes and warm each other's drive cache.
-double timed_read(FileReader & rd, uint64_t block, int lanes, int per_lane, uint64_t seed) {
+// How the offsets are drawn. The distinction matters because the two questions this probe answers
+// are not the same question. What a lane count is worth is a property of the storage, and spreading
+// the reads over the whole file is the cleanest way to ask it. Whether a live mapping serialises
+// our reads is a property of how the ENGINE reads: it walks a layer's expert slices, which are
+// clustered in the file and advance through it as the token progresses. A uniform draw over 21 GiB
+// reproduces none of that locality, and the probe that used one missed a 24% effect the engine sees.
+enum class Pattern {
+    Spread,   // uniform over the file: asks the storage what it can do
+    Clustered // a window of neighbouring slices that advances: asks it what happens to US
+};
+
+// Read `per_lane` blocks of `block` bytes per lane and return the aggregate rate in MiB/s. Offsets
+// are drawn from a stream seeded by the caller so two points of the curve do not read the same bytes
+// and warm each other's drive cache.
+double
+timed_read(FileReader & rd, uint64_t block, int lanes, int per_lane, uint64_t seed, Pattern pat = Pattern::Spread) {
     const uint64_t fsize = rd.file_size();
     if (fsize <= block * 4) return 0.0;
     const uint64_t span = fsize - block;
@@ -146,12 +188,21 @@ double timed_read(FileReader & rd, uint64_t block, int lanes, int per_lane, uint
         ths.emplace_back([&, l] {
             uint64_t x = seed + (uint64_t) l * 0x9E3779B97F4A7C15ull;
             long long total = 0;
+            // The clustered walk: a window a layer's worth of slices wide, drawn inside, advancing
+            // once per round so the whole read sweeps the file the way a generated token does.
+            const uint64_t window = std::min<uint64_t>(span, block * 64);
             for (int i = 0; i < per_lane; ++i) {
                 // xorshift64*, so the offsets are spread without pulling in <random>
                 x ^= x >> 12;
                 x ^= x << 25;
                 x ^= x >> 27;
-                const uint64_t off = ((x * 0x2545F4914F6CDD1Dull) % span) & ~(uint64_t) 4095;
+                const uint64_t draw = x * 0x2545F4914F6CDD1Dull;
+                uint64_t off = draw % span;
+                if (pat == Pattern::Clustered) {
+                    const uint64_t base = (span / (uint64_t) per_lane) * (uint64_t) i;
+                    off = (base + draw % window) % span;
+                }
+                off &= ~(uint64_t) 4095;
                 const long long n = rd.read(l, bufs[(size_t) l].data(), off, block);
                 if (n > 0) total += n;
             }
@@ -167,6 +218,27 @@ double timed_read(FileReader & rd, uint64_t block, int lanes, int per_lane, uint
     for (long long g : got)
         bytes += g;
     return (double) bytes / (1024.0 * 1024.0) / secs;
+}
+
+// The median of `repeats` measurements of the same point. A drive's answer to the same question
+// varies run to run, and the lane decision is a comparison between points a few percent apart: on
+// one desktop SSD a single sample flipped the answer between one lane and two across runs, which is
+// the probe reporting its own noise. The median is the cheapest estimator that a single outlier
+// cannot move, and it costs only the repeats of the one point that decides something.
+double median_rate(FileReader & rd,
+                   uint64_t block,
+                   int lanes,
+                   int per_lane,
+                   uint64_t seed,
+                   int repeats,
+                   Pattern pat = Pattern::Spread) {
+    if (repeats <= 1) return timed_read(rd, block, lanes, per_lane, seed, pat);
+    std::vector<double> r;
+    r.reserve((size_t) repeats);
+    for (int i = 0; i < repeats; ++i)
+        r.push_back(timed_read(rd, block, lanes, per_lane, seed + (uint64_t) i * 0x9E3779B9ull, pat));
+    std::sort(r.begin(), r.end());
+    return r[r.size() / 2];
 }
 
 } // namespace
@@ -194,7 +266,8 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
         if (map.ok()) {
             FileReader rd;
             if (rd.open(model_path, 4, /*direct=*/true, 4096, bounce)) {
-                mapped_rate = timed_read(rd, slice, 4, per_lane, 0xC0FFEEull);
+                map.warm(slice * 64); // a loaded model's mapping is resident where it has been read
+                mapped_rate = median_rate(rd, slice, 4, per_lane, 0xC0FFEEull, 3, Pattern::Clustered);
             }
         }
     }
@@ -204,31 +277,46 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
     hw.storage.align = 4096;
     hw.storage.direct_ok = rd.direct() ? Tri::Yes : Tri::No;
 
-    double unmapped_rate = 0.0;
     uint64_t seed = 0x1234567ull;
     for (uint64_t sz : sizes) {
         for (int lanes : lane_counts) {
-            const double r = timed_read(rd, sz, lanes, per_lane, seed);
+            // Only the model's own slice size decides anything - it is where the lane count is read
+            // off - so it is the only size worth paying repeats for. The neighbours are there to
+            // show the shape of the curve, and one sample says enough about a shape.
+            const int repeats = sz == slice ? 3 : 1;
+            const double r = median_rate(rd, sz, lanes, per_lane, seed, repeats);
             seed += 0x9E3779B9ull;
             if (r <= 0.0) continue;
             hw.storage.rate_curve.push_back({(uint32_t) sz, (uint32_t) lanes, r});
-            if (sz == slice && lanes == 4) unmapped_rate = r;
         }
     }
+
+    // The comparable point for the mapping question, read the way the engine reads rather than the
+    // way the curve is drawn: same size, same lanes, same pattern as the mapped arm above.
+    const double unmapped_rate = median_rate(rd, slice, 4, per_lane, 0xC0FFEEull, 3, Pattern::Clustered);
 
     // The verdict, from the two comparable points. The threshold is deliberately loose: what is
     // being detected is a collapse to roughly one lane's throughput, not a few percent of noise.
     hw.storage.rate_mapped_mibs = mapped_rate;
     hw.storage.rate_unmapped_mibs = unmapped_rate;
 
-    // This probe reports Yes or nothing, never No, and the reason is a measurement that contradicted
-    // it. On a desktop where the ENGINE gains 24% of decode from releasing the mapping (its own read
-    // rate goes 871 -> 1680 MiB/s), this probe sees the two arms within 2% of each other. Whatever
-    // the probe is failing to reproduce - most likely the access pattern, since it reads uniformly
-    // at random where the engine walks expert slices layer by layer against a warm cache - its
-    // fidelity is established in the positive direction only. A negative from an instrument that
-    // missed a known positive is not evidence of absence, and reporting one as `measured` would be
-    // the confident wrong answer this whole design exists to avoid.
+    // This probe reports Yes or nothing, never No.
+    //
+    // It used to draw both arms uniformly at random over the whole file, and on a desktop where the
+    // ENGINE gains 24% of decode from releasing the mapping - its own read rate goes 871 -> 1680
+    // MiB/s - it saw the two arms within 2% of each other. Two things it was not reproducing have
+    // since been fixed: the mapping is now warmed before the mapped arm reads, because an untouched
+    // mapping holds no pages and cannot interfere with anything, and both arms now walk clustered,
+    // advancing windows the way the streamer walks a layer's expert slices.
+    //
+    // The fix worked where the old probe failed: on that same desktop it now reads 1151 against 2806
+    // MiB/s across repeated runs, an effect of the right size and sign, where before it saw the two
+    // arms within 2% of each other.
+    //
+    // The asymmetry stays anyway. What has been established is that this instrument can see the
+    // effect where it exists; nothing yet establishes that its silence means absence, because no
+    // machine with a KNOWN negative has been put in front of it. Reporting a No as `measured` on
+    // that basis would be the confident wrong answer this whole design exists to avoid.
     if (mapped_rate > 0.0 && unmapped_rate > 0.0 && mapped_rate < 0.7 * unmapped_rate) {
         hw.storage.mapping_serialises_reads = Tri::Yes;
     }

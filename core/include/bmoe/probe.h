@@ -39,6 +39,16 @@ ModelProfile probe_model(const char * model_path);
 // asked (no devices registered yet, or an unknown expert type) — which every rule declines on.
 void probe_device_support(HardwareProfile & hw, const ModelProfile & model);
 
+// How much memory this process can hold and expect to keep, which is not what the machine reports
+// as available: where a reclaim compresses, that figure is a floor for what could be taken and an
+// over-promise for what could be kept. Fills hw.holdable_bytes, or leaves it 0 where this machine
+// will not say - every rule then falls back to the reported budget and states which one it used.
+//
+// `allow_active` opts into the measurement rather than the estimate: holding memory in steps until
+// the kernel takes some back. It is intrusive by nature - seconds of wall clock and real pressure
+// on the machine - so it is off unless a caller asks for it, while the estimate costs nothing.
+void probe_headroom(HardwareProfile & hw, bool allow_active);
+
 // Measure this storage with the reads this engine issues: the rate curve around `slice_bytes` for
 // one, two and four lanes, and whether a live mapping of the model serialises those reads. Costs
 // real I/O — a few tens of MiB and well under a second — which is why it is separate from the free
