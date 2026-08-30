@@ -833,8 +833,9 @@ int main(int argc, char ** argv) {
         if (std::getenv("BMOE_CACHE_MB")) req.pinned.push_back("cache-mb");
         if (std::getenv("BMOE_IO_THREADS")) req.pinned.push_back("io-threads");
 
-        const HardwareProfile hw = probe_hardware(cfg.model_path.c_str());
+        HardwareProfile hw = probe_hardware(cfg.model_path.c_str());
         const ModelProfile mp = probe_model(cfg.model_path.c_str());
+        probe_device_support(hw, mp);
         const Plan plan = plan_run(cfg, hw, mp, req);
         cfg = plan.config;
 

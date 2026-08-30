@@ -100,6 +100,10 @@ ModelProfile probe_model(const char * model_path) {
             per_layer_expert_bytes[layer] += size;
             per_layer_one_expert[layer] += one;
             projections_per_layer[layer]++;
+            if (m.expert_type_id < 0) {
+                const auto t = meta.offsets.type_by_name.find(name);
+                if (t != meta.offsets.type_by_name.end()) m.expert_type_id = t->second;
+            }
         } else {
             m.largest_dense_tensor = std::max(m.largest_dense_tensor, size);
         }

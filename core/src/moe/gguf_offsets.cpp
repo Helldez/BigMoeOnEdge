@@ -52,6 +52,7 @@ void fill_offsets(const gguf_context * gctx, int file_idx, GgufOffsets & out) {
         const char * name = gguf_get_tensor_name(gctx, i);
         out.off_by_name[name] = data_off + (uint64_t) gguf_get_tensor_offset(gctx, i);
         out.size_by_name[name] = (uint64_t) gguf_get_tensor_size(gctx, i);
+        out.type_by_name[name] = (int) gguf_get_tensor_type(gctx, i);
         out.file_by_name[name] = file_idx;
     }
 }

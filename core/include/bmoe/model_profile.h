@@ -50,6 +50,11 @@ struct ModelProfile {
     // wrong on both, and wrong in the direction that under-sizes the floor.
     uint64_t token_cycle_bytes = 0;
 
+    // The quantization the expert tensors carry, as a ggml type id, or -1 when unknown. Kept as an
+    // opaque integer so this header stays free of ggml; it exists only to be handed back to a
+    // backend when asking whether that backend can execute this model's expert matmul natively.
+    int expert_type_id = -1;
+
     // ── shapes that constrain what may be done ──────────────────────────────────────
     // The output head is the embedding table. Two tensor objects over one range, so a policy that
     // rebinds one and not the other leaves the graph reading the mapping every token.

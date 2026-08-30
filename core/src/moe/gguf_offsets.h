@@ -24,6 +24,9 @@ struct GgufOffsets {
     // is strided by nb2, read from the graph's tensor), but the route trace does: it is the
     // only way to say how many bytes of a layer are dense, i.e. left mmap-resident.
     std::unordered_map<std::string, uint64_t> size_by_name;
+    // tensor name -> its ggml type id. Carried as an int so consumers that only need to hand it
+    // back to a backend (asking whether that backend can execute this layout) need no ggml header.
+    std::unordered_map<std::string, int> type_by_name;
     // tensor name -> index into shard_paths. Always filled; 0 for every tensor of a
     // single-file model, so consumers index shard_paths unconditionally.
     std::unordered_map<std::string, int> file_by_name;

@@ -196,6 +196,55 @@ Plan plan_run(const RunConfig & base,
         return p;
     }
 
+    // ── the accelerator axis: what may leave the host, and what may never ──────────
+    // Two facts settle this, and neither is a vendor name. A device whose memory IS the host's has
+    // no bandwidth of its own to win, and batch-1 decode is a chain of GEMVs that reads every weight
+    // once for a single multiply-accumulate: it is bandwidth-bound, so on such a device an offload
+    // moves the work without moving the bottleneck. A device with memory of its own wins in
+    // proportion to that memory's bandwidth, which is a number this profile does not yet carry.
+    //
+    // The streamed experts are separately constrained, and absolutely: the streamer serves a tensor
+    // by rebinding `data` onto the file's native layout, so a weight it serves must live in a host
+    // buffer that is not repacked. A device that only executes a repacked layout is excluded here
+    // by that property rather than by name, which is how an NPU with two native quant formats ends
+    // up excluded without a single line written for it.
+    {
+        uint64_t device_local = 0;
+        const ComputeDevice * candidate = nullptr;
+        for (const ComputeDevice & d : hw.devices) {
+            if (d.host_memory) continue;
+            device_local += d.memory_total;
+            if (!candidate) candidate = &d;
+        }
+
+        if (hw.devices.empty()) {
+            note("offload", "host", Source::Unprobed,
+                 "no compute devices were enumerated (the backends register at load), so nothing could "
+                 "be considered for offload");
+        } else if (device_local == 0) {
+            note("offload", "host", Source::Derived,
+                 "every device here reads the host's own memory, so moving a weight onto one frees no "
+                 "memory and wins no bandwidth: batch-1 decode is bound by bandwidth, not by arithmetic");
+        } else if (candidate && candidate->memory_bandwidth_gibs <= 0.0) {
+            note("offload", "host", Source::Unprobed,
+                 "a device with " + u64s(mib(device_local)) +
+                     " MiB of its own is present, but its memory bandwidth is unmeasured here and that is "
+                     "the number a decode offload turns on");
+        } else {
+            note("offload", "host", Source::Policy,
+                 "placing weights across devices is a capacity problem that llama.cpp's own fitter "
+                 "solves; this planner owns the tier below it and does not duplicate it");
+        }
+
+        // Stated whatever the outcome above, because it is the condition this engine exists under.
+        const bool repack_blocks = candidate && candidate->needs_repack == Tri::Yes;
+        note("experts", "host", Source::Derived,
+             repack_blocks ? "a streamed expert must keep the file's native layout so its pointer can be "
+                             "rebound, and the device here executes only a repacked layout"
+                           : "a streamed expert must live in a host buffer whose pointer we may rebind onto "
+                             "the file's native layout");
+    }
+
     // ── the dense policy: decided by what a reclaim COSTS here, nothing else ────────
     if (!pinned("dense-weights", dense_mode_name(p.config.moe.dense_weights))) {
         if (hw.anon_overflow == Overflow::Kill && hw.file_pages_counted == Tri::No) {

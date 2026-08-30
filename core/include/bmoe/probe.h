@@ -28,4 +28,14 @@ HardwareProfile probe_hardware(const char * model_path);
 // declines on.
 ModelProfile probe_model(const char * model_path);
 
+// Ask every registered device whether it can execute THIS model's expert matmul on THIS model's
+// quantized layout, and whether placing such a weight there would need a repack. Asking the backend
+// about the real operation is what keeps the answer vendor-neutral and current: a backend that
+// gains a kernel starts answering yes with nothing here changing, and one that only executes a
+// repacked layout is excluded from the streamed experts for a stated reason rather than by name.
+//
+// Fills the per-device fields of `hw`, and leaves them Unknown where the question could not be
+// asked (no devices registered yet, or an unknown expert type) — which every rule declines on.
+void probe_device_support(HardwareProfile & hw, const ModelProfile & model);
+
 } // namespace bmoe

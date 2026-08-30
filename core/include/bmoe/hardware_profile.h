@@ -59,6 +59,24 @@ struct ComputeDevice {
     // device-local buffer, whose pointer is not a host address; the streamer can only serve tensors
     // for which this is true.
     bool rebindable = false;
+
+    // Whether this device can execute the model's own expert matmul on the model's own quantized
+    // layout. Probed by asking the backend about the real operation rather than by listing formats,
+    // so a backend that gains a kernel answers differently without anything here changing.
+    // Unknown until asked; a rule that needs it declines.
+    Tri runs_expert_op = Tri::Unknown;
+
+    // Whether placing a weight here requires the loader to repack it into a device-specific layout.
+    // A repacked expert tensor cannot be served by the streamer at all: the whole mechanism is
+    // rebinding `data` onto the file's native layout, and a repack replaces exactly that.
+    Tri needs_repack = Tri::Unknown;
+
+    // Memory bandwidth in GiB/s, 0 when unmeasured. This is the number that decides a decode
+    // offload, because batch-1 decode is a chain of GEMVs that reads every weight once for a single
+    // multiply-accumulate: it is bound by bandwidth, not by arithmetic. A device that shares the
+    // host's memory therefore has nothing to win however fast its ALUs are, and one with memory of
+    // its own wins in proportion to this.
+    double memory_bandwidth_gibs = 0.0;
 };
 
 // The measured read rate at one (request size, lane count) point. A curve of these is the only

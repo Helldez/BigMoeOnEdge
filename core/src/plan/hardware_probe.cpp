@@ -6,6 +6,7 @@
 #include "../io/platform_io.h"
 
 #include "ggml-backend.h"
+#include "ggml.h"
 
 #include <cstdio>
 #include <cstring>
@@ -139,6 +140,55 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.label = std::to_string(h.n_cores) + " cores, " + std::to_string((unsigned long long) (h.residency_budget >> 20)) +
               " MiB available";
     return h;
+}
+
+void probe_device_support(HardwareProfile & hw, const ModelProfile & model) {
+    if (model.expert_type_id < 0 || model.n_expert == 0) return; // nothing to ask about
+
+    // Build the real operation in a context that allocates no tensor data: a MUL_MAT_ID over a 3-D
+    // expert tensor of this model's own type and shape. Asking about the actual node is the whole
+    // point - a table of "supported formats" would go stale the moment a backend gains a kernel,
+    // and would have to be written once per vendor.
+    ggml_init_params ip{};
+    ip.mem_size = 4 * 1024 * 1024;
+    ip.mem_buffer = nullptr;
+    ip.no_alloc = true;
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) return;
+
+    const ggml_type type = (ggml_type) model.expert_type_id;
+    const int64_t blk = ggml_blck_size(type);
+    if (blk > 0) {
+        // Shapes only have to be legal and representative; the graph is never run.
+        const int64_t n_embd = blk * 8;
+        const int64_t n_ff = blk * 8;
+        const int64_t n_used = (int64_t) (model.n_expert_used ? model.n_expert_used : 1);
+
+        // Shapes follow ggml_mul_mat_id's own contract: `as` is 3-D with one matrix per expert,
+        // `b` is 3-D whose ne[2] is the token count, and `ids` is 2-D [n_expert_used, n_tokens].
+        // One token is enough to ask the question, and keeping it at one keeps the assertions
+        // trivially satisfied.
+        ggml_tensor * w = ggml_new_tensor_3d(ctx, type, n_embd, n_ff, (int64_t) model.n_expert);
+        ggml_tensor * x = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, 1, 1);
+        ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, 1);
+        ggml_tensor * op = (w && x && ids) ? ggml_mul_mat_id(ctx, w, x, ids) : nullptr;
+
+        if (op) {
+            for (ComputeDevice & d : hw.devices) {
+                ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
+                if (!dev) continue;
+                d.runs_expert_op = ggml_backend_dev_supports_op(dev, op) ? Tri::Yes : Tri::No;
+
+                // A device that executes this layout only out of a buffer type of its own needs the
+                // weight converted at load. For a streamed expert that is fatal rather than merely
+                // costly: the streamer's whole mechanism is rebinding `data` onto the file's native
+                // layout, and a repack is precisely what replaces that layout.
+                ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
+                d.needs_repack = (buft && !ggml_backend_buft_is_host(buft)) ? Tri::Yes : Tri::No;
+            }
+        }
+    }
+    ggml_free(ctx);
 }
 
 } // namespace bmoe
