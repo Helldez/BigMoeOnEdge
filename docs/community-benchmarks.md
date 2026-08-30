@@ -124,6 +124,7 @@ the table is for. What the app catalog ships:
 | gpt-oss-120b | Q4_K_M | 62.8 GB | [unsloth/gpt-oss-120b-GGUF](https://huggingface.co/unsloth/gpt-oss-120b-GGUF) | add `--no-think`; pass the first shard |
 | DeepSeek V4 Flash 0731 | UD-IQ2_M | 90.9 GB | [unsloth/DeepSeek-V4-Flash-0731-GGUF](https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF) | pass the first shard |
 | Qwen3.8-Flash-Next | UD-IQ3_XXS | 82.0 GB | [unsloth/Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) | needs engine 0.22.0+; pass the first shard |
+| Qwen3.8-Flash-Next | Q2_K | 80.4 GB | [DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF](https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF) | dense side at 2-4 bit (2.4 GB pinned); no imatrix; pass the first shard |
 
 ### What makes a row comparable
 
