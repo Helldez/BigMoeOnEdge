@@ -349,6 +349,11 @@ struct RunConfig {
     std::string prompt = "The capital of Japan is";
     int n_predict = 128;
     int n_threads = 4;
+    // Threads for prefill, which is a different question from threads for decode: prefill is
+    // compute-bound and scales with cores, while a streamed decode spends most of its time waiting
+    // on flash and gains nothing from more of them. 0 means "same as n_threads", the historical
+    // behaviour and what every caller that never heard of this gets.
+    int n_threads_batch = 0;
     int n_ctx = 2048;
 
     // Largest batch computed in one graph, i.e. the prefill chunk size. 0 (the default) means
@@ -397,16 +402,6 @@ struct RunConfig {
     // buffer type, since the streamer can only serve experts that live in host memory.
     int n_gpu_layers = 0;
     std::vector<std::string> buft_overrides;
-
-    // Where the overridden weights are COMPUTED, which is a separate question from where they live.
-    // Empty - the default - means the CPU buffer type, the historical behaviour and the only answer
-    // on a machine with nothing else. A device name here means that device's HOST buffer type
-    // instead: memory we can still read flash into and rebind, that the device reads directly. The
-    // pair of properties is what lets an accelerator execute a streamed expert at all, and it is
-    // asked of the device rather than assumed from what kind of device it is. The session resolves
-    // the name and falls back to the CPU buffer type if the device or its host buffer is gone,
-    // because a plan is advice about a machine and the machine is what has the last word.
-    std::string expert_compute_device;
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;

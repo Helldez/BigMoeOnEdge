@@ -43,6 +43,20 @@ Semantic Versioning.
   pressure. Where neither can answer, the fact stays unknown, the plan falls back to the reported
   budget, and the rationale says which of the three it used.
 
+- **Two thread counts, because they are two workloads.** `--threads` is what a streamed decode uses,
+  and a decode waiting on flash gains nothing from a thread on a slower core — it only sets the pace
+  at the barrier. Prefill is the opposite: it is compute-bound (measured at zero stall on a long
+  prompt), so it has arithmetic for every core the machine has, slow ones included. The session
+  passed one number to both; it now passes `n_threads` and `n_threads_batch`, and the planner
+  derives the second from the same core-class fact as the first.
+
+- **`tensor_read_lazy` is now a choice rather than an inheritance.** llama.cpp reads the rows of
+  arch-marked tensors on demand and its default turns that on by itself above 4 GiB. The marked
+  tensors — the per-layer embedding tables of gemma4 and qwen4exp — are exactly the ones
+  `--row-stream` gathers rows from, so both mechanisms would be paging the same bytes by different
+  routes, neither aware of the other's residency. The engine now sets it explicitly: off when
+  `--row-stream` is on, the upstream default otherwise.
+
 - **Threads from core classes, not from a core count.** Every thread in a ggml graph meets the same
   barrier, so on a machine whose cores are not alike a thread on a slower core does not add its
   throughput — it sets the pace, and the fast cores wait. The profile now carries the classes,
@@ -51,30 +65,27 @@ Semantic Versioning.
   one, the plan says there is nothing to improve; where the machine does not publish them, the
   default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
 
-- **The device path: measured, decided, and routed at load — with the half that remains named.** A bandwidth probe schedules **one graph on every backend**
-  — the same GEMV, the same buffer — so the host's figure and a device's are the same measurement in
-  the same units. That matters more than which graph it is: the rules only ever use the ratio, and a
-  ratio between a hand-rolled loop on one side and a vendor kernel on the other would compare the
-  two implementations rather than the two paths to memory. It skips a device that has no room to
-  spare, and a device that will not allocate or has no kernel keeps its unmeasured 0. Where a device
-  offers a host buffer, runs the model's own layout and reads memory faster than the host does, the
-  plan now **names it** rather than only describing the possibility, and the session binds the
-  overridden experts to that device's host buffer type instead of the CPU's — the same pinned memory
-  the streamer reads flash into and rebinds. The session resolves the name and verifies again before
-  acting, falling back to the CPU buffer type if the device or its host buffer is not there, because
-  a plan describes the machine it was made on.
+- **The device path: the obvious route is closed, and we can now say exactly why.** A bandwidth
+  probe schedules **one graph on every backend** — the same GEMV, the same buffer — so the host's
+  figure and a device's are the same measurement in the same units. That matters more than which
+  graph it is: the rules only ever use the ratio, and a ratio between a hand-rolled loop on one side
+  and a vendor kernel on the other would compare the two implementations rather than the two paths
+  to memory. It skips a device with no room to spare, and one that will not allocate or has no
+  kernel keeps its unmeasured 0.
 
-  **This is necessary and not yet sufficient**, and the reason is the engine's own mechanism: the
-  buffer type decides where llama.cpp allocates the weight at load, and the streamer then rebinds
-  `data` onto a reservation of its own, which is where the bytes are for the rest of the run. A
-  device pointed at that tensor would be reading ordinary host memory it was never given access to.
-  Closing it means the streamer's per-layer reservations coming from the device's host buffer
-  allocator, which trades against the lazy commit those reservations exist for — the thing that lets
-  a 150 GB model have valid addresses everywhere while holding two. That is a design question and a
-  measurement, not plumbing, and it is written down rather than glossed.
-
-  On this machine, which registers only a CPU, all of the above runs, measures 32 GiB/s for the
-  host, finds nothing to compare it against and says so.
+  What the probe was meant to arm — binding streamed experts to a device's host buffer type so an
+  accelerator computes them — **does not work, for reasons readable in the pinned submodule**.
+  `llama-model-loader.cpp` substitutes the CPU's buffer type for any device host buffer whenever the
+  model is mapped ("avoid using a host buffer when using mmap"), and this engine always maps it; and
+  `ggml-cuda.cu`'s `supports_buft` accepts the CUDA host buffer only on an `integrated` device,
+  which upstream currently disables, so a unified-memory GB10 answers as discrete and refuses it.
+  A third reason is ours: the streamer rebinds `data` onto memory it reserved itself, which no
+  device was ever given access to. The routing added earlier in this cycle has therefore been
+  removed rather than left to look like a feature; the plan still names a device that would qualify,
+  and arms nothing. The route that is actually open is `ggml_backend_dev_buffer_from_host_ptr`,
+  implemented by Metal, CPU and BLAS but not by CUDA, SYCL, Vulkan or OpenCL — and it trades against
+  the lazy commit the streamer's reservations exist for. Written down in docs/hardware-planning.md
+  rather than attempted blind.
 
 - **A device is asked what it can do, not where its memory is.** The profile called a weight
   rebindable only where the memory was the host's. That is the wrong test, and on a machine with
@@ -95,7 +106,13 @@ Semantic Versioning.
   interfere with anything, and both arms walk clustered windows that advance through the file the
   way the streamer walks a layer's expert slices. Separately, the lane count is now the median of
   three samples at the model's own slice size, because one sample was flipping the answer between
-  one lane and two across runs on the same drive.
+  one lane and two across runs on the same drive, and the tie-break inside the tolerance now goes to
+  MORE lanes rather than fewer. That last one is a principle overturned by a measurement: the rule
+  took the cheapest count on the reasoning that equal throughput makes the cheaper one strictly
+  better, and on this desktop the probe genuinely cannot separate two lanes from four while the
+  engine gives 4.648 tok/s at two against 5.261 at four. A lane also buys latency — a queue that
+  drains sooner ends the stall sooner — and this probe only reads throughput. With the tie-break
+  following the evidence, the pick is stable across runs.
 
   Both changes were measured on the desktop where the effect is known. The mapping arms now read
   1151 against 2806 MiB/s, stable across runs, where the old probe saw them within 2% of each other.

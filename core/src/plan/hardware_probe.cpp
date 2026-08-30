@@ -157,6 +157,11 @@ void probe_devices(HardwareProfile & h) {
             // Only a host address can be repointed at bytes we read ourselves, which is the
             // condition the expert streamer exists under. A device-local buffer's pointer is not one.
             d.rebindable = is_yes(d.host_buffer);
+            // Two more capabilities the device declares for free, both of which decide something
+            // above: whether it can wrap memory we already own (what the streamer would need), and
+            // whether it can copy while it computes.
+            d.host_ptr_buffers = props.caps.buffer_from_host_ptr ? Tri::Yes : Tri::No;
+            d.async_copies = props.caps.async ? Tri::Yes : Tri::No;
             h.devices.push_back(std::move(d));
         }
     }

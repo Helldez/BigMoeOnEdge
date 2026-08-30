@@ -71,6 +71,18 @@ struct ComputeDevice {
     // and readable by it. Unknown until asked.
     Tri host_buffer = Tri::Unknown;
 
+    // True when this device can wrap memory the CALLER already owns in a buffer of its own. It is
+    // the capability the expert streamer would need, and it is not the same as offering a host
+    // buffer: one hands us memory the device can read, the other reads memory we hand it. The
+    // streamer allocates its own reservations and rebinds tensors onto them, so a device that can
+    // only do the first still cannot see the bytes a streamed expert is actually made of.
+    Tri host_ptr_buffers = Tri::Unknown;
+
+    // True when this device can copy while it computes. On a device across a link it is the
+    // difference between a transfer that costs its own time and one that hides behind the previous
+    // operation - a different axis from our own read/compute overlap, which hides compute behind I/O.
+    Tri async_copies = Tri::Unknown;
+
     // True when a weight placed here can still have its `data` pointer rebound by us — the whole
     // mechanism of the expert streamer. Host memory qualifies, and so does a host buffer offered by
     // a device with memory of its own; a device-local buffer does not, because its pointer is not a

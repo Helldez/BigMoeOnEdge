@@ -618,43 +618,34 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // planner), carried in as n_gpu_layers plus the override patterns it wrote. With nothing
     // planned this is the historical behaviour, everything on the host.
     //
-    // Each pattern is routed to a HOST buffer type, which is the streamer's one hard requirement:
-    // it serves a tensor by rebinding `data` onto bytes it read itself, and only a host address can
-    // be rebound. Which host buffer type is the second stage's decision. The CPU's is the default
-    // and the only answer on a machine with nothing else. A named device means that device's own
-    // host buffer, the memory it can read directly.
+    // Every pattern is routed to the CPU buffer type. That is what the fitter itself does for the
+    // experts it leaves on the host, and it is the one placement the streamer can serve: it rebinds
+    // `data` onto bytes it read itself, and only a host address can be rebound.
     //
-    // Necessary, and known to be insufficient on its own: this decides where llama.cpp ALLOCATES
-    // the weight, and the expert streamer then rebinds `data` onto a reservation of its own, which
-    // is where the bytes live for the rest of the run. Until those reservations come from the same
-    // allocator, a device pointed at these tensors would be reading ordinary host memory rather than
-    // memory it was given access to. See docs/hardware-planning.md - it trades against the lazy
-    // commit the reservations exist for, so it is a design question rather than a line of code.
+    // Routing them to a DEVICE's host buffer type instead - the obvious way to let an accelerator
+    // compute a streamed expert - does not work, and the two reasons are both in this submodule.
+    // `llama-model-loader.cpp` ("avoid using a host buffer when using mmap") replaces any host
+    // buffer type with the CPU's whenever the model is mmap'd, which this engine always is; and
+    // `ggml-cuda.cu`'s `supports_buft` accepts the CUDA host buffer only on an `integrated` device,
+    // so on a discrete one the op falls back to the CPU regardless. See docs/hardware-planning.md
+    // for what a working version would have to do instead - wrap our own reservation with
+    // `ggml_backend_dev_buffer_from_host_ptr`, which CUDA does not implement and Metal does.
     llama_model_params mparams = llama_model_default_params();
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
     mparams.use_extra_bufts = false;
     mparams.n_gpu_layers = cfg.n_gpu_layers;
+    // llama.cpp reads the rows of arch-marked tensors on demand, and its default turns that on by
+    // itself for anything over 4 GiB. The tensors it marks - the per-layer embedding tables of
+    // gemma4 and qwen4exp - are exactly the ones `--row-stream` gathers rows from, so the two
+    // mechanisms would be paging the same bytes by two different routes, each unaware of the
+    // other's residency. Whichever is doing it, only one may: ours when it is asked for, theirs
+    // otherwise. Inheriting the default silently is the one option that is never right.
+    mparams.tensor_read_lazy = cfg.moe.row_stream ? LLAMA_TENSOR_READ_LAZY_OFF : LLAMA_TENSOR_READ_LAZY_AUTO;
     std::vector<llama_model_tensor_buft_override> buft_overrides;
     if (!cfg.buft_overrides.empty()) {
-        // Resolve the plan's device by name, and verify rather than trust: a plan describes the
-        // machine it was made on, and a device that is gone, or that no longer offers a host
-        // buffer, must fall back to the CPU's rather than take the load down with it.
-        ggml_backend_buffer_type_t host_buft = ggml_backend_cpu_buffer_type();
-        if (!cfg.expert_compute_device.empty()) {
-            ggml_backend_dev_t dev = ggml_backend_dev_by_name(cfg.expert_compute_device.c_str());
-            ggml_backend_buffer_type_t dev_host = dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
-            if (dev_host && ggml_backend_buft_is_host(dev_host)) {
-                host_buft = dev_host;
-                std::fprintf(stderr, "bmoe: experts in %s's host buffer, computed there\n",
-                             cfg.expert_compute_device.c_str());
-            } else {
-                std::fprintf(stderr, "bmoe: %s offers no host buffer here; experts stay on the CPU buffer type\n",
-                             cfg.expert_compute_device.c_str());
-            }
-        }
         buft_overrides.reserve(cfg.buft_overrides.size() + 1);
         for (const std::string & pat : cfg.buft_overrides)
-            buft_overrides.push_back({pat.c_str(), host_buft});
+            buft_overrides.push_back({pat.c_str(), ggml_backend_cpu_buffer_type()});
         buft_overrides.push_back({nullptr, nullptr}); // terminator
         mparams.tensor_buft_overrides = buft_overrides.data();
     }
@@ -767,7 +758,11 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return fail("failed to create context");
     im.ctx.reset(ctx);
-    llama_set_n_threads(ctx, cfg.n_threads, cfg.n_threads);
+    // Decode and prefill get their own counts. They are different workloads: prefill is compute-bound
+    // and scales with cores, a streamed decode waits on flash. 0 means "the same", which is what
+    // every caller got before this existed.
+    const int n_threads_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
+    llama_set_n_threads(ctx, cfg.n_threads, n_threads_batch);
 
     // The MTP draft context: same model, same eval callback, but ctx_type = MTP so llama.cpp builds
     // the nextn graph. It keeps its own (single-position) KV, hence n_rs_seq = 0 — nothing is ever
@@ -791,7 +786,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         llama_context * ctx_dft = llama_init_from_model(model, dparams);
         if (!ctx_dft) return fail("failed to create the MTP draft context");
         im.ctx_dft.reset(ctx_dft);
-        llama_set_n_threads(ctx_dft, cfg.n_threads, cfg.n_threads);
+        llama_set_n_threads(ctx_dft, cfg.n_threads, n_threads_batch);
     }
 
     // Opt-in sampling. temp <= 0 leaves smpl null and the decode loop on argmax — the deterministic

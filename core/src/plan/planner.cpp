@@ -378,22 +378,32 @@ Plan plan_run(const RunConfig & base,
             break;
         }
         const bool repack_blocks = candidate && candidate->needs_repack == Tri::Yes;
-        if (host_capable && host_capable->memory_bandwidth_gibs <= 0.0)
+        if (host_capable && !pol.streamer_serves_device_memory)
+            note("experts", "host", Source::Derived,
+                 std::string("this device could compute them on paper - it offers a host buffer and runs the "
+                             "model's own layout - and it still cannot. The streamer rebinds every expert onto "
+                             "memory it reserved itself, which no device was given access to; and a host buffer "
+                             "type would not survive the load anyway, since a mapped model has one substituted "
+                             "for the CPU's. ") +
+                     (is_yes(host_capable->host_ptr_buffers)
+                          ? "This device can wrap memory a caller already owns, which is the one opening: the "
+                            "streamer's own reservations would have to be handed over that way"
+                          : "This device cannot wrap memory a caller already owns, so there is no opening here "
+                            "at all"));
+        else if (host_capable && host_capable->memory_bandwidth_gibs <= 0.0)
             note("experts", "host", Source::Unprobed,
                  "this device offers a host buffer and executes this model's expert matmul on the file's own "
                  "layout, so streamed experts could be computed on it - but what that is worth is the ratio of "
                  "its bandwidth to the host's, and its own is unmeasured here");
         else if (host_capable && hw.host_bandwidth_gibs > 0.0 &&
-                 host_capable->memory_bandwidth_gibs > hw.host_bandwidth_gibs) {
-            // The decision, carried rather than merely printed: the session resolves this name and
-            // routes the overridden weights to that device's host buffer type instead of the CPU's.
-            // It verifies again before acting, because a plan describes the machine it was made on.
-            p.config.expert_compute_device = host_capable->name;
+                 host_capable->memory_bandwidth_gibs > hw.host_bandwidth_gibs)
             note("experts", "device", Source::Measured,
                  "this device offers a host buffer, executes the model's own layout, and reaches " +
                      u64s((uint64_t) host_capable->memory_bandwidth_gibs) + " GiB/s against the host's " +
-                     u64s((uint64_t) hw.host_bandwidth_gibs) + ": the experts stay rebindable and are computed there");
-        } else
+                     u64s((uint64_t) hw.host_bandwidth_gibs) +
+                     ": once the streamer can hand it their memory, "
+                     "this is where they belong");
+        else
             note("experts", "host", Source::Derived,
                  repack_blocks ? "a streamed expert must keep the file's native layout so its pointer can be "
                                  "rebound, and the device here executes only a repacked layout"
@@ -600,6 +610,17 @@ Plan plan_run(const RunConfig & base,
                  "this machine's cores are not alike (" + shape +
                      " by reported maximum frequency), and every thread meets the same barrier: a thread on a "
                      "slower core sets the pace rather than adding to it, so the fast class is the count");
+            // Prefill is the other workload, and it answers differently. It is compute-bound - the
+            // measured attribution on a phone puts the stall at zero on a long prompt - so it has
+            // arithmetic to give every core, including the slow ones, and a barrier it can afford to
+            // wait on. Decode does not: it is waiting on flash, and a slow core there costs the pace
+            // for nothing. Same fact, two workloads, two answers.
+            if (!req.is_pinned("threads-batch") && hw.n_cores > fast) {
+                p.config.n_threads_batch = (int) hw.n_cores;
+                note("threads-batch", u64s(hw.n_cores), Source::Derived,
+                     "prefill is compute-bound where a streamed decode is not, so it has work for the slower "
+                     "cores that decode would only wait on");
+            }
         } else if (hw.core_classes.size() == 1) {
             note("threads", u64s((uint64_t) p.config.n_threads), Source::Derived,
                  "every core here is alike, so there is no slower class to spill onto and the count is not "

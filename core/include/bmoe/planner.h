@@ -69,6 +69,20 @@ struct PlannerPolicy {
     // nothing can take the memory back, nor where the limit is a hard cap the margin already sizes.
     float fits_air_ratio = 1.0f;
 
+    // Whether THIS ENGINE can hand a device the memory a streamed expert is made of. It is a fact
+    // about our own streamer rather than about any machine, which is why it lives here and not in
+    // the hardware profile - and it is false, because the streamer reserves address space and
+    // commits pages itself, so the bytes a rebound tensor points at were never allocated by, or
+    // registered with, any device.
+    //
+    // The rule that would route expert compute to a device reads this first, and that is deliberate
+    // rather than defensive: without it the plan would name a device on a machine where the device
+    // would then read memory it cannot see. A knob that is right in principle and wrong in practice
+    // is worse than one that is off, so the precondition is written down and the day the streamer
+    // allocates through `ggml_backend_dev_buffer_from_host_ptr` this becomes true and one condition
+    // flips. The tests exercise both settings.
+    bool streamer_serves_device_memory = false;
+
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };
 

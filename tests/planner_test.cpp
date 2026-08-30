@@ -304,6 +304,9 @@ int main() {
         const Plan p = plan_run(base_cfg(), het, model, PlanRequest{});
         check(p.config.n_threads == 10, "heterogeneous cores: threads are the fast class",
               std::to_string(p.config.n_threads));
+        check(p.config.n_threads_batch == 20, "heterogeneous cores: prefill takes every core",
+              std::to_string(p.config.n_threads_batch));
+        check(validate(p.config).ok, "heterogeneous cores: the plan is a valid config", validate(p.config).error);
         const Decision * d = find(p, "threads");
         check(d && d->source == Source::Derived, "heterogeneous cores: the thread count is derived");
     }
@@ -311,6 +314,7 @@ int main() {
         HardwareProfile uniform = desktop();
         uniform.core_classes = {8};
         const Plan p = plan_run(base_cfg(), uniform, model, PlanRequest{});
+        check(p.config.n_threads_batch == 0, "uniform cores: prefill keeps the same count as decode");
         const Decision * d = find(p, "threads");
         check(d && d->source == Source::Derived && d->reason.find("alike") != std::string::npos,
               "uniform cores: nothing to improve, and the plan says why");
@@ -337,29 +341,39 @@ int main() {
         gpu.needs_repack = Tri::No;
         acc.devices.push_back(gpu);
 
+        // The engine's own precondition comes first: the streamer rebinds every expert onto memory
+        // it reserved itself, so until those reservations come from a device allocator, no device
+        // may be named however capable or fast it is. This is the shipping default.
+        {
+            const Plan p = plan_run(base_cfg(), acc, model, PlanRequest{});
+            const Decision * d = find(p, "experts");
+            check(d && d->value == "host" && d->reason.find("would not survive the load") != std::string::npos,
+                  "streamer cannot serve device memory: no device is named, and the plan says why",
+                  d ? d->reason.substr(0, 60) : "none");
+        }
+
+        // Everything below exercises the rule as it will behave once that precondition holds.
+        PlannerPolicy able = PlannerPolicy::defaults();
+        able.streamer_serves_device_memory = true;
+
         // Unmeasured bandwidth: the mechanism is stated, the decision is not taken.
-        const Plan unmeasured = plan_run(base_cfg(), acc, model, PlanRequest{});
+        const Plan unmeasured = plan_run(base_cfg(), acc, model, Placement{}, PlanRequest{}, able);
         const Decision * d = find(unmeasured, "experts");
         check(d && d->source == Source::Unprobed, "host-buffer device, no bandwidth: stated, not decided");
 
         // Measured and faster than the host: the experts stay rebindable and go there. (back(), not
         // [0]: this fixture already carries a plain discrete device, and the one under test is ours.)
         acc.devices.back().memory_bandwidth_gibs = 200.0;
-        const Plan p = plan_run(base_cfg(), acc, model, PlanRequest{});
+        const Plan p = plan_run(base_cfg(), acc, model, Placement{}, PlanRequest{}, able);
         d = find(p, "experts");
         check(d && d->value == "device" && d->source == Source::Measured,
               "host-buffer device, faster than the host: experts computed there", d ? d->value : "none");
-        check(p.config.expert_compute_device == "accelerator",
-              "the decision is carried in the config, not only printed", p.config.expert_compute_device);
-        check(unmeasured.config.expert_compute_device.empty(),
-              "an unmeasured device leaves the config on the CPU buffer type");
 
         // A device that needs a repack is excluded by that property alone, however fast it is.
         acc.devices.back().needs_repack = Tri::Yes;
-        const Plan r = plan_run(base_cfg(), acc, model, PlanRequest{});
+        const Plan r = plan_run(base_cfg(), acc, model, Placement{}, PlanRequest{}, able);
         d = find(r, "experts");
         check(d && d->value == "host", "repacking device: excluded whatever its bandwidth");
-        check(r.config.expert_compute_device.empty(), "repacking device: nothing carried into the config");
     }
 
     // ── a dense model has nothing to stream ────────────────────────────────────────

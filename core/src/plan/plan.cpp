@@ -33,16 +33,26 @@ uint32_t StorageFacts::best_lanes(uint32_t request_bytes) const {
         best_rate = std::max(best_rate, rate_at(request_bytes, s.lanes));
     if (best_rate <= 0.0) return 0;
 
-    // The SMALLEST lane count that reaches within a few percent of the best rate, not the argmax.
-    // Two reasons, and neither is aesthetic: a difference inside the probe's own noise would
-    // otherwise flip the answer between runs, and where two lane counts deliver the same throughput
-    // the cheaper one is strictly better - fewer threads, less queueing, less contention with the
-    // compute the reads are supposed to be overlapping.
+    // The LARGEST lane count that reaches within a few percent of the best rate.
+    //
+    // This used to be the smallest, on the reasoning that where two lane counts deliver the same
+    // throughput the cheaper one is strictly better - fewer threads, less queueing, less contention
+    // with the compute the reads are supposed to be overlapping. That reasoning is sound and the
+    // measurement refutes it. On one desktop SSD the probe cannot separate two lanes from four: it
+    // picks either across repeated runs, medians and all. The engine on that same machine is not
+    // ambiguous at all - three interleaved 64-token runs give 4.648 tok/s at two lanes against
+    // 5.261 at four, +13%, with no overlap between the groups.
+    //
+    // So a lane buys something this probe does not measure. Aggregate throughput is what it reads;
+    // what a streamed decode also spends is LATENCY, waiting for the slice that the next expert
+    // needs, and a queue that empties sooner ends the stall sooner even when the bytes per second
+    // come out the same. Until that is measured directly, the tie-break follows the evidence rather
+    // than the principle: inside the probe's own resolution, more lanes.
     const double good_enough = best_rate * 0.95;
     uint32_t pick = 0;
     for (const RateSample & s : rate_curve) {
         if (rate_at(request_bytes, s.lanes) < good_enough) continue;
-        if (!pick || s.lanes < pick) pick = s.lanes;
+        if (s.lanes > pick) pick = s.lanes;
     }
     return pick;
 }

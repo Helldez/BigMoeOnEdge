@@ -140,25 +140,23 @@ asks the caller nothing. It costs about a second of a load already measured in s
 on the desktop it was validated on - against a lane count worth 12% of every token afterwards.
 `--no-probe-io` opts out for a caller that must not touch the drive at all.
 
-It measures the rate curve around the model's own expert slice, at one, two and four lanes, and
-picks the **smallest** lane count that reaches within 5% of the best rate: where two lane counts
-deliver the same throughput the cheaper one is strictly better, and a difference inside the probe's
-own noise would otherwise flip the answer between runs.
+It measures the rate curve around the model's own expert slice, at one, two and four lanes, taking
+the median of three samples at the size that decides anything, and picks the **largest** lane count
+that reaches within 5% of the best rate.
 
-That prediction is falsifiable, and on the desktop it has been checked against the engine twice,
-with opposite answers - which turned out to be the interesting part.
+Largest, not smallest, and that is a correction the machine forced. The rule used to take the
+cheapest count inside the tolerance, on the reasoning that where two lane counts deliver the same
+throughput the cheaper one is strictly better: fewer threads, less queueing, less contention with
+the compute the reads are meant to overlap. Sound, and wrong. On the desktop SSD here the probe
+cannot separate two lanes from four - repeated runs pick either, medians and all - while the engine
+is not ambiguous at all: three interleaved 64-token runs give **4.648 tok/s at two lanes against
+5.261 at four**, +13%, with no overlap between the groups.
 
-The first check was taken with the model's mapping alive. The probe picked two lanes, and a real run
-gave 3.400 / **3.969** / 3.535 tok/s at one, two and four: two was right, and four was worse. The
-second was taken after the mapping-interference probe was fixed (below) and the lane point was made
-a median of three samples. The probe picked **four**, and three interleaved runs of 64 tokens each
-gave **4.648 tok/s at two lanes against 5.261 at four**, +13%, with no overlap between the groups.
-
-Both are correct measurements of different machines, in the only sense that matters here: a machine
-that holds the model mapped serialises its concurrent uncached reads, so its fourth lane is not a
-lane at all, and a machine that has released the mapping has four real ones. The lane count was
-never a property of the drive alone. It is why the two knobs are decided from the same probe, and
-why a rate curve measured under the wrong mapping state answers the wrong question.
+So a lane buys something this probe does not measure. What it reads is aggregate throughput; what a
+streamed decode also spends is **latency**, waiting for the slice the next expert needs, and a queue
+that drains sooner ends the stall sooner even when the bytes per second come out the same. Until
+that is measured directly, the tie-break follows the evidence rather than the principle: inside the
+probe's own resolution, more lanes. With that, the pick is stable across runs.
 
 ### What it will not tell you
 
@@ -347,7 +345,7 @@ Each row is a gap here paired with the public facility that closes it. None need
 
 | gap | facility | what it would allow |
 |---|---|---|
-| streamed experts compute on the CPU wherever memory is unified — **half built**: the load-time placement is routed, the streamer's own buffers are not | `ggml_backend_dev_host_buffer_type()` (asked of every device), `ggml_backend_dev_supports_op` on the model's own `mul_mat_id` and on the bandwidth graph; `ggml_backend_buft_alloc_buffer` for the half that is missing | detection, decision and the load-time buffer type are in. What is not: the streamer overwrites `data` with its own reservation, so the bytes a device would read are ordinary host memory, not the pinned memory it was pointed at. See below |
+| streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` + `caps.buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Metal, CPU and BLAS implement it; CUDA, SYCL, Vulkan and OpenCL do not |
 | prefill on the device over streamed experts (designed, not built) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
 | KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
@@ -359,29 +357,43 @@ Each row is a gap here paired with the public facility that closes it. None need
 
 128 GB of unified LPDDR5x at roughly 273 GB/s, twenty ARM cores, a Blackwell GPU, models
 streamed from NVMe: exactly the `experts-stream` regime, and the machine upstream's own expert
-streaming PR benchmarked on. This planner used to misread it twice over. ggml reports the GB10 as a GPU
-with memory of its own, because the CUDA backend's `integrated` flag is disabled; and the profile
-called a weight rebindable only where the memory was the host's, so the rule that streamed experts
-must live in a rebindable buffer put every expert matmul on the ARM cores with the GPU idle. The misreadings are fixed. Rebindability is asked of the device — does it offer a host buffer type, does
-it execute this model's own layout — rather than inferred from where its memory is; and the
-`integrated` flag is no longer needed for anything, because what it would have hinted at is now
-measured: the same GEMV is scheduled on every backend, and the rule compares the device's rate to
-the host's. Where the device wins, the plan names it and the session binds the overridden experts to
-that device's host buffer type instead of the CPU's.
+streaming PR benchmarked on. This planner used to misread it twice over: ggml reports the GB10 as a GPU
+with memory of its own, because the CUDA backend's `integrated` flag is disabled, and the profile
+called a weight rebindable only where the memory was the host's — so every expert matmul went to the
+ARM cores with the GPU idle. The reading is fixed: rebindability is asked of the device, and the
+`integrated` flag is not needed for anything any more, because what it would have hinted at is now
+measured directly — the same GEMV on every backend, and the rule compares the rates.
 
-**That is necessary and not yet sufficient, and the reason is this engine's own mechanism.** The
-buffer type decides where llama.cpp *allocates* the weight at load; the streamer then rebinds
-`data` onto memory it reserved itself, which is where the bytes actually are for the rest of the
-run. So a tensor can be labelled with a device's host buffer while the bytes it reads sit in
-ordinary host memory that the device was never given access to. Closing it means the streamer's own
-per-layer reservations coming from that device's host buffer allocator rather than from the
-platform's, and that trades against the lazy commit those reservations exist for: a full-size
-address reservation with pages committed on a miss and released on eviction is what lets a
-150 GB model have valid addresses everywhere while holding two. Whether a pinned host allocation
-can be made to behave that way, and how much of the win survives if it cannot, is a design question
-and a measurement — not plumbing. On a machine whose memory is unified the conflict is likely to be
-mild, since pinned host and host are the same DRAM there, but that is a hypothesis and this project
-does not ship those as facts.
+**But the route everyone reaches for first is closed, and the evidence is in the pinned submodule
+rather than inferred.** Binding the expert overrides to a device's *host buffer type*:
+
+- `src/llama-model-loader.cpp` carries the comment *"avoid using a host buffer when using mmap"* and
+  substitutes the CPU's buffer type for any device host buffer whenever the model is mapped. This
+  engine always maps it — load-bearing, not a setting — so such an override is undone at load and
+  nothing downstream ever sees it.
+- `ggml/src/ggml-cuda/ggml-cuda.cu`'s `supports_buft` accepts the CUDA host buffer **only on an
+  `integrated` device**. On a discrete one no device claims the buffer and the op lands on the CPU.
+  With `integrated` disabled upstream, a unified-memory GB10 answers as discrete: the machine where
+  this would pay is the machine that refuses it.
+
+And a third reason that is ours alone: the streamer rebinds `data` onto memory it reserved itself,
+so the bytes a device would read were never allocated by it or registered with it.
+
+**The route that is actually open** is `ggml_backend_dev_buffer_from_host_ptr`, which wraps memory
+the caller already owns in a buffer of the device's own; `caps.buffer_from_host_ptr` says who
+implements it — CPU, BLAS and **Metal** do, CUDA, SYCL, Vulkan and OpenCL do not — and llama.cpp
+uses it itself to hand Metal the mapped model region. For us it would mean the streamer's per-layer
+reservations being wrapped that way, which trades against the lazy commit they exist for: a
+wrapped or page-locked range needs its pages present, and a full-size reservation with pages
+committed on a miss and released on eviction is exactly what lets a 150 GB model have valid
+addresses everywhere while holding two. CUDA's nearest equivalent, `cudaHostRegister` via
+`ggml_backend_cuda_register_host_buffer`, is behind an environment variable upstream and accelerates
+transfers rather than moving where an op runs.
+
+So the axis, stated honestly: **on Apple-style unified memory a path exists and is unbuilt; on
+discrete CUDA there is no path through today's public API; on a unified CUDA device the path exists
+in principle and upstream reports the device in a way that refuses it.** The planner says as much,
+names the device that would qualify, and arms nothing.
 
 The measurement to beat is public: on the same GB10, llama.cpp's own expert-streaming PR reports
 0.87 tok/s of decode with the experts on the CPU against 2.20 with them on the GPU, and 1.06
