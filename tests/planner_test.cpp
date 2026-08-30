@@ -208,6 +208,44 @@ int main() {
         check(p.streaming_declined && !p.decline_reason.empty(), "roomy machine: the refusal is explained");
     }
 
+    // ── fitting is not being left alone: the same model, two machines that both "fit" ──
+    // A phone whose reclaim compresses, holding a model that fits with little beyond itself. It is
+    // the common case, not the exotic one, and residency there is reclaimed from underneath.
+    {
+        HardwareProfile barely = phone();
+        barely.residency_budget = 25 * GiB; // the 21 GiB model fits, with about 2 GiB beyond it
+        const Plan p = plan_run(base_cfg(), barely, model, PlanRequest{});
+        check(p.regime == Regime::ExpertsStream, "fits barely: streams instead of trusting residency");
+        check(p.config.moe.enabled, "fits barely: streaming on");
+        const Decision * d = find(p, "residency");
+        check(d && d->source == Source::Derived, "fits barely: the demotion is a derived decision");
+        check(d && d->reason.find("reclaim is cheap") != std::string::npos,
+              "fits barely: the reason names the machine's reclaim", d ? d->reason : "no decision");
+    }
+
+    // The same shape on a machine where nothing is taken from us is left alone: a hard per-process
+    // cap is explicit, and the margin for it is already the largest of the three. (27 GiB, because
+    // that margin is 20%: the model has to clear the bar before the air rule is even reached.)
+    {
+        HardwareProfile barely = hard_capped();
+        barely.residency_budget = 27 * GiB;
+        barely.memory_total = 32 * GiB;
+        const Plan p = plan_run(base_cfg(), barely, model, PlanRequest{});
+        check(p.regime == Regime::Fits, "fits barely under a hard cap: still resident, nothing reclaims us");
+        check(!p.config.moe.enabled, "fits barely under a hard cap: streaming stays off");
+    }
+
+    // And where a reclaim has to write to a disk the kernel is reluctant enough that the classic
+    // host offload stands: this is the desktop shape, and it is checked in the placement case below.
+    // A reclaim-exempt machine likewise: what cannot be taken back does not have to be defended.
+    {
+        HardwareProfile barely = phone();
+        barely.residency_budget = 25 * GiB;
+        barely.anon_overflow = Overflow::None;
+        const Plan p = plan_run(base_cfg(), barely, model, PlanRequest{});
+        check(p.regime == Regime::Fits, "fits barely with nothing to reclaim it: resident");
+    }
+
     // ── too little room for one token's worth of experts ───────────────────────────
     {
         HardwareProfile tight = phone();

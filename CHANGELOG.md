@@ -29,6 +29,21 @@ Semantic Versioning.
   phone is the cell that would price it, and it is owed.
 
 ### Added
+- **Fitting is not the same as being left alone.** The plan's "this model fits, stream nothing"
+  exit used to fire the moment the bytes cleared a margin. On a machine whose reclaim is cheap for
+  the kernel — it compresses the page, or drops a clean one — that is the wrong question: a model
+  that fits *just barely* is reclaimed from underneath and refaults its weights one page at a time,
+  which we measure at 0.1 tok/s against 5.0 for the same model streamed. The case is an ordinary
+  one, an 8B-class MoE in a 12 GB phone, not a corner. Residency there now has to leave room beyond
+  the model itself (`PlannerPolicy::fits_air_ratio`) or the experts stream and the plan says so in
+  a line of its own. Where a reclaim writes to a disk the kernel is far more reluctant and the
+  classic host offload is untouched; where the allocation is reclaim-exempt, or the limit is a hard
+  per-process cap, nothing can be taken from us and the exit stands. An unprofiled machine keeps
+  its old behaviour, like every other missing fact. The ratio is policy rather than measurement and
+  is deliberately crude, because the error it guards is asymmetric by two orders of magnitude; the
+  headroom probe is what replaces it, and the same probe fixes the budget under-reading on a
+  compressing machine, which is why they are one piece of work.
+
 - **Planned on the phone, and three things the phone corrected.** The same rules, with no line
   written for Android, derived the shipped Android recipe from facts: the pinned dense allocation
   from a reclaim that compresses plus a reclaim-exempt store, four read lanes from the measured UFS

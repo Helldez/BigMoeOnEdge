@@ -141,25 +141,31 @@ measure `--release-mmap` yourself.
 
 ## Next steps, noted and not built
 
-**The "fits" exits need headroom, not a threshold.** Two of the early exits — everything on
-devices, and a host residual that fits in RAM — currently hand the run to plain residency the
-moment the bytes fit under a margin. That margin is set by what a reclaim costs and is a fixed
-fraction; it is not the question. A model that fits *just barely* does not run well resident: it
-lives under continuous reclaim, and the measured case is stark — the 35B fully resident through
-mmap decoded at 0.1 tok/s where streaming it decoded at 5.0. The right rule is a *dynamic* delta:
-stream unless residency leaves enough air that the working set is not being fought over, where
-"enough" comes from the overflow behaviour (compress, swap, kill) and from what else the machine
-is holding, not from a constant.
+**The "fits" exit asks for air, and still owes a measurement.** The case is the phone, and it is
+the common one rather than the exotic one: an 8B-class MoE that fits in 12 GB *just barely*. It
+fits on paper. In practice the system, the app and the kernel's own page cache sit on top of it,
+and what the last few hundred MiB go to is decided by whoever touched memory last — so a resident
+model is reclaimed from underneath every few tokens and refaults its dense set from flash a page at
+a time. Streamed, the same model holds a pinned dense set and a cache that *chooses* what to keep,
+and decodes faster than the "fully resident" version that keeps losing itself. The measured case is
+stark: the 35B fully resident through mmap decoded at 0.1 tok/s where streaming it decoded at 5.0.
+Fitting is not the same as being left alone.
 
-The case this is about is the phone, and it is the common one, not the exotic one: an 8B-class
-MoE that fits in 12 GB *just barely*. It fits on paper. In practice the system, the app, and the
-kernel's own page cache sit on top of it, and what the last few hundred MiB go to is decided by
-whoever touched memory last — so a resident model is reclaimed from underneath every few tokens,
-and refaults its dense set from flash a page at a time. Streamed, the same model holds a pinned
-dense set and a cache that *chooses* what to keep, and decodes faster than the "fully resident"
-version that keeps losing itself. Fitting is not the same as being left alone. Until that delta
-exists, a caller who knows better pins `--moe-stream` and the plan honours it; the exit stays as it
-is, and this note is the reason it is not to be trusted near the boundary.
+So the exit now asks a second question. Where a reclaim is **cheap for the kernel** — it compresses
+the page, or drops a clean one — residency must leave room beyond the model itself, `fits_air_ratio`
+of what it would hold, or the experts stream and the plan says why. Where a reclaim has to write to
+a disk the kernel is far more reluctant and the classic host offload stands; where the allocation is
+exempt nothing can take it; where the limit is a hard per-process cap nothing is taken at all, and
+the margin for that case is already the largest of the three. An unprofiled machine keeps the old
+behaviour, like every other missing fact: the evidence is specific to cheap reclaim and does not
+entitle a rule to generalise past it.
+
+That ratio is policy, not measurement, and it is deliberately crude because the error it guards is
+asymmetric by two orders of magnitude — streaming a model that would have fitted costs some reads,
+residency on one that does not costs fifty times the throughput. What replaces it is the headroom
+probe: how much this process can actually hold on a machine whose reclaim compresses, where
+`MemAvailable` is a floor rather than a cap. The same measurement fixes the budget under-reading
+described below, which is why they are one piece of work and not two.
 
 ## What is not probed yet
 

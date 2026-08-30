@@ -60,6 +60,29 @@ uint64_t margin_bytes(const HardwareProfile & hw, const PlannerPolicy & pol) {
     return std::max(by_frac, pol.margin_min_bytes);
 }
 
+// Whether taking resident pages back from us is CHEAP for this kernel, which is the case where
+// fitting stops implying being left alone. It is the narrow reading on purpose. Where a reclaim
+// only compresses or only drops a clean page, the kernel does it routinely and to anyone, so a
+// model with nothing to spare is reclaimed from underneath continuously - that is the case we
+// measured. Where a reclaim has to write to a disk the kernel is far more reluctant, where the
+// allocation is exempt nothing can take it, and where the limit is a hard cap nothing is taken at
+// all. And `Unknown` keeps the default like every other missing fact: the evidence here is specific
+// to cheap reclaim, so an unprofiled machine is not entitled to its conclusion. The headroom probe
+// is what generalises this from a class of kernel to a measurement.
+bool reclaim_is_cheap(Overflow o) {
+    switch (o) {
+    case Overflow::Compress:
+    case Overflow::Refault:
+        return true;
+    case Overflow::None:
+    case Overflow::Swap:
+    case Overflow::Kill:
+    case Overflow::Unknown:
+        break;
+    }
+    return false;
+}
+
 const char * overflow_name(Overflow o) {
     switch (o) {
     case Overflow::None:
@@ -207,6 +230,18 @@ Plan plan_run(const RunConfig & base,
         p.regime = Regime::DenseOversized;
     }
 
+    // Fitting is not the same as being left alone. Where the machine can take pages back, residency
+    // has to clear a second bar: room beyond the model itself, so its weights are not reclaimed and
+    // refaulted a page at a time under whatever else the machine is doing. The bar is a policy ratio
+    // rather than a measurement, and the reason it can be this crude is that the error is asymmetric
+    // by two orders of magnitude: streaming a model that would have fitted costs some reads, while
+    // residency on a model that does not is 0.1 tok/s against 5.0. Until the headroom probe exists,
+    // the cheap side of that asymmetry is the right default, and a caller who disagrees drops --auto.
+    const uint64_t air = usable > host_all ? usable - host_all : 0;
+    const uint64_t air_needed = (uint64_t) ((double) host_all * (double) pol.fits_air_ratio);
+    const bool air_short = p.regime == Regime::Fits && reclaim_is_cheap(hw.anon_overflow) && air < air_needed;
+    if (air_short) p.regime = host_dense <= usable ? Regime::ExpertsStream : Regime::DenseOversized;
+
     if (placement.fitted) {
         note("placement", u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers on devices", Source::Measured,
              placement.outcome + "; " + u64s(host_layers) + " of " + u64s(n_layer) +
@@ -233,6 +268,13 @@ Plan plan_run(const RunConfig & base,
              u64s(mib(usable)) + " MiB usable, which is the " + u64s(mib(hw.residency_budget)) +
              " MiB this process may hold less a " + u64s(mib(margin)) + " MiB margin (" +
              overflow_name(hw.anon_overflow) + ")");
+
+    if (air_short)
+        note("residency", "not verified", Source::Derived,
+             "the host set fits with " + u64s(mib(air)) + " MiB to spare against the " + u64s(mib(host_all)) +
+                 " MiB it would hold, and a reclaim is cheap here (" + overflow_name(hw.anon_overflow) +
+                 "): a model that fits only just is reclaimed from underneath and refaults its weights one page at "
+                 "a time, so the experts stream instead. Run without --auto to keep plain residency");
 
     if (placement.fitted && host_layers == 0) {
         p.regime = Regime::Fits;

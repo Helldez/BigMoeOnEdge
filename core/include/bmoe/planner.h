@@ -60,6 +60,15 @@ struct PlannerPolicy {
     // Never leave less than this free, whatever the fractions say on a small machine.
     uint64_t margin_min_bytes = 256ull << 20;
 
+    // How much room a model must leave BEYOND itself before residency is called safe, as a multiple
+    // of what it would hold. Fitting and being left alone are different claims: on a machine whose
+    // reclaim can take pages back, a model that fits just barely is reclaimed from underneath and
+    // refaults its weights one page at a time, which is measured at 0.1 tok/s against 5.0 for the
+    // same model streamed. "Leave as much as you take" is the cheapest test that separates the two
+    // without a measurement; the headroom probe replaces it with one. It does not apply where
+    // nothing can take the memory back, nor where the limit is a hard cap the margin already sizes.
+    float fits_air_ratio = 1.0f;
+
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };
 
