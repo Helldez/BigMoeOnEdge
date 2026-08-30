@@ -321,7 +321,8 @@ are designed and not yet active.
  | loads with the fitter's n_gpu_layers + overrides               |
  | dense -> anon | dma-buf | mmap                                 |
  | host experts -> streamer: LRU cache, lanes, mul_mat_id overlap |
- | experts -> the planned device's HOST buffer when one wins     |
+ | experts -> planned device's HOST buffer type at LOAD          |
+ | (but the streamer then rebinds onto its own reservation)      |
  | [NOT ACTIVE] prefill on the device over streamed experts       |
  +--------------------------------+-------------------------------+
                                   v
@@ -346,7 +347,7 @@ Each row is a gap here paired with the public facility that closes it. None need
 
 | gap | facility | what it would allow |
 |---|---|---|
-| ~~streamed experts compute on the CPU wherever memory is unified~~ — **built end to end**, never yet run on a device | `ggml_backend_dev_host_buffer_type()` (asked of every device), `ggml_backend_dev_supports_op` on the model's own `mul_mat_id`, and on the bandwidth graph | detection, decision and routing are in: a device that offers a host buffer and runs the file's native layout has the experts bound to that buffer, still rebindable by the streamer and executed by it. What is missing is a machine with such a device |
+| streamed experts compute on the CPU wherever memory is unified — **half built**: the load-time placement is routed, the streamer's own buffers are not | `ggml_backend_dev_host_buffer_type()` (asked of every device), `ggml_backend_dev_supports_op` on the model's own `mul_mat_id` and on the bandwidth graph; `ggml_backend_buft_alloc_buffer` for the half that is missing | detection, decision and the load-time buffer type are in. What is not: the streamer overwrites `data` with its own reservation, so the bytes a device would read are ordinary host memory, not the pinned memory it was pointed at. See below |
 | prefill on the device over streamed experts (designed, not built) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
 | KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
@@ -361,13 +362,26 @@ streamed from NVMe: exactly the `experts-stream` regime, and the machine upstrea
 streaming PR benchmarked on. This planner used to misread it twice over. ggml reports the GB10 as a GPU
 with memory of its own, because the CUDA backend's `integrated` flag is disabled; and the profile
 called a weight rebindable only where the memory was the host's, so the rule that streamed experts
-must live in a rebindable buffer put every expert matmul on the ARM cores with the GPU idle. Both halves are fixed. Rebindability is asked of the device — does it offer a host buffer type, does
+must live in a rebindable buffer put every expert matmul on the ARM cores with the GPU idle. The misreadings are fixed. Rebindability is asked of the device — does it offer a host buffer type, does
 it execute this model's own layout — rather than inferred from where its memory is; and the
 `integrated` flag is no longer needed for anything, because what it would have hinted at is now
 measured: the same GEMV is scheduled on every backend, and the rule compares the device's rate to
 the host's. Where the device wins, the plan names it and the session binds the overridden experts to
-that device's host buffer type instead of the CPU's — the same memory, pinned, that we still read
-flash into and rebind. What is missing is a machine of this kind to run it on.
+that device's host buffer type instead of the CPU's.
+
+**That is necessary and not yet sufficient, and the reason is this engine's own mechanism.** The
+buffer type decides where llama.cpp *allocates* the weight at load; the streamer then rebinds
+`data` onto memory it reserved itself, which is where the bytes actually are for the rest of the
+run. So a tensor can be labelled with a device's host buffer while the bytes it reads sit in
+ordinary host memory that the device was never given access to. Closing it means the streamer's own
+per-layer reservations coming from that device's host buffer allocator rather than from the
+platform's, and that trades against the lazy commit those reservations exist for: a full-size
+address reservation with pages committed on a miss and released on eviction is what lets a
+150 GB model have valid addresses everywhere while holding two. Whether a pinned host allocation
+can be made to behave that way, and how much of the win survives if it cannot, is a design question
+and a measurement — not plumbing. On a machine whose memory is unified the conflict is likely to be
+mild, since pinned host and host are the same DRAM there, but that is a hypothesis and this project
+does not ship those as facts.
 
 The measurement to beat is public: on the same GB10, llama.cpp's own expert-streaming PR reports
 0.87 tok/s of decode with the experts on the CPU against 2.20 with them on the GPU, and 1.06

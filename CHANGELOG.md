@@ -51,7 +51,7 @@ Semantic Versioning.
   one, the plan says there is nothing to improve; where the machine does not publish them, the
   default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
 
-- **The device path, built end to end.** A bandwidth probe schedules **one graph on every backend**
+- **The device path: measured, decided, and routed at load — with the half that remains named.** A bandwidth probe schedules **one graph on every backend**
   — the same GEMV, the same buffer — so the host's figure and a device's are the same measurement in
   the same units. That matters more than which graph it is: the rules only ever use the ratio, and a
   ratio between a hand-rolled loop on one side and a vendor kernel on the other would compare the
@@ -60,12 +60,21 @@ Semantic Versioning.
   offers a host buffer, runs the model's own layout and reads memory faster than the host does, the
   plan now **names it** rather than only describing the possibility, and the session binds the
   overridden experts to that device's host buffer type instead of the CPU's — the same pinned memory
-  the streamer reads flash into and rebinds, so the weights stay ours to serve and become the
-  device's to compute. The session resolves the name and verifies again before acting, falling back
-  to the CPU buffer type if the device or its host buffer is not there, because a plan describes the
-  machine it was made on. On this machine, which registers only a CPU, all of it runs, measures 32
-  GiB/s for the host, finds nothing to compare it against and says so: complete and unverified,
-  which the plan reports differently from missing.
+  the streamer reads flash into and rebinds. The session resolves the name and verifies again before
+  acting, falling back to the CPU buffer type if the device or its host buffer is not there, because
+  a plan describes the machine it was made on.
+
+  **This is necessary and not yet sufficient**, and the reason is the engine's own mechanism: the
+  buffer type decides where llama.cpp allocates the weight at load, and the streamer then rebinds
+  `data` onto a reservation of its own, which is where the bytes are for the rest of the run. A
+  device pointed at that tensor would be reading ordinary host memory it was never given access to.
+  Closing it means the streamer's per-layer reservations coming from the device's host buffer
+  allocator, which trades against the lazy commit those reservations exist for — the thing that lets
+  a 150 GB model have valid addresses everywhere while holding two. That is a design question and a
+  measurement, not plumbing, and it is written down rather than glossed.
+
+  On this machine, which registers only a CPU, all of the above runs, measures 32 GiB/s for the
+  host, finds nothing to compare it against and says so.
 
 - **A device is asked what it can do, not where its memory is.** The profile called a weight
   rebindable only where the memory was the host's. That is the wrong test, and on a machine with

@@ -191,14 +191,16 @@ because a barrier waits for its slowest participant.
 What is still owed is measurement rather than design, and every knob the plan cannot decide prints
 `[unprobed]`.
 
-- **A machine with an accelerator to run the device path on.** It is built end to end and has never
-  met one. A device is asked whether it offers a host buffer type and whether it runs this model's
+- **Streamed experts computed on a device, rather than on the CPU cores.** Half built, and the
+  missing half is a design question rather than plumbing. A device is asked whether it offers a host buffer type and whether it runs this model's
   own expert matmul on the file's native layout; the bandwidth probe schedules one GEMV on every
   backend so the host's figure and the device's are the same measurement; where the device wins, the
-  session binds the overridden experts to that device's host buffer — the same memory, pinned, that
-  the streamer still reads flash into and rebinds. On a machine that registers only a CPU all of
-  this runs and finds nothing to compare, which is what the plan says. Complete and unverified is
-  not the same as missing, and the two should not be reported as if they were.
+  session binds the overridden experts to that device's host buffer type at load. What is not done is
+  the streamer's own reservations coming from that same allocator: it rebinds `data` onto memory it
+  reserved itself, so a device pointed at those tensors would read ordinary host memory it was never
+  given access to. Doing it trades against the lazy commit that lets a model far past RAM have valid
+  addresses everywhere while holding a fraction of it. On a machine that registers only a CPU the
+  measured half runs and finds nothing to compare, which is what the plan says.
 - **A prefill-aware cache floor.** Each expert is already read at most once per ubatch (the `seen_`
   guard in the streamer), so the read-once property that wave-partitioned prefill exists to provide
   is not missing. What is missing is a guarantee that the cache can hold one layer's ubatch working

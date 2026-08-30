@@ -622,8 +622,14 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // it serves a tensor by rebinding `data` onto bytes it read itself, and only a host address can
     // be rebound. Which host buffer type is the second stage's decision. The CPU's is the default
     // and the only answer on a machine with nothing else. A named device means that device's own
-    // host buffer - the same memory, pinned, that the device reads directly - so the weight stays
-    // rebindable by us and becomes executable by it, without a copy and without a repack.
+    // host buffer, the memory it can read directly.
+    //
+    // Necessary, and known to be insufficient on its own: this decides where llama.cpp ALLOCATES
+    // the weight, and the expert streamer then rebinds `data` onto a reservation of its own, which
+    // is where the bytes live for the rest of the run. Until those reservations come from the same
+    // allocator, a device pointed at these tensors would be reading ordinary host memory rather than
+    // memory it was given access to. See docs/hardware-planning.md - it trades against the lazy
+    // commit the reservations exist for, so it is a design question rather than a line of code.
     llama_model_params mparams = llama_model_default_params();
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
     mparams.use_extra_bufts = false;
