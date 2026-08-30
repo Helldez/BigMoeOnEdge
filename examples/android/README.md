@@ -28,6 +28,9 @@ research harness and keeps the app a thin driver over the CLI.
    adb install app/build/outputs/apk/dev/debug/app-dev-debug.apk
    ```
 
+   The app's pure-Kotlin rules (catalog status and the like) have JVM unit tests under
+   `app/src/test`; CI runs them, and so does `./gradlew testDevDebugUnitTest`.
+
    Published sideload builds are signed with a stable key instead, so an update installs over
    the previous one rather than being refused. That needs a `keystore.properties` next to `app/`
    (gitignored — it points at the keystore and holds its passwords); without it, builds fall back
