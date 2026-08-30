@@ -47,9 +47,9 @@ each word actually needs. That is the direction architectures are moving in, and
 direction this engine was built for: the more of a model that is there to be consulted rather than
 held, the less it matters that it does not fit.
 
-<p align="center"><img src="docs/assets/hero-qwen38.gif" width="360" alt="Qwen3.8-Flash-Next (125B, ~82 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
-<p align="center"><em>Qwen3.8-Flash-Next: 125B parameters, ~82 GB on disk, on a 12 GB phone.
-2.03 tok/s in the demo app, real time.</em></p>
+<p align="center"><img src="docs/assets/hero-qwen38.gif" width="360" alt="Qwen3.8-Flash-Next (125B, ~80 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
+<p align="center"><em>Qwen3.8-Flash-Next: 125B parameters, ~80 GB on disk (Q2_K), on a 12 GB phone.
+3.48 tok/s in the demo app, real time.</em></p>
 
 It is not one model, either. Below: three more, one after another on the same phone, each past
 what it should be able to hold.
@@ -193,7 +193,7 @@ Defaults are the measured winning recipe for a model near RAM.
 | `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
 | `deepseek4` | DeepSeek V4 Flash (284B-A13B), validated on the 0731 release | V3.2-style routing (256 experts + shared); compressed attention is dense-side; ships multi-shard |
 | `bailingmoe3` | Ling 3.0 (e.g. Ling-3.0-flash, 127B-A5B) | 512 routed experts + shared, biased top-k; hybrid KDA/MLA attention is dense-side |
-| `qwen4exp` | Qwen3.8-Flash-Next (125B-A6B), the Qwen4 architecture preview | 512 routed experts + shared; a 51B n-gram embedding table stays mmap'd (see limitations). Runs on the 12 GB test phone at ~2 tok/s with pinned dense weights; pinned to the upstream PR until it merges |
+| `qwen4exp` | Qwen3.8-Flash-Next (125B-A6B), the Qwen4 architecture preview | 512 routed experts + shared; a 51B n-gram embedding table stays mmap'd (see limitations). Runs on the 12 GB test phone with pinned dense weights: ~2 tok/s at UD-IQ3_XXS, 3.5 tok/s at the Q2_K build; upstream support merged in `b10666` |
 
 Adding an architecture is one row in the registry; expert counts and layouts are discovered from
 the model file at runtime, so nothing about a specific model is hardcoded in the streaming path.
