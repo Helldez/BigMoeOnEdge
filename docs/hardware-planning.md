@@ -149,9 +149,17 @@ lives under continuous reclaim, and the measured case is stark — the 35B fully
 mmap decoded at 0.1 tok/s where streaming it decoded at 5.0. The right rule is a *dynamic* delta:
 stream unless residency leaves enough air that the working set is not being fought over, where
 "enough" comes from the overflow behaviour (compress, swap, kill) and from what else the machine
-is holding, not from a constant. Until that delta exists, a caller who knows better pins
-`--moe-stream` and the plan honours it; the exit stays as it is, and this note is the reason it
-is not to be trusted near the boundary.
+is holding, not from a constant.
+
+The case this is about is the phone, and it is the common one, not the exotic one: an 8B-class
+MoE that fits in 12 GB *just barely*. It fits on paper. In practice the system, the app, and the
+kernel's own page cache sit on top of it, and what the last few hundred MiB go to is decided by
+whoever touched memory last — so a resident model is reclaimed from underneath every few tokens,
+and refaults its dense set from flash a page at a time. Streamed, the same model holds a pinned
+dense set and a cache that *chooses* what to keep, and decodes faster than the "fully resident"
+version that keeps losing itself. Fitting is not the same as being left alone. Until that delta
+exists, a caller who knows better pins `--moe-stream` and the plan honours it; the exit stays as it
+is, and this note is the reason it is not to be trusted near the boundary.
 
 ## What is not probed yet
 
