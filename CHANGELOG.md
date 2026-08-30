@@ -29,6 +29,39 @@ Semantic Versioning.
   phone is the cell that would price it, and it is owed.
 
 ### Added
+- **`--auto`: derive the streaming knobs from the machine and the model, and print why.** Every
+  knob the engine exposes has a right answer that depends on the hardware, and until now the only
+  way to get it was to already know it. `--auto` resolves them from what the machine reports and
+  what the gguf's own shapes say, `--plan-explain` prints the fact behind each choice, and
+  `--plan-only` prints the plan and exits without loading anything. Opt-in; without it nothing
+  changes.
+
+  The planner is a pure function over two profiles, unit-tested against synthetic machines
+  (`tests/planner_test.cpp`), and that is the point: **no platform name appears in a rule.**
+  Windows, Android, iOS, CUDA and Metal exist only in the adapter that fills the profile, so the
+  same rule that picks anonymous dense buffers where a reclaim swaps to disk picks a reclaim-exempt
+  allocation where it compresses instead, and leaves the weights mapped where holding too much
+  kills the process. One rule, three facts, three answers, no branch.
+
+  Two invariants hold by construction rather than by care. A knob whose deciding fact was not
+  probed keeps its default and is reported `[unprobed]`, so a plan doubles as the standing list of
+  measurements still owed. And nothing lossy ever arms itself: dropping, substitution and
+  route-ahead stay off at any quality budget on any machine, because a policy that changes the
+  output has to be a person's decision. A knob passed by hand — flag or `BMOE_*` env — is never
+  overwritten.
+
+  The cache floor is the model's own token cycle, summed over the tensors the file carries rather
+  than multiplied out, so a fused `gate_up` projection, leading dense blocks, and a trailing MTP
+  block that llama.cpp never loads are each counted correctly. On Qwen3.6-35B-A3B-Q4_K_M the
+  metadata-only derivation returns 581 MiB against the 582 MiB the engine computes at load from the
+  tensors it actually bound. Below that floor the plan declines to stream and says why, rather than
+  thrashing.
+
+  Deliberately NOT here: tensor placement across compute devices, which is a capacity problem
+  llama.cpp already solves; and any read probe — the storage rate curve and whether a live mapping
+  serialises concurrent reads both cost real I/O, so `--io-threads` and `--release-mmap` report
+  `[unprobed]` for now and keep their defaults. See `docs/hardware-planning.md`.
+
 - **`--release-mmap`: hand back the model file's mapping after load, which on Windows is worth
   +46% decode.** llama.cpp maps every gguf it loads and keeps the mapping for the model's
   lifetime. That is load-bearing for the streamer, which rebinds expert tensors onto the file's

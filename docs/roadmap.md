@@ -175,6 +175,33 @@ more budget — which `--cache-mb auto` now takes automatically, capped by `--ca
 ([cache-sizing.md](cache-sizing.md)). Admission policies and a persistent cross-run cache
 remain unexplored.
 
+## Hardware planning — the rules are in, the probes are not
+
+`--auto` derives the streaming knobs from the machine and the model instead of from flags, and
+prints the fact behind each choice ([hardware-planning.md](hardware-planning.md)). The rules carry
+no platform names, so the same rule reaches a different answer on a desktop, a phone and a
+kill-on-resident platform from the facts alone.
+
+What is left is measurement rather than design, and the plan already names it: every knob it cannot
+decide prints `[unprobed]`.
+
+- **A read-rate probe**, about a second at load, sweeping request size against lane count. It is the
+  only honest source of `--io-threads`, because the same expert slice sits at a different point of a
+  desktop SSD's curve and a phone's UFS curve — 4 KiB returns 2% of peak on one and 6.8% on the
+  other.
+- **A mapping-interference probe.** Whether a live mapping serialises concurrent uncached reads is
+  measurable in one second and is worth 46% of decode on the storage where it is true; today it is
+  the one thing keeping `--release-mmap` opt-in rather than derived.
+- **The compute-device axis.** Devices are enumerated and recorded but no rule reads them yet. The
+  cheapest first question is whether llama.cpp's own capacity fitter (`common_fit_params`, which
+  assumes system memory is unlimited) and our residency sensors agree on the same model — the
+  planner's cache budget consumes that projection as fact, so a disagreement changes the design
+  rather than a constant. It buys nothing on an integrated GPU, where moving a tensor off the
+  device frees no memory at all.
+- **Threads and `--ubatch`** have no rule because they have no measurement: nothing here relates
+  core topology to decode throughput, and the compute-buffer reservation's crossover against the
+  cache is unmeasured.
+
 ## Not on this list
 
 Routing prediction and speculative expert gating were built and **removed**: the recall/latency

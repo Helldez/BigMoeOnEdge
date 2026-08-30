@@ -8,6 +8,8 @@
 // Environment variables are read ONLY here, as overrides for the matching flags, so the
 // engine stays env-free. The flag always wins over the env value.
 #include "bmoe/config.h"
+#include "bmoe/planner.h"
+#include "bmoe/probe.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
 #include "bmoe/recipe.h"
@@ -438,6 +440,13 @@ static void print_usage(const char * argv0) {
         "                          (default 3). The confidence gate: raise it for fewer, better\n"
         "                          drafts, lower it for coverage\n"
         "\n"
+        "  Hardware planning:\n"
+        "      --auto              resolve the streaming knobs from what this machine and this model\n"
+        "                          report, rather than from flags. A knob you also pass by hand is\n"
+        "                          left exactly as you set it, and nothing lossy is ever armed\n"
+        "      --plan-explain      print the resolved plan and the fact behind each choice, then run\n"
+        "      --plan-only         print the plan and exit, without loading the model\n"
+        "\n"
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
         "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
@@ -596,6 +605,9 @@ int main(int argc, char ** argv) {
     std::string compute_trace_path;
     std::string io_trace_path;
     bool session_mode = false;
+    bool auto_plan = false;
+    bool plan_explain = false;
+    bool plan_only = false;
 
     // Which flags the user actually typed. The env overrides below consult this rather than
     // comparing against the default, so passing a flag its default value still wins.
@@ -668,7 +680,15 @@ int main(int argc, char ** argv) {
             cfg.compute_trace_layers = true;
         } else if (a == "--io-trace")
             io_trace_path = next("--io-trace");
-        else if (a == "--moe-stream")
+        else if (a == "--auto")
+            auto_plan = true;
+        else if (a == "--plan-explain")
+            plan_explain = true;
+        else if (a == "--plan-only") {
+            auto_plan = true;
+            plan_explain = true;
+            plan_only = true;
+        } else if (a == "--moe-stream")
             cfg.moe.enabled = true;
         else if (a == "--cache-mb") {
             const std::string v = next("--cache-mb");
@@ -797,6 +817,35 @@ int main(int argc, char ** argv) {
             std::getchar();
         }
         return 1;
+    }
+
+    // --auto: resolve the streaming knobs from what the machine and the model report. It runs after
+    // the flags and the env overrides so that anything the caller expressed either way is a pin the
+    // planner may not touch — an automatic choice that quietly overruled a person would be worse
+    // than no automation at all.
+    if (auto_plan) {
+        PlanRequest req;
+        for (const std::string & s : seen) {
+            const size_t dashes = s.find_first_not_of('-');
+            if (dashes != std::string::npos && dashes > 0) req.pinned.push_back(s.substr(dashes));
+        }
+        // An env override is the caller speaking too, so it pins the same way a flag does.
+        if (std::getenv("BMOE_CACHE_MB")) req.pinned.push_back("cache-mb");
+        if (std::getenv("BMOE_IO_THREADS")) req.pinned.push_back("io-threads");
+
+        const HardwareProfile hw = probe_hardware(cfg.model_path.c_str());
+        const ModelProfile mp = probe_model(cfg.model_path.c_str());
+        const Plan plan = plan_run(cfg, hw, mp, req);
+        cfg = plan.config;
+
+        if (plan_explain) {
+            std::fprintf(stderr, "plan: machine %s\n", hw.label.c_str());
+            if (mp.ok)
+                std::fprintf(stderr, "plan: model %s, %u experts top-%u over %u MoE layers\n", mp.arch.c_str(),
+                             mp.n_expert, mp.n_expert_used, mp.n_layer);
+            std::fputs(plan.explain().c_str(), stderr);
+        }
+        if (plan_only) return 0;
     }
 
     ValidationResult vr = validate(cfg);

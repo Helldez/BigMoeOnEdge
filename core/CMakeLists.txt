@@ -1,13 +1,16 @@
 # bmoe_core — the streaming engine.
 #
 # Pure-policy sources (config validation, the architecture registry, the n-gram draft
-# matcher) build with no native dependency. The streaming adapters compile only when
-# llama.cpp is present, because they include its public headers (llama.h, ggml.h, gguf.h).
+# matcher, the hardware planner) build with no native dependency. The streaming adapters
+# compile only when llama.cpp is present, because they include its public headers
+# (llama.h, ggml.h, gguf.h).
 
 add_library(bmoe_core STATIC
     src/config.cpp
     src/moe/arch_registry.cpp
     src/engine/ngram_draft.cpp
+    src/plan/plan.cpp
+    src/plan/planner.cpp
 )
 
 target_include_directories(bmoe_core PUBLIC
@@ -27,6 +30,8 @@ if(BMOE_HAVE_LLAMA)
         src/moe/dense_weights.cpp
         src/moe/row_stream.cpp
         src/moe/gguf_offsets.cpp
+        src/plan/hardware_probe.cpp
+        src/plan/model_probe.cpp
         src/moe/expert_stream_source.cpp
         src/moe/router_hook.cpp
         src/engine/session.cpp
