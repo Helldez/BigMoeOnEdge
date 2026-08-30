@@ -78,6 +78,15 @@ Semantic Versioning.
   one, the plan says there is nothing to improve; where the machine does not publish them, the
   default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
 
+- **`offload: host` renamed, because it read as a refusal.** A machine with an accelerator uses it:
+  the first stage is llama.cpp's capacity fitter, and whatever it places on a device is placed and
+  computed there — the plan carries its `n_gpu_layers` and override patterns straight into the load,
+  and the `placement` line reports it. The decision underneath was named `offload` with the value
+  `host`, which reads as "we put nothing on the device" when it means "nothing FURTHER than what the
+  fitter already did". It is now `extra-offload: none`, and every one of its four reasons says so.
+  A new section at the top of docs/hardware-planning.md draws the same line before anything else can
+  be misread: the GPU runs what fits; what this planner owns is the residue that streams from flash.
+
 - **The device path: the obvious route is closed, and we can now say exactly why.** A bandwidth
   probe schedules **one graph on every backend** — the same GEMV, the same buffer — so the host's
   figure and a device's are the same measurement in the same units. That matters more than which

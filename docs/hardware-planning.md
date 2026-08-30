@@ -14,6 +14,24 @@ bmoe-cli -m model.gguf --auto --probe-mem      # ...and measure what this machin
 
 It is opt-in. Without it nothing changes.
 
+## What runs where, so the rest of this document is not misread
+
+A machine with an accelerator uses it. The first stage is llama.cpp's own capacity fitter, and
+whatever it places on a device is placed, computed there, and none of the rules below touch it: the
+plan carries its `n_gpu_layers` and its override patterns straight into the load. On a box with
+24 GB of VRAM and a 150 GB model, the attention, the dense set and the experts of every layer that
+fits are on the GPU.
+
+What this planner owns is the residue - the expert tensors the fitter left on the host because
+there was no room - and those are the ones it streams from flash. **Those** cannot be computed on a
+discrete GPU, and the `extra-offload` line in every plan is about them and only them, never about
+the fitter's placement. The reason is in "Why the obvious route is closed" below, and it is not a
+choice: a streamed expert exists by having its `data` pointer rebound onto memory this engine
+reserved, and a discrete device cannot read that memory through anything the public API offers
+today. Upstream is stuck on the same step - its own expert-streaming PR has been open since July,
+and the neighbouring issue says the fix needs a change inside `ggml_backend_sched_compute_splits`,
+which is a fork.
+
 ## Two stages, one composer
 
 Placing tensors across compute devices is a capacity problem, exactly solvable from tensor sizes,

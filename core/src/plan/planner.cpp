@@ -315,7 +315,11 @@ Plan plan_run(const RunConfig & base,
         return p;
     }
 
-    // ── the accelerator axis: what may leave the host, and what may never ──────────
+    // ── the accelerator axis: what may leave the host BEYOND the fitter's placement ─
+    // Read the `placement` decision above first: layers the fitter put on a device are already
+    // there, computed there, and none of this touches them. What follows is only about the residue
+    // the fitter left on the host - the experts this engine streams - and whether anything more can
+    // be done with them than running them on the CPU cores.
     // Two facts settle this, and neither is a vendor name. A device whose memory IS the host's has
     // no bandwidth of its own to win, and batch-1 decode is a chain of GEMVs that reads every weight
     // once for a single multiply-accumulate: it is bandwidth-bound, so on such a device an offload
@@ -337,22 +341,24 @@ Plan plan_run(const RunConfig & base,
         }
 
         if (hw.devices.empty()) {
-            note("offload", "host", Source::Unprobed,
-                 "no compute devices were enumerated (the backends register at load), so nothing could "
-                 "be considered for offload");
+            note("extra-offload", "none", Source::Unprobed,
+                 "no compute devices were enumerated (the backends register at load), so there was nothing "
+                 "to consider beyond what the fitter already placed");
         } else if (device_local == 0) {
-            note("offload", "host", Source::Derived,
-                 "every device here reads the host's own memory, so moving a weight onto one frees no "
-                 "memory and wins no bandwidth: batch-1 decode is bound by bandwidth, not by arithmetic");
+            note("extra-offload", "none", Source::Derived,
+                 "every device here reads the host's own memory, so moving a weight onto one beyond the "
+                 "fitter's own placement frees no memory and wins no bandwidth: batch-1 decode is bound by "
+                 "bandwidth, not by arithmetic");
         } else if (candidate && candidate->memory_bandwidth_gibs <= 0.0) {
-            note("offload", "host", Source::Unprobed,
+            note("extra-offload", "none", Source::Unprobed,
                  "a device with " + u64s(mib(device_local)) +
-                     " MiB of its own is present, but its memory bandwidth is unmeasured here and that is "
-                     "the number a decode offload turns on");
+                     " MiB of its own is present and the fitter has already used it; moving anything FURTHER "
+                     "would turn on its memory bandwidth, which is unmeasured here");
         } else {
-            note("offload", "host", Source::Policy,
-                 "placing weights across devices is a capacity problem that llama.cpp's own fitter "
-                 "solves; this planner owns the tier below it and does not duplicate it");
+            note("extra-offload", "none", Source::Policy,
+                 "the fitter has already placed what fits on the devices - see the placement line above - and "
+                 "placing weights across devices is a capacity problem it solves exactly; this planner owns "
+                 "the tier below it and does not second-guess it");
         }
 
         // Where the streamed experts are COMPUTED, which is a different question from where they
