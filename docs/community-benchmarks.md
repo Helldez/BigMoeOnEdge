@@ -150,6 +150,9 @@ On a phone, the app's telemetry panel and the CSV from `scripts/bench-run.sh` ca
 - If the storage probe reads far below the drive's rating, say so. That is a result in itself.
 - The first run after a download has the file's head in the page cache. The probe skips a quarter
   into the file for exactly that reason; the engine run uses O_DIRECT and is unaffected.
+- A storage column reading `n/a` means the probe refused its own number: the filesystem accepted
+  `iflag=direct` but served the page cache anyway (network and overlay filesystems do this), so
+  the measured rate was not a physical read. The engine columns are still valid.
 
 ## Results
 

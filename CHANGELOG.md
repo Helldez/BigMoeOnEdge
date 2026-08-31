@@ -118,6 +118,14 @@ Semantic Versioning.
   chain died there was no Download button left to resume it. The legacy-merged-file rule, meant for
   a single-file gpt-oss from an earlier release, now applies only when the entry's file name is not
   one of its shards. The app module gains its first JVM unit test for the rule, run in CI.
+- `bench-report.sh` measured the model with `du` on the path as given, so a Hugging Face cache
+  symlink reported 0.0 GiB and a split model counted only the shard on the command line; sizes now
+  dereference (`stat -L`) and sum every sibling shard. The same raw-path size fed the storage
+  probe's offset, and the probe trusted `dd`'s exit code while assuming a full 1 GiB was read: on
+  a short read, or a filesystem that takes `iflag=direct` without honouring it, that printed rates
+  no drive can do (110 GiB/s in the first community report, #192). The rate now comes from the
+  byte count in `dd`'s own summary, and a physically impossible result prints `n/a` with a note
+  instead of a number. (#193)
 
 ## [0.23.0] - 2026-08-29
 
