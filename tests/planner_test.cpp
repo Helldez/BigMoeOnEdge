@@ -472,6 +472,32 @@ int main() {
                   d ? d->reason.substr(0, 60) : "none");
         }
 
+        // ...and what that same note says about the one remaining opening must not overstate it.
+        // The capability a device advertises for wrapping memory the caller owns is a blanket
+        // promise, and a backend whose support is conditional per device and per call declines to
+        // make one while implementing the call anyway - so an absent yes is Unknown, not No. This
+        // fixture leaves the field at its default, which is that case. Reading a false there as a
+        // closed door is what once made this plan wrong about the backends that run on phones.
+        {
+            const Plan p = plan_run(base_cfg(), acc, model, PlanRequest{});
+            const Decision * d = find(p, "experts");
+            check(d && d->reason.find("is unprobed") != std::string::npos &&
+                      d->reason.find("no opening here at all") == std::string::npos,
+                  "unknown host-ptr capability: reported unprobed, never as a closed door",
+                  d ? d->reason : "no decision");
+        }
+
+        // A device that does advertise it gets the opening named, which is the other half of the
+        // same asymmetry: a yes here IS a fact.
+        {
+            HardwareProfile wraps = acc;
+            wraps.devices.back().host_ptr_buffers = Tri::Yes;
+            const Plan p = plan_run(base_cfg(), wraps, model, PlanRequest{});
+            const Decision * d = find(p, "experts");
+            check(d && d->reason.find("which is the one opening") != std::string::npos,
+                  "advertised host-ptr capability: the plan names the opening", d ? d->reason : "no decision");
+        }
+
         // Everything below exercises the rule as it will behave once that precondition holds.
         PlannerPolicy able = PlannerPolicy::defaults();
         able.streamer_serves_device_memory = true;

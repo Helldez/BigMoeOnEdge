@@ -158,10 +158,25 @@ void probe_devices(HardwareProfile & h) {
             // Only a host address can be repointed at bytes we read ourselves, which is the
             // condition the expert streamer exists under. A device-local buffer's pointer is not one.
             d.rebindable = is_yes(d.host_buffer);
-            // Two more capabilities the device declares for free, both of which decide something
-            // above: whether it can wrap memory we already own (what the streamer would need), and
-            // whether it can copy while it computes.
-            d.host_ptr_buffers = props.caps.buffer_from_host_ptr ? Tri::Yes : Tri::No;
+            // Two more capabilities the device declares for free. Whether it can copy while it
+            // computes is a plain fact. Whether it can wrap memory we already own - the one thing a
+            // streamed expert would need - is NOT, and the mapping below is asymmetric on purpose.
+            //
+            // `caps.buffer_from_host_ptr` is a declaration, and a false one does not establish
+            // absence. In the pinned submodule the Vulkan, OpenCL and SYCL devices each report it
+            // false while wiring a complete implementation into their device interface: Vulkan's
+            // imports host memory through an extension whose success is per-device and per-call, so
+            // there is nothing it could honestly promise in a blanket capability, and it promises
+            // nothing. A rule reading No here would conclude "closed" about the backends that run on
+            // the machines this project targets.
+            //
+            // Nor can we settle it by trying. Unlike its neighbour `get_host_buffer_type`, which
+            // null-checks the interface pointer and returns nothing, `ggml_backend_dev_buffer_from_
+            // host_ptr` calls straight through - so an attempt on a device that genuinely lacks it
+            // dereferences null instead of declining. Until an instrument exists that can separate
+            // the two, a yes is a fact and everything else is Unknown: the same shape as the
+            // mapping-serialisation probe, and for the same reason.
+            d.host_ptr_buffers = props.caps.buffer_from_host_ptr ? Tri::Yes : Tri::Unknown;
             d.async_copies = props.caps.async ? Tri::Yes : Tri::No;
             h.devices.push_back(std::move(d));
         }

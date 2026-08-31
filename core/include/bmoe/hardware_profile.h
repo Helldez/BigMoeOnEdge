@@ -81,6 +81,11 @@ struct ComputeDevice {
     // buffer: one hands us memory the device can read, the other reads memory we hand it. The
     // streamer allocates its own reservations and rebinds tensors onto them, so a device that can
     // only do the first still cannot see the bytes a streamed expert is actually made of.
+    //
+    // Yes is a fact; Unknown covers both "declined" and "declared nothing", and a reader must not
+    // collapse it to No. The capability this is filled from is a blanket promise, and backends whose
+    // support is conditional per device decline to make it while implementing the call anyway - so a
+    // negative there is not evidence of absence. See probe_devices().
     Tri host_ptr_buffers = Tri::Unknown;
 
     // True when this device can copy while it computes. On a device across a link it is the

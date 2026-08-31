@@ -388,7 +388,7 @@ Each row is a gap here paired with the public facility that closes it. None need
 
 | gap | facility | what it would allow |
 |---|---|---|
-| streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` + `caps.buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Metal, CPU and BLAS implement it; CUDA, SYCL, Vulkan and OpenCL do not |
+| streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Who implements it is **not** what `caps.buffer_from_host_ptr` says — see "A capability that lies by omission" below |
 | prefill on the device over streamed experts (designed, not built) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
 | KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
@@ -423,9 +423,9 @@ And a third reason that is ours alone: the streamer rebinds `data` onto memory i
 so the bytes a device would read were never allocated by it or registered with it.
 
 **The route that is actually open** is `ggml_backend_dev_buffer_from_host_ptr`, which wraps memory
-the caller already owns in a buffer of the device's own; `caps.buffer_from_host_ptr` says who
-implements it — CPU, BLAS and **Metal** do, CUDA, SYCL, Vulkan and OpenCL do not — and llama.cpp
-uses it itself to hand Metal the mapped model region. For us it would mean the streamer's per-layer
+the caller already owns in a buffer of the device's own; CPU, BLAS and **Metal** advertise it, and
+llama.cpp uses it itself to hand Metal the mapped model region. Who else implements it is a longer
+story — see the next section. For us it would mean the streamer's per-layer
 reservations being wrapped that way, which trades against the lazy commit they exist for: a
 wrapped or page-locked range needs its pages present, and a full-size reservation with pages
 committed on a miss and released on eviction is exactly what lets a 150 GB model have valid
@@ -437,6 +437,40 @@ So the axis, stated honestly: **on Apple-style unified memory a path exists and 
 discrete CUDA there is no path through today's public API; on a unified CUDA device the path exists
 in principle and upstream reports the device in a way that refuses it.** The planner says as much,
 names the device that would qualify, and arms nothing.
+
+## A capability that lies by omission
+
+`caps.buffer_from_host_ptr` is the field this planner used to read as the answer to "can this device
+wrap memory we own". It is not that answer, and reading it as one produced a wrong fact about the
+backends that matter most here.
+
+In the pinned submodule, **Vulkan, OpenCL and SYCL each report the capability `false` while wiring a
+complete implementation into their device interface.** Vulkan's is not a stub: it imports host memory
+through `VK_EXT_external_memory_host`, refusing only when the extension is absent or when the pointer
+and size are not multiples of the device's `minImportedHostPointerAlignment`. That is precisely why
+the capability is false — it is a blanket promise, and a backend whose support is conditional per
+device and per call has nothing blanket to promise, so it promises nothing. CUDA, by contrast, leaves
+the interface pointer `NULL`: there the false is a genuine absence.
+
+Two consequences, and the second is why this is not simply fixed.
+
+**A false is not evidence of absence**, so the probe no longer records one. `true` maps to `Yes` and
+everything else to `Unknown`, which is the same asymmetry the mapping-serialisation probe already
+carries and for the same reason: an instrument that returns a negative on a case known to be positive
+has fidelity in one direction only. The plan prints the unknown and says the advertisement decided
+nothing.
+
+**And it cannot be settled by trying.** `ggml_backend_dev_buffer_from_host_ptr` calls straight
+through to the interface pointer, unlike its neighbour `ggml_backend_dev_host_buffer_type`, which
+null-checks and returns nothing. So an attempt on a device that truly lacks it dereferences null
+rather than declining, and there is no way from outside to tell the two cases apart first. The
+instrument that would close this is a three-line null guard upstream, matching the function directly
+above it — a contribution, not a fork, and the one thing that would turn this `Unknown` into a
+measurement.
+
+This matters beyond tidiness: Vulkan and OpenCL are the GPU APIs on the phones this project targets.
+The route we described as open only on Apple may be open on an Adreno or a Mali too, and the old
+reading of this field would have reported it closed without ever asking.
 
 The measurement to beat is public: on the same GB10, llama.cpp's own expert-streaming PR reports
 0.87 tok/s of decode with the experts on the CPU against 2.20 with them on the GPU, and 1.06

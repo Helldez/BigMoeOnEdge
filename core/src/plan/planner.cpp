@@ -440,8 +440,13 @@ Plan plan_run(const RunConfig & base,
                      (is_yes(host_capable->host_ptr_buffers)
                           ? "This device can wrap memory a caller already owns, which is the one opening: the "
                             "streamer's own reservations would have to be handed over that way"
-                          : "This device cannot wrap memory a caller already owns, so there is no opening here "
-                            "at all"));
+                      : host_capable->host_ptr_buffers == Tri::No
+                          ? "This device cannot wrap memory a caller already owns, so there is no opening here "
+                            "at all"
+                          : "Whether this device can wrap memory a caller already owns - the one opening left - "
+                            "is unprobed. What it advertises is a blanket promise, and a backend whose support "
+                            "is conditional declines to make one while implementing the call anyway, so the "
+                            "absence of a yes decides nothing here"));
         else if (host_capable && host_capable->memory_bandwidth_gibs <= 0.0)
             note("experts", "host", Source::Unprobed,
                  "this device offers a host buffer and executes this model's expert matmul on the file's own "

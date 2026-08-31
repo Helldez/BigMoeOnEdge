@@ -7,6 +7,29 @@ Semantic Versioning.
 ## [0.24.0] - unreleased
 
 ### Fixed
+- **The planner recorded "this device cannot wrap memory we own" about backends that can.** The
+  device probe filled `host_ptr_buffers` from `caps.buffer_from_host_ptr` and mapped a false
+  straight to `No`. That capability is a blanket promise, and three backends in the pinned
+  submodule — Vulkan, OpenCL and SYCL — report it false while wiring a complete implementation into
+  their device interface. Vulkan's imports host memory through `VK_EXT_external_memory_host` and
+  declines only when the extension is missing or the pointer and size are not multiples of the
+  device's import alignment; a support that is conditional per device and per call has nothing
+  blanket to promise, so it promises nothing. CUDA's false is real — the interface pointer is
+  `NULL` — and the two cases are indistinguishable from the outside.
+
+  So a false is no longer read as an answer: `true` maps to `Yes`, everything else to `Unknown`,
+  the same asymmetry the mapping-serialisation probe already carries. The plan prints the unknown
+  and says the advertisement decided nothing, rather than printing a "no opening here at all" that
+  was wrong on exactly the backends this project runs on — Vulkan and OpenCL are the GPU APIs on
+  phones. Nothing downstream changes: no rule reads this field yet, and the fact it feeds is a
+  printed rationale.
+
+  It cannot be settled by trying, either, which is why this is a correction rather than a
+  measurement: `ggml_backend_dev_buffer_from_host_ptr` calls straight through to the interface
+  pointer where its neighbour `ggml_backend_dev_host_buffer_type` null-checks and returns nothing,
+  so an attempt on a device that genuinely lacks it dereferences null instead of declining. The
+  instrument that would close this is a null guard upstream matching the function above it.
+
 - **A tied output head left half the biggest dense weight reading the model's mmap.** When a gguf
   carries no `output.weight`, llama.cpp builds the output head from the token embedding table, and
   the model then holds **two** `ggml_tensor` objects, identically named, over the same file bytes.
