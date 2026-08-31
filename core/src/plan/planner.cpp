@@ -643,6 +643,18 @@ Plan plan_run(const RunConfig & base,
              "exists yet, so spending it would be a guess");
     }
 
+    // A placement the fitter made and this planner did not apply, because on shared memory its
+    // capacity arithmetic counts the same pool twice. Said out loud: "no layers on devices" on a
+    // machine that has one is a sentence a reader would otherwise take as "there is no device".
+    if (placement.shared_memory_placement)
+        note("placement-declined", "shared memory", Source::Derived,
+             "the capacity fitter placed " + u64s(mib(placement.device_bytes)) +
+                 " MiB on a device whose memory is this host's own, and counted that as separate from the " +
+                 u64s(mib(placement.host_resident_bytes)) +
+                 " MiB it left here - the same pool, twice. Acting on it once made a phone try to hold both "
+                 "and took the device down, so the placement is reported and not applied. What closes this is "
+                 "charging the device bytes to the same budget, not a flag");
+
     // ── overlap: named, not armed ──────────────────────────────────────────────────
     // Hiding compute behind the reads is not a quality choice - the output is byte-identical - and
     // it is worth about 5% on the phone this was measured on, where a plan without it lost to a

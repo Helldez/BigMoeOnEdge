@@ -58,15 +58,32 @@ Placement probe_placement(const char * model_path, const ModelProfile & model, u
                      : "the capacity fitter could not make the model fit the devices";
     pl.n_ctx = cparams.n_ctx;
 
-    // With no device that has memory of its own, "layers on devices" means nothing: the fitter
-    // leaves n_gpu_layers at its default (all), and taken literally that would read as every
-    // expert placed off-host. Count the devices rather than trusting the number.
+    // With no device at all, "layers on devices" means nothing: the fitter leaves n_gpu_layers at
+    // its default, which means "all", and taken literally that would read as every expert placed
+    // off-host on a machine that has nowhere to put them. So the number is trusted only when there
+    // is something to place on.
+    //
+    // "Something" means a device with memory OF ITS OWN, and the reason is a phone that crashed.
+    //
+    // The first version of this counted `TYPE_GPU` only, so an integrated accelerator - which
+    // reports `TYPE_IGPU` - never counted and the fitter's placement was discarded on every machine
+    // with one. That looked like a bug and was changed to count any non-CPU device. It is a bug,
+    // and it is not the one that matters: on unified memory the fitter's accounting DOUBLE-COUNTS.
+    // It was told an Adreno had "15195 MiB free" on a phone with 11 GB in total, because the GPU's
+    // memory IS the host's, and it then placed 14125 MiB there while leaving 1810 MiB of host set
+    // beside it. Honouring that number made the session try to do it, and took the device down.
+    //
+    // So the fitter is trusted only where its capacity arithmetic is sound: a device with separate
+    // memory. Where the memory is shared, its placement is a projection about a pool it has counted
+    // twice, and this planner does not act on it until `device_bytes` is charged to the same budget
+    // as the host set - which is a change to the second stage, not a flag here.
     size_t n_dev_local = 0;
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         const enum ggml_backend_dev_type t = ggml_backend_dev_type(ggml_backend_dev_get(i));
         if (t == GGML_BACKEND_DEVICE_TYPE_GPU) ++n_dev_local;
     }
     pl.n_gpu_layers = n_dev_local ? mparams.n_gpu_layers : 0;
+    pl.shared_memory_placement = n_dev_local == 0 && ggml_backend_dev_count() > 1;
 
     // Which layers keep their routed experts on the host. Two sources, and both are read rather
     // than reconstructed: a layer beyond what the fitter placed on devices is entirely host; a

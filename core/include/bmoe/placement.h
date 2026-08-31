@@ -40,6 +40,11 @@ struct Placement {
     // Device-local memory the placement uses, summed over devices with memory of their own.
     uint64_t device_bytes = 0;
 
+    // True when the fitter had a device to place on, but one whose memory is the host's - so its
+    // capacity arithmetic counted the same pool twice and its placement was NOT applied. Carried so
+    // the plan can say that out loud instead of reporting "no device" on a machine that has one.
+    bool shared_memory_placement = false;
+
     // The fitter's own host breakdown, raw, so the derived figures above can be checked against
     // it: what it projects for the model's host buffers, the context (KV), and the compute buffers.
     uint64_t raw_host_model_bytes = 0;

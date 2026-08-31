@@ -99,6 +99,21 @@ Semantic Versioning.
   that matters for this, the phone whose classes broke the old rule, has not been re-measured: it
   dropped off wireless debugging mid-session and that validation is owed.
 
+- **A placement the fitter makes on unified memory is counted twice, and acting on it crashed a
+  phone.** The adapter used to discard the fitter's `n_gpu_layers` unless a device reported
+  `TYPE_GPU` — which an integrated accelerator never does, so on every phone, APU and unified-memory
+  workstation the placement was thrown away and the session loaded `0/42 layers to GPU` with the
+  whole model mmap'd on the host. That is a bug, and correcting it exposed the one that matters:
+  the fitter was told an Adreno had **15195 MiB free on a device with 11 GB in total**, because the
+  GPU's memory IS the host's, and it then placed 14125 MiB there *beside* 1810 MiB of host set.
+  Honouring that made the session try to hold both, and took the device down.
+
+  So the fitter is trusted where its capacity arithmetic is sound — a device with separate memory —
+  and its placement on shared memory is now **reported and not applied**, under its own
+  `placement-declined` line, because "no layers on devices" on a machine that has one reads as
+  "there is no device". What closes this properly is charging `device_bytes` to the same budget as
+  the host set, which is a change to the second stage rather than a flag.
+
 - **The thread rule is withdrawn: the first heterogeneous machine refuted it.** It set the count to
   the fast core class, reasoning that every thread meets the same barrier so a thread on a slower
   core sets the pace rather than adding to it. Sound, and wrong: on a phone with two prime cores and
