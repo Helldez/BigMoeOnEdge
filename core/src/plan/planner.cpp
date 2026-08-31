@@ -643,44 +643,49 @@ Plan plan_run(const RunConfig & base,
              "exists yet, so spending it would be a guess");
     }
 
-    // ── threads: a barrier waits for the slowest participant ───────────────────────
-    // The rule reads the classes, not the count. Every thread in a ggml graph meets at the same
-    // barrier, so a thread on a slower core does not add its throughput - it sets the pace for all
-    // of them, and the ones that finished wait. On a machine with one class this changes nothing
-    // and says so; on a heterogeneous one it is the difference between filling the fast cores and
-    // spilling onto the slow ones. Where the classes could not be read, the default stands.
-    if (!pinned("threads", u64s((uint64_t) p.config.n_threads))) {
+    // ── overlap: named, not armed ──────────────────────────────────────────────────
+    // Hiding compute behind the reads is not a quality choice - the output is byte-identical - and
+    // it is worth about 5% on the phone this was measured on, where a plan without it lost to a
+    // hand-written recipe that had it. It is still not armed, and the reason is the same one that
+    // withdrew the thread rule two blocks down: one machine's evidence is not a rule. What the plan
+    // can do honestly is say the knob exists and that the caller is the one who knows.
+    if (!req.is_pinned("overlap") && !p.config.moe.overlap)
+        note("overlap", "off", Source::Unprobed,
+             "hiding compute behind the reads changes no output and measured +5% on one phone, but one "
+             "machine is not a rule and nothing here predicts where it stops paying: pass --overlap");
+
+    // ── threads: the classes are a fact, the rule that read them was wrong ─────────
+    // The rule here used to set the count to the fast class, reasoning that every thread meets the
+    // same barrier so a thread on a slower core sets the pace rather than adding to it. Sound, and
+    // refuted by the first heterogeneous machine it met: a phone with two prime cores and six others
+    // got two threads instead of four, and decode compute went from 0.127 to 0.195 s/token - 4.24
+    // tok/s down to 2.68. Losing half the threads costs more than the barrier's imbalance does,
+    // and nothing here knows where that trade turns over.
+    //
+    // So the classes stay as a measured fact, printed because they are worth knowing, and the knob
+    // keeps its default. Deriving a count from them would need a thread sweep on the machine itself,
+    // which is a probe this does not have. The same applies to prefill: it is compute-bound and
+    // plausibly wants every core, and "plausibly" is exactly what this planner does not ship.
+    if (!req.is_pinned("threads")) {
         if (hw.core_classes.size() > 1) {
-            const uint32_t fast = hw.core_classes.front();
-            p.config.n_threads = (int) fast;
             std::string shape;
-            for (size_t i = 0; i < hw.core_classes.size(); ++i)
-                shape += (i ? " + " : "") + u64s(hw.core_classes[i]);
-            note("threads", u64s(fast), Source::Derived,
+            for (size_t k = 0; k < hw.core_classes.size(); ++k)
+                shape += (k ? " + " : "") + u64s(hw.core_classes[k]);
+            note("threads", u64s((uint64_t) p.config.n_threads), Source::Unprobed,
                  "this machine's cores are not alike (" + shape +
-                     " by reported maximum frequency), and every thread meets the same barrier: a thread on a "
-                     "slower core sets the pace rather than adding to it, so the fast class is the count");
-            // Prefill is the other workload, and it answers differently. It is compute-bound - the
-            // measured attribution on a phone puts the stall at zero on a long prompt - so it has
-            // arithmetic to give every core, including the slow ones, and a barrier it can afford to
-            // wait on. Decode does not: it is waiting on flash, and a slow core there costs the pace
-            // for nothing. Same fact, two workloads, two answers.
-            if (!req.is_pinned("threads-batch") && hw.n_cores > fast) {
-                p.config.n_threads_batch = (int) hw.n_cores;
-                note("threads-batch", u64s(hw.n_cores), Source::Derived,
-                     "prefill is compute-bound where a streamed decode is not, so it has work for the slower "
-                     "cores that decode would only wait on");
-            }
+                     " by reported maximum frequency), which is measured - but the rule that turned that "
+                     "into a count was refuted on a machine of exactly this shape, so the default stands "
+                     "until a thread sweep says otherwise");
         } else if (hw.core_classes.size() == 1) {
             note("threads", u64s((uint64_t) p.config.n_threads), Source::Derived,
                  "every core here is alike, so there is no slower class to spill onto and the count is not "
                  "the planner's to improve");
         } else {
             note("threads", u64s((uint64_t) p.config.n_threads), Source::Unprobed,
-                 "this machine does not report per-core maximum frequencies, so its core classes are unknown "
-                 "and a thread count derived from a bare core count would be a guess");
+                 "this machine does not report per-core maximum frequencies, so its core classes are unknown");
         }
     }
+
     if (!req.is_pinned("ubatch"))
         note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
              "the compute-buffer reservation trades against the cache, but the crossover is unmeasured on "

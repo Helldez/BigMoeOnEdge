@@ -83,7 +83,7 @@ bool compressor_ratio(double * ratio) {
 // It grows in steps and stops at the first sign of loss, so the usual outcome is that it never
 // reaches its ceiling; it releases everything before returning, on every path; and it is reached
 // only because a caller asked for it.
-uint64_t measure_holdable(uint64_t ceiling) {
+uint64_t measure_holdable(uint64_t ceiling, uint64_t enough) {
     const size_t page = pio::vm_page();
     if (page == 0 || ceiling < (uint64_t) page * 2) return 0;
 
@@ -120,6 +120,7 @@ uint64_t measure_holdable(uint64_t ceiling) {
         if (!pio::vm_resident_sample(first, step, &sampled, &resident) || sampled == 0) break;
         if (resident < sampled) break; // the boundary: what was held BEFORE this step is the answer
         last_good = total;
+        if (last_good >= enough) break; // the question was "can this be held", and it can
     }
 
     for (void * p : held)
@@ -129,7 +130,7 @@ uint64_t measure_holdable(uint64_t ceiling) {
 
 } // namespace
 
-void probe_headroom(HardwareProfile & hw, bool allow_active) {
+void probe_headroom(HardwareProfile & hw, bool allow_active, uint64_t target_bytes) {
     if (hw.residency_budget == 0) return; // nothing to compare against; the plan already declines
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -149,13 +150,22 @@ void probe_headroom(HardwareProfile & hw, bool allow_active) {
 
     if (!allow_active) return;
 
-    // The measurement supersedes the estimate when it is available, because it is the same question
-    // answered rather than modelled. The ceiling is what the machine physically has: a probe cannot
-    // discover headroom that does not exist, and stopping there bounds what it can do to the
-    // machine on the way.
-    const uint64_t ceiling = hw.memory_total ? hw.memory_total : hw.residency_budget;
-    const uint64_t measured = measure_holdable(ceiling);
-    if (measured > 0) {
+    // Probe FOR THE TARGET, not for the maximum. Climbing towards what the machine physically has
+    // provokes the reclaim it is meant to observe and then reports the pressure it caused: on the
+    // test phone, which holds 4.4 GB in practice, that version answered 924 MiB - less than the
+    // figure it was supposed to correct upwards. A quarter above the target is enough headroom to
+    // see a boundary if one is there, and little enough to stay out of the way if it is not.
+    if (target_bytes == 0) return;
+    uint64_t ceiling = target_bytes + target_bytes / 4;
+    if (hw.memory_total && ceiling > hw.memory_total) ceiling = hw.memory_total;
+
+    const uint64_t measured = measure_holdable(ceiling, target_bytes);
+    if (measured == 0) return;
+
+    // What the probe establishes is a LOWER BOUND that was actually held, so it only ever raises the
+    // figure. Where it stopped early it has found a real boundary under its own allocation, which is
+    // evidence about that allocation rather than proof the reported figure is wrong.
+    if (measured > hw.holdable_bytes && measured > hw.residency_budget) {
         hw.holdable_bytes = measured;
         hw.holdable_from = Headroom::Measured;
     }

@@ -63,7 +63,13 @@ void probe_bandwidth(HardwareProfile & hw);
 // `allow_active` opts into the measurement rather than the estimate: holding memory in steps until
 // the kernel takes some back. It is intrusive by nature - seconds of wall clock and real pressure
 // on the machine - so it is off unless a caller asks for it, while the estimate costs nothing.
-void probe_headroom(HardwareProfile & hw, bool allow_active);
+// `target_bytes` is what the caller actually wants to hold - on this engine, the dense set plus one
+// token's worth of experts, the smallest configuration worth running. The active probe stops as soon
+// as it has held that much, and never probes far past it. That bound is not politeness: a probe that
+// climbs towards the machine's total size PROVOKES the reclaim it is trying to observe, and then
+// reports the pressure it caused. Measured on a phone that comfortably holds 4.4 GB in practice, the
+// unbounded version answered 924 MiB.
+void probe_headroom(HardwareProfile & hw, bool allow_active, uint64_t target_bytes);
 
 // Measure this storage with the reads this engine issues: the rate curve around `slice_bytes` for
 // one, two and four lanes, and whether a live mapping of the model serialises those reads. Costs

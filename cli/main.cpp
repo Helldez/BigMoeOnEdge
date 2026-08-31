@@ -865,7 +865,10 @@ int main(int argc, char ** argv) {
         // How much of this machine we can hold and keep. The free half reads accounting and always
         // runs; the measuring half holds memory until the kernel takes some back, which is real
         // pressure on a live machine, so it waits to be asked with --probe-mem.
-        probe_headroom(hw, probe_mem);
+        // The target is the smallest configuration worth running: the dense set this machine would
+        // hold, plus one token's worth of experts. Asking "can this be held" is a bounded question;
+        // asking "how much could be held" is the one that provokes the answer it measures.
+        probe_headroom(hw, probe_mem, mp.dense_bytes + mp.token_cycle_bytes);
         // The first stage: llama.cpp's own capacity fitter, on every backend it knows. Devices are
         // only registered once the backend is initialised, so it is brought up here — the session
         // does the same and the call is reference counted.

@@ -78,6 +78,23 @@ Semantic Versioning.
   one, the plan says there is nothing to improve; where the machine does not publish them, the
   default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
 
+- **The thread rule is withdrawn: the first heterogeneous machine refuted it.** It set the count to
+  the fast core class, reasoning that every thread meets the same barrier so a thread on a slower
+  core sets the pace rather than adding to it. Sound, and wrong: on a phone with two prime cores and
+  six others it chose two threads instead of four, decode compute went from 0.127 to 0.195 s/token,
+  and throughput fell from 4.24 to 2.68 tok/s. Losing half the threads costs more than the barrier's
+  imbalance, and nothing here knows where that trade turns over — deriving a count would need a
+  thread sweep on the machine itself. The classes stay as a measured fact and are printed; the knob
+  keeps its default. Prefill's count goes back to the default too, for the same reason: it is
+  *plausibly* helped by every core, and plausibly is what this planner does not ship.
+
+- **`--overlap` is named, and still not armed.** A phone A/B found the last gap between a derived
+  plan and a hand-written recipe: the planner never decided overlap, which the recipe passed. It
+  changes no output and was worth about 5% there — and one machine's evidence is not a rule, so the
+  plan says the knob exists and leaves it to the caller. With it supplied by hand and every other
+  knob derived, interleaved runs give 3.888 / 3.938 tok/s for the plan against 3.845 / 3.541 for the
+  recipe.
+
 - **The KV is a budget line now, not a silent subtraction.** Context memory and the expert cache come
   out of the same bytes, and the context's reservation only ever appeared inside the placement's
   rationale. The plan states it: what the context reserves, what its compute buffers reserve, and

@@ -191,6 +191,24 @@ of absence, and printing one as `measured` would be exactly the confident wrong 
 exists to avoid. So the plan prints the two rates, says the probe saw nothing, and tells you to
 measure `--release-mmap` yourself.
 
+## A rule that a machine took back
+
+**Threads from core classes: proposed, shipped, refuted, withdrawn — in a day.** The rule set the
+count to the fast class, because every thread meets the same barrier and one on a slower core sets
+the pace rather than adding to it. The first heterogeneous machine it met disagreed: a phone
+reporting two prime cores and six others got two threads instead of four, decode compute went
+0.127 → 0.195 s/token and throughput 4.24 → 2.68 tok/s. Half the threads cost more than the
+imbalance saved, and nothing in this planner knows where that trade turns over.
+
+What survives is the fact. The classes are measured, they are printed, and the knob keeps its
+default — because a count derived from them would need a thread sweep on the machine itself, which
+is a probe this does not have. The same reasoning retired the prefill count at the same time: it is
+*plausibly* helped by every core there is, and plausibly is precisely what does not ship here.
+
+It is worth writing down that this is the second principle in two days to be overturned by a
+measurement rather than by an argument — the lane tie-break was the first. Both were sound. Neither
+was true.
+
 ## Where a rule is still cruder than the fact it stands in for
 
 **The "fits" exit asks for air, and the ratio is still policy.** The case is the phone, and it is

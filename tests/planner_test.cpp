@@ -302,13 +302,15 @@ int main() {
         het.n_cores = 20;
         het.core_classes = {10, 10}; // ten fast, ten slow: a barrier waits for the slow ones
         const Plan p = plan_run(base_cfg(), het, model, PlanRequest{});
-        check(p.config.n_threads == 10, "heterogeneous cores: threads are the fast class",
+        check(p.config.n_threads == base_cfg().n_threads,
+              "heterogeneous cores: the count is NOT derived - that rule was refuted on a real phone",
               std::to_string(p.config.n_threads));
-        check(p.config.n_threads_batch == 20, "heterogeneous cores: prefill takes every core",
-              std::to_string(p.config.n_threads_batch));
+        check(p.config.n_threads_batch == 0, "heterogeneous cores: prefill keeps the default too");
         check(validate(p.config).ok, "heterogeneous cores: the plan is a valid config", validate(p.config).error);
         const Decision * d = find(p, "threads");
-        check(d && d->source == Source::Derived, "heterogeneous cores: the thread count is derived");
+        check(d && d->source == Source::Unprobed && d->reason.find("refuted") != std::string::npos,
+              "heterogeneous cores: the classes are reported, the rule is not applied",
+              d ? d->reason.substr(0, 60) : "none");
     }
     {
         HardwareProfile uniform = desktop();
