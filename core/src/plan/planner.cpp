@@ -541,6 +541,25 @@ Plan plan_run(const RunConfig & base,
         }
     }
 
+    // ── the KV, as a budget line rather than a silent subtraction ───────────────────
+    // Context memory competes with the expert cache for the same bytes, and until now it only
+    // appeared inside the placement's rationale. On a long context it is the larger of the two, and
+    // a reader deciding whether to shorten the prompt deserves to see the trade rather than infer
+    // it. Nothing is DECIDED here: llama.cpp's own defaults already pick flash attention when the
+    // build supports it, which costs no quality, and the one lever that would free real memory -
+    // quantizing the K and V caches - changes the output. That makes it lossy by this planner's
+    // definition, and lossy levers are the caller's to arm, never a plan's.
+    if (placement.fitted && placement.raw_host_context_bytes > 0) {
+        const uint64_t kv = placement.raw_host_context_bytes;
+        const uint64_t compute = placement.raw_host_compute_bytes;
+        note("kv-budget", u64s(mib(kv)) + " MiB", Source::Measured,
+             "the context reserves " + u64s(mib(kv)) + " MiB on the host and its compute buffers another " +
+                 u64s(mib(compute)) + ", against " + u64s(mib(budget)) +
+                 " MiB left for the expert cache: the two come out of the same memory, and a shorter context "
+                 "is the caller's cheapest way to buy cache. Quantizing the K/V caches would buy more and "
+                 "changes the output, so it stays a lever this plan will not pull");
+    }
+
     // ── the I/O policy: from the machine's own rate curve, never from a class name ──
     if (!pinned("io-threads", u64s((uint64_t) p.config.moe.io_threads))) {
         const uint32_t want = hw.storage.best_lanes((uint32_t) model.expert_slice_bytes);

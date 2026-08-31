@@ -78,6 +78,21 @@ Semantic Versioning.
   one, the plan says there is nothing to improve; where the machine does not publish them, the
   default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
 
+- **The KV is a budget line now, not a silent subtraction.** Context memory and the expert cache come
+  out of the same bytes, and the context's reservation only ever appeared inside the placement's
+  rationale. The plan states it: what the context reserves, what its compute buffers reserve, and
+  what is left for the cache — so the trade is visible to a reader deciding whether to shorten a
+  prompt. Nothing is decided: llama.cpp already picks flash attention where the build supports it,
+  and the one lever that would free real memory, quantizing the K/V caches, changes the output and
+  is therefore the caller's to arm.
+
+- **`--ubatch` was measured and did not resolve.** Six interleaved decode runs at 512 / 256 / 128
+  on the desktop: 4.016 and 4.893 at 512, 4.907 and 3.370 at 256, 4.638 and 3.604 at 128. The
+  spread within one setting exceeds the difference between settings, and the two repetitions
+  disagree about the winner — short runs that each reload the model leave the page cache somewhere
+  different every time. The knob keeps its default and still prints `[unprobed]`, with the numbers
+  written down: a measurement that failed to resolve is worth more on the record than absent.
+
 - **Backends that ship as separate libraries were never looked for.** llama.cpp's own tools call
   `ggml_backend_load_all()` before they enumerate devices; this engine did not, so a binary sitting
   beside a `ggml-vulkan` or `ggml-cuda` library — or any build made with `GGML_BACKEND_DL` — saw a

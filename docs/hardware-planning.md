@@ -227,8 +227,15 @@ on a compressing machine, which is why the two were one piece of work rather tha
   accelerator: this machine registers only the CPU, so the probe measures the host's figure, the
   rule finds nothing to compare it against, and the plan says so. The mechanism is complete and
   unverified, which is a different thing from missing, and the plan distinguishes them.
-- **`--ubatch`** has no rule at all: the compute-buffer reservation's crossover against the cache is
-  unmeasured on every machine here.
+- **`--ubatch`, and this one has been tried.** The compute-buffer reservation trades against the
+  expert cache: a narrower ubatch reserves less and leaves more cache, at the cost of chunking
+  prefill. Six interleaved decode runs on the desktop, 512 / 256 / 128, gave 4.016 and 4.893 tok/s
+  at 512, 4.907 and 3.370 at 256, 4.638 and 3.604 at 128. **The spread within one setting is larger
+  than the difference between settings** — 256 alone ranges from 3.37 to 4.91 — so the first
+  repetition and the second disagree about the winner. Short runs that each reload the model leave
+  the page cache in a different state every time, and 48 tokens is not long enough to average that
+  out. The knob keeps its default and prints `[unprobed]`, now because the measurement was made and
+  did not resolve, which is a different thing from never having looked.
 
 The residency budget is `MemAvailable` on every platform that reports it, and on a machine whose
 reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set
