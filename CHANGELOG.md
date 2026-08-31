@@ -99,6 +99,14 @@ Semantic Versioning.
   that matters for this, the phone whose classes broke the old rule, has not been re-measured: it
   dropped off wireless debugging mid-session and that validation is owed.
 
+- **A device we are not using is now taken out of the graph.** Declining to place weights on one was
+  not enough: a registered backend collects work by itself — the weightless nodes especially, norms
+  and softmax — purely for being there, and each piece it collects is a boundary the graph crosses
+  twice. Measured with *nothing at all* placed on the device: **61 splits per token**, which is also
+  why a build carrying the Vulkan backend lost to one without it at identical settings. When the
+  plan puts no weight on a device, llama.cpp is now handed the CPU and nothing else
+  (`mparams.devices`), and the decision says so. A caller who wants the device anyway pins it.
+
 - **Contiguous device blocks: tested, and they fail too.** `--gpu-layers N` places the last N layers
   entirely on the device, experts resident, no override — the one shape July's verdict left
   untested, because it should put the boundary in one place instead of twice per layer. Swept

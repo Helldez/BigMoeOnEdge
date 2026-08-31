@@ -416,6 +416,14 @@ struct RunConfig {
     // have this idea finds the verdict instead of the idea.
     bool dense_on_device = false;
 
+    // Hand llama.cpp the CPU and nothing else. Set when this plan has decided no weight goes on a
+    // device: leaving one registered is not free, because the scheduler gives it every node it can
+    // execute - norms, softmax, the weightless ones - purely because it is there, and each of those
+    // is a boundary the graph crosses twice. Measured with nothing placed on the device at all:
+    // 61 graph splits per token, and a build with the backend compiled in losing to one without it.
+    // A device we are not using should not be in the room.
+    bool devices_cpu_only = false;
+
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
     SpecConfig spec; // self-speculative decoding (MTP head or n-gram lookup); off by default

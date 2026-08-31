@@ -631,6 +631,15 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // for what a working version would have to do instead - wrap our own reservation with
     // `ggml_backend_dev_buffer_from_host_ptr`, which CUDA does not implement and Metal does.
     llama_model_params mparams = llama_model_default_params();
+    // A device we are not using should not be in the room. Left registered, the scheduler hands it
+    // every node it can execute - the weightless ones especially - purely because it is there, and
+    // each one is a boundary the graph crosses twice. Handing llama.cpp the CPU alone is the only
+    // way to say "not this run" that the scheduler cannot talk itself out of.
+    ggml_backend_dev_t only_cpu[2] = {nullptr, nullptr};
+    if (cfg.devices_cpu_only) {
+        only_cpu[0] = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (only_cpu[0]) mparams.devices = only_cpu;
+    }
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
     mparams.use_extra_bufts = false;
     mparams.n_gpu_layers = cfg.n_gpu_layers;
