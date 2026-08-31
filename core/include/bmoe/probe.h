@@ -39,6 +39,14 @@ ModelProfile probe_model(const char * model_path);
 // asked (no devices registered yet, or an unknown expert type) — which every rule declines on.
 void probe_device_support(HardwareProfile & hw, const ModelProfile & model);
 
+// Make every backend this machine has available for enumeration, including any that ship as
+// separate shared libraries rather than linked in. llama.cpp's own tools do this before they look
+// at devices, and the reason to do it here is the same: a device nobody enumerated is a device no
+// rule can consider, and "there is no accelerator" and "nobody went to look" are different answers.
+//
+// A statically linked build finds nothing and loses nothing. Call it before llama_backend_init().
+void register_backends();
+
 // What each compute engine can pull out of the memory it reads weights from, in GiB/s. One graph -
 // the same GEMV - scheduled on every backend, so the figures are comparable: the rules only ever use
 // the ratio of two of them, and a ratio between two different experiments would mean nothing. The

@@ -78,6 +78,14 @@ Semantic Versioning.
   one, the plan says there is nothing to improve; where the machine does not publish them, the
   default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
 
+- **Backends that ship as separate libraries were never looked for.** llama.cpp's own tools call
+  `ggml_backend_load_all()` before they enumerate devices; this engine did not, so a binary sitting
+  beside a `ggml-vulkan` or `ggml-cuda` library — or any build made with `GGML_BACKEND_DL` — saw a
+  machine with no accelerator on it. That is the difference between "there is no device here" and
+  "nobody went to look", and the plan was reporting the first while doing the second. Now called
+  through `register_backends()` in the probe layer, so ggml stays out of the CLI. A statically
+  linked build finds nothing and loses nothing.
+
 - **An integrated accelerator was being treated as if it were the CPU, and told it wins nothing.**
   Two mistakes in one branch. The rule that discards a device whose memory is the host's made two
   claims and only one was provable: that moving a weight there frees nothing is arithmetic, and that

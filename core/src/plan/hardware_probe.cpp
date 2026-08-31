@@ -170,6 +170,14 @@ void probe_devices(HardwareProfile & h) {
 
 } // namespace
 
+void register_backends() {
+    // ggml looks beside the executable, and in GGML_BACKEND_DIR where the build set one, for
+    // libraries named after each backend. In a build that linked them statically this finds nothing
+    // and costs a few failed lookups; in one built with GGML_BACKEND_DL it is the difference between
+    // a machine with an accelerator and a machine that appears to have none.
+    ggml_backend_load_all();
+}
+
 HardwareProfile probe_hardware(const char * model_path) {
     HardwareProfile h;
 

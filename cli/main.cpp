@@ -863,6 +863,9 @@ int main(int argc, char ** argv) {
         // The first stage: llama.cpp's own capacity fitter, on every backend it knows. Devices are
         // only registered once the backend is initialised, so it is brought up here — the session
         // does the same and the call is reference counted.
+        // Bring up everything that can register a device, including backends that ship as separate
+        // shared libraries. A device nobody enumerated is a device no rule below can consider.
+        register_backends();
         llama_backend_init();
         // Our context is the pin, typed or defaulted: the fitter's own default is a different
         // number, and left unpinned it would pick the model's full training context.
