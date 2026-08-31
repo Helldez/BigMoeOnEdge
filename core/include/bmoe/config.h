@@ -406,9 +406,14 @@ struct RunConfig {
     // Put the DENSE weights on an accelerator that shares this host's memory, leaving the routed
     // experts on the host for the streamer. On such a machine the move frees no memory - it is the
     // same pool - so it is worth making only where that device consumes this model's weights faster
-    // than the CPU does, which the bandwidth probe measures. Off by default and armed by the caller:
-    // the one time a device placement armed itself here it took a phone down, and the device's own
-    // compute buffer is not yet a line in the budget.
+    // than the CPU does, which the bandwidth probe measures.
+    //
+    // Off by default, armed by the caller, and currently REFUSED by the planner - because it was
+    // measured three times in July on a device of exactly this class and it lost by 27%: the dense
+    // and expert halves interleave, so a two-device split crosses the boundary twice per layer and
+    // the boundary tax eats the CPU time the device frees. See
+    // docs/bench-data/2026-07-27-gpu-dense-offload/. Kept as a named lever so the next person to
+    // have this idea finds the verdict instead of the idea.
     bool dense_on_device = false;
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
