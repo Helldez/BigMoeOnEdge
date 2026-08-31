@@ -670,9 +670,9 @@ Plan plan_run(const RunConfig & base,
         if (hw.best_threads > 0) {
             p.config.n_threads = (int) hw.best_threads;
             note("threads", u64s(hw.best_threads), Source::Measured,
-                 "the highest rate this machine reached on its own memory-bound matmul, swept over the "
-                 "thread counts it has. It is that matmul and not a whole decode, which is why this is a "
-                 "measurement of the machine rather than of the model");
+                 "swept over the thread counts this machine has, on a matmul in this model's own "
+                 "quantized format - which is the material that matters: measured in F32 instead, the same "
+                 "sweep answered 2 on a phone whose engine is 58% faster at 4");
         } else if (hw.core_classes.size() > 1) {
             std::string shape;
             for (size_t k = 0; k < hw.core_classes.size(); ++k)

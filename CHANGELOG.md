@@ -78,6 +78,16 @@ Semantic Versioning.
   one, the plan says there is nothing to improve; where the machine does not publish them, the
   default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
 
+- **And the measurement had to be made of the right material.** The first sweep used an F32 matmul
+  and answered **2** on the phone — the same wrong number as the rule it replaced, on a machine whose
+  engine is 58% faster at 4. An F32 GEMV is pure bandwidth and stops improving the moment the bus is
+  full; a quantized one carries dequantisation work per byte and keeps using cores past that point.
+  The sweep now runs on a matmul in **this model's own quantized format**, and answers 4 on the
+  phone and 4 on the desktop, both matching what the engine prefers. It also changes what the figure
+  beside the machine line means: not raw memory bandwidth, but how fast a backend consumes this
+  model's weights — which is the number an offload decision actually wants, and it is labelled as
+  such.
+
 - **And replaced with a measurement.** Leaving the count at a default is still a hard-coded number,
   just someone else's. The bandwidth probe now sweeps the thread counts the machine has — powers of
   two up to the core count, plus the core count — running the same memory-bound matmul at each and

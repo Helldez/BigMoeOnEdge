@@ -200,11 +200,12 @@ struct HardwareProfile {
     // to ask the machine.
     uint32_t best_threads = 0;
 
-    // What the HOST can actually reach from memory, in GiB/s, 0 when unmeasured. Paired with a
-    // device's own figure it answers the only question that decides an offload on shared memory:
-    // batch-1 decode is a chain of GEMVs that reads every weight once, so what matters is not who
-    // has the faster arithmetic but who can pull bytes faster out of the same DRAM. Where the two
-    // are the same memory, the ratio of these two numbers IS the offload's value.
+    // How fast the HOST consumes weight bytes in THIS MODEL's own format, in GiB/s, 0 when
+    // unmeasured. Not raw memory bandwidth, and the difference is the point: a quantized matmul
+    // carries dequantisation work per byte, so it reaches a different rate and scales differently
+    // with threads than an F32 read of the same memory would. Paired with a device's figure from the
+    // same graph, it answers the only question that decides an offload - who consumes this model's
+    // weights faster - which is what batch-1 decode is, every weight read once and multiplied once.
     double host_bandwidth_gibs = 0.0;
 
     std::vector<ComputeDevice> devices;

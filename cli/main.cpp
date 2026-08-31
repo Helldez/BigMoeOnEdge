@@ -878,7 +878,7 @@ int main(int argc, char ** argv) {
         // What each engine can pull out of memory, on one graph so the figures compare. It is the
         // number an offload turns on, and it needs the backends registered, so it waits for the
         // init above rather than joining the free facts.
-        probe_bandwidth(hw);
+        probe_bandwidth(hw, mp);
         const Placement placement = probe_placement(cfg.model_path.c_str(), mp, (uint32_t) cfg.n_ctx);
         const Plan plan = plan_run(cfg, hw, mp, placement, req);
         cfg = plan.config;

@@ -38,6 +38,17 @@ constexpr int64_t k_rows = 4096;
 constexpr int64_t k_cols = 4096;
 constexpr int k_reps = 4;
 
+// The weight type to measure with. The model's own where it has one, because a quantized matmul and
+// an F32 one do not scale the same way with threads: the F32 kind is pure bandwidth and stops
+// improving as soon as the bus is full, while the quantized kind carries dequantisation per byte
+// and keeps using cores past that. Falling back to F32 makes the figure a bandwidth number and says
+// so; using the model's makes it a number about this workload.
+ggml_type weight_type(const ModelProfile & model) {
+    if (model.expert_type_id < 0) return GGML_TYPE_F32;
+    const ggml_type t = (ggml_type) model.expert_type_id;
+    return ggml_blck_size(t) > 0 ? t : GGML_TYPE_F32;
+}
+
 // The thread counts worth trying. Powers of two up to the core count, plus the core count itself:
 // enough resolution to separate "half the cores" from "all of them", which is where the refuted
 // rule went wrong, without turning a probe into a benchmark.
@@ -52,7 +63,7 @@ std::vector<int> thread_ladder(uint32_t n_cores) {
 // Run the same GEMV on one backend and return the rate at which it read the weight, in GiB/s.
 // Returns 0 for every way of not knowing: no backend, no allocation, no kernel, no time elapsed.
 // A zero here is "unmeasured", and it is never to be read as "slow".
-double measure(ggml_backend_dev_t dev, int n_threads = 0) {
+double measure(ggml_backend_dev_t dev, ggml_type wtype, int n_threads = 0) {
     if (!dev) return 0.0;
     ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
     if (!backend) return 0.0;
@@ -77,8 +88,12 @@ double measure(ggml_backend_dev_t dev, int n_threads = 0) {
     ggml_backend_buffer_t buf = nullptr;
 
     if (ctx) {
-        ggml_tensor * w = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k_cols, k_rows);
-        ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k_cols, 1);
+        // Shapes must respect the type's block size, which is what makes this the model's own kind
+        // of matmul rather than a shape the kernel would refuse.
+        const int64_t blk = ggml_blck_size(wtype);
+        const int64_t cols = blk > 0 ? (k_cols / blk) * blk : k_cols;
+        ggml_tensor * w = ggml_new_tensor_2d(ctx, wtype, cols, k_rows);
+        ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, cols, 1);
         ggml_tensor * y = (w && x) ? ggml_mul_mat(ctx, w, x) : nullptr;
 
         // Ask before allocating: a backend without a kernel for this shape would otherwise be
@@ -88,7 +103,7 @@ double measure(ggml_backend_dev_t dev, int n_threads = 0) {
             if (buf) {
                 // Any bytes will do - the rate does not depend on the values - but they must be
                 // written through the backend, since the buffer may not be host memory.
-                std::vector<float> zeros((size_t) (k_rows * k_cols), 0.0f);
+                std::vector<char> zeros((size_t) std::max(ggml_nbytes(w), ggml_nbytes(x)), 0);
                 ggml_backend_tensor_set(w, zeros.data(), 0, ggml_nbytes(w));
                 ggml_backend_tensor_set(x, zeros.data(), 0, ggml_nbytes(x));
 
@@ -118,7 +133,8 @@ double measure(ggml_backend_dev_t dev, int n_threads = 0) {
 
 } // namespace
 
-void probe_bandwidth(HardwareProfile & hw) {
+void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model) {
+    const ggml_type wtype = weight_type(model);
     const uint64_t needed = (uint64_t) k_rows * k_cols * sizeof(float);
     for (ComputeDevice & d : hw.devices) {
         ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
@@ -128,7 +144,7 @@ void probe_bandwidth(HardwareProfile & hw) {
         // is not worth pushing a machine into a failed allocation to get. Host memory is not
         // guarded here because the residency budget already governs it.
         if (!d.host_memory && d.memory_free && d.memory_free < needed * 4) continue;
-        const double gibs = measure(dev);
+        const double gibs = measure(dev, wtype);
         if (gibs <= 0.0) continue;
         d.memory_bandwidth_gibs = gibs;
         // The host's own figure is whatever the CPU backend reached on the same graph. Taking it
@@ -145,7 +161,7 @@ void probe_bandwidth(HardwareProfile & hw) {
         double best_rate = 0.0;
         uint32_t best_n = 0;
         for (int t : thread_ladder(hw.n_cores)) {
-            const double r = measure(dev, t);
+            const double r = measure(dev, wtype, t);
             if (r > best_rate * 1.02) { // a rung has to beat the incumbent by more than noise
                 best_rate = r;
                 best_n = (uint32_t) t;
@@ -162,7 +178,7 @@ void probe_bandwidth(HardwareProfile & hw) {
     // offload belongs in the description of the machine rather than only inside a rule that read it.
     if (hw.host_bandwidth_gibs > 0.0) {
         char buf[64];
-        std::snprintf(buf, sizeof(buf), ", %.0f GiB/s host read", hw.host_bandwidth_gibs);
+        std::snprintf(buf, sizeof(buf), ", %.0f GiB/s on this model's matmul", hw.host_bandwidth_gibs);
         hw.label += buf;
     }
 }

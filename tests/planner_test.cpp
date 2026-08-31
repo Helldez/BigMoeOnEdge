@@ -389,8 +389,8 @@ int main() {
         check(p.config.n_threads == 8, "swept threads: the measurement decides", std::to_string(p.config.n_threads));
         const Decision * d = find(p, "threads");
         check(d && d->source == Source::Measured, "swept threads: recorded as measured");
-        check(d && d->reason.find("not a whole decode") != std::string::npos,
-              "swept threads: the plan says what the instrument actually saw");
+        check(d && d->reason.find("quantized format") != std::string::npos,
+              "swept threads: the plan says what the instrument was made of");
     }
 
     // ── streamed experts may be COMPUTED on a device that reads host memory ─────────

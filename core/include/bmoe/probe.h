@@ -53,7 +53,12 @@ void register_backends();
 // CPU backend's result is also the host's figure. Devices are only registered after
 // llama_backend_init(), and a device that will not allocate or has no kernel for the op keeps its
 // unmeasured 0, which every rule declines on rather than reading as "slow".
-void probe_bandwidth(HardwareProfile & hw);
+// `model` supplies the quantized type the weights actually are. That matters more than it looks:
+// an F32 GEMV saturates a memory bus at very few threads, while a quantized one carries
+// dequantisation work per byte and keeps scaling past that point. Measured with F32 on a phone, the
+// sweep answered 2 threads - the same wrong answer as the rule it replaced, and the engine is 58%
+// faster at 4. The instrument has to be made of the same material as the workload.
+void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model);
 
 // How much memory this process can hold and expect to keep, which is not what the machine reports
 // as available: where a reclaim compresses, that figure is a floor for what could be taken and an
