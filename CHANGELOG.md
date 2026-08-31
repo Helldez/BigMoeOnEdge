@@ -99,6 +99,19 @@ Semantic Versioning.
   that matters for this, the phone whose classes broke the old rule, has not been re-measured: it
   dropped off wireless debugging mid-session and that validation is owed.
 
+- **The streamer now binds only expert tensors it can actually serve, and that was the fault.** The
+  capture harvested any expert-named tensor from the graph regardless of which backend owned its
+  buffer — so with weights on a device it bound one and then rebound `data` through a pointer that
+  was not ours. That is the segmentation fault three device runs hit. A layer whose experts a
+  placement put on a device is simply not the streamer's, and the capture now says so by asking
+  `ggml_backend_buffer_is_host`. A null buffer keeps the historical answer, since that is what a
+  CPU-only run has always presented.
+
+  It also unlocks the one shape the July verdict left untested. `--gpu-layers N` places the last N
+  layers **entirely** on the device — experts included and resident, no expert override — which puts
+  the boundary in one place instead of twice per layer. The override is what creates the
+  interleaving that measured −27%.
+
 - **`--dense-on-device`: built, armed once, refused.** On a machine whose accelerator shares host
   memory the capacity tier has nothing to say, so what is left is bandwidth — and the probe reads
   the phone's Adreno at 24 GiB/s against the host's 11 on this model's own matmul, with a dense set

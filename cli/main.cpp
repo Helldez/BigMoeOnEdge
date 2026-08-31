@@ -696,7 +696,15 @@ int main(int argc, char ** argv) {
             probe_io = true;
         } else if (a == "--no-probe-io")
             probe_io = false;
-        else if (a == "--dense-on-device") {
+        else if (a == "--gpu-layers" && i + 1 < argc) {
+            // Contiguous blocks: llama.cpp fills devices from the TOP, so N here means the last N
+            // layers ENTIRELY on the device - experts included and resident, not streamed. That is
+            // the one shape the July verdict left untested: it puts the device boundary in one
+            // place instead of twice per layer, at the cost of those layers' experts leaving the
+            // cache. No expert override goes with it, deliberately; the override is what creates
+            // the interleaving that verdict measured.
+            cfg.n_gpu_layers = std::atoi(argv[++i]);
+        } else if (a == "--dense-on-device") {
             auto_plan = true;
             cfg.dense_on_device = true;
         } else if (a == "--probe-mem") {
