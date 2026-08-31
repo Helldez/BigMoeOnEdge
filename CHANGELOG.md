@@ -78,6 +78,17 @@ Semantic Versioning.
   one, the plan says there is nothing to improve; where the machine does not publish them, the
   default stands and prints `[unprobed]` rather than deriving a number from a bare core count.
 
+- **And replaced with a measurement.** Leaving the count at a default is still a hard-coded number,
+  just someone else's. The bandwidth probe now sweeps the thread counts the machine has — powers of
+  two up to the core count, plus the core count — running the same memory-bound matmul at each and
+  keeping the rung that beats the incumbent by more than noise. The thread setter comes from
+  `ggml_backend_reg_get_proc_address`, the way ggml exposes every backend-specific entry point, so a
+  backend that has one is configured and one that has none runs as it is. Where the sweep has an
+  answer it decides, over the core classes, which go back to being a fact rather than an argument.
+  On the desktop it picks 4 of 16 — the same number as the default, now for a reason. The machine
+  that matters for this, the phone whose classes broke the old rule, has not been re-measured: it
+  dropped off wireless debugging mid-session and that validation is owed.
+
 - **The thread rule is withdrawn: the first heterogeneous machine refuted it.** It set the count to
   the fast core class, reasoning that every thread meets the same barrier so a thread on a slower
   core sets the pace rather than adding to it. Sound, and wrong: on a phone with two prime cores and

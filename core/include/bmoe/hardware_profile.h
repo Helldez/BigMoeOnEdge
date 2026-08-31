@@ -192,6 +192,14 @@ struct HardwareProfile {
     // slower class can cost throughput rather than add it. One entry means every core is alike.
     std::vector<uint32_t> core_classes;
 
+    // The thread count that reached the highest rate on this machine's own memory-bound matmul,
+    // 0 when unmeasured. It is a measurement rather than a rule for a reason: the rule that read
+    // core classes instead - fast class only, because a barrier waits for its slowest participant -
+    // was refuted by the first heterogeneous machine it met, where it cost 37% of throughput. How
+    // many threads a machine wants is a property of that machine, and the honest way to have it is
+    // to ask the machine.
+    uint32_t best_threads = 0;
+
     // What the HOST can actually reach from memory, in GiB/s, 0 when unmeasured. Paired with a
     // device's own figure it answers the only question that decides an offload on shared memory:
     // batch-1 decode is a chain of GEMVs that reads every weight once, so what matters is not who

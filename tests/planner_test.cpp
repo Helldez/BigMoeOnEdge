@@ -303,7 +303,7 @@ int main() {
         het.core_classes = {10, 10}; // ten fast, ten slow: a barrier waits for the slow ones
         const Plan p = plan_run(base_cfg(), het, model, PlanRequest{});
         check(p.config.n_threads == base_cfg().n_threads,
-              "heterogeneous cores: the count is NOT derived - that rule was refuted on a real phone",
+              "heterogeneous cores alone: the count is NOT derived - that rule was refuted on a real phone",
               std::to_string(p.config.n_threads));
         check(p.config.n_threads_batch == 0, "heterogeneous cores: prefill keeps the default too");
         check(validate(p.config).ok, "heterogeneous cores: the plan is a valid config", validate(p.config).error);
@@ -375,6 +375,22 @@ int main() {
         check(d && d->reason.find("could compute them on paper") != std::string::npos,
               "an integrated device is considered for the streamed experts, not skipped as if it were the CPU",
               d ? d->reason.substr(0, 70) : "none");
+    }
+
+    // ── the thread count is measured, not reasoned about ───────────────────────────
+    // What replaced the refuted rule: a sweep on the machine's own matmul. Where it has an answer it
+    // wins, including over the core classes, which stay a fact and stop being an argument.
+    {
+        HardwareProfile swept = desktop();
+        swept.n_cores = 20;
+        swept.core_classes = {2, 18}; // the shape that broke the old rule: it would have said 2
+        swept.best_threads = 8;
+        const Plan p = plan_run(base_cfg(), swept, model, PlanRequest{});
+        check(p.config.n_threads == 8, "swept threads: the measurement decides", std::to_string(p.config.n_threads));
+        const Decision * d = find(p, "threads");
+        check(d && d->source == Source::Measured, "swept threads: recorded as measured");
+        check(d && d->reason.find("not a whole decode") != std::string::npos,
+              "swept threads: the plan says what the instrument actually saw");
     }
 
     // ── streamed experts may be COMPUTED on a device that reads host memory ─────────

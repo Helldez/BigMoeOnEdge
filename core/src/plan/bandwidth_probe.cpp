@@ -23,6 +23,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <vector>
@@ -37,13 +38,35 @@ constexpr int64_t k_rows = 4096;
 constexpr int64_t k_cols = 4096;
 constexpr int k_reps = 4;
 
+// The thread counts worth trying. Powers of two up to the core count, plus the core count itself:
+// enough resolution to separate "half the cores" from "all of them", which is where the refuted
+// rule went wrong, without turning a probe into a benchmark.
+std::vector<int> thread_ladder(uint32_t n_cores) {
+    std::vector<int> out;
+    for (int t = 1; t <= (int) n_cores; t *= 2)
+        out.push_back(t);
+    if (n_cores > 0 && (out.empty() || out.back() != (int) n_cores)) out.push_back((int) n_cores);
+    return out;
+}
+
 // Run the same GEMV on one backend and return the rate at which it read the weight, in GiB/s.
 // Returns 0 for every way of not knowing: no backend, no allocation, no kernel, no time elapsed.
 // A zero here is "unmeasured", and it is never to be read as "slow".
-double measure(ggml_backend_dev_t dev) {
+double measure(ggml_backend_dev_t dev, int n_threads = 0) {
     if (!dev) return 0.0;
     ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
     if (!backend) return 0.0;
+
+    // Ask the backend for its own thread setter rather than calling a CPU-specific function: it is
+    // how ggml exposes every backend-specific entry point, so a backend that has one is configured
+    // and one that has none simply runs as it is.
+    if (n_threads > 0) {
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+        auto set_threads =
+            reg ? (ggml_backend_set_n_threads_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_n_threads")
+                : nullptr;
+        if (set_threads) set_threads(backend, n_threads);
+    }
 
     double gibs = 0.0;
     ggml_init_params ip{};
@@ -111,7 +134,27 @@ void probe_bandwidth(HardwareProfile & hw) {
         // The host's own figure is whatever the CPU backend reached on the same graph. Taking it
         // from the same measurement rather than from a separate loop is the point: the comparison
         // the rules make is a ratio, and a ratio between two different experiments means nothing.
-        if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) hw.host_bandwidth_gibs = gibs;
+        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU) continue;
+        hw.host_bandwidth_gibs = gibs;
+
+        // How many threads this machine wants, asked rather than reasoned about. The same graph at
+        // each rung of the ladder; the rung with the highest rate wins, and ties go to the smaller
+        // count because threads are not free elsewhere. What this instrument sees is a memory-bound
+        // matmul, which is what a batch-1 decode mostly is - not the whole of it, and the plan says
+        // as much rather than presenting the number as a decode measurement.
+        double best_rate = 0.0;
+        uint32_t best_n = 0;
+        for (int t : thread_ladder(hw.n_cores)) {
+            const double r = measure(dev, t);
+            if (r > best_rate * 1.02) { // a rung has to beat the incumbent by more than noise
+                best_rate = r;
+                best_n = (uint32_t) t;
+            }
+        }
+        if (best_n > 0) {
+            hw.best_threads = best_n;
+            hw.host_bandwidth_gibs = std::max(hw.host_bandwidth_gibs, best_rate);
+        }
     }
 
     // Put it where a reader will see it. The label is the machine's one line of free text, printed

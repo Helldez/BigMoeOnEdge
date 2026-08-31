@@ -667,7 +667,13 @@ Plan plan_run(const RunConfig & base,
     // which is a probe this does not have. The same applies to prefill: it is compute-bound and
     // plausibly wants every core, and "plausibly" is exactly what this planner does not ship.
     if (!req.is_pinned("threads")) {
-        if (hw.core_classes.size() > 1) {
+        if (hw.best_threads > 0) {
+            p.config.n_threads = (int) hw.best_threads;
+            note("threads", u64s(hw.best_threads), Source::Measured,
+                 "the highest rate this machine reached on its own memory-bound matmul, swept over the "
+                 "thread counts it has. It is that matmul and not a whole decode, which is why this is a "
+                 "measurement of the machine rather than of the model");
+        } else if (hw.core_classes.size() > 1) {
             std::string shape;
             for (size_t k = 0; k < hw.core_classes.size(); ++k)
                 shape += (k ? " + " : "") + u64s(hw.core_classes[k]);
