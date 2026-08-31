@@ -696,7 +696,10 @@ int main(int argc, char ** argv) {
             probe_io = true;
         } else if (a == "--no-probe-io")
             probe_io = false;
-        else if (a == "--probe-mem") {
+        else if (a == "--dense-on-device") {
+            auto_plan = true;
+            cfg.dense_on_device = true;
+        } else if (a == "--probe-mem") {
             auto_plan = true;
             probe_mem = true;
         } else if (a == "--plan-only") {

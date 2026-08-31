@@ -99,6 +99,20 @@ Semantic Versioning.
   that matters for this, the phone whose classes broke the old rule, has not been re-measured: it
   dropped off wireless debugging mid-session and that validation is owed.
 
+- **`--dense-on-device`: built, armed once, refused.** On a machine whose accelerator shares host
+  memory the capacity tier has nothing to say, so what is left is bandwidth — and the probe reads
+  the phone's Adreno at 24 GiB/s against the host's 11 on this model's own matmul, with a dense set
+  of only 1785 MiB. Computing it there costs no memory on a shared pool, which makes it the one
+  offer such a device has. The mechanism is every layer to the device plus an `exps` override
+  routing the routed experts back to a host buffer for the streamer.
+  
+  It does not work. It faults once the expert streamer starts, three times out of three, while the
+  same run without it is fine. Standing the dense policy down first — it would rebind a pointer it
+  does not own — moved the fault later rather than removing it, so something else in the streamed
+  path is still handed a device address. The flag therefore refuses itself and says so: a lever that
+  takes the machine down is worse than one that does not exist. The opportunity is real and the
+  mechanism is not, and the plan states both.
+
 - **A placement the fitter makes on unified memory is counted twice, and acting on it crashed a
   phone.** The adapter used to discard the fitter's `n_gpu_layers` unless a device reported
   `TYPE_GPU` — which an integrated accelerator never does, so on every phone, APU and unified-memory

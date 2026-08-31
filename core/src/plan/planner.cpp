@@ -686,6 +686,45 @@ Plan plan_run(const RunConfig & base,
                  "placement is quoted and not applied. Using such a device is a bandwidth decision, not a "
                  "capacity one");
 
+    // ── the dense set on a device that shares this memory ──────────────────────────
+    // The capacity tier said nothing here, so this is the bandwidth decision it left behind. The
+    // dense set is small - a fraction of the file - and the device reads this model's weights
+    // faster than the cores do, so computing it there is the whole of what an integrated
+    // accelerator can offer. It costs no capacity, because the memory is the same memory.
+    //
+    // Armed by the caller, not by this plan. What is missing is the device's own compute buffer as
+    // a budget line: on one phone it reserved 906 MiB against the CPU's 22, and a plan that sizes a
+    // cache without knowing that is a plan that takes the machine down - which it did, once.
+    if (devices_share_host_memory && !p.config.dense_on_device) {
+        const ComputeDevice * fast = nullptr;
+        for (const ComputeDevice & d : hw.devices) {
+            if (d.is_cpu || d.runs_expert_op != Tri::Yes || d.needs_repack == Tri::Yes) continue;
+            if (hw.host_bandwidth_gibs <= 0.0 || d.memory_bandwidth_gibs <= hw.host_bandwidth_gibs * 1.10) continue;
+            fast = &d;
+            break;
+        }
+        if (fast)
+            note("dense-on-device", "off", Source::Unprobed,
+                 "this device reads the model's own weights at " + u64s((uint64_t) fast->memory_bandwidth_gibs) +
+                     " GiB/s against the host's " + u64s((uint64_t) hw.host_bandwidth_gibs) +
+                     ", and the dense set is " + u64s(mib(model.dense_bytes)) +
+                     " MiB - small enough that computing it there costs no memory on a shared pool. Arm it with "
+                     "--dense-on-device; this plan will not, until the device's compute buffer is a budget line");
+    }
+    if (p.config.dense_on_device && devices_share_host_memory) {
+        // Refused, and the refusal is the finding. Placing the dense set on a shared-memory device
+        // and routing the experts back with an `exps` override loads, reserves, starts the streamer
+        // - and then segmentation-faults, three times out of three on the phone it was tried on,
+        // while the same run without it is fine. Standing the dense policy down (it would rebind a
+        // pointer it does not own) moved the fault later rather than removing it, so something else
+        // in the streamed path is still handed a device address. Until that is found this arms
+        // nothing: a lever that takes the machine down is worse than one that does not exist.
+        p.config.dense_on_device = false;
+        note("dense-on-device", "refused", Source::Derived,
+             "armed by the caller and refused here: this path faults once the expert streamer starts, "
+             "reproducibly, and the cause is not yet known. The opportunity is real - this device reads the "
+             "model's weights faster than the host - and the mechanism is not");
+    }
     // ── overlap: named, not armed ──────────────────────────────────────────────────
     // Hiding compute behind the reads is not a quality choice - the output is byte-identical - and
     // it is worth about 5% on the phone this was measured on, where a plan without it lost to a

@@ -403,6 +403,14 @@ struct RunConfig {
     int n_gpu_layers = 0;
     std::vector<std::string> buft_overrides;
 
+    // Put the DENSE weights on an accelerator that shares this host's memory, leaving the routed
+    // experts on the host for the streamer. On such a machine the move frees no memory - it is the
+    // same pool - so it is worth making only where that device consumes this model's weights faster
+    // than the CPU does, which the bandwidth probe measures. Off by default and armed by the caller:
+    // the one time a device placement armed itself here it took a phone down, and the device's own
+    // compute buffer is not yet a line in the budget.
+    bool dense_on_device = false;
+
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
     SpecConfig spec; // self-speculative decoding (MTP head or n-gram lookup); off by default
