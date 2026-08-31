@@ -33,6 +33,7 @@
 #include "bmoe/predict_stats.h"
 #include "bmoe/row_source.h"
 #include "expert_stream_source.h"
+#include "markov_chain.h"
 
 #include <atomic>
 #include <chrono>
@@ -195,6 +196,8 @@ public:
     // run, so it cannot ride on begin_trace_batch.
     void set_batch_phase(int phase) { batch_phase_ = phase; }
 
+    void reset_markov() { markov_.reset(); }
+
     long long experts_routed() const { return experts_routed_; }
     long long experts_dropped() const { return experts_dropped_; }
     // Substitution's own ledger. Reranked counts every slot the policy examined (its denominator —
@@ -291,10 +294,12 @@ private:
     std::unordered_set<std::string> row_disqualified_; // non-expert weight leaves (see captured_weights)
     std::vector<int32_t> gathered_;                    // reused scratch for stream-mode id gather
 
-    // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
-    // during prefill). Empty when prefetch is off or a layer has not been seen yet.
-    int prefetch_layers_ = 0;
-    std::vector<std::vector<int32_t>> prev_ids_;
+        // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
+        // during prefill). Empty when prefetch is off or a layer has not been seen yet.
+        int prefetch_layers_ = 0;
+        std::vector<std::vector<int32_t>> prev_ids_;
+        MarkovChain markov_;
+        std::vector<int32_t> temp_pred_ids_;
 
     // Prediction (probe and/or prefetch). All of this is inert unless one of the two is on.
     //

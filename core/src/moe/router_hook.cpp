@@ -3,6 +3,7 @@
 #include "ggml.h"
 #include "../io/platform_io.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -1535,11 +1536,25 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             apply_route_ahead(t, il, nu, nt);
         }
 
+        const int n_expert = t->nb[0] > 0 ? (int)(t->nb[1] / t->nb[0]) : 0;
+        if (n_expert > 0 && !markov_.is_inited()) {
+            markov_.init(n_layer_, n_expert);
+        }
+
         gathered_.clear();
         for (int j = 0; j < nt; ++j)
             for (int k = 0; k < nu; ++k)
                 gathered_.push_back(
                     *(const int32_t *) ((const char *) t->data + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]));
+
+        if (markov_.is_inited() && !prev_ids_[il].empty() && !gathered_.empty()) {
+            const size_t last_row = (size_t) (nt - 1) * nu;
+            for (int32_t prev_exp : prev_ids_[il]) {
+                for (int k = 0; k < nu; ++k) {
+                    markov_.update(il, prev_exp, gathered_[last_row + k]);
+                }
+            }
+        }
 
         if (trace_on_) {
             flush_pending(); // the previous layer's whole weight chain has been offered by now
@@ -1600,8 +1615,28 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         if (prefetch_layers_ > 0 && il >= 0 && il < n_layer_) {
             for (int k = 1; k <= prefetch_layers_; ++k) {
                 const int tl = il + k;
-                if (tl < n_layer_ && !prev_ids_[tl].empty())
-                    source_->prefetch(tl, prev_ids_[tl].data(), (int) prev_ids_[tl].size());
+                if (tl < n_layer_ && !prev_ids_[tl].empty()) {
+                    if (markov_.is_inited()) {
+                        temp_pred_ids_.clear();
+                        for (int32_t prev_exp : prev_ids_[tl]) {
+                            int32_t pred_exp = markov_.predict(tl, prev_exp);
+                            if (pred_exp >= 0) {
+                                if (std::find(temp_pred_ids_.begin(), temp_pred_ids_.end(), pred_exp) == temp_pred_ids_.end()) {
+                                    temp_pred_ids_.push_back(pred_exp);
+                                }
+                            } else {
+                                if (std::find(temp_pred_ids_.begin(), temp_pred_ids_.end(), prev_exp) == temp_pred_ids_.end()) {
+                                    temp_pred_ids_.push_back(prev_exp);
+                                }
+                            }
+                        }
+                        if (!temp_pred_ids_.empty()) {
+                            source_->prefetch(tl, temp_pred_ids_.data(), (int) temp_pred_ids_.size());
+                        }
+                    } else {
+                        source_->prefetch(tl, prev_ids_[tl].data(), (int) prev_ids_[tl].size());
+                    }
+                }
             }
         }
 

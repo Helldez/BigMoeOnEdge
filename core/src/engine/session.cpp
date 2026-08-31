@@ -1105,15 +1105,11 @@ RunResult Session::generate(const GenerateRequest & req,
     // continues the conversation, reusing the KV prefix already decoded from earlier turns.
     if (req.clear_kv) {
         llama_memory_clear(llama_get_memory(ctx), true);
-        // The draft context tracks the target's positions and must be dropped with it, or the first
-        // draft of the new conversation is conditioned on the previous one.
         if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
         im.chat_history.clear();
         im.kv_tokens.clear();
-        // A new chat resets the sampler RNG, so a fixed seed reproduces the same transcript from a
-        // fresh conversation. A continued turn (clear_kv=false) keeps the stream going, matching the
-        // KV it decodes against.
         if (im.smpl) llama_sampler_reset(im.smpl);
+        im.hook->reset_markov();
     }
 
     // Format the prompt. With chat on, render the model's OWN chat template (real Jinja) over the
