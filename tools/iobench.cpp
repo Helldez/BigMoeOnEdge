@@ -31,6 +31,14 @@
 //                [--compute-load N] [--scatter N]
 #include "file_reader.h"
 #include "platform_io.h"
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
+#include "platform_io.h"
 
 #include <atomic>
 #include <chrono>
@@ -64,6 +72,58 @@ struct LaneResult {
     long long busy_ns = 0;
 };
 
+// A read-only mapping of the whole file, held open while the lanes read, which is the state
+// llama.cpp leaves a gguf in for the model's lifetime. It exists because that state is not free:
+// on Windows, while a section of a file is alive, NTFS serialises concurrent unbuffered reads on
+// it, and four lanes deliver one lane's throughput (2400-2660 MiB/s without, 895-930 with, at
+// 576 KiB). Nothing is ever read through the mapping here; only its existence is the variable.
+struct FileMapping {
+    void * view = nullptr;
+    uint64_t len = 0;
+#if defined(_WIN32)
+    HANDLE file = INVALID_HANDLE_VALUE, section = nullptr;
+#else
+    int fd = -1;
+#endif
+
+    bool open(const std::string & path) {
+#if defined(_WIN32)
+        file = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+        LARGE_INTEGER sz;
+        if (!GetFileSizeEx(file, &sz)) return false;
+        len = (uint64_t) sz.QuadPart;
+        section = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (!section) return false;
+        view = MapViewOfFile(section, FILE_MAP_READ, 0, 0, 0);
+        return view != nullptr;
+#else
+        fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0) return false;
+        len = (uint64_t) lseek(fd, 0, SEEK_END);
+        view = mmap(nullptr, (size_t) len, PROT_READ, MAP_PRIVATE, fd, 0);
+        return view != MAP_FAILED;
+#endif
+    }
+
+    void close() {
+#if defined(_WIN32)
+        if (view) UnmapViewOfFile(view);
+        if (section) CloseHandle(section);
+        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+        view = nullptr;
+        section = nullptr;
+        file = INVALID_HANDLE_VALUE;
+#else
+        if (view && view != MAP_FAILED) munmap(view, (size_t) len);
+        if (fd >= 0) ::close(fd);
+        view = nullptr;
+        fd = -1;
+#endif
+    }
+};
+
 // One lane: random-offset logical reads of `slice` bytes until the deadline, each issued as
 // `scatter` preads of slice/scatter bytes at independent offsets (see the header comment). Offsets
 // are block-aligned and kept a slice away from EOF so every read is a full window (the
@@ -75,28 +135,48 @@ void lane_worker(bmoe::FileReader * r,
                  int scatter,
                  size_t align,
                  uint64_t fsize,
+                 uint64_t range_bytes,
+                 bool fresh,
                  clock_t_::time_point deadline,
                  LaneResult * out) {
     // Equal-total-bytes split, each piece its own aligned window — otherwise scatter rows would
     // compare different traffic volumes, not different layouts.
     const size_t piece = ((slice / (size_t) scatter) + align - 1) & ~(align - 1);
-    void * dst = bmoe::pio::alloc_aligned(align, piece);
+    // --fresh: reserved address space that is decommitted and recommitted before every read, so
+    // each copy out of the bounce lands on pages the process has never touched -- what the expert
+    // cache's reserve/commit/evict does to every slice it admits, and a cost a plain reused
+    // destination buffer hides entirely.
+    void * dst = fresh ? bmoe::pio::vm_reserve(piece) : bmoe::pio::alloc_aligned(align, piece);
     if (!dst) return;
-    const uint64_t span = (fsize > piece * 2) ? (fsize - piece * 2) : 0;
+    const uint64_t whole = (fsize > piece * 2) ? (fsize - piece * 2) : 0;
+    // --range-mb: confine the offsets to one region in the middle of the file, the way one layer's
+    // routed experts sit inside one tensor rather than spread over the whole file.
+    const uint64_t span = (range_bytes && range_bytes < whole) ? range_bytes : whole;
+    const uint64_t base = (span < whole) ? ((whole - span) / 2) & ~(uint64_t) (align - 1) : 0;
     if (span == 0) {
-        bmoe::pio::aligned_free(dst);
+        if (fresh)
+            bmoe::pio::vm_release(dst, piece);
+        else
+            bmoe::pio::aligned_free(dst);
         return;
     }
     Lcg rng((uint64_t) lane + 1);
     LaneResult acc;
     while (clock_t_::now() < deadline) {
         for (int s = 0; s < scatter; ++s) {
-            const uint64_t off = (rng.next() % span) & ~(uint64_t) (align - 1);
+            const uint64_t off = base + ((rng.next() % span) & ~(uint64_t) (align - 1));
+            if (fresh) {
+                bmoe::pio::vm_evict(dst, piece);
+                if (!bmoe::pio::vm_commit(dst, piece)) break;
+            }
             const auto t0 = clock_t_::now();
             const long long got = r->read(lane, dst, off, piece);
             const auto t1 = clock_t_::now();
             if (got < 0) {
-                bmoe::pio::aligned_free(dst);
+                if (fresh)
+                    bmoe::pio::vm_release(dst, piece);
+                else
+                    bmoe::pio::aligned_free(dst);
                 *out = acc;
                 return;
             }
@@ -105,7 +185,10 @@ void lane_worker(bmoe::FileReader * r,
             acc.busy_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
         }
     }
-    bmoe::pio::aligned_free(dst);
+    if (fresh)
+        bmoe::pio::vm_release(dst, piece);
+    else
+        bmoe::pio::aligned_free(dst);
     *out = acc;
 }
 
@@ -134,6 +217,10 @@ bool run_row(const std::string & path,
              bool direct,
              double seconds,
              int load,
+             uint64_t range_bytes,
+             bool fresh,
+             bool with_mapping,
+             bool reopen_lanes,
              double * mibs_out) {
     bmoe::FileReader r;
     // Ask the OS rather than assuming 4096: alignment is exactly the variable this tool exists to
@@ -143,6 +230,22 @@ bool run_row(const std::string & path,
     if (!r.open(path, lanes, direct, align, bounce_cap)) {
         std::fprintf(stderr, "open failed (lanes=%d)\n", lanes);
         return false;
+    }
+    // The mapping is opened AFTER the lanes and, with --reopen-lanes, dropped before they are
+    // reopened: on Windows a lane opened while a section was alive keeps serialising against it
+    // even once the section is gone, so the two halves of that behaviour are separable here.
+    FileMapping fm;
+    if (with_mapping && !fm.open(path)) {
+        std::fprintf(stderr, "mapping the model failed\n");
+        r.close();
+        return false;
+    }
+    if (reopen_lanes) {
+        fm.close();
+        if (!r.reopen()) {
+            std::fprintf(stderr, "reopening the lanes failed\n");
+            return false;
+        }
     }
     std::vector<LaneResult> res((size_t) lanes);
     std::vector<std::thread> th;
@@ -157,7 +260,8 @@ bool run_row(const std::string & path,
         loaders.emplace_back(load_worker, deadline, &stop);
 
     for (int i = 0; i < lanes; ++i)
-        th.emplace_back(lane_worker, &r, i, slice, scatter, align, r.file_size(), deadline, &res[(size_t) i]);
+        th.emplace_back(lane_worker, &r, i, slice, scatter, align, r.file_size(), range_bytes, fresh, deadline,
+                        &res[(size_t) i]);
     for (auto & t : th)
         t.join();
     const double wall_s = std::chrono::duration<double>(clock_t_::now() - t0).count();
@@ -180,6 +284,7 @@ bool run_row(const std::string & path,
                 r.direct() ? "direct" : "BUFFERED");
     std::fflush(stdout);
     r.close();
+    fm.close();
     if (mibs_out) *mibs_out = mibs;
     return true;
 }
@@ -192,7 +297,15 @@ void usage(const char * a0) {
                  "                  equal pieces at independent offsets — same bytes, scattered layout\n"
                  "  --buffered      drop O_DIRECT, to see what the page cache contributes\n"
                  "  --compute-load  N CPU-burning threads alongside the lanes (default 0), to read\n"
-                 "                  under the contention the streamer actually faces\n",
+                 "                  under the contention the streamer actually faces\n"
+                 "  --range-mb      confine the random offsets to one N MiB region of the file\n"
+                 "  --fresh         commit the destination pages afresh before every read, as the\n"
+                 "                  expert cache does for every slice it admits\n"
+                 "  --mmap          hold a read-only mapping of the file open while the lanes read,\n"
+                 "                  as llama.cpp does for a loaded model (Windows: this alone\n"
+                 "                  serialises unbuffered reads -- see mapping_release.h)\n"
+                 "  --reopen-lanes  with --mmap: drop the mapping and reopen the lanes before\n"
+                 "                  reading, which is what the engine does under --release-mmap\n",
                  a0);
 }
 
@@ -206,6 +319,10 @@ int main(int argc, char ** argv) {
     double seconds = 5.0;
     bool direct = true;
     int load = 0;
+    uint64_t range_bytes = 0;
+    bool fresh = false;
+    bool with_mapping = false;
+    bool reopen_lanes = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -230,6 +347,14 @@ int main(int argc, char ** argv) {
             direct = false;
         else if (a == "--compute-load")
             load = std::atoi(next("--compute-load"));
+        else if (a == "--range-mb")
+            range_bytes = (uint64_t) std::atoll(next("--range-mb")) << 20;
+        else if (a == "--fresh")
+            fresh = true;
+        else if (a == "--mmap")
+            with_mapping = true;
+        else if (a == "--reopen-lanes")
+            reopen_lanes = true;
         else {
             usage(argv[0]);
             return 2;
@@ -268,7 +393,9 @@ int main(int argc, char ** argv) {
     for (int L : lanes) {
         if (L < 1) continue;
         double mibs = 0.0;
-        if (!run_row(model, L, slice, scatter, direct, seconds, load, &mibs)) return 1;
+        if (!run_row(model, L, slice, scatter, direct, seconds, load, range_bytes, fresh, with_mapping, reopen_lanes,
+                     &mibs))
+            return 1;
         if (mibs > best) {
             best = mibs;
             best_lanes = L;

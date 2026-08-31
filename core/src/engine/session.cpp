@@ -10,6 +10,7 @@
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
 #include "../io/platform_io.h"
+#include "../io/mapping_release.h"
 
 #include "llama.h"
 #include "ggml.h"
@@ -321,6 +322,9 @@ struct Session::Impl {
     // (the fail-open default) means the flag alone does the job and generate() adds nothing.
     ThinkControl think_ctl = ThinkControl::Template;
     bool backend_inited = false;
+    // What release_file_mappings left behind on purpose; released only after `model` is gone
+    // (its teardown still unmaps/closes what it believes is its mapping; see mapping_release.h).
+    pio::MappingPlaceholders mapping_placeholders;
 
     // Sampling chain, built once at open() only when sampling is requested (temp > 0); null on the
     // greedy default, where the decode loop stays on the argmax fast path. See open()/generate().
@@ -371,6 +375,7 @@ struct Session::Impl {
         ctx.reset();
         hook.reset();
         model.reset();
+        mapping_placeholders.release();
         if (backend_inited) llama_backend_free();
     }
 };
@@ -862,6 +867,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // their own buffers; every mode needs the list to hold back a tensor too large to be
         // resident at all (qwen4exp's n-gram table), which must also leave the warm sweep and the
         // residency sensor — see DenseWeights::hold_back_oversized.
+        std::vector<std::string> unaccounted; // file tensors no policy owns; decides release-mmap below
         {
             const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
             // The subset the graph only row-gathers, when the run asked for the row policy. Their
@@ -869,20 +875,54 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             // dense list rather than a second list, so a table cannot be both resident and streamed.
             const std::unordered_set<std::string> row_names =
                 cfg.moe.row_stream ? im.hook->row_gathered_weights() : std::unordered_set<std::string>();
+            // Walk the captured OBJECTS, not the name map: a tied output head gives two tensors
+            // one name over one file range, and a name-keyed walk would rebind only one of them
+            // and leave the other reading the mmap for the life of the run. Twins are folded into
+            // one entry's alias list so the bytes are still read and allocated exactly once.
             std::vector<DenseTensorRef> dense, rows;
-            for (const auto & kv : im.hook->captured_weights()) {
-                const std::string & name = kv.first;
+            std::unordered_map<uint64_t, size_t> dense_at; // (shard, file offset) -> index in `dense`
+            for (ggml_tensor * t : im.hook->captured_weight_objects()) {
+                if (!t) continue;
+                const std::string name = t->name;
                 if (expert_names.count(name)) continue;
                 auto off = offs.off_by_name.find(name);
                 auto sz = offs.size_by_name.find(name);
                 if (off == offs.off_by_name.end() || sz == offs.size_by_name.end()) continue; // not a file tensor
+                const int file_idx = offs.file_by_name.at(name);
+                const uint64_t key = ((uint64_t) (uint32_t) file_idx << 48) ^ off->second;
+                auto seen = dense_at.find(key);
+                if (seen != dense_at.end()) {
+                    dense[seen->second].aliases.push_back(t);
+                    continue;
+                }
                 DenseTensorRef d;
-                d.tensor = kv.second;
+                d.tensor = t;
                 d.file_off = off->second;
                 d.size = sz->second;
-                d.file_idx = offs.file_by_name.at(name);
+                d.file_idx = file_idx;
+                dense_at.emplace(key, dense.size());
                 dense.push_back(d);
+                // A table with a twin is by definition also read some other way, so it cannot have
+                // qualified as row-gathered; the guard costs nothing and keeps that coupling explicit.
                 if (row_names.count(name)) rows.push_back(d);
+            }
+            for (const DenseTensorRef & d : dense)
+                if (!d.aliases.empty())
+                    std::fprintf(stderr, "bmoe: '%s' is bound %zu times over one range (tied head) — all rebound\n",
+                                 d.tensor->name, d.aliases.size() + 1);
+            // Every gguf tensor that is neither streamed nor in the dense list is one the capture
+            // decode never touched. With speculation off that is a tensor llama.cpp did not even load
+            // (load_mtp is off, so the MTP block stays in the file): nothing in this session can
+            // reach it. With the MTP draft on, a second context builds a second graph, and a tensor
+            // the capture missed may be one that graph reads, so the list then blocks release-mmap.
+            // Only release-mmap reads this list, so only a run that asked for it pays to build it.
+            if (cfg.moe.release_mmap) {
+                std::unordered_set<std::string> owned;
+                owned.reserve(dense.size());
+                for (const DenseTensorRef & d : dense)
+                    if (d.tensor) owned.insert(d.tensor->name);
+                for (const auto & kv : offs.off_by_name)
+                    if (!expert_names.count(kv.first) && !owned.count(kv.first)) unaccounted.push_back(kv.first);
             }
             const uint64_t row_budget = (uint64_t) std::max(0, cfg.moe.row_stream_mb) * 1024ull * 1024ull;
             im.source.set_dense_tensors(std::move(dense));
@@ -895,6 +935,49 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // The row policy exists only once dense_.init has taken the tables over; null means nothing
         // qualified or the takeover declined, and the hook then costs exactly nothing per node.
         im.hook->set_row_source(im.source.row_source());
+
+        // Drop the model file's mapping once nothing reads through it (core/src/io/mapping_release.h).
+        // Safety is decided here, not in the module, and it is decided by looking rather than by
+        // reasoning: the release is correct only while nothing still dereferences the mapping, so the
+        // engine asks the OS whether any weight the graph read still points inside it. That covers
+        // every residency policy at once — a dense set left mmap'd, a table held back as oversized,
+        // and the twin a tied output head creates, which carries the same name as the embedding table
+        // and which no name-based accounting can see.
+        //
+        // It is a check over the pointers the capture pass observed, not a proof about the ones it
+        // did not: a graph shape this session never built could hold another. That residue, plus the
+        // gguf tensors no policy owns once the MTP draft adds a second graph, is why the flag is
+        // opt-in rather than on by default.
+        std::vector<const void *> weight_addrs;
+        if (cfg.moe.release_mmap) {
+            weight_addrs.reserve(im.hook->captured_weight_objects().size());
+            for (const ggml_tensor * t : im.hook->captured_weight_objects())
+                if (t && t->data) weight_addrs.push_back(t->data);
+        }
+        const size_t still_mapped =
+            cfg.moe.release_mmap ? pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs) : 0;
+        if (cfg.moe.release_mmap) {
+            if (still_mapped) {
+                std::fprintf(stderr, "bmoe: release-mmap skipped: %zu weight(s) still read the model's mapping\n",
+                             still_mapped);
+            } else if (!unaccounted.empty() && cfg.spec.is_mtp()) {
+                std::fprintf(stderr, "bmoe: release-mmap skipped: %zu file tensor(s) no policy owns (first: %s)\n",
+                             unaccounted.size(), unaccounted.front().c_str());
+            } else {
+                const pio::MappingReleaseReport r =
+                    pio::release_file_mappings(offs.shard_paths, &im.mapping_placeholders);
+                // Lanes opened while the section was alive stay serialised against it even once it
+                // is gone (measured: iobench S3 vs S4), so the readers are reopened after the release.
+                if (r.supported && (r.views_unmapped || r.sections_closed) && !im.source.reopen_readers())
+                    std::fprintf(stderr, "bmoe: release-mmap: reader reopen failed; reads stay serialised\n");
+                if (r.supported) // POSIX has nothing to undo and says nothing
+                    std::fprintf(stderr,
+                                 "bmoe: release-mmap: %d view(s) unmapped (%llu MiB), %d section(s) closed%s%s%s\n",
+                                 r.views_unmapped, (unsigned long long) (r.bytes >> 20), r.sections_closed,
+                                 r.plugs_missed ? ", handle slot not reclaimed" : "", r.error.empty() ? "" : "; ",
+                                 r.error.c_str());
+            }
+        }
 
         if (route_trace) {
             im.route_trace = route_trace;

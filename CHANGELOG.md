@@ -6,7 +6,73 @@ Semantic Versioning.
 
 ## [0.24.0] - unreleased
 
+### Fixed
+- **A tied output head left half the biggest dense weight reading the model's mmap.** When a gguf
+  carries no `output.weight`, llama.cpp builds the output head from the token embedding table, and
+  the model then holds **two** `ggml_tensor` objects, identically named, over the same file bytes.
+  The capture pass recorded weights in a map keyed by name, so it kept one of them, and
+  `--dense-weights anon` / `ahwb` rebound that one: the twin went on reading the mmap for the whole
+  run. On a model past RAM that is the output projection — a tensor whose per-token cost rivals all
+  the routed experts together — served by page faults from flash, which is precisely what those two
+  policies exist to prevent. Gemma is in this case, and so is any architecture that ties its
+  embeddings.
+
+  The capture now records every distinct leaf object, deduplicated by address, and the dense policy
+  folds tensors over one file range into a single entry with an alias list, rebinding them all onto
+  the same buffer. Bytes are still read once and memory is still allocated once — on the gemma4
+  gate, the same 70 anon buffers as before — and every byte-identity gate passes unchanged. The
+  same fix is what makes the mapping releasable on those models rather than a crash.
+
+  What this is worth in throughput is **not measured**. The mechanism is certain, the size of it is
+  not: it depends on how much of the mapped table the kernel was still holding, which on a phone
+  under reclaim is a different story from a desktop with room to spare. Gemma-4-26B on the test
+  phone is the cell that would price it, and it is owed.
+
 ### Added
+- **`--release-mmap`: hand back the model file's mapping after load, which on Windows is worth
+  +46% decode.** llama.cpp maps every gguf it loads and keeps the mapping for the model's
+  lifetime. That is load-bearing for the streamer, which rebinds expert tensors onto the file's
+  native layout, but it is not free: on Windows, while a section of a file is alive, NTFS
+  serialises concurrent unbuffered reads on that file, and a lane opened while the section
+  existed keeps serialising against it even after the section is gone. Four I/O lanes therefore
+  deliver exactly one lane's throughput, which is why lanes and threads have always measured dead
+  on the desktop host and why the engine read at roughly a third of what the drive can serve.
+
+  Measured with `bmoe-iobench` at the engine's own request shape (576 KiB, 4 lanes, O_DIRECT) on
+  an NVMe host: **2400-2660 MiB/s with no mapping, 895-930 MiB/s with one held open, 2400 again
+  once the mapping is dropped and the lanes are reopened.** Confining the offsets (`--range-mb`),
+  committing the destination afresh (`--fresh`) and running the lanes against a busy CPU
+  (`--compute-load`) all move the number by a few per cent; the mapping moves it by 2.6x. The
+  same three cells on the 12 GB Android phone are flat: f2fs does not serialise, so there is no
+  read-path gain to collect there. The flag is implemented on POSIX anyway (munmap of the file's
+  VMAs, inert placeholders left in their ranges), and the phone then turned out to gain for a
+  different reason — see below.
+
+  With the flag, once nothing reads through the mapping any more the engine unmaps the file,
+  closes its section and reopens the reader lanes. Whether that is safe is decided by looking rather
+  than by reasoning: the engine asks the OS whether any weight the capture pass observed still points
+  inside a mapping of the model files, and declines if any does. One check covers every residency
+  policy at once — a dense set deliberately left mmap'd, a table held back as oversized, or a tensor
+  no name-based accounting could have found.
+
+  It stays opt-in because the check answers for the pointers the capture pass saw and for no others:
+  a graph shape this session never built could hold another one. That residue, plus the gguf tensors
+  no policy owns once the MTP draft adds a second graph, is the remaining unknown. llama.cpp is not patched and
+  still believes it owns its mapping, so what it will unmap and close at teardown is left in place
+  as an inert placeholder. Off by default.
+
+  Host A/B, Qwen3.6-35B-A3B Q4_K_M, cache 3000 MiB, 4 lanes, overlap, dense anon, 96 tokens,
+  interleaved: **3.16 to 4.63 tok/s (+46%)**, flash stall per token **0.182 to 0.074 s**, per-read
+  latency p50 **2.49 to 1.20 ms**, with bytes read, cache hit rate, evictions and re-reads
+  identical to the digit and the generated text byte-identical.
+
+  On the phone the flag pays too, by a different mechanism and by less. Flash stall is unchanged in
+  every cell (0.087-0.093 s/token with the flag and without), exactly as the microbenchmark
+  predicts, but CPU time per token falls about 9% and decode comes out 5-9% ahead: holding a 20 GB
+  mapping registered is not free for a kernel already under memory pressure, and handing it back
+  removes that. Prefill, model load and TTFT are unaffected. Preliminary — two 48-token cells per
+  variant in both orders, against a 20% cell-to-cell spread on this device — so it is recorded as a
+  direction, not a number, pending a long run.
 - **`--row-stream`: dense tables the graph only gathers rows from, served from flash.** The dense
   policy has one shape for every non-expert weight, and it is the right shape for a weight that is
   multiplied: read it whole, keep it resident. A token embedding table is not that. The graph

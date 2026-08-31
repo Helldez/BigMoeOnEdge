@@ -40,6 +40,13 @@ struct DenseTensorRef {
     uint64_t file_off = 0;
     uint64_t size = 0;
     int file_idx = 0; // which shard file holds the bytes (0 for a single-file model)
+    // Other tensor objects over the SAME file bytes, which a residency policy must rebind together
+    // with `tensor` or leave together where they are. A tied output head is the case that produces
+    // them: llama.cpp builds the head from the token embedding table, so the model holds two
+    // ggml_tensors, identically named, over one range. Rebinding one and not the other leaves the
+    // graph reading the model's mmap every token, and makes the range unsafe to release. Empty for
+    // every ordinary weight, so the common path allocates nothing.
+    std::vector<ggml_tensor *> aliases;
 };
 
 class DenseWeights {
@@ -81,6 +88,15 @@ public:
     // The row policy, once init has run: null when no table qualified or the takeover failed. The
     // engine's graph adapter needs it to make rows present before a gather node runs.
     IRowSource * row_source() const;
+
+    // Whether any tensor this module was given still reads through the model file's mapping once
+    // init has run: every tensor under Mmap/Warmed, and under Anonymous/Pinned the ones held back
+    // as oversized. Row-gathered tables are served from our own reader, not the mapping.
+    bool file_mapping_in_use() const;
+
+    // Reopen the readers still in service after init: the row policy's, if any (the dense copy's
+    // own readers have done their one job). See FileReader::reopen for why this exists.
+    bool reopen_readers();
     RowSourceStats row_stats() const;
 
     // Sample how much of the dense set the kernel still has in RAM (mincore), setting resident_frac().

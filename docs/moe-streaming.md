@@ -63,6 +63,39 @@ calling thread participates as lane 0. On UFS 4.x, 4 lanes roughly triples effec
 bandwidth over serial. Compute threads (`-t`) show a U-shape — 4 is the measured optimum;
 8 regresses badly because ggml's spin-wait contends with the synchronous reads.
 
+## The model file's mapping (`--release-mmap`)
+
+llama.cpp maps the gguf and keeps it mapped for the model's lifetime. On Windows that mapping
+serialises the lanes above: while a section of the file is alive, concurrent unbuffered reads on
+it are taken one at a time, so `--io-threads 4` reads at one lane's rate. It is not the drive and
+it is not the engine — `bmoe-iobench --model M.gguf --lanes 4 --slice-kb 576` measures 2400-2660
+MiB/s, the same command with `--mmap` measures 895-930, and adding `--reopen-lanes` recovers the
+full rate. A lane opened while the section existed stays serialised after it is gone, which is why
+the recovery needs both halves.
+
+`--release-mmap` does exactly that inside the engine: after load, once nothing reads through the
+mapping any more, the file is unmapped, its section closed and the reader lanes reopened.
+
+Whether releasing is safe is decided by looking, not by reasoning about which tensors ought to have
+been rebound: the engine asks the OS whether any weight the capture pass observed still points inside
+a mapping of the model files, and declines if any does. That one question covers every residency
+policy — a dense set left mmap'd under `mmap` or `warm`, a table held back as oversized, or a tensor
+no name-based accounting could have found. Run with `--dense-weights mmap` and the engine reports the
+count and stands down.
+
+It is still opt-in, because the check answers for the pointers the capture pass saw and for no
+others. A graph shape this session never builds could hold another one, and llama.cpp exposes no way
+to enumerate a loaded model's tensors and settle it. The MTP draft is the concrete case: it builds a
+second graph, so a gguf tensor no policy owns blocks the release there as well. Worth +46% decode on
+the desktop host, byte-identical.
+
+Android is a different story with the same conclusion. The iobench cells above are flat there — f2fs
+does not serialise, so there is no read bandwidth to recover, and the engine's flash stall is
+unchanged with the flag and without. What changes is CPU: a 20 GB mapping the kernel still has to
+account for costs about 9% of the decode's CPU time on a device under memory pressure, and dropping
+it is worth 5-9% of throughput. That measurement is two short cells per variant and is a direction,
+not a number. The flag stays off by default on both platforms.
+
 ## Why repack must stay off
 
 The streamer rebinds `tensor->data` to a buffer it fills from the file's native byte
