@@ -243,8 +243,20 @@ Plan plan_run(const RunConfig & base,
 
     // The bytes that would have to be resident on the host if nothing were streamed: with a
     // placement, what the fitter left here; without one, the whole file.
-    const uint64_t host_all = placement.fitted ? placement.host_resident_bytes + host_expert_bytes : model.file_bytes;
-    const uint64_t host_dense = placement.fitted ? placement.host_resident_bytes : model.dense_bytes;
+    //
+    // On a machine where every device's memory IS the host's, what the fitter put "on a device" is
+    // in this same pool and has to be charged to it. The fitter's own arithmetic treats the two as
+    // separate - it was told an integrated accelerator had 15 GB free on an 11 GB machine - and a
+    // budget that inherits that mistake will size a cache for memory that is already spoken for.
+    // Where devices have memory of their own the term is zero and nothing changes.
+    bool devices_share_host_memory = !hw.devices.empty();
+    for (const ComputeDevice & d : hw.devices)
+        if (!d.host_memory) devices_share_host_memory = false;
+    const uint64_t device_on_host = devices_share_host_memory ? placement.device_bytes : 0;
+
+    const uint64_t host_all =
+        placement.fitted ? placement.host_resident_bytes + host_expert_bytes + device_on_host : model.file_bytes;
+    const uint64_t host_dense = placement.fitted ? placement.host_resident_bytes + device_on_host : model.dense_bytes;
     if (host_all <= usable) {
         p.regime = Regime::Fits;
     } else if (host_dense <= usable) {
@@ -282,8 +294,13 @@ Plan plan_run(const RunConfig & base,
         p.config.n_gpu_layers = placement.n_gpu_layers;
         p.config.buft_overrides = placement.override_patterns;
     } else {
-        note("placement", "none", Source::Unprobed,
-             "the capacity fitter was not run, so no layer is placed on a device: everything is on the host");
+        note("placement", "none", placement.shared_memory_placement ? Source::Derived : Source::Unprobed,
+             placement.shared_memory_placement
+                 ? "the capacity fitter ran and its answer was set aside: every device here reads this "
+                   "host's own memory, so 'what fits where' has one pool and no answer. Everything is on "
+                   "the host, which is what it already was"
+                 : "the capacity fitter was not run, so no layer is placed on a device: everything is on "
+                   "the host");
     }
 
     note("regime", regime_name(p.regime), Source::Derived,
@@ -358,7 +375,11 @@ Plan plan_run(const RunConfig & base,
             }
             const std::string capacity = "every device here reads the host's own memory, so moving a weight onto "
                                          "one frees nothing: the capacity tier is inert. ";
-            if (fastest && hw.host_bandwidth_gibs > 0.0 && fastest->memory_bandwidth_gibs > hw.host_bandwidth_gibs)
+            // A tenth, not a hair: the two figures come from the same probe on the same machine, and
+            // claiming "more" for a difference inside its own repeatability is how a rationale starts
+            // being read as noise. Measured 19 against 19 on a phone, which is not a finding.
+            if (fastest && hw.host_bandwidth_gibs > 0.0 &&
+                fastest->memory_bandwidth_gibs > hw.host_bandwidth_gibs * 1.10)
                 note("extra-offload", "none", Source::Measured,
                      capacity + "What is left is bandwidth, and here the device has more of it (" +
                          u64s((uint64_t) fastest->memory_bandwidth_gibs) + " against " +
@@ -646,14 +667,24 @@ Plan plan_run(const RunConfig & base,
     // A placement the fitter made and this planner did not apply, because on shared memory its
     // capacity arithmetic counts the same pool twice. Said out loud: "no layers on devices" on a
     // machine that has one is a sentence a reader would otherwise take as "there is no device".
+    if (device_on_host > 0)
+        note("shared-pool", u64s(mib(device_on_host)) + " MiB", Source::Derived,
+             "every device here reads this host's own memory, so what the fitter placed on one is in the "
+             "same pool as what it left here and is charged to it: " +
+                 u64s(mib(device_on_host)) + " MiB added to the " + u64s(mib(placement.host_resident_bytes)) +
+                 " MiB host set before anything was sized. The fitter treats the two as separate, which is "
+                 "how it came to report 15 GB free on an 11 GB machine");
+
     if (placement.shared_memory_placement)
-        note("placement-declined", "shared memory", Source::Derived,
-             "the capacity fitter placed " + u64s(mib(placement.device_bytes)) +
-                 " MiB on a device whose memory is this host's own, and counted that as separate from the " +
+        note("placement-declined", u64s(mib(placement.device_bytes)) + " MiB", Source::Derived,
+             "the capacity fitter would have placed " + u64s(mib(placement.device_bytes)) +
+                 " MiB on a device whose memory is this host's own, counting it as separate from the " +
                  u64s(mib(placement.host_resident_bytes)) +
-                 " MiB it left here - the same pool, twice. Acting on it once made a phone try to hold both "
-                 "and took the device down, so the placement is reported and not applied. What closes this is "
-                 "charging the device bytes to the same budget, not a flag");
+                 " MiB it left here - the same pool, twice. Acting on that took a phone down; charging it "
+                 "instead reads as a model twice its real size and declines a run that works. The number is "
+                 "not wrong by an amount, it is about a distinction this machine does not have, so the "
+                 "placement is quoted and not applied. Using such a device is a bandwidth decision, not a "
+                 "capacity one");
 
     // ── overlap: named, not armed ──────────────────────────────────────────────────
     // Hiding compute behind the reads is not a quality choice - the output is byte-identical - and

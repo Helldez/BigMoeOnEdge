@@ -108,11 +108,16 @@ Semantic Versioning.
   GPU's memory IS the host's, and it then placed 14125 MiB there *beside* 1810 MiB of host set.
   Honouring that made the session try to hold both, and took the device down.
 
-  So the fitter is trusted where its capacity arithmetic is sound — a device with separate memory —
-  and its placement on shared memory is now **reported and not applied**, under its own
-  `placement-declined` line, because "no layers on devices" on a machine that has one reads as
-  "there is no device". What closes this properly is charging `device_bytes` to the same budget as
-  the host set, which is a change to the second stage rather than a flag.
+  Charging those bytes to the real pool was tried and is also wrong: it reads as a model twice its
+  size and declines a run that works. The number is not wrong by an amount — it is about a
+  distinction the machine does not have. So on a machine whose every device reads host memory, the
+  first stage runs, its answer is **quoted and set aside**, and the plan proceeds from the model
+  alone, which is what it does with no accelerator at all and is exactly right here. Using such a
+  device is a **bandwidth** decision, and that one belongs to the second stage.
+
+  Two smaller things the same session fixed: the plan said "the capacity fitter was not run" when it
+  had run and been set aside, and it claimed a device "has more" bandwidth on 19 against 19 GiB/s —
+  a difference inside the probe's own repeatability. It now needs a tenth to say so.
 
 - **The thread rule is withdrawn: the first heterogeneous machine refuted it.** It set the count to
   the fast core class, reasoning that every thread meets the same barrier so a thread on a slower

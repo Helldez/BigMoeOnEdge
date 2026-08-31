@@ -83,7 +83,20 @@ Placement probe_placement(const char * model_path, const ModelProfile & model, u
         if (t == GGML_BACKEND_DEVICE_TYPE_GPU) ++n_dev_local;
     }
     pl.n_gpu_layers = n_dev_local ? mparams.n_gpu_layers : 0;
-    pl.shared_memory_placement = n_dev_local == 0 && ggml_backend_dev_count() > 1;
+
+    // Where no device has memory of its own, the whole first stage has nothing to say. A capacity
+    // fitter answers "what fits where" by moving bytes between pools, and there is one pool: moving
+    // a weight onto such a device frees nothing, and the numbers it produces describe a machine that
+    // does not exist - it was told an integrated accelerator had 15 GB free on an 11 GB device, and
+    // placed 14125 MiB there beside a host set it counted separately.
+    //
+    // Neither honouring that (which took a phone down) nor charging it to the real pool (which then
+    // reads as a 34 GB model and declines a run that works) is right, because the number is not
+    // wrong by an amount - it is about a distinction this machine does not have. So the stage is
+    // reported as not fitted and the plan proceeds from the model alone, which is what it does on a
+    // machine with no accelerator at all and is exactly right here. Using such a device is a
+    // BANDWIDTH decision, and that one is the second stage's to make.
+    const bool shared_memory_only = n_dev_local == 0 && ggml_backend_dev_count() > 1;
 
     // Which layers keep their routed experts on the host. Two sources, and both are read rather
     // than reconstructed: a layer beyond what the fitter placed on devices is entirely host; a
@@ -136,6 +149,15 @@ Placement probe_placement(const char * model_path, const ModelProfile & model, u
         pl.host_resident_bytes = dense_on_host + (uint64_t) cpu.context + (uint64_t) cpu.compute;
         for (size_t i = 0; i + 1 < dm.size(); ++i)
             pl.device_bytes += (uint64_t) dm[i].model + (uint64_t) dm[i].context + (uint64_t) dm[i].compute;
+    }
+
+    // Set aside last, with its numbers kept. Everything above ran, so the plan can quote what the
+    // fitter said while declining to act on it - a decision reported without its figures is one a
+    // reader has to take on trust, and this one in particular deserves to be checkable.
+    if (shared_memory_only) {
+        pl.shared_memory_placement = true;
+        pl.fitted = false;
+        pl.outcome = "the capacity fitter ran, and had only devices whose memory is this host's own";
     }
     return pl;
 }

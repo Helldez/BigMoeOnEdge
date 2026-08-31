@@ -327,6 +327,58 @@ int main() {
         check(d && d->source == Source::Unprobed, "unreported core classes: the default stands, unprobed");
     }
 
+    // ── on shared memory, what the fitter placed is charged to the same pool ───────
+    // The fitter's capacity arithmetic treats device memory as separate. On a machine where it is
+    // the host's own, inheriting that gives a budget for memory already spoken for - which is how a
+    // phone was told an integrated accelerator had 15 GB free on an 11 GB device.
+    {
+        HardwareProfile uma = phone();
+        uma.devices.clear();
+        ComputeDevice cpu;
+        cpu.name = "CPU";
+        cpu.is_cpu = true;
+        cpu.host_memory = true;
+        uma.devices.push_back(cpu);
+        ComputeDevice ig;
+        ig.name = "integrated";
+        ig.host_memory = true;
+        uma.devices.push_back(ig);
+        uma.residency_budget = 8 * GiB;
+
+        Placement pl;
+        pl.fitted = true;
+        pl.n_gpu_layers = 0;
+        pl.n_ctx = 2048;
+        for (uint32_t il = 0; il < 48; ++il)
+            pl.host_expert_layers.push_back(il);
+        pl.host_resident_bytes = 1 * GiB;
+        pl.device_bytes = 4 * GiB; // the same memory, which the fitter counted twice
+
+        const Plan p = plan_run(base_cfg(), uma, model, pl, PlanRequest{});
+        const Decision * d = find(p, "shared-pool");
+        check(d && d->source == Source::Derived, "shared memory: the device bytes are charged and said");
+        const Decision * c = find(p, "cache-mb");
+        // Charged: 1 + 4 GiB is held before anything is sized, so the cache cannot be sized as if
+        // only 1 GiB were. Without the charge it would have been GiBs larger.
+        check(!c || (uint64_t) c->value.size() > 0, "shared memory: a cache decision was still reached");
+        check(p.cache_budget_bytes < 3 * GiB, "shared memory: the cache is sized against the real pool",
+              std::to_string((unsigned long long) (p.cache_budget_bytes >> 20)) + " MiB");
+    }
+
+    // A device with memory of its own is not charged: the two pools really are separate.
+    {
+        HardwareProfile disc = desktop();
+        Placement pl;
+        pl.fitted = true;
+        pl.n_ctx = 2048;
+        for (uint32_t il = 0; il < 48; ++il)
+            pl.host_expert_layers.push_back(il);
+        pl.host_resident_bytes = 1 * GiB;
+        pl.device_bytes = 4 * GiB;
+        const Plan p = plan_run(base_cfg(), disc, model, pl, PlanRequest{});
+        check(find(p, "shared-pool") == nullptr, "discrete memory: nothing is charged twice");
+    }
+
     // ── an integrated accelerator is not the CPU ───────────────────────────────────
     // Its memory IS the host's, so the capacity tier is inert - that much is arithmetic. Whether it
     // reaches more of the same bus than the cores do is a measurement, and treating "shared memory"
