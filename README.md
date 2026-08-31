@@ -26,7 +26,7 @@ they are needed. The rest of the model stays on disk. That is what lets a model 
 bigger than your RAM generate text on an ordinary phone, losslessly: the output is byte-identical
 to running the same model fully resident.
 
-It is built **on top of llama.cpp's public API**, not as a fork. Every quantization format,
+It is built **on top of llama.cpp's public API**. Every quantization format,
 tokenizer and chat template llama.cpp supports works out of the box, because llama.cpp itself is
 doing that part: MXFP4 and Q4_K_M stream through the same code. Supporting a new MoE architecture
 is one row in a registry, and following a new llama.cpp release is a routine submodule bump.
