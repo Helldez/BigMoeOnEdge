@@ -99,6 +99,20 @@ Semantic Versioning.
   that matters for this, the phone whose classes broke the old rule, has not been re-measured: it
   dropped off wireless debugging mid-session and that validation is owed.
 
+- **Contiguous device blocks: tested, and they fail too.** `--gpu-layers N` places the last N layers
+  entirely on the device, experts resident, no override — the one shape July's verdict left
+  untested, because it should put the boundary in one place instead of twice per layer. Swept
+  0/2/4/8 on the phone: **2.398 tok/s at N=0, 0.587 at N=2** — four times slower — with N=4 and N=8
+  faulting. The I/O side of the trade worked exactly as predicted, cache hits 48% → 73% and
+  re-reads 84.5 → 5.2 per token, and throughput collapsed anyway.
+
+  The reason the boundary never lands in one place is worse than the trade: **at N=0 the graph
+  already has 61 splits**. Merely having the Vulkan backend registered makes the scheduler split
+  ~60-82 times per token with nothing on the device, which is also why the Vulkan build lost to the
+  CPU-only one at equal settings earlier. The direction is closed for this class of device, now with
+  every shape tried; what remains untested is prefill — every number here is decode — and discrete
+  GPUs, where dedicated VRAM changes the problem and none of this transfers.
+
 - **The streamer now binds only expert tensors it can actually serve, and that was the fault.** The
   capture harvested any expert-named tensor from the graph regardless of which backend owned its
   buffer — so with weights on a device it bound one and then rebound `data` through a pointer that
