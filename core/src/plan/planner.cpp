@@ -721,9 +721,14 @@ Plan plan_run(const RunConfig & base,
         // nothing: a lever that takes the machine down is worse than one that does not exist.
         p.config.dense_on_device = false;
         note("dense-on-device", "refused", Source::Derived,
-             "armed by the caller and refused here: this path faults once the expert streamer starts, "
-             "reproducibly, and the cause is not yet known. The opportunity is real - this device reads the "
-             "model's weights faster than the host - and the mechanism is not");
+             "refused, and twice over. This path faults once the expert streamer starts, reproducibly - the "
+             "expert override here is a literal pattern where the earlier `--gpu` built one from the "
+             "architecture recipe, which is a bug and a small one. The larger reason is that the same "
+             "placement was measured three times on a device of this class and LOST: full offload -27% on a "
+             "Q4_0 run, because the dense and expert halves interleave, so a two-device split crosses the "
+             "boundary twice per layer - 96 splits against 1 - and the boundary tax eats the CPU time the "
+             "device frees. The untested shape that could change it is contiguous layer BLOCKS, experts "
+             "included and resident, which puts the boundary in one place");
     }
     // ── overlap: named, not armed ──────────────────────────────────────────────────
     // Hiding compute behind the reads is not a quality choice - the output is byte-identical - and
