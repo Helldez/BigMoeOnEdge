@@ -17,5 +17,5 @@ fi
 cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
 cmake --build "$BUILD_DIR" -j "$JOBS"
 
-echo "built: $BUILD_DIR/cli/bmoe-cli"
+echo "built: $BUILD_DIR/bin/bmoe-cli"
 echo "run gates: (cd $BUILD_DIR && ctest --output-on-failure)"

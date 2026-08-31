@@ -93,6 +93,33 @@ Semantic Versioning.
   different every time. The knob keeps its default and still prints `[unprobed]`, with the numbers
   written down: a measurement that failed to resolve is worth more on the record than absent.
 
+- **A build that adapts to the machine it lands on** (`scripts/build-portable.sh`). The default build
+  links its backends in, so a CPU-only binary has no accelerator wherever it runs. This one builds
+  them as separate shared libraries and lets ggml find them at start-up — the way llama.cpp ships
+  its own releases. Verified here: nine `ggml-cpu-*` libraries, one per instruction-set tier, beside
+  the binary, and the plan correctly enumerating the device and measuring 30 GiB/s through it.
+
+  Three costs, all real and all written into the script. `--overlap` is gone, because it needs the
+  fork's expert-ready hook and that symbol lives in the CPU backend — a backend loaded at runtime is
+  not there to link against; reaching it would mean exposing the hook through
+  `ggml_backend_reg_get_proc_address`, which is a change to the fork commit. `-march=native` is
+  gone, since `GGML_NATIVE` and `GGML_BACKEND_DL` are mutually exclusive upstream, replaced by one
+  CPU library per tier chosen at start-up. And the layout matters: ggml looks beside the executable,
+  so the binary and its backends travel together.
+
+- **Everything runnable now lands beside the libraries it needs.** llama.cpp sets that for its own
+  targets but only inside its subdirectory scope, so ours were landing elsewhere — which broke two
+  things that look unrelated and are not. Running the gates needed the library directory on `PATH`
+  by hand, a footgun documented for months; and a dynamic-backend build would have found no backends
+  at all, because ggml looks for them next to the executable. One line at the top of the root
+  `CMakeLists.txt` fixes both. `ctest` now passes from a clean shell.
+
+- **The ordering bug the portable build exposed immediately.** `register_backends()` was called just
+  before `llama_backend_init()` — and `probe_hardware()`, which enumerates devices, runs earlier. A
+  statically linked backend registers itself on first use, so nothing looked wrong; one that ships
+  as a separate library does not exist until it is loaded, and the plan reported "no compute devices
+  were enumerated" on a machine that has one. Registration now happens before anything looks.
+
 - **Backends that ship as separate libraries were never looked for.** llama.cpp's own tools call
   `ggml_backend_load_all()` before they enumerate devices; this engine did not, so a binary sitting
   beside a `ggml-vulkan` or `ggml-cuda` library — or any build made with `GGML_BACKEND_DL` — saw a

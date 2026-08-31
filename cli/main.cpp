@@ -848,6 +848,12 @@ int main(int argc, char ** argv) {
         if (std::getenv("BMOE_CACHE_MB")) req.pinned.push_back("cache-mb");
         if (std::getenv("BMOE_IO_THREADS")) req.pinned.push_back("io-threads");
 
+        // Before anything looks at devices. A statically linked backend registers itself on first
+        // use, which hid the ordering; one that ships as a separate library does not exist until it
+        // is loaded, so probing the machine first enumerated nothing and the plan said "no compute
+        // devices" on a machine that has one. A device nobody enumerated is a device no rule can
+        // consider, and that is a different answer from "there is none".
+        register_backends();
         HardwareProfile hw = probe_hardware(cfg.model_path.c_str());
         const ModelProfile mp = probe_model(cfg.model_path.c_str());
         probe_device_support(hw, mp);
@@ -863,9 +869,6 @@ int main(int argc, char ** argv) {
         // The first stage: llama.cpp's own capacity fitter, on every backend it knows. Devices are
         // only registered once the backend is initialised, so it is brought up here — the session
         // does the same and the call is reference counted.
-        // Bring up everything that can register a device, including backends that ship as separate
-        // shared libraries. A device nobody enumerated is a device no rule below can consider.
-        register_backends();
         llama_backend_init();
         // Our context is the pin, typed or defaulted: the fitter's own default is a different
         // number, and left unpinned it would pick the model's full training context.

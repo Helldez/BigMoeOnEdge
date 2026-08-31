@@ -47,13 +47,18 @@ cat "$OUT/machine.txt"
 say "build"
 # Backends are opt-in at configure time. Enable what the box has; a build without a device is a
 # valid run of this script and answers the CPU half of every question below.
+#
+# The alternative is scripts/build-portable.sh, which builds the backends as separate libraries and
+# lets ggml find them at start-up - one binary that adapts. It costs `--overlap` and the native CPU
+# tuning, so it is the right answer for shipping and the wrong one for a benchmark that has to be
+# comparable with the numbers already on record.
 CMAKE_EXTRA="${BMOE_CMAKE_EXTRA:-}"
 run cmake -S . -B build-rented -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=ON ${CMAKE_EXTRA}
 run cmake --build build-rented -j
 say "gates (correctness before speed, always)"
 (cd build-rented && ctest --output-on-failure) 2>&1 | tee -a "$OUT/log.txt"
 
-CLI=build-rented/cli/bmoe-cli
+CLI=build-rented/bin/bmoe-cli
 
 say "the plan, from free facts only"
 run "$CLI" -m "$MODEL" --plan-only --no-probe-io

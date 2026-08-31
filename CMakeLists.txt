@@ -29,6 +29,13 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
+# Everything runnable lands beside the libraries it needs. llama.cpp sets this for its own targets
+# but only inside its subdirectory scope, so ours were landing elsewhere - which broke two things
+# that look unrelated and are not. Running a test needed the library directory on PATH by hand; and
+# `ggml_backend_load_all()` looks for dynamically loadable backends NEXT TO THE EXECUTABLE, so a
+# GGML_BACKEND_DL build would have found none of them and reported a machine with no accelerator.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
 option(BMOE_BUILD_TESTS "Build byte-identity gates and unit tests" ON)
 option(BMOE_BUILD_CLI   "Build the bmoe-cli host tool"              ON)
 # Off by default: diagnostics, not part of the product. They need no llama.cpp, so they can be

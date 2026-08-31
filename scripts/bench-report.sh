@@ -5,7 +5,7 @@
 #   scripts/bench-report.sh MODEL.gguf [extra bmoe-cli flags...]
 #
 # What it does, in order:
-#   1. builds bmoe-cli if build/cli/bmoe-cli is missing (BMOE_CLI overrides the binary);
+#   1. builds bmoe-cli if build/bin/bmoe-cli is missing (BMOE_CLI overrides the binary);
 #   2. records the machine: CPU, cores, RAM, kernel, the drive the model sits on and its
 #      measured O_DIRECT read rate at 512 KiB requests, straight from the model file — the same
 #      request size the expert stream issues, so the number is the ceiling this engine can see;
@@ -16,7 +16,7 @@
 #   4. parses the CSV trailer the engine writes and prints one markdown block.
 #
 # Env overrides: THREADS (default: min(8, online cores)), N_PREDICT (256), IO_THREADS (4),
-# CACHE_MB (auto), UBATCH (512), BENCH_OUT (.bench-report), BMOE_CLI (build/cli/bmoe-cli).
+# CACHE_MB (auto), UBATCH (512), BENCH_OUT (.bench-report), BMOE_CLI (build/bin/bmoe-cli).
 # Anything after the model path is passed to bmoe-cli verbatim (e.g. --no-think for gpt-oss,
 # --n-expert-used 6 for the turbo top-k rows).
 set -euo pipefail
@@ -37,7 +37,7 @@ IO_THREADS="${IO_THREADS:-4}"
 CACHE_MB="${CACHE_MB:-auto}"
 UBATCH="${UBATCH:-512}"   # matches the app: a wider graph reserves buffers the expert cache wants
 BENCH_OUT="${BENCH_OUT:-$ROOT/.bench-report}"
-BMOE_CLI="${BMOE_CLI:-$ROOT/build/cli/bmoe-cli}"
+BMOE_CLI="${BMOE_CLI:-$ROOT/build/bin/bmoe-cli}"
 PROMPT="Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field"
 
 # --- 1. binary ------------------------------------------------------------------------------
