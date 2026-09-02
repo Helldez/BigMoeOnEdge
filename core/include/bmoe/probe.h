@@ -47,6 +47,22 @@ void probe_device_support(HardwareProfile & hw, const ModelProfile & model);
 // A statically linked build finds nothing and loses nothing. Call it before llama_backend_init().
 void register_backends();
 
+// What this binary can even see. A backend the build did not compile in, and did not find beside
+// the executable, is a device no probe will ever enumerate — so a plan made on this machine would
+// optimise for a machine with no accelerator and never say why. The fields keep the three answers
+// apart: how many came linked, how many were loaded at run time, and whether anyone looked at all.
+// Only meaningful after register_backends().
+struct BackendInventory {
+    uint32_t linked = 0;            // compiled into this binary
+    uint32_t loaded_at_runtime = 0; // found as separate shared libraries beside the executable
+    bool looked = false;            // register_backends() ran; false means nobody went to look
+    std::vector<std::string> names; // every registered backend, for the rationale and the CSV header
+
+    uint32_t total() const { return linked + loaded_at_runtime; }
+};
+
+BackendInventory backend_inventory();
+
 // What each compute engine can pull out of the memory it reads weights from, in GiB/s. One graph -
 // the same GEMV - scheduled on every backend, so the figures are comparable: the rules only ever use
 // the ratio of two of them, and a ratio between two different experiments would mean nothing. The

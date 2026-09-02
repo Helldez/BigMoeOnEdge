@@ -355,16 +355,34 @@ Plan plan_run(const RunConfig & base,
     {
         uint64_t device_local = 0;
         const ComputeDevice * candidate = nullptr;
+        uint32_t n_accelerators = 0; // devices that are not the CPU: the only ones an offload means
         for (const ComputeDevice & d : hw.devices) {
+            if (!d.is_cpu) ++n_accelerators;
             if (d.host_memory) continue;
             device_local += d.memory_total;
             if (!candidate) candidate = &d;
         }
 
-        if (hw.devices.empty()) {
-            note("extra-offload", "none", Source::Unprobed,
-                 "no compute devices were enumerated (the backends register at load), so there was nothing "
-                 "to consider beyond what the fitter already placed");
+        if (n_accelerators == 0) {
+            // Three different answers, and only the first is about this machine. A build that
+            // compiled no accelerator backend and found none beside itself will report a machine
+            // with no accelerator on ANY hardware, which is a fact about the build being read as a
+            // fact about the room.
+            if (!hw.backends_looked)
+                note("extra-offload", "none", Source::Unprobed,
+                     "nothing was enumerated because nobody went to look: the backend registry was never "
+                     "asked, so this says nothing about what this machine has");
+            else if (hw.backends_linked <= 1 && hw.backends_loaded == 0)
+                note("extra-offload", "none", Source::Unprobed,
+                     "this build carries no accelerator backend and found none beside the executable, so it "
+                     "would report a machine with no accelerator on any hardware. That is a property of the "
+                     "build, not of this machine: configure the backends whose SDK is present, or ship them "
+                     "as loadable libraries next to the binary");
+            else
+                note("extra-offload", "none", Source::Measured,
+                     u64s(hw.backends_linked + hw.backends_loaded) +
+                         " backends were registered and none of them offered a compute device beyond the "
+                         "host CPU, so there was nothing to consider past what the fitter placed");
         } else if (device_local == 0) {
             // Two claims used to be made here and only one of them was provable. That moving a
             // weight onto a device whose memory IS the host's frees nothing is arithmetic. That it

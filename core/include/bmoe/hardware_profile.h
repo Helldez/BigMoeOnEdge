@@ -261,6 +261,14 @@ struct HardwareProfile {
 
     std::vector<ComputeDevice> devices;
 
+    // What this BUILD could see, which bounds what the machine appears to have. A backend that was
+    // not compiled in and was not found beside the executable enumerates no device, so an empty
+    // `devices` means one of two entirely different things and a rule that conflates them is
+    // reporting a property of the build as a property of the hardware.
+    uint32_t backends_linked = 0;
+    uint32_t backends_loaded = 0; // found at run time as separate shared libraries
+    bool backends_looked = false; // false: nothing was even enumerated
+
     // ── storage ─────────────────────────────────────────────────────────────────────
     StorageFacts storage;
 

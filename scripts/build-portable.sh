@@ -24,14 +24,33 @@
 #     together when you copy the build somewhere; a lone binary silently reports a machine with no
 #     accelerator on it.
 #
-# Backends are still opt-in: pass -DGGML_CUDA=ON and friends for the ones whose SDK is on THIS
-# machine. The point is not that one build has everything - it is that a build with three backends
-# runs on a machine with one, and says which one it found.
+# Backends whose SDK is present on THIS machine are turned on automatically, because leaving them
+# all opt-in is how a build silently reports a machine with no accelerator: the planner enumerates
+# only what was compiled in or found beside the binary, so a backend nobody asked for is a device no
+# rule can ever consider. Anything detected here can still be overridden by passing the flag
+# yourself - an explicit -DGGML_CUDA=OFF wins, since your flags come after these.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$ROOT/build-portable}"
+
+# Detected by looking for the toolchain each backend actually needs, not by guessing from the OS.
+# A missing SDK leaves the backend off and the plan says the build carries none, which is the honest
+# outcome; a present one costs a longer compile and gives the planner a device to weigh.
+DETECTED=()
+have() { command -v "$1" >/dev/null 2>&1; }
+
+have nvcc && DETECTED+=(-DGGML_CUDA=ON) && echo "detected: CUDA (nvcc)"
+have hipcc && DETECTED+=(-DGGML_HIP=ON) && echo "detected: ROCm (hipcc)"
+have glslc && DETECTED+=(-DGGML_VULKAN=ON) && echo "detected: Vulkan (glslc)"
+have icpx && DETECTED+=(-DGGML_SYCL=ON) && echo "detected: SYCL (icpx)"
+[ "$(uname -s 2>/dev/null)" = "Darwin" ] && DETECTED+=(-DGGML_METAL=ON) && echo "detected: Metal"
+
+if [ ${#DETECTED[@]} -eq 0 ]; then
+    echo "detected: no accelerator SDK on this machine - building CPU-only."
+    echo "  That is a property of THIS build: the binary will report no accelerator wherever it runs."
+fi
 
 cmake -S "$ROOT" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -39,6 +58,7 @@ cmake -S "$ROOT" -B "$BUILD_DIR" \
     -DGGML_BACKEND_DL=ON \
     -DGGML_NATIVE=OFF \
     -DGGML_CPU_ALL_VARIANTS=ON \
+    "${DETECTED[@]}" \
     "$@"
 
 cmake --build "$BUILD_DIR" -j

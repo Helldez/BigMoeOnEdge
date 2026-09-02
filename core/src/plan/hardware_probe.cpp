@@ -185,12 +185,36 @@ void probe_devices(HardwareProfile & h) {
 
 } // namespace
 
+// How many backends this binary carries, and how many it found beside itself. Recorded rather than
+// recomputed, because the difference is only visible at the moment of loading — and it is the
+// difference between two answers a plan must never conflate: "this machine has no accelerator" and
+// "this build never went to look".
+uint32_t g_backends_linked = 0;
+uint32_t g_backends_loaded = 0;
+bool g_backends_looked = false;
+
 void register_backends() {
     // ggml looks beside the executable, and in GGML_BACKEND_DIR where the build set one, for
     // libraries named after each backend. In a build that linked them statically this finds nothing
     // and costs a few failed lookups; in one built with GGML_BACKEND_DL it is the difference between
     // a machine with an accelerator and a machine that appears to have none.
+    g_backends_linked = (uint32_t) ggml_backend_reg_count();
     ggml_backend_load_all();
+    const uint32_t after = (uint32_t) ggml_backend_reg_count();
+    g_backends_loaded = after > g_backends_linked ? after - g_backends_linked : 0;
+    g_backends_looked = true;
+}
+
+BackendInventory backend_inventory() {
+    BackendInventory inv;
+    inv.linked = g_backends_linked;
+    inv.loaded_at_runtime = g_backends_loaded;
+    inv.looked = g_backends_looked;
+    for (size_t i = 0; i < ggml_backend_reg_count(); ++i) {
+        ggml_backend_reg_t reg = ggml_backend_reg_get(i);
+        if (reg) inv.names.push_back(ggml_backend_reg_name(reg));
+    }
+    return inv;
 }
 
 HardwareProfile probe_hardware(const char * model_path) {
@@ -203,6 +227,11 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.file_pages_counted = probe_file_pages_counted();
     h.n_cores = std::thread::hardware_concurrency();
     probe_core_classes(h);
+
+    const BackendInventory inv = backend_inventory();
+    h.backends_linked = inv.linked;
+    h.backends_loaded = inv.loaded_at_runtime;
+    h.backends_looked = inv.looked;
 
     probe_devices(h);
 
