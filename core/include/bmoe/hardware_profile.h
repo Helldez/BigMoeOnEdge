@@ -183,6 +183,12 @@ struct StorageFacts {
     // free and the plan under-spends on residency.
     double refault_mibs = 0.0;
 
+    // Spread between the fastest and slowest repeat at the point that decides something, as a
+    // ratio; 0 when not measured, 1.0 when perfectly repeatable. A plan quoting a rate whose next
+    // run contradicts it is worse than one that admits the range, and this is what lets the
+    // rationale say so instead of printing three digits it cannot stand behind.
+    double rate_spread = 0.0;
+
     // How much a live mapping costs concurrent uncached reads, as a ratio, 1.0 when not measured.
     // Derived from the two points above so a rule reads one number, not two.
     double mapping_penalty() const {

@@ -83,6 +83,40 @@ struct PlannerPolicy {
     // flips. The tests exercise both settings.
     bool streamer_serves_device_memory = false;
 
+    // ── the cost model's coefficients ───────────────────────────────────────────────
+    // How many of a token's expert reads a cache serves, credited as this multiple of the FRACTION
+    // OF THE EXPERT SET IT HOLDS. 1.0 is the neutral reading: hold a tenth, serve a tenth.
+    //
+    // The relationship is really super-linear, because routing has strong temporal locality — the
+    // one measurement on record is a cache holding 13% of the set serving 61.9% of the reads — so
+    // this default is conservative by roughly 5x and deliberately so: over-crediting the cache
+    // spends memory on a saving that cannot be collected, and the error is asymmetric. Fitting a
+    // curve to a single point would be inventing the shape, so the shape stays linear and the
+    // coefficient is what a closed loop corrects from a run's own counters. An earlier 0.22 here
+    // was 20x low against that same measurement and made the cache look nearly worthless, which on
+    // a machine where cache and residency compete evenly is a mis-allocation rather than caution.
+    float cache_hit_optimism = 1.0f;
+
+    // How much faster than the host a device must be before its win is believed, as a fraction. A
+    // tenth, not a hair: the two figures come from the same probe on the same machine, and claiming
+    // "more" for a difference inside its own repeatability is how a rationale starts being read as
+    // noise. Measured 19 against 19 on a phone, which is not a finding.
+    float min_backend_win = 0.10f;
+
+    // What ONE host/device boundary crossing costs a token, in seconds. 0 means unmeasured, and
+    // unmeasured means NO group may be placed on a device — not that crossings are free.
+    //
+    // This is the term that decides an offload in practice and the one a bandwidth ratio cannot
+    // see, so leaving it at 0 is a refusal rather than a gap. The evidence: on a 40-layer model a
+    // device placement was swept 0/2/4/8 and went from 2.398 tok/s at N=0 to 0.587 at N=2, with N=4
+    // and N=8 faulting, while the I/O half of the trade did exactly what this cost model predicts
+    // (cache hits 48% to 73%, re-reads 84.5 to 5.2 per token). The bandwidth probe on that machine
+    // read the device at 20 GiB/s against the host's 12 and would have recommended the move with
+    // confidence. Dense and expert halves alternate per layer, so a split placement crosses twice
+    // per layer; contiguous layer blocks, the shape that should have put the boundary in one place,
+    // failed too; and merely registering the device cost 61 crossings per token with nothing on it.
+    double device_split_seconds = 0.0;
+
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };
 

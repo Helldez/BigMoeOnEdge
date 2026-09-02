@@ -10,6 +10,7 @@ add_library(bmoe_core STATIC
     src/moe/arch_registry.cpp
     src/engine/ngram_draft.cpp
     src/plan/plan.cpp
+    src/plan/allocate.cpp
     src/plan/planner.cpp
 )
 

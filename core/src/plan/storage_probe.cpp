@@ -231,14 +231,31 @@ double median_rate(FileReader & rd,
                    int per_lane,
                    uint64_t seed,
                    int repeats,
-                   Pattern pat = Pattern::Spread) {
+                   Pattern pat = Pattern::Spread,
+                   double * spread = nullptr) {
     if (repeats <= 1) return timed_read(rd, block, lanes, per_lane, seed, pat);
     std::vector<double> r;
     r.reserve((size_t) repeats);
     for (int i = 0; i < repeats; ++i)
         r.push_back(timed_read(rd, block, lanes, per_lane, seed + (uint64_t) i * 0x9E3779B9ull, pat));
     std::sort(r.begin(), r.end());
+    // The spread across repeats, as a ratio. A probe that does not report its own noise invites a
+    // plan to quote a rate to three digits that its next run will contradict.
+    if (spread && r.front() > 0.0) *spread = r.back() / r.front();
     return r[r.size() / 2];
+}
+
+// How many requests each lane must issue for one sample to last long enough to mean anything. A
+// fixed request count makes the decisive sample as short as the storage is fast - 160 requests of
+// 664 KiB is 106 MiB, which a desktop NVMe finishes in 40 ms - and a 40 ms measurement on a
+// general-purpose OS reports scheduling noise. Measured: across three consecutive runs the same
+// machine answered 1116, 1526 and 2583 MiB/s at the same point, and the plan's predicted ms/token
+// moved with it by more than 2x. Sizing by BYTES instead makes the sample's duration a property of
+// the measurement rather than of the device.
+int requests_per_lane(uint64_t block, int lanes, uint64_t target_bytes, int floor_count) {
+    if (block == 0 || lanes <= 0) return floor_count;
+    const uint64_t per = target_bytes / (block * (uint64_t) lanes);
+    return (int) std::max<uint64_t>((uint64_t) floor_count, per);
 }
 
 } // namespace
@@ -252,7 +269,11 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
     const uint64_t slice = slice_bytes ? slice_bytes : (512u << 10);
     const uint64_t sizes[3] = {std::max<uint64_t>(4096, slice / 4), slice, slice * 4};
     const int lane_counts[3] = {1, 2, 4};
-    const int per_lane = 40; // per point: enough that the lane comparison is not decided by noise
+    const int per_lane = 40; // per point on the curve's shape: one short sample says enough
+
+    // Bytes ONE sample must move at the point that decides something. Sized for duration rather
+    // than for a request count, so the measurement does not get shorter as the storage gets faster.
+    const uint64_t decisive_bytes = 512ull << 20;
 
     const size_t bounce = (size_t) sizes[2] + 65536;
 
@@ -281,10 +302,15 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
     for (uint64_t sz : sizes) {
         for (int lanes : lane_counts) {
             // Only the model's own slice size decides anything - it is where the lane count is read
-            // off - so it is the only size worth paying repeats for. The neighbours are there to
-            // show the shape of the curve, and one sample says enough about a shape.
-            const int repeats = sz == slice ? 3 : 1;
-            const double r = median_rate(rd, sz, lanes, per_lane, seed, repeats);
+            // off and where the expert lane is priced - so it is the only size worth paying repeats
+            // AND a long sample for. The neighbours are there to show the shape of the curve, and
+            // one short sample says enough about a shape.
+            const bool decisive = sz == slice;
+            const int repeats = decisive ? 3 : 1;
+            const int reqs = decisive ? requests_per_lane(sz, lanes, decisive_bytes, per_lane) : per_lane;
+            double spread = 0.0;
+            const double r = median_rate(rd, sz, lanes, reqs, seed, repeats, Pattern::Spread, &spread);
+            if (decisive && spread > hw.storage.rate_spread) hw.storage.rate_spread = spread;
             seed += 0x9E3779B9ull;
             if (r <= 0.0) continue;
             hw.storage.rate_curve.push_back({(uint32_t) sz, (uint32_t) lanes, r});

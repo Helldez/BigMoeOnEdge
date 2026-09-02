@@ -517,12 +517,42 @@ Plan plan_run(const RunConfig & base,
         dense_pending = dense_pending > model.largest_dense_tensor ? dense_pending - model.largest_dense_tensor : 0;
     p.dense_pending_bytes = dense_pending;
 
+    // ── the allocation: what each group is WORTH, not what is left over ─────────────
+    //
+    // This is where the residual sizing used to be - cache gets `usable` minus whatever the dense
+    // policy took - and the residual is the shape that cannot express the two cases that matter. On
+    // a machine with room it hands the cache more than a hit is worth; on a pressured one it hands
+    // the dense set memory that would have bought more hits. Both halves now compete in one unit,
+    // seconds per byte of weights, and the cache is a fractional candidate above its own floor
+    // rather than the remainder.
+    //
+    // The allocator sees the HOST's share: where the first stage put some layers' experts on a
+    // device, those bytes are not the streamer's to hold and must not be planned for.
+    ModelProfile host_model = model;
+    host_model.group(WeightGroup::Experts).bytes = host_expert_bytes;
+    if (n_moe_layer && host_layers < n_moe_layer) {
+        const double share = (double) host_layers / (double) n_moe_layer;
+        host_model.token_cycle_bytes = (uint64_t) ((double) model.token_cycle_bytes * share);
+        host_model.group(WeightGroup::Experts).bytes_per_token = host_model.token_cycle_bytes;
+    }
+
+    AllocationInputs ai;
+    ai.budget_bytes = usable;
+    ai.engine_cache_min = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
+    ai.can_pin = p.config.moe.dense_weights == DenseWeightsMode::Pinned;
+    ai.reserved_bytes = dense_pending;
+    ai.cacheable_bytes = host_expert_bytes;
+    const Allocation alloc = allocate(hw, host_model, ai, pol);
+    p.allocation = alloc;
+
+    for (const std::string & n : alloc.notes)
+        note("cost", "-", Source::Derived, n);
+
     // ── the cache budget, and the floor that is the model's own arithmetic ──────────
-    const uint64_t cycle = model.token_cycle_bytes;
+    const uint64_t cycle = host_model.token_cycle_bytes;
     p.token_cycle_bytes = cycle;
 
-    const uint64_t for_cache_raw = usable > dense_pending ? usable - dense_pending : 0;
-    const uint64_t budget = std::min(for_cache_raw, host_expert_bytes);
+    const uint64_t budget = alloc.cache_bytes;
     p.cache_budget_bytes = budget;
 
     if (cycle == 0) {
@@ -555,10 +585,11 @@ Plan plan_run(const RunConfig & base,
         p.config.moe.cache_auto = false;
         p.config.moe.cache_mb = (int) mib(budget);
         note("cache-mb", u64s(mib(budget)), Source::Derived,
-             u64s(mib(usable)) + " MiB usable less " + u64s(mib(dense_pending)) +
-                 " MiB the dense policy is about "
-                 "to make non-reclaimable, capped at the " +
-                 u64s(mib(model.expert_bytes)) + " MiB the experts occupy");
+             "what the cache is worth out of " + u64s(mib(usable)) +
+                 " MiB usable, ranked against the resident groups by seconds saved per byte of RAM rather "
+                 "than handed the remainder: " +
+                 u64s(mib(alloc.resident_bytes)) + " MiB committed in total, of which " + u64s(mib(budget)) +
+                 " MiB is cache, over a floor of " + u64s(mib(cycle)) + " MiB");
 
         // The generic 1500 MiB guard predates the per-model floor and is the weaker of the two: a
         // budget above this model's own token cycle is not pathological however small it looks.

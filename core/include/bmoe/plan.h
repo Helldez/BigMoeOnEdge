@@ -12,6 +12,7 @@
 // Pure policy: no llama.cpp, no I/O.
 #pragma once
 
+#include "bmoe/allocate.h"
 #include "bmoe/config.h"
 #include "bmoe/placement.h"
 
@@ -85,6 +86,12 @@ struct Plan {
     uint64_t token_cycle_bytes = 0;
     uint64_t cache_budget_bytes = 0;
     uint64_t dense_pending_bytes = 0;
+
+    // Where every group of weights ended up and what that is predicted to cost. The config above is
+    // what the engine can be TOLD; this is what the plan actually decided, and the two differ
+    // wherever the engine has no way to express a per-group choice. Keeping both is what makes a
+    // prediction checkable against the run it produced.
+    Allocation allocation;
 
     // Human-readable multi-line rationale: one line per decision, plus the regime and the decline.
     // This is what `--plan-explain` prints.

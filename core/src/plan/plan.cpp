@@ -111,6 +111,29 @@ std::string Plan::explain() const {
         out += "\n";
     }
 
+    // The allocation, last, because it is the part a reader checks the prediction against: what
+    // each group got, what it is predicted to cost, and what the same token would have cost with
+    // nothing resident. The bound is printed as a bound and never divided into the prediction to
+    // manufacture a speedup figure - the page cache retains some of a mapped model and readahead
+    // amortises some of the rest, both by an amount no plan can know.
+    if (allocation.seconds_per_token > 0.0) {
+        char head[160];
+        std::snprintf(head, sizeof(head), "plan:   cost %.1f ms/token predicted, %.1f ms/token with nothing resident\n",
+                      allocation.seconds_per_token * 1000.0, allocation.seconds_worst_case * 1000.0);
+        out += head;
+        for (int i = 0; i < (int) WeightGroup::count; ++i) {
+            const GroupPlacement & g = allocation.groups[i];
+            if (g.seconds_per_token <= 0.0 && g.resident_bytes == 0) continue;
+            char line[256];
+            std::snprintf(line, sizeof(line), "plan:     %-10s %-14s %6llu MiB held, %7.2f ms/token  ",
+                          group_name(g.group), lane_name(g.lane), (unsigned long long) (g.resident_bytes >> 20),
+                          g.seconds_per_token * 1000.0);
+            out += line;
+            out += g.reason;
+            out += "\n";
+        }
+    }
+
     if (streaming_declined) {
         out += "plan:   declined: ";
         out += decline_reason;
