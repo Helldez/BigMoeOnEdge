@@ -290,10 +290,20 @@ Plan plan_run(const RunConfig & base,
                  u64s(mib(placement.raw_host_context_bytes)) + ", compute " +
                  u64s(mib(placement.raw_host_compute_bytes)) + " MiB; file " + u64s(mib(model.file_bytes)) +
                  ", experts " + u64s(mib(model.expert_bytes)) + ")");
+        // The context is NOT the fitter's decision, and this line used to claim it was. Upstream
+        // modifies the context if and ONLY if it is handed a zero, and the placement adapter always
+        // pins it to the caller's - so what comes back is the number that went in. Reporting that as
+        // `[measured]` credited a measurement nobody made, on the one knob whose default has been
+        // observed to decide whether a model streams at all: a 26B model was refused for a cache
+        // 184 MiB short while its context reserved 440 MiB, and halving it was the difference
+        // between declining and running. Nothing has priced this number - not the fitter, which
+        // cannot, and not this planner, which believed the fitter had.
         if (placement.n_ctx && !req.is_pinned("ctx-size")) {
             p.config.n_ctx = (int) placement.n_ctx;
-            note("ctx-size", u64s(placement.n_ctx), Source::Measured,
-                 "the capacity fitter shrinks context before it moves weights; this is where it settled");
+            note("ctx-size", u64s(placement.n_ctx), Source::Policy,
+                 "the value this run was given, not a choice: the capacity fitter only picks a context when it "
+                 "is handed a zero and this planner always pins it, so nothing has weighed this number against "
+                 "what the memory it reserves would buy as expert cache");
         }
         p.config.n_gpu_layers = placement.n_gpu_layers;
         p.config.buft_overrides = placement.override_patterns;
