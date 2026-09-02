@@ -172,16 +172,21 @@ Allocation allocate(const HardwareProfile & hw,
             p.seconds_per_token = seconds_at_mibs(cycle, stream_mibs) + finite_or_zero(compute);
             p.reason = "streamed, no cache: the routed top-k read as sequential slices";
 
-            // Two floors, different in kind. The model's token cycle is the MECHANICAL one: below
-            // it an LRU evicts a slice before the same token needs it again, so the cache costs its
-            // memory and returns no hits. The engine additionally refuses any budget under a fixed
-            // guard, which is model-independent and predates this; a plan has to clear both or the
-            // engine would reject the configuration it just produced.
-            const uint64_t floor = std::max(cycle, in.engine_cache_min);
+            // The floor is the model's token cycle and nothing else. Below it an LRU evicts a slice
+            // before the same token needs it again, so the cache costs its memory and returns no
+            // hits — that is mechanical, and it is the only bound this file may enforce.
+            //
+            // The engine's fixed guard is NOT a second floor. It is a generic constant chosen once
+            // for every model, the caller clears it with `force-cache`, and enforcing it here turns
+            // a working configuration into a refusal: measured on a phone where this model's cycle
+            // is 581 MiB and 1077 MiB were free, which returns hits and which the guard alone would
+            // have declined.
+            const uint64_t floor = cycle;
             if (in.engine_cache_min > cycle)
-                a.notes.push_back("the expert cache floor here is the engine's fixed guard (" +
-                                  mibs(in.engine_cache_min) + "), not this model's token cycle (" + mibs(cycle) +
-                                  "): the guard is the binding constraint");
+                a.notes.push_back("the engine's fixed cache guard (" + mibs(in.engine_cache_min) +
+                                  ") is above this model's token cycle (" + mibs(cycle) +
+                                  "), so a budget between the two returns hits and needs force-cache to be "
+                                  "accepted; the floor enforced here is the model's");
 
             // A cache holding the whole expert set saves every read. The credited hit rate is
             // linear in its size, so the saving per byte of RAM is constant above the floor and this
@@ -222,8 +227,27 @@ Allocation allocate(const HardwareProfile & hw,
     }
 
     // ── 2. spend the budget down the ranking ─────────────────────────────────────────────────
-    std::sort(candidates.begin(), candidates.end(),
-              [](const Candidate & x, const Candidate & y) { return x.density > y.density; });
+    // Density first, and at equal density the LARGER candidate first. The tie is not a corner case:
+    // every group that is read whole every token has the same seconds-saved-per-byte, because both
+    // halves of the ratio scale with its size. With equal density the total saving is proportional
+    // to the bytes packed, so packing the big one first is strictly better - and packing it last
+    // strands it. Measured on a phone with a dense-oversized model: three small groups took 1511
+    // MiB and left a 2700 MiB attention set to refault at 112 s/token, where taking the big one
+    // first fits it and most of the rest.
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate & x, const Candidate & y) {
+        // Ties are compared with a relative tolerance, not exactly, and that is the whole point of
+        // this comparator. In exact arithmetic every group that is read whole every token has the
+        // SAME density - it is `1/refault_rate - 1/compute_rate`, and the group's size cancels -
+        // but computed as (b/r - b/h)/b it comes out differing by a few ulp per group. An exact
+        // comparison would then read those ulp as a real ranking and order the groups by rounding
+        // noise. With the tie recognised, the larger candidate goes first: at equal density the
+        // total saving is proportional to the bytes packed, so packing the big one first is never
+        // worse and packing it last can strand it.
+        const double scale = x.density > y.density ? x.density : y.density;
+        const bool tied = scale > 0.0 && std::fabs(x.density - y.density) <= scale * 1e-9;
+        if (!tied) return x.density > y.density;
+        return x.bytes > y.bytes;
+    });
 
     uint64_t remaining = in.budget_bytes;
     for (const Candidate & c : candidates) {
@@ -280,7 +304,7 @@ Allocation allocate(const HardwareProfile & hw,
         // proposed. A cache under one token cycle evicts what the same token still needs, so it
         // costs its memory and returns no hits - and a bound that only guards one of the two paths
         // into this number is not a floor.
-        const uint64_t floor = std::max(model.token_cycle_bytes, in.engine_cache_min);
+        const uint64_t floor = model.token_cycle_bytes;
         if (sized > 0 && sized < floor) {
             a.notes.push_back("expert cache left off: " + mibs(sized) + " survived the dense reservation but one " +
                               "token's routing reads " + mibs(floor) +
@@ -299,6 +323,11 @@ Allocation allocate(const HardwareProfile & hw,
         }
         a.cache_bytes = sized;
         GroupPlacement & p = a.at(WeightGroup::Experts);
+        // The ranking may already have written a size that the reservation or the floor then took
+        // away. Leaving it there makes the plan contradict itself - a placement claiming to hold
+        // memory the plan says it will not spend - and a plan that disagrees with itself cannot be
+        // checked against the run it produced.
+        if (sized == 0) p.resident_bytes = 0;
         if (sized > 0) {
             p.lane = Lane::ExpertStream;
             p.resident_bytes = sized;

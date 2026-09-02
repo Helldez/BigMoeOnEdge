@@ -156,10 +156,25 @@ void probe_headroom(HardwareProfile & hw, bool allow_active, uint64_t target_byt
     // figure it was supposed to correct upwards. A quarter above the target is enough headroom to
     // see a boundary if one is there, and little enough to stay out of the way if it is not.
     if (target_bytes == 0) return;
-    uint64_t ceiling = target_bytes + target_bytes / 4;
+
+    // The question worth asking is only ever "can MORE be held than was reported", because this
+    // figure is only ever used to raise the reported one. A target under what the kernel already
+    // promises teaches nothing: the probe spends real pressure, confirms it can hold less than it
+    // was told it could, and the answer is then discarded. Measured on a phone with a 26B model —
+    // target 2702 MiB against 3418 MiB reported, so `--probe-mem` churned and changed nothing.
+    //
+    // So the target is lifted to a quarter above the reported budget when the model's own is
+    // smaller. A quarter is this file's existing coefficient rather than a new one, and it stays a
+    // bounded overshoot rather than a climb: the boundary check inside `measure_holdable` stops at
+    // the first page taken back, which is what separates this from the unbounded version above.
+    uint64_t enough = target_bytes;
+    const uint64_t above_reported = hw.residency_budget + hw.residency_budget / 4;
+    if (enough < above_reported) enough = above_reported;
+
+    uint64_t ceiling = enough;
     if (hw.memory_total && ceiling > hw.memory_total) ceiling = hw.memory_total;
 
-    const uint64_t measured = measure_holdable(ceiling, target_bytes);
+    const uint64_t measured = measure_holdable(ceiling, enough);
     if (measured == 0) return;
 
     // What the probe establishes is a LOWER BOUND that was actually held, so it only ever raises the

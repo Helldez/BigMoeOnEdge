@@ -70,9 +70,17 @@ struct GroupPlacement {
 
 // What the allocator is allowed to spend and what it must leave alone.
 struct AllocationInputs {
-    uint64_t budget_bytes = 0;     // RAM this plan may commit, after margins and reservations
-    uint64_t engine_cache_min = 0; // the engine's own fixed cache guard, which a plan must also clear
-    bool can_pin = false;          // a reclaim-exempt store exists and is large enough to matter
+    uint64_t budget_bytes = 0; // RAM this plan may commit, after margins and reservations
+    bool can_pin = false;      // a reclaim-exempt store exists and is large enough to matter
+
+    // The engine's own fixed cache guard, REPORTED and never enforced here. It is a generic
+    // constant that predates the per-model floor and is the weaker of the two: a budget above this
+    // model's own token cycle returns hits however small it looks next to a number chosen once for
+    // every model at once, and the caller clears the guard with `force-cache` when that is the case.
+    // Enforcing it here as a floor declines models that stream perfectly well — measured on a phone
+    // where a 35B-A3B has a 581 MiB token cycle and 1077 MiB free, and the guard alone turned a
+    // working configuration into a refusal.
+    uint64_t engine_cache_min = 0;
 
     // Bytes the dense policy will hold whatever this ranking concludes. The engine's dense mode is
     // one setting for every non-expert tensor, so per-group dense residency is not something it can

@@ -898,9 +898,21 @@ int main(int argc, char ** argv) {
         // runs; the measuring half holds memory until the kernel takes some back, which is real
         // pressure on a live machine, so it waits to be asked with --probe-mem.
         // The target is the smallest configuration worth running: the dense set this machine would
-        // hold, plus one token's worth of experts. Asking "can this be held" is a bounded question;
-        // asking "how much could be held" is the one that provokes the answer it measures.
-        probe_headroom(hw, probe_mem, mp.dense_bytes + mp.token_cycle_bytes);
+        // hold, plus the smallest cache that returns any hits at all. Asking "can this be held" is a
+        // bounded question; asking "how much could be held" is the one that provokes the answer it
+        // measures.
+        //
+        // The cache term is the FLOOR the engine will actually enforce, not one token cycle. Those
+        // differ whenever the engine's fixed guard is the larger, and the difference decides whether
+        // the probe is worth running at all: it only ever raises the reported figure, so a target
+        // below what the machine already reports available can never raise anything, and the probe
+        // spends real pressure to produce an answer that is then discarded. Measured on a phone with
+        // gemma4: target 2702 MiB against 3418 MiB reported, so `--probe` churned and changed
+        // nothing, and the plan declined to stream a model that device runs.
+        // Written without std::max on purpose: windows.h defines `max` as a macro and this
+        // translation unit sees it.
+        const uint64_t guard_bytes = (uint64_t) bmoe::MoeStreamConfig::cache_min_mb << 20;
+        const uint64_t cache_floor = mp.token_cycle_bytes > guard_bytes ? mp.token_cycle_bytes : guard_bytes;
         // The first stage: llama.cpp's own capacity fitter, on every backend it knows. Devices are
         // only registered once the backend is initialised, so it is brought up here — the session
         // does the same and the call is reference counted.
@@ -911,6 +923,14 @@ int main(int argc, char ** argv) {
         // number an offload turns on, and it needs the backends registered, so it waits for the
         // init above rather than joining the free facts.
         probe_bandwidth(hw, mp);
+        // The intrusive one goes LAST, and the order is load-bearing rather than tidy. It holds
+        // gigabytes and dirties every page of them, so on a machine whose reclaim compresses it
+        // leaves the kernel busy and the compressor full for a while after it releases. Anything
+        // measured next measures that recovery instead of the machine: run before the thread sweep,
+        // it made the sweep answer 1 thread on a phone that every other run of the same binary
+        // measured at 4 — a knob worth about half this device's throughput, decided by the probe
+        // that ran before it.
+        probe_headroom(hw, probe_mem, mp.dense_bytes + cache_floor);
         const Placement placement = probe_placement(cfg.model_path.c_str(), mp, (uint32_t) cfg.n_ctx);
         const Plan plan = plan_run(cfg, hw, mp, placement, req);
         cfg = plan.config;
