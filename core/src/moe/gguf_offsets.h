@@ -27,6 +27,11 @@ struct GgufOffsets {
     // tensor name -> its ggml type id. Carried as an int so consumers that only need to hand it
     // back to a backend (asking whether that backend can execute this layout) need no ggml header.
     std::unordered_map<std::string, int> type_by_name;
+    // tensor name -> its row count (ne[1]), 0 for a 1-D tensor. The only SHAPE this map carries,
+    // and it exists for one question: how many bytes of a table a single token gathers, which is
+    // what turns an embedding table from a residency cost into a per-token demand. Filled from the
+    // same parse as everything else rather than from a second one.
+    std::unordered_map<std::string, uint64_t> rows_by_name;
     // tensor name -> index into shard_paths. Always filled; 0 for every tensor of a
     // single-file model, so consumers index shard_paths unconditionally.
     std::unordered_map<std::string, int> file_by_name;

@@ -2,6 +2,7 @@
 // the rendered rationale. No rules live here — those are in planner.cpp.
 
 #include "bmoe/hardware_profile.h"
+#include "bmoe/model_profile.h"
 #include "bmoe/plan.h"
 
 #include <algorithm>
@@ -55,6 +56,32 @@ uint32_t StorageFacts::best_lanes(uint32_t request_bytes) const {
         if (s.lanes > pick) pick = s.lanes;
     }
     return pick;
+}
+
+const char * group_name(WeightGroup g) {
+    switch (g) {
+    case WeightGroup::Embedding:
+        return "embedding";
+    case WeightGroup::Attention:
+        return "attention";
+    case WeightGroup::DenseFfn:
+        return "dense-ffn";
+    case WeightGroup::Experts:
+        return "experts";
+    case WeightGroup::Output:
+        return "output";
+    case WeightGroup::Other:
+        return "other";
+    default:
+        return "?";
+    }
+}
+
+uint64_t ModelProfile::bytes_per_token() const {
+    uint64_t total = 0;
+    for (int i = 0; i < (int) WeightGroup::count; ++i)
+        total += groups[i].bytes_per_token;
+    return total;
 }
 
 uint64_t HardwareProfile::device_local_memory() const {

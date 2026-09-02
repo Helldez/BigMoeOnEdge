@@ -1,22 +1,32 @@
-// How fast each compute engine can pull weights out of the memory it will read them from.
+// What each compute engine can do with this model's weights, verified by doing it.
 //
-// This is the number that decides an offload, and it is the only one that does. Batch-1 decode is a
-// chain of GEMVs: every weight is read once and multiplied once, so arithmetic is never the
-// constraint and the winner is whoever moves bytes faster. On a machine with separate memories that
-// is a property of each memory. On a machine with ONE memory it is a property of the engine's path
-// to it — and the two are not equal, which is the whole reason this probe exists: cores reach a
-// fraction of a fabric that an accelerator on the same die saturates.
+// Two questions, one graph. How fast does this engine pull weights out of the memory it will read
+// them from — the number a bandwidth-bound batch-1 decode turns on, since every weight is read once
+// and multiplied once so arithmetic is never the constraint. And does it produce the RIGHT answer,
+// and honour a host pointer when handed one, because a planner that trusts an advertisement makes
+// two silent mistakes: it believes `buffer_from_host_ptr` and plans to stream into a buffer that
+// cannot be rebound, and it treats a device as a faster CPU without ever checking that it computes
+// the same thing.
 //
-// The measurement is one graph, run on every backend. That matters more than what the graph is: a
-// ratio between a hand-rolled loop on one side and a vendor kernel on the other would measure the
-// two implementations rather than the two paths, and the number is only ever used as a ratio. So
-// the same `mul_mat` over the same buffer is scheduled on the CPU backend and on each device, and
-// what comes back is bytes read over seconds, in the same units, from the same work.
+// The measurement is ONE graph run on every backend. That matters more than what the graph is: a
+// ratio between a hand-rolled loop on one side and a vendor kernel on the other would measure two
+// implementations rather than two paths, and the number is only ever used as a ratio. So the same
+// `mul_mat` over the same bytes is scheduled on the CPU backend and on each device.
+//
+// The weight type is the MODEL's, not F32, and that is not a detail: an F32 matmul is pure
+// bandwidth and stops improving as soon as the bus is full, while a quantized one carries
+// dequantisation work per byte and keeps using cores past that point. Measured in F32 the thread
+// sweep below answered 2 on a phone whose engine is 58% faster at 4.
+//
+// On the agreement test: cross-backend float reductions do not associate in the same order, so
+// bit-equality is the wrong gate — a correct kernel fails it. The gate is a tight relative
+// tolerance, which a correct kernel passes comfortably and a wrong one misses by orders of
+// magnitude.
 //
 // Bounded by construction: a buffer sized to outrun any last-level cache and nothing more, a few
-// repetitions, everything released before returning. It costs a fraction of the load it runs
-// inside, and where a backend will not allocate or will not run the op, that device simply keeps
-// its unmeasured 0 and every rule above declines rather than assuming.
+// repetitions, everything released before returning. Where a backend will not allocate or will not
+// run the op, that device keeps its unmeasured 0 and every rule above declines rather than
+// assuming. A zero here is "unmeasured", and it is never to be read as "slow".
 
 #include "bmoe/probe.h"
 
@@ -25,7 +35,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace bmoe {
@@ -38,11 +50,8 @@ constexpr int64_t k_rows = 4096;
 constexpr int64_t k_cols = 4096;
 constexpr int k_reps = 4;
 
-// The weight type to measure with. The model's own where it has one, because a quantized matmul and
-// an F32 one do not scale the same way with threads: the F32 kind is pure bandwidth and stops
-// improving as soon as the bus is full, while the quantized kind carries dequantisation per byte
-// and keeps using cores past that. Falling back to F32 makes the figure a bandwidth number and says
-// so; using the model's makes it a number about this workload.
+// The weight type to measure with. The model's own where it has one; falling back to F32 makes the
+// figure a raw bandwidth number rather than a number about this workload, and the plan says so.
 ggml_type weight_type(const ModelProfile & model) {
     if (model.expert_type_id < 0) return GGML_TYPE_F32;
     const ggml_type t = (ggml_type) model.expert_type_id;
@@ -60,13 +69,58 @@ std::vector<int> thread_ladder(uint32_t n_cores) {
     return out;
 }
 
-// Run the same GEMV on one backend and return the rate at which it read the weight, in GiB/s.
-// Returns 0 for every way of not knowing: no backend, no allocation, no kernel, no time elapsed.
-// A zero here is "unmeasured", and it is never to be read as "slow".
-double measure(ggml_backend_dev_t dev, ggml_type wtype, int n_threads = 0) {
-    if (!dev) return 0.0;
+// Deterministic bytes, with enough variation that a broken kernel cannot pass by returning a
+// constant. Deterministic matters: the agreement test compares devices against the CPU on the SAME
+// bytes, and data regenerated per device would compare two different questions.
+struct Probe {
+    ggml_type type = GGML_TYPE_F32;
+    int64_t cols = 0;
+    int64_t rows = 0;
+    std::vector<uint8_t> weight;
+    std::vector<float> x;
+};
+
+bool build_probe(Probe & p, ggml_type wtype) {
+    const int64_t blk = ggml_blck_size(wtype);
+    p.type = wtype;
+    p.cols = blk > 0 ? (k_cols / blk) * blk : k_cols;
+    p.rows = k_rows;
+    if (p.cols <= 0) return false;
+
+    const size_t row_bytes = ggml_row_size(wtype, p.cols);
+    if (row_bytes == 0) return false;
+
+    std::vector<float> src((size_t) (p.cols * p.rows));
+    for (size_t i = 0; i < src.size(); ++i)
+        src[i] = std::sin((float) (i % 1024) * 0.017f) * 0.5f;
+
+    p.weight.resize(row_bytes * (size_t) p.rows);
+    if (wtype == GGML_TYPE_F32) {
+        std::memcpy(p.weight.data(), src.data(), p.weight.size());
+    } else if (ggml_quantize_chunk(wtype, src.data(), p.weight.data(), 0, p.rows, p.cols, nullptr) == 0) {
+        return false;
+    }
+
+    p.x.resize((size_t) p.cols);
+    for (size_t i = 0; i < p.x.size(); ++i)
+        p.x[i] = std::cos((float) (i % 512) * 0.011f);
+    return true;
+}
+
+struct RunResult {
+    bool ok = false;
+    double gibs = 0.0;
+    std::vector<float> out;
+};
+
+// Run the probe on one backend. `host_ptr_buffer`, when true, asks the device to wrap OUR memory
+// instead of allocating its own — the capability the whole streaming design depends on, tested by
+// exercising it rather than by reading a flag.
+RunResult run_gemv(ggml_backend_dev_t dev, const Probe & p, int n_threads, bool host_ptr_buffer) {
+    RunResult r;
+    if (!dev) return r;
     ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
-    if (!backend) return 0.0;
+    if (!backend) return r;
 
     // Ask the backend for its own thread setter rather than calling a CPU-specific function: it is
     // how ggml exposes every backend-specific entry point, so a backend that has one is configured
@@ -79,64 +133,137 @@ double measure(ggml_backend_dev_t dev, ggml_type wtype, int n_threads = 0) {
         if (set_threads) set_threads(backend, n_threads);
     }
 
-    double gibs = 0.0;
     ggml_init_params ip{};
     ip.mem_size = ggml_tensor_overhead() * 8 + ggml_graph_overhead();
     ip.mem_buffer = nullptr;
     ip.no_alloc = true;
     ggml_context * ctx = ggml_init(ip);
-    ggml_backend_buffer_t buf = nullptr;
+    if (!ctx) {
+        ggml_backend_free(backend);
+        return r;
+    }
 
-    if (ctx) {
-        // Shapes must respect the type's block size, which is what makes this the model's own kind
-        // of matmul rather than a shape the kernel would refuse.
-        const int64_t blk = ggml_blck_size(wtype);
-        const int64_t cols = blk > 0 ? (k_cols / blk) * blk : k_cols;
-        ggml_tensor * w = ggml_new_tensor_2d(ctx, wtype, cols, k_rows);
-        ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, cols, 1);
-        ggml_tensor * y = (w && x) ? ggml_mul_mat(ctx, w, x) : nullptr;
+    ggml_backend_buffer_t own_buf = nullptr;
+    ggml_backend_buffer_t host_buf = nullptr;
+    std::vector<uint8_t> host_copy;
 
-        // Ask before allocating: a backend without a kernel for this shape would otherwise be
-        // charged for a fallback that says nothing about its own path to memory.
-        if (y && ggml_backend_dev_supports_op(dev, y)) {
-            buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
-            if (buf) {
-                // Any bytes will do - the rate does not depend on the values - but they must be
-                // written through the backend, since the buffer may not be host memory.
-                std::vector<char> zeros((size_t) std::max(ggml_nbytes(w), ggml_nbytes(x)), 0);
-                ggml_backend_tensor_set(w, zeros.data(), 0, ggml_nbytes(w));
-                ggml_backend_tensor_set(x, zeros.data(), 0, ggml_nbytes(x));
+    ggml_tensor * w = ggml_new_tensor_2d(ctx, p.type, p.cols, p.rows);
+    ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, p.cols, 1);
+    ggml_tensor * y = (w && x) ? ggml_mul_mat(ctx, w, x) : nullptr;
 
-                ggml_cgraph * gf = ggml_new_graph(ctx);
-                ggml_build_forward_expand(gf, y);
+    // Ask before allocating: a backend without a kernel for this shape would otherwise be charged
+    // for a fallback that says nothing about its own path to memory.
+    if (y && ggml_backend_dev_supports_op(dev, y)) {
+        bool placed = true;
+        if (host_ptr_buffer) {
+            // Our memory, handed to the device. If it really honours host pointers, the graph below
+            // reads the values we wrote here without any copy — exactly what the streamer needs in
+            // order to rebind a tensor onto a slice it just read from flash.
+            host_copy = p.weight;
+            host_buf = ggml_backend_dev_buffer_from_host_ptr(dev, host_copy.data(), host_copy.size(), 0);
+            if (host_buf) {
+                w->buffer = host_buf;
+                w->data = host_copy.data();
+            } else {
+                placed = false;
+            }
+        }
 
-                ggml_backend_graph_compute(backend, gf); // once to warm anything that warms
+        if (placed) own_buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
+        if (placed && own_buf) {
+            if (!host_ptr_buffer) ggml_backend_tensor_set(w, p.weight.data(), 0, ggml_nbytes(w));
+            ggml_backend_tensor_set(x, p.x.data(), 0, ggml_nbytes(x));
+
+            ggml_cgraph * gf = ggml_new_graph(ctx);
+            ggml_build_forward_expand(gf, y);
+
+            // One untimed pass: the first call pays for kernel selection, JIT and lazy device
+            // setup, and timing it would measure the setup rather than the device.
+            if (ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS) {
                 const auto t0 = std::chrono::steady_clock::now();
-                for (int i = 0; i < k_reps; ++i)
-                    ggml_backend_graph_compute(backend, gf);
+                bool all_ok = true;
+                for (int i = 0; i < k_reps && all_ok; ++i)
+                    all_ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
                 ggml_backend_synchronize(backend);
                 const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
-                if (secs > 0.0) {
-                    const double bytes = (double) ggml_nbytes(w) * k_reps;
-                    gibs = bytes / secs / (1024.0 * 1024.0 * 1024.0);
+                if (all_ok && secs > 0.0) {
+                    r.gibs = (double) ggml_nbytes(w) * k_reps / secs / (1024.0 * 1024.0 * 1024.0);
+                    r.out.resize((size_t) p.rows);
+                    ggml_backend_tensor_get(y, r.out.data(), 0, r.out.size() * sizeof(float));
+                    r.ok = true;
                 }
             }
         }
     }
 
-    if (buf) ggml_backend_buffer_free(buf);
-    if (ctx) ggml_free(ctx);
+    if (own_buf) ggml_backend_buffer_free(own_buf);
+    if (host_buf) ggml_backend_buffer_free(host_buf);
+    ggml_free(ctx);
     ggml_backend_free(backend);
-    return gibs;
+    return r;
+}
+
+// Agreement, not bit-equality. See the file header.
+bool agrees(const std::vector<float> & a, const std::vector<float> & b) {
+    if (a.size() != b.size() || a.empty()) return false;
+    double num = 0, den = 0;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const double d = (double) a[i] - (double) b[i];
+        num += d * d;
+        den += (double) a[i] * (double) a[i];
+    }
+    if (den <= 0) return false;
+    return std::sqrt(num / den) < 1e-4;
 }
 
 } // namespace
 
 void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model) {
-    const ggml_type wtype = weight_type(model);
-    const uint64_t needed = (uint64_t) k_rows * k_cols * sizeof(float);
+    Probe probe;
+    if (!build_probe(probe, weight_type(model))) return;
+
+    const uint64_t needed = (uint64_t) probe.weight.size();
+
+    // The CPU first and unconditionally: it is the reference every device is judged against, and a
+    // comparison without it is not a comparison. Its own result defines correctness by definition.
+    std::vector<float> reference;
     for (ComputeDevice & d : hw.devices) {
+        if (!d.is_cpu) continue;
+        ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
+        if (!dev) continue;
+        const RunResult ref = run_gemv(dev, probe, 0, false);
+        if (!ref.ok) continue;
+        reference = ref.out;
+        d.memory_bandwidth_gibs = ref.gibs;
+        d.identity_ok = Tri::Yes;       // the CPU is the reference
+        d.host_ptr_verified = Tri::Yes; // it computes on host memory and nothing else
+        hw.host_bandwidth_gibs = ref.gibs;
+
+        // How many threads this machine wants, asked rather than reasoned about. The same graph at
+        // each rung of the ladder; the rung with the highest rate wins, and ties go to the smaller
+        // count because threads are not free elsewhere. What this instrument sees is a memory-bound
+        // matmul, which is what a batch-1 decode mostly is — not the whole of it, and the plan says
+        // as much rather than presenting the number as a decode measurement.
+        double best_rate = 0.0;
+        uint32_t best_n = 0;
+        for (int t : thread_ladder(hw.n_cores)) {
+            const RunResult r = run_gemv(dev, probe, t, false);
+            if (r.ok && r.gibs > best_rate * 1.02) { // a rung has to beat the incumbent by more than noise
+                best_rate = r.gibs;
+                best_n = (uint32_t) t;
+            }
+        }
+        if (best_n > 0) {
+            hw.best_threads = best_n;
+            hw.host_bandwidth_gibs = std::max(hw.host_bandwidth_gibs, best_rate);
+            d.memory_bandwidth_gibs = hw.host_bandwidth_gibs;
+        }
+        break;
+    }
+
+    for (ComputeDevice & d : hw.devices) {
+        if (d.is_cpu) continue;
         ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
         if (!dev) continue;
         // Do not take memory a device may be short of just to learn how fast it is. A device with
@@ -144,32 +271,21 @@ void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model) {
         // is not worth pushing a machine into a failed allocation to get. Host memory is not
         // guarded here because the residency budget already governs it.
         if (!d.host_memory && d.memory_free && d.memory_free < needed * 4) continue;
-        const double gibs = measure(dev, wtype);
-        if (gibs <= 0.0) continue;
-        d.memory_bandwidth_gibs = gibs;
-        // The host's own figure is whatever the CPU backend reached on the same graph. Taking it
-        // from the same measurement rather than from a separate loop is the point: the comparison
-        // the rules make is a ratio, and a ratio between two different experiments means nothing.
-        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU) continue;
-        hw.host_bandwidth_gibs = gibs;
 
-        // How many threads this machine wants, asked rather than reasoned about. The same graph at
-        // each rung of the ladder; the rung with the highest rate wins, and ties go to the smaller
-        // count because threads are not free elsewhere. What this instrument sees is a memory-bound
-        // matmul, which is what a batch-1 decode mostly is - not the whole of it, and the plan says
-        // as much rather than presenting the number as a decode measurement.
-        double best_rate = 0.0;
-        uint32_t best_n = 0;
-        for (int t : thread_ladder(hw.n_cores)) {
-            const double r = measure(dev, wtype, t);
-            if (r > best_rate * 1.02) { // a rung has to beat the incumbent by more than noise
-                best_rate = r;
-                best_n = (uint32_t) t;
-            }
-        }
-        if (best_n > 0) {
-            hw.best_threads = best_n;
-            hw.host_bandwidth_gibs = std::max(hw.host_bandwidth_gibs, best_rate);
+        const RunResult own = run_gemv(dev, probe, 0, false);
+        if (!own.ok) continue;
+        d.memory_bandwidth_gibs = own.gibs;
+
+        // Correctness before speed. Without a reference nothing can be concluded, and an unproven
+        // device stays Unknown rather than being credited with agreement it never demonstrated.
+        if (!reference.empty()) d.identity_ok = agrees(own.out, reference) ? Tri::Yes : Tri::No;
+
+        // The advertisement is not the fact. A device that returns a host-pointer buffer and then
+        // reads something else closes the door to streaming with no error anywhere, so the only
+        // answer worth recording is what happened when one was actually used.
+        if (is_yes(d.host_ptr_buffers) && !reference.empty()) {
+            const RunResult hp = run_gemv(dev, probe, 0, true);
+            d.host_ptr_verified = (hp.ok && agrees(hp.out, reference)) ? Tri::Yes : Tri::No;
         }
     }
 

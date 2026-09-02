@@ -110,12 +110,39 @@ struct ComputeDevice {
     // rebinding `data` onto the file's native layout, and a repack replaces exactly that.
     Tri needs_repack = Tri::Unknown;
 
-    // Memory bandwidth in GiB/s, 0 when unmeasured. This is the number that decides a decode
-    // offload, because batch-1 decode is a chain of GEMVs that reads every weight once for a single
-    // multiply-accumulate: it is bound by bandwidth, not by arithmetic. A device that shares the
-    // host's memory therefore has nothing to win however fast its ALUs are, and one with memory of
-    // its own wins in proportion to this.
+    // Memory bandwidth in GiB/s, 0 when unmeasured. This is a NECESSARY input to an offload
+    // decision and emphatically not a sufficient one, which is the most expensive lesson on this
+    // branch: batch-1 decode is a chain of GEMVs that reads every weight once for a single
+    // multiply-accumulate, so a device that shares the host's memory has little to win however fast
+    // its ALUs are, and one with memory of its own wins in proportion to this — but a GEMV measured
+    // on one buffer sees none of the costs below. Measured 20 GiB/s against the host's 12 on a
+    // phone whose engine then ran the offload at 0.53x.
     double memory_bandwidth_gibs = 0.0;
+
+    // Whether this device reproduced the CPU's result on the probe graph. A device that computes
+    // something else is excluded on CORRECTNESS, before speed is considered at all — and the
+    // exclusion has to be a probe rather than a promise, since nothing in a backend's advertised
+    // capabilities says "and the answers are right". Bit-equality is the wrong gate: cross-backend
+    // float reductions do not associate in the same order, so a correct kernel would fail it.
+    Tri identity_ok = Tri::Unknown;
+
+    // Whether this device honoured a host-pointer buffer when actually handed one: the buffer was
+    // created AND the graph read the values written through our own pointer. Distinct from
+    // `host_ptr_buffers`, which is only the advertisement — and a device that returns a buffer and
+    // then reads something else closes the door to streaming silently, with no error anywhere.
+    Tri host_ptr_verified = Tri::Unknown;
+
+    // Boundary crossings this device adds to ONE token's graph, 0 when unmeasured. It is the term
+    // that decides an offload in practice and the one a bandwidth figure cannot see. Two measured
+    // facts sit behind it. Dense and expert halves alternate per layer, so a split placement
+    // crosses twice per layer — 96 crossings on a 48-layer model — and contiguous layer blocks,
+    // the shape that should have avoided it, failed too: swept 0/2/4/8 on a 40-layer model, 2.398
+    // tok/s at N=0 against 0.587 at N=2, with N=4 and N=8 faulting, while the I/O half of the trade
+    // did exactly what the cost model predicted (cache hits 48% to 73%, re-reads 84.5 to 5.2 per
+    // token). And merely REGISTERING a device costs crossings: 61 splits per token with nothing
+    // placed on it, which is why a device the plan does not use must be kept out of the run rather
+    // than merely left empty.
+    uint32_t graph_splits = 0;
 };
 
 // The measured read rate at one (request size, lane count) point. A curve of these is the only
@@ -148,6 +175,19 @@ struct StorageFacts {
     // Kept so the rationale can quote them: a verdict a reader can check beats one to be believed.
     double rate_mapped_mibs = 0.0;
     double rate_unmapped_mibs = 0.0;
+
+    // The price of a REFAULT: page-sized random reads, in MiB/s, 0 when not measured. It is what a
+    // weight left to the kernel's mapping costs per byte once memory pressure has dropped its
+    // pages, and it is not a fraction of the sequential rate but a different order of magnitude —
+    // 23 MiB/s against 2609 on the test host, 116x. Without it, leaving a group mapped looks nearly
+    // free and the plan under-spends on residency.
+    double refault_mibs = 0.0;
+
+    // How much a live mapping costs concurrent uncached reads, as a ratio, 1.0 when not measured.
+    // Derived from the two points above so a rule reads one number, not two.
+    double mapping_penalty() const {
+        return (rate_mapped_mibs > 0.0 && rate_unmapped_mibs > 0.0) ? rate_unmapped_mibs / rate_mapped_mibs : 1.0;
+    }
 
     // Best measured rate at or near `request_bytes` for `lanes`, or 0 when the curve says nothing
     // about that point. Nearest-sample lookup on purpose: interpolating a curve whose whole shape

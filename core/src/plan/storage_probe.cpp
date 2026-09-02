@@ -291,6 +291,14 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
         }
     }
 
+    // The price of a REFAULT, measured as the kernel pays it: one page at a time, scattered, one
+    // lane. This is what a group left to the file mapping costs per byte once pressure has dropped
+    // its pages, and it is the term that decides whether residency is worth buying at all. It is
+    // deliberately not derived as a fraction of the sequential rate: on the test host it is 23
+    // MiB/s against 2609 sequential, 116x, and a plan that assumed a fraction would under-spend on
+    // residency by two orders of magnitude.
+    hw.storage.refault_mibs = median_rate(rd, 4096, 1, per_lane * 4, 0x5EEDFA11ull, 3, Pattern::Spread);
+
     // The comparable point for the mapping question, read the way the engine reads rather than the
     // way the curve is drawn: same size, same lanes, same pattern as the mapped arm above.
     const double unmapped_rate = median_rate(rd, slice, 4, per_lane, 0xC0FFEEull, 3, Pattern::Clustered);

@@ -44,6 +44,7 @@ static ModelProfile moe_model() {
     m.arch = "qwen3moe";
     m.is_moe = true;
     m.n_layer = 48;
+    m.n_moe_layer = 48; // no leading dense blocks in this family: every block carries experts
     m.n_expert = 256;
     m.n_expert_used = 8;
     m.n_expert_projections = 3;

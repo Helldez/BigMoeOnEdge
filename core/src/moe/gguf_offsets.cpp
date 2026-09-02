@@ -54,6 +54,12 @@ void fill_offsets(const gguf_context * gctx, int file_idx, GgufOffsets & out) {
         out.size_by_name[name] = (uint64_t) gguf_get_tensor_size(gctx, i);
         out.type_by_name[name] = (int) gguf_get_tensor_type(gctx, i);
         out.file_by_name[name] = file_idx;
+        // Row count, for the one consumer that needs a shape rather than a size: turning a table's
+        // total bytes into the bytes a single token gathers from it. Taken here because this parse
+        // has already walked the whole KV section, which is exactly what this file's header says a
+        // caller must not be made to pay for twice.
+        const int64_t * ne = gguf_get_tensor_ne(gctx, i);
+        out.rows_by_name[name] = ne ? (uint64_t) (ne[1] > 0 ? ne[1] : 0) : 0;
     }
 }
 

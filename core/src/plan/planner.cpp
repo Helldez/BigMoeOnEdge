@@ -189,10 +189,13 @@ Plan plan_run(const RunConfig & base,
     // the host and nothing of the model sits on a device; with one, only the host share of the
     // experts is the streamer's to serve, and the dense set the fitter kept on the host is what it
     // costs the residency budget.
-    const uint32_t n_layer = model.n_layer;
-    const uint32_t host_layers = placement.fitted ? (uint32_t) placement.host_expert_layers.size() : n_layer;
-    const uint64_t host_expert_bytes = (placement.fitted && n_layer)
-                                           ? (uint64_t) ((double) model.expert_bytes * host_layers / n_layer)
+    // Expert bytes prorate over the layers that CARRY experts, not over every block in the file.
+    // On an architecture with leading dense blocks the two counts differ, and dividing the expert
+    // set by the larger of them understates what the host still has to stream.
+    const uint32_t n_moe_layer = model.n_moe_layer;
+    const uint32_t host_layers = placement.fitted ? (uint32_t) placement.host_expert_layers.size() : n_moe_layer;
+    const uint64_t host_expert_bytes = (placement.fitted && n_moe_layer)
+                                           ? (uint64_t) ((double) model.expert_bytes * host_layers / n_moe_layer)
                                            : model.expert_bytes;
 
     auto note = [&](const char * knob, std::string value, Source src, std::string reason) {
@@ -279,10 +282,11 @@ Plan plan_run(const RunConfig & base,
 
     if (placement.fitted) {
         note("placement", u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers on devices", Source::Measured,
-             placement.outcome + "; " + u64s(host_layers) + " of " + u64s(n_layer) +
-                 " layers keep their experts on the host, host-resident " + u64s(mib(placement.host_resident_bytes)) +
-                 " MiB, on devices " + u64s(mib(placement.device_bytes)) + " MiB, context " + u64s(placement.n_ctx) +
-                 " (fitter's host breakdown: model " + u64s(mib(placement.raw_host_model_bytes)) + ", context " +
+             placement.outcome + "; " + u64s(host_layers) + " of " + u64s(n_moe_layer) +
+                 " MoE layers keep their experts on the host, host-resident " +
+                 u64s(mib(placement.host_resident_bytes)) + " MiB, on devices " + u64s(mib(placement.device_bytes)) +
+                 " MiB, context " + u64s(placement.n_ctx) + " (fitter's host breakdown: model " +
+                 u64s(mib(placement.raw_host_model_bytes)) + ", context " +
                  u64s(mib(placement.raw_host_context_bytes)) + ", compute " +
                  u64s(mib(placement.raw_host_compute_bytes)) + " MiB; file " + u64s(mib(model.file_bytes)) +
                  ", experts " + u64s(mib(model.expert_bytes)) + ")");

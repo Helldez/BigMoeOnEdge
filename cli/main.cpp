@@ -896,9 +896,22 @@ int main(int argc, char ** argv) {
 
         if (plan_explain) {
             std::fprintf(stderr, "plan: machine %s\n", hw.label.c_str());
-            if (mp.ok)
-                std::fprintf(stderr, "plan: model %s, %u experts top-%u over %u MoE layers\n", mp.arch.c_str(),
-                             mp.n_expert, mp.n_expert_used, mp.n_layer);
+            if (mp.ok) {
+                std::fprintf(stderr, "plan: model %s, %u experts top-%u over %u of %u blocks\n", mp.arch.c_str(),
+                             mp.n_expert, mp.n_expert_used, mp.n_moe_layer, mp.n_layer);
+                // The decomposition the cost model prices, printed because a per-token demand is
+                // the one number a reader can sanity-check against the model they know: a table
+                // gathered by row must be tiny per token however large it is on disk.
+                for (int gi = 0; gi < (int) WeightGroup::count; ++gi) {
+                    const GroupDemand & d = mp.groups[gi];
+                    if (d.bytes == 0) continue;
+                    std::fprintf(stderr, "plan:   %-10s %7llu MiB, %7llu MiB/token%s\n", group_name((WeightGroup) gi),
+                                 (unsigned long long) (d.bytes >> 20), (unsigned long long) (d.bytes_per_token >> 20),
+                                 d.row_gatherable ? "  (row-gathered)"
+                                 : d.streamable   ? "  (streamable)"
+                                                  : "");
+                }
+            }
             std::fputs(plan.explain().c_str(), stderr);
         }
         if (plan_only) return 0;
