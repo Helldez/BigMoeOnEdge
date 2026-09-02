@@ -275,6 +275,20 @@ Allocation allocate(const HardwareProfile & hw,
     if (in.cacheable_bytes > 0 && model.is_moe) {
         const uint64_t priced = a.cache_bytes;
         uint64_t sized = std::min(after_reserved, in.cacheable_bytes) & ~((1ull << 20) - 1);
+
+        // The floor applies to whatever survived the reservation, not only to what the ranking
+        // proposed. A cache under one token cycle evicts what the same token still needs, so it
+        // costs its memory and returns no hits - and a bound that only guards one of the two paths
+        // into this number is not a floor.
+        const uint64_t floor = std::max(model.token_cycle_bytes, in.engine_cache_min);
+        if (sized > 0 && sized < floor) {
+            a.notes.push_back("expert cache left off: " + mibs(sized) + " survived the dense reservation but one " +
+                              "token's routing reads " + mibs(floor) +
+                              ". Under that floor the cache evicts a slice before the same token needs it again - "
+                              "an eviction per read and no hits, measurably slower than no cache at all.");
+            sized = 0;
+        }
+
         if (priced > 0) {
             sized = std::min(priced, sized);
         } else if (sized > 0) {

@@ -6,7 +6,80 @@ Semantic Versioning.
 
 ## [0.24.0] - unreleased
 
+### Added
+- **The placement tiers are priced in one unit, and the expert cache competes for memory instead of
+  collecting the remainder.** The cache used to be sized as a residual — everything usable, minus
+  whatever the dense policy took — and that shape cannot express the two cases that matter: on a
+  machine with room it hands the cache more than a hit is worth, and on a pressured one it hands the
+  dense set memory that would have bought more hits. Both halves now compete in **seconds per byte
+  of weights**, a unit available because batch-1 decode is bandwidth-bound, and the one that lets
+  flash enter the objective function at all.
+
+  `core/src/plan/allocate.cpp` prices every legal lane for every group of weights, ranks the
+  candidates by seconds saved per byte of RAM, and spends the budget down that list; the cache is a
+  fractional candidate above its own model-derived floor. The model is decomposed by **access
+  shape** rather than by role, since that is what decides residency — a table gathered by row costs
+  a few KiB per token however large it is on disk, and pricing it as "dense weights" would put a
+  demand on every token that no token has.
+
+  Three rules keep it from becoming an oracle: an unmeasured number may never justify a move, a
+  device must win by a margin rather than merely win, and the plan that streams nothing stays
+  reachable.
+
+- **Graph crossings are a priced term, and no group goes to a device while their price is unknown.**
+  This is where a cost model earns its keep: bandwidth alone would have recommended an offload
+  measured at **0.53x**, because the probe read that device at 20 GiB/s against the host's 12 and a
+  GEMV on one buffer sees no boundary crossings. Dense and expert halves alternate per layer, so a
+  split placement crosses twice per layer; the contiguous-block shape that should have avoided that
+  went 2.398 to 0.587 tok/s on a sweep, with the I/O half of the trade behaving exactly as this
+  model predicts. Correctness also gates speed now: a device that does not reproduce the CPU's
+  answer on the probe graph is excluded before its rate is looked at, and one that advertises host
+  pointers must honour a real one.
+
+- **`--probe` / `--plan` / `--plan-run`, and a plan that prints how to reproduce itself.** Three
+  commands over one machinery because they answer three questions: look at the machine, say what you
+  would do, do it. `--auto` remains an alias. `--plan` prints the exact `bmoe-cli` line that
+  reproduces the plan, so it can be pasted, edited, diffed against a hand-tuned run and dropped into
+  a bench cell — a plan that can only be executed is an oracle, and an oracle cannot be falsified.
+
+- **The run is compared against its own prediction.** At the end of a `--plan-run` the predicted
+  s/token is printed against the measured one, with the credited cache hit rate beside the observed
+  one, because that is the term the error is almost always in. Hits are credited linearly in the
+  fraction of the expert set held while routing has strong temporal locality — one measurement on
+  record is 13% of the set serving 61.9% of the reads — so the prediction stays pessimistic and now
+  says by how much instead of being believed.
+
+- **A machine with no accelerator is distinguished from a build that never looked.** A backend that
+  was not compiled in and not found beside the executable enumerates no device, so the plan reported
+  "no accelerator" on any hardware and that was a property of the build read as a property of the
+  room. The profile now records how many backends came linked, how many were loaded at run time and
+  whether anyone looked at all. `scripts/build-portable.sh` enables the backends whose toolchain is
+  present and says what it found.
+
 ### Fixed
+- **The storage probe was not repeatable, and every number downstream of it inherited that.** The
+  sample at the point that decides something measured a fixed request COUNT, so its duration shrank
+  as the storage got faster — 160 requests of 664 KiB is 106 MiB, about 40 ms on an NVMe, and a
+  40 ms measurement on a general-purpose OS reports scheduling noise. Three consecutive runs
+  answered 1116, 1526 and 2583 MiB/s and the predicted cost moved 2.3x with them. Sized by bytes
+  instead: 2832, 2845, 2861 MiB/s and 202, 206, 197 ms/token. The probe now reports its own spread
+  and the plan quotes it when it is wide.
+
+- **`ModelProfile::n_layer` meant two things.** It was filled with the count of MoE layers and read
+  by the placement adapter as the count of blocks — llama.cpp's own coordinate system, which
+  `n_gpu_layers` counts down from and which an override pattern names — and it prorated DENSE bytes
+  over it. On an architecture with leading dense blocks (`lfm2moe`, `bailingmoe3`) the two counts
+  differ and the mapping slides. Now `n_layer` and `n_moe_layer`, with each use moved to the right
+  one.
+
+- **An expert cache under the model's token cycle could still be produced.** The floor was applied
+  where the ranking proposed a size but not where the dense reservation reduced it, and a bound that
+  guards one of two paths into a number is not a floor.
+
+- **The price of a refault was missing from the cost model**, so a group left mapped looked nearly
+  free. It is measured directly now (page-sized scattered reads, one lane) because it is not a
+  fraction of the sequential rate but a different order of magnitude: 24 MiB/s against 2800, 116x.
+
 - **The planner recorded "this device cannot wrap memory we own" about backends that can.** The
   device probe filled `host_ptr_buffers` from `caps.buffer_from_host_ptr` and mapped a false
   straight to `No`. That capability is a blanket promise, and three backends in the pinned

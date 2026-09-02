@@ -59,6 +59,106 @@ Two outcomes of the first stage end the plan early, and both are stated: if the 
 fits in RAM the experts stay resident and nothing streams (the classic `-ot exps=CPU` offload);
 if every layer's experts land on a device, nothing is left for the streamer.
 
+## The unit everything is priced in
+
+Most knobs in a plan are decided by **one fact**: the lane count by the storage curve, `o-direct` by
+whether uncached reads return correct bytes, the thread count by a sweep. For those, a rule that
+reads the fact is the right shape and nothing below applies.
+
+Four decisions are not like that, because they are **trades**. RAM given to the dense set is RAM
+taken from the expert cache. A group moved to a device frees host memory and adds graph crossings. A
+narrower prefill hands its reservation to the weights. These compete, so they have to be priced
+against each other in one unit, and that unit is **seconds per byte of weights**.
+
+It is available because batch-1 decode is bandwidth-bound: every weight is read once and multiplied
+once, so a GEMV's cost tracks the bytes it sweeps exactly as a read's does. Flash, RAM and device
+memory become directly comparable — which is what lets the flash tier enter the objective function
+at all, and is the one thing no other placement solver does. `--fit` upstream does static memory
+accounting and disables itself under `-ot`; ATSInfer solves the same knapsack with a 15k-line fork,
+CUDA only, RAM↔VRAM only.
+
+`core/src/plan/allocate.cpp` prices every legal lane for every group, ranks the candidates by
+**seconds saved per byte of RAM**, and spends the budget down that list. The expert cache is one
+more candidate on the same list — a fractional one, above its own model-derived floor — rather than
+a special case that receives whatever is left over. That matters in two directions: the old residual
+handed the cache more than a hit was worth on a machine with room, and handed the dense set memory
+that would have bought more hits on a pressured one.
+
+The model is decomposed by **access shape**, not by role, because that is what decides residency:
+a 30B MoE reads every byte of its attention weights per token and one row of its embedding table,
+and pricing both as "dense weights" prices things three orders of magnitude apart identically.
+
+Three rules keep the cost model from becoming an oracle, and they are load-bearing:
+
+1. **An unmeasured number may never justify a move.** A missing fact makes a candidate ineligible,
+   never cheap. Every decline names the measurement it was owed.
+2. **A device must win by a margin, not merely win.** Half the plausible levers this engine has
+   tried lost on measurement; a planner built to believe its own model would rediscover every one of
+   them with confidence.
+3. **The plan that streams nothing stays reachable**, because residency beats streaming whenever
+   residency is available.
+
+### The term a bandwidth ratio cannot see
+
+The device decision is where a cost model earns its keep or discredits itself. Bandwidth alone would
+have recommended an offload **measured at 0.53x**: the probe read that device at 20 GiB/s against the
+host's 12. What it could not see is the graph crossings. Dense and expert halves alternate per layer,
+so a split placement crosses the host/device boundary twice per layer; the contiguous-block shape
+that should have put the boundary in one place was swept 0/2/4/8 and went **2.398 to 0.587 tok/s**,
+with N=4 and N=8 faulting — while the I/O half of the trade did exactly what this cost model predicts
+(cache hits 48% → 73%, re-reads 84.5 → 5.2 per token). Merely *registering* a device cost 61
+crossings per token with nothing placed on it.
+
+So crossings are a priced term (`PlannerPolicy::device_split_seconds`), and **while their price is
+unmeasured no group is placed on a device** and the plan says which measurement it was owed. Two
+further costs a single-GEMV probe structurally cannot see were also paid on that machine: the offload
+disabled Flash Attention, and quantized kernel quality is not uniform — the fast path was name-gated
+on the expert tensors, so dense weights at 2–4 bit fell to generic kernels while the CPU had
+hand-written dotprod.
+
+Correctness gates speed: a device that does not reproduce the CPU's answer on the probe graph is
+excluded before its rate is looked at, and a device that advertises host pointers must honour one
+when handed it.
+
+### The plan is a value
+
+`--probe` measures, `--plan` says what it would do and exits, `--plan-run` does it (`--auto` is an
+alias). `--plan` prints the exact `bmoe-cli` line that reproduces the plan, because a plan that can
+only be executed is an oracle and an oracle cannot be falsified — everything this repository knows
+about performance was learned by A/B-ing one lever at a time. Any flag typed by hand is a pin the
+planner may not touch.
+
+At the end of a run the plan's prediction is compared against what happened, with the credited cache
+hit rate beside the measured one. That comparison is what makes the coefficients correctable rather
+than believed: hits are credited **linearly** in the fraction of the expert set held, while routing
+has strong temporal locality — one measurement on record is a cache holding 13% of the set serving
+61.9% of the reads — so the prediction is pessimistic by roughly that factor. Fitting a curve to a
+single point would be inventing the shape, so the shape stays linear and the coefficient is what the
+loop corrects.
+
+## Backends this build can even see
+
+The planner enumerates what ggml registers. A backend the build did not compile in, and did not find
+beside the executable, is a device no rule can consider — so the plan reports "no accelerator" on any
+hardware, forever, and that is a property of the build printed as a property of the room.
+
+`register_backends()` calls `ggml_backend_load_all()` before enumeration, which finds backends
+shipped as separate shared libraries. Those are looked for **next to the executable**, which is why
+`CMAKE_RUNTIME_OUTPUT_DIRECTORY` is set at the root — a lone binary copied without its libraries
+silently reports a machine with no accelerator. `scripts/build-portable.sh` builds them that way
+(`GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS`) and enables the backends whose toolchain is present;
+it costs `--overlap`, whose expert-ready hook symbol lives in the CPU backend and cannot be linked
+against when that backend is loaded at runtime.
+
+The profile records how many backends came linked, how many were loaded at run time, and whether
+anyone looked at all, so the plan keeps three answers apart: *this machine has no accelerator*,
+*this build carries none*, and *nobody went to look*.
+
+None of this writes a backend or forks one. Every backend comes from ggml; the planner asks devices
+about **properties** — `host_memory`, `host_buffer`, `host_ptr_buffers`, `needs_repack`,
+`runs_expert_op`, `identity_ok` — and never matches a name. That is how an NPU with two native quant
+formats excludes itself without a line written for it.
+
 ## The two invariants
 
 **Decline instead of guessing.** Every probed fact is a tri-state, and `Unknown` is an input rather
@@ -160,7 +260,26 @@ on the desktop it was validated on - against a lane count worth 12% of every tok
 
 It measures the rate curve around the model's own expert slice, at one, two and four lanes, taking
 the median of three samples at the size that decides anything, and picks the **largest** lane count
-that reaches within 5% of the best rate.
+that reaches within 5% of the best rate. It also measures the price of a **refault** — page-sized
+scattered reads, one lane — because that is what a group left mapped costs once pressure has dropped
+its pages, and it is not a fraction of the sequential rate but a different order of magnitude: 24
+MiB/s against 2800 on this desktop, **116x**. Without that term, leaving a group mapped looks nearly
+free and the plan under-spends on residency by two orders of magnitude.
+
+### The decisive sample is sized in bytes, not in requests
+
+The sample at the point that decides something used to be a fixed **request count**, which makes its
+duration shrink as the storage gets faster: 160 requests of 664 KiB is 106 MiB, about 40 ms on this
+NVMe, and a 40 ms measurement on a general-purpose OS reports scheduling noise. Three consecutive
+runs on the same machine answered **1116, 1526 and 2583 MiB/s**, and the plan's predicted ms/token
+moved with them by more than 2x — which would have poisoned the prediction-versus-measurement loop
+before it could correct anything.
+
+Sized by bytes instead (512 MiB per sample), the same three runs read **2832, 2845 and 2861 MiB/s**
+and predicted 202, 206 and 197 ms/token. The probe now also records its own spread across repeats,
+and the plan quotes it when it is wide: a rate that is not repeatable makes every number downstream
+of it unrepeatable too, and a reader comparing two runs deserves to know that before concluding
+anything from them.
 
 Largest, not smallest, and that is a correction the machine forced. The rule used to take the
 cheapest count inside the tolerance, on the reasoning that where two lane counts deliver the same

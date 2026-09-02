@@ -13,6 +13,7 @@
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG.
 
 #include "bmoe/config.h"
+#include "bmoe/allocate.h"
 #include "bmoe/planner.h"
 
 #include <cstdio>
@@ -55,6 +56,16 @@ static ModelProfile moe_model() {
     m.expert_bytes = 18 * GiB;
     m.dense_bytes = 3 * GiB;
     m.largest_dense_tensor = 243 * MiB;
+
+    // The decomposition the cost model prices. Shaped so the totals agree with the file: the dense
+    // groups are read whole every token, the embedding is gathered by row (so its per-token demand
+    // is a few KiB however large the table is), and the experts demand exactly one token cycle.
+    m.group(WeightGroup::Attention) = {1400 * MiB, 1400 * MiB, false, false};
+    m.group(WeightGroup::DenseFfn) = {400 * MiB, 400 * MiB, false, false};
+    m.group(WeightGroup::Output) = {700 * MiB, 700 * MiB, false, false};
+    m.group(WeightGroup::Other) = {228 * MiB, 228 * MiB, false, false};
+    m.group(WeightGroup::Embedding) = {344 * MiB, 8 * KiB, true, true};
+    m.group(WeightGroup::Experts) = {18 * GiB, m.token_cycle_bytes, false, true};
     m.ok = true;
     return m;
 }
@@ -627,6 +638,134 @@ int main() {
         check(text.find("[derived]") != std::string::npos, "explain() names each decision's source");
         check(find(p, "threads") && find(p, "threads")->source == Source::Unprobed,
               "a knob with no rule is recorded as unprobed rather than silently defaulted");
+    }
+
+    // ── the cost model: every verdict it encodes, as a case rather than as a comment ──
+    //
+    // These drive `allocate()` directly. It is a pure function over two structs, so a machine with
+    // a fast accelerator and a machine that lies about one are both a fixture, and the refutations
+    // this engine paid for stay checked instead of staying in a paragraph nobody runs.
+    {
+        // A machine with everything measured: rates for compute, refault and the expert lane.
+        auto measured_machine = [&]() {
+            HardwareProfile h = desktop();
+            h.host_bandwidth_gibs = 100.0;
+            h.storage.refault_mibs = 24.0; // the price of a page fault, two orders below sequential
+            h.devices.clear();
+            return h;
+        };
+        auto inputs = [&](uint64_t budget) {
+            AllocationInputs in;
+            in.budget_bytes = budget;
+            in.engine_cache_min = 0;
+            in.cacheable_bytes = model.expert_bytes;
+            return in;
+        };
+        auto fast_device = [](const char * name, double gibs) {
+            ComputeDevice d;
+            d.name = name;
+            d.memory_bandwidth_gibs = gibs;
+            d.memory_total = 16 * GiB;
+            d.memory_free = 15 * GiB;
+            d.identity_ok = Tri::Yes;
+            d.needs_repack = Tri::No;
+            return d;
+        };
+        const PlannerPolicy pol = PlannerPolicy::defaults();
+
+        // The read-whole groups outrank the cache: they are re-read every token while the cache
+        // serves one token cycle, so seconds saved per byte of RAM is orders apart. This is the
+        // measured behaviour ("pin the dense set, then give the cache the rest") arrived at by
+        // arithmetic rather than written down as an order.
+        {
+            const Allocation a = allocate(measured_machine(), model, inputs(6 * GiB), pol);
+            check(a.at(WeightGroup::Attention).lane == Lane::Resident, "read-whole groups win residency first");
+            check(a.cache_bytes > 0, "the cache still gets what remains after them");
+            check(a.at(WeightGroup::Embedding).resident_bytes == 0,
+                  "a row-gathered table buys no residency, however large it is",
+                  "it holds " + std::to_string(a.at(WeightGroup::Embedding).resident_bytes >> 20) + " MiB");
+        }
+
+        // Under the model's own token cycle a cache evicts what the same token still needs. The
+        // floor is the model's arithmetic, and a budget below it buys nothing at all.
+        {
+            AllocationInputs in = inputs(3 * GiB);
+            in.reserved_bytes = 3 * GiB - (100 * MiB); // leaves less than one token cycle
+            const Allocation a = allocate(measured_machine(), model, in, pol);
+            check(a.cache_bytes == 0, "a residual under the token cycle leaves the cache off",
+                  std::to_string(a.cache_bytes >> 20) + " MiB");
+        }
+
+        // THE refutation. A device three times the host's bandwidth is still not used while the
+        // price of a graph crossing is unmeasured: dense and expert halves alternate per layer, and
+        // a bandwidth ratio cannot see that cost. Measured 20 against 12 GiB/s on a phone that then
+        // ran the move at 0.53x.
+        {
+            HardwareProfile h = measured_machine();
+            h.devices.push_back(fast_device("fast", 300.0));
+            const Allocation a = allocate(h, model, inputs(6 * GiB), pol);
+            check(a.at(WeightGroup::Attention).device < 0, "an unpriced graph crossing forbids a device placement");
+            check(a.device_applicable, "and the plan does not claim a placement it did not make");
+        }
+
+        // Priced, and worth it: the same device wins once a crossing has a number small enough.
+        {
+            HardwareProfile h = measured_machine();
+            h.devices.push_back(fast_device("fast", 300.0));
+            PlannerPolicy priced = pol;
+            priced.device_split_seconds = 1e-7; // 96 crossings cost ~10 us against ~9 ms saved
+            const Allocation a = allocate(h, model, inputs(6 * GiB), priced);
+            check(a.at(WeightGroup::Attention).device >= 0, "a priced crossing lets a real win through");
+            check(!a.device_applicable, "and it is reported as not applicable by this build");
+        }
+
+        // Correctness gates speed, and it is a fact rather than a promise: a device that does not
+        // reproduce the CPU's answer is excluded before its rate is looked at.
+        {
+            HardwareProfile h = measured_machine();
+            ComputeDevice d = fast_device("wrong", 300.0);
+            d.identity_ok = Tri::No;
+            h.devices.push_back(d);
+            PlannerPolicy priced = pol;
+            priced.device_split_seconds = 1e-9;
+            const Allocation a = allocate(h, model, inputs(6 * GiB), priced);
+            check(a.at(WeightGroup::Attention).device < 0, "a device that computes something else is excluded");
+        }
+
+        // A repacked layout replaces the very thing a rebind depends on, so such a device is out on
+        // a property rather than on a name.
+        {
+            HardwareProfile h = measured_machine();
+            ComputeDevice d = fast_device("repacker", 300.0);
+            d.needs_repack = Tri::Yes;
+            h.devices.push_back(d);
+            PlannerPolicy priced = pol;
+            priced.device_split_seconds = 1e-9;
+            const Allocation a = allocate(h, model, inputs(6 * GiB), priced);
+            check(a.at(WeightGroup::Attention).device < 0, "a device that only runs a repacked layout is excluded");
+        }
+
+        // Unified memory at equal bandwidth: nothing to win, and the plan says so instead of moving
+        // work for its own sake. Measured 19 against 19 on a phone, which is not a finding.
+        {
+            HardwareProfile h = measured_machine();
+            ComputeDevice d = fast_device("integrated", 100.0);
+            d.host_memory = true;
+            h.devices.push_back(d);
+            PlannerPolicy priced = pol;
+            priced.device_split_seconds = 1e-9;
+            const Allocation a = allocate(h, model, inputs(6 * GiB), priced);
+            check(a.at(WeightGroup::Attention).device < 0, "an equal-bandwidth device wins nothing and is not used");
+        }
+
+        // An unmeasured rate makes a candidate ineligible, never cheap.
+        {
+            HardwareProfile h = measured_machine();
+            h.storage.refault_mibs = 0.0;
+            const Allocation a = allocate(h, model, inputs(6 * GiB), pol);
+            check(a.at(WeightGroup::Attention).lane == Lane::Mmap,
+                  "with the refault price unmeasured, residency is not bought");
+        }
     }
 
     // Informational: the rationale as a user would read it. Printed rather than asserted, because
