@@ -46,9 +46,24 @@ namespace {
 
 // Big enough that the read comes from memory rather than from a cache, small enough to allocate
 // anywhere this runs. A GEMV over a matrix this size reads every byte of it exactly once.
-constexpr int64_t k_rows = 4096;
+// The weight has to outrun the LAST cache, not the first, and that is a bigger number than it looks.
+// At 4096x4096 a Q4_K weight is about 9 MB, which sits inside the system-level cache of a current
+// phone SoC - so the probe measured that cache's bandwidth, a single core saturated it, and the
+// thread sweep answered 1 on a device whose engine is 58% faster at 4. Four times that size puts the
+// read back in memory where the decode's reads actually come from.
+constexpr int64_t k_rows = 16384;
 constexpr int64_t k_cols = 4096;
-constexpr int k_reps = 4;
+
+// How long one sample must last, and the cap that keeps a slow device from turning a probe into a
+// benchmark. Sized by DURATION rather than by a repetition count, for the same reason the storage
+// probe is sized by bytes: a fixed count makes the sample shorter as the machine gets faster, and a
+// 4096x4096 Q4_K weight is about 9 MB, so four repetitions is 38 MB - two milliseconds on a phone.
+// A two-millisecond sample on a general-purpose OS reports scheduling noise, and this sample decides
+// the thread count: the ladder takes a rung only if it beats the incumbent by 2%, so noise at that
+// scale made the same binary answer 1, 1, 4 across three runs of the same model. One thread is
+// worth about half this device's throughput.
+constexpr double k_sample_seconds = 0.15;
+constexpr int k_reps_max = 512;
 
 // The weight type to measure with. The model's own where it has one; falling back to F32 makes the
 // figure a raw bandwidth number rather than a number about this workload, and the plan says so.
@@ -182,13 +197,23 @@ RunResult run_gemv(ggml_backend_dev_t dev, const Probe & p, int n_threads, bool 
             if (ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS) {
                 const auto t0 = std::chrono::steady_clock::now();
                 bool all_ok = true;
-                for (int i = 0; i < k_reps && all_ok; ++i)
+                int reps = 0;
+                // Repeat until the sample is long enough to mean something, not a fixed number of
+                // times. The clock is read each pass rather than a rep count computed up front,
+                // because the rate this is trying to measure is the very thing such a count would
+                // have to assume.
+                while (all_ok && reps < k_reps_max) {
                     all_ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
+                    ++reps;
+                    if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() >=
+                        k_sample_seconds)
+                        break;
+                }
                 ggml_backend_synchronize(backend);
                 const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
-                if (all_ok && secs > 0.0) {
-                    r.gibs = (double) ggml_nbytes(w) * k_reps / secs / (1024.0 * 1024.0 * 1024.0);
+                if (all_ok && secs > 0.0 && reps > 0) {
+                    r.gibs = (double) ggml_nbytes(w) * reps / secs / (1024.0 * 1024.0 * 1024.0);
                     r.out.resize((size_t) p.rows);
                     ggml_backend_tensor_get(y, r.out.data(), 0, r.out.size() * sizeof(float));
                     r.ok = true;

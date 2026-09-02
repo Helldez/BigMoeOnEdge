@@ -99,7 +99,13 @@ struct AllocationInputs {
 struct Allocation {
     GroupPlacement groups[(int) WeightGroup::count];
 
-    uint64_t cache_bytes = 0;    // expert cache budget; 0 means the expert lane is not used
+    uint64_t cache_bytes = 0; // expert cache budget; 0 means the expert lane is not used
+
+    // What was available for the cache BEFORE the floor was applied. It is the only way to say how
+    // far short a refused cache fell: `cache_bytes` is 0 once the floor rejects it, and a shortfall
+    // computed from a zero is the whole floor rather than the gap, which turns an actionable "184
+    // MiB short" into a useless "901 MiB short".
+    uint64_t cache_available_bytes = 0;
     uint64_t resident_bytes = 0; // what the whole allocation holds
     uint64_t budget_bytes = 0;
 

@@ -600,10 +600,38 @@ Plan plan_run(const RunConfig & base,
                  " MiB) is under this model's token cycle, but the caller "
                  "pinned cache-mb and a pin is the caller's authority: proceeding with the pinned value");
     } else if (budget < cycle) {
-        decline("a cache of " + u64s(mib(budget)) + " MiB is below this model's worst-case token cycle of " +
-                u64s(mib(cycle)) +
-                " MiB: under that floor the cache evicts what the same token still needs, "
-                "so it costs its memory and returns no hits at all");
+        std::string why = "a cache of " + u64s(mib(budget)) + " MiB is below this model's worst-case token cycle of " +
+                          u64s(mib(cycle)) +
+                          " MiB: under that floor the cache evicts what the same token still needs, "
+                          "so it costs its memory and returns no hits at all";
+
+        // Name the one lever that closes the gap, and do not pull it. The KV reservation is the
+        // cheapest memory on this machine to give back, and the first stage shrinks the context only
+        // until the model FITS - which can stop well short of where streaming becomes possible.
+        // Measured: a 26B model with a 901 MiB token cycle was left 717 MiB at the context the fitter
+        // settled on, and 939 MiB at half of it, which is the difference between declining and
+        // running. But a context length is a capability the caller chose, not a speed knob, so a
+        // planner that quietly halved it would be changing what the run can DO - the same reason
+        // nothing lossy arms itself here. It gets named instead.
+        const uint64_t kv = placement.raw_host_context_bytes;
+        // From what was available BEFORE the floor zeroed it, or the shortfall is the whole floor.
+        const uint64_t had = alloc.cache_available_bytes;
+        const uint64_t shortfall = cycle > had ? cycle - had : 0;
+        if (kv > 0 && placement.n_ctx > 0 && shortfall > 0 && shortfall < kv) {
+            const double keep = 1.0 - (double) shortfall / (double) kv;
+            uint64_t suggest = (uint64_t) ((double) placement.n_ctx * keep);
+            // Down to the next power of two: a context is a number a person types, and one that
+            // clears the floor by arithmetic but not in practice would be worse than no suggestion.
+            uint64_t pow2 = 512;
+            while (pow2 * 2 <= suggest)
+                pow2 *= 2;
+            if (pow2 >= 512 && pow2 < (uint64_t) placement.n_ctx)
+                why += ". The context reserves " + u64s(mib(kv)) + " MiB here and the cache is " +
+                       u64s(mib(shortfall)) + " MiB short, so --ctx-size " + u64s(pow2) +
+                       " would clear the floor and stream: the first stage shrinks the context only until the "
+                       "model fits, which is not the same as until it runs well";
+        }
+        decline(why);
         note("moe-stream", "off", Source::Derived, "budget below the derived cache floor");
         return p;
     }

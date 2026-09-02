@@ -889,11 +889,15 @@ int main(int argc, char ** argv) {
         HardwareProfile hw = probe_hardware(cfg.model_path.c_str());
         const ModelProfile mp = probe_model(cfg.model_path.c_str());
         probe_device_support(hw, mp);
-        // On by default: it costs about a second against a model load measured in seconds, and the
-        // lane count it produces was worth 12% of decode on the machine it was validated on. A
-        // default that hides a measured gain behind a flag nobody knows to pass is a bad default.
-        // --no-probe-io opts out for a caller that must not touch the drive.
-        if (probe_io) probe_storage(hw, cfg.model_path.c_str(), mp.expert_slice_bytes);
+        // The probes run QUIET FIRST, DIRTY LAST, and that ordering is a measurement rather than a
+        // preference. The thread sweep below is the delicate one: it compares a matmul at one, two
+        // and four threads and takes the rung that beats the incumbent by 2%, so a machine still
+        // recovering from someone else's gigabytes answers with the recovery instead of with itself.
+        // Run after the storage probe - which now reads gigabytes at the decisive request size - it
+        // answered 1 thread on a device that answers 4 when asked on a quiet machine, and one thread
+        // is worth about half this device's throughput.
+        //
+        // So: bandwidth first, then storage, then the intrusive headroom probe last of all.
         // How much of this machine we can hold and keep. The free half reads accounting and always
         // runs; the measuring half holds memory until the kernel takes some back, which is real
         // pressure on a live machine, so it waits to be asked with --probe-mem.
@@ -923,6 +927,11 @@ int main(int argc, char ** argv) {
         // number an offload turns on, and it needs the backends registered, so it waits for the
         // init above rather than joining the free facts.
         probe_bandwidth(hw, mp);
+        // On by default: it costs about a second against a model load measured in seconds, and the
+        // lane count it produces was worth 12% of decode on the machine it was validated on. A
+        // default that hides a measured gain behind a flag nobody knows to pass is a bad default.
+        // --no-probe-io opts out for a caller that must not touch the drive.
+        if (probe_io) probe_storage(hw, cfg.model_path.c_str(), mp.expert_slice_bytes);
         // The intrusive one goes LAST, and the order is load-bearing rather than tidy. It holds
         // gigabytes and dirties every page of them, so on a machine whose reclaim compresses it
         // leaves the kernel busy and the compressor full for a while after it releases. Anything

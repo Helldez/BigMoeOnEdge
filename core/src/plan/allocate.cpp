@@ -299,6 +299,7 @@ Allocation allocate(const HardwareProfile & hw,
     if (in.cacheable_bytes > 0 && model.is_moe) {
         const uint64_t priced = a.cache_bytes;
         uint64_t sized = std::min(after_reserved, in.cacheable_bytes) & ~((1ull << 20) - 1);
+        a.cache_available_bytes = priced > 0 ? std::min(priced, sized) : sized;
 
         // The floor applies to whatever survived the reservation, not only to what the ranking
         // proposed. A cache under one token cycle evicts what the same token still needs, so it
