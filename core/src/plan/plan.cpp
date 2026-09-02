@@ -58,6 +58,23 @@ uint32_t StorageFacts::best_lanes(uint32_t request_bytes) const {
     return pick;
 }
 
+// The spelling `--dense-weights` accepts, which is not the spelling the rationale prints: one is a
+// flag value the CLI parses, the other is a word for a reader. Keeping them apart is what stops a
+// reproduction line from being subtly untypeable.
+const char * dense_mode_flag(DenseWeightsMode m) {
+    switch (m) {
+    case DenseWeightsMode::Mmap:
+        return "mmap";
+    case DenseWeightsMode::Warmed:
+        return "warm";
+    case DenseWeightsMode::Anonymous:
+        return "anon";
+    case DenseWeightsMode::Pinned:
+        return "ahwb";
+    }
+    return "anon";
+}
+
 const char * group_name(WeightGroup g) {
     switch (g) {
     case WeightGroup::Embedding:
@@ -89,6 +106,37 @@ uint64_t HardwareProfile::device_local_memory() const {
     for (const ComputeDevice & d : devices)
         if (!d.host_memory) total += d.memory_total;
     return total;
+}
+
+std::string Plan::to_flags() const {
+    const RunConfig def; // the defaults a flag would be redundant against
+    std::string f;
+    auto add = [&f](const std::string & s) {
+        if (!f.empty()) f += ' ';
+        f += s;
+    };
+
+    if (!config.moe.enabled) {
+        // A plan that streams nothing is a real plan and has to be reproducible too: the flags that
+        // matter are the ones it did NOT set, so say so rather than printing an empty line.
+        add("# streaming declined; run without --moe-stream");
+        return f;
+    }
+
+    add("--moe-stream");
+    if (config.moe.cache_mb != def.moe.cache_mb) add("--cache-mb " + std::to_string(config.moe.cache_mb));
+    if (config.moe.force_cache) add("--force-cache");
+    if (config.moe.io_threads != def.moe.io_threads) add("--io-threads " + std::to_string(config.moe.io_threads));
+    if (!config.moe.o_direct) add("--no-odirect");
+    if (config.moe.release_mmap) add("--release-mmap");
+    if (config.moe.row_stream) add("--row-stream");
+    if (config.moe.dense_weights != def.moe.dense_weights)
+        add("--dense-weights " + std::string(dense_mode_flag(config.moe.dense_weights)));
+    if (config.n_threads != def.n_threads) add("--threads " + std::to_string(config.n_threads));
+    if (config.n_ctx != def.n_ctx) add("--ctx-size " + std::to_string(config.n_ctx));
+    if (config.n_ubatch != def.n_ubatch) add("--ubatch " + std::to_string(config.n_ubatch));
+    if (config.n_gpu_layers != def.n_gpu_layers) add("--gpu-layers " + std::to_string(config.n_gpu_layers));
+    return f;
 }
 
 std::string Plan::explain() const {

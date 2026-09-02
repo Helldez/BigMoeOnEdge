@@ -93,9 +93,18 @@ struct Plan {
     // prediction checkable against the run it produced.
     Allocation allocation;
 
-    // Human-readable multi-line rationale: one line per decision, plus the regime and the decline.
-    // This is what `--plan-explain` prints.
+    // Human-readable multi-line rationale: one line per decision, plus the regime, the allocation
+    // and the decline. This is what `--plan` prints.
     std::string explain() const;
+
+    // The plan as a bmoe-cli command line: the form in which it can be pasted, edited, diffed
+    // against a hand-tuned run and put in a bench cell. A plan you cannot re-type by hand is a plan
+    // you cannot argue with, and arguing with it one lever at a time is how everything this
+    // repository knows about performance was learned.
+    //
+    // Only knobs the plan actually chose appear; a knob left at its default is left out rather than
+    // spelled with its default value, so the line reads as the decisions and not as a dump.
+    std::string to_flags() const;
 };
 
 } // namespace bmoe

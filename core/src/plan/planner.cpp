@@ -297,6 +297,22 @@ Plan plan_run(const RunConfig & base,
         }
         p.config.n_gpu_layers = placement.n_gpu_layers;
         p.config.buft_overrides = placement.override_patterns;
+
+        // The two stages answer different questions, and where they disagree the disagreement is
+        // the finding. The fitter solves CAPACITY - what fits where - and its answer is applied
+        // because it is the only route to a device this engine has, and because a model that only
+        // fits with layers on a device must keep them there. This planner owns the tier below and
+        // would not have chosen the move: dense and expert halves alternate per layer, so the
+        // placement crosses the host/device boundary twice per layer, and what a crossing costs is
+        // unmeasured. Saying so is what stops a slow run from being read as the engine being slow.
+        if (placement.n_gpu_layers != 0 && pol.device_split_seconds <= 0.0)
+            note("placement-cost", "unpriced", Source::Unprobed,
+                 "the capacity fitter placed layers on a device and that placement is applied, but this "
+                 "plan's cost model did not choose it and could not have: the move crosses the "
+                 "host/device boundary twice per layer and the price of a crossing is unmeasured here. "
+                 "On the one machine where it was measured, a bandwidth ratio of 20 against 12 GiB/s "
+                 "still ran at 0.53x. If this run is slower than the same model with the device left "
+                 "out, that is the reason to check first");
     } else {
         note("placement", "none", placement.shared_memory_placement ? Source::Derived : Source::Unprobed,
              placement.shared_memory_placement

@@ -687,9 +687,24 @@ int main(int argc, char ** argv) {
             cfg.compute_trace_layers = true;
         } else if (a == "--io-trace")
             io_trace_path = next("--io-trace");
-        else if (a == "--auto")
+        // Three commands over one machinery, because they answer three different questions: look at
+        // the machine, say what you would do, do it. `--plan` prints the plan and the exact command
+        // line that reproduces it, then exits - which is what makes a plan a VALUE that can be
+        // pasted, diffed against a hand-tuned run and dropped into a bench cell, instead of an
+        // oracle that can only be obeyed.
+        else if (a == "--plan-run" || a == "--auto")
             auto_plan = true;
-        else if (a == "--plan-explain")
+        else if (a == "--plan") {
+            auto_plan = true;
+            plan_explain = true;
+            plan_only = true;
+        } else if (a == "--probe") {
+            auto_plan = true;
+            plan_explain = true;
+            plan_only = true;
+            probe_io = true;
+            probe_mem = true;
+        } else if (a == "--plan-explain")
             plan_explain = true;
         else if (a == "--probe-io") {
             auto_plan = true;
@@ -845,6 +860,12 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // What the plan predicted, kept past the plan's own scope so the run can be compared against it.
+    // A prediction nobody checks is an opinion; the comparison at the end of the run is the only
+    // thing that makes the cost model's coefficients correctable rather than believed.
+    double predicted_s_per_token = 0.0;
+    double predicted_hit_pct = -1.0;
+
     // --auto: resolve the streaming knobs from what the machine and the model report. It runs after
     // the flags and the env overrides so that anything the caller expressed either way is a pin the
     // planner may not touch — an automatic choice that quietly overruled a person would be worse
@@ -893,6 +914,9 @@ int main(int argc, char ** argv) {
         const Placement placement = probe_placement(cfg.model_path.c_str(), mp, (uint32_t) cfg.n_ctx);
         const Plan plan = plan_run(cfg, hw, mp, placement, req);
         cfg = plan.config;
+        predicted_s_per_token = plan.allocation.seconds_per_token;
+        if (plan.allocation.cache_bytes > 0 && mp.expert_bytes > 0)
+            predicted_hit_pct = 100.0 * (double) plan.allocation.cache_bytes / (double) mp.expert_bytes;
 
         if (plan_explain) {
             std::fprintf(stderr, "plan: machine %s\n", hw.label.c_str());
@@ -913,6 +937,11 @@ int main(int argc, char ** argv) {
                 }
             }
             std::fputs(plan.explain().c_str(), stderr);
+            // The line that reproduces this plan by hand. Printed last so it is the thing left on
+            // screen, because a plan that cannot be re-typed is a plan nobody can A/B against - and
+            // one lever at a time is how every measurement in this repo was made.
+            std::fprintf(stderr, "plan: reproduce with\n  bmoe-cli -m %s %s\n", cfg.model_path.c_str(),
+                         plan.to_flags().c_str());
         }
         if (plan_only) return 0;
     }
@@ -1059,6 +1088,20 @@ int main(int argc, char ** argv) {
     }
     std::printf("generation: %d tokens, %.3f s/token (%.3f tok/s)\n", s.n_generated, s.s_per_token,
                 s.tokens_per_second);
+
+    // The loop that closes. A plan predicted this run before it started; here is what it got. The
+    // ratio is the whole point - a cost model whose error is never printed cannot be corrected, and
+    // the term the error is almost always in is the credited cache hit rate, which is why the two
+    // hit figures sit next to each other. The plan credits hits LINEARLY in the fraction of the
+    // expert set held; routing has strong temporal locality, so the real rate runs well above that
+    // line and the prediction is pessimistic by roughly the same factor.
+    if (predicted_s_per_token > 0.0 && s.s_per_token > 0.0) {
+        const double err = 100.0 * (predicted_s_per_token / s.s_per_token - 1.0);
+        std::printf("plan: predicted %.3f s/token, measured %.3f (%+.0f%%)", predicted_s_per_token, s.s_per_token, err);
+        if (predicted_hit_pct >= 0.0 && s.cache_hit_pct >= 0.0)
+            std::printf("; cache hits credited %.0f%%, measured %.1f%%", predicted_hit_pct, s.cache_hit_pct);
+        std::printf("\n");
+    }
     // Compute decomposition (0 s/tok CPU means the platform couldn't measure it — Windows host).
     // occupancy = CPU-time ÷ (wall × threads): ~1 is compute-bound, well under 1 is a throttled or
     // preempted core; major faults/token > 0 means dense weights re-faulted from flash inside decode.
