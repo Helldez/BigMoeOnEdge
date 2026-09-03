@@ -359,7 +359,6 @@ Allocation allocate(const HardwareProfile & hw,
     // expert halves alternate per layer, so a split placement crosses the boundary twice per layer,
     // and a bandwidth ratio cannot see any of it. Where that price is unmeasured this declines,
     // which is the whole difference between a planner and an oracle.
-    const bool split_priced = pol.device_split_seconds > 0.0;
     bool any_device = false;
     bool wanted_device = false;
 
@@ -382,7 +381,7 @@ Allocation allocate(const HardwareProfile & hw,
             // A device that cannot hold the group is not an option; and on a device whose memory IS
             // the host's the group's bytes are the SAME bytes, so counting them twice is how a
             // planner allocates memory that does not exist.
-            if (!dev.host_memory && dev.memory_free && dev.memory_free < d.bytes) continue;
+            if (dev.has_own_memory() && dev.memory_free && dev.memory_free < d.bytes) continue;
 
             const double t = seconds_at_gibs(d.bytes_per_token, dev.memory_bandwidth_gibs);
             if (t < best_t * (1.0 - pol.min_backend_win)) {
@@ -396,7 +395,7 @@ Allocation allocate(const HardwareProfile & hw,
         // The crossings this creates: the boundary is entered and left once per layer that has a
         // group on each side, and the experts are always on the host today.
         const uint32_t crossings = 2 * std::max(1u, model.n_moe_layer);
-        if (!split_priced) {
+        if (best->split_seconds <= 0.0) {
             a.notes.push_back(
                 std::string("a device would consume this model's ") + group_name((WeightGroup) i) + " faster (" +
                 std::to_string((int) std::lround(best->memory_bandwidth_gibs)) + " against " +
@@ -410,7 +409,7 @@ Allocation allocate(const HardwareProfile & hw,
                 "to 0.587 tok/s. An unmeasured number may not justify a move.");
             continue;
         }
-        const double split_cost = pol.device_split_seconds * crossings;
+        const double split_cost = best->split_seconds * crossings;
         if (t_host - best_t <= split_cost) {
             a.notes.push_back(std::string("a device consumes this model's ") + group_name((WeightGroup) i) +
                               " faster, and the graph crossings the move creates cost more than it saves");

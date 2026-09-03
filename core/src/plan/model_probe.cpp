@@ -84,6 +84,7 @@ ModelProfile probe_model(const char * model_path) {
     m.arch = meta.info.arch;
     m.n_expert = (uint32_t) std::max(0, meta.info.n_expert);
     m.n_expert_used = (uint32_t) std::max(0, meta.info.n_expert_used);
+    m.n_embd = (uint32_t) std::max(0, meta.info.n_embd);
 
     const MoeRecipe * recipe = find_moe_recipe(m.arch.c_str());
     if (m.n_expert > 1 && !recipe) {

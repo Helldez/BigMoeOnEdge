@@ -104,7 +104,7 @@ uint64_t ModelProfile::bytes_per_token() const {
 uint64_t HardwareProfile::device_local_memory() const {
     uint64_t total = 0;
     for (const ComputeDevice & d : devices)
-        if (!d.host_memory) total += d.memory_total;
+        if (d.has_own_memory()) total += d.memory_total;
     return total;
 }
 

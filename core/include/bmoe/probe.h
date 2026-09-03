@@ -63,6 +63,14 @@ struct BackendInventory {
 
 BackendInventory backend_inventory();
 
+// What a device COSTS to use, settled by using it: whether its memory is really the host's, and
+// what one host/device boundary crossing costs a token. Both are the kind of fact a declaration
+// gets wrong - a device type is not a memory topology, and a bandwidth figure cannot see a
+// crossing - and both fail closed, leaving the fact Unknown or zero where the measurement could
+// not be made. Needs the backends registered; run it on a quiet machine, before the probes that
+// dirty gigabytes. See core/src/plan/device_probe.cpp.
+void probe_device_costs(HardwareProfile & hw, const ModelProfile & model);
+
 // What each compute engine can pull out of the memory it reads weights from, in GiB/s. One graph -
 // the same GEMV - scheduled on every backend, so the figures are comparable: the rules only ever use
 // the ratio of two of them, and a ratio between two different experiments would mean nothing. The
@@ -103,6 +111,7 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
 // model takes. `n_ctx` 0 lets the fitter choose (it shrinks context before moving weights); a set
 // value is a pin. Returns fitted=false where the fitter could not run, and the planner then plans
 // as if there were no devices at all.
-Placement probe_placement(const char * model_path, const ModelProfile & model, uint32_t n_ctx);
+Placement
+probe_placement(const char * model_path, const ModelProfile & model, const HardwareProfile & hw, uint32_t n_ctx);
 
 } // namespace bmoe

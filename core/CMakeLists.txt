@@ -34,6 +34,7 @@ if(BMOE_HAVE_LLAMA)
         src/plan/hardware_probe.cpp
         src/plan/headroom_probe.cpp
         src/plan/bandwidth_probe.cpp
+        src/plan/device_probe.cpp
         src/plan/storage_probe.cpp
         src/plan/placement_probe.cpp
         src/plan/model_probe.cpp

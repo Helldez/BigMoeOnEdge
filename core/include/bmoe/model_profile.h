@@ -77,6 +77,11 @@ struct ModelProfile {
     uint32_t n_expert = 0;      // experts per MoE layer
     uint32_t n_expert_used = 0; // routed per token (top-k)
 
+    // The hidden state's width. Not a size the streamer cares about — it is what a tensor handed
+    // across a host/device boundary actually carries, so it is the shape the split probe measures
+    // a crossing at. Zero when the file does not state it, and the probe then declines.
+    uint32_t n_embd = 0;
+
     // How many expert tensors a layer has: three where gate/up/down are separate, two where gate
     // and up are fused. Read from which tensors the file actually carries, so a new fusion is a
     // different count rather than a new case.

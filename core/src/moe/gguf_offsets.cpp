@@ -73,6 +73,9 @@ void fill_model_info(const gguf_context * gctx, GgufModelInfo & out) {
         // LLM_KV_EXPERT_USED_COUNT expand "%s" to the architecture).
         out.n_expert = meta_int(gctx, out.arch + ".expert_count", 0);
         out.n_expert_used = meta_int(gctx, out.arch + ".expert_used_count", 0);
+        // The hidden state's width. It is what a tensor crossing a host/device boundary actually
+        // carries, so the split probe needs it to measure a crossing at the size this model pays.
+        out.n_embd = meta_int(gctx, out.arch + ".embedding_length", 0);
     }
     out.ok = true;
 }

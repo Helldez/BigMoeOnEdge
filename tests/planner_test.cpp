@@ -97,7 +97,7 @@ static HardwareProfile desktop() {
     gpu.name = "discrete";
     gpu.memory_total = 8 * GiB;
     gpu.memory_free = 7 * GiB;
-    gpu.host_memory = false;
+    gpu.shares_host_memory = Tri::No;
     gpu.rebindable = false;
     h.devices.push_back(gpu);
     return h;
@@ -122,7 +122,7 @@ static HardwareProfile phone() {
     ComputeDevice igpu;
     igpu.name = "integrated";
     igpu.memory_total = 6 * GiB;
-    igpu.host_memory = true; // moving a tensor off it frees nothing
+    igpu.shares_host_memory = Tri::Yes; // moving a tensor off it frees nothing
     h.devices.push_back(igpu);
     return h;
 }
@@ -349,11 +349,11 @@ int main() {
         ComputeDevice cpu;
         cpu.name = "CPU";
         cpu.is_cpu = true;
-        cpu.host_memory = true;
+        cpu.shares_host_memory = Tri::Yes;
         uma.devices.push_back(cpu);
         ComputeDevice ig;
         ig.name = "integrated";
-        ig.host_memory = true;
+        ig.shares_host_memory = Tri::Yes;
         uma.devices.push_back(ig);
         uma.residency_budget = 8 * GiB;
 
@@ -401,12 +401,12 @@ int main() {
         ComputeDevice cpu;
         cpu.name = "CPU";
         cpu.is_cpu = true;
-        cpu.host_memory = true;
+        cpu.shares_host_memory = Tri::Yes;
         igpu.devices.push_back(cpu);
         ComputeDevice ig;
         ig.name = "integrated";
         ig.is_cpu = false;
-        ig.host_memory = true; // no memory of its own
+        ig.shares_host_memory = Tri::Yes; // no memory of its own
         ig.host_buffer = Tri::Yes;
         ig.runs_expert_op = Tri::Yes;
         ig.needs_repack = Tri::No;
@@ -434,7 +434,7 @@ int main() {
         check(d && d->source == Source::Measured && d->reason.find("no more of it") != std::string::npos,
               "integrated, no faster: measured, not assumed", d ? d->reason.substr(0, 70) : "none");
 
-        // And it is a candidate for the experts rule at all, which a host_memory test excluded.
+        // And it is a candidate for the experts rule at all, which a shared-memory test excluded.
         d = find(fast, "experts");
         check(d && d->reason.find("could compute them on paper") != std::string::npos,
               "an integrated device is considered for the streamed experts, not skipped as if it were the CPU",
@@ -466,7 +466,7 @@ int main() {
         ComputeDevice gpu;
         gpu.name = "accelerator";
         gpu.memory_total = 16 * GiB;
-        gpu.host_memory = false;
+        gpu.shares_host_memory = Tri::No;
         gpu.host_buffer = Tri::Yes;
         gpu.rebindable = true;
         gpu.runs_expert_op = Tri::Yes;
@@ -712,8 +712,8 @@ int main() {
         {
             HardwareProfile h = measured_machine();
             h.devices.push_back(fast_device("fast", 300.0));
-            PlannerPolicy priced = pol;
-            priced.device_split_seconds = 1e-7; // 96 crossings cost ~10 us against ~9 ms saved
+            h.devices.back().split_seconds = 1e-7; // 96 crossings cost ~10 us against ~9 ms saved
+            const PlannerPolicy & priced = pol;
             const Allocation a = allocate(h, model, inputs(6 * GiB), priced);
             check(a.at(WeightGroup::Attention).device >= 0, "a priced crossing lets a real win through");
             check(!a.device_applicable, "and it is reported as not applicable by this build");
@@ -726,8 +726,8 @@ int main() {
             ComputeDevice d = fast_device("wrong", 300.0);
             d.identity_ok = Tri::No;
             h.devices.push_back(d);
-            PlannerPolicy priced = pol;
-            priced.device_split_seconds = 1e-9;
+            h.devices.back().split_seconds = 1e-9;
+            const PlannerPolicy & priced = pol;
             const Allocation a = allocate(h, model, inputs(6 * GiB), priced);
             check(a.at(WeightGroup::Attention).device < 0, "a device that computes something else is excluded");
         }
@@ -739,8 +739,8 @@ int main() {
             ComputeDevice d = fast_device("repacker", 300.0);
             d.needs_repack = Tri::Yes;
             h.devices.push_back(d);
-            PlannerPolicy priced = pol;
-            priced.device_split_seconds = 1e-9;
+            h.devices.back().split_seconds = 1e-9;
+            const PlannerPolicy & priced = pol;
             const Allocation a = allocate(h, model, inputs(6 * GiB), priced);
             check(a.at(WeightGroup::Attention).device < 0, "a device that only runs a repacked layout is excluded");
         }
@@ -750,12 +750,42 @@ int main() {
         {
             HardwareProfile h = measured_machine();
             ComputeDevice d = fast_device("integrated", 100.0);
-            d.host_memory = true;
+            d.shares_host_memory = Tri::Yes;
             h.devices.push_back(d);
-            PlannerPolicy priced = pol;
-            priced.device_split_seconds = 1e-9;
+            h.devices.back().split_seconds = 1e-9;
+            const PlannerPolicy & priced = pol;
             const Allocation a = allocate(h, model, inputs(6 * GiB), priced);
             check(a.at(WeightGroup::Attention).device < 0, "an equal-bandwidth device wins nothing and is not used");
+        }
+
+        // A device whose memory topology was never settled must not be credited with memory of its
+        // own. The error is asymmetric and the safe direction is the one taken: counting a shared
+        // pool as extra capacity overcommits a machine - the accounting that took a phone down -
+        // while counting separate memory as shared merely leaves it unused. This is also the case a
+        // device TYPE gets wrong, since Metal reports GPU on unified-memory hardware.
+        {
+            HardwareProfile h = measured_machine();
+            ComputeDevice d = fast_device("unsettled", 300.0);
+            d.shares_host_memory = Tri::Unknown; // the probe could not run
+            d.memory_total = 16 * GiB;
+            h.devices.push_back(d);
+            check(h.device_local_memory() == 0, "an unsettled device is not counted as capacity of its own",
+                  std::to_string(h.device_local_memory() >> 20) + " MiB");
+            check(!h.devices.back().has_own_memory() && h.devices.back().reads_host_memory(),
+                  "and it reads as sharing the host's memory until measured");
+        }
+
+        // The crossing price is a per-device MEASUREMENT, not a policy constant: two devices on one
+        // machine can differ, and a device nobody measured declines on its own rather than
+        // inheriting a number from its neighbour.
+        {
+            HardwareProfile h = measured_machine();
+            ComputeDevice slow_link = fast_device("far", 300.0);
+            slow_link.split_seconds = 1e-3; // 96 crossings cost ~96 ms against ~9 ms saved
+            h.devices.push_back(slow_link);
+            const Allocation a = allocate(h, model, inputs(6 * GiB), pol);
+            check(a.at(WeightGroup::Attention).device < 0,
+                  "a measured crossing price can refuse a device that wins on bandwidth");
         }
 
         // An unmeasured rate makes a candidate ineligible, never cheap.

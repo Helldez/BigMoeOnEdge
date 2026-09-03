@@ -295,7 +295,7 @@ void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model) {
         // its own memory is skipped unless it has room to spare; the answer is worth having, and it
         // is not worth pushing a machine into a failed allocation to get. Host memory is not
         // guarded here because the residency budget already governs it.
-        if (!d.host_memory && d.memory_free && d.memory_free < needed * 4) continue;
+        if (d.has_own_memory() && d.memory_free && d.memory_free < needed * 4) continue;
 
         const RunResult own = run_gemv(dev, probe, 0, false);
         if (!own.ok) continue;

@@ -56,6 +56,7 @@ struct GgufModelInfo {
     std::string arch;
     int n_expert = 0;
     int n_expert_used = 0;
+    int n_embd = 0; // hidden state width: what a tensor crossing a backend boundary carries
     bool ok = false;
 };
 

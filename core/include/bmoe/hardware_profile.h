@@ -65,10 +65,26 @@ struct ComputeDevice {
     // gets silently excluded from a question that was only ever meant to exclude the CPU.
     bool is_cpu = false;
 
-    // True when the device's memory IS host memory (an integrated GPU, unified memory). Moving a
-    // tensor off such a device frees nothing, which is why the capacity tier is nearly inert there
-    // and only the bandwidth tier is left.
-    bool host_memory = false;
+    // Whether this device's memory IS the host's — one physical pool, so moving a tensor onto it
+    // frees nothing and the capacity tier is inert, leaving only bandwidth to win.
+    //
+    // A TRI-STATE, and deliberately not a bool read off the device type. `TYPE_IGPU` is a claim of
+    // shared memory and is believed, because believing it errs safe. `TYPE_GPU` is NOT evidence of
+    // separate memory: Metal reports it on hardware whose memory is unified, and trusting it there
+    // is how the same physical RAM gets counted twice — the accounting that took a phone down when
+    // an integrated device was credited with "15195 MiB free" on a machine holding 11 GB. So the
+    // type only ever narrows this to Yes; a No has to be measured (see probe_device_costs).
+    //
+    // Read it through the accessors below rather than directly. They encode the asymmetry once: an
+    // unknown is treated as SHARED, because counting a shared pool as extra capacity overcommits a
+    // machine, while counting separate memory as shared merely leaves it unused.
+    Tri shares_host_memory = Tri::Unknown;
+
+    // True only where it is KNOWN this device has memory of its own — the only case where the
+    // capacity tier can buy anything.
+    bool has_own_memory() const { return shares_host_memory == Tri::No; }
+    // True where the device's memory is, or must be assumed to be, the host's.
+    bool reads_host_memory() const { return shares_host_memory != Tri::No; }
     // True when this device can execute over a HOST buffer - pinned memory it reads directly rather
     // than a buffer of its own. It is the property that decides whether streamed experts can be
     // computed here at all, and it is not the same as having host memory: a discrete accelerator
@@ -131,6 +147,16 @@ struct ComputeDevice {
     // `host_ptr_buffers`, which is only the advertisement — and a device that returns a buffer and
     // then reads something else closes the door to streaming silently, with no error anywhere.
     Tri host_ptr_verified = Tri::Unknown;
+
+    // What ONE host/device boundary crossing costs on this machine, in seconds; 0 when unmeasured,
+    // and unmeasured means no group may be placed here rather than that crossings are free.
+    //
+    // This is the term a bandwidth figure structurally cannot see, and the one that decides an
+    // offload in practice. It is measured rather than assumed: a chain of cheap ops over a
+    // hidden-state-sized tensor is run once on the host and once with alternate ops pinned to this
+    // device, the scheduler is asked how many splits the second one really had, and the difference
+    // is divided by them. See core/src/plan/device_probe.cpp.
+    double split_seconds = 0.0;
 
     // Boundary crossings this device adds to ONE token's graph, 0 when unmeasured. It is the term
     // that decides an offload in practice and the one a bandwidth figure cannot see. Two measured

@@ -927,6 +927,10 @@ int main(int argc, char ** argv) {
         // number an offload turns on, and it needs the backends registered, so it waits for the
         // init above rather than joining the free facts.
         probe_bandwidth(hw, mp);
+        // What a device costs to use: whether its memory is really the host's, and what one
+        // boundary crossing costs. Here for the same reason as the sweep above - it allocates on
+        // the device and watches the host's available memory, which the probes below would drown.
+        probe_device_costs(hw, mp);
         // On by default: it costs about a second against a model load measured in seconds, and the
         // lane count it produces was worth 12% of decode on the machine it was validated on. A
         // default that hides a measured gain behind a flag nobody knows to pass is a bad default.
@@ -940,7 +944,7 @@ int main(int argc, char ** argv) {
         // measured at 4 — a knob worth about half this device's throughput, decided by the probe
         // that ran before it.
         probe_headroom(hw, probe_mem, mp.dense_bytes + cache_floor);
-        const Placement placement = probe_placement(cfg.model_path.c_str(), mp, (uint32_t) cfg.n_ctx);
+        const Placement placement = probe_placement(cfg.model_path.c_str(), mp, hw, (uint32_t) cfg.n_ctx);
         const Plan plan = plan_run(cfg, hw, mp, placement, req);
         cfg = plan.config;
         predicted_s_per_token = plan.allocation.seconds_per_token;

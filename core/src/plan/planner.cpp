@@ -254,7 +254,7 @@ Plan plan_run(const RunConfig & base,
     // Where devices have memory of their own the term is zero and nothing changes.
     bool devices_share_host_memory = !hw.devices.empty();
     for (const ComputeDevice & d : hw.devices)
-        if (!d.host_memory) devices_share_host_memory = false;
+        if (d.has_own_memory()) devices_share_host_memory = false;
     const uint64_t device_on_host = devices_share_host_memory ? placement.device_bytes : 0;
 
     const uint64_t host_all =
@@ -315,7 +315,10 @@ Plan plan_run(const RunConfig & base,
         // would not have chosen the move: dense and expert halves alternate per layer, so the
         // placement crosses the host/device boundary twice per layer, and what a crossing costs is
         // unmeasured. Saying so is what stops a slow run from being read as the engine being slow.
-        if (placement.n_gpu_layers != 0 && pol.device_split_seconds <= 0.0)
+        bool any_split_priced = false;
+        for (const ComputeDevice & d : hw.devices)
+            if (!d.is_cpu && d.split_seconds > 0.0) any_split_priced = true;
+        if (placement.n_gpu_layers != 0 && !any_split_priced)
             note("placement-cost", "unpriced", Source::Unprobed,
                  "the capacity fitter placed layers on a device and that placement is applied, but this "
                  "plan's cost model did not choose it and could not have: the move crosses the "
@@ -384,7 +387,7 @@ Plan plan_run(const RunConfig & base,
         uint32_t n_accelerators = 0; // devices that are not the CPU: the only ones an offload means
         for (const ComputeDevice & d : hw.devices) {
             if (!d.is_cpu) ++n_accelerators;
-            if (d.host_memory) continue;
+            if (!d.has_own_memory()) continue;
             device_local += d.memory_total;
             if (!candidate) candidate = &d;
         }

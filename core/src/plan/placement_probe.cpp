@@ -20,7 +20,8 @@
 
 namespace bmoe {
 
-Placement probe_placement(const char * model_path, const ModelProfile & model, uint32_t n_ctx) {
+Placement
+probe_placement(const char * model_path, const ModelProfile & model, const HardwareProfile & hw, uint32_t n_ctx) {
     Placement pl;
     if (!model_path || !*model_path || !model.ok) return pl;
 
@@ -77,11 +78,15 @@ Placement probe_placement(const char * model_path, const ModelProfile & model, u
     // memory. Where the memory is shared, its placement is a projection about a pool it has counted
     // twice, and this planner does not act on it until `device_bytes` is charged to the same budget
     // as the host set - which is a change to the second stage, not a flag here.
+    // Counted from the PROFILE's measured fact, not from the device type. The type was the whole
+    // bug: an integrated accelerator reports TYPE_IGPU and never counted, and Metal reports TYPE_GPU
+    // on hardware whose memory is unified, so counting types either discards a real placement or
+    // credits a shared pool as separate capacity. `has_own_memory()` is true only where the probe
+    // established it by allocating on the device and watching what the host lost - and an unsettled
+    // device reads as shared, which is the safe direction.
     size_t n_dev_local = 0;
-    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
-        const enum ggml_backend_dev_type t = ggml_backend_dev_type(ggml_backend_dev_get(i));
-        if (t == GGML_BACKEND_DEVICE_TYPE_GPU) ++n_dev_local;
-    }
+    for (const ComputeDevice & d : hw.devices)
+        if (d.has_own_memory()) ++n_dev_local;
     pl.n_gpu_layers = n_dev_local ? mparams.n_gpu_layers : 0;
 
     // Where no device has memory of its own, the whole first stage has nothing to say. A capacity

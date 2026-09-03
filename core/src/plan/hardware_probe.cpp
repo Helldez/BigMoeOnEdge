@@ -144,17 +144,23 @@ void probe_devices(HardwareProfile & h) {
             d.description = props.description ? props.description : "";
             d.memory_free = props.memory_free;
             d.memory_total = props.memory_total;
-            // An integrated device's memory IS host memory: moving a tensor off it frees nothing,
-            // which is the fact that makes the capacity tier nearly inert on such a machine.
             d.is_cpu = props.type == GGML_BACKEND_DEVICE_TYPE_CPU;
-            d.host_memory = d.is_cpu || props.type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+            // The device TYPE may only ever narrow this to "shared", never to "its own". The CPU's
+            // memory is the host's by definition, and a device that calls itself integrated is
+            // claiming shared memory - a claim worth believing, because believing it errs safe.
+            // `TYPE_GPU` is not the opposite claim: Metal reports it on unified-memory hardware, so
+            // taking it as evidence of separate memory is how one physical pool gets counted twice.
+            // It stays Unknown - which the accessors read as shared - until probe_device_costs
+            // settles it by allocating on the device and watching what the host loses.
+            if (d.is_cpu || props.type == GGML_BACKEND_DEVICE_TYPE_IGPU) d.shares_host_memory = Tri::Yes;
             // Whether this device will execute over memory the host owns. Asking the backend for a
             // host buffer type is the question; a device that answers is one we can read flash into
             // and it can compute out of, which is exactly the pair of properties a streamed expert
             // needs. Host memory has it by definition, and a device with memory of its own may still
             // offer it - which is the difference between an accelerator that can serve streamed
             // experts and one that can only be handed a copy it repacks.
-            d.host_buffer = d.host_memory || ggml_backend_dev_host_buffer_type(dev) != nullptr ? Tri::Yes : Tri::No;
+            d.host_buffer =
+                d.reads_host_memory() || ggml_backend_dev_host_buffer_type(dev) != nullptr ? Tri::Yes : Tri::No;
             // Only a host address can be repointed at bytes we read ourselves, which is the
             // condition the expert streamer exists under. A device-local buffer's pointer is not one.
             d.rebindable = is_yes(d.host_buffer);
