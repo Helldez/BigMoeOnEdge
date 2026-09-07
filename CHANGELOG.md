@@ -4,29 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.24.0] - unreleased
-
-### Fixed
-- **A tied output head left half the biggest dense weight reading the model's mmap.** When a gguf
-  carries no `output.weight`, llama.cpp builds the output head from the token embedding table, and
-  the model then holds **two** `ggml_tensor` objects, identically named, over the same file bytes.
-  The capture pass recorded weights in a map keyed by name, so it kept one of them, and
-  `--dense-weights anon` / `ahwb` rebound that one: the twin went on reading the mmap for the whole
-  run. On a model past RAM that is the output projection — a tensor whose per-token cost rivals all
-  the routed experts together — served by page faults from flash, which is precisely what those two
-  policies exist to prevent. Gemma is in this case, and so is any architecture that ties its
-  embeddings.
-
-  The capture now records every distinct leaf object, deduplicated by address, and the dense policy
-  folds tensors over one file range into a single entry with an alias list, rebinding them all onto
-  the same buffer. Bytes are still read once and memory is still allocated once — on the gemma4
-  gate, the same 70 anon buffers as before — and every byte-identity gate passes unchanged. The
-  same fix is what makes the mapping releasable on those models rather than a crash.
-
-  What this is worth in throughput is **not measured**. The mechanism is certain, the size of it is
-  not: it depends on how much of the mapped table the kernel was still holding, which on a phone
-  under reclaim is a different story from a desktop with room to spare. Gemma-4-26B on the test
-  phone is the cell that would price it, and it is owed.
+## [0.24.0] - 2026-09-07
 
 ### Added
 - **`--release-mmap`: hand back the model file's mapping after load, which on Windows is worth
@@ -183,6 +161,26 @@ Semantic Versioning.
   measurements in the PR (#179).
 
 ### Fixed
+- **A tied output head left half the biggest dense weight reading the model's mmap.** When a gguf
+  carries no `output.weight`, llama.cpp builds the output head from the token embedding table, and
+  the model then holds **two** `ggml_tensor` objects, identically named, over the same file bytes.
+  The capture pass recorded weights in a map keyed by name, so it kept one of them, and
+  `--dense-weights anon` / `ahwb` rebound that one: the twin went on reading the mmap for the whole
+  run. On a model past RAM that is the output projection — a tensor whose per-token cost rivals all
+  the routed experts together — served by page faults from flash, which is precisely what those two
+  policies exist to prevent. Gemma is in this case, and so is any architecture that ties its
+  embeddings.
+
+  The capture now records every distinct leaf object, deduplicated by address, and the dense policy
+  folds tensors over one file range into a single entry with an alias list, rebinding them all onto
+  the same buffer. Bytes are still read once and memory is still allocated once — on the gemma4
+  gate, the same 70 anon buffers as before — and every byte-identity gate passes unchanged. The
+  same fix is what makes the mapping releasable on those models rather than a crash.
+
+  What this is worth in throughput is **not measured**. The mechanism is certain, the size of it is
+  not: it depends on how much of the mapped table the kernel was still holding, which on a phone
+  under reclaim is a different story from a desktop with room to spare. Gemma-4-26B on the test
+  phone is the cell that would price it, and it is owed.
 - A sharded catalog entry (DeepSeek V4 Flash, Qwen3.8-Flash-Next) read as on-device as soon as its
   first shard landed, which is the smallest file of the set and arrives seconds into the download:
   the row lost its progress bar, a Run on the incomplete set failed at load, and if the download
