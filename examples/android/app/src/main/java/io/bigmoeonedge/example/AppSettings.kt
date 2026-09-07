@@ -65,6 +65,18 @@ data class AppSettings(
     // so the only question it raises is whether the reads cost more than the RAM is worth - which
     // is why it is off until the on-device A/B says otherwise.
     val rowStream: Boolean = false,
+    // Hand the model file's mapping back to the kernel once every weight has been rebound onto the
+    // app's own memory. Needs a dense policy that does that rebinding (Anon or Pinned), which is why
+    // the switch is disabled under Mmap and Warm — under those the engine looks at its own pointers,
+    // sees weights still reading the mapping, and stands down anyway.
+    //
+    // The mechanism that makes this worth +46% on a Windows desktop (a live mapping serialises the
+    // streamer's unbuffered reads) does NOT exist here: on f2fs the read lanes measure the same with
+    // the mapping and without. What it buys on device is CPU — keeping a 20 GB mapping registered
+    // costs a kernel under memory pressure, and dropping it took ~9% off CPU per token. That is two
+    // 48-token cells against a device whose cells spread 20%, so it is a direction and not a number,
+    // and the switch stays off until a 256-token A/B earns it.
+    val releaseMmap: Boolean = false,
     // Cache-aware substitution, as a PERCENTAGE of the router's score range (0 = off). Before a
     // routing is committed, every expert already resident gets its score raised by this fraction of
     // the range and the top-k is taken again, so a resident expert wins a slot only when it was
@@ -187,6 +199,12 @@ data class AppSettings(
             // discovered by the streamer's capture pass; independent of the cache and of the
             // dense-weight mode, since what it changes is which tensors that mode applies to.
             if (rowStream) a += "--row-stream"
+            // Only the policies that rebind every weight into the app's own memory can leave the
+            // mapping unreferenced. Sending it under Mmap or Warm is not unsafe — the engine checks
+            // its own pointers and declines — but it would be a switch that silently does nothing.
+            if (releaseMmap && (denseWeights == DenseWeights.ANON || denseWeights == DenseWeights.AHWB)) {
+                a += "--release-mmap"
+            }
             // Same cacheOn guard and for the same reason: with no cache there is nothing resident
             // to substitute toward, so the policy would re-rank against an all-miss mask.
             if (substitutePct > 0 && cacheOn) a += listOf("--expert-substitute", (substitutePct / 100.0).toString())
@@ -236,6 +254,7 @@ data class AppSettings(
             .putInt("routeAhead", routeAhead)
             .putInt("dropColdPct", dropColdPct)
             .putBoolean("rowStream", rowStream)
+            .putBoolean("releaseMmap", releaseMmap)
             .putInt("substitutePct", substitutePct)
             .putInt("sessionCtx", sessionCtx)
             .putString("spec", spec).putInt("mtpDraft", mtpDraft).putInt("mtpPMinPct", mtpPMinPct)
@@ -379,6 +398,7 @@ data class AppSettings(
                 routeAhead = p.getInt("routeAhead", d.routeAhead),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
                 rowStream = p.getBoolean("rowStream", d.rowStream),
+                releaseMmap = p.getBoolean("releaseMmap", d.releaseMmap),
                 substitutePct = p.getInt("substitutePct", d.substitutePct),
                 sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
                 spec = run {

@@ -23,6 +23,7 @@ if(BMOE_HAVE_LLAMA)
     target_sources(bmoe_core PRIVATE
         src/io/platform_io.cpp
         src/io/file_reader.cpp
+        src/io/mapping_release.cpp
         src/moe/dense_weights.cpp
         src/moe/row_stream.cpp
         src/moe/gguf_offsets.cpp

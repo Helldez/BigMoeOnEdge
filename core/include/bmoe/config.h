@@ -120,6 +120,23 @@ struct MoeStreamConfig {
     bool row_stream = false;
     int row_stream_mb = 64; // resident window across all row-streamed tables, in MiB
 
+    // ── release the model file's mapping after load (Windows) ─────────────────────────
+    // llama.cpp keeps the gguf mapped for the model's lifetime, and on Windows a live section of
+    // the file serialises the streamer's concurrent unbuffered reads: four lanes deliver one
+    // lane's throughput (measured; see core/src/io/mapping_release.h). With this on, once nothing
+    // reads through the mapping any more (dense weights copied out under anon/ahwb, every file
+    // tensor either streamed, copied or row-served) the engine unmaps the file and closes its
+    // section. On POSIX the mapping is munmap'd the same way; Android was measured not to serialise
+    // reads, so there the gain is smaller and of a different kind (see docs/moe-streaming.md).
+    //
+    // Opt-in, and it must stay opt-in until the safety question has a positive answer rather than a
+    // blacklist. The release is correct only while nothing still dereferences the mapping, and
+    // llama.cpp exposes no way to enumerate a loaded model's tensors and prove that. The session
+    // declines on every shape where a surviving pointer is KNOWN — a dense policy that keeps the
+    // weights mmap'd, a tied output head, an unowned tensor under the MTP draft — but a future
+    // architecture can invent another one. See Session::open.
+    bool release_mmap = false;
+
     // ── cache-aware expert dropping (lossy; opt-in) ──────────────────────────────────
     // Skip a routed expert when it is a cache MISS *and* the router weighted it below
     // drop_cold_frac × (1 / n_expert_used) — i.e. below that fraction of the uniform share a

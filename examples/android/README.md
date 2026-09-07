@@ -170,6 +170,13 @@ Two worth knowing before you turn them on:
 - **"Stream row-gathered tables"** (`--row-stream`) serves the token embedding table out of flash
   instead of RAM. Lossless, and which tables it applies to is read off the model's own graph, so
   on a model where none qualify it does nothing. See `../../docs/row-gathered-tables.md`.
+- **"Release the model mapping"** (`--release-mmap`) hands the model file's mapping back to the
+  kernel once every weight has been copied into the app's own memory, so it needs **Dense weights**
+  on Anon or Pinned and is disabled otherwise. Lossless. The mechanism that makes it worth +46% on
+  a Windows desktop does not exist here — on f2fs the read lanes measure the same either way — but
+  keeping a 20 GB mapping registered costs a kernel under memory pressure, and dropping it took
+  ~9% off CPU per token. Two 48-token cells on a device that spreads 20%: a direction, not a
+  number, which is why it is off by default.
 - **"Prefer cached experts"** (`--expert-substitute`) steers each routing toward experts already
   in RAM, so the same number of experts runs but fewer are read from flash. It changes the reply,
   and past 20% the reply keeps reading well while the model behind it is much worse: judge it on

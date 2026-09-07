@@ -55,9 +55,15 @@ What follows from that:
   base by `file_off % align` so the destination inherits the file's misalignment) does not remove
   the spill, only its size. Not built: the win is a memcpy, the risk is the memory accounting the
   whole engine's budget rests on, and it cannot be judged without a device.
-- The remaining gap between the engine's effective rate and the drive's is **duty cycle, not
-  bandwidth**, and is not yet honestly sized: the ceiling itself falls by a third once the device
-  is hot, so engine and microbench must be measured interleaved at matched entry state. Owed.
+- **The gap between the engine's effective rate and the drive's was the model file's own mapping,
+  on Windows (2026-08-29).** This entry used to call it duty cycle and leave it unsized. It is
+  not duty cycle: while llama.cpp's section of the gguf is alive, NTFS serialises the streamer's
+  concurrent unbuffered reads, so four lanes deliver one lane's throughput — which is also the
+  real reason lanes and threads measured dead on this host, and why the serial path once read at
+  exactly the one-lane rate with four lanes open. `bmoe-iobench --mmap` reproduces it in one
+  cell and `--mmap --reopen-lanes` recovers it; `--release-mmap` is the engine's version and is
+  worth +46% decode on the desktop host, lossless. The same cells are flat on the phone, so this
+  is a platform defect, not a read-path one, and the phone's remaining gap is still unsized.
 
 ## Warm-up
 

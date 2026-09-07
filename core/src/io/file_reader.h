@@ -40,9 +40,15 @@ public:
     // bounce per lane. `direct` requests cache bypass; it is verified and silently downgraded where
     // the platform or the storage refuses or mis-serves it — direct() then reports the effective
     // mode. Reads align to `align` where the platform's direct mode demands it. Returns false on any
-    // open/alloc failure. A reader is opened once and not reused.
+    // open/alloc failure.
     bool open(const std::string & path, int lanes, bool direct, size_t align, size_t bounce_cap);
     void close();
+    // Close every fd and open the same file again with the same lanes, alignment and bounce size.
+    // Exists for one reason: on Windows an unbuffered handle opened while the file had a live
+    // section keeps serialising against it even after the section is gone, so once the model's
+    // mapping is released the lanes must be reopened to read at the drive's rate (see
+    // mapping_release.h). Not thread-safe: no read may be in flight on any lane. Accounting is kept.
+    bool reopen();
 
     bool is_open() const { return !fds_.empty(); }
     bool direct() const { return direct_; } // the effective cache-bypass mode, not the request
@@ -72,6 +78,12 @@ private:
                                  // after the open's own report and every fallback
     bool aligned_reads_ = false; // direct_ AND the platform's direct mode rejects unaligned reads —
                                  // gates the read mechanics: window rounding, bounce, buffered tail fd
+    // What open() was asked for, so reopen() can ask for the same thing again. direct_ above is the
+    // outcome, which a reopen must be free to reach on its own rather than inherit.
+    std::string path_;
+    int lanes_ = 0;
+    bool direct_req_ = false;
+    size_t bounce_cap_ = 0;
     std::atomic<long long> read_bytes_{0};
     std::atomic<long long> syscall_ns_{0};
 };

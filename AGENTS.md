@@ -15,7 +15,7 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `core/include/bmoe/` — ports (interfaces) + config. Pure policy, no llama.cpp include.
 - `core/src/io/` — `platform_io` (cross-platform O_DIRECT reads + reserve/commit/evict VM);
   `file_reader` (pooled positioned reader, per-consumer O_DIRECT — used by both the expert stream
-  and the dense loader).
+  and the dense loader); `mapping_release` (hands the model file's mapping back after load).
 - `core/src/moe/` — `gguf_offsets`, `arch_registry`, `expert_stream_source`, `router_hook`;
   `dense_weights` (the non-expert weight policy: mmap / warm / anon, plus the residency sensor).
 - `core/src/engine/runtime.cpp` — composition + greedy generation loop.
