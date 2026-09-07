@@ -22,6 +22,7 @@ core/
   src/
     io/         platform_io — O_DIRECT reads + reserve/commit/evict VM, cross-platform
                 file_reader — pooled positioned reader, per-consumer O_DIRECT
+                mapping_release - releases the model file's mapping after load (--release-mmap)
     moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), arch_registry,
                 expert_stream_source (one reader per shard), router_hook
                 dense_weights — non-expert weight policy + the residency sensor

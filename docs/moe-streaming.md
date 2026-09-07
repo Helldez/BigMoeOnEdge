@@ -83,6 +83,12 @@ policy — a dense set left mmap'd under `mmap` or `warm`, a table held back as 
 no name-based accounting could have found. Run with `--dense-weights mmap` and the engine reports the
 count and stands down.
 
+On Windows the run ends with `warning: UnmapViewOfFile failed`, printed by llama.cpp rather than
+by the engine. That is the designed outcome, not a defect: llama.cpp is not patched and still
+believes it owns the mapping, so at teardown it unmaps a base the engine has already released. An
+inert reservation is left in that range precisely so the call finds a placeholder and fails
+harmlessly, instead of finding whatever was allocated there next.
+
 It is still opt-in, because the check answers for the pointers the capture pass saw and for no
 others. A graph shape this session never builds could hold another one, and llama.cpp exposes no way
 to enumerate a loaded model's tensors and settle it. The MTP draft is the concrete case: it builds a

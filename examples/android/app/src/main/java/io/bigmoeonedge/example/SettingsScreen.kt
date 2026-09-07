@@ -127,6 +127,17 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                     enabled = stream,
                 ) { onChange(current.copy(rowStream = it)) }
 
+                SwitchRow(
+                    "Release the model mapping",
+                    "Once every weight has been copied into the app's own memory, the model file " +
+                        "does not need to stay mapped. Handing the mapping back frees the kernel " +
+                        "from tracking it, which showed up as less CPU per token. Lossless - the " +
+                        "output is identical. Needs Dense weights on Anon or Pinned.",
+                    current.releaseMmap,
+                    enabled = stream && (current.denseWeights == DenseWeights.ANON ||
+                        current.denseWeights == DenseWeights.AHWB),
+                ) { onChange(current.copy(releaseMmap = it)) }
+
                 ExperimentalGroup {
                     IntSetting(
                         "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,

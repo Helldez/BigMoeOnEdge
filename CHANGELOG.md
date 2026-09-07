@@ -73,6 +73,11 @@ Semantic Versioning.
   removes that. Prefill, model load and TTFT are unaffected. Preliminary — two 48-token cells per
   variant in both orders, against a 20% cell-to-cell spread on this device — so it is recorded as a
   direction, not a number, pending a long run.
+
+  The demo app exposes it as **"Release the model mapping"**, enabled only under a dense policy that
+  rebinds every weight into the app's own memory (Anon or Pinned) — under Mmap or Warm the engine
+  looks at its own pointers and declines, so the switch would be one that silently does nothing. Off
+  by default, for the same reason the flag is: the phone's number is a direction.
 - **`--row-stream`: dense tables the graph only gathers rows from, served from flash.** The dense
   policy has one shape for every non-expert weight, and it is the right shape for a weight that is
   multiplied: read it whole, keep it resident. A token embedding table is not that. The graph
