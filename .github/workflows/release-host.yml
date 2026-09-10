@@ -72,6 +72,15 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
 
+      # The desktop app's web UI, built from the same checkout; the server build stages it beside
+      # the binary (server/stage_assets.cmake).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build the web UI
+        shell: bash
+        run: cd ui && npm ci && npm test && npm run build
+
       # Static: one file to download, no libggml/libllama next to it to get wrong.
       - name: Configure & build
         shell: bash
@@ -86,7 +95,7 @@ jobs:
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF \
             ${{ matrix.cmake_extra }}
-          cmake --build build --config Release -j --target bmoe-cli
+          cmake --build build --config Release -j --target bmoe-cli bmoe-server bmoe-server-assets
 
       - name: Package
         id: pkg
@@ -125,30 +134,55 @@ jobs:
             BMOE_CLI=\$PWD/bmoe-cli scripts/bench-report.sh /path/to/model.gguf
           from a checkout of https://github.com/Helldez/BigMoeOnEdge (docs/community-benchmarks.md).
           EOF
+          # The desktop app: bmoe-server with the web UI and the model catalog staged beside it.
+          DESK="bmoe-desktop-$TAG-${{ matrix.target }}"
+          mkdir -p "$DESK"
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN=build/bin/Release; SRV=bmoe-server.exe; else BIN=build/bin; SRV=bmoe-server; fi
+          cp "$BIN/$SRV" "$DESK/"
+          [ "${{ runner.os }}" = "Windows" ] || strip "$DESK/$SRV" || true
+          cp -r "$BIN/ui" "$BIN/catalog" "$DESK/"
+          cp LICENSE "$DESK/"
+          cat > "$DESK/README.txt" <<EOF
+          BigMoeOnEdge desktop $TAG, ${{ matrix.target }}
+
+          Start $SRV (double-click it on Windows, or run ./$SRV --open) and use the page it opens
+          at http://127.0.0.1:8765/. Download a model from the Models page or point it at a gguf you
+          have. Everything runs on this machine; the server listens on this machine only.
+
+          Settings and downloaded models live in your user data folder; ./$SRV --help lists the
+          options. The HTTP API (OpenAI-compatible chat included) is documented in docs/server-api.md
+          in the repository.
+          EOF
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$NAME.zip" "$NAME" > /dev/null
-            echo "asset=$NAME.zip" >> "$GITHUB_OUTPUT"
+            7z a -tzip "$DESK.zip" "$DESK" > /dev/null
+            echo "assets=$NAME.zip $DESK.zip" >> "$GITHUB_OUTPUT"
           else
             tar czf "$NAME.tar.gz" "$NAME"
-            echo "asset=$NAME.tar.gz" >> "$GITHUB_OUTPUT"
+            tar czf "$DESK.tar.gz" "$DESK"
+            echo "assets=$NAME.tar.gz $DESK.tar.gz" >> "$GITHUB_OUTPUT"
           fi
 
-      # The binary must at least start on the runner it was built on.
+      # The binaries must at least start on the runner they were built on.
       - name: Smoke
         shell: bash
         run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then build/cli/Release/bmoe-cli.exe --version; else build/cli/bmoe-cli --version; fi
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            build/cli/Release/bmoe-cli.exe --version && build/bin/Release/bmoe-server.exe --version
+          else
+            build/cli/bmoe-cli --version && build/bin/bmoe-server --version
+          fi
 
       - name: Upload asset to the release
         if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.tag.outputs.tag }}" "${{ steps.pkg.outputs.asset }}" --clobber
+        run: gh release upload "${{ steps.tag.outputs.tag }}" ${{ steps.pkg.outputs.assets }} --clobber
 
       - name: Keep as workflow artifact (dry run)
         if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.upload)
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.pkg.outputs.asset }}
-          path: ${{ steps.pkg.outputs.asset }}
+          name: host-${{ matrix.target }}
+          path: bmoe-*-${{ matrix.target }}.*

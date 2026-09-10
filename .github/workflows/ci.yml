@@ -72,7 +72,7 @@ jobs:
         # bump would silently start failing every PR against a version nobody was told about.
         run: |
           sudo apt-get update && sudo apt-get install -y clang-format-18
-          find core cli tests -type f \( -name '*.cpp' -o -name '*.h' \) \
+          find core cli server tests -type f \( -name '*.cpp' -o -name '*.h' \) \
             -print0 | xargs -0 clang-format-18 --dry-run --Werror
 
   host-linux:
@@ -126,9 +126,9 @@ jobs:
             -DGGML_NATIVE=OFF \
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF
-          cmake --build build --config Release -j --target bmoe-cli
+          cmake --build build --config Release -j --target bmoe-cli bmoe-server
       - name: Smoke
-        run: build/cli/bmoe-cli --version
+        run: build/cli/bmoe-cli --version && build/bin/bmoe-server --version
 
   # Cross-compiles the arm64 engine (the native compile gate) and packages the example
   # APK around it, uploading the APK as an artifact — and attaching it to the release on a
@@ -166,7 +166,7 @@ jobs:
           cmake -S . -B build-android -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
-            -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF \
+            -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_SERVER=OFF \
             -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_OPENCL=OFF \
             -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" \
             -DLLAMA_CURL=OFF

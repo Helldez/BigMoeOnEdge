@@ -31,6 +31,7 @@ endif()
 
 option(BMOE_BUILD_TESTS "Build byte-identity gates and unit tests" ON)
 option(BMOE_BUILD_CLI   "Build the bmoe-cli host tool"              ON)
+option(BMOE_BUILD_SERVER "Build bmoe-server, the engine behind the local web UI" ON)
 # Off by default: diagnostics, not part of the product. They need no llama.cpp, so they can be
 # configured and cross-compiled on their own without building the engine.
 option(BMOE_BUILD_TOOLS "Build standalone diagnostic tools (bmoe-iobench)" OFF)
@@ -58,6 +59,10 @@ add_subdirectory(core)
 
 if(BMOE_BUILD_CLI AND BMOE_HAVE_LLAMA)
     add_subdirectory(cli)
+endif()
+
+if(BMOE_BUILD_SERVER AND BMOE_HAVE_LLAMA)
+    add_subdirectory(server)
 endif()
 
 if(BMOE_BUILD_TESTS AND BMOE_HAVE_LLAMA)

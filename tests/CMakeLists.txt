@@ -42,6 +42,14 @@ add_executable(bmoe_params_test params_test.cpp)
 target_link_libraries(bmoe_params_test PRIVATE bmoe_core)
 add_test(NAME params_table COMMAND bmoe_params_test)
 
+# bmoe-server's policy: conversation continuity, the settings layers and the JSON edges. No HTTP,
+# no session, no model.
+if(TARGET bmoe_server_core)
+    add_executable(bmoe_server_test server_test.cpp)
+    target_link_libraries(bmoe_server_test PRIVATE bmoe_server_core)
+    add_test(NAME server_logic COMMAND bmoe_server_test)
+endif()
+
 # release_file_mappings: on Windows it must find and drop this process's own view + section of a
 # file and leave the placeholders in place; on POSIX it must report unsupported and touch nothing.
 add_executable(bmoe_mapping_release_test mapping_release_test.cpp)
