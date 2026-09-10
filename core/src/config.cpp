@@ -184,8 +184,10 @@ ValidationResult validate(const RunConfig & cfg) {
                         "split exists to move per-expert page commits off the publish path, and the "
                         "shared-slot path has none.");
         }
-        if (m.predict_spec_max < 0 || m.predict_spec_max > 8) {
-            return fail("moe.predict_spec_max must be in [0, 8] (0 = retention only, no speculation)");
+        if (m.predict_spec_max < 0 || m.predict_spec_max > MoeStreamConfig::predict_spec_max_limit) {
+            return fail("moe.predict_spec_max must be in [0, " +
+                        std::to_string(MoeStreamConfig::predict_spec_max_limit) +
+                        "] (0 = retention only, no speculation)");
         }
         if (m.predict_prefetch && m.prefetch_layers > 0) {
             return fail("moe.predict_prefetch and moe.prefetch_layers are mutually exclusive: they "

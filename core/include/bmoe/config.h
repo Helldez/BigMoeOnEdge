@@ -270,6 +270,7 @@ struct MoeStreamConfig {
     static constexpr int io_threads_max = 8;
     static constexpr int prefetch_layers_max = 8;
     static constexpr int route_ahead_max = 8; // beyond this the staleness has no measured meaning
+    static constexpr int predict_spec_max_limit = 8;
 };
 
 // Where the draft tokens of a self-speculative step come from. The verify half of the loop is

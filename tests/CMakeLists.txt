@@ -36,6 +36,12 @@ add_executable(bmoe_config_test config_test.cpp)
 target_link_libraries(bmoe_config_test PRIVATE bmoe_core)
 add_test(NAME config_validate COMMAND bmoe_config_test)
 
+# The parameter table (bmoe/params.h): every flag the CLI used to parse by hand must set the same
+# field to the same value, and to_args() must read back into the config it came from. Pure policy.
+add_executable(bmoe_params_test params_test.cpp)
+target_link_libraries(bmoe_params_test PRIVATE bmoe_core)
+add_test(NAME params_table COMMAND bmoe_params_test)
+
 # release_file_mappings: on Windows it must find and drop this process's own view + section of a
 # file and leave the placeholders in place; on POSIX it must report unsupported and touch nothing.
 add_executable(bmoe_mapping_release_test mapping_release_test.cpp)

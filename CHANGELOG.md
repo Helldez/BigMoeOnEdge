@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **One parameter table for every engine tunable** (`bmoe/params.h`). Each `RunConfig` knob is one
+  row: key, type, group, level, scope, bounds written with the same constants `validate()` checks,
+  help text, and its reader and writer. Keys are the long flag without dashes, the name a planner
+  decision already uses. `bmoe-cli` now parses its engine flags and prints their usage from the
+  table, so a knob added there is parsed, documented and exposed to a front-end in one place.
+- `bmoe-cli --describe-params` prints the table as JSON (the schema a settings form is rendered
+  from); `--show-config` prints the fully resolved configuration, the equivalent flags and the
+  `validate()` verdict, then exits.
+- `--ngram-max-match N`: the n-gram source's longest suffix had a field and a validation rule but
+  no flag.
+
+### Changed
+- Malformed numeric flag values are rejected (`--threads 4x` used to run with 4 threads,
+  `--threads abc` with 0). Exit code 2, as for other invalid values.
+- `--cache-mb` given twice takes the last value instead of failing validation when one was `auto`,
+  and `BMOE_CACHE_MB=auto` now means auto-sizing (it used to parse as 0, cache off).
+- The per-flag usage text is the table's help, shorter than the hand-written one; the measured
+  detail stays in the docs each flag points to.
+
 ## [0.24.0] - 2026-09-07
 
 ### Added

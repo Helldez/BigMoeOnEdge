@@ -6,6 +6,7 @@
 
 add_library(bmoe_core STATIC
     src/config.cpp
+    src/params.cpp
     src/moe/arch_registry.cpp
     src/engine/ngram_draft.cpp
 )

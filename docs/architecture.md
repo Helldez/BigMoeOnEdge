@@ -14,6 +14,8 @@ cli/            bmoe-cli — parses flags, the only place env vars are read
 core/
   include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
     config.h        RunConfig + validate()
+    params.h        the parameter table: every RunConfig tunable described once (flag, type,
+                    bounds, help); the CLI parses from it, front-ends render settings from its JSON
     expert_source.h IExpertSource — the residency strategy port
     row_source.h    IRowSource - the row-gathered residency port
     recipe.h        MoeRecipe + registry
