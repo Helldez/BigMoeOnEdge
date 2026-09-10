@@ -45,7 +45,8 @@
     </div>
     <div>
       <dt>RSS</dt>
-      <dd>{last ? formatMib(last.rss_mib) : '-'}</dd>
+      <!-- 0 is "the platform cannot report it" (the engine's convention), not an empty process. -->
+      <dd>{last && last.rss_mib > 0 ? formatMib(last.rss_mib) : '-'}</dd>
     </div>
     <div>
       <dt>Available memory</dt>

@@ -11,6 +11,13 @@ a single ~25-line hook on a fork branch with an explicit sunset (see below and
 
 ```
 cli/            bmoe-cli — parses flags, the only place env vars are read
+server/         bmoe-server: the engine behind the desktop web UI (docs/server-api.md)
+                conversation, settings_store, event_bus, json_util: pure policy (bmoe_server_core)
+                engine_host: the one Session, loads, continuity; model_library: files, catalog,
+                downloads; planner_adapter: /api/plan when the planner is built in;
+                platform: the only file with platform #ifs; main: HTTP routes and guards
+ui/             the web UI (Svelte + TypeScript); settings rendered from the parameter table
+catalog/        models.json: the curated model catalog, as data
 core/
   include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
     config.h        RunConfig + validate()
@@ -40,7 +47,9 @@ tests/          byte-identity gates
 examples/android an APK that drives bmoe-cli via ProcessBuilder
 ```
 
-Dependencies point inward: adapters depend on the port headers, the CLI composes them.
+Dependencies point inward: adapters depend on the port headers, the CLI and the server compose
+them. The server and the web UI meet only at the HTTP API; the UI knows no engine parameter by
+name, it renders whatever `GET /api/params` describes.
 The pure-policy code (`config.cpp`, `arch_registry.cpp`) compiles with no native
 dependency, so a subset of the project builds and is testable before llama.cpp is
 fetched.
