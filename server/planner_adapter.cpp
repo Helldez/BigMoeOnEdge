@@ -87,8 +87,10 @@ PlanOutcome make_plan(const RunConfig & cfg, const std::vector<std::string> & pi
         }
     }
     // Tensor-placement patterns are a list the parameter table has no type for: named, not dropped.
-    for (const std::string & p : plan.config.buft_overrides)
-        not_applicable.push_back("tensor override " + p);
+    // Only when the table cannot carry them: with a `tensor-overrides` row they are ordinary values.
+    if (!find_param("tensor-overrides"))
+        for (const std::string & p : plan.config.buft_overrides)
+            not_applicable.push_back("tensor override " + p);
     for (const Decision & d : plan.decisions)
         o.decisions.push_back(
             {{"knob", d.knob}, {"value", d.value}, {"source", source_name(d.source)}, {"reason", d.reason}});

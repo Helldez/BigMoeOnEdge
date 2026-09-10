@@ -45,6 +45,7 @@ json param_string_to_value(const ParamDesc & d, const std::string & s) {
         return std::strtod(s.c_str(), nullptr);
     case ParamType::Choice:
     case ParamType::Path:
+    case ParamType::Text:
         break;
     }
     return s;

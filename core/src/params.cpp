@@ -683,6 +683,8 @@ const char * param_type_name(ParamType t) {
         return "choice";
     case ParamType::Path:
         return "path";
+    case ParamType::Text:
+        return "text";
     }
     return "?";
 }
