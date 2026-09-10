@@ -113,3 +113,9 @@ if(PYTHON3)
 else()
     message(WARNING "python3 not found: MoE gates will not run (models cannot be generated)")
 endif()
+
+# The hardware planner. Pure policy over synthetic machine profiles — no model, no llama.cpp, no
+# device — which is the point: rules meant to hold on hardware we do not own are checked here.
+add_executable(bmoe_planner_test planner_test.cpp)
+target_link_libraries(bmoe_planner_test PRIVATE bmoe_core)
+add_test(NAME planner COMMAND bmoe_planner_test)

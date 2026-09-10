@@ -9,6 +9,8 @@
 // engine stays env-free. The flag always wins over the env value.
 #include "bmoe/config.h"
 #include "bmoe/params.h"
+#include "bmoe/planner.h"
+#include "bmoe/probe.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
 #include "bmoe/recipe.h"
@@ -16,6 +18,8 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
+
+#include "llama.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -464,6 +468,17 @@ static void print_usage(const char * argv0) {
                 "                          JSON and exit: the schema a front-end renders its settings from\n"
                 "      --show-config       print the resolved configuration (flags, env overrides and CLI\n"
                 "                          defaults applied) as JSON with its validation result, and exit\n"
+                "      --auto              resolve the streaming knobs from what this machine and this model\n"
+                "                          report (the hardware planner). A knob you also pass by hand is left\n"
+                "                          exactly as you set it, and nothing lossy is ever armed\n"
+                "      --plan              print the plan, the fact behind each choice and the flags that\n"
+                "                          reproduce it, then exit without loading the model (= --plan-only)\n"
+                "      --plan-explain      with --auto: print the plan, then run it\n"
+                "      --probe             --plan, plus the memory probe below\n"
+                "      --no-probe-io       plan without the storage read probe (touches no drive)\n"
+                "      --probe-mem         measure how much memory this machine will let us KEEP, by holding\n"
+                "                          it until the kernel takes some back. The one probe that puts a live\n"
+                "                          machine under real pressure, so it is off unless asked\n"
                 "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
                 "      --csv PATH          also write per-token metrics as CSV\n"
                 "      --route-trace PATH  diagnostics: write the per-step per-layer MoE routing trace\n"
@@ -579,6 +594,11 @@ int main(int argc, char ** argv) {
 
     bool describe_params = false;
     bool show_config = false;
+    bool auto_plan = false;
+    bool plan_explain = false;
+    bool plan_only = false;
+    bool probe_io = true;
+    bool probe_mem = false; // off by default: it is the one probe that puts the machine under real pressure
 
     // Which parameters the user actually typed, by key. The env overrides below consult this rather
     // than comparing against the default, so passing a flag its default value still wins.
@@ -606,7 +626,28 @@ int main(int argc, char ** argv) {
             describe_params = true;
         else if (a == "--show-config")
             show_config = true;
-        else if (a == "--session")
+        // Three commands over one machinery, because they answer three different questions: look at
+        // the machine, say what you would do, do it. `--plan` prints the plan and the exact command
+        // line that reproduces it, then exits - which is what makes a plan a VALUE that can be
+        // pasted, diffed against a hand-tuned run and dropped into a bench cell.
+        else if (a == "--auto" || a == "--plan-run")
+            auto_plan = true;
+        else if (a == "--plan" || a == "--plan-only") {
+            auto_plan = plan_explain = plan_only = true;
+        } else if (a == "--probe") {
+            auto_plan = plan_explain = plan_only = true;
+            probe_io = probe_mem = true;
+        } else if (a == "--plan-explain")
+            plan_explain = true;
+        else if (a == "--probe-io") {
+            auto_plan = true;
+            probe_io = true;
+        } else if (a == "--no-probe-io")
+            probe_io = false;
+        else if (a == "--probe-mem") {
+            auto_plan = true;
+            probe_mem = true;
+        } else if (a == "--session")
             session_mode = true;
         else if (a == "--csv")
             csv_path = next("--csv");
@@ -713,6 +754,68 @@ int main(int argc, char ** argv) {
     // --cache-mb or BMOE_CACHE_MB still wins, including an explicit 0.
     if (cfg.moe.enabled && !cfg.moe.cache_auto && !seen.count("cache-mb") && std::getenv("BMOE_CACHE_MB") == nullptr)
         cfg.moe.cache_auto = true;
+
+    // --auto: resolve the streaming knobs from what the machine and the model report. It runs after
+    // the flags, the env overrides and the CLI's own defaults, so that anything the caller expressed
+    // either way is a pin the planner may not touch: an automatic choice that quietly overruled a
+    // person would be worse than no automation at all. The pinned names are the parameter keys,
+    // which is the name a Decision uses for its knob. See docs/hardware-planning.md.
+    double predicted_s_per_token = 0.0;
+    double predicted_hit_pct = -1.0;
+    if (seen.count("dense-on-device")) auto_plan = true; // a request to the planner, as before
+    if (auto_plan && !cfg.model_path.empty()) {
+        PlanRequest req;
+        req.pinned.assign(seen.begin(), seen.end());
+        // An env override is the caller speaking too, so it pins the same way a flag does.
+        for (const EnvOverride & e : kEnvOverrides)
+            if (const char * v = std::getenv(e.var); v && *v) req.pinned.push_back(e.key);
+
+        // QUIET FIRST, DIRTY LAST, and the order is a measurement rather than a preference: backends
+        // registered before anything looks at devices; bandwidth and device costs before the storage
+        // probe reads gigabytes; the intrusive headroom probe last of all, because it leaves the
+        // kernel busy and anything measured after it measures the recovery.
+        register_backends();
+        HardwareProfile hw = probe_hardware(cfg.model_path.c_str());
+        const ModelProfile mp = probe_model(cfg.model_path.c_str());
+        probe_device_support(hw, mp);
+        // The cache term is the FLOOR the engine will enforce, not one token cycle. Written without
+        // std::max on purpose: windows.h defines `max` as a macro and this translation unit sees it.
+        const uint64_t guard_bytes = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
+        const uint64_t cache_floor = mp.token_cycle_bytes > guard_bytes ? mp.token_cycle_bytes : guard_bytes;
+        llama_backend_init();
+        probe_bandwidth(hw, mp);
+        probe_device_costs(hw, mp);
+        if (probe_io) probe_storage(hw, cfg.model_path.c_str(), mp.expert_slice_bytes);
+        probe_headroom(hw, probe_mem, mp.dense_bytes + cache_floor);
+        const Placement placement = probe_placement(cfg.model_path.c_str(), mp, hw, (uint32_t) cfg.n_ctx);
+        const Plan plan = plan_run(cfg, hw, mp, placement, req);
+        cfg = plan.config;
+        predicted_s_per_token = plan.allocation.seconds_per_token;
+        if (plan.allocation.cache_bytes > 0 && mp.expert_bytes > 0)
+            predicted_hit_pct = 100.0 * (double) plan.allocation.cache_bytes / (double) mp.expert_bytes;
+
+        if (plan_explain) {
+            std::fprintf(stderr, "plan: machine %s\n", hw.label.c_str());
+            if (mp.ok) {
+                std::fprintf(stderr, "plan: model %s, %u experts top-%u over %u of %u blocks\n", mp.arch.c_str(),
+                             mp.n_expert, mp.n_expert_used, mp.n_moe_layer, mp.n_layer);
+                for (int gi = 0; gi < (int) WeightGroup::count; ++gi) {
+                    const GroupDemand & d = mp.groups[gi];
+                    if (d.bytes == 0) continue;
+                    std::fprintf(stderr, "plan:   %-10s %7llu MiB, %7llu MiB/token%s\n", group_name((WeightGroup) gi),
+                                 (unsigned long long) (d.bytes >> 20), (unsigned long long) (d.bytes_per_token >> 20),
+                                 d.row_gatherable ? "  (row-gathered)"
+                                 : d.streamable   ? "  (streamable)"
+                                                  : "");
+                }
+            }
+            std::fputs(plan.explain().c_str(), stderr);
+            // The line that reproduces this plan by hand, printed last so it is what stays on screen.
+            std::fprintf(stderr, "plan: reproduce with\n  bmoe-cli -m %s %s\n", cfg.model_path.c_str(),
+                         plan.to_flags().c_str());
+        }
+        if (plan_only) return 0;
+    }
 
     // The configuration exactly as a run would get it, and whether validate() accepts it. A
     // front-end reads this to check a form against the real resolution rules, not a copy of them.
@@ -880,6 +983,17 @@ int main(int argc, char ** argv) {
     }
     std::printf("generation: %d tokens, %.3f s/token (%.3f tok/s)\n", s.n_generated, s.s_per_token,
                 s.tokens_per_second);
+
+    // The loop that closes. A plan predicted this run before it started; here is what it got. A cost
+    // model whose error is never printed cannot be corrected, and the term the error is almost always
+    // in is the credited cache hit rate, which is why the two hit figures sit next to each other.
+    if (predicted_s_per_token > 0.0 && s.s_per_token > 0.0) {
+        const double err = 100.0 * (predicted_s_per_token / s.s_per_token - 1.0);
+        std::printf("plan: predicted %.3f s/token, measured %.3f (%+.0f%%)", predicted_s_per_token, s.s_per_token, err);
+        if (predicted_hit_pct >= 0.0 && s.cache_hit_pct >= 0.0)
+            std::printf("; cache hits credited %.0f%%, measured %.1f%%", predicted_hit_pct, s.cache_hit_pct);
+        std::printf("\n");
+    }
     // Compute decomposition (0 s/tok CPU means the platform couldn't measure it — Windows host).
     // occupancy = CPU-time ÷ (wall × threads): ~1 is compute-bound, well under 1 is a throttled or
     // preempted core; major faults/token > 0 means dense weights re-faulted from flash inside decode.

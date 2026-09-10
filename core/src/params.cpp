@@ -218,6 +218,15 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("threads-batch", "Prefill threads", G::Generation, L::Advanced,
+                          "Threads for prefill, which is compute-bound and scales with cores, while a streamed "
+                          "decode mostly waits on flash. 0 = the same as the compute threads.");
+        d.value_hint = "N";
+        bounds(d, 0, 256);
+        bind_int(d, [](RunConfig & c) -> int & { return c.n_threads_batch; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("chatml", "Chat template", G::Generation, L::Advanced,
                           "Wrap the prompt in the model family's own chat turn. A chat front-end always "
                           "sets it; off sends the prompt as raw text.");
@@ -422,6 +431,36 @@ std::vector<ParamDesc> build() {
         d.value_hint = "N";
         bounds(d, 0, std::numeric_limits<int>::max(), "MiB");
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.row_stream_mb; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("gpu-layers", "Layers on a device", G::Memory, L::Advanced,
+                          "Layers stored on a compute device, counted from the top as llama.cpp fills them: "
+                          "their experts are resident there, not streamed. 0 keeps everything on the host. The "
+                          "hardware planner sets it from llama.cpp's own capacity fitter.");
+        d.value_hint = "N";
+        bounds(d, 0, 1024, "layers");
+        bind_int(d, [](RunConfig & c) -> int & { return c.n_gpu_layers; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("dense-on-device", "Dense weights on device", G::Memory, L::Experimental,
+                          "Put the dense weights on an accelerator that shares this host's memory, leaving the "
+                          "experts to the streamer. Measured to lose on a phone GPU; kept as a named lever.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--dense-on-device", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.dense_on_device; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("devices", "Compute devices", G::Memory, L::Advanced,
+                          "Which compute devices llama.cpp may use: all it finds, or the CPU only. A device left "
+                          "registered but unused still takes graph nodes, each one a boundary crossing.");
+        d.type = ParamType::Choice;
+        d.value_hint = "all|cpu";
+        bind_choice<bool>(d, [](RunConfig & c) -> bool & { return c.devices_cpu_only; },
+                          {{false, {"all", "all"}}, {true, {"cpu", "CPU only"}}});
         t.push_back(d);
     }
 

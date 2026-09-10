@@ -12,6 +12,7 @@
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 
+#include "ggml-backend.h"
 #include "llama.h"
 #include "ggml.h"
 
@@ -611,11 +612,52 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     auto gguf = [&]() -> const GgufModelInfo & { return meta().info; };
 
     // Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
-    // q4_K buffer would break the rebind), experts on CPU.
+    // q4_K buffer would break the rebind), and every expert the streamer serves in host memory.
+    //
+    // Layers on devices are the first stage's decision (llama.cpp's capacity fitter, via the
+    // planner), carried in as n_gpu_layers plus the override patterns it wrote. With nothing
+    // planned this is the historical behaviour, everything on the host.
+    //
+    // Every pattern is routed to the CPU buffer type. That is what the fitter itself does for the
+    // experts it leaves on the host, and it is the one placement the streamer can serve: it rebinds
+    // `data` onto bytes it read itself, and only a host address can be rebound.
+    //
+    // Routing them to a DEVICE's host buffer type instead - the obvious way to let an accelerator
+    // compute a streamed expert - does not work, and the two reasons are both in this submodule.
+    // `llama-model-loader.cpp` ("avoid using a host buffer when using mmap") replaces any host
+    // buffer type with the CPU's whenever the model is mmap'd, which this engine always is; and
+    // `ggml-cuda.cu`'s `supports_buft` accepts the CUDA host buffer only on an `integrated` device,
+    // so on a discrete one the op falls back to the CPU regardless. See docs/hardware-planning.md
+    // for what a working version would have to do instead - wrap our own reservation with
+    // `ggml_backend_dev_buffer_from_host_ptr`, which CUDA does not implement and Metal does.
     llama_model_params mparams = llama_model_default_params();
+    // A device we are not using should not be in the room. Left registered, the scheduler hands it
+    // every node it can execute - the weightless ones especially - purely because it is there, and
+    // each one is a boundary the graph crosses twice. Handing llama.cpp the CPU alone is the only
+    // way to say "not this run" that the scheduler cannot talk itself out of.
+    ggml_backend_dev_t only_cpu[2] = {nullptr, nullptr};
+    if (cfg.devices_cpu_only) {
+        only_cpu[0] = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (only_cpu[0]) mparams.devices = only_cpu;
+    }
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
     mparams.use_extra_bufts = false;
-    mparams.n_gpu_layers = 0;
+    mparams.n_gpu_layers = cfg.n_gpu_layers;
+    // llama.cpp reads the rows of arch-marked tensors on demand, and its default turns that on by
+    // itself for anything over 4 GiB. The tensors it marks - the per-layer embedding tables of
+    // gemma4 and qwen4exp - are exactly the ones `--row-stream` gathers rows from, so the two
+    // mechanisms would be paging the same bytes by two different routes, each unaware of the
+    // other's residency. Whichever is doing it, only one may: ours when it is asked for, theirs
+    // otherwise. Inheriting the default silently is the one option that is never right.
+    mparams.tensor_read_lazy = cfg.moe.row_stream ? LLAMA_TENSOR_READ_LAZY_OFF : LLAMA_TENSOR_READ_LAZY_AUTO;
+    std::vector<llama_model_tensor_buft_override> buft_overrides;
+    if (!cfg.buft_overrides.empty()) {
+        buft_overrides.reserve(cfg.buft_overrides.size() + 1);
+        for (const std::string & pat : cfg.buft_overrides)
+            buft_overrides.push_back({pat.c_str(), ggml_backend_cpu_buffer_type()});
+        buft_overrides.push_back({nullptr, nullptr}); // terminator
+        mparams.tensor_buft_overrides = buft_overrides.data();
+    }
     // The nextn/MTP block is skipped at load unless asked for: llama.cpp marks its tensors
     // TENSOR_SKIP by default, and only --mtp builds a graph over them. n_layer_nextn comes from
     // the gguf metadata either way, so the "this model has no trained head" check below is
@@ -725,7 +767,11 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return fail("failed to create context");
     im.ctx.reset(ctx);
-    llama_set_n_threads(ctx, cfg.n_threads, cfg.n_threads);
+    // Decode and prefill get their own counts. They are different workloads: prefill is compute-bound
+    // and scales with cores, a streamed decode waits on flash. 0 means "the same", which is what
+    // every caller got before this existed.
+    const int n_threads_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
+    llama_set_n_threads(ctx, cfg.n_threads, n_threads_batch);
 
     // The MTP draft context: same model, same eval callback, but ctx_type = MTP so llama.cpp builds
     // the nextn graph. It keeps its own (single-position) KV, hence n_rs_seq = 0 — nothing is ever
@@ -749,7 +795,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         llama_context * ctx_dft = llama_init_from_model(model, dparams);
         if (!ctx_dft) return fail("failed to create the MTP draft context");
         im.ctx_dft.reset(ctx_dft);
-        llama_set_n_threads(ctx_dft, cfg.n_threads, cfg.n_threads);
+        llama_set_n_threads(ctx_dft, cfg.n_threads, n_threads_batch);
     }
 
     // Opt-in sampling. temp <= 0 leaves smpl null and the decode loop on argmax — the deterministic

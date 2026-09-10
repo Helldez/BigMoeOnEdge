@@ -52,7 +52,14 @@ void fill_offsets(const gguf_context * gctx, int file_idx, GgufOffsets & out) {
         const char * name = gguf_get_tensor_name(gctx, i);
         out.off_by_name[name] = data_off + (uint64_t) gguf_get_tensor_offset(gctx, i);
         out.size_by_name[name] = (uint64_t) gguf_get_tensor_size(gctx, i);
+        out.type_by_name[name] = (int) gguf_get_tensor_type(gctx, i);
         out.file_by_name[name] = file_idx;
+        // Row count, for the one consumer that needs a shape rather than a size: turning a table's
+        // total bytes into the bytes a single token gathers from it. Taken here because this parse
+        // has already walked the whole KV section, which is exactly what this file's header says a
+        // caller must not be made to pay for twice.
+        const int64_t * ne = gguf_get_tensor_ne(gctx, i);
+        out.rows_by_name[name] = ne ? (uint64_t) (ne[1] > 0 ? ne[1] : 0) : 0;
     }
 }
 
@@ -66,6 +73,9 @@ void fill_model_info(const gguf_context * gctx, GgufModelInfo & out) {
         // LLM_KV_EXPERT_USED_COUNT expand "%s" to the architecture).
         out.n_expert = meta_int(gctx, out.arch + ".expert_count", 0);
         out.n_expert_used = meta_int(gctx, out.arch + ".expert_used_count", 0);
+        // The hidden state's width. It is what a tensor crossing a host/device boundary actually
+        // carries, so the split probe needs it to measure a crossing at the size this model pays.
+        out.n_embd = meta_int(gctx, out.arch + ".embedding_length", 0);
     }
     out.ok = true;
 }

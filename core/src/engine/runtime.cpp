@@ -15,6 +15,10 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.n_ubatch = cfg.n_ubatch; // 0 = follow n_batch; smaller trades prefill speed for memory
     sc.chatml = cfg.chatml;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
+    sc.n_gpu_layers = cfg.n_gpu_layers;   // the first stage's placement; 0 = everything on the host
+    sc.buft_overrides = cfg.buft_overrides;
+    sc.devices_cpu_only = cfg.devices_cpu_only;
+    sc.n_threads_batch = cfg.n_threads_batch;
     sc.compute_trace_layers = cfg.compute_trace_layers;
     sc.sampling = cfg.sampling; // greedy by default; opt-in stochastic decoding
     sc.moe = cfg.moe;

@@ -1,5 +1,6 @@
 #include "router_hook.h"
 
+#include "ggml-backend.h"
 #include "ggml.h"
 #include "../io/platform_io.h"
 
@@ -1367,8 +1368,16 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 int il = -1;
                 const int p = match_expert(src->name, recipe_, il);
                 if (p >= 0) {
-                    // An expert-named tensor: streamed, never a dense-rebind candidate.
-                    if (il >= 0 && il < n_layer_ && src->ne[2] > 0) { // expert dim is dim-2
+                    // An expert-named tensor: streamed, never a dense-rebind candidate - and only if
+                    // it is somewhere we can serve. The streamer works by pointing `data` at bytes it
+                    // read itself, so a tensor a device owns is not ours to bind: writing through that
+                    // pointer is a fault, and it is the fault a dense-on-device run hit three times.
+                    // A layer whose experts the placement put on a device is simply not the
+                    // streamer's, and this is where that becomes true rather than assumed. A null
+                    // buffer keeps the historical answer, since that is what a CPU-only run has
+                    // always presented here.
+                    const bool servable = !src->buffer || ggml_backend_buffer_is_host(src->buffer);
+                    if (servable && il >= 0 && il < n_layer_ && src->ne[2] > 0) { // expert dim is dim-2
                         LayerExperts & L = captured_[il];
                         L.bound = true;
                         L.proj[p].tensor = src;

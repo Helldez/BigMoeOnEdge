@@ -175,6 +175,40 @@ more budget — which `--cache-mb auto` now takes automatically, capped by `--ca
 ([cache-sizing.md](cache-sizing.md)). Admission policies and a persistent cross-run cache
 remain unexplored.
 
+## Hardware planning — what is measured, and what is still owed
+
+`--auto` derives the streaming knobs from the machine and the model instead of from flags, and
+prints the fact behind each choice ([hardware-planning.md](hardware-planning.md)). The rules carry
+no platform names, so the same rule reaches a different answer on a desktop, a phone and a
+kill-on-resident platform from the facts alone.
+
+In: the read-rate probe (request size against lane count, about a second at load, the only honest
+source of `--io-threads`); the mapping-interference probe; llama.cpp's own capacity fitter as a
+first stage; the headroom probe, which answers what this process can hold rather than what the
+machine reports available; and a thread rule that reads core classes rather than a core count,
+because a barrier waits for its slowest participant.
+
+What is still owed is measurement rather than design, and every knob the plan cannot decide prints
+`[unprobed]`.
+
+- **Streamed experts computed on a device, rather than on the CPU cores.** Half built, and the
+  missing half is a design question rather than plumbing. A device is asked whether it offers a host buffer type and whether it runs this model's
+  own expert matmul on the file's native layout; the bandwidth probe schedules one GEMV on every
+  backend so the host's figure and the device's are the same measurement; where the device wins, the
+  session binds the overridden experts to that device's host buffer type at load. What is not done is
+  the streamer's own reservations coming from that same allocator: it rebinds `data` onto memory it
+  reserved itself, so a device pointed at those tensors would read ordinary host memory it was never
+  given access to. Doing it trades against the lazy commit that lets a model far past RAM have valid
+  addresses everywhere while holding a fraction of it. On a machine that registers only a CPU the
+  measured half runs and finds nothing to compare, which is what the plan says.
+- **A prefill-aware cache floor.** Each expert is already read at most once per ubatch (the `seen_`
+  guard in the streamer), so the read-once property that wave-partitioned prefill exists to provide
+  is not missing. What is missing is a guarantee that the cache can hold one layer's ubatch working
+  set: the derived floor is the *decode* token cycle, and a wide prefill batch touches many more
+  experts per layer than a token does.
+- **`--ubatch`** has no rule because it has no measurement: the compute-buffer reservation's
+  crossover against the cache is unmeasured on every machine here.
+
 ## Not on this list
 
 Routing prediction and speculative expert gating were built and **removed**: the recall/latency

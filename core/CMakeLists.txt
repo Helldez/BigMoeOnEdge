@@ -1,14 +1,18 @@
 # bmoe_core — the streaming engine.
 #
 # Pure-policy sources (config validation, the architecture registry, the n-gram draft
-# matcher) build with no native dependency. The streaming adapters compile only when
-# llama.cpp is present, because they include its public headers (llama.h, ggml.h, gguf.h).
+# matcher, the hardware planner) build with no native dependency. The streaming adapters
+# compile only when llama.cpp is present, because they include its public headers
+# (llama.h, ggml.h, gguf.h).
 
 add_library(bmoe_core STATIC
     src/config.cpp
     src/params.cpp
     src/moe/arch_registry.cpp
     src/engine/ngram_draft.cpp
+    src/plan/plan.cpp
+    src/plan/allocate.cpp
+    src/plan/planner.cpp
 )
 
 target_include_directories(bmoe_core PUBLIC
@@ -28,6 +32,13 @@ if(BMOE_HAVE_LLAMA)
         src/moe/dense_weights.cpp
         src/moe/row_stream.cpp
         src/moe/gguf_offsets.cpp
+        src/plan/hardware_probe.cpp
+        src/plan/headroom_probe.cpp
+        src/plan/bandwidth_probe.cpp
+        src/plan/device_probe.cpp
+        src/plan/storage_probe.cpp
+        src/plan/placement_probe.cpp
+        src/plan/model_probe.cpp
         src/moe/expert_stream_source.cpp
         src/moe/router_hook.cpp
         src/engine/session.cpp
@@ -55,8 +66,18 @@ if(BMOE_HAVE_LLAMA)
     # Intra-layer I/O–compute overlap needs the fork's expert-ready hook in ggml-cpu.h. Detect
     # it by inspecting the submodule header rather than the git remote, so any tree carrying the
     # hook (a rebase, a different fork) enables the feature. PUBLIC so cli/ and tests/ see it.
+    #
+    # It also needs the CPU backend to be LINKED. Under GGML_BACKEND_DL that backend is a module
+    # loaded at runtime and its symbols are not available to link against, so the hook is present in
+    # the header and unresolvable at link time - which is a build that fails rather than a feature
+    # that degrades. A dynamic-backend build therefore ships without overlap, and says so here.
+    # Reaching it in that build would mean exposing the hook through
+    # `ggml_backend_reg_get_proc_address`, the way ggml exposes every other backend-specific
+    # function; that is a change to the fork commit, not to this file.
     set(_ggml_cpu_h "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include/ggml-cpu.h")
-    if(EXISTS "${_ggml_cpu_h}")
+    if(GGML_BACKEND_DL)
+        message(STATUS "bmoe: dynamic backends - overlap unavailable (the CPU backend is not linked)")
+    elseif(EXISTS "${_ggml_cpu_h}")
         file(READ "${_ggml_cpu_h}" _ggml_cpu_src)
         if(_ggml_cpu_src MATCHES "ggml_cpu_set_expert_ready_hook")
             target_compile_definitions(bmoe_core PUBLIC BMOE_HAVE_EXPERT_READY_HOOK=1)

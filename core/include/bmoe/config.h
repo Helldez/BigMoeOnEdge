@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace bmoe {
 
@@ -349,6 +350,11 @@ struct RunConfig {
     std::string prompt = "The capital of Japan is";
     int n_predict = 128;
     int n_threads = 4;
+    // Threads for prefill, which is a different question from threads for decode: prefill is
+    // compute-bound and scales with cores, while a streamed decode spends most of its time waiting
+    // on flash and gains nothing from more of them. 0 means "same as n_threads", the historical
+    // behaviour and what every caller that never heard of this gets.
+    int n_threads_batch = 0;
     int n_ctx = 2048;
 
     // Largest batch computed in one graph, i.e. the prefill chunk size. 0 (the default) means
@@ -388,6 +394,36 @@ struct RunConfig {
     // to an untraced run. Only meaningful when a compute-trace sink is attached; see
     // bmoe/decode_trace.h for what the layer-mode rows contain.
     bool compute_trace_layers = false;
+
+    // ── what the first stage (llama.cpp's capacity fitter) decided ─────────────────
+    // Layers stored on devices, counted from the top the way llama.cpp fills them, and the
+    // per-tensor buffer-type override patterns the fitter wrote. 0 and empty — the defaults — mean
+    // everything on the host, which is what the engine did before any planner existed. The
+    // patterns are llama.cpp's own regexes over tensor names; the session maps each to the CPU
+    // buffer type, since the streamer can only serve experts that live in host memory.
+    int n_gpu_layers = 0;
+    std::vector<std::string> buft_overrides;
+
+    // Put the DENSE weights on an accelerator that shares this host's memory, leaving the routed
+    // experts on the host for the streamer. On such a machine the move frees no memory - it is the
+    // same pool - so it is worth making only where that device consumes this model's weights faster
+    // than the CPU does, which the bandwidth probe measures.
+    //
+    // Off by default, armed by the caller, and currently REFUSED by the planner - because it was
+    // measured three times in July on a device of exactly this class and it lost by 27%: the dense
+    // and expert halves interleave, so a two-device split crosses the boundary twice per layer and
+    // the boundary tax eats the CPU time the device frees. See
+    // docs/bench-data/2026-07-27-gpu-dense-offload/. Kept as a named lever so the next person to
+    // have this idea finds the verdict instead of the idea.
+    bool dense_on_device = false;
+
+    // Hand llama.cpp the CPU and nothing else. Set when this plan has decided no weight goes on a
+    // device: leaving one registered is not free, because the scheduler gives it every node it can
+    // execute - norms, softmax, the weightless ones - purely because it is there, and each of those
+    // is a boundary the graph crosses twice. Measured with nothing placed on the device at all:
+    // 61 graph splits per token, and a build with the backend compiled in losing to one without it.
+    // A device we are not using should not be in the room.
+    bool devices_cpu_only = false;
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;

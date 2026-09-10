@@ -7,6 +7,11 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Hardware planner: `--auto`, `--plan`, `--probe`, and `/api/plan` in the desktop UI.** The engine
+  measures the machine and reads the model, then resolves the streaming knobs with the fact behind
+  each one; a knob set by hand is never touched and nothing lossy arms itself. The planner's
+  placement knobs join the parameter table (`--gpu-layers`, `--threads-batch`, `--devices`,
+  `--dense-on-device`). See `docs/hardware-planning.md`.
 - **One parameter table for every engine tunable** (`bmoe/params.h`). Each `RunConfig` knob is one
   row: key, type, group, level, scope, bounds written with the same constants `validate()` checks,
   help text, and its reader and writer. Keys are the long flag without dashes, the name a planner

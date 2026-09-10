@@ -138,6 +138,12 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
 // size the expert cache to the device (--cache-mb auto); the budget is fixed for the run thereafter.
 uint64_t mem_available_bytes();
 
+// Physical memory this machine has, 0 where it cannot be read. Not a sizing signal on its own -
+// what a process may hold is `mem_available_bytes()` and what it may KEEP is a separate probe - but
+// it bounds both, and it is what a rationale needs to say how much of the machine a plan is asking
+// for. A phone with 12 GB total and 6 GB available is describing two different things.
+uint64_t mem_total_bytes();
+
 // Process-wide compute-decomposition counters, cumulative since process start; the caller deltas
 // them across a single decode to split the per-token "compute" residual into its real causes.
 // Both return 0 when the platform cannot report them (Windows host build), which the metrics treat
