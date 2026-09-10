@@ -200,6 +200,18 @@ int main() {
     expect_flag({"--predict-log"}, [](const RunConfig & c) { return c.moe.predict_log; });
     expect_flag({"--predict-prefetch"}, [](const RunConfig & c) { return c.moe.predict_prefetch; });
     expect_flag({"--predict-spec-max", "0"}, [](const RunConfig & c) { return c.moe.predict_spec_max == 0; });
+    // The planner's placement knobs, carried by the table so an applied plan keeps them.
+    expect_flag({"--gpu-layers", "12"}, [](const RunConfig & c) { return c.n_gpu_layers == 12; });
+    expect_flag({"--devices", "cpu"}, [](const RunConfig & c) { return c.devices_cpu_only; });
+    expect_flag({"--tensor-overrides", "blk\\.1\\..*_exps;blk\\.2\\..*_exps"}, [](const RunConfig & c) {
+        return c.buft_overrides.size() == 2 && c.buft_overrides[1] == "blk\\.2\\..*_exps";
+    });
+    {
+        RunConfig c;
+        c.buft_overrides = {"a", "b.*"};
+        c.n_gpu_layers = 3;
+        expect_roundtrip("placement knobs", c);
+    }
 
     // Flags the table must NOT claim: they belong to the front-end, not to a run's configuration.
     for (const char * f : {"-p", "--prompt", "--progress", "--session", "--csv", "--route-trace", "--compute-trace",

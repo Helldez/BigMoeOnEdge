@@ -454,6 +454,32 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("tensor-overrides", "Tensor placement", G::Memory, L::Debug,
+                          "The per-tensor placement llama.cpp's capacity fitter wrote: regex patterns over tensor "
+                          "names, separated by ';', each kept on the host. Set by the hardware planner; empty "
+                          "leaves every tensor where the layer count puts it.");
+        d.type = ParamType::Text;
+        d.value_hint = "PATTERNS";
+        // One string for a list: ';' does not occur in the fitter's patterns, which are plain regexes.
+        d.get = [](const RunConfig & c) {
+            std::string s;
+            for (const std::string & p : c.buft_overrides)
+                s += (s.empty() ? "" : ";") + p;
+            return s;
+        };
+        d.set = [](RunConfig & c, const std::string & s, std::string &) {
+            c.buft_overrides.clear();
+            for (size_t a = 0; !s.empty();) {
+                const size_t b = s.find(';', a);
+                c.buft_overrides.push_back(s.substr(a, b == std::string::npos ? std::string::npos : b - a));
+                if (b == std::string::npos) break;
+                a = b + 1;
+            }
+            return true;
+        };
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("devices", "Compute devices", G::Memory, L::Advanced,
                           "Which compute devices llama.cpp may use: all it finds, or the CPU only. A device left "
                           "registered but unused still takes graph nodes, each one a boundary crossing.");
