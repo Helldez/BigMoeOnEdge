@@ -17,7 +17,7 @@ or 5xx status.
 
 - **Parameters** come from the engine's parameter table (`bmoe/params.h`). `GET /api/params`
   returns the schema; values travel as `{key: value}` objects, where a value has the JSON type the
-  schema's `type` says (`bool`, `int`, `float`) or is a string (`path`, `choice`, and the literal
+  schema's `type` says (`bool`, `int`, `float`) or is a string (`path`, `text`, `choice`, and the literal
   `"auto"` for a parameter with `accepts_auto`).
 - **Scope.** A `request`-scoped parameter (`n-predict`, `think`) applies to the next message. A
   `session`-scoped one is fixed while a model is loaded: changing it marks the config

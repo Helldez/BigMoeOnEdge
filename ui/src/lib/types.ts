@@ -1,6 +1,6 @@
 // Wire types for the bmoe-server HTTP API (docs/server-api.md). Shapes only, no behaviour.
 
-export type ParamType = 'bool' | 'int' | 'float' | 'choice' | 'path';
+export type ParamType = 'bool' | 'int' | 'float' | 'choice' | 'path' | 'text';
 export type ParamLevel = 'basic' | 'advanced' | 'experimental' | 'debug';
 export type ParamScope = 'request' | 'session';
 export type ParamValue = boolean | number | string;

@@ -30,7 +30,8 @@
 
 namespace bmoe {
 
-enum class ParamType { Bool, Int, Float, Choice, Path };
+// Path and Text are both free strings; the difference is only how a form presents them.
+enum class ParamType { Bool, Int, Float, Choice, Path, Text };
 
 // Groups in the order a settings form shows them.
 enum class ParamGroup {

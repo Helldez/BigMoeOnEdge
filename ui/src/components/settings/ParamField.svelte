@@ -119,7 +119,7 @@
           oninput={onText}
           onfocus={() => (focused = true)}
           onblur={onBlur}
-          class:wide={spec.type === 'path'}
+          class:wide={spec.type === 'path' || spec.type === 'text'}
         />
         {#if numeric && spec.accepts_auto && draft.trim().toLowerCase() !== 'auto'}
           <button type="button" onclick={() => { draft = 'auto'; commit('auto'); settings.flush(); }}>Auto</button>
