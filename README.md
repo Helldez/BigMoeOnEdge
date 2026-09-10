@@ -183,6 +183,14 @@ app renders the same feed live while you chat. More under [Telemetry](#telemetry
 live telemetry panel, and every knob above in Settings with a one-line note on what it does.
 Defaults are the measured winning recipe for a model near RAM.
 
+### Desktop app
+
+`bmoe-server` keeps a model loaded and serves a web UI on your machine only: chat with live engine
+metrics per token, model downloads, and every engine setting, rendered from the engine's own
+parameter table. It also speaks an OpenAI-compatible chat API, so other clients can use the engine
+([server-api.md](docs/server-api.md)). With the hardware planner built in, it proposes a
+configuration for your model on your machine and shows the fact behind each choice.
+
 ## Supported models
 
 | Architecture | Reference models | Notes |
@@ -408,6 +416,21 @@ macOS builds from the same sources and has no O_DIRECT; a direct request is serv
 instead (uncached, but not alignment-constrained), and `o_direct` in the telemetry reports what the
 open actually achieved.
 
+### Desktop app
+
+Each release attaches a `bmoe-desktop` archive per platform: start `bmoe-server` (on Windows, a
+double click) and the UI opens at `http://127.0.0.1:8765/`. From source, build the UI first so the
+CMake build can place it beside the server:
+
+```bash
+cd ui && npm ci && npm run build && cd ..
+scripts/build-host.sh
+build/bin/bmoe-server --open
+```
+
+Settings and downloaded models live in your user data folder; `bmoe-server --help` lists the
+options, and any `bmoe-cli` engine flag given at start holds for that run.
+
 ### Android
 
 The demo app is in [`examples/android`](examples/android): build the CLI for arm64 with
@@ -462,6 +485,8 @@ Formats and schemas: [docs/telemetry.md](docs/telemetry.md).
 or reproduce the measurements. Most-wanted entry points:
 
 - [docs/architecture.md](docs/architecture.md): the layer map and the llama.cpp relationship.
+- [docs/server-api.md](docs/server-api.md): the desktop server's HTTP API, OpenAI-compatible chat
+  included.
 - [docs/adding-a-model.md](docs/adding-a-model.md): supporting a new MoE architecture.
 - [docs/benchmarks.md](docs/benchmarks.md): measured results and
   [how they were produced](docs/benchmark-method.md).

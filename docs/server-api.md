@@ -6,6 +6,9 @@ endpoint, so any OpenAI client can use it too.
 
 It binds to `127.0.0.1` by default and has no authentication: it is a local program, like the
 CLI. Binding to another address is an explicit choice (`--host`), and the server says so at start.
+On loopback it answers only to loopback host names (a DNS-rebinding page cannot reach it), and a
+state-changing request carrying a browser `Origin` other than its own is refused with `403`
+(`--allow-origin URL` admits one more, for a UI dev server).
 
 All request and response bodies are JSON (UTF-8). Errors are `{"error": "<message>"}` with a 4xx
 or 5xx status.
@@ -191,17 +194,25 @@ Cancels a running download. The partial file is kept so a later download resumes
 
 ### `GET /api/plan`
 
-`{"available": false, "reason": "..."}` in a build without the hardware planner. Otherwise the
-planner's proposal for the current model and machine, computed without loading the model:
+`{"available": false, "reason": "..."}` in a build without the hardware planner, and
+`{"available": true, "error": "..."}` when there is nothing to plan (no model selected).
+Otherwise the planner's proposal for the configured model on this machine. It runs the planner's
+probes (a second or two of storage reads and a bandwidth run, never the intrusive memory probe)
+without loading the model; `409` while a generation runs, since that would skew the measurement.
 
 ```json
-{"available": true, "regime": "experts_stream", "streaming_declined": false,
- "decline_reason": "", "decisions": [{"knob": "cache-mb", "value": "4347", "source": "measured",
- "reason": "..."}], "values": {"cache-mb": 4347}, "args": ["..."], "explain": "..."}
+{"available": true, "model": "C:/models/Qwen3.6-35B-A3B-Q4_K_M.gguf",
+ "machine": "16 cores, 3388 MiB available of 15182 MiB, 33 GiB/s on this model's matmul",
+ "regime": "experts-stream", "streaming_declined": false, "decline_reason": "",
+ "decisions": [{"knob": "cache-mb", "value": "703", "source": "derived", "reason": "..."}],
+ "values": {"cache-mb": 703, "threads": 8}, "args": ["--moe-stream", "--cache-mb", "703"],
+ "not_applicable": [], "explain": "..."}
 ```
 
 `source` is `measured | derived | policy | operator | unprobed`. Keys in `user_keys` come back as
-`operator`: the planner never touches them.
+`operator`: the planner never touches them. `values` are the parameters the plan changes, read
+through the parameter table; `not_applicable` names anything the plan decided that the table
+cannot hold (a tensor-placement pattern, say), so it is shown rather than silently dropped.
 
 ### `POST /api/plan/apply`
 

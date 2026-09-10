@@ -19,6 +19,7 @@ for the idea the project is built on.
 |---|---|
 | [adding-a-model.md](adding-a-model.md) | How to support a new MoE architecture (a recipe row plus a gate). |
 | [telemetry.md](telemetry.md) | The `BMOE_*` line protocol and CSV schema — the integration contract. |
+| [server-api.md](server-api.md) | The desktop server's HTTP API: settings from the parameter table, OpenAI-compatible chat, live events, models and the plan. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
 | [cache-sizing.md](cache-sizing.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
 | [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output (with the lossy knobs off). |

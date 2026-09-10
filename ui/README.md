@@ -14,7 +14,8 @@ npm install
 npm run dev
 ```
 
-The dev server proxies `/api` and `/v1` to `http://127.0.0.1:8765`, so start the engine first:
+The dev server proxies `/api` and `/v1` to `http://127.0.0.1:8765`, presenting the server's own
+origin (the server refuses state-changing requests from any other), so start the engine first:
 
 ```bash
 bmoe-server --port 8765
@@ -31,7 +32,8 @@ npm run build   # production build
 ## Build output
 
 `npm run build` writes a static site to `ui/dist/` (`index.html` plus hashed assets, with
-relative paths). `bmoe-server` serves that directory as plain files. There is no SPA fallback,
+relative paths). The CMake build copies it beside `bmoe-server` as `ui/` (see
+`server/stage_assets.cmake`), and the server serves it as plain files. There is no SPA fallback,
 so routes are hash based (`#/chat`, `#/models`, `#/settings`, `#/plan`).
 
 ## Settings are schema driven
