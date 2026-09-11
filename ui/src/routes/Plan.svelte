@@ -122,7 +122,9 @@
     <table>
       <thead><tr><th>Parameter</th><th>Value</th><th>Source</th><th>Reason</th></tr></thead>
       <tbody>
-        {#each plan.decisions as d (d.knob)}
+        <!-- Keyed by position: a knob can carry several decisions (the planner notes `cost` more
+             than once), and a duplicate key stops Svelte rendering the whole page. -->
+        {#each plan.decisions as d, i (i)}
           <tr>
             <td><code>{d.knob}</code></td>
             <td><code>{d.value}</code></td>
