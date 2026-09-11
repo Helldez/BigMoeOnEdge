@@ -219,8 +219,11 @@ without loading the model; `409` while a generation runs, since that would skew 
 `operator`: the planner never touches them. `values` are the parameters the plan changes, read
 through the parameter table; `not_applicable` names anything the plan decided that the table
 cannot hold (a tensor-placement pattern, say), so it is shown rather than silently dropped.
-A plan computed while a model is loaded carries a `warning`: that model's memory reads as taken,
-so the plan is sized for a smaller machine. Auto mode avoids this by planning with nothing loaded.
+With a model loaded that an auto load planned, `GET /api/plan` answers at once with that plan and
+`"from_last_load": true`, without measuring. `GET /api/plan?measure=1` measures again regardless;
+a plan computed while a model is loaded carries a `warning`, because that model's memory reads as
+taken and the plan is sized for a smaller machine. Auto mode avoids this by planning with nothing
+loaded.
 
 ### `POST /api/plan/apply`
 

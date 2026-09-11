@@ -11,12 +11,17 @@
   let applying = $state(false);
   let applied = $state(false);
 
-  async function refresh() {
+  let measuring = $state(false);
+
+  async function refresh(measure = false) {
     error = '';
+    measuring = measure;
     try {
-      plan = await api.plan();
+      plan = await api.plan(measure);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
+    } finally {
+      measuring = false;
     }
   }
 
@@ -47,12 +52,14 @@
     }
   }
 
-  onMount(refresh);
+  onMount(() => refresh());
 </script>
 
 <div class="head">
   <h1>Plan</h1>
-  <button type="button" onclick={refresh}>Refresh</button>
+  <button type="button" onclick={() => refresh(true)} disabled={measuring}>
+    {measuring ? 'Measuring...' : 'Measure again'}
+  </button>
 </div>
 
 {#if error}
@@ -60,7 +67,7 @@
 {/if}
 
 {#if !plan}
-  {#if !error}<p class="muted">Loading...</p>{/if}
+  {#if !error}<p class="muted">Measuring this machine (about 15 s)...</p>{/if}
 {:else if !plan.available}
   <div class="card">
     <p><strong>The automatic hardware planner is not in this build.</strong></p>
@@ -87,6 +94,9 @@
     <p class="banner warn" role="status">{plan.warning}</p>
   {/if}
   <div class="card summary">
+    {#if plan.from_last_load}
+      <p class="ok-text">This is the plan the loaded model runs with, measured on a quiet machine when it loaded.</p>
+    {/if}
     <p>Regime: <strong>{plan.regime}</strong></p>
     {#if plan.machine}<p class="muted">Machine: {plan.machine}</p>{/if}
     {#if plan.not_applicable?.length}

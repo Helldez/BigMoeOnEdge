@@ -110,6 +110,8 @@ export interface PlanAvailable {
   not_applicable?: string[];
   /** Set when the plan was measured with a model loaded, which makes it pessimistic. */
   warning?: string;
+  /** The plan applied at the last load, served without measuring again. */
+  from_last_load?: boolean;
   /** Set instead of the fields above when there is nothing to plan (no model selected). */
   error?: string;
 }
