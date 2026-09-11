@@ -255,28 +255,59 @@ struct App {
                   {"valid", v.ok},
                   {"error", v.error},
                   {"reload_required", host.reload_required(cfg)},
-                  {"plan", store.plan_decisions()}};
+                  {"plan", store.plan_decisions()},
+                  {"auto_plan", auto_plan()}};
         if (rejected) o["rejected"] = *rejected;
         return o;
     }
 
     void publish_config() { bus.publish("config", config_object()); }
 
-    // Load the configured model. A model this build does not stream (a dense one) cannot open with
-    // streaming on, so streaming follows the model unless the user set it themselves.
+    // On by default wherever there is a planner to ask: the point of measuring the machine is that
+    // nobody has to tune it by hand. A person can turn it off and it stays off.
+    bool auto_plan() const { return planner_available() && store.auto_plan(true); }
+
+    // Load the configured model.
+    //
+    // In auto mode the plan is made first, and on a quiet machine: the session being replaced goes
+    // before the probes, because its memory would otherwise read as taken and the plan would size
+    // everything for a machine that is not this one. Values a person set stay pinned.
+    //
+    // A model this build does not stream (a dense one) cannot open with streaming on, so streaming
+    // follows the model unless the user set it themselves.
     std::string load_current() {
+        if (store.config().model_path.empty()) return "no model selected";
+        if (auto_plan()) {
+            host.unload();
+            PlanOutcome p = make_plan(store.config(), store.operator_keys());
+            if (p.ok) {
+                store.apply_plan(p.values, p.decisions);
+                std::lock_guard<std::mutex> lk(plan_m);
+                last_plan = std::move(p);
+            }
+            publish_config();
+        }
         const RunConfig requested = store.config();
-        if (requested.model_path.empty()) return "no model selected";
         RunConfig effective = requested;
         const std::vector<std::string> ops = store.operator_keys();
         const bool pinned = std::find(ops.begin(), ops.end(), "moe-stream") != ops.end();
         const std::string arch = lib.probe_arch(requested.model_path);
-        if (effective.moe.enabled && !pinned && !arch.empty() && !find_moe_recipe(arch.c_str())) {
+        if (effective.moe.enabled && !pinned && !arch.empty() && !find_moe_recipe(arch.c_str()))
             effective.moe.enabled = false;
-            effective.moe.overlap = false;
-            effective.moe.io_two_wave = false;
-        }
+        if (!effective.moe.enabled) drop_streaming_only(effective);
         return host.load(effective, requested);
+    }
+
+    // Everything that only means something on a running stream, turned off with it. A default the
+    // server arms (overlap) or a plan that declines streaming must not leave a config validate()
+    // refuses; the knobs come back on their own the next time streaming does.
+    static void drop_streaming_only(RunConfig & c) {
+        c.moe.overlap = false;
+        c.moe.io_two_wave = false;
+        c.moe.predict_log = false;
+        c.moe.predict_prefetch = false;
+        c.moe.route_ahead = 0;
+        c.moe.row_stream = false;
     }
 };
 
@@ -297,6 +328,10 @@ void register_routes(httplib::Server & svr, App & app) {
         const json reset = body.value("reset", json::array());
         if (!values.is_object() || !reset.is_array())
             return send_error(res, 400, "values must be an object and reset an array");
+        if (body.contains("auto_plan")) {
+            if (!body["auto_plan"].is_boolean()) return send_error(res, 400, "auto_plan must be a boolean");
+            app.store.set_auto_plan(body["auto_plan"].get<bool>());
+        }
         std::vector<std::string> reset_keys;
         for (const json & k : reset)
             if (k.is_string()) reset_keys.push_back(k.get<std::string>());
@@ -493,7 +528,10 @@ void register_routes(httplib::Server & svr, App & app) {
             return send_error(res, 409, "busy: a plan measures the machine, and a running generation would skew it");
         PlanOutcome p = make_plan(app.store.config(), app.store.operator_keys());
         if (!p.ok) return send_json(res, json{{"available", true}, {"error", p.error}});
-        const json body = p.body;
+        json body = p.body;
+        if (app.host.loaded_or_loading())
+            body["warning"] = "measured with a model loaded: its memory reads as taken, so this plan is sized for a "
+                              "smaller machine than this one. Auto mode plans with the model unloaded.";
         {
             std::lock_guard<std::mutex> lk(app.plan_m);
             app.last_plan = std::move(p);

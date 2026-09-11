@@ -80,6 +80,8 @@ export interface Config {
   reload_required: boolean;
   /** The last applied plan's decisions, or null. */
   plan: PlanDecision[] | { decisions: PlanDecision[] } | null;
+  /** Every load plans first (only true where the planner is built in). */
+  auto_plan?: boolean;
   /** Only on a `PUT /api/config` response. */
   rejected?: Record<string, string>;
 }
@@ -87,6 +89,7 @@ export interface Config {
 export interface ConfigUpdate {
   values?: Record<string, ParamValue>;
   reset?: string[];
+  auto_plan?: boolean;
 }
 
 export interface PlanUnavailable {
@@ -103,6 +106,12 @@ export interface PlanAvailable {
   values: Record<string, ParamValue>;
   args: string[];
   explain: string;
+  machine?: string;
+  not_applicable?: string[];
+  /** Set when the plan was measured with a model loaded, which makes it pessimistic. */
+  warning?: string;
+  /** Set instead of the fields above when there is nothing to plan (no model selected). */
+  error?: string;
 }
 
 export type Plan = PlanUnavailable | PlanAvailable;

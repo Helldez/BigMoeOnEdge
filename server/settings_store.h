@@ -45,6 +45,11 @@ public:
     std::vector<std::string> operator_keys() const; // launch + user: what a plan must not touch
     json plan_decisions() const;
 
+    // Whether every load plans first. A server setting, not an engine parameter, so it lives beside
+    // the values rather than in the table. `fallback` is the answer until someone sets it.
+    bool auto_plan(bool fallback) const;
+    void set_auto_plan(bool on); // persists
+
 private:
     RunConfig build_locked() const;
     void save_locked() const;
@@ -54,6 +59,8 @@ private:
     const std::string path_;
     std::map<std::string, std::string> plan_, launch_, user_;
     json decisions_ = nullptr;
+    bool auto_plan_set_ = false;
+    bool auto_plan_ = false;
 };
 
 } // namespace bmoe::server

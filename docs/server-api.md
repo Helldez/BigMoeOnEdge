@@ -53,8 +53,12 @@ on for the loaded session: with it off the engine is plain llama.cpp on mmap, an
 ### `POST /api/session/load`
 
 Opens a session with the current config (unloading any loaded one first). Body: optional
-`{"model": "<path>"}`, which sets the `model` parameter first. Returns `202` immediately; progress
-arrives as `state` events. `400` if the config does not validate (body carries the error).
+`{"model": "<path>"}`, which sets the `model` parameter first. Returns `202` once the load is under
+way; progress arrives as `state` events. `400` if the config does not validate (body carries the
+error). With `auto_plan` on, the previous session is unloaded, the machine is measured and the plan
+applied before the load starts, which adds the planner's probes (about 15 s) to the request. When
+streaming ends up off (a dense model, or a plan that declines), every setting that only means
+something on a stream (overlap, prefetchers, row streaming) is turned off with it.
 
 ### `POST /api/session/unload`
 
@@ -99,7 +103,9 @@ Optional fields: `short`, `switches` (`[{flag, value, deprecated?}]`), `choices`
 
 `values` holds every parameter. `args` is the equivalent `bmoe-cli` command line (for "copy as
 command"). `reload_required` is true when a session-scoped value differs from the loaded
-session's. `plan` is the last applied plan's decisions (see below), or `null`.
+session's. `plan` is the last applied plan's decisions (see below), or `null`. `auto_plan` is
+whether every load plans first: on by default in a build with the planner, always false without
+one; `PUT /api/config` with `{"auto_plan": false}` turns it off, and the choice is saved.
 
 ### `PUT /api/config`
 
@@ -213,6 +219,8 @@ without loading the model; `409` while a generation runs, since that would skew 
 `operator`: the planner never touches them. `values` are the parameters the plan changes, read
 through the parameter table; `not_applicable` names anything the plan decided that the table
 cannot hold (a tensor-placement pattern, say), so it is shown rather than silently dropped.
+A plan computed while a model is loaded carries a `warning`: that model's memory reads as taken,
+so the plan is sized for a smaller machine. Auto mode avoids this by planning with nothing loaded.
 
 ### `POST /api/plan/apply`
 
