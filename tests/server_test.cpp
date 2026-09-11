@@ -112,6 +112,11 @@ static void settings_tests() {
     check(again.load().empty(), "saved settings reload without warnings");
     const RunConfig c = again.config();
     check(c.moe.cache_auto && c.sampling.temp == 0.7f && c.moe.overlap, "user layer persists with its types");
+    check(again.auto_plan(true) && !again.auto_plan(false), "auto_plan follows the fallback until it is set");
+    again.set_auto_plan(false);
+    SettingsStore third(defaults, path.u8string());
+    third.load();
+    check(!third.auto_plan(true), "auto_plan, once turned off, stays off across a restart");
 
     std::filesystem::remove(path, ec);
 }

@@ -26,6 +26,10 @@ std::vector<std::string> SettingsStore::load() {
     }
     const json values = doc.value("values", json::object());
     std::lock_guard<std::mutex> lk(m_);
+    if (doc.contains("auto_plan") && doc["auto_plan"].is_boolean()) {
+        auto_plan_set_ = true;
+        auto_plan_ = doc["auto_plan"].get<bool>();
+    }
     for (auto it = values.begin(); it != values.end(); ++it) {
         const ParamDesc * d = find_param(it.key());
         std::string s, err;
@@ -106,6 +110,18 @@ std::vector<std::string> SettingsStore::operator_keys() const {
     return {keys.begin(), keys.end()};
 }
 
+bool SettingsStore::auto_plan(bool fallback) const {
+    std::lock_guard<std::mutex> lk(m_);
+    return auto_plan_set_ ? auto_plan_ : fallback;
+}
+
+void SettingsStore::set_auto_plan(bool on) {
+    std::lock_guard<std::mutex> lk(m_);
+    auto_plan_set_ = true;
+    auto_plan_ = on;
+    save_locked();
+}
+
 json SettingsStore::plan_decisions() const {
     std::lock_guard<std::mutex> lk(m_);
     return decisions_;
@@ -115,7 +131,8 @@ void SettingsStore::save_locked() const {
     json values = json::object();
     for (const auto & kv : user_)
         if (const ParamDesc * d = find_param(kv.first)) values[kv.first] = param_string_to_value(*d, kv.second);
-    const json doc = {{"version", 1}, {"values", values}};
+    json doc = {{"version", 1}, {"values", values}};
+    if (auto_plan_set_) doc["auto_plan"] = auto_plan_;
 
     // Write-then-rename, so a crash mid-write leaves the previous file rather than half of one.
     std::error_code ec;

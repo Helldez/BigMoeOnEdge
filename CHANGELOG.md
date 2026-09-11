@@ -27,7 +27,10 @@ Semantic Versioning.
   - Models: the ggufs in the models folder (a split set listed once), a curated catalog kept as
     data in `catalog/models.json`, and resumable downloads through the system `curl`.
   - `/api/plan` offers the hardware planner's plan, with the fact behind each decision, when the
-    engine carries the planner; values set by hand are never overridden.
+    engine carries the planner; values set by hand are never overridden. With the planner built
+    in, every load plans first by default (auto mode), with the previous model unloaded so the
+    probes measure the machine rather than the model already in it; a plan measured with a model
+    loaded says so.
   - Release builds attach a `bmoe-desktop-<tag>-<target>` archive: the server with the UI and the
     catalog beside it. On Windows a double click starts it and opens the browser.
 - **One parameter table for every engine tunable** (`bmoe/params.h`). Each `RunConfig` knob is one
