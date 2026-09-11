@@ -633,7 +633,10 @@ int main(int argc, char ** argv) {
     register_guards(svr, o);
     register_routes(svr, app);
     if (!ui_dir.empty()) {
-        svr.set_mount_point("/", ui_dir);
+        // no-cache means "revalidate", not "never store": the browser keeps the files and asks with
+        // the ETag each time, so a rebuilt UI is picked up on the next load instead of whenever the
+        // browser's heuristic decides the old index.html has aged out.
+        svr.set_mount_point("/", ui_dir, httplib::Headers{{"Cache-Control", "no-cache"}});
     } else {
         svr.Get("/", [](const httplib::Request &, httplib::Response & res) {
             res.set_content("<!doctype html><title>bmoe-server</title><p>The web UI is not built. Run "
