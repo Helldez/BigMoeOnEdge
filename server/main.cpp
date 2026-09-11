@@ -241,6 +241,10 @@ struct App {
     // machine, and a second run could plan differently.
     std::mutex plan_m;
     PlanOutcome last_plan;
+    // The plan the loaded model runs with, made on a quiet machine by the last auto load. Kept apart
+    // from last_plan: a plan measured by hand with that model resident is a different, pessimistic
+    // measurement and must not replace it.
+    PlanOutcome load_plan;
 
     App(Options o, std::string settings_path, std::string models_dir, std::string catalog)
         : opt(std::move(o)), store(server_defaults(), std::move(settings_path)), host(bus),
@@ -283,6 +287,7 @@ struct App {
             if (p.ok) {
                 store.apply_plan(p.values, p.decisions);
                 std::lock_guard<std::mutex> lk(plan_m);
+                load_plan = p;
                 last_plan = std::move(p);
             }
             publish_config();
@@ -520,10 +525,24 @@ void register_routes(httplib::Server & svr, App & app) {
         send_json(res, json{{"ok", cancelled}}, cancelled ? 200 : 404);
     });
 
-    svr.Get("/api/plan", [&](const httplib::Request &, httplib::Response & res) {
+    svr.Get("/api/plan", [&](const httplib::Request & req, httplib::Response & res) {
         if (!planner_available())
             return send_json(res, json{{"available", false},
                                        {"reason", "this build does not include the automatic hardware planner"}});
+        // With a model loaded, the answer is the plan it runs with: measuring again now would count
+        // that model's memory as taken. `?measure=1` asks for a fresh measurement anyway.
+        if (!req.has_param("measure") && app.host.loaded_or_loading()) {
+            PlanOutcome lp;
+            {
+                std::lock_guard<std::mutex> lk(app.plan_m);
+                lp = app.load_plan;
+            }
+            if (lp.ok && lp.body.value("model", "") == app.store.config().model_path) {
+                json body = lp.body;
+                body["from_last_load"] = true;
+                return send_json(res, body);
+            }
+        }
         if (app.host.generating())
             return send_error(res, 409, "busy: a plan measures the machine, and a running generation would skew it");
         PlanOutcome p = make_plan(app.store.config(), app.store.operator_keys());

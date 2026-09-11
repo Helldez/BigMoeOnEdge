@@ -67,7 +67,8 @@ export const api = {
   models: () => request<ModelsResponse>('GET', 'api/models'),
   download: (id: string) => request<unknown>('POST', 'api/models/download', { id }),
   cancelDownload: (id: string) => request<unknown>('DELETE', `api/models/download/${encodeURIComponent(id)}`),
-  plan: () => request<Plan>('GET', 'api/plan'),
+  /** The plan in force; `measure` runs the planner's probes again instead. */
+  plan: (measure = false) => request<Plan>('GET', measure ? 'api/plan?measure=1' : 'api/plan'),
   applyPlan: () => request<Config>('POST', 'api/plan/apply'),
 };
 
