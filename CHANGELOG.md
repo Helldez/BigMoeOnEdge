@@ -4,6 +4,47 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.24.1] - 2026-09-16
+
+### Added
+
+- **Serve the engine to agent tooling (`scripts/bmoe-serve.py`,
+  [docs/serve.md](docs/serve.md)).** The engine has no HTTP server — it serves prompts over the
+  `--session` stdin protocol — so a stdlib-only Python bridge now wraps that protocol in an
+  OpenAI-compatible endpoint (`/v1/chat/completions`, streaming and not, plus `/v1/models`),
+  keeping the model loaded and the expert cache warm between requests. opencode (or anything
+  speaking `/v1/chat/completions`) can use the engine as its local model; reasoning arrives
+  separately in `reasoning_content`, and every response carries the same perf block the CSV sink
+  records. Requests are serialised: one engine session, one generation at a time. The bridge is
+  the single entry point — it resolves engine and model itself (`--engine`/`--model`, else
+  `$BMOE_ENGINE`/`$BMOE_MODEL`, else the host build or a bundle's `bmoe-cli` beside it), clamps
+  client `max_tokens` to its `--max-tokens` ceiling so an oversized budget cannot sit in the
+  context window for tens of minutes, and retries once with a halved budget when a request
+  overflows `n_ctx`. Also `scripts/build-arm64.sh`: a cross-built, self-contained ARM64
+  GNU/Linux bundle (`bmoe-arm64/`, RUNPATH `$ORIGIN/lib`, baseline `armv8.2-a+dotprod+fp16`)
+  that stages the bridge alongside the CLI, so the server runs standalone on an SBC or ARM box.
+
+### Fixed
+
+- **The engine self-reported 0.23.0 after the 0.24.0 cut.** `project(VERSION)` in the top-level
+  `CMakeLists.txt` is the single source of `BMOE_VERSION` and is supposed to move with the app
+  version in the release PR (the rule after the same bug bit the 0.20.0 release); the 0.24.0
+  release PR missed it, so `--version` and the `engine=` preamble of every 0.24.0 metrics file
+  named an engine that no release cut. `project(VERSION)` moves with this release instead, and
+  the versions ship in step from here on. A stray `</content>` line at the end of this file
+  (leaked fence from the 0.24.0 changelog commit) is removed in the same pass. App version
+  0.24.1 (versionCode 40).
+
+### Documented
+
+- [docs/serve.md](docs/serve.md) now records the two lessons from serving a real agent on a
+  small host: the memory-budget rule for `--ubatch`, and that prefill is the wall on modest
+  CPUs (~20 tok/s measured on a 2015 dual-core laptop — threads, batch width and governor all
+  inside noise, while `--n-expert-used` trades answer quality for speed). The client-side
+  recipe that actually helps lives there too: set the model's real `limit` so the client
+  compacts before overflowing, prefer a minimal agent prompt with fewer enabled tools, and
+  keep conversations short.
+
 ## [0.24.0] - 2026-09-07
 
 ### Added
@@ -1628,4 +1669,3 @@ to produce a confident wrong number rather than an error.
   packaged as a debug APK built and published as a CI artifact.
 - Documentation: architecture, the seam, MoE streaming, adding a model, telemetry,
   benchmark method, limitations, roadmap.
-</content>

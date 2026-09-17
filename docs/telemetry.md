@@ -482,7 +482,9 @@ support, are archived in
 ## Session mode
 
 With `--session`, `bmoe-cli` keeps the model loaded and the expert cache warm across prompts
-instead of exiting after one generation (see [session.md](session.md)). Requests arrive as one
+instead of exiting after one generation (see [session.md](session.md)). For an OpenAI-compatible
+HTTP view of this protocol — agent tooling talks to the engine without speaking `BMOE_*` — see
+[serve.md](serve.md). Requests arrive as one
 JSON object per line on **stdin**; responses interleave control lines with the same per-token
 lines above on **stdout**. The control lines are also `BMOE_<TAG> {json}`, so a per-token parser
 extends to them naturally.

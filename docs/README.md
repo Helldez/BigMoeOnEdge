@@ -20,6 +20,7 @@ for the idea the project is built on.
 | [adding-a-model.md](adding-a-model.md) | How to support a new MoE architecture (a recipe row plus a gate). |
 | [telemetry.md](telemetry.md) | The `BMOE_*` line protocol and CSV schema — the integration contract. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
+| [serve.md](serve.md) | Serving the engine to agent tooling: the OpenAI-compatible bridge, host memory budget, ARM64 Linux bundles. |
 | [cache-sizing.md](cache-sizing.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
 | [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output (with the lossy knobs off). |
 | [expert-dropping.md](expert-dropping.md) | `--drop-cold-experts F`: spending quality only where it buys a flash read, and why a cache-dependent setting's output is not reproducible. |
