@@ -166,6 +166,26 @@ returns. This is how `ggml_backend_sched` implements the eval-callback today
   loudly if the ordering ever changes;
 - CI runs the gates on every submodule bump.
 
+## Per-graph placement (`--prefill-device`)
+
+The prefill device ([npu-prefill.md](npu-prefill.md)) adds no llama.cpp change, but it leans on four
+more behaviours of the public surface, all covered by gates G16 and G17:
+
+- **The scheduler assigns a backend per graph, from the weight's buffer.** `ggml_backend_sched` looks
+  at each weight's `tensor->buffer` every time it splits a graph, so rebinding `buffer`, `data` and
+  `extra` (and, for a weight carried to the device in another type, `type` and `nb`) between graphs
+  moves the weight's ops. The rebind happens only between `llama_decode` calls.
+- **Graph reuse skips that decision.** A graph shaped like the previous one is reused without being
+  re-scheduled, so device graphs and CPU graphs are kept to different widths (`--prefill-min-tokens`).
+  A llama.cpp change that reused graphs across shapes would break this; G16 would show it.
+- **`ggml_backend_tensor_set` is where a backend lays weights out its own way.** The arena writes each
+  expert through a per-expert view, and writes each slot tensor once whole at load so the backend
+  records its layout for the tensor the op actually reads.
+- **Two context knobs.** `n_outputs_max` bounds the logit rows the context reserves, and toggling
+  `llama_set_causal_attn` off and on makes the next decode redo the compute-buffer reservation, which
+  the engine uses once, with the weights on the device, so the CPU does not keep a reservation for a
+  graph it never runs.
+
 ## Upgrading llama.cpp
 
 Because the submodule pins the `bmoe/expert-ready-hook` fork branch (section 3), a bump

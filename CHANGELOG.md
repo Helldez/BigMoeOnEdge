@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.25.0] - unreleased
+
+### Added
+- **`--prefill-device`: prefill on the NPU, decode on the CPU, on a model larger than RAM.**
+  Measured on a 12 GB phone with a Hexagon v81 NPU, Qwen3.6-35B-A3B Q4_0 streamed: a 1418-token
+  prompt prefills in **8.2 s instead of 63.8 s (172 against 22.2 tok/s, 7.8x)**, a 1921-token one in
+  11.2 s instead of 106.5 s. Short prompts do not gain (121 tokens: 9.5 against 9.95 s), because
+  the device path reads the whole expert set once per graph and a short prompt is all read.
+
+  Wide prefill graphs run on the device and decode stays on the CPU, exactly as without the flag.
+  The weights are moved per graph, not per model: the scheduler runs each op where its weight
+  lives and re-decides that for every graph, so rebinding a weight's buffer between graphs moves
+  its ops, with no llama.cpp change. Device graphs and CPU graphs are kept to different widths so
+  llama.cpp never reuses one for the other.
+
+  With `--moe-stream` the device never holds the model: two layer-sized slots, filled from flash
+  by loader threads while the device computes the other one (about 900 MB for the model above).
+  The model state moves into the device's host buffer, so decode and prefill share one KV cache.
+  A weight type the device's matmul refuses is carried to it in the nearest one it takes, converted
+  once at load. The compute-buffer reservation is redone with the weights on the device and the
+  logit rows capped, which kept the CPU's buffer at 154 MB instead of 2.2 GB and decode at 3.25
+  tok/s (3.41 without the flag).
+
+  Off by default; the app has it as **Prefill on the NPU** under Experimental. Needs a model whose
+  expert tensors the NPU takes (Q4_0, Q4_1, Q8_0, IQ4_NL, MXFP4) and the Hexagon backend in the
+  build (`scripts/build-hexagon-android.sh`). The NPU computes in fp16, so the output is not
+  identical to the CPU's. Gates G16 and G17 prove the placement against a loopback device on the
+  host, bit for bit. See [docs/npu-prefill.md](docs/npu-prefill.md).
+- **Telemetry:** `prefill_dev_tokens`, `prefill_dev_nodes`, `prefill_dev_read_mib` and
+  `prefill_dev_stall_s` in `BMOE_DONE` and the CSV trailer.
+
 ## [0.24.0] - 2026-09-07
 
 ### Added

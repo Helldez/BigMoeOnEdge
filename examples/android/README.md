@@ -19,6 +19,18 @@ research harness and keeps the app a thin driver over the CLI.
    This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-cli.so` and the
    `libllama`/`libggml` shared libraries.
 
+   For **Prefill on the NPU** the engine needs the Hexagon backend, which builds inside upstream's
+   Snapdragon toolchain container instead (it carries the Hexagon SDK), then stages the same way:
+
+   ```bash
+   docker run --rm -v <repo>:/workspace ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
+       bash /workspace/scripts/build-hexagon-android.sh
+   powershell -File ../../scripts/stage-hexagon-jnilibs.ps1
+   ```
+
+   An APK without it runs as before with the switch off; with it on, the engine refuses to start and
+   names the device it could not find.
+
 2. Build and install the APK. Open this folder in Android Studio, or use the committed
    Gradle wrapper directly. The app has two distribution flavors (see below); build the one
    you want:
@@ -167,6 +179,10 @@ Two worth knowing before you turn them on:
 - **"Decide the experts early"** (`--route-ahead`) commits each layer's routing before that layer
   runs, so the reads can never be wasted. It changes the reply, and it is refused alongside guessing
   ahead. See `../../docs/route-ahead.md`.
+- **"Prefill on the NPU"** (`--prefill-device HTP0`) runs the prompt on the Hexagon NPU and keeps
+  decode on the CPU. It needs a Q4_0 model (the NPU kernels take no K-quant), an APK built with the
+  Hexagon backend (see Build), and it widens the prompt batch to 2048 tokens, because each batch
+  reads the experts from flash once. Short prompts do not gain. See `../../docs/npu-prefill.md`.
 - **"Stream row-gathered tables"** (`--row-stream`) serves the token embedding table out of flash
   instead of RAM. Lossless, and which tables it applies to is read off the model's own graph, so
   on a model where none qualify it does nothing. See `../../docs/row-gathered-tables.md`.

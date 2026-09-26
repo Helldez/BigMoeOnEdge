@@ -27,7 +27,9 @@ core/
                 expert_stream_source (one reader per shard), router_hook
                 dense_weights — non-expert weight policy + the residency sensor
                 row_stream - row-gathered tables served from flash (see row-gathered-tables.md)
+                device_arena - two layer slots on a prefill device, filled from flash (npu-prefill.md)
     engine/     session — composition + the generation loop (open/generate/close)
+                prefill_device - moves layer weights and model state onto a device per graph
                 runtime — the one-shot run() wrapper over a Session
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 thinking_control — how "thinking off" is honoured, probed per model
