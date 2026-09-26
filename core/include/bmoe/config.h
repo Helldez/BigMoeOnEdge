@@ -375,6 +375,12 @@ struct PrefillDeviceConfig {
 
     static constexpr int min_tokens_floor = 2; // decode is one token wide; this keeps the shapes apart
 
+    // Logit rows a graph may produce, with the device on. llama.cpp reserves compute memory for as many
+    // as the ubatch is wide, and a row is the whole vocabulary: 2048 rows of a 248k-token vocabulary
+    // were 2 GB of reservation (measured on a 35B-A3B), which starved decode into thrashing. A prompt
+    // needs one row; a perplexity pass is fed in pieces this wide instead.
+    static constexpr int max_outputs = 128;
+
     bool enabled() const { return !device.empty(); }
 };
 

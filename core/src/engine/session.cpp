@@ -566,7 +566,10 @@ PplResult Session::perplexity(const PplRequest & req) {
     } else {
         // Same placement rule as generate()'s prefill, so --ppl scores exactly the numerics a prompt
         // gets: wide pieces on the prefill device, a narrow tail on the CPU.
-        const int step = im.prefill_dev ? prefill_piece(im.cfg) : im.cfg.n_batch;
+        // Every row here wants its logits, so a piece is also capped by the output rows the context
+        // reserved (PrefillDeviceConfig::max_outputs).
+        const int step =
+            im.prefill_dev ? std::min(prefill_piece(im.cfg), PrefillDeviceConfig::max_outputs) : im.cfg.n_batch;
         Impl::PlacementGuard placement_guard{im};
         for (int i = 0; i < n; i += step) {
             const int chunk = std::min(step, n - i);
@@ -800,7 +803,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     }
     // Placement is decided here, by moving weights; a backend's own offload heuristic would move
     // ops of CPU-resident weights to the device on its own (GPU backends do for wide batches).
-    if (cfg.prefill.enabled()) cparams.op_offload = false;
+    if (cfg.prefill.enabled()) {
+        cparams.op_offload = false;
+        cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
+    }
     // Rejecting a draft means rewinding the KV to the last accepted position. With recurrent-state
     // snapshots the rewind is a cheap restore; without them llama.cpp has to fall back to replaying
     // the sequence, which would hand back exactly the decode the speculation just saved.
