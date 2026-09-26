@@ -1170,14 +1170,40 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 return fail("prefill device " + cfg.prefill.device + " dense arena: " + perr);
             if (im.arena->has_dense())
                 std::fprintf(stderr,
-                             "bmoe: prefill-device dense arena: layer weights through 2 slots, %.1f MiB"
-                             "\n",
-                             (double) im.arena->dense_slot_bytes() / (1024.0 * 1024.0));
+                             "bmoe: prefill-device dense arena: layer weights through 2 slots, %.1f MiB; %d converted "
+                             "to a type the device takes (%.1f MiB)\n",
+                             (double) im.arena->dense_slot_bytes() / (1024.0 * 1024.0), im.arena->dense_converted(),
+                             (double) im.arena->dense_converted_bytes() / (1024.0 * 1024.0));
             std::fprintf(
                 stderr, "bmoe: prefill-device expert arena: %d layers through 2 slots of %.1f MiB, %d loaders\n",
                 im.arena->n_layers(), (double) im.arena->slot_bytes() / 2.0 / (1024.0 * 1024.0), cfg.moe.io_threads);
         }
         im.hook->count_device_nodes(true);
+
+        // The context reserved its compute buffers at creation, for the widest graph with every weight
+        // on the CPU — a prefill this session will never run there. At a wide ubatch that reservation is
+        // gigabytes of RAM the expert cache does not get (measured 2.2 GB at 2048 on a 35B-A3B, while the
+        // device's own graph needed 136 MB at 1024). So reserve again, with the weights where a wide
+        // graph will actually find them: toggling a context flag is the public way to have llama.cpp
+        // redo its reservation at the next decode, and one device-placed decode is that decode. The CPU
+        // keeps only what its own graphs (decode, a short tail) need, grown on demand from there.
+        {
+            llama_set_causal_attn(ctx, false);
+            llama_set_causal_attn(ctx, true);
+            const int n = cfg.prefill.min_tokens;
+            llama_token tok = llama_vocab_bos(im.vocab);
+            if (tok < 0) tok = 0;
+            std::vector<llama_token> toks((size_t) n, tok);
+            llama_batch b = llama_batch_init(n, 0, 1);
+            batch_fill(b, toks.data(), n, /*pos0*/ 0, /*all_logits*/ false);
+            im.place_prefill(true);
+            const int rc = im.decode_placed(ctx, b);
+            im.place_prefill(false);
+            llama_batch_free(b);
+            im.clear_memory(ctx);
+            if (rc != 0)
+                return fail("prefill device " + cfg.prefill.device + ": the device-placed reservation decode failed");
+        }
         std::fprintf(stderr,
                      "bmoe: prefill-device %s: %zu layer tensors, %.1f MiB copied; graphs >= %d tokens run there\n",
                      cfg.prefill.device.c_str(), im.prefill_dev->n_tensors(),

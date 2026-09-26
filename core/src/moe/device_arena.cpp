@@ -13,7 +13,65 @@ namespace bmoe {
 
 namespace {
 constexpr size_t kAlign = 4096; // O_DIRECT alignment, as the streamer uses
+
+// Whether the device runs a matmul whose weight is `type`, shaped like `w`, from its own buffer. Asked
+// of the device itself rather than read off a list, so any backend answers for its own kernels. The
+// probe weight is allocated: a backend may remember an unallocated weight (Hexagon notes it for
+// repacking) and that note would outlive the probe.
+bool device_matmul_takes(ggml_backend_dev_t dev, ggml_type type, const ggml_tensor * w) {
+    if (ggml_is_quantized(type) && w->ne[0] % ggml_blck_size(type) != 0) return false;
+    ggml_init_params ip{};
+    ip.mem_size = ggml_tensor_overhead() * 4;
+    ip.no_alloc = true;
+    ggml_context * c = ggml_init(ip);
+    if (!c) return false;
+    ggml_tensor * p = ggml_new_tensor_2d(c, type, w->ne[0], std::min<int64_t>(w->ne[1], 256));
+    ggml_backend_buffer_t b = ggml_backend_alloc_ctx_tensors_from_buft(c, ggml_backend_dev_buffer_type(dev));
+    bool ok = false;
+    if (b) {
+        ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        ggml_tensor * x = ggml_new_tensor_2d(c, GGML_TYPE_F32, w->ne[0], 256);
+        ok = ggml_backend_dev_supports_op(dev, ggml_mul_mat(c, p, x));
+        ggml_backend_buffer_free(b);
+    }
+    ggml_free(c);
+    return ok;
 }
+
+// The type a 2-D weight should have on the device: its own if the device takes it, else the closest
+// one it takes — Q8_0 for a quantised weight (every 4-6 bit grid re-quantises onto it with an error
+// well under one of its own steps), F16 then F32 for a float one. Its own type when nothing fits, so
+// the op stays on the CPU as it would have.
+ggml_type device_type_for(ggml_backend_dev_t dev, const ggml_tensor * w) {
+    if (ggml_n_dims(w) != 2 || device_matmul_takes(dev, w->type, w)) return w->type;
+    if (ggml_is_quantized(w->type)) {
+        if (device_matmul_takes(dev, GGML_TYPE_Q8_0, w)) return GGML_TYPE_Q8_0;
+    } else {
+        if (device_matmul_takes(dev, GGML_TYPE_F16, w)) return GGML_TYPE_F16;
+        if (device_matmul_takes(dev, GGML_TYPE_F32, w)) return GGML_TYPE_F32;
+    }
+    return w->type;
+}
+
+// `w`'s bytes re-encoded as `type`, a row at a time through f32.
+std::vector<uint8_t> convert_weight(const ggml_tensor * w, ggml_type type) {
+    const int64_t n_per_row = w->ne[0];
+    const int64_t nrows = ggml_nrows(w);
+    std::vector<uint8_t> out(ggml_row_size(type, n_per_row) * (size_t) nrows);
+    std::vector<float> row((size_t) n_per_row);
+    const ggml_type_traits * from = ggml_get_type_traits(w->type);
+    for (int64_t r = 0; r < nrows; ++r) {
+        const char * src = (const char *) w->data + (size_t) r * w->nb[1];
+        if (w->type == GGML_TYPE_F32)
+            std::memcpy(row.data(), src, (size_t) n_per_row * sizeof(float));
+        else
+            from->to_float(src, row.data(), n_per_row);
+        ggml_quantize_chunk(type, row.data(), out.data() + (size_t) r * ggml_row_size(type, n_per_row), 0, 1, n_per_row,
+                            nullptr);
+    }
+    return out;
+}
+} // namespace
 
 DeviceExpertArena::~DeviceExpertArena() {
     place(false);
@@ -27,7 +85,8 @@ DeviceExpertArena::~DeviceExpertArena() {
         if (t.joinable()) t.join();
     for (void * s : staging_)
         if (s) pio::aligned_free(s);
-    if (buf_) ggml_backend_buffer_free(buf_);
+    for (ggml_backend_buffer_t b : slot_buf_)
+        if (b) ggml_backend_buffer_free(b);
     if (ctx_) ggml_free(ctx_);
     for (ggml_backend_buffer_t b : dense_buf_)
         if (b) ggml_backend_buffer_free(b);
@@ -45,8 +104,8 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
         return false;
     }
 
-    // The bound layers, in graph order, and the shape every one of them must share.
-    const ggml_tensor * shape[MoeRecipe::max_exps] = {};
+    // The bound layers, in graph order, and the distinct (type, shape) variants of each projection.
+    std::vector<const ggml_tensor *> variants[MoeRecipe::max_exps];
     k_of_layer_.assign(layers.size(), -1);
     uint64_t max_nb2 = 0;
     for (size_t il = 0; il < layers.size(); ++il) {
@@ -58,13 +117,17 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             ggml_tensor * t = L.proj[p].tensor;
             if (!t) break; // recipes fill their slots from the front
-            if (!shape[p]) {
-                shape[p] = t;
-            } else if (t->type != shape[p]->type || !ggml_are_same_shape(t, shape[p])) {
-                err = std::string("expert tensor ") + t->name + " differs in shape or type from " + shape[p]->name +
-                      "; the device slots need every MoE layer alike";
+            if (n_expert_ == 0) n_expert_ = (int) t->ne[2];
+            if (t->ne[2] != n_expert_) {
+                err = std::string("expert tensor ") + t->name + " has a different expert count";
                 return false;
             }
+            int v = 0;
+            while (v < (int) variants[p].size() &&
+                   (variants[p][(size_t) v]->type != t->type || !ggml_are_same_shape(variants[p][(size_t) v], t)))
+                ++v;
+            if (v == (int) variants[p].size()) variants[p].push_back(t);
+            a.variant[p] = v;
             a.t[p] = t;
             a.proj[p].file_off = L.proj[p].file_off;
             a.proj[p].nb2 = (uint64_t) t->nb[2];
@@ -88,59 +151,83 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
         err = "no MoE layer to stream";
         return false;
     }
-    n_expert_ = (int) shape[0]->ne[2];
 
-    // Two slots, plus a view per expert into each: the loaders write experts one at a time through
-    // the views, so a slot fills in parallel and never needs a layer-sized staging buffer.
-    const size_t n_tensors = 2 * (size_t) n_proj_ * (1 + (size_t) n_expert_);
+    // Each projection gets a region of the slot sized for its largest variant; every variant's slot
+    // tensor sits at the start of that region. A backend that pads rows for its own layout (Hexagon
+    // rounds both matrix dims up to 32) would put expert e somewhere other than e * nb2, where the
+    // views write it, so a padded variant is refused.
+    ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
+    const size_t align = ggml_backend_buft_get_alignment(buft);
+    size_t region_off[MoeRecipe::max_exps] = {};
+    size_t slot_size = 0;
+    size_t n_tensors = 0;
+    for (int p = 0; p < n_proj_; ++p) {
+        size_t biggest = 0;
+        for (const ggml_tensor * v : variants[p]) {
+            if (ggml_backend_buft_get_alloc_size(buft, v) != ggml_nbytes(v)) {
+                err = std::string("the device pads expert matrices of ") + v->name +
+                      "; per-expert upload needs them unpadded";
+                return false;
+            }
+            biggest = std::max(biggest, ggml_nbytes(v));
+            n_tensors += 1 + (size_t) n_expert_;
+        }
+        region_off[p] = slot_size;
+        slot_size += GGML_PAD(biggest, align);
+    }
+    slot_bytes_ = 2 * slot_size;
+
     ggml_init_params ip{};
-    ip.mem_size = ggml_tensor_overhead() * (n_tensors + 8);
+    ip.mem_size = ggml_tensor_overhead() * (2 * n_tensors + 8);
     ip.no_alloc = true;
     ctx_ = ggml_init(ip);
     if (!ctx_) {
         err = "ggml_init failed";
         return false;
     }
-    ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
+    size_t zmax = 0;
     for (int s = 0; s < 2; ++s) {
+        slot_buf_[s] = ggml_backend_buft_alloc_buffer(buft, slot_size + align);
+        if (!slot_buf_[s]) {
+            err = std::string("cannot allocate two expert slots on ") + ggml_backend_dev_name(dev);
+            return false;
+        }
+        ggml_backend_buffer_set_usage(slot_buf_[s], GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        char * base = (char *) ggml_backend_buffer_get_base(slot_buf_[s]);
+        base += (align - ((uintptr_t) base % align)) % align;
         for (int p = 0; p < n_proj_; ++p) {
-            ggml_tensor * t = ggml_dup_tensor(ctx_, shape[p]);
-            ggml_format_name(t, "arena.s%d.p%d", s, p);
-            // A backend that pads rows for its own layout (Hexagon rounds both matrix dims up to 32)
-            // would put expert e somewhere other than e * nb2, where the views write it.
-            if (ggml_backend_buft_get_alloc_size(buft, t) != ggml_nbytes(t)) {
-                err = std::string("the device pads expert matrices of ") + shape[p]->name +
-                      "; per-expert upload needs them unpadded";
-                return false;
+            for (size_t v = 0; v < variants[p].size(); ++v) {
+                Twin w;
+                w.t = ggml_dup_tensor(ctx_, variants[p][v]);
+                ggml_format_name(w.t, "arena.s%d.p%d.v%d", s, p, (int) v);
+                if (ggml_backend_tensor_alloc(slot_buf_[s], w.t, base + region_off[p]) != GGML_STATUS_SUCCESS) {
+                    err = std::string("cannot place an expert slot tensor for ") + variants[p][v]->name;
+                    return false;
+                }
+                for (int e = 0; e < n_expert_; ++e) {
+                    ggml_tensor * view = ggml_view_3d(ctx_, w.t, w.t->ne[0], w.t->ne[1], 1, w.t->nb[1], w.t->nb[2],
+                                                      (size_t) e * w.t->nb[2]);
+                    if (ggml_backend_view_init(view) != GGML_STATUS_SUCCESS) {
+                        err = "cannot initialise an expert view";
+                        return false;
+                    }
+                    w.views.push_back(view);
+                }
+                zmax = std::max(zmax, ggml_nbytes(w.t));
+                twins_[s][p].push_back(std::move(w));
             }
-            slot_[s][p] = t;
-            views_[s][p].resize((size_t) n_expert_);
-            for (int e = 0; e < n_expert_; ++e) {
-                ggml_tensor * v =
-                    ggml_view_3d(ctx_, t, t->ne[0], t->ne[1], 1, t->nb[1], t->nb[2], (size_t) e * t->nb[2]);
-                views_[s][p][(size_t) e] = v;
-            }
-            slot_bytes_ += ggml_nbytes(t);
         }
     }
-    buf_ = ggml_backend_alloc_ctx_tensors_from_buft(ctx_, buft);
-    if (!buf_) {
-        err = std::string("cannot allocate two expert slots on ") + ggml_backend_dev_name(dev);
-        return false;
-    }
-    ggml_backend_buffer_set_usage(buf_, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
 
     // One whole-tensor write per slot tensor, before any view write. A backend records how a tensor
     // is laid out when it is written (Hexagon flags it repacked), and the op reads the slot tensor,
-    // not the views the loaders write through — so the slot itself must have been written once.
+    // not the views the loaders write through — so each slot tensor must have been written once.
     {
-        size_t zmax = 0;
-        for (int p = 0; p < n_proj_; ++p)
-            zmax = std::max(zmax, ggml_nbytes(slot_[0][p]));
         std::vector<uint8_t> zeros(zmax, 0);
         for (int s = 0; s < 2; ++s)
             for (int p = 0; p < n_proj_; ++p)
-                ggml_backend_tensor_set(slot_[s][p], zeros.data(), 0, ggml_nbytes(slot_[s][p]));
+                for (Twin & w : twins_[s][p])
+                    ggml_backend_tensor_set(w.t, zeros.data(), 0, ggml_nbytes(w.t));
     }
 
     for (const std::string & sp : shard_paths) {
@@ -184,12 +271,25 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
     const size_t align = ggml_backend_buft_get_alignment(buft);
     // Each slot must hold the largest layer of its parity: layers differ (a hybrid model alternates
     // attention and recurrent blocks), and each layer is laid out from the start of its slot.
+    // Sized for each weight as the device will hold it, which is not always the file's type.
     size_t need[2] = {0, 0};
-    for (size_t il = 0; il < per_layer.size(); ++il) {
-        size_t sz = 0;
-        for (ggml_tensor * t : per_layer[il])
-            sz += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), align);
-        need[il % 2] = std::max(need[il % 2], sz);
+    std::vector<std::vector<ggml_type>> dtype(per_layer.size());
+    {
+        ggml_init_params sp{};
+        sp.mem_size = ggml_tensor_overhead() * 2;
+        sp.no_alloc = true;
+        for (size_t il = 0; il < per_layer.size(); ++il) {
+            size_t sz = 0;
+            for (ggml_tensor * t : per_layer[il]) {
+                const ggml_type dt = device_type_for(dev, t);
+                dtype[il].push_back(dt);
+                ggml_context * c = ggml_init(sp);
+                ggml_tensor * shaped = ggml_new_tensor(c, dt, GGML_MAX_DIMS, t->ne);
+                sz += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, shaped), align);
+                ggml_free(c);
+            }
+            need[il % 2] = std::max(need[il % 2], sz);
+        }
     }
     for (int s = 0; s < 2; ++s) {
         if (need[s] == 0) continue;
@@ -216,8 +316,10 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
         // A fresh allocator per layer: every layer of a parity starts at the same offset, on purpose.
         ggml_tallocr ta = ggml_tallocr_new(dense_buf_[il % 2]);
         DenseLayer & D = dense_[il];
-        for (ggml_tensor * t : per_layer[il]) {
-            ggml_tensor * w = ggml_dup_tensor(dense_ctx_, t);
+        for (size_t j = 0; j < per_layer[il].size(); ++j) {
+            ggml_tensor * t = per_layer[il][j];
+            const ggml_type dt = dtype[il][j];
+            ggml_tensor * w = ggml_new_tensor(dense_ctx_, dt, GGML_MAX_DIMS, t->ne);
             ggml_set_name(w, t->name);
             if (ggml_tallocr_alloc(&ta, w) != GGML_STATUS_SUCCESS) {
                 err = std::string("cannot place ") + t->name + " in its dense slot";
@@ -225,8 +327,18 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
             }
             D.t.push_back(t);
             D.twin.push_back(w);
-            D.src.push_back(t->data);
+            if (dt != t->type) {
+                D.converted.push_back(convert_weight(t, dt));
+                D.src.push_back(D.converted.back().data());
+                ++dense_converted_;
+                dense_converted_bytes_ += D.converted.back().size();
+            } else {
+                D.converted.emplace_back();
+                D.src.push_back(t->data);
+            }
         }
+        D.host_type.assign(D.t.size(), GGML_TYPE_F32);
+        D.host_nb.assign(D.t.size(), {});
         D.host_buffer.assign(D.t.size(), nullptr);
         D.host_data.assign(D.t.size(), nullptr);
         D.host_extra.assign(D.t.size(), nullptr);
@@ -248,7 +360,7 @@ void DeviceExpertArena::place(bool on_device) {
                 L.host_buffer[p] = t->buffer;
                 L.host_data[p] = t->data;
                 L.host_extra[p] = t->extra;
-                const ggml_tensor * s = slot_[k % 2][p];
+                const ggml_tensor * s = twins_[k % 2][p][(size_t) L.variant[p]].t;
                 t->buffer = s->buffer;
                 t->data = s->data;
                 t->extra = s->extra;
@@ -266,13 +378,22 @@ void DeviceExpertArena::place(bool on_device) {
                 D.host_buffer[i] = t->buffer;
                 D.host_data[i] = t->data;
                 D.host_extra[i] = t->extra;
+                D.host_type[i] = t->type;
+                for (int d = 0; d < GGML_MAX_DIMS; ++d)
+                    D.host_nb[i][(size_t) d] = t->nb[d];
                 t->buffer = D.twin[i]->buffer;
                 t->data = D.twin[i]->data;
                 t->extra = D.twin[i]->extra;
+                t->type = D.twin[i]->type;
+                for (int d = 0; d < GGML_MAX_DIMS; ++d)
+                    t->nb[d] = D.twin[i]->nb[d];
             } else {
                 t->buffer = D.host_buffer[i];
                 t->data = D.host_data[i];
                 t->extra = D.host_extra[i];
+                t->type = D.host_type[i];
+                for (int d = 0; d < GGML_MAX_DIMS; ++d)
+                    t->nb[d] = D.host_nb[i][(size_t) d];
             }
         }
     }
@@ -412,7 +533,8 @@ void DeviceExpertArena::worker(int lane) {
         if (got < 0) {
             failed_ = true;
         } else {
-            ggml_backend_tensor_set(views_[task.k % 2][task.p][(size_t) task.e], stage, 0, (size_t) pr.nb2);
+            const Twin & w = twins_[task.k % 2][task.p][(size_t) L.variant[task.p]];
+            ggml_backend_tensor_set(w.views[(size_t) task.e], stage, 0, (size_t) pr.nb2);
             read_bytes_ += pr.nb2;
         }
         {

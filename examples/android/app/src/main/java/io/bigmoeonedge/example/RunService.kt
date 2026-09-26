@@ -147,7 +147,13 @@ class RunService : Service() {
             // Wait for the DSP by polling rather than by interrupt when the run uses it: the prefill
             // arena stops the graph at every layer, twice, and measured on device polling halves the
             // cost of each crossing (0.8 ms to 0.4 ms). Only then, since polling burns a core.
-            if (argv.contains("--prefill-device")) pb.environment()["GGML_HEXAGON_OPPOLL"] = "1"
+            if (argv.contains("--prefill-device")) {
+                pb.environment()["GGML_HEXAGON_OPPOLL"] = "1"
+                // The backend only exposes its host buffer type when asked. The prefill moves the
+                // KV cache there, where both the CPU and the NPU can address it; without it the
+                // cache stays in plain CPU memory and the NPU hands every attention back.
+                pb.environment()["GGML_HEXAGON_HOSTBUF"] = "1"
+            }
             pb.directory(File(model).parentFile)
 
             val p = pb.start().also { proc = it }

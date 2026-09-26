@@ -31,6 +31,7 @@
 
 #include "ggml-backend.h"
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -51,8 +52,9 @@ public:
     DeviceExpertArena & operator=(const DeviceExpertArena &) = delete;
 
     // `layers` is indexed by layer id, as the streamer receives it; unbound entries are dense layers
-    // and get no slot. Every bound layer must have the same expert tensor shapes, since they share
-    // two slots. `threads` loader threads, each with its own read lane.
+    // and get no slot. Layers may differ in an expert tensor's type (quantisers keep some ffn_down in
+    // more bits): each projection gets a region of the slot sized for its largest variant, and one
+    // slot tensor per variant at that address. `threads` loader threads, each with its own lane.
     bool init(ggml_backend_dev_t dev,
               const std::vector<std::string> & shard_paths,
               const std::vector<LayerExperts> & layers,
@@ -89,6 +91,8 @@ public:
     double stall_seconds() const { return stall_ns_.load() * 1e-9; }
     size_t slot_bytes() const { return slot_bytes_; }
     size_t dense_slot_bytes() const { return dense_slot_bytes_; }
+    int dense_converted() const { return dense_converted_; }
+    size_t dense_converted_bytes() const { return dense_converted_bytes_; }
     bool has_dense() const { return !dense_.empty(); }
     int n_layers() const { return (int) order_.size(); }
 
@@ -105,6 +109,12 @@ private:
         ggml_backend_buffer_t host_buffer[MoeRecipe::max_exps] = {};
         void * host_data[MoeRecipe::max_exps] = {};
         void * host_extra[MoeRecipe::max_exps] = {};
+        int variant[MoeRecipe::max_exps] = {}; // which slot tensor of the projection this layer uses
+    };
+    // A slot tensor for one (type, shape) variant of a projection, and a view per expert into it.
+    struct Twin {
+        ggml_tensor * t = nullptr;
+        std::vector<ggml_tensor *> views;
     };
     struct Task {
         bool dense = false;
@@ -118,6 +128,11 @@ private:
         std::vector<const void *> src;   // host bytes, taken at init: t is rebound while filling
         std::vector<ggml_backend_buffer_t> host_buffer;
         std::vector<void *> host_data, host_extra;
+        // A weight whose type the device's matmul does not take is carried in one it does (see
+        // init_dense); its converted bytes live here, and the swap changes type and strides too.
+        std::vector<std::vector<uint8_t>> converted;
+        std::vector<ggml_type> host_type;
+        std::vector<std::array<size_t, GGML_MAX_DIMS>> host_nb;
     };
 
     void worker(int lane);
@@ -130,11 +145,11 @@ private:
     int n_proj_ = 0;
 
     ggml_context * ctx_ = nullptr;
-    ggml_backend_buffer_t buf_ = nullptr;
-    ggml_tensor * slot_[2][MoeRecipe::max_exps] = {};
-    // Per-expert views into each slot: views_[s][p][e]. Built once; a repacking backend keeps
-    // per-tensor state for each, so recreating them per fill would grow without bound.
-    std::vector<ggml_tensor *> views_[2][MoeRecipe::max_exps];
+    ggml_backend_buffer_t slot_buf_[2] = {};
+    // twins_[s][p][variant]: every variant of projection p in slot s sits at the same address. Built
+    // once, views included; a repacking backend keeps per-tensor state for each, so recreating them
+    // per fill would grow without bound.
+    std::vector<Twin> twins_[2][MoeRecipe::max_exps];
     size_t slot_bytes_ = 0;
 
     std::vector<std::unique_ptr<FileReader>> readers_;
@@ -156,6 +171,8 @@ private:
     ggml_context * dense_ctx_ = nullptr;
     ggml_backend_buffer_t dense_buf_[2] = {};
     size_t dense_slot_bytes_ = 0;
+    int dense_converted_ = 0;
+    size_t dense_converted_bytes_ = 0;
     std::vector<int> dense_remaining_;
     std::vector<bool> dense_scheduled_;
     std::vector<bool> dense_waited_; // this graph: someone waited for the layer before it ran

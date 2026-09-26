@@ -36,6 +36,6 @@ cmake -S /workspace -B "$OUT" \
 # so it is only built when asked for by name.
 cmake --build "$OUT" --target bmoe-cli "htp-${HTP_ARCH}" -j "$(nproc)"
 
-cp "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$OUT/"
+cp -f "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$OUT/"
 echo "built:"
 find "$OUT" -maxdepth 4 \( -name 'bmoe-cli' -o -name 'lib*.so' \) -newer "$OUT/CMakeCache.txt" | sort
