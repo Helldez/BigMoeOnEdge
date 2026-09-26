@@ -6,6 +6,7 @@
 #include "bmoe/ngram_draft.h"
 #include "chat_parse.h"
 #include "thinking_control.h"
+#include "prefill_device.h"
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
@@ -258,6 +259,20 @@ dense_bytes_per_layer(const GgufOffsets & offs, const std::vector<LayerExperts> 
     return out;
 }
 
+// Width of one prefill piece under a prefill device: one ubatch, so a decode call is one graph.
+int prefill_piece(const SessionConfig & cfg) {
+    return cfg.n_ubatch > 0 ? std::min(cfg.n_ubatch, cfg.n_batch) : cfg.n_batch;
+}
+
+// Every exit from a prefill (errors and cancellation included) leaves the weights on the host: the
+// next graph may be a decode, and the CPU cannot read a device buffer.
+struct HostPlacementGuard {
+    detail::PrefillDevice * dev;
+    ~HostPlacementGuard() {
+        if (dev) dev->to_host();
+    }
+};
+
 } // namespace
 
 // All native state lives here, behind the pimpl. Built once by Session::open(); every
@@ -274,6 +289,11 @@ struct Session::Impl {
     std::unique_ptr<llama_context, void (*)(llama_context *)> ctx{nullptr, llama_free};
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
     ExpertStreamSource source;
+
+    // Prefill on an accelerator (SessionConfig::prefill). The device list is handed to the model
+    // loader, which keeps the pointer, so it lives here; the null entry terminates it.
+    ggml_backend_dev_t prefill_devs[2] = {nullptr, nullptr};
+    std::unique_ptr<detail::PrefillDevice> prefill_dev;
 
     // The MTP draft source (SpecConfig::source == mtp). A SECOND context over the SAME model,
     // created with ctx_type = MTP so llama.cpp builds the nextn graph instead of the trunk one. It
@@ -366,6 +386,8 @@ struct Session::Impl {
         // buffers back the rebound expert tensors), then the context (its eval callback points
         // at the hook), then the hook, then unmap the model, then release the backend.
         source.shutdown();
+        // Hands every weight back to its mapping, then frees the device copy: before the model goes.
+        prefill_dev.reset();
         if (smpl) llama_sampler_free(smpl); // independent of ctx/model; free before them
         // The speculative driver holds both contexts and detaches the backend samplers it
         // installed on the draft one, so it goes before either context is freed.
@@ -509,8 +531,13 @@ PplResult Session::perplexity(const PplRequest & req) {
             if (!score(0, pos)) return r;
         }
     } else {
-        for (int i = 0; i < n; i += im.cfg.n_batch) {
-            const int chunk = std::min(im.cfg.n_batch, n - i);
+        // Same placement rule as generate()'s prefill, so --ppl scores exactly the numerics a prompt
+        // gets: wide pieces on the prefill device, a narrow tail on the CPU.
+        const int step = im.prefill_dev ? prefill_piece(im.cfg) : im.cfg.n_batch;
+        HostPlacementGuard placement_guard{im.prefill_dev.get()};
+        for (int i = 0; i < n; i += step) {
+            const int chunk = std::min(step, n - i);
+            if (im.prefill_dev) im.prefill_dev->place(chunk >= im.cfg.prefill.min_tokens);
             batch_fill(b, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ true);
             im.hook->set_batch_phase(req.as_decode ? 1 : 0);
             if (llama_decode(ctx, b) != 0) {
@@ -622,6 +649,26 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // unaffected by this flag.
     mparams.load_mtp = cfg.spec.is_mtp();
 
+    // The prefill device joins the scheduler as the model's only non-CPU device, with no layer
+    // assigned to it: every weight still loads from the mmap, and the device runs nothing until
+    // PrefillDevice moves the layer weights onto it for a wide graph.
+    if (cfg.prefill.enabled()) {
+        ggml_backend_dev_t dev = ggml_backend_dev_by_name(cfg.prefill.device.c_str());
+        if (!dev) {
+            std::string names;
+            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                if (!names.empty()) names += ", ";
+                names += ggml_backend_dev_name(ggml_backend_dev_get(i));
+            }
+            return fail("prefill device '" + cfg.prefill.device + "' not found (this build has: " + names + ")");
+        }
+        im.prefill_devs[0] = dev;
+        mparams.devices = im.prefill_devs;
+        // With a device listed, llama.cpp would put CPU weights in the device's host buffer type,
+        // which is an allocation and a copy, not the file mapping. The mapping is load-bearing.
+        mparams.no_host = true;
+    }
+
     // Optional active-expert override: reduce the model's top-k routing (e.g. 8 -> 6) to cut
     // per-token compute and — under streaming — flash I/O, at a quality cost. Applied purely
     // through llama.cpp's public kv_overrides on the arch-prefixed expert_used_count key: the
@@ -713,10 +760,14 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
-    if (cfg.moe.enabled || compute_trace) {
+    // The prefill device needs it once, for the capture that finds the layer weights.
+    if (cfg.moe.enabled || compute_trace || cfg.prefill.enabled()) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = im.hook.get();
     }
+    // Placement is decided here, by moving weights; a backend's own offload heuristic would move
+    // ops of CPU-resident weights to the device on its own (GPU backends do for wide batches).
+    if (cfg.prefill.enabled()) cparams.op_offload = false;
     // Rejecting a draft means rewinding the KV to the last accepted position. With recurrent-state
     // snapshots the rewind is a cheap restore; without them llama.cpp has to fall back to replaying
     // the sequence, which would hand back exactly the decode the speculation just saved.
@@ -1018,6 +1069,38 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
         llama_memory_clear(llama_get_memory(ctx), true); // discard warm-up KV
         if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+    }
+
+    // Prefill device: learn the layer weights from one graph, then give them a device copy. The same
+    // capture the streamer uses; streaming is excluded by validate(), so here it only collects.
+    if (cfg.prefill.enabled()) {
+        im.hook->begin_capture();
+        llama_token warm_tok = llama_vocab_bos(im.vocab);
+        if (warm_tok < 0) warm_tok = 0;
+        llama_batch warm = llama_batch_get_one(&warm_tok, 1);
+        if (llama_decode(ctx, warm) != 0) return fail("prefill-device capture decode failed");
+        im.hook->end_capture();
+        llama_memory_clear(llama_get_memory(ctx), true);
+
+        // Layer weights only ("blk.N." is llama.cpp's naming for every architecture). The token
+        // table is a row gather and the output head computes the last position alone, so both stay
+        // with the CPU: moving them would buy nothing and cost their size in device memory. The
+        // usage test drops the graph inputs and KV views the capture records alongside.
+        std::vector<ggml_tensor *> layer_weights;
+        for (ggml_tensor * t : im.hook->captured_weight_objects()) {
+            if (std::strncmp(t->name, "blk.", 4) != 0) continue;
+            if (!t->buffer || ggml_backend_buffer_get_usage(t->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) continue;
+            layer_weights.push_back(t);
+        }
+        im.prefill_dev = std::make_unique<detail::PrefillDevice>();
+        std::string perr;
+        if (!im.prefill_dev->init(im.prefill_devs[0], layer_weights, perr))
+            return fail("prefill device " + cfg.prefill.device + ": " + perr);
+        im.hook->count_device_nodes(true);
+        std::fprintf(stderr,
+                     "bmoe: prefill-device %s: %zu layer tensors, %.1f MiB copied; graphs >= %d tokens run there\n",
+                     cfg.prefill.device.c_str(), im.prefill_dev->n_tensors(),
+                     (double) im.prefill_dev->bytes() / (1024.0 * 1024.0), cfg.prefill.min_tokens);
     }
 
     // Decode traces. Outside the streaming block on purpose: the compute trace measures the graph,
@@ -1401,8 +1484,21 @@ RunResult Session::generate(const GenerateRequest & req,
     // context it never uses.
     const bool spec_on = im.cfg.spec.enabled();
     const bool mtp_on = im.mtp != nullptr;
-    for (int i = (int) n_common; i < n_prompt; i += im.cfg.n_batch) {
-        const int chunk = std::min(im.cfg.n_batch, n_prompt - i);
+    // With a prefill device the prompt goes in one ubatch per decode, so each graph's width is one we
+    // chose and can place: wide pieces on the device, a narrow tail on the CPU. Left to llama_decode,
+    // a batch would be split into ubatches whose last one could be one token wide — the shape of the
+    // decode graph that follows, which llama.cpp would then reuse without re-scheduling it.
+    const int pf_step = im.prefill_dev ? prefill_piece(im.cfg) : im.cfg.n_batch;
+    HostPlacementGuard placement_guard{im.prefill_dev.get()};
+    int prefill_device_tokens = 0;
+    const long long device_nodes0 = im.hook->device_nodes();
+    for (int i = (int) n_common; i < n_prompt; i += pf_step) {
+        const int chunk = std::min(pf_step, n_prompt - i);
+        if (im.prefill_dev) {
+            const bool on_dev = chunk >= im.cfg.prefill.min_tokens;
+            im.prefill_dev->place(on_dev);
+            if (on_dev) prefill_device_tokens += chunk;
+        }
         llama_batch pf;
         if (mtp_on) {
             // Positions are absolute here — the prompt token at index i sits at position i, reused
@@ -1429,6 +1525,8 @@ RunResult Session::generate(const GenerateRequest & req,
         if (mtp_on && !common_speculative_process(im.mtp.get(), pf))
             return fail("MTP draft context failed to process the prefill batch");
     }
+    if (im.prefill_dev) im.prefill_dev->to_host(); // decode reads the mapping
+    const long long prefill_device_nodes = im.hook->device_nodes() - device_nodes0;
     // The suffix is now in the KV; record it so the next turn can diff against it.
     if (chat_on)
         for (int i = (int) n_common; i < n_prompt; ++i)
@@ -1770,6 +1868,8 @@ RunResult Session::generate(const GenerateRequest & req,
     s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
+    s.prefill_device_tokens = prefill_device_tokens;
+    s.prefill_device_nodes = prefill_device_nodes;
     s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
     s.prefill_read_mib = prefill_tally.read_mib;
     s.prefill_io_seconds = prefill_tally.io_seconds;

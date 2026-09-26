@@ -131,6 +131,12 @@ struct RunSummary {
     double prefill_io_seconds = 0.0;
     double prefill_stall_seconds = 0.0;
     double prefill_mgmt_seconds = 0.0;
+    // Of n_prompt, the tokens whose prefill graph ran on the prefill device (RunConfig::prefill).
+    // Zero when that is off, and for a prompt too short to reach it. What proves the device ran.
+    int prefill_device_tokens = 0;
+    // Graph nodes a device backend computed during this turn's prefill: the proof the device RAN,
+    // where prefill_device_tokens only says the weights were moved there. Zero when that is off.
+    long long prefill_device_nodes = 0;
 
     // MoE streaming totals (zero when streaming is off)
     double moe_read_mib = 0.0;

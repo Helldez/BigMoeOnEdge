@@ -339,6 +339,29 @@ int main() {
         expect_ok("the same narrow ubatch is fine without speculation", c);
     }
 
+    // Prefill device: the rebind is only safe while device graphs and CPU graphs never share a width.
+    {
+        RunConfig c = ok_base();
+        c.prefill.device = "HTP0";
+        expect_ok("a prefill device with the default min_tokens is valid", c);
+        c.prefill.min_tokens = PrefillDeviceConfig::min_tokens_floor;
+        expect_ok("min_tokens at the floor is valid", c);
+        c.prefill.min_tokens = 1;
+        expect_fail("a one-token device graph would share the decode graph's shape", c);
+        c.prefill.min_tokens = c.n_ctx + 1;
+        expect_fail("min_tokens above n_ctx could never reach the device", c);
+        c.prefill.min_tokens = 32;
+        c.moe.enabled = true;
+        expect_fail("prefill device with streaming is not wired yet", c);
+        c.moe.enabled = false;
+        c.spec.source = DraftSource::ngram;
+        expect_fail("prefill device with speculation breaks the width invariant", c);
+        c.spec.source = DraftSource::none;
+        c.prefill.device.clear();
+        c.prefill.min_tokens = 1;
+        expect_ok("min_tokens is not checked while the prefill device is off", c);
+    }
+
     if (failures == 0) {
         std::printf("all config checks passed\n");
         return 0;

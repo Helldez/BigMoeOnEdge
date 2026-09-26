@@ -54,6 +54,9 @@ struct SessionConfig {
     // open() builds the wider verify batch, and — for the MTP source only — the draft context.
     // See RunConfig::spec.
     SpecConfig spec;
+    // Wide prefill graphs on an accelerator, decode on the CPU. Fixed for the session: the device
+    // joins the scheduler at load. See RunConfig::prefill.
+    PrefillDeviceConfig prefill;
 };
 
 // The RunConfig → SessionConfig mapping, in one place. Both entry points that open a session from a

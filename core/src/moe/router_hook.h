@@ -203,6 +203,13 @@ public:
     // run, so it cannot ride on begin_trace_batch.
     void set_batch_phase(int phase) { batch_phase_ = phase; }
 
+    // Graph nodes whose output lives in a non-host buffer, i.e. that a device backend computed. The
+    // proof a prefill device ran, as opposed to merely having the weights moved onto it: a backend
+    // allocates the outputs of the ops IT runs in its own compute buffer. Counted only when armed,
+    // since it costs a test per node on every graph.
+    void count_device_nodes(bool on) { count_device_nodes_ = on; }
+    long long device_nodes() const { return device_nodes_; }
+
     long long experts_routed() const { return experts_routed_; }
     long long experts_dropped() const { return experts_dropped_; }
     // Substitution's own ledger. Reranked counts every slot the policy examined (its denominator —
@@ -481,6 +488,8 @@ private:
     bool drop_prefill_ = false;
     int batch_phase_ = 1; // 0 prefill, 1 decode
     long long experts_routed_ = 0, experts_dropped_ = 0;
+    bool count_device_nodes_ = false;
+    long long device_nodes_ = 0;
 
     // Cache-aware substitution. Inert unless sub_lambda_ > 0.
     //

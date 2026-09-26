@@ -64,11 +64,86 @@
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
 
+#include "ggml-backend.h"
+
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <thread>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 using namespace bmoe;
+
+// ── G16 support: a second device on any host ────────────────────────────────────────────────────
+// The prefill-device path moves weights onto another backend's buffers between graphs. The RPC
+// backend fronting this same CPU is a device every host has, and since it computes with the very
+// kernels the local CPU uses, placement is the ONLY thing that differs: the output must be
+// byte-identical. Hexagon's own numerics (fp16 on HMX) are a device question, not this gate's.
+
+static const char * const kRpcEndpoint = "127.0.0.1:50599";
+
+// True once something accepts on the endpoint. The RPC client aborts the process when it cannot
+// connect, so the server has to be seen listening before it is registered.
+static bool port_accepts(int port) {
+#if defined(_WIN32)
+    static bool wsa = [] {
+        WSADATA d;
+        return WSAStartup(MAKEWORD(2, 2), &d) == 0;
+    }();
+    if (!wsa) return false;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return false;
+#else
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) return false;
+#endif
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = htons((unsigned short) port);
+    inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    const bool ok = connect(s, (sockaddr *) &a, sizeof(a)) == 0;
+#if defined(_WIN32)
+    closesocket(s);
+#else
+    close(s);
+#endif
+    return ok;
+}
+
+// Starts an in-process rpc-server over the CPU device and returns the client device's registry
+// name, or "" when this build has no RPC backend.
+static std::string loopback_rpc_device() {
+    ggml_backend_reg_t rpc = ggml_backend_reg_by_name("RPC");
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (!rpc || !cpu) return "";
+    using start_fn = void (*)(const char *, const char *, size_t, size_t, ggml_backend_dev_t *);
+    using add_fn = ggml_backend_reg_t (*)(const char *);
+    auto start = (start_fn) ggml_backend_reg_get_proc_address(rpc, "ggml_backend_rpc_start_server");
+    auto add = (add_fn) ggml_backend_reg_get_proc_address(rpc, "ggml_backend_rpc_add_server");
+    if (!start || !add) return "";
+    // Serves until the process exits; the gates are one process.
+    std::thread([start, cpu] {
+        ggml_backend_dev_t devs[1] = {cpu};
+        start(kRpcEndpoint, nullptr, 2, 1, devs);
+    }).detach();
+    for (int i = 0; i < 200 && !port_accepts(50599); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    if (!port_accepts(50599)) return "";
+    ggml_backend_reg_t srv = add(kRpcEndpoint);
+    if (!srv || ggml_backend_reg_dev_count(srv) == 0) return "";
+    ggml_backend_register(srv);
+    return ggml_backend_dev_name(ggml_backend_reg_dev_get(srv, 0));
+}
 
 static RunConfig base(const std::string & model) {
     RunConfig c;
@@ -761,6 +836,87 @@ int main(int argc, char ** argv) {
         } else {
             std::printf("[PASS] G14b route-ahead(1) committed %lld routings (%lld passed through) and generated\n",
                         r.summary.route_ahead_overridden, r.summary.route_ahead_passthrough);
+        }
+    }
+
+    // ── G16: prefill on a device, decode on the CPU ──
+    // The reference prefills in the same 4-token ubatches, all on the CPU, so the graphs are the same
+    // shapes and the only difference is where the wide ones ran. a) one generate: identical, and some
+    // prompt tokens must actually have gone to the device, or the gate passes vacuously (the trap G10b
+    // and G14b guard). b) two generates in one session: the weights go back to the host for decode and
+    // out again for the next prompt, which is where a stale reused graph would read a device buffer
+    // from the CPU. c) perplexity, which compares every position's logits instead of one greedy path.
+    {
+        const std::string dev = loopback_rpc_device();
+        if (dev.empty()) {
+            std::printf("[SKIP] G16 prefill device: this build has no RPC backend (GGML_RPC=OFF)\n");
+        } else {
+            RunConfig pref = base(model);
+            pref.moe.enabled = false;
+            pref.n_ubatch = 4;
+            RunConfig pdev = pref;
+            pdev.prefill.device = dev;
+            pdev.prefill.min_tokens = 4;
+
+            std::string s_pref;
+            if (!gen(pref, s_pref, err)) {
+                std::fprintf(stderr, "G16 reference run failed: %s\n", err.c_str());
+                return 2;
+            }
+            RunResult r = run(pdev);
+            if (!r) {
+                std::fprintf(stderr, "G16 prefill-device run failed: %s\n", r.error.c_str());
+                return 2;
+            }
+            fails += check("G16a prefill on device, decode on CPU == all CPU", s_pref, r.generated_text);
+            // Tokens say the weights were moved; nodes say the device computed. Both, or the in-process
+            // server (whose buffers the CPU could read directly) would let a silent fallback pass.
+            if (r.summary.prefill_device_tokens <= 0 || r.summary.prefill_device_nodes <= 0) {
+                std::printf("[FAIL] G16a the device did not prefill (%d of %d tokens, %lld nodes)\n",
+                            r.summary.prefill_device_tokens, r.summary.n_prompt, r.summary.prefill_device_nodes);
+                ++fails;
+            } else {
+                std::printf("[PASS] G16a the device prefilled %d of %d prompt tokens (%lld nodes)\n",
+                            r.summary.prefill_device_tokens, r.summary.n_prompt, r.summary.prefill_device_nodes);
+            }
+
+            std::string open_err;
+            std::unique_ptr<Session> s = Session::open(session_config_from(pdev), open_err);
+            if (!s) {
+                std::fprintf(stderr, "G16 session open failed: %s\n", open_err.c_str());
+                return 2;
+            }
+            GenerateRequest req;
+            req.prompt = pdev.prompt;
+            req.n_predict = pdev.n_predict;
+            req.clear_kv = true;
+            RunResult g1 = s->generate(req);
+            RunResult g2 = s->generate(req);
+            if (!g1 || !g2) {
+                std::fprintf(stderr, "G16 session generate failed: %s\n", (!g1 ? g1.error : g2.error).c_str());
+                return 2;
+            }
+            fails += check("G16b session generate #1 (device prefill) == all CPU", s_pref, g1.generated_text);
+            fails += check("G16b session generate #2 (device prefill again) == all CPU", s_pref, g2.generated_text);
+
+            PplRequest pr;
+            pr.text = "The quick brown fox jumps over the lazy dog, and then it runs back home to sleep.";
+            pr.skip = 2;
+            std::unique_ptr<Session> sc = Session::open(session_config_from(pref), open_err);
+            if (!sc) {
+                std::fprintf(stderr, "G16 reference session open failed: %s\n", open_err.c_str());
+                return 2;
+            }
+            PplResult p_cpu = sc->perplexity(pr);
+            PplResult p_dev = s->perplexity(pr);
+            if (!p_cpu.ok || !p_dev.ok) {
+                std::fprintf(stderr, "G16 perplexity failed: %s\n", (!p_cpu.ok ? p_cpu.error : p_dev.error).c_str());
+                return 2;
+            }
+            char a[64], b[64];
+            std::snprintf(a, sizeof(a), "%.17g/%d", p_cpu.nll, p_cpu.n_top1);
+            std::snprintf(b, sizeof(b), "%.17g/%d", p_dev.nll, p_dev.n_top1);
+            fails += check("G16c perplexity with device prefill == all CPU (nll/top1, bit for bit)", a, b);
         }
     }
 

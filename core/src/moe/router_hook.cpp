@@ -1,6 +1,7 @@
 #include "router_hook.h"
 
 #include "ggml.h"
+#include "ggml-backend.h"
 #include "../io/platform_io.h"
 
 #include <cmath>
@@ -1325,6 +1326,9 @@ void RouterHook::end_compute_batch() {
 }
 
 bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
+    // The scheduler asks about every node of every split, whichever backend runs it.
+    if (ask && count_device_nodes_ && t->buffer && !ggml_backend_buffer_is_host(t->buffer)) ++device_nodes_;
+
     // ── compute trace: close the previous node's interval, open the next ──
     // Ordering matters: this runs before every other job below, so the timestamp is as close to the
     // boundary as possible and the streamer's own work (load_layer, the residency query) lands

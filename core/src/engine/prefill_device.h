@@ -1,0 +1,63 @@
+// Prefill on an accelerator, decode on the CPU, by rebinding weights between graphs.
+//
+// The llama.cpp scheduler assigns each op to the backend that holds its weight, and it does so on
+// every graph it builds (ggml_backend_sched_backend_from_buffer). A weight's location is nothing but
+// three public fields of its ggml_tensor — buffer, data, extra — so swapping them between two
+// graphs moves every op that reads the weight from one backend to the other, with no llama.cpp
+// change. This class owns the device-side copy and does the swap; the session decides WHEN, which
+// is where the one real hazard lives (graph reuse, see PrefillDeviceConfig).
+//
+// The device copy is written through ggml_backend_tensor_set rather than memcpy, so a backend that
+// keeps weights in its own layout (Hexagon repacks Q4_0 into HMX tiles on set_tensor) gets them the
+// way its kernels expect. The host binding is left untouched: decode keeps reading the mapping.
+#pragma once
+
+#include "ggml-backend.h"
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+namespace bmoe::detail {
+
+class PrefillDevice {
+public:
+    PrefillDevice() = default;
+    ~PrefillDevice();
+    PrefillDevice(const PrefillDevice &) = delete;
+    PrefillDevice & operator=(const PrefillDevice &) = delete;
+
+    // Allocates `weights` in `dev`'s buffer type and copies them in. Every weight must be host
+    // readable (the mmap) and contiguous; anything else is an error, not a skip, because a
+    // silently skipped weight would pin its op to the CPU and cost a split per graph.
+    bool init(ggml_backend_dev_t dev, const std::vector<ggml_tensor *> & weights, std::string & err);
+
+    // Placement for the NEXT graph. Idempotent; cheap (three stores per tensor).
+    void place(bool on_device);
+    void to_host() { place(false); }
+    bool on_device() const { return on_device_; }
+
+    size_t n_tensors() const { return entries_.size(); }
+    size_t bytes() const { return bytes_; }
+
+private:
+    struct Binding {
+        ggml_backend_buffer_t buffer = nullptr;
+        void * data = nullptr;
+        void * extra = nullptr;
+    };
+    struct Entry {
+        ggml_tensor * t = nullptr;
+        Binding host;
+        Binding dev;
+    };
+    static void apply(ggml_tensor * t, const Binding & b);
+
+    std::vector<Entry> entries_;
+    ggml_context * ctx_ = nullptr;        // metadata of the device-side twins
+    ggml_backend_buffer_t buf_ = nullptr; // may be a multi-buffer when a backend caps buffer size
+    size_t bytes_ = 0;
+    bool on_device_ = false;
+};
+
+} // namespace bmoe::detail

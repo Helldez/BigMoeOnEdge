@@ -16,6 +16,8 @@
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
 
+#include "ggml-backend.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -38,6 +40,31 @@
 #endif
 
 using namespace bmoe;
+
+// "rpc:HOST:PORT" names the first device behind a ggml rpc-server, which has to be registered
+// before the engine can find it by name; any other value is already a device name. Resolved here,
+// in the front-end, so the engine only ever sees a registry name. Looked up through the registry
+// rather than linked, so a build without the RPC backend says so instead of failing to link.
+static bool resolve_prefill_device(std::string & dev, std::string & err) {
+    static const std::string pfx = "rpc:";
+    if (dev.compare(0, pfx.size(), pfx) != 0) return true;
+    const std::string endpoint = dev.substr(pfx.size());
+    ggml_backend_reg_t rpc = ggml_backend_reg_by_name("RPC");
+    if (!rpc) {
+        err = "this build has no RPC backend (configure with -DGGML_RPC=ON)";
+        return false;
+    }
+    using add_server_fn = ggml_backend_reg_t (*)(const char *);
+    auto add = (add_server_fn) ggml_backend_reg_get_proc_address(rpc, "ggml_backend_rpc_add_server");
+    ggml_backend_reg_t srv = add ? add(endpoint.c_str()) : nullptr;
+    if (!srv || ggml_backend_reg_dev_count(srv) == 0) {
+        err = "no ggml rpc-server device at " + endpoint;
+        return false;
+    }
+    ggml_backend_register(srv);
+    dev = ggml_backend_dev_name(ggml_backend_reg_dev_get(srv, 0));
+    return true;
+}
 
 static int env_int(const char * k, int dflt) {
     const char * v = std::getenv(k);
@@ -387,6 +414,10 @@ static void print_usage(const char * argv0) {
         "                          RAM back to the expert cache at the cost of prefill speed;\n"
         "                          decode is unaffected. Measured: a context of 2048 reserves\n"
         "                          320 MiB, falling to 80 MiB at 512.\n"
+        "      --prefill-device D  run wide prefill graphs on ggml device D (e.g. HTP0) while decode\n"
+        "                          stays on the CPU; rpc:HOST:PORT names a device behind a ggml\n"
+        "                          rpc-server. Not with streaming or speculation yet. Default off.\n"
+        "      --prefill-min-tokens N  narrowest prefill piece sent to that device (default 32)\n"
         "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
         "      --no-think          render the chat template with reasoning disabled\n"
         "      --progress          emit machine telemetry (one JSON line per token)\n"
@@ -624,6 +655,10 @@ int main(int argc, char ** argv) {
             cfg.n_ctx = std::atoi(next("-c"));
         else if (a == "--ubatch")
             cfg.n_ubatch = std::atoi(next("--ubatch"));
+        else if (a == "--prefill-device")
+            cfg.prefill.device = next("--prefill-device");
+        else if (a == "--prefill-min-tokens")
+            cfg.prefill.min_tokens = std::atoi(next("--prefill-min-tokens"));
         else if (a == "--n-expert-used")
             cfg.n_expert_used = std::atoi(next("--n-expert-used"));
         else if (a == "--temp")
@@ -811,6 +846,13 @@ int main(int argc, char ** argv) {
     if (!vr) {
         std::fprintf(stderr, "config error: %s\n", vr.error.c_str());
         return 1;
+    }
+    if (cfg.prefill.enabled()) {
+        std::string perr;
+        if (!resolve_prefill_device(cfg.prefill.device, perr)) {
+            std::fprintf(stderr, "config error: --prefill-device: %s\n", perr.c_str());
+            return 1;
+        }
     }
 
     std::unique_ptr<IMetricsSink> sink;

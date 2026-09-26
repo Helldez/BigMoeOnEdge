@@ -5,6 +5,10 @@
 
 add_executable(bmoe_moe_gates moe_gates.cpp)
 target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
+# G16 probes the loopback rpc-server port before registering it.
+if(WIN32)
+    target_link_libraries(bmoe_moe_gates PRIVATE ws2_32)
+endif()
 
 # Reasoning-parser wiring regression (issue #49). Needs no model — it drives the extracted
 # bmoe::detail::build_parse_params directly — so it runs unconditionally, unlike the gates below.

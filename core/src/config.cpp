@@ -102,6 +102,24 @@ ValidationResult validate(const RunConfig & cfg) {
                     "spec.draft_max.");
     }
 
+    if (cfg.prefill.enabled()) {
+        if (cfg.prefill.min_tokens < PrefillDeviceConfig::min_tokens_floor)
+            return fail("prefill.min_tokens must be >= " + std::to_string(PrefillDeviceConfig::min_tokens_floor) +
+                        ": a one-token device graph would share its shape with a CPU decode graph, and llama.cpp "
+                        "reuses a same-shaped graph without re-scheduling it.");
+        if (cfg.prefill.min_tokens > cfg.n_ctx)
+            return fail("prefill.min_tokens=" + std::to_string(cfg.prefill.min_tokens) +
+                        " exceeds n_ctx=" + std::to_string(cfg.n_ctx) + ": no prefill could ever reach the device.");
+        // Streamed experts are rebound by the streamer on every layer; the device path would have to
+        // fill its own arena from the same reads. Not wired yet.
+        if (cfg.moe.enabled)
+            return fail("prefill.device does not combine with moe.enabled yet: the streamed expert "
+                        "arena on the device is not implemented");
+        // Speculation widens CPU graphs past one token and runs a second context over the same
+        // weights; both would break the width invariant the rebind relies on.
+        if (cfg.spec.enabled()) return fail("prefill.device does not combine with speculative decoding");
+    }
+
     // overlap is meaningless without streaming (it gates the streamer's own reads). The
     // hook-availability check is deferred to run(): validate() stays pure (no native).
     if (cfg.moe.overlap && !cfg.moe.enabled) {
