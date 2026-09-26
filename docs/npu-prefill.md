@@ -13,13 +13,15 @@ works on a model larger than RAM: the NPU never holds the model, only two layers
 
 Qwen3.6-35B-A3B, Q4_0 gguf (20.8 GB) on a 12 GB phone with a Hexagon v81 NPU and UFS 4 storage,
 streamed (`--moe-stream --overlap --dense-weights ahwb --cache-mb 1500 -t 4`), ubatch 2048 on the
-NPU, 512 on the CPU:
+NPU, 512 on the CPU. The Q4_K_M row is the same model in the quantisation the app's catalog ships,
+on the 2026-09-26 llama.cpp base, with 8 loaders:
 
 | prompt | CPU prefill | NPU prefill | |
 |---|---:|---:|---:|
 | 121 tokens | 9.95 s (12.2 tok/s) | 9.5 s (12.7 tok/s) | parity: flash bound |
 | 1418 tokens, prose | 63.8 s (22.2 tok/s) | 8.2 s (172 tok/s) | 7.8x |
 | 1921 tokens | 106.5 s (18.0 tok/s) | 11.2 s (171 tok/s) | 9.5x |
+| 1418 tokens, prose, **Q4_K_M** | 80.6 s (17.6 tok/s) | 10.0 s (141 tok/s) | 8.1x |
 
 Decode after the 1418-token prompt: 3.41 tok/s on the CPU-only run, 3.25 tok/s with the NPU
 prefill (both decode on the CPU; the difference is the memory the NPU's slots hold).
@@ -87,11 +89,17 @@ instead of the 21 GB the model is.
 
 ## Requirements
 
-- A model whose expert tensors the NPU's `MUL_MAT_ID` takes: Q4_0, Q4_1, Q8_0, IQ4_NL or MXFP4. K-quants
-  (Q4_K_M and friends) are not supported by the Hexagon kernels. gpt-oss is natively MXFP4.
+- A model whose expert tensors the NPU's `MUL_MAT_ID` takes: Q4_0, Q4_1, Q8_0, IQ4_NL, MXFP4, and since
+  the 2026-09-26 llama.cpp base the K-quants Q4_K, Q5_K and Q6_K, which is what a Q4_K_M is made of.
+  A dense weight in any other type is converted for the device (see above); Q3_K and below are not
+  taken for experts. gpt-oss is natively MXFP4.
 - The Hexagon backend in the build: `scripts/build-hexagon-android.sh` builds the CLI, the backend and
   its DSP-side skel inside upstream's Snapdragon toolchain container, and
   `scripts/stage-hexagon-jnilibs.ps1` stages them into the app.
+- `--prefill-loaders N` (default 8) sets the threads that fill the slots, apart from `--io-threads`,
+  which stays the decode's read lanes. Each loader reads and repacks, and a K-quant repack is
+  CPU-heavy: on a Q4_K_M, 4 loaders left the NPU waiting 10.3 s of a 15.1 s prefill, 8 left it 5.0 of
+  10.0.
 - On device: `ADSP_LIBRARY_PATH` pointing at the directory with `libggml-htp-v81.so` (fastrpc resolves
   the skel through it), and `GGML_HEXAGON_HOSTBUF=1`. `GGML_HEXAGON_OPPOLL=1` makes the host poll for
   the DSP instead of waiting on an interrupt, which halves the cost of each crossing.

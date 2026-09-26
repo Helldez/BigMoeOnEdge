@@ -216,8 +216,10 @@ If a future release moves the two hooks (a stable expert-residency API, say) ups
 this seam shrinks further or disappears — `core/` does not change.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-b10666`, commit `0e8c83e` — the single expert-ready-hook commit
-(section 3) on top of upstream `ggml-org/llama.cpp` master `4e97ac8` (tag `b10666`, which
-carries the merged Qwen3.8-Flash-Next support). Each bump gets its own fork branch and the
+`bmoe/expert-ready-hook-2609`, commit `dce9698`: the single expert-ready-hook commit
+(section 3) on top of upstream `ggml-org/llama.cpp` master `965f897` of 2026-09-26 (530 commits
+past `b10666`). On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
+before the classic loop does, so the hook fires ahead of it; G4 is what proves it still gates
+every read. Each bump gets its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /
 `git submodule status` for the current pin).

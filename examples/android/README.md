@@ -180,7 +180,8 @@ Two worth knowing before you turn them on:
   runs, so the reads can never be wasted. It changes the reply, and it is refused alongside guessing
   ahead. See `../../docs/route-ahead.md`.
 - **"Prefill on the NPU"** (`--prefill-device HTP0`) runs the prompt on the Hexagon NPU and keeps
-  decode on the CPU. It needs a Q4_0 model (the NPU kernels take no K-quant), an APK built with the
+  decode on the CPU. It needs a model the NPU kernels take (Q4_0, Q8_0, MXFP4, or a Q4_K_M; not the
+  Q3 and Q2 builds), an APK built with the
   Hexagon backend (see Build), and it widens the prompt batch to 2048 tokens, because each batch
   reads the experts from flash once. Short prompts do not gain. See `../../docs/npu-prefill.md`.
 - **"Stream row-gathered tables"** (`--row-stream`) serves the token embedding table out of flash

@@ -35,6 +35,19 @@ Semantic Versioning.
 - **Telemetry:** `prefill_dev_tokens`, `prefill_dev_nodes`, `prefill_dev_read_mib` and
   `prefill_dev_stall_s` in `BMOE_DONE` and the CSV trailer.
 
+### Changed
+- **llama.cpp submodule bumped** to upstream master `965f897` of 2026-09-26 (530 commits past
+  `b10666`), as the one-commit fork branch `bmoe/expert-ready-hook-2609`. What it brings here is the
+  Hexagon backend's K-quants: the NPU now takes a Q4_K_M, the quantisation the app's catalog ships,
+  so the NPU prefill needs no special build of the model. Measured on Qwen3.6-35B-A3B Q4_K_M, 1418
+  tokens: **80.6 s on the CPU, 10.0 s on the NPU (8.1x)**, with no weight converted. On the Q4_0 the
+  prefill is unchanged (8.3 against 8.2 s): the device now waits on the flash, not on its own maths.
+  Upstream's CPU `mul_mat_id` gained a tiled path that reads an expert before the classic loop, so
+  the expert-ready hook now fires ahead of it (G4 proves it gates every read); upstream renamed the
+  draft parameters' `n_past` to `pos0`.
+- **`--prefill-loaders N`** (default 8) sets the arena's loader threads apart from `--io-threads`, the
+  decode's read lanes; the app has it as **NPU loader threads**.
+
 ## [0.24.0] - 2026-09-07
 
 ### Added

@@ -79,8 +79,8 @@ data class AppSettings(
     val releaseMmap: Boolean = false,
     // Run wide prefill graphs on the Hexagon NPU while decode stays on the CPU (--prefill-device).
     // With streaming, the experts and the layer weights reach the NPU through a two-layer arena,
-    // so it costs about two layers of memory, not the model. Needs a Q4_0 (or Q8_0/MXFP4) model,
-    // since the NPU kernels take no K-quant, and its numbers are fp16 on the matrix engine, so the
+    // so it costs about two layers of memory, not the model. Needs a model the NPU kernels take
+    // (Q4_K_M, Q4_0, Q8_0, MXFP4; not Q3/Q2), and its numbers are fp16 on the matrix engine, so the
     // output is not identical to the CPU's. Off until the on-device A/B prices both.
     val npuPrefill: Boolean = false,
     // Threads that fill the NPU's two layer slots from flash during a prefill (--prefill-loaders).

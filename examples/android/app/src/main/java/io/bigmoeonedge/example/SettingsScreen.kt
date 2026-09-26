@@ -144,7 +144,8 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         "Prefill on the NPU",
                         "Run the prompt on the Hexagon NPU and keep decoding on the CPU. With streaming, " +
                             "the weights reach the NPU two layers at a time, straight from flash. Needs a " +
-                            "Q4_0 model. Not identical to the CPU (the NPU computes in fp16), and not with " +
+                            "Q4_K_M, Q4_0, Q8_0 or MXFP4 model (not Q3/Q2). Not identical to the CPU (the " +
+                            "NPU computes in fp16), and not with " +
                             "speculation or row-streamed tables.",
                         current.npuPrefill,
                     ) { onChange(current.copy(npuPrefill = it)) }
