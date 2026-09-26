@@ -33,6 +33,11 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.BigMoeOnEdge">
 
+        <!-- The Hexagon NPU's fastrpc driver is a vendor public library, not an NDK one, so the app
+             has to declare it to get it in its linker namespace. Not required: the app runs on
+             devices without it, and the NPU prefill then fails to find its device. -->
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

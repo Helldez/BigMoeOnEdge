@@ -138,6 +138,15 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         current.denseWeights == DenseWeights.AHWB),
                 ) { onChange(current.copy(releaseMmap = it)) }
 
+                SwitchRow(
+                    "Prefill on the NPU",
+                    "Run the prompt on the Hexagon NPU and keep decoding on the CPU. With streaming, " +
+                        "the weights reach the NPU two layers at a time, straight from flash. Needs a " +
+                        "Q4_0 model. Not identical to the CPU (the NPU computes in fp16), and not with " +
+                        "speculation or row-streamed tables.",
+                    current.npuPrefill,
+                ) { onChange(current.copy(npuPrefill = it)) }
+
                 ExperimentalGroup {
                     IntSetting(
                         "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,

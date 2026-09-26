@@ -77,6 +77,12 @@ data class AppSettings(
     // 48-token cells against a device whose cells spread 20%, so it is a direction and not a number,
     // and the switch stays off until a 256-token A/B earns it.
     val releaseMmap: Boolean = false,
+    // Run wide prefill graphs on the Hexagon NPU while decode stays on the CPU (--prefill-device).
+    // With streaming, the experts and the layer weights reach the NPU through a two-layer arena,
+    // so it costs about two layers of memory, not the model. Needs a Q4_0 (or Q8_0/MXFP4) model,
+    // since the NPU kernels take no K-quant, and its numbers are fp16 on the matrix engine, so the
+    // output is not identical to the CPU's. Off until the on-device A/B prices both.
+    val npuPrefill: Boolean = false,
     // Cache-aware substitution, as a PERCENTAGE of the router's score range (0 = off). Before a
     // routing is committed, every expert already resident gets its score raised by this fraction of
     // the range and the top-k is taken again, so a resident expert wins a slot only when it was
@@ -136,14 +142,22 @@ data class AppSettings(
      *   marks each with a `turn` column, which is the only way to read the two-turn shape this
      *   engine is judged by (a fast turn, an idle, then the turn that pays for it).
      */
+    /**
+     * Whether the NPU prefill is actually requested: the engine refuses it with speculation (the wider
+     * verify graphs would share shapes with device graphs) and with row-streamed tables (their rows
+     * are gathered on the host, inside a graph that would run on the NPU).
+     */
+    fun npuActive(): Boolean = npuPrefill && spec == SPEC_OFF && !(rowStream && !mmap)
+
     fun sessionArgv(cliPath: String, modelPath: String, csvPath: String? = null): List<String> {
         val a = mutableListOf(
             cliPath,
             "-m", modelPath,
             "-t", threads.toString(),
             "-c", sessionCtx.toString(),
-            // Never reserve a graph wider than the context itself.
-            "--ubatch", minOf(SESSION_UBATCH, sessionCtx).toString(),
+            // Never reserve a graph wider than the context itself. Wider under the NPU prefill:
+            // there every graph re-reads the experts once, so the width is what the flash pays.
+            "--ubatch", minOf(if (npuActive()) NPU_UBATCH else SESSION_UBATCH, sessionCtx).toString(),
             // Render the model's OWN chat template, whichever family it belongs to; the flag name
             // is historical (ChatML is only llama.cpp's fallback when a gguf ships no template).
             // Nothing here selects a format, so it is correct for every model in the catalog.
@@ -209,6 +223,8 @@ data class AppSettings(
             // to substitute toward, so the policy would re-rank against an all-miss mask.
             if (substitutePct > 0 && cacheOn) a += listOf("--expert-substitute", (substitutePct / 100.0).toString())
         }
+        // Outside the streaming block: it applies to a model that fits too (no arena then).
+        if (npuActive()) a += listOf("--prefill-device", NPU_DEVICE)
         // Outside the streaming block on purpose: speculation is a decode-loop change, not a
         // residency policy, so it applies to the mmap baseline too — which is what makes an A/B of
         // the two against each other meaningful.
@@ -255,6 +271,7 @@ data class AppSettings(
             .putInt("dropColdPct", dropColdPct)
             .putBoolean("rowStream", rowStream)
             .putBoolean("releaseMmap", releaseMmap)
+            .putBoolean("npuPrefill", npuPrefill)
             .putInt("substitutePct", substitutePct)
             .putInt("sessionCtx", sessionCtx)
             .putString("spec", spec).putInt("mtpDraft", mtpDraft).putInt("mtpPMinPct", mtpPMinPct)
@@ -278,6 +295,13 @@ data class AppSettings(
         // width). Prefill pays instead, and barely: chunking it costs ~7.7x the flash reads but
         // only ~6% of prefill wall time, because prefill is compute-bound.
         const val SESSION_UBATCH = 512
+
+        // The NPU prefill's graph width. Each graph streams every expert once, so a 4096-token prompt
+        // at 512 would read the model eight times; 2048 halves that twice over for a compute buffer
+        // four times the size. A starting point for the on-device sweep, not a measured optimum.
+        const val NPU_UBATCH = 2048
+        // The Hexagon backend's device name for the first NPU session.
+        const val NPU_DEVICE = "HTP0"
 
         // Context rungs. 4096 is the default a chat wants; the shorter ones exist for a model that
         // already fills RAM, where the KV cache competes with the weights themselves.
@@ -399,6 +423,7 @@ data class AppSettings(
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
                 rowStream = p.getBoolean("rowStream", d.rowStream),
                 releaseMmap = p.getBoolean("releaseMmap", d.releaseMmap),
+                npuPrefill = p.getBoolean("npuPrefill", d.npuPrefill),
                 substitutePct = p.getInt("substitutePct", d.substitutePct),
                 sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
                 spec = run {
