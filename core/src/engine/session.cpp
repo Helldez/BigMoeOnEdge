@@ -1743,7 +1743,7 @@ RunResult Session::generate(const GenerateRequest & req,
                 common_speculative_draft_params & dp = common_speculative_get_draft_params(im.mtp.get(), /*seq*/ 0);
                 dp.drafting = true;
                 dp.n_max = std::min(im.cfg.spec.draft_max, room);
-                dp.n_past = n_past;
+                dp.pos0 = n_past; // upstream renamed n_past -> pos0 (#28715); text-only, so the same value
                 dp.id_last = tok;
                 dp.prompt = &mtp_ctx;
                 dp.result = &im.draft_buf;
