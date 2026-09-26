@@ -367,7 +367,7 @@ struct PrefillDeviceConfig {
     // verify batch is excluded by validation for now.
     int min_tokens = 32;
 
-    // TEST ONLY: sleep this long before each expert upload of the streamed-expert arena. On a tiny
+    // TEST ONLY: sleep this long before the first upload of each layer in the arena. On a tiny
     // model the loaders always beat the graph to the next layer, so a missing barrier would go
     // unnoticed; slowed down, the barrier is the only thing keeping compute behind the loads, and the
     // gate proves it. Never set by a front-end.

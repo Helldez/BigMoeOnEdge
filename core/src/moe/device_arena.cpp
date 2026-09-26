@@ -29,6 +29,9 @@ DeviceExpertArena::~DeviceExpertArena() {
         if (s) pio::aligned_free(s);
     if (buf_) ggml_backend_buffer_free(buf_);
     if (ctx_) ggml_free(ctx_);
+    for (ggml_backend_buffer_t b : dense_buf_)
+        if (b) ggml_backend_buffer_free(b);
+    if (dense_ctx_) ggml_free(dense_ctx_);
 }
 
 bool DeviceExpertArena::init(ggml_backend_dev_t dev,
@@ -162,6 +165,79 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
     return true;
 }
 
+bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
+                                   const std::vector<std::vector<ggml_tensor *>> & per_layer,
+                                   std::string & err) {
+    size_t n_tensors = 0;
+    for (const auto & v : per_layer)
+        n_tensors += v.size();
+    if (n_tensors == 0) return true;
+    for (const auto & v : per_layer)
+        for (ggml_tensor * t : v)
+            if (!t->buffer || !ggml_backend_buffer_is_host(t->buffer) || !t->data || t->view_src ||
+                !ggml_is_contiguous(t)) {
+                err = std::string("layer weight ") + t->name + " is not a host-resident contiguous leaf";
+                return false;
+            }
+
+    ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
+    const size_t align = ggml_backend_buft_get_alignment(buft);
+    // Each slot must hold the largest layer of its parity: layers differ (a hybrid model alternates
+    // attention and recurrent blocks), and each layer is laid out from the start of its slot.
+    size_t need[2] = {0, 0};
+    for (size_t il = 0; il < per_layer.size(); ++il) {
+        size_t sz = 0;
+        for (ggml_tensor * t : per_layer[il])
+            sz += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), align);
+        need[il % 2] = std::max(need[il % 2], sz);
+    }
+    for (int s = 0; s < 2; ++s) {
+        if (need[s] == 0) continue;
+        dense_buf_[s] = ggml_backend_buft_alloc_buffer(buft, need[s] + align);
+        if (!dense_buf_[s]) {
+            err = std::string("cannot allocate a dense layer slot on ") + ggml_backend_dev_name(dev);
+            return false;
+        }
+        ggml_backend_buffer_set_usage(dense_buf_[s], GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        dense_slot_bytes_ += need[s];
+    }
+
+    ggml_init_params ip{};
+    ip.mem_size = ggml_tensor_overhead() * (n_tensors + 8);
+    ip.no_alloc = true;
+    dense_ctx_ = ggml_init(ip);
+    if (!dense_ctx_) {
+        err = "ggml_init failed";
+        return false;
+    }
+    dense_.assign(per_layer.size(), DenseLayer{});
+    for (size_t il = 0; il < per_layer.size(); ++il) {
+        if (per_layer[il].empty()) continue;
+        // A fresh allocator per layer: every layer of a parity starts at the same offset, on purpose.
+        ggml_tallocr ta = ggml_tallocr_new(dense_buf_[il % 2]);
+        DenseLayer & D = dense_[il];
+        for (ggml_tensor * t : per_layer[il]) {
+            ggml_tensor * w = ggml_dup_tensor(dense_ctx_, t);
+            ggml_set_name(w, t->name);
+            if (ggml_tallocr_alloc(&ta, w) != GGML_STATUS_SUCCESS) {
+                err = std::string("cannot place ") + t->name + " in its dense slot";
+                return false;
+            }
+            D.t.push_back(t);
+            D.twin.push_back(w);
+            D.src.push_back(t->data);
+        }
+        D.host_buffer.assign(D.t.size(), nullptr);
+        D.host_data.assign(D.t.size(), nullptr);
+        D.host_extra.assign(D.t.size(), nullptr);
+    }
+    std::lock_guard<std::mutex> lk(mu_);
+    dense_remaining_.assign(dense_.size(), 0);
+    dense_scheduled_.assign(dense_.size(), false);
+    dense_waited_.assign(dense_.size(), false);
+    return true;
+}
+
 void DeviceExpertArena::place(bool on_device) {
     if (on_device == on_device_) return;
     for (size_t k = 0; k < order_.size(); ++k) {
@@ -183,6 +259,23 @@ void DeviceExpertArena::place(bool on_device) {
             }
         }
     }
+    for (DenseLayer & D : dense_) {
+        for (size_t i = 0; i < D.t.size(); ++i) {
+            ggml_tensor * t = D.t[i];
+            if (on_device) {
+                D.host_buffer[i] = t->buffer;
+                D.host_data[i] = t->data;
+                D.host_extra[i] = t->extra;
+                t->buffer = D.twin[i]->buffer;
+                t->data = D.twin[i]->data;
+                t->extra = D.twin[i]->extra;
+            } else {
+                t->buffer = D.host_buffer[i];
+                t->data = D.host_data[i];
+                t->extra = D.host_extra[i];
+            }
+        }
+    }
     on_device_ = on_device;
 }
 
@@ -194,18 +287,64 @@ void DeviceExpertArena::schedule(int k) {
     // Projection-major, the order the layer's matmuls consume them in.
     for (int p = 0; p < n_proj_; ++p)
         for (int e = 0; e < n_expert_; ++e)
-            queue_.push_back(Task{k, p, e});
+            queue_.push_back(Task{false, k, p, e});
     cv_work_.notify_all();
 }
 
+void DeviceExpertArena::schedule_dense(int il) {
+    if (il < 0 || il >= (int) dense_.size() || dense_scheduled_[(size_t) il]) return;
+    dense_scheduled_[(size_t) il] = true;
+    const int n = (int) dense_[(size_t) il].t.size();
+    dense_remaining_[(size_t) il] = n;
+    in_flight_ += n;
+    for (int i = 0; i < n; ++i) {
+        Task t;
+        t.dense = true;
+        t.k = il;
+        t.p = i;
+        queue_.push_back(t);
+    }
+    if (n) cv_work_.notify_all();
+}
+
 void DeviceExpertArena::begin_graph() {
-    std::lock_guard<std::mutex> lk(mu_);
+    std::unique_lock<std::mutex> lk(mu_);
     std::fill(scheduled_.begin(), scheduled_.end(), false);
+    std::fill(dense_scheduled_.begin(), dense_scheduled_.end(), false);
+    std::fill(dense_waited_.begin(), dense_waited_.end(), false);
+    // Dense first: layer 0 needs them before anything, and there is no node before layer 0 to wait
+    // at, so this waits for them here.
+    schedule_dense(0);
+    schedule_dense(1);
     schedule(0);
     schedule(1);
+    if (!dense_.empty()) {
+        cv_done_.wait(lk, [&] { return dense_remaining_[0] == 0; });
+        dense_waited_[0] = true;
+    }
+}
+
+void DeviceExpertArena::dense_barrier(int il) {
+    if (dense_.empty() || il < 0 || il + 1 >= (int) dense_.size()) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> lk(mu_);
+    // Layer il is done with its slot, which is the one layer il+2 goes into.
+    schedule_dense(il + 1);
+    schedule_dense(il + 2);
+    cv_done_.wait(lk, [&] { return dense_remaining_[(size_t) il + 1] == 0; });
+    dense_waited_[(size_t) il + 1] = true;
+    lk.unlock();
+    stall_ns_ +=
+        (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
 }
 
 void DeviceExpertArena::barrier(int il) {
+    // The dense slot of this layer must have been waited for before the layer began: if the graph
+    // never passed the node that paces it, its attention already ran on whatever the slot held.
+    if (il >= 0 && il < (int) dense_.size() && !dense_[(size_t) il].t.empty()) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!dense_waited_[(size_t) il]) failed_ = true;
+    }
     if (il < 0 || il >= (int) k_of_layer_.size()) return;
     const int k = k_of_layer_[(size_t) il];
     if (k < 0) return;
@@ -226,7 +365,10 @@ void DeviceExpertArena::end_graph() {
     // A graph that stopped early leaves queued reads nobody will wait for: drop them, and wait only
     // for the ones a loader already holds.
     for (const Task & t : queue_) {
-        --remaining_[(size_t) t.k];
+        if (t.dense)
+            --dense_remaining_[(size_t) t.k];
+        else
+            --remaining_[(size_t) t.k];
         --in_flight_;
     }
     queue_.clear();
@@ -245,6 +387,21 @@ void DeviceExpertArena::worker(int lane) {
         }
         // Once per layer (its first upload): with one loader that holds the whole layer back, and it
         // stays cheap where the sleep granularity is coarse (Windows rounds up to ~15 ms).
+        if (task.dense) {
+            if (test_delay_us_ > 0 && task.p == 0)
+                std::this_thread::sleep_for(std::chrono::microseconds(test_delay_us_));
+            // Host-resident bytes: a copy (and the backend's repack), no flash read.
+            const DenseLayer & D = dense_[(size_t) task.k];
+            ggml_backend_tensor_set(D.twin[(size_t) task.p], D.src[(size_t) task.p], 0,
+                                    ggml_nbytes(D.t[(size_t) task.p]));
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                --dense_remaining_[(size_t) task.k];
+                --in_flight_;
+            }
+            cv_done_.notify_all();
+            continue;
+        }
         if (test_delay_us_ > 0 && task.p == 0 && task.e == 0)
             std::this_thread::sleep_for(std::chrono::microseconds(test_delay_us_));
         const Layer & L = order_[(size_t) task.k];

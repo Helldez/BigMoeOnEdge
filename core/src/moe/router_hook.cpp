@@ -174,6 +174,7 @@ void RouterHook::begin_capture() {
     captured_weight_seen_.clear();
     captured_state_objects_.clear();
     captured_state_seen_.clear();
+    last_node_.assign((size_t) n_layer_, std::string());
     row_gathered_.clear();
     row_disqualified_.clear();
 }
@@ -1368,6 +1369,10 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // ── capture: harvest expert weight tensors from every node's sources ──
     if (capturing_) {
         if (ask) {
+            // Every node passes through here in graph order, so the last one carrying a layer's
+            // index is that layer's end.
+            const int nl = node_layer(t->name);
+            if (nl >= 0 && nl < (int) last_node_.size()) last_node_[(size_t) nl] = t->name;
             for (int s = 0; s < GGML_MAX_SRC; ++s) {
                 ggml_tensor * src = t->src[s];
                 if (!src || src->name[0] == '\0') continue;
@@ -1413,8 +1418,11 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // keeps the row policy (the one host job a device graph would still need) off this path.
     if (device_arena_) {
         const int dl = is_moe_node(t->name) ? match_layer_node(t->name, "ffn_moe_topk-") : -1;
-        if (ask) return dl >= 0;
+        const int nl = node_layer(t->name);
+        const bool layer_end = nl >= 0 && nl < (int) last_node_.size() && last_node_[(size_t) nl] == t->name;
+        if (ask) return dl >= 0 || layer_end;
         if (dl >= 0) device_arena_->barrier(dl);
+        if (layer_end) device_arena_->dense_barrier(nl);
         return true;
     }
 

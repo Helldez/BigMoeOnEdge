@@ -93,10 +93,7 @@ bool PrefillDevice::init(ggml_backend_dev_t dev, const std::vector<ggml_tensor *
         err = "no device";
         return false;
     }
-    if (weights.empty()) {
-        err = "the graph read no layer weights";
-        return false;
-    }
+    if (weights.empty()) return true; // everything goes through an arena, or the model has no layer weights
     for (ggml_tensor * w : weights) {
         if (!w->buffer || !ggml_backend_buffer_is_host(w->buffer) || !w->data) {
             err = std::string("weight ") + w->name + " is not host readable";

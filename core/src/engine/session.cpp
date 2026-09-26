@@ -1131,6 +1131,25 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             if (!t->buffer || ggml_backend_buffer_get_usage(t->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) continue;
             layer_weights.push_back(t);
         }
+        // Streaming means the model does not fit, and then the layer weights cannot be resident on the
+        // device either: on unified memory a resident copy is RAM taken from the expert cache twice
+        // over, and a device session has a ceiling of its own. They go through the arena, two layers
+        // at a time, paced at each layer's last node — which the capture must have found for every
+        // layer, or the pacing has nowhere to wait and the copy stays resident.
+        std::vector<std::vector<ggml_tensor *>> dense_per_layer;
+        if (cfg.moe.enabled && im.hook->learned_layer_ends()) {
+            dense_per_layer.resize((size_t) n_layer_streamed);
+            for (ggml_tensor * t : layer_weights) {
+                int il = -1;
+                if (std::sscanf(t->name, "blk.%d.", &il) == 1 && il >= 0 && il < (int) dense_per_layer.size())
+                    dense_per_layer[(size_t) il].push_back(t);
+            }
+            layer_weights.clear();
+        } else if (cfg.moe.enabled) {
+            std::fprintf(stderr, "bmoe: prefill-device: layer ends not found in the graph; layer weights stay "
+                                 "resident on the device"
+                                 "\n");
+        }
         im.prefill_dev = std::make_unique<detail::PrefillDevice>();
         std::string perr;
         if (!im.prefill_dev->init(im.prefill_devs[0], layer_weights, perr))
@@ -1147,6 +1166,13 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 return fail("prefill device " + cfg.prefill.device + " expert arena: " + perr);
             im.arena_layers.clear();
             im.arena->set_test_delay_us(cfg.prefill.test_load_delay_us);
+            if (!im.arena->init_dense(im.prefill_devs[0], dense_per_layer, perr))
+                return fail("prefill device " + cfg.prefill.device + " dense arena: " + perr);
+            if (im.arena->has_dense())
+                std::fprintf(stderr,
+                             "bmoe: prefill-device dense arena: layer weights through 2 slots, %.1f MiB"
+                             "\n",
+                             (double) im.arena->dense_slot_bytes() / (1024.0 * 1024.0));
             std::fprintf(
                 stderr, "bmoe: prefill-device expert arena: %d layers through 2 slots of %.1f MiB, %d loaders\n",
                 im.arena->n_layers(), (double) im.arena->slot_bytes() / 2.0 / (1024.0 * 1024.0), cfg.moe.io_threads);

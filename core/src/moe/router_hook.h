@@ -95,6 +95,14 @@ public:
     // path — the routing lives on the device and the arena, not the streamer, supplies the experts.
     void set_device_arena(DeviceExpertArena * arena) { device_arena_ = arena; }
 
+    // After capture, whether the last node of every layer was seen: what paces a dense arena, which
+    // must load a layer's weights before its first node and so waits at the end of the one before.
+    bool learned_layer_ends() const {
+        for (const std::string & n : last_node_)
+            if (n.empty()) return false;
+        return !last_node_.empty();
+    }
+
     // After capture, the subset of those weights the graph only ever GATHERS ROWS from — the shape a
     // token embedding table has, and the one residency policy can exploit (see IRowSource). A name is
     // in this set only if EVERY node that referenced the tensor was a row gather taking it as the
@@ -319,6 +327,7 @@ private:
     std::vector<ggml_tensor *> captured_state_objects_;
     std::unordered_set<const ggml_tensor *> captured_state_seen_;
     DeviceExpertArena * device_arena_ = nullptr;
+    std::vector<std::string> last_node_; // per layer: name of its last node in the capture graph
     // Capture-time evidence for row_gathered_weights(): every weight seen as the TABLE of a row
     // gather, and every weight seen in any way that rules that out. The verdict is the difference.
     std::unordered_set<std::string> row_gathered_;
