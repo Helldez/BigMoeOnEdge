@@ -107,6 +107,9 @@ ValidationResult validate(const RunConfig & cfg) {
             return fail("prefill.min_tokens must be >= " + std::to_string(PrefillDeviceConfig::min_tokens_floor) +
                         ": a one-token device graph would share its shape with a CPU decode graph, and llama.cpp "
                         "reuses a same-shaped graph without re-scheduling it.");
+        if (cfg.prefill.load_threads < 1 || cfg.prefill.load_threads > PrefillDeviceConfig::load_threads_max)
+            return fail("prefill.load_threads must be in [1, " + std::to_string(PrefillDeviceConfig::load_threads_max) +
+                        "]");
         if (cfg.prefill.min_tokens > cfg.n_ctx)
             return fail("prefill.min_tokens=" + std::to_string(cfg.prefill.min_tokens) +
                         " exceeds n_ctx=" + std::to_string(cfg.n_ctx) + ": no prefill could ever reach the device.");

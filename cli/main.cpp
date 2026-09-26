@@ -422,6 +422,9 @@ static void print_usage(const char * argv0) {
         "                          rpc-server. With --moe-stream the experts reach it through a\n"
         "                          two-layer arena. Not with speculation or --row-stream. Off.\n"
         "      --prefill-min-tokens N  narrowest prefill piece sent to that device (default 32)\n"
+        "      --prefill-loaders N  threads that fill the device's layer slots from flash, with\n"
+        "                          --moe-stream (1..16, default 8). Decode read lanes stay\n"
+        "                          --io-threads.\n"
         "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
         "      --no-think          render the chat template with reasoning disabled\n"
         "      --progress          emit machine telemetry (one JSON line per token)\n"
@@ -663,6 +666,8 @@ int main(int argc, char ** argv) {
             cfg.prefill.device = next("--prefill-device");
         else if (a == "--prefill-min-tokens")
             cfg.prefill.min_tokens = std::atoi(next("--prefill-min-tokens"));
+        else if (a == "--prefill-loaders")
+            cfg.prefill.load_threads = std::atoi(next("--prefill-loaders"));
         else if (a == "--n-expert-used")
             cfg.n_expert_used = std::atoi(next("--n-expert-used"));
         else if (a == "--temp")

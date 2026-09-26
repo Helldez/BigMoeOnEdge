@@ -1167,7 +1167,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                      (double) im.prefill_dev->state_bytes() / (1024.0 * 1024.0), state_where.c_str());
         if (cfg.moe.enabled) {
             im.arena = std::make_unique<DeviceExpertArena>();
-            if (!im.arena->init(im.prefill_devs[0], im.arena_shards, im.arena_layers, cfg.moe.io_threads,
+            if (!im.arena->init(im.prefill_devs[0], im.arena_shards, im.arena_layers, cfg.prefill.load_threads,
                                 cfg.moe.o_direct, perr))
                 return fail("prefill device " + cfg.prefill.device + " expert arena: " + perr);
             im.arena_layers.clear();
@@ -1180,9 +1180,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                              "to a type the device takes (%.1f MiB)\n",
                              (double) im.arena->dense_slot_bytes() / (1024.0 * 1024.0), im.arena->dense_converted(),
                              (double) im.arena->dense_converted_bytes() / (1024.0 * 1024.0));
-            std::fprintf(
-                stderr, "bmoe: prefill-device expert arena: %d layers through 2 slots of %.1f MiB, %d loaders\n",
-                im.arena->n_layers(), (double) im.arena->slot_bytes() / 2.0 / (1024.0 * 1024.0), cfg.moe.io_threads);
+            std::fprintf(stderr,
+                         "bmoe: prefill-device expert arena: %d layers through 2 slots of %.1f MiB, %d loaders\n",
+                         im.arena->n_layers(), (double) im.arena->slot_bytes() / 2.0 / (1024.0 * 1024.0),
+                         cfg.prefill.load_threads);
         }
         im.hook->count_device_nodes(true);
 

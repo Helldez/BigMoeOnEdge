@@ -344,6 +344,13 @@ int main() {
         RunConfig c = ok_base();
         c.prefill.device = "HTP0";
         expect_ok("a prefill device with the default min_tokens is valid", c);
+        c.prefill.load_threads = 0;
+        expect_fail("no arena loader thread", c);
+        c.prefill.load_threads = PrefillDeviceConfig::load_threads_max + 1;
+        expect_fail("arena loaders above the cap", c);
+        c.prefill.load_threads = PrefillDeviceConfig::load_threads_max;
+        expect_ok("arena loaders at the cap", c);
+        c.prefill.load_threads = 8;
         c.prefill.min_tokens = PrefillDeviceConfig::min_tokens_floor;
         expect_ok("min_tokens at the floor is valid", c);
         c.prefill.min_tokens = 1;

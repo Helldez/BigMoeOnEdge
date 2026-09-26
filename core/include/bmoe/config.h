@@ -367,6 +367,14 @@ struct PrefillDeviceConfig {
     // verify batch is excluded by validation for now.
     int min_tokens = 32;
 
+    // Loader threads of the streamed-expert arena (with moe.enabled). Separate from moe.io_threads,
+    // which sets the decode's read lanes: a prefill graph has the whole CPU idle while the device
+    // computes, and each loader both reads and repacks (a K-quant repack is CPU-heavy), while decode
+    // wants few lanes. Measured on a Q4_K_M: 4 loaders left the device waiting 10.3 s of a 15.1 s
+    // prefill, 8 left it 5.0 of 10.0.
+    int load_threads = 8;
+    static constexpr int load_threads_max = 16;
+
     // TEST ONLY: sleep this long before the first upload of each layer in the arena. On a tiny
     // model the loaders always beat the graph to the next layer, so a missing barrier would go
     // unnoticed; slowed down, the barrier is the only thing keeping compute behind the loads, and the

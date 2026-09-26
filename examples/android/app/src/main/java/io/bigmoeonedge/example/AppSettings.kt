@@ -83,6 +83,10 @@ data class AppSettings(
     // since the NPU kernels take no K-quant, and its numbers are fp16 on the matrix engine, so the
     // output is not identical to the CPU's. Off until the on-device A/B prices both.
     val npuPrefill: Boolean = false,
+    // Threads that fill the NPU's two layer slots from flash during a prefill (--prefill-loaders).
+    // The CPU is idle while the NPU computes, and a K-quant repack is CPU-heavy, so this wants more
+    // than the decode's read lanes above, which it no longer shares.
+    val npuLoaders: Int = 8,
     // Cache-aware substitution, as a PERCENTAGE of the router's score range (0 = off). Before a
     // routing is committed, every expert already resident gets its score raised by this fraction of
     // the range and the top-k is taken again, so a resident expert wins a slot only when it was
@@ -224,7 +228,10 @@ data class AppSettings(
             if (substitutePct > 0 && cacheOn) a += listOf("--expert-substitute", (substitutePct / 100.0).toString())
         }
         // Outside the streaming block: it applies to a model that fits too (no arena then).
-        if (npuActive()) a += listOf("--prefill-device", NPU_DEVICE)
+        if (npuActive()) {
+            a += listOf("--prefill-device", NPU_DEVICE)
+            if (!mmap) a += listOf("--prefill-loaders", npuLoaders.toString())
+        }
         // Outside the streaming block on purpose: speculation is a decode-loop change, not a
         // residency policy, so it applies to the mmap baseline too — which is what makes an A/B of
         // the two against each other meaningful.
@@ -272,6 +279,7 @@ data class AppSettings(
             .putBoolean("rowStream", rowStream)
             .putBoolean("releaseMmap", releaseMmap)
             .putBoolean("npuPrefill", npuPrefill)
+            .putInt("npuLoaders", npuLoaders)
             .putInt("substitutePct", substitutePct)
             .putInt("sessionCtx", sessionCtx)
             .putString("spec", spec).putInt("mtpDraft", mtpDraft).putInt("mtpPMinPct", mtpPMinPct)
@@ -302,6 +310,8 @@ data class AppSettings(
         const val NPU_UBATCH = 2048
         // The Hexagon backend's device name for the first NPU session.
         const val NPU_DEVICE = "HTP0"
+        // Loader rungs for the NPU slots; the engine accepts 1..16.
+        val NPU_LOADER_CHOICES = intArrayOf(2, 4, 6, 8, 12)
 
         // Context rungs. 4096 is the default a chat wants; the shorter ones exist for a model that
         // already fills RAM, where the KV cache competes with the weights themselves.
@@ -424,6 +434,7 @@ data class AppSettings(
                 rowStream = p.getBoolean("rowStream", d.rowStream),
                 releaseMmap = p.getBoolean("releaseMmap", d.releaseMmap),
                 npuPrefill = p.getBoolean("npuPrefill", d.npuPrefill),
+                npuLoaders = p.getInt("npuLoaders", d.npuLoaders),
                 substitutePct = p.getInt("substitutePct", d.substitutePct),
                 sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
                 spec = run {

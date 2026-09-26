@@ -149,6 +149,10 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         current.npuPrefill,
                     ) { onChange(current.copy(npuPrefill = it)) }
                     IntSetting(
+                        "NPU loader threads", AppSettings.NPU_LOADER_CHOICES, current.npuLoaders,
+                        enabled = current.npuPrefill && stream,
+                    ) { onChange(current.copy(npuLoaders = it)) }
+                    IntSetting(
                         "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
                         format = { if (it == 0) "off" else "$it" },
                         // Mutually exclusive with predictive prefetch: two predictors would speculate
