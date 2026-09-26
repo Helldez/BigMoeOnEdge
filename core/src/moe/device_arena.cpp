@@ -153,9 +153,10 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
     }
 
     // Each projection gets a region of the slot sized for its largest variant; every variant's slot
-    // tensor sits at the start of that region. A backend that pads rows for its own layout (Hexagon
-    // rounds both matrix dims up to 32) would put expert e somewhere other than e * nb2, where the
-    // views write it, so a padded variant is refused.
+    // tensor sits at the start of that region. On the device an expert need not occupy the bytes it
+    // does in the file: a backend that re-lays weights out (Hexagon tiles them, and holds a K-quant in
+    // a wider tile format) puts expert e at e * (allocated size / n_expert). That is the stride used
+    // below, so it must divide evenly.
     ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
     const size_t align = ggml_backend_buft_get_alignment(buft);
     size_t region_off[MoeRecipe::max_exps] = {};
@@ -164,12 +165,13 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
     for (int p = 0; p < n_proj_; ++p) {
         size_t biggest = 0;
         for (const ggml_tensor * v : variants[p]) {
-            if (ggml_backend_buft_get_alloc_size(buft, v) != ggml_nbytes(v)) {
-                err = std::string("the device pads expert matrices of ") + v->name +
-                      "; per-expert upload needs them unpadded";
+            const size_t dev = ggml_backend_buft_get_alloc_size(buft, v);
+            if (dev % (size_t) n_expert_ != 0 || dev / (size_t) n_expert_ < (size_t) v->nb[2]) {
+                err = std::string("the device lays out ") + v->name +
+                      " in a way the arena cannot address one expert at a time";
                 return false;
             }
-            biggest = std::max(biggest, ggml_nbytes(v));
+            biggest = std::max(biggest, dev);
             n_tensors += 1 + (size_t) n_expert_;
         }
         region_off[p] = slot_size;
@@ -204,14 +206,18 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
                     err = std::string("cannot place an expert slot tensor for ") + variants[p][v]->name;
                     return false;
                 }
+                // One single-expert tensor per expert, placed where the device keeps that expert. Not
+                // views: a view may not reach past the file-sized extent of its source, and on a
+                // backend whose per-expert stride is wider than the file's the last experts would.
+                const size_t stride = ggml_backend_buft_get_alloc_size(buft, w.t) / (size_t) n_expert_;
                 for (int e = 0; e < n_expert_; ++e) {
-                    ggml_tensor * view = ggml_view_3d(ctx_, w.t, w.t->ne[0], w.t->ne[1], 1, w.t->nb[1], w.t->nb[2],
-                                                      (size_t) e * w.t->nb[2]);
-                    if (ggml_backend_view_init(view) != GGML_STATUS_SUCCESS) {
-                        err = "cannot initialise an expert view";
+                    ggml_tensor * x = ggml_new_tensor_3d(ctx_, w.t->type, w.t->ne[0], w.t->ne[1], 1);
+                    if (ggml_backend_tensor_alloc(slot_buf_[s], x, base + region_off[p] + (size_t) e * stride) !=
+                        GGML_STATUS_SUCCESS) {
+                        err = "cannot place an expert inside its slot";
                         return false;
                     }
-                    w.views.push_back(view);
+                    w.views.push_back(x);
                 }
                 zmax = std::max(zmax, ggml_nbytes(w.t));
                 twins_[s][p].push_back(std::move(w));
