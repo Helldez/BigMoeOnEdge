@@ -34,6 +34,10 @@
 #include "bmoe/row_source.h"
 #include "expert_stream_source.h"
 
+namespace bmoe {
+class DeviceExpertArena;
+}
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -80,6 +84,16 @@ public:
     // reading the model's mmap for the life of the run, which is what --dense-weights anon and
     // ahwb exist to prevent. Order is first-seen, so a run is reproducible.
     const std::vector<ggml_tensor *> & captured_weight_objects() const { return captured_weight_objects_; }
+
+    // After capture, the memory module's state tensors the graph read (KV cache, recurrent state):
+    // llama.cpp names them cache_*, and the graph only ever reaches them through views, so they are
+    // found through view_src. A prefill device needs them in memory it can address.
+    const std::vector<ggml_tensor *> & captured_state_objects() const { return captured_state_objects_; }
+
+    // While set, the graph being computed runs on a prefill device fed by `arena`: the hook isolates
+    // each layer's routing node only to pace the arena there, and does nothing else of the streaming
+    // path — the routing lives on the device and the arena, not the streamer, supplies the experts.
+    void set_device_arena(DeviceExpertArena * arena) { device_arena_ = arena; }
 
     // After capture, the subset of those weights the graph only ever GATHERS ROWS from — the shape a
     // token embedding table has, and the one residency policy can exploit (see IRowSource). A name is
@@ -302,6 +316,9 @@ private:
     std::unordered_map<std::string, ggml_tensor *> captured_weights_;
     std::vector<ggml_tensor *> captured_weight_objects_; // same leaves, deduplicated by address
     std::unordered_set<const ggml_tensor *> captured_weight_seen_;
+    std::vector<ggml_tensor *> captured_state_objects_;
+    std::unordered_set<const ggml_tensor *> captured_state_seen_;
+    DeviceExpertArena * device_arena_ = nullptr;
     // Capture-time evidence for row_gathered_weights(): every weight seen as the TABLE of a row
     // gather, and every weight seen in any way that rules that out. The verdict is the difference.
     std::unordered_set<std::string> row_gathered_;

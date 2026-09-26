@@ -137,6 +137,11 @@ struct RunSummary {
     // Graph nodes a device backend computed during this turn's prefill: the proof the device RAN,
     // where prefill_device_tokens only says the weights were moved there. Zero when that is off.
     long long prefill_device_nodes = 0;
+    // With streaming, the experts the device prefill read through its arena, and the wall time the
+    // graph waited at a layer for them: the flash half of a device prefill, which the streamer's
+    // own prefill_read_mib/prefill_stall_seconds above do not see. Zero without an arena.
+    double prefill_device_read_mib = 0.0;
+    double prefill_device_stall_seconds = 0.0;
 
     // MoE streaming totals (zero when streaming is off)
     double moe_read_mib = 0.0;

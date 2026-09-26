@@ -352,7 +352,10 @@ int main() {
         expect_fail("min_tokens above n_ctx could never reach the device", c);
         c.prefill.min_tokens = 32;
         c.moe.enabled = true;
-        expect_fail("prefill device with streaming is not wired yet", c);
+        expect_ok("prefill device with streaming (the expert arena)", c);
+        c.moe.row_stream = true;
+        expect_fail("prefill device with the row policy: its gathers happen on the host", c);
+        c.moe.row_stream = false;
         c.moe.enabled = false;
         c.spec.source = DraftSource::ngram;
         expect_fail("prefill device with speculation breaks the width invariant", c);

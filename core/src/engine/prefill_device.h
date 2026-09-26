@@ -32,6 +32,21 @@ public:
     // silently skipped weight would pin its op to the CPU and cost a split per graph.
     bool init(ggml_backend_dev_t dev, const std::vector<ggml_tensor *> & weights, std::string & err);
 
+    // Moves the memory module's state (KV cache, recurrent state) into the device's HOST buffer type
+    // for good: memory the CPU reads directly and the device addresses too, so decode on the CPU and
+    // prefill on the device share one cache without a copy per turn. Left on the CPU, the attention of
+    // every device graph would fall back to the CPU, which at prefill widths is most of the time. A
+    // device without a host buffer type (RPC) gets a plain CPU buffer: nothing gained, same behaviour.
+    // Returns the buffer type used through `where`.
+    bool init_state(ggml_backend_dev_t dev,
+                    const std::vector<ggml_tensor *> & states,
+                    std::string & where,
+                    std::string & err);
+    // Zero the moved state, for every llama_memory_clear(data=true) of the session: that call clears
+    // the buffers llama.cpp allocated, which these tensors no longer live in.
+    void clear_state();
+    size_t state_bytes() const { return state_bytes_; }
+
     // Placement for the NEXT graph. Idempotent; cheap (three stores per tensor).
     void place(bool on_device);
     void to_host() { place(false); }
@@ -58,6 +73,11 @@ private:
     ggml_backend_buffer_t buf_ = nullptr; // may be a multi-buffer when a backend caps buffer size
     size_t bytes_ = 0;
     bool on_device_ = false;
+
+    std::vector<Entry> states_; // .dev is the moved binding, in force from init_state on
+    ggml_context * state_ctx_ = nullptr;
+    ggml_backend_buffer_t state_buf_ = nullptr;
+    size_t state_bytes_ = 0;
 };
 
 } // namespace bmoe::detail

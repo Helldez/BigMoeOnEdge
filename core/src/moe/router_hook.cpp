@@ -2,6 +2,7 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "device_arena.h"
 #include "../io/platform_io.h"
 
 #include <cmath>
@@ -171,6 +172,8 @@ void RouterHook::begin_capture() {
     captured_weights_.clear();
     captured_weight_objects_.clear();
     captured_weight_seen_.clear();
+    captured_state_objects_.clear();
+    captured_state_seen_.clear();
     row_gathered_.clear();
     row_disqualified_.clear();
 }
@@ -1368,6 +1371,12 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             for (int s = 0; s < GGML_MAX_SRC; ++s) {
                 ggml_tensor * src = t->src[s];
                 if (!src || src->name[0] == '\0') continue;
+                // Memory-module state, reached through a view. Not a weight: recorded apart.
+                ggml_tensor * base = src->view_src ? src->view_src : src;
+                if (std::strncmp(base->name, "cache_", 6) == 0) {
+                    if (captured_state_seen_.insert(base).second) captured_state_objects_.push_back(base);
+                    continue;
+                }
                 int il = -1;
                 const int p = match_expert(src->name, recipe_, il);
                 if (p >= 0) {
@@ -1396,6 +1405,17 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             }
         }
         return false; // capture never isolates a node
+    }
+
+    // ── device prefill: pace the expert arena at each layer's routing node ──
+    // Everything below is the host streaming path, and none of it applies to a graph on the device:
+    // the routing ids live in device memory, the streamer does not feed this graph, and validation
+    // keeps the row policy (the one host job a device graph would still need) off this path.
+    if (device_arena_) {
+        const int dl = is_moe_node(t->name) ? match_layer_node(t->name, "ffn_moe_topk-") : -1;
+        if (ask) return dl >= 0;
+        if (dl >= 0) device_arena_->barrier(dl);
+        return true;
     }
 
     // ── row-gathered dense tables: put the rows in place before the node reads them ──

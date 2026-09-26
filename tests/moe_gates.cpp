@@ -917,6 +917,97 @@ int main(int argc, char ** argv) {
             std::snprintf(a, sizeof(a), "%.17g/%d", p_cpu.nll, p_cpu.n_top1);
             std::snprintf(b, sizeof(b), "%.17g/%d", p_dev.nll, p_dev.n_top1);
             fails += check("G16c perplexity with device prefill == all CPU (nll/top1, bit for bit)", a, b);
+
+            // ── G17: streamed experts through the device arena ──
+            // The model streams; the device prefill gets its experts from two slots refilled layer by
+            // layer while decode keeps the streamer's cache. Same reference, same pieces. Variants: no
+            // cache, a small evicting cache (decode must not see a trace of the arena), and one loader
+            // (every layer waits at its barrier, the ordering the slots rely on at its tightest). Each
+            // must also show that the arena read experts and the device computed.
+            struct Variant {
+                const char * name;
+                int cache_mb;
+                int io_threads;
+                int delay_us;
+            };
+            const Variant variants[] = {
+                {"G17a arena, cache off, 4 loaders", 0, 4, 0},
+                {"G17b arena, small forced cache, 4 loaders", 2, 4, 0},
+                // Loads slowed until the graph always reaches a layer first: only the barrier orders them.
+                {"G17c arena, cache off, 1 slowed loader", 0, 1, 20000},
+            };
+            // Greedy text alone is a weak witness here: on the tiny model a slot holding the wrong
+            // layer's experts can still produce the same few tokens (measured, with the barrier
+            // sabotaged). So each variant is also scored for perplexity, bit for bit, and must read the
+            // same bytes as the first: a graph that outran its loads reads less, since the drained
+            // queue is dropped.
+            double arena_mib_ref = -1.0;
+            for (const Variant & v : variants) {
+                RunConfig c = pdev;
+                c.moe.enabled = true;
+                c.moe.cache_mb = v.cache_mb;
+                c.moe.force_cache = v.cache_mb > 0;
+                c.moe.io_threads = v.io_threads;
+                c.prefill.test_load_delay_us = v.delay_us;
+                std::unique_ptr<Session> vs = Session::open(session_config_from(c), open_err);
+                if (!vs) {
+                    std::fprintf(stderr, "%s open failed: %s\n", v.name, open_err.c_str());
+                    return 2;
+                }
+                RunResult rr = vs->generate(req);
+                if (!rr) {
+                    std::fprintf(stderr, "%s failed: %s\n", v.name, rr.error.c_str());
+                    return 2;
+                }
+                fails += check(v.name, s_pref, rr.generated_text);
+                const double mib = rr.summary.prefill_device_read_mib;
+                if (arena_mib_ref < 0.0) arena_mib_ref = mib;
+                if (mib <= 0.0 || mib != arena_mib_ref || rr.summary.prefill_device_nodes <= 0) {
+                    std::printf("[FAIL] %s: the arena read %.3f MiB (expected %.3f), the device computed %lld nodes\n",
+                                v.name, mib, arena_mib_ref, rr.summary.prefill_device_nodes);
+                    ++fails;
+                } else {
+                    std::printf("[PASS] %s: the arena read %.3f MiB, the device computed %lld nodes\n", v.name, mib,
+                                rr.summary.prefill_device_nodes);
+                }
+                PplResult pv = vs->perplexity(pr);
+                if (!pv.ok) {
+                    std::fprintf(stderr, "%s perplexity failed: %s\n", v.name, pv.error.c_str());
+                    return 2;
+                }
+                char cv[64];
+                std::snprintf(cv, sizeof(cv), "%.17g/%d", pv.nll, pv.n_top1);
+                fails += check((std::string(v.name) + ": perplexity bit for bit").c_str(), a, cv);
+            }
+
+            // Two generates and a perplexity pass through one streamed session: the arena refills per
+            // graph and the streamer's cache carries on underneath it.
+            RunConfig cs = pdev;
+            cs.moe.enabled = true;
+            cs.moe.cache_mb = 2;
+            cs.moe.force_cache = true;
+            cs.moe.io_threads = 4;
+            std::unique_ptr<Session> ss = Session::open(session_config_from(cs), open_err);
+            if (!ss) {
+                std::fprintf(stderr, "G17 session open failed: %s\n", open_err.c_str());
+                return 2;
+            }
+            RunResult h1 = ss->generate(req);
+            RunResult h2 = ss->generate(req);
+            if (!h1 || !h2) {
+                std::fprintf(stderr, "G17 session generate failed: %s\n", (!h1 ? h1.error : h2.error).c_str());
+                return 2;
+            }
+            fails += check("G17d streamed session generate #1 == all CPU", s_pref, h1.generated_text);
+            fails += check("G17d streamed session generate #2 == all CPU", s_pref, h2.generated_text);
+            PplResult p_arena = ss->perplexity(pr);
+            if (!p_arena.ok) {
+                std::fprintf(stderr, "G17 perplexity failed: %s\n", p_arena.error.c_str());
+                return 2;
+            }
+            char c3[64];
+            std::snprintf(c3, sizeof(c3), "%.17g/%d", p_arena.nll, p_arena.n_top1);
+            fails += check("G17e perplexity through the arena == all CPU (nll/top1, bit for bit)", a, c3);
         }
     }
 

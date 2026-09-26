@@ -110,11 +110,11 @@ ValidationResult validate(const RunConfig & cfg) {
         if (cfg.prefill.min_tokens > cfg.n_ctx)
             return fail("prefill.min_tokens=" + std::to_string(cfg.prefill.min_tokens) +
                         " exceeds n_ctx=" + std::to_string(cfg.n_ctx) + ": no prefill could ever reach the device.");
-        // Streamed experts are rebound by the streamer on every layer; the device path would have to
-        // fill its own arena from the same reads. Not wired yet.
-        if (cfg.moe.enabled)
-            return fail("prefill.device does not combine with moe.enabled yet: the streamed expert "
-                        "arena on the device is not implemented");
+        // The row policy serves dense tables from the eval callback at each gather, and a device graph
+        // bypasses the host streaming path in that callback entirely.
+        if (cfg.moe.row_stream)
+            return fail("prefill.device does not combine with moe.row_stream: the tables it serves are "
+                        "gathered on the host, inside a graph that would run on the device");
         // Speculation widens CPU graphs past one token and runs a second context over the same
         // weights; both would break the width invariant the rebind relies on.
         if (cfg.spec.enabled()) return fail("prefill.device does not combine with speculative decoding");

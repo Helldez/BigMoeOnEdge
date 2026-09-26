@@ -9,6 +9,7 @@
 #include "prefill_device.h"
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
+#include "../moe/device_arena.h"
 #include "../moe/gguf_offsets.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
@@ -264,15 +265,6 @@ int prefill_piece(const SessionConfig & cfg) {
     return cfg.n_ubatch > 0 ? std::min(cfg.n_ubatch, cfg.n_batch) : cfg.n_batch;
 }
 
-// Every exit from a prefill (errors and cancellation included) leaves the weights on the host: the
-// next graph may be a decode, and the CPU cannot read a device buffer.
-struct HostPlacementGuard {
-    detail::PrefillDevice * dev;
-    ~HostPlacementGuard() {
-        if (dev) dev->to_host();
-    }
-};
-
 } // namespace
 
 // All native state lives here, behind the pimpl. Built once by Session::open(); every
@@ -294,6 +286,46 @@ struct Session::Impl {
     // loader, which keeps the pointer, so it lives here; the null entry terminates it.
     ggml_backend_dev_t prefill_devs[2] = {nullptr, nullptr};
     std::unique_ptr<detail::PrefillDevice> prefill_dev;
+    // With streaming on, the experts reach the device through this arena instead of a resident
+    // copy. `arena_layers`/`arena_shards` are what the streamer was given, kept for its init.
+    std::unique_ptr<DeviceExpertArena> arena;
+    std::vector<LayerExperts> arena_layers;
+    std::vector<std::string> arena_shards;
+
+    // Placement of the NEXT graph: the layer weights, the streamed experts and the hook move together.
+    void place_prefill(bool on_device) {
+        if (!prefill_dev) return;
+        prefill_dev->place(on_device);
+        if (arena) {
+            arena->place(on_device);
+            hook->set_device_arena(on_device ? arena.get() : nullptr);
+        }
+    }
+    // One llama_decode, on whichever side place_prefill last chose. On the device the arena is
+    // started before and drained after, and a failed expert read fails the decode: the graph would
+    // have computed on a slot that never filled.
+    int decode_placed(llama_context * c, const llama_batch & b) {
+        const bool dev = arena && prefill_dev && prefill_dev->on_device();
+        if (dev) arena->begin_graph();
+        int rc = llama_decode(c, b);
+        if (dev) {
+            arena->end_graph();
+            if (rc == 0 && arena->failed()) rc = -1;
+        }
+        return rc;
+    }
+    // Every llama_memory_clear(data) of the target context: llama.cpp clears the buffers it
+    // allocated, which a moved model state no longer lives in.
+    // Every exit from a prefill (errors and cancellation included) leaves the weights on the host:
+    // the next graph may be a decode, and the CPU cannot read a device buffer.
+    struct PlacementGuard {
+        Impl & im;
+        ~PlacementGuard() { im.place_prefill(false); }
+    };
+    void clear_memory(llama_context * c) {
+        llama_memory_clear(llama_get_memory(c), true);
+        if (prefill_dev) prefill_dev->clear_state();
+    }
 
     // The MTP draft source (SpecConfig::source == mtp). A SECOND context over the SAME model,
     // created with ctx_type = MTP so llama.cpp builds the nextn graph instead of the trunk one. It
@@ -387,6 +419,7 @@ struct Session::Impl {
         // at the hook), then the hook, then unmap the model, then release the backend.
         source.shutdown();
         // Hands every weight back to its mapping, then frees the device copy: before the model goes.
+        arena.reset(); // joins its loaders and hands the experts back to the streamer's binding
         prefill_dev.reset();
         if (smpl) llama_sampler_free(smpl); // independent of ctx/model; free before them
         // The speculative driver holds both contexts and detaches the backend samplers it
@@ -450,7 +483,7 @@ PplResult Session::perplexity(const PplRequest & req) {
     }
     r.n_tokens = n;
 
-    llama_memory_clear(llama_get_memory(ctx), true);
+    im.clear_memory(ctx);
     im.kv_tokens.clear();
 
     // Warm-up graph, discarded. Both routing policies decide at the terminal node of each layer's
@@ -467,7 +500,7 @@ PplResult Session::perplexity(const PplRequest & req) {
             r.error = "warm-up decode failed";
             return r;
         }
-        llama_memory_clear(llama_get_memory(ctx), true);
+        im.clear_memory(ctx);
     }
     const long long routed0 = im.hook->experts_routed();
     const long long dropped0 = im.hook->experts_dropped();
@@ -534,13 +567,13 @@ PplResult Session::perplexity(const PplRequest & req) {
         // Same placement rule as generate()'s prefill, so --ppl scores exactly the numerics a prompt
         // gets: wide pieces on the prefill device, a narrow tail on the CPU.
         const int step = im.prefill_dev ? prefill_piece(im.cfg) : im.cfg.n_batch;
-        HostPlacementGuard placement_guard{im.prefill_dev.get()};
+        Impl::PlacementGuard placement_guard{im};
         for (int i = 0; i < n; i += step) {
             const int chunk = std::min(step, n - i);
-            if (im.prefill_dev) im.prefill_dev->place(chunk >= im.cfg.prefill.min_tokens);
+            im.place_prefill(im.prefill_dev && chunk >= im.cfg.prefill.min_tokens);
             batch_fill(b, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ true);
             im.hook->set_batch_phase(req.as_decode ? 1 : 0);
-            if (llama_decode(ctx, b) != 0) {
+            if (im.decode_placed(ctx, b) != 0) {
                 r.error = "decode failed at position " + std::to_string(i);
                 return r;
             }
@@ -980,6 +1013,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             im.source.set_row_tensors(std::move(rows), row_budget);
         }
 
+        if (cfg.prefill.enabled()) {
+            im.arena_layers = layers;
+            im.arena_shards = offs.shard_paths;
+        }
         if (!im.source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
@@ -1067,20 +1104,22 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 #endif
         }
 
-        llama_memory_clear(llama_get_memory(ctx), true); // discard warm-up KV
+        im.clear_memory(ctx); // discard warm-up KV
         if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
     }
 
-    // Prefill device: learn the layer weights from one graph, then give them a device copy. The same
-    // capture the streamer uses; streaming is excluded by validate(), so here it only collects.
+    // Prefill device: learn the layer weights from one graph, then give them a device copy. Streaming
+    // already ran that capture; without it, run it here, only to collect.
     if (cfg.prefill.enabled()) {
-        im.hook->begin_capture();
-        llama_token warm_tok = llama_vocab_bos(im.vocab);
-        if (warm_tok < 0) warm_tok = 0;
-        llama_batch warm = llama_batch_get_one(&warm_tok, 1);
-        if (llama_decode(ctx, warm) != 0) return fail("prefill-device capture decode failed");
-        im.hook->end_capture();
-        llama_memory_clear(llama_get_memory(ctx), true);
+        if (!cfg.moe.enabled) {
+            im.hook->begin_capture();
+            llama_token warm_tok = llama_vocab_bos(im.vocab);
+            if (warm_tok < 0) warm_tok = 0;
+            llama_batch warm = llama_batch_get_one(&warm_tok, 1);
+            if (llama_decode(ctx, warm) != 0) return fail("prefill-device capture decode failed");
+            im.hook->end_capture();
+            im.clear_memory(ctx);
+        }
 
         // Layer weights only ("blk.N." is llama.cpp's naming for every architecture). The token
         // table is a row gather and the output head computes the last position alone, so both stay
@@ -1096,6 +1135,22 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         std::string perr;
         if (!im.prefill_dev->init(im.prefill_devs[0], layer_weights, perr))
             return fail("prefill device " + cfg.prefill.device + ": " + perr);
+        std::string state_where;
+        if (!im.prefill_dev->init_state(im.prefill_devs[0], im.hook->captured_state_objects(), state_where, perr))
+            return fail("prefill device " + cfg.prefill.device + ": " + perr);
+        std::fprintf(stderr, "bmoe: prefill-device model state: %.1f MiB in %s\n",
+                     (double) im.prefill_dev->state_bytes() / (1024.0 * 1024.0), state_where.c_str());
+        if (cfg.moe.enabled) {
+            im.arena = std::make_unique<DeviceExpertArena>();
+            if (!im.arena->init(im.prefill_devs[0], im.arena_shards, im.arena_layers, cfg.moe.io_threads,
+                                cfg.moe.o_direct, perr))
+                return fail("prefill device " + cfg.prefill.device + " expert arena: " + perr);
+            im.arena_layers.clear();
+            im.arena->set_test_delay_us(cfg.prefill.test_load_delay_us);
+            std::fprintf(
+                stderr, "bmoe: prefill-device expert arena: %d layers through 2 slots of %.1f MiB, %d loaders\n",
+                im.arena->n_layers(), (double) im.arena->slot_bytes() / 2.0 / (1024.0 * 1024.0), cfg.moe.io_threads);
+        }
         im.hook->count_device_nodes(true);
         std::fprintf(stderr,
                      "bmoe: prefill-device %s: %zu layer tensors, %.1f MiB copied; graphs >= %d tokens run there\n",
@@ -1270,7 +1325,7 @@ RunResult Session::generate(const GenerateRequest & req,
     // clear_kv = "new chat": drop the KV and the engine-held conversation. Otherwise this turn
     // continues the conversation, reusing the KV prefix already decoded from earlier turns.
     if (req.clear_kv) {
-        llama_memory_clear(llama_get_memory(ctx), true);
+        im.clear_memory(ctx);
         // The draft context tracks the target's positions and must be dropped with it, or the first
         // draft of the new conversation is conditioned on the previous one.
         if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
@@ -1387,7 +1442,7 @@ RunResult Session::generate(const GenerateRequest & req,
             // SWA-style memory (e.g. Gemma) can refuse a partial removal; fall back to a full
             // re-prefill in that case rather than continuing from an inconsistent cache.
             if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
-                llama_memory_clear(llama_get_memory(ctx), true);
+                im.clear_memory(ctx);
                 n_common = 0;
             }
             im.kv_tokens.resize(n_common);
@@ -1405,15 +1460,14 @@ RunResult Session::generate(const GenerateRequest & req,
     // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
     auto rollback_turn = [&]() {
         if (chat_on) {
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1))
-                llama_memory_clear(llama_get_memory(ctx), true);
+            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) im.clear_memory(ctx);
             im.kv_tokens.resize(n_common);
             if (history_pushed) {
                 im.chat_history.pop_back();
                 history_pushed = false;
             }
         } else {
-            llama_memory_clear(llama_get_memory(ctx), true);
+            im.clear_memory(ctx);
         }
         // Whatever the target rolled back to, the draft context follows: a cancelled turn that left
         // the two at different positions would fail the NEXT turn, not this one.
@@ -1489,14 +1543,16 @@ RunResult Session::generate(const GenerateRequest & req,
     // a batch would be split into ubatches whose last one could be one token wide — the shape of the
     // decode graph that follows, which llama.cpp would then reuse without re-scheduling it.
     const int pf_step = im.prefill_dev ? prefill_piece(im.cfg) : im.cfg.n_batch;
-    HostPlacementGuard placement_guard{im.prefill_dev.get()};
+    Impl::PlacementGuard placement_guard{im};
     int prefill_device_tokens = 0;
+    const uint64_t arena_read0 = im.arena ? im.arena->read_bytes() : 0;
+    const double arena_stall0 = im.arena ? im.arena->stall_seconds() : 0.0;
     const long long device_nodes0 = im.hook->device_nodes();
     for (int i = (int) n_common; i < n_prompt; i += pf_step) {
         const int chunk = std::min(pf_step, n_prompt - i);
         if (im.prefill_dev) {
             const bool on_dev = chunk >= im.cfg.prefill.min_tokens;
-            im.prefill_dev->place(on_dev);
+            im.place_prefill(on_dev);
             if (on_dev) prefill_device_tokens += chunk;
         }
         llama_batch pf;
@@ -1509,7 +1565,7 @@ RunResult Session::generate(const GenerateRequest & req,
             pf = llama_batch_get_one(tokens.data() + i, chunk);
         }
         trace_begin(i, chunk, /*phase*/ 0);
-        if (llama_decode(ctx, pf) != 0) {
+        if (im.decode_placed(ctx, pf) != 0) {
             if (im.cancel_requested.load(std::memory_order_relaxed)) {
                 rollback_turn();
                 res.ok = true;
@@ -1525,7 +1581,7 @@ RunResult Session::generate(const GenerateRequest & req,
         if (mtp_on && !common_speculative_process(im.mtp.get(), pf))
             return fail("MTP draft context failed to process the prefill batch");
     }
-    if (im.prefill_dev) im.prefill_dev->to_host(); // decode reads the mapping
+    im.place_prefill(false); // decode reads the host bindings
     const long long prefill_device_nodes = im.hook->device_nodes() - device_nodes0;
     // The suffix is now in the KV; record it so the next turn can diff against it.
     if (chat_on)
@@ -1842,7 +1898,7 @@ RunResult Session::generate(const GenerateRequest & req,
         if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, emitted_end, -1)) {
             // Nothing survives that we can still describe, so say so rather than leave kv_tokens
             // asserting a prefix the context no longer holds. The next turn re-prefills in full.
-            llama_memory_clear(llama_get_memory(ctx), true);
+            im.clear_memory(ctx);
             im.kv_tokens.clear();
         }
         // The draft context mirrors the target's positions (process() decodes the same batches into
@@ -1870,6 +1926,10 @@ RunResult Session::generate(const GenerateRequest & req,
     s.prefill_seconds = prefill_seconds;
     s.prefill_device_tokens = prefill_device_tokens;
     s.prefill_device_nodes = prefill_device_nodes;
+    if (im.arena) {
+        s.prefill_device_read_mib = (double) (im.arena->read_bytes() - arena_read0) / (1024.0 * 1024.0);
+        s.prefill_device_stall_seconds = im.arena->stall_seconds() - arena_stall0;
+    }
     s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
     s.prefill_read_mib = prefill_tally.read_mib;
     s.prefill_io_seconds = prefill_tally.io_seconds;
