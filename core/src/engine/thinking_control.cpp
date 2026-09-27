@@ -3,6 +3,8 @@
 #include <cstdio>
 #include <exception>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace bmoe {
 
@@ -116,6 +118,31 @@ ThinkControl probe_think_control(const common_chat_templates * tmpls) {
         std::fprintf(stderr, "bmoe: thinking-control probe failed (%s); assuming the template honours it\n", e.what());
         return ThinkControl::Template;
     }
+}
+
+bool build_turn_inputs(common_chat_templates_inputs & inputs,
+                       std::vector<common_chat_msg> messages,
+                       bool think,
+                       ThinkControl ctl) {
+    inputs.messages = std::move(messages);
+    inputs.add_generation_prompt = true;
+    inputs.use_jinja = true;
+    inputs.enable_thinking = think;
+    // AUTO is what bakes reasoning-stripping into the generated parser grammar. It is set here,
+    // before apply — the field defaults to NONE, which produces a content-only grammar that leaves
+    // <think> markers in the answer no matter how the parse is wired.
+    inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+
+    // Many templates never read enable_thinking (LFM2.5 among them): the flag reaches the jinja
+    // context, is discarded, and the model reasons anyway — the setting silently does nothing. For
+    // those, close the reasoning span in the prompt instead, so the model resumes at the first token
+    // of its answer with the reasoning already behind it. Which models need this was measured at
+    // open() (probe_think_control), not assumed.
+    if (!think && ctl == ThinkControl::Prefill) {
+        add_no_think_prefill(inputs);
+        return true;
+    }
+    return false;
 }
 
 } // namespace bmoe::detail

@@ -5,6 +5,8 @@
 #include "bmoe/version.h"
 #include "bmoe/ngram_draft.h"
 #include "chat_parse.h"
+#include "logits.h"
+#include "prefill_support.h"
 #include "thinking_control.h"
 #include "prefill_path.h"
 #include "../moe/router_hook.h"
@@ -40,27 +42,12 @@ namespace bmoe {
 
 namespace {
 
+using detail::batch_fill;
+using detail::PrefillTally;
+
 using clock_t_ = std::chrono::steady_clock;
 double secs(clock_t_::time_point a, clock_t_::time_point b) {
     return std::chrono::duration<double>(b - a).count();
-}
-
-// Fill an explicitly-allocated batch with `n` tokens at consecutive positions on sequence 0.
-//
-// The engine otherwise decodes through llama_batch_get_one, which leaves pos/seq_id/logits null and
-// lets llama.cpp infer them. Speculation cannot: the driver reads the batch's sequence ids, and a
-// verify pass needs logits at EVERY position, not just the last. So every batch on the speculative
-// path is spelled out — including prefill, which the driver must see to keep the draft context's
-// KV in step with the target's.
-void batch_fill(llama_batch & b, const llama_token * toks, int n, llama_pos pos0, bool all_logits) {
-    b.n_tokens = n;
-    for (int i = 0; i < n; ++i) {
-        b.token[i] = toks[i];
-        b.pos[i] = pos0 + i;
-        b.n_seq_id[i] = 1;
-        b.seq_id[i][0] = 0;
-        b.logits[i] = (int8_t) (all_logits || i == n - 1);
-    }
 }
 
 // Graph width for the MTP draft context, and it wants to be SMALL.
@@ -191,40 +178,6 @@ struct GenTally {
         stall_seconds += m.stall_ms / 1000.0;
         drain_seconds += m.drain_ms / 1000.0;
         adopt_seconds += m.adopt_ms / 1000.0;
-    }
-};
-
-// The prompt phase's measurement, the prefill counterpart of GenTally above: the source's
-// counters are cumulative across a warm session, so begin() pins them (with the process CPU
-// clock) just above the prompt chunk loop and end() closes the deltas just after it — the same
-// wall-additive terms the decode fields report, read with the same rules. end()'s sample is the
-// phase boundary itself: the decode baseline below seeds its cursors from it, so prefill's end
-// and decode's start are one reading of the counters, not two that could drift apart.
-struct PrefillTally {
-    IExpertSource::Stats pre;
-    double cpu0 = 0.0;
-
-    // Deltas across this turn's prefill chunks — valid after end().
-    double cpu_seconds = 0.0;
-    double read_mib = 0.0;
-    double io_seconds = 0.0;
-    double stall_seconds = 0.0;
-    double mgmt_seconds = 0.0;
-
-    // The stats sample end() closed on, for the decode baseline to start from.
-    IExpertSource::Stats post;
-
-    void begin(bool moe_on, const IExpertSource & src) {
-        pre = moe_on ? src.stats() : IExpertSource::Stats{};
-        cpu0 = pio::process_cpu_seconds();
-    }
-    void end(bool moe_on, const IExpertSource & src) {
-        post = moe_on ? src.stats() : IExpertSource::Stats{};
-        cpu_seconds = pio::process_cpu_seconds() - cpu0;
-        read_mib = (double) ((long long) post.read_bytes - (long long) pre.read_bytes) / (1024.0 * 1024.0);
-        io_seconds = post.read_seconds - pre.read_seconds;
-        stall_seconds = post.stall_seconds - pre.stall_seconds;
-        mgmt_seconds = post.mgmt_seconds - pre.mgmt_seconds;
     }
 };
 
@@ -501,14 +454,8 @@ PplResult Session::perplexity(const PplRequest & req) {
             r.error = "no logits at position " + std::to_string(pos);
             return false;
         }
-        // log softmax at the token that actually follows, in a numerically safe order.
-        float max = lg[0];
-        for (int v = 1; v < im.n_vocab; ++v)
-            if (lg[v] > max) max = lg[v];
-        double sum = 0.0;
-        for (int v = 0; v < im.n_vocab; ++v)
-            sum += std::exp((double) (lg[v] - max));
-        const double logp = (double) (lg[tokens[pos + 1]] - max) - std::log(sum);
+        // log softmax at the token that actually follows.
+        const double logp = detail::log_norm(lg, im.n_vocab).logp(lg[tokens[pos + 1]]);
         nll -= logp;
         ++scored;
         if (argmax(lg, im.n_vocab) == tokens[pos + 1]) ++top1;
@@ -572,13 +519,7 @@ PplResult Session::perplexity(const PplRequest & req) {
             r.error = "no logits after the text";
             return r;
         }
-        float max = lg[0];
-        for (int v = 1; v < im.n_vocab; ++v)
-            if (lg[v] > max) max = lg[v];
-        double sum = 0.0;
-        for (int v = 0; v < im.n_vocab; ++v)
-            sum += std::exp((double) (lg[v] - max));
-        const double lse = (double) max + std::log(sum);
+        const detail::LogNorm z = detail::log_norm(lg, im.n_vocab);
         for (const std::string & c : req.choices) {
             llama_token ct[8];
             const int nc = llama_tokenize(im.vocab, c.c_str(), (int) c.size(), ct, 8, false, false);
@@ -586,7 +527,7 @@ PplResult Session::perplexity(const PplRequest & req) {
                 r.error = "choice '" + c + "' does not tokenize";
                 return r;
             }
-            r.choice_logp.push_back((double) lg[ct[0]] - lse);
+            r.choice_logp.push_back(z.logp(lg[ct[0]]));
         }
     }
     if (scored == 0 && req.choices.empty()) {
@@ -1292,28 +1233,11 @@ RunResult Session::generate(const GenerateRequest & req,
             im.chat_history.push_back(user_msg);
             history_pushed = true;
 
+            // The full conversation, not just this turn. The reasoning span and the turn header a
+            // prefilled turn resumes after are rendered by llama.cpp's own handler for this
+            // template, so no marker for any family is spelled out here. See thinking_control.h.
             common_chat_templates_inputs inputs;
-            inputs.messages = im.chat_history; // the full conversation, not just this turn
-            inputs.add_generation_prompt = true;
-            inputs.use_jinja = true;
-            inputs.enable_thinking = req.think;
-            // AUTO is what bakes reasoning-stripping into the generated parser grammar. It is set
-            // here, before apply — the field defaults to NONE, which produces a content-only
-            // grammar that leaves <think> markers in the answer no matter how the parse is wired.
-            inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
-
-            // Many templates never read enable_thinking (LFM2.5 among them): the flag reaches the
-            // jinja context, is discarded, and the model reasons anyway — the setting silently does
-            // nothing. For those, close the reasoning span in the prompt instead, so the model
-            // resumes at the first token of its answer with the reasoning already behind it.
-            //
-            // The span is rendered by llama.cpp's own handler for this template, so no marker for
-            // any family — harmony's primed final channel included — is spelled out here. Which
-            // models need this was measured at open(), not assumed. See thinking_control.h.
-            if (!req.think && im.think_ctl == ThinkControl::Prefill) {
-                detail::add_no_think_prefill(inputs);
-                prefilled_answer = true;
-            }
+            prefilled_answer = detail::build_turn_inputs(inputs, im.chat_history, req.think, im.think_ctl);
 
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt;

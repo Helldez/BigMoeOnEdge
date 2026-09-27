@@ -8,6 +8,7 @@ add_library(bmoe_core STATIC
     src/config.cpp
     src/moe/arch_registry.cpp
     src/engine/ngram_draft.cpp
+    src/engine/logits.cpp
 )
 
 target_include_directories(bmoe_core PUBLIC
