@@ -505,7 +505,6 @@ class RunService : Service() {
         }
         val json = buildString {
             append("""{"cmd":"decide","id":""").append(id)
-            append(""","think":false""")
             append(""","prefix":"""").append(jsonEscape(req.prompt)).append('"')
             append(""","suffix":"""").append(jsonEscape(Choice.suffix(options))).append('"')
             append(""","choices":[""")

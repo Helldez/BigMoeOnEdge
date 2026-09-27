@@ -26,10 +26,7 @@ std::vector<Token> LlamaDecideBackend::tokenize(const std::string & text, bool s
     return t;
 }
 
-bool LlamaDecideBackend::render(const std::string & content,
-                                bool think,
-                                std::vector<Token> & out,
-                                std::string & error) {
+bool LlamaDecideBackend::render(const std::string & content, std::vector<Token> & out, std::string & error) {
     if (!d_.tmpls) {
         out = tokenize(content, true);
         return true;
@@ -39,7 +36,7 @@ bool LlamaDecideBackend::render(const std::string & content,
         msg.role = "user";
         msg.content = content;
         common_chat_templates_inputs inputs;
-        build_turn_inputs(inputs, {msg}, think, d_.think_ctl);
+        build_turn_inputs(inputs, {msg}, /*think*/ false, d_.think_ctl);
         out = tokenize(common_chat_templates_apply(d_.tmpls, inputs).prompt, true);
         return true;
     } catch (const std::exception & e) {

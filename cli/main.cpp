@@ -264,7 +264,6 @@ static bool emit_decide(Session & session, const SessionCmd & cmd) {
     req.prefix = cmd.prefix;
     req.suffix = cmd.suffix;
     req.choices = cmd.choices;
-    req.think = cmd.think;
     req.reuse_prefix = cmd.reuse_prefix;
     const DecideResult r = session.decide(req);
     if (!r.ok && !r.cancelled) {
@@ -286,12 +285,12 @@ static bool emit_decide(Session & session, const SessionCmd & cmd) {
     logp += "]";
     const PrefillStats & p = r.prefill;
     std::printf("BMOE_DECIDE {\"id\":%d,\"cancelled\":%s,\"best\":%d,\"choice_logp\":%s,\"n_tokens\":%d,"
-                "\"n_reused\":%d,\"n_prefilled\":%d,\"restore_s\":%.3f,\"prefill_s\":%.3f,\"prefill_cpu_s\":%.3f,"
-                "\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,\"prefill_stall_s\":%.3f,\"prefill_mgmt_s\":%.3f,"
-                "\"prefix_state_mib\":%.1f}\n",
+                "\"n_reused\":%d,\"n_prefilled\":%d,\"restore_s\":%.3f,\"store_s\":%.3f,\"prefill_s\":%.3f,"
+                "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,\"prefill_stall_s\":%.3f,"
+                "\"prefill_mgmt_s\":%.3f,\"prefix_state_mib\":%.1f}\n",
                 cmd.id, r.cancelled ? "true" : "false", r.best, logp.c_str(), r.n_tokens, r.n_reused, r.n_prefilled,
-                r.restore_seconds, p.seconds, p.cpu_seconds, p.read_mib, p.io_seconds, p.stall_seconds, p.mgmt_seconds,
-                (double) r.prefix_state_bytes / (1024.0 * 1024.0));
+                r.restore_seconds, r.store_seconds, p.seconds, p.cpu_seconds, p.read_mib, p.io_seconds, p.stall_seconds,
+                p.mgmt_seconds, (double) r.prefix_state_bytes / (1024.0 * 1024.0));
     std::fflush(stdout);
     return true;
 }
@@ -357,8 +356,6 @@ static int run_session_loop(const RunConfig & cfg,
                 json_get_string(line, "prefix", c.prefix);
                 json_get_string(line, "suffix", c.suffix);
                 json_get_string_array(line, "choices", c.choices);
-                // A decision reads one token, so reasoning is off unless the request asks for it.
-                c.think = json_get_bool(line, "think", false);
                 c.reuse_prefix = json_get_bool(line, "reuse_prefix", true);
             } else {
                 continue;
@@ -934,6 +931,11 @@ int main(int argc, char ** argv) {
     ValidationResult vr = validate(cfg);
     if (!vr) {
         std::fprintf(stderr, "config error: %s\n", vr.error.c_str());
+        return 1;
+    }
+    // Decide requests only travel through the session protocol; a one-shot run would ignore the flag.
+    if (cfg.decide.enabled && !session_mode) {
+        std::fprintf(stderr, "config error: --decide needs --session\n");
         return 1;
     }
 

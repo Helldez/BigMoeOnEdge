@@ -499,7 +499,7 @@ Requests (stdin):
 ```
 {"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>}
 {"cmd":"decide","id":<int>,"prefix":"<string>","suffix":"<string>","choices":["<string>",...],
- "think":<bool>,"reuse_prefix":<bool>}   # needs --decide; see decide.md
+ "reuse_prefix":<bool>}   # needs --decide; always rendered with reasoning off; see decide.md
 {"cmd":"cancel"}          # interrupt the in-flight generation; the session stays loaded
 {"cmd":"close"}           # end the session (EOF on stdin does the same)
 ```
@@ -531,7 +531,7 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "reasoning":"<string>","text":"<string>"}
 BMOE_DECIDE {"id":<int>,"cancelled":<bool>,"best":<int>,"choice_logp":[<float|null>,...],
              "n_tokens":<int>,"n_reused":<int>,"n_prefilled":<int>,"restore_s":<float>,
-             "prefill_s":<float>,"prefill_cpu_s":<float>,"prefill_read_mib":<float>,
+             "store_s":<float>,"prefill_s":<float>,"prefill_cpu_s":<float>,"prefill_read_mib":<float>,
              "prefill_io_s":<float>,"prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
              "prefix_state_mib":<float>}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}

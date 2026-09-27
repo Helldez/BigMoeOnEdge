@@ -60,7 +60,7 @@ public:
     int clears = 0;
     std::vector<float> logits_;
 
-    bool render(const std::string & content, bool, std::vector<Token> & out, std::string &) override {
+    bool render(const std::string & content, std::vector<Token> & out, std::string &) override {
         out = bytes_of(content);
         out.push_back(kTurnEnd);
         return true;

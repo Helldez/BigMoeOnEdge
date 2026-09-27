@@ -79,7 +79,20 @@ across the join can make the last shared-looking token a different token in cont
   then prefilled whole and the kept state is left as it was.
 
 The kept state costs memory, and on a phone that memory comes out of the same RAM the expert cache
-lives in. `BMOE_DECIDE` reports it as `prefix_state_mib`.
+lives in. `BMOE_DECIDE` reports it as `prefix_state_mib`, and copying it after the prefix as
+`store_s` (not part of `prefill_s`). A `generate()` drops it: it is worth its RAM only while
+decisions follow one another, and the next decision after a chat turn builds a fresh one.
+
+## What a decision assumes
+
+- **Reasoning is off.** A decision reads the first token of the answer; with reasoning on, that
+  token is the reasoning opener, so there is no `think` switch on the request.
+- **A choice is scored by its standalone first token.** Each choice is tokenized on its own, with no
+  template and no leading space. Under a chat template the answer opens a fresh assistant turn, so a
+  bare label like `A` is the token the model would write. Without a template (a raw prompt ending in
+  `Answer:`) the continuation is usually ` A`, and a tokenizer that prepends a space to every text
+  scores `▁A`: there, end the prompt so the label follows it directly, or pass the label with the
+  space the model would write.
 
 ## Measured
 

@@ -23,8 +23,9 @@ public:
     virtual ~IDecideBackend() = default;
 
     // The prompt tokens of `content` rendered as one user turn, exactly as generate() renders the
-    // first turn of a conversation. False, with `error` set, when the template cannot be applied.
-    virtual bool render(const std::string & content, bool think, std::vector<Token> & out, std::string & error) = 0;
+    // first turn of a conversation, with reasoning off (see DecideRequest). False, with `error` set,
+    // when the template cannot be applied.
+    virtual bool render(const std::string & content, std::vector<Token> & out, std::string & error) = 0;
     // A choice as plain text: no template, no special tokens, no BOS.
     virtual std::vector<Token> tokenize_plain(const std::string & text) = 0;
 

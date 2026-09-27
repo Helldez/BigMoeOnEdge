@@ -41,7 +41,7 @@ public:
     explicit LlamaDecideBackend(const LlamaDecideDeps & d);
     ~LlamaDecideBackend() override;
 
-    bool render(const std::string & content, bool think, std::vector<Token> & out, std::string & error) override;
+    bool render(const std::string & content, std::vector<Token> & out, std::string & error) override;
     std::vector<Token> tokenize_plain(const std::string & text) override;
     int n_ctx() const override { return d_.n_ctx; }
     int n_vocab() const override { return d_.n_vocab; }

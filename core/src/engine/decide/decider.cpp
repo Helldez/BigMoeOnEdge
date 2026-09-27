@@ -32,7 +32,7 @@ DecideResult run_decide(IDecideBackend & backend, IPrefixCache * cache, const De
     if (!choice_first_tokens(req.choices, choice_tokens, backend.n_vocab(), choice_ids, error)) return refuse(error);
 
     std::vector<Token> tokens;
-    if (!backend.render(req.prefix + req.suffix, req.think, tokens, error)) return refuse(error);
+    if (!backend.render(req.prefix + req.suffix, tokens, error)) return refuse(error);
     const int n = (int) tokens.size();
     if (n < 1) return refuse("empty prompt after tokenization");
     if (n > backend.n_ctx())
@@ -44,7 +44,7 @@ DecideResult run_decide(IDecideBackend & backend, IPrefixCache * cache, const De
     int n_split = 0;
     if (reuse) {
         std::vector<Token> prefix_alone;
-        if (!backend.render(req.prefix, req.think, prefix_alone, error)) return refuse(error);
+        if (!backend.render(req.prefix, prefix_alone, error)) return refuse(error);
         n_split = prefix_split(tokens, prefix_alone);
     }
 
@@ -62,15 +62,31 @@ DecideResult run_decide(IDecideBackend & backend, IPrefixCache * cache, const De
         r.prefix_state_bytes = cache ? cache->bytes() : 0;
         return r;
     };
-    const auto t_prefill0 = std::chrono::steady_clock::now();
-    backend.begin_prefill_measure();
+    // The prefill is measured in two brackets around the prefix snapshot, so prefill_s reads exactly
+    // as BMOE_DONE's and the copy of the state is reported on its own, as restore_seconds is.
+    auto measured_prefill = [&](int from, int to, PrefillStats & st) {
+        const auto t0 = std::chrono::steady_clock::now();
+        backend.begin_prefill_measure();
+        const bool ok = backend.prefill(tokens, from, to);
+        backend.end_prefill_measure(st);
+        st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        return ok;
+    };
+    PrefillStats head;
     if (n_restored < n_split) {
-        if (!backend.prefill(tokens, n_restored, n_split)) return fail("prefix prefill failed");
+        if (!measured_prefill(n_restored, n_split, head)) return fail("prefix prefill failed");
+        const auto t0 = std::chrono::steady_clock::now();
         cache->store(backend, tokens, n_split);
+        r.store_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     }
-    if (!backend.prefill(tokens, n_split, n)) return fail("prefill decode failed");
-    backend.end_prefill_measure(r.prefill);
-    r.prefill.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_prefill0).count();
+    PrefillStats tail;
+    if (!measured_prefill(n_split, n, tail)) return fail("prefill decode failed");
+    r.prefill.seconds = head.seconds + tail.seconds;
+    r.prefill.cpu_seconds = head.cpu_seconds + tail.cpu_seconds;
+    r.prefill.read_mib = head.read_mib + tail.read_mib;
+    r.prefill.io_seconds = head.io_seconds + tail.io_seconds;
+    r.prefill.stall_seconds = head.stall_seconds + tail.stall_seconds;
+    r.prefill.mgmt_seconds = head.mgmt_seconds + tail.mgmt_seconds;
     r.n_reused = n_restored;
     r.n_prefilled = n - n_restored;
 

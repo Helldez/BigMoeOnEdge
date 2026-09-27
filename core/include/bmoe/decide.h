@@ -28,7 +28,9 @@ struct DecideRequest {
     // tokens coincide cannot be told apart, so such a request is refused rather than answered with a
     // tie; single-token labels ("A", "B", ...) avoid the collision by construction.
     std::vector<std::string> choices;
-    bool think = false; // rendered into the template exactly as GenerateRequest::think
+    // There is no think switch: the template is always rendered with reasoning off. A decision reads
+    // the first token of the answer, and with reasoning on that token is the reasoning opener, so
+    // every choice would be scored against the model starting to think rather than against its answer.
     // Allow this call to restore and refresh the prefix state. Off, the prompt is prefilled whole and
     // the kept state is left untouched: the reference a restored run is compared against.
     bool reuse_prefix = true;
@@ -64,6 +66,7 @@ struct DecideResult {
     int n_reused = 0;    // restored from the kept prefix state instead of prefilled
     int n_prefilled = 0; // prefilled by this call (n_tokens - n_reused)
     double restore_seconds = 0.0;
+    double store_seconds = 0.0; // copying the state after the prefix into the kept slot; not in prefill
     PrefillStats prefill;
     // Memory the kept prefix state occupies after this call. On a phone it is taken from the same RAM
     // the expert cache lives in, so it is reported rather than left to be inferred.

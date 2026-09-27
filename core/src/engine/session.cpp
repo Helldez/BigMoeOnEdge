@@ -1246,6 +1246,12 @@ RunResult Session::generate(const GenerateRequest & req,
     // not carry over. (cancel() sets it; the abort callback reads it.)
     im.cancel_requested.store(false, std::memory_order_relaxed);
 
+    // A kept decide() prefix is worth its RAM only while decisions follow one another. Back in a
+    // conversation it would sit, until close, in the memory the expert cache lives in, so it goes
+    // now; the next decide() builds a fresh one.
+    im.decide_cache.reset();
+    im.decide_cache_chosen = false;
+
     RunResult res;
     auto fail = [&](std::string msg) {
         res.ok = false;

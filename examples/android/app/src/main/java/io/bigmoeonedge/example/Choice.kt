@@ -15,7 +15,8 @@ data class ChoiceScore(val label: String, val text: String, val prob: Double)
  * something to show, lives here, so the service and the screen never spell out the format.
  */
 object Choice {
-    /** Options are labelled A, B, C…: one token each in every tokenizer, so they never collide. */
+    /** Options are labelled A, B, C…: single letters, one token each in the usual tokenizers. Should two
+     *  ever share a first token, the engine refuses the request rather than answer with a tie. */
     const val MAX_OPTIONS = 26
 
     fun labels(n: Int): List<String> = (0 until n.coerceAtMost(MAX_OPTIONS)).map { ('A' + it).toString() }

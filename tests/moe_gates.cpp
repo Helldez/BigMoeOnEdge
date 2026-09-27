@@ -54,7 +54,7 @@
 //       after a partial restore scores == itself as computed (b), == perplexity's choices after the
 //       same text (c), resident == streaming (d), a generate() after decide() == one without (e), and
 //       a session without decide enabled refuses it harmlessly (f).
-//       G16 and G17 are taken by the prefill-device branch (PR #200).
+//       G16 and G17 are reserved for the prefill-device gates.
 //
 // G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
 // RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but

@@ -69,8 +69,8 @@ add_executable(bmoe_csv_summary_test csv_summary_test.cpp)
 target_link_libraries(bmoe_csv_summary_test PRIVATE bmoe_core)
 add_test(NAME csv_summary COMMAND bmoe_csv_summary_test)
 
-# decide()'s policy — the prompt split, choice checks and scoring, when the prefix state is
-# restored, stored or left alone — over a scripted fake backend. No model, no llama.cpp, so it runs
+# decide()'s policy (the prompt split, choice checks and scoring, when the prefix state is
+# restored, stored or left alone) over a scripted fake backend. No model, no llama.cpp, so it runs
 # unconditionally; the same path on a real model is gate G18.
 add_executable(bmoe_decide_test decide_test.cpp)
 target_link_libraries(bmoe_decide_test PRIVATE bmoe_core)

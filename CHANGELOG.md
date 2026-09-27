@@ -18,8 +18,11 @@ Semantic Versioning.
   The session keeps the model state after the prefix and restores it when the next prefix extends
   it, the shape of an agent whose history grows step by step (`--decide-prefix-cache auto|on|off`,
   and `"reuse_prefix":false` per request). The state is the whole sequence state, so hybrid models
-  with recurrent layers work too. Choices that share a first token, and prompts past the context,
-  are refused before anything is prefilled.
+  with recurrent layers work too; a `generate()` drops it, so it holds RAM only while decisions
+  follow one another. Choices that share a first token, and prompts past the context, are refused
+  before anything is prefilled. A decision is always rendered with reasoning off (its answer is the
+  first token, which with reasoning on would be the reasoning opener), and `--decide` without
+  `--session` is a config error.
 
   Measured on a PC as a correctness run (Qwen3.6-35B-A3B Q4_K_M, streamed, expert cache off, times
   not a benchmark): an agent's three steps to turn on Wi-Fi were answered right at p 0.986 to 0.998;
