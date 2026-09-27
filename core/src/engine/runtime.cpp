@@ -20,6 +20,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.moe = cfg.moe;
     sc.spec = cfg.spec;       // self-speculation (MTP head or n-gram lookup); off by default
     sc.prefill = cfg.prefill; // prefill on an accelerator; off by default
+    sc.decide = cfg.decide;
     return sc;
 }
 

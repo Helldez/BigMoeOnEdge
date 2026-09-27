@@ -1,0 +1,87 @@
+#include "decider.h"
+
+#include "choice_scorer.h"
+#include "prompt_split.h"
+
+#include <chrono>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace bmoe::detail {
+
+DecideResult run_decide(IDecideBackend & backend, IPrefixCache * cache, const DecideRequest & req) {
+    DecideResult r;
+    // Emptied first, before anything can refuse: the caller has already dropped whatever conversation
+    // the sequence held, and a refused request must not leave its tokens behind for the next
+    // generate() to build on at positions it no longer knows about.
+    backend.clear();
+    auto refuse = [&](std::string msg) {
+        r.error = std::move(msg);
+        r.prefix_state_bytes = cache ? cache->bytes() : 0;
+        return r;
+    };
+
+    // Everything that can refuse the request runs before any token is prefilled.
+    std::vector<std::vector<Token>> choice_tokens;
+    choice_tokens.reserve(req.choices.size());
+    for (const std::string & c : req.choices)
+        choice_tokens.push_back(backend.tokenize_plain(c));
+    std::vector<Token> choice_ids;
+    std::string error;
+    if (!choice_first_tokens(req.choices, choice_tokens, backend.n_vocab(), choice_ids, error)) return refuse(error);
+
+    std::vector<Token> tokens;
+    if (!backend.render(req.prefix + req.suffix, req.think, tokens, error)) return refuse(error);
+    const int n = (int) tokens.size();
+    if (n < 1) return refuse("empty prompt after tokenization");
+    if (n > backend.n_ctx())
+        return refuse("prompt of " + std::to_string(n) + " tokens exceeds the session n_ctx (" +
+                      std::to_string(backend.n_ctx()) + ")");
+    r.n_tokens = n;
+
+    const bool reuse = cache && req.reuse_prefix && !req.prefix.empty();
+    int n_split = 0;
+    if (reuse) {
+        std::vector<Token> prefix_alone;
+        if (!backend.render(req.prefix, req.think, prefix_alone, error)) return refuse(error);
+        n_split = prefix_split(tokens, prefix_alone);
+    }
+
+    int n_restored = 0;
+    if (reuse && n_split > 0) {
+        const auto t0 = std::chrono::steady_clock::now();
+        n_restored = cache->restore(backend, tokens, n_split);
+        r.restore_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    }
+
+    auto fail = [&](const char * what) {
+        r.error = what;
+        r.fatal = true;
+        backend.clear();
+        r.prefix_state_bytes = cache ? cache->bytes() : 0;
+        return r;
+    };
+    const auto t_prefill0 = std::chrono::steady_clock::now();
+    backend.begin_prefill_measure();
+    if (n_restored < n_split) {
+        if (!backend.prefill(tokens, n_restored, n_split)) return fail("prefix prefill failed");
+        cache->store(backend, tokens, n_split);
+    }
+    if (!backend.prefill(tokens, n_split, n)) return fail("prefill decode failed");
+    backend.end_prefill_measure(r.prefill);
+    r.prefill.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_prefill0).count();
+    r.n_reused = n_restored;
+    r.n_prefilled = n - n_restored;
+
+    const float * logits = backend.last_logits();
+    if (!logits) return fail("no logits after the prompt");
+    score_choices(logits, backend.n_vocab(), choice_ids, r.choice_logp, r.best);
+
+    backend.clear();
+    r.prefix_state_bytes = cache ? cache->bytes() : 0;
+    r.ok = true;
+    return r;
+}
+
+} // namespace bmoe::detail

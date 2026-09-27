@@ -15,9 +15,17 @@ enum class EngineState { IDLE, LOADING, READY, GENERATING, ERROR }
 /**
  * One committed message in the multi-turn transcript. metrics is a compact per-turn line.
  * reasoning is the model's thinking span (assistant turns only), shown as a collapsible block
- * above the answer; empty when the model did not reason.
+ * above the answer; empty when the model did not reason. [choices] is set on the model's side of a
+ * Choose turn (role "choice"): the options with their probabilities, [best] the one it picked.
  */
-data class ChatTurn(val role: String, val text: String, val metrics: String = "", val reasoning: String = "")
+data class ChatTurn(
+    val role: String,
+    val text: String,
+    val metrics: String = "",
+    val reasoning: String = "",
+    val choices: List<ChoiceScore>? = null,
+    val best: Int = -1,
+)
 
 /** Immutable snapshot of the session + current generation, observed by the Compose UI. */
 data class UiState(

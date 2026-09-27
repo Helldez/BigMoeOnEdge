@@ -159,6 +159,17 @@ sweep point from the benchmark protocol, not the app default: the app ships a fi
 expert cache. See `../../docs/benchmark-method.md` for the full procedure and the cache/thread
 sweep.
 
+## Choose from options
+
+The **Choose from options** switch on the chat screen turns the prompt into a question and adds a
+field for options, one per line. The model picks one without writing an answer: the options are
+lettered, the whole request is one prefill with no decode, and each option comes back with the
+probability the model put on it (they need not add up to 100%; the rest is the model being unsure).
+Asking the same question again with other options reuses the question instead of reading it again.
+A Choose turn ends the chat conversation, so the next chat message starts a new one. The session
+always accepts these requests, so switching between Chat and Choose never reloads the model. The
+engine side is [docs/decide.md](../../docs/decide.md).
+
 ## How Settings are organised
 
 Each category shows the recommended configuration first and folds everything else into a collapsed

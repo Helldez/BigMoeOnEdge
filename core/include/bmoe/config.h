@@ -392,6 +392,31 @@ struct PrefillDeviceConfig {
     bool enabled() const { return !device.empty(); }
 };
 
+// Whether Session::decide() keeps the model state after a request's prefix and restores it when the
+// next request's prefix extends it (bmoe/decide.h).
+enum class PrefixCacheMode {
+    // On where splitting a prompt at the prefix costs only the tokens on each side — the CPU, where
+    // prefill time scales with the tokens fed. Off where every prefill graph costs about the same at
+    // any width, because there a second graph for the few tokens after the prefix costs as much as
+    // prefilling the whole prompt again.
+    Auto,
+    On,
+    Off,
+};
+
+// Stable lowercase spelling ("auto", "on", "off"), shared by the CLI flag and the telemetry.
+const char * prefix_cache_mode_name(PrefixCacheMode m);
+// The inverse of prefix_cache_mode_name. False, and `out` untouched, on any other spelling.
+bool parse_prefix_cache_mode(const std::string & s, PrefixCacheMode & out);
+
+// Session::decide() policy. Fixed for the session.
+struct DecideConfig {
+    // Off by default: decide() then refuses every request and nothing is allocated for it, so a
+    // session that does not use decisions is exactly what it was before the feature existed.
+    bool enabled = false;
+    PrefixCacheMode prefix_cache = PrefixCacheMode::Auto;
+};
+
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
@@ -442,6 +467,7 @@ struct RunConfig {
     MoeStreamConfig moe;
     SpecConfig spec;             // self-speculative decoding (MTP head or n-gram lookup); off by default
     PrefillDeviceConfig prefill; // prefill graphs on an accelerator; off by default
+    DecideConfig decide;         // decide()'s prefix-state policy; off by default
 };
 
 // Validation result: ok plus a human-readable reason when not.

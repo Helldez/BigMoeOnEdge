@@ -498,6 +498,8 @@ Requests (stdin):
 
 ```
 {"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>}
+{"cmd":"decide","id":<int>,"prefix":"<string>","suffix":"<string>","choices":["<string>",...],
+ "think":<bool>,"reuse_prefix":<bool>}   # needs --decide; see decide.md
 {"cmd":"cancel"}          # interrupt the in-flight generation; the session stays loaded
 {"cmd":"close"}           # end the session (EOF on stdin does the same)
 ```
@@ -527,8 +529,22 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "token_demand_mib":<float>,"mtp_drafted":<int>,"mtp_accepted":<int>,"mtp_decodes":<int>,
             "mtp_draft_s_tok":<float>,"drafted_steps":<int>,"loop_overhead_s_tok":<float>,
             "reasoning":"<string>","text":"<string>"}
+BMOE_DECIDE {"id":<int>,"cancelled":<bool>,"best":<int>,"choice_logp":[<float|null>,...],
+             "n_tokens":<int>,"n_reused":<int>,"n_prefilled":<int>,"restore_s":<float>,
+             "prefill_s":<float>,"prefill_cpu_s":<float>,"prefill_read_mib":<float>,
+             "prefill_io_s":<float>,"prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
+             "prefix_state_mib":<float>}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
+
+A `decide` request is answered by `BMOE_BEGIN` and then one `BMOE_DECIDE` line, with no per-token
+lines in between: nothing is decoded ([decide.md](decide.md)). `choice_logp[i]` is the log-probability
+of the first token of `choices[i]` over the whole vocabulary, in request order, and `null` where it
+is minus infinity. `best` is the index of the highest. `n_reused` tokens were restored from the kept
+prefix state and `n_prefilled` were prefilled; the `prefill_*` keys read exactly as `BMOE_DONE`'s.
+`prefix_state_mib` is the memory the kept state holds after the call. `think` defaults to `false`
+and `reuse_prefix` to `true`. Colliding choices (two sharing a first token), no choices, a prompt past
+`n_ctx`, or a session opened without `--decide` answer `BMOE_ERROR` with `fatal:false`.
 
 `BMOE_DONE`'s `mtp_*` keys are the self-speculation counters (all `0` without speculation, and the
 same keys whichever source drafted): `mtp_accepted / mtp_drafted` is the acceptance on that turn,

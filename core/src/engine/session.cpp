@@ -5,6 +5,8 @@
 #include "bmoe/version.h"
 #include "bmoe/ngram_draft.h"
 #include "chat_parse.h"
+#include "decide/decider.h"
+#include "decide/llama_backend.h"
 #include "logits.h"
 #include "prefill_support.h"
 #include "thinking_control.h"
@@ -319,6 +321,11 @@ struct Session::Impl {
     std::vector<common_chat_msg> chat_history;
     std::vector<llama_token> kv_tokens;
 
+    // decide()'s kept prefix state. Chosen at the first decide() (the policy needs the backend's
+    // answer on prefill cost), null when the policy keeps none.
+    std::unique_ptr<detail::IPrefixCache> decide_cache;
+    bool decide_cache_chosen = false;
+
     // Route trace (diagnostics): null unless requested AND streaming is on — there is no routing
     // to trace otherwise.
     IRouteTraceSink * route_trace = nullptr;
@@ -544,6 +551,50 @@ PplResult Session::perplexity(const PplRequest & req) {
     r.experts_substituted = im.hook->experts_substituted() - substituted0;
     r.seconds = secs(t0, clock_t_::now());
     r.ok = true;
+    return r;
+}
+
+DecideResult Session::decide(const DecideRequest & req) {
+    Impl & im = *impl_;
+    if (!im.cfg.decide.enabled) {
+        DecideResult off;
+        off.error = "decide is off for this session (open it with decide enabled)";
+        return off;
+    }
+    im.cancel_requested.store(false, std::memory_order_relaxed);
+
+    // A decision is not a conversation turn: whatever generate() was continuing is gone once the
+    // context is overwritten, so forget it rather than let a later turn diff against stale tokens.
+    im.chat_history.clear();
+    im.kv_tokens.clear();
+
+    detail::LlamaDecideDeps deps;
+    deps.ctx = im.ctx.get();
+    deps.ctx_dft = im.ctx_dft.get();
+    deps.vocab = im.vocab;
+    deps.n_vocab = im.n_vocab;
+    deps.n_ctx = im.cfg.n_ctx;
+    deps.n_batch = im.cfg.n_batch;
+    deps.hook = im.hook.get();
+    deps.source = &im.source;
+    deps.moe_on = im.cfg.moe.enabled;
+    deps.tmpls = im.chat_on ? im.chat_tmpls.get() : nullptr;
+    deps.think_ctl = im.think_ctl;
+    detail::LlamaDecideBackend backend(deps);
+
+    if (!im.decide_cache_chosen) {
+        im.decide_cache =
+            detail::make_prefix_cache(im.cfg.decide.prefix_cache, backend.prefill_cost_scales_with_tokens());
+        im.decide_cache_chosen = true;
+    }
+    DecideResult r = detail::run_decide(backend, im.decide_cache.get(), req);
+    // The abort callback turns a cancel into a failed decode; that is a request honoured, not a
+    // context gone bad, and run_decide has already emptied the sequence.
+    if (!r.ok && r.fatal && im.cancel_requested.load(std::memory_order_relaxed)) {
+        r.fatal = false;
+        r.cancelled = true;
+        r.error = "cancelled";
+    }
     return r;
 }
 

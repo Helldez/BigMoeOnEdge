@@ -4,6 +4,36 @@
 
 namespace bmoe {
 
+namespace {
+
+struct PrefixCacheModeName {
+    PrefixCacheMode mode;
+    const char * name;
+};
+// The one place the spellings live: both directions read this table.
+constexpr PrefixCacheModeName kPrefixCacheModes[] = {
+    {PrefixCacheMode::Auto, "auto"},
+    {PrefixCacheMode::On, "on"},
+    {PrefixCacheMode::Off, "off"},
+};
+
+} // namespace
+
+const char * prefix_cache_mode_name(PrefixCacheMode m) {
+    for (const auto & e : kPrefixCacheModes)
+        if (e.mode == m) return e.name;
+    return kPrefixCacheModes[0].name;
+}
+
+bool parse_prefix_cache_mode(const std::string & s, PrefixCacheMode & out) {
+    for (const auto & e : kPrefixCacheModes)
+        if (s == e.name) {
+            out = e.mode;
+            return true;
+        }
+    return false;
+}
+
 ValidationResult validate(const RunConfig & cfg) {
     ValidationResult r;
     auto fail = [&](std::string msg) {
