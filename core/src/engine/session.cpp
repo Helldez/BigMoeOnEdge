@@ -6,10 +6,9 @@
 #include "bmoe/ngram_draft.h"
 #include "chat_parse.h"
 #include "thinking_control.h"
-#include "prefill_device.h"
+#include "prefill_path.h"
 #include "../moe/router_hook.h"
 #include "../moe/expert_stream_source.h"
-#include "../moe/device_arena.h"
 #include "../moe/gguf_offsets.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
@@ -282,49 +281,27 @@ struct Session::Impl {
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
     ExpertStreamSource source;
 
-    // Prefill on an accelerator (SessionConfig::prefill). The device list is handed to the model
-    // loader, which keeps the pointer, so it lives here; the null entry terminates it.
-    ggml_backend_dev_t prefill_devs[2] = {nullptr, nullptr};
-    std::unique_ptr<detail::PrefillDevice> prefill_dev;
-    // With streaming on, the experts reach the device through this arena instead of a resident
-    // copy. `arena_layers`/`arena_shards` are what the streamer was given, kept for its init.
-    std::unique_ptr<DeviceExpertArena> arena;
-    std::vector<LayerExperts> arena_layers;
-    std::vector<std::string> arena_shards;
+    // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
+    // load, whose device list it holds, and opened after it.
+    std::unique_ptr<detail::PrefillPath> prefill;
 
-    // Placement of the NEXT graph: the layer weights, the streamed experts and the hook move together.
     void place_prefill(bool on_device) {
-        if (!prefill_dev) return;
-        prefill_dev->place(on_device);
-        if (arena) {
-            arena->place(on_device);
-            hook->set_device_arena(on_device ? arena.get() : nullptr);
-        }
+        if (prefill) prefill->place(on_device);
     }
-    // One llama_decode, on whichever side place_prefill last chose. On the device the arena is
-    // started before and drained after, and a failed expert read fails the decode: the graph would
-    // have computed on a slot that never filled.
     int decode_placed(llama_context * c, const llama_batch & b) {
-        const bool dev = arena && prefill_dev && prefill_dev->on_device();
-        if (dev) arena->begin_graph();
-        int rc = llama_decode(c, b);
-        if (dev) {
-            arena->end_graph();
-            if (rc == 0 && arena->failed()) rc = -1;
-        }
-        return rc;
+        return prefill ? prefill->decode(c, b) : llama_decode(c, b);
     }
-    // Every llama_memory_clear(data) of the target context: llama.cpp clears the buffers it
-    // allocated, which a moved model state no longer lives in.
     // Every exit from a prefill (errors and cancellation included) leaves the weights on the host:
     // the next graph may be a decode, and the CPU cannot read a device buffer.
     struct PlacementGuard {
         Impl & im;
         ~PlacementGuard() { im.place_prefill(false); }
     };
+    // Every llama_memory_clear(data) of the target context goes through here: llama.cpp clears the
+    // buffers it allocated, which a moved model state no longer lives in.
     void clear_memory(llama_context * c) {
         llama_memory_clear(llama_get_memory(c), true);
-        if (prefill_dev) prefill_dev->clear_state();
+        if (prefill) prefill->clear_state();
     }
 
     // The MTP draft source (SpecConfig::source == mtp). A SECOND context over the SAME model,
@@ -419,8 +396,7 @@ struct Session::Impl {
         // at the hook), then the hook, then unmap the model, then release the backend.
         source.shutdown();
         // Hands every weight back to its mapping, then frees the device copy: before the model goes.
-        arena.reset(); // joins its loaders and hands the experts back to the streamer's binding
-        prefill_dev.reset();
+        prefill.reset();
         if (smpl) llama_sampler_free(smpl); // independent of ctx/model; free before them
         // The speculative driver holds both contexts and detaches the backend samplers it
         // installed on the draft one, so it goes before either context is freed.
@@ -569,11 +545,11 @@ PplResult Session::perplexity(const PplRequest & req) {
         // Every row here wants its logits, so a piece is also capped by the output rows the context
         // reserved (PrefillDeviceConfig::max_outputs).
         const int step =
-            im.prefill_dev ? std::min(prefill_piece(im.cfg), PrefillDeviceConfig::max_outputs) : im.cfg.n_batch;
+            im.prefill ? std::min(prefill_piece(im.cfg), PrefillDeviceConfig::max_outputs) : im.cfg.n_batch;
         Impl::PlacementGuard placement_guard{im};
         for (int i = 0; i < n; i += step) {
             const int chunk = std::min(step, n - i);
-            im.place_prefill(im.prefill_dev && chunk >= im.cfg.prefill.min_tokens);
+            im.place_prefill(im.prefill && chunk >= im.cfg.prefill.min_tokens);
             batch_fill(b, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ true);
             im.hook->set_batch_phase(req.as_decode ? 1 : 0);
             if (im.decode_placed(ctx, b) != 0) {
@@ -689,20 +665,11 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // assigned to it: every weight still loads from the mmap, and the device runs nothing until
     // PrefillDevice moves the layer weights onto it for a wide graph.
     if (cfg.prefill.enabled()) {
-        ggml_backend_dev_t dev = ggml_backend_dev_by_name(cfg.prefill.device.c_str());
-        if (!dev) {
-            std::string names;
-            for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
-                if (!names.empty()) names += ", ";
-                names += ggml_backend_dev_name(ggml_backend_dev_get(i));
-            }
-            // Absent both when the build lacks the backend and when the backend found no hardware
-            // (a phone without the accelerator's driver registers nothing), so name neither cause.
-            return fail("prefill device '" + cfg.prefill.device + "' is not available here (devices found: " + names +
-                        "); run without --prefill-device");
-        }
-        im.prefill_devs[0] = dev;
-        mparams.devices = im.prefill_devs;
+        std::string derr;
+        ggml_backend_dev_t dev = detail::PrefillPath::find_device(cfg.prefill.device, derr);
+        if (!dev) return fail(derr);
+        im.prefill = std::make_unique<detail::PrefillPath>(dev);
+        mparams.devices = im.prefill->model_devices();
         // With a device listed, llama.cpp would put CPU weights in the device's host buffer type,
         // which is an allocation and a copy, not the file mapping. The mapping is load-bearing.
         mparams.no_host = true;
@@ -1022,10 +989,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             im.source.set_row_tensors(std::move(rows), row_budget);
         }
 
-        if (cfg.prefill.enabled()) {
-            im.arena_layers = layers;
-            im.arena_shards = offs.shard_paths;
-        }
+        if (im.prefill) im.prefill->keep_stream_layout(layers, offs.shard_paths);
         if (!im.source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
@@ -1117,107 +1081,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
     }
 
-    // Prefill device: learn the layer weights from one graph, then give them a device copy. Streaming
-    // already ran that capture; without it, run it here, only to collect.
-    if (cfg.prefill.enabled()) {
-        if (!cfg.moe.enabled) {
-            im.hook->begin_capture();
-            llama_token warm_tok = llama_vocab_bos(im.vocab);
-            if (warm_tok < 0) warm_tok = 0;
-            llama_batch warm = llama_batch_get_one(&warm_tok, 1);
-            if (llama_decode(ctx, warm) != 0) return fail("prefill-device capture decode failed");
-            im.hook->end_capture();
-            im.clear_memory(ctx);
-        }
-
-        // Layer weights only ("blk.N." is llama.cpp's naming for every architecture). The token
-        // table is a row gather and the output head computes the last position alone, so both stay
-        // with the CPU: moving them would buy nothing and cost their size in device memory. The
-        // usage test drops the graph inputs and KV views the capture records alongside.
-        std::vector<ggml_tensor *> layer_weights;
-        for (ggml_tensor * t : im.hook->captured_weight_objects()) {
-            if (std::strncmp(t->name, "blk.", 4) != 0) continue;
-            if (!t->buffer || ggml_backend_buffer_get_usage(t->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) continue;
-            layer_weights.push_back(t);
-        }
-        // Streaming means the model does not fit, and then the layer weights cannot be resident on the
-        // device either: on unified memory a resident copy is RAM taken from the expert cache twice
-        // over, and a device session has a ceiling of its own. They go through the arena, two layers
-        // at a time, paced at each layer's last node — which the capture must have found for every
-        // layer, or the pacing has nowhere to wait and the copy stays resident.
-        std::vector<std::vector<ggml_tensor *>> dense_per_layer;
-        if (cfg.moe.enabled && im.hook->learned_layer_ends()) {
-            dense_per_layer.resize((size_t) n_layer_streamed);
-            for (ggml_tensor * t : layer_weights) {
-                int il = -1;
-                if (std::sscanf(t->name, "blk.%d.", &il) == 1 && il >= 0 && il < (int) dense_per_layer.size())
-                    dense_per_layer[(size_t) il].push_back(t);
-            }
-            layer_weights.clear();
-        } else if (cfg.moe.enabled) {
-            std::fprintf(stderr, "bmoe: prefill-device: layer ends not found in the graph; layer weights stay "
-                                 "resident on the device"
-                                 "\n");
-        }
-        im.prefill_dev = std::make_unique<detail::PrefillDevice>();
+    if (im.prefill) {
         std::string perr;
-        if (!im.prefill_dev->init(im.prefill_devs[0], layer_weights, im.hook->non_matrix_weights(), perr))
-            return fail("prefill device " + cfg.prefill.device + ": " + perr);
-        std::string state_where;
-        if (!im.prefill_dev->init_state(im.prefill_devs[0], im.hook->captured_state_objects(), state_where, perr))
-            return fail("prefill device " + cfg.prefill.device + ": " + perr);
-        std::fprintf(stderr, "bmoe: prefill-device model state: %.1f MiB in %s\n",
-                     (double) im.prefill_dev->state_bytes() / (1024.0 * 1024.0), state_where.c_str());
-        if (cfg.moe.enabled) {
-            im.arena = std::make_unique<DeviceExpertArena>();
-            if (!im.arena->init(im.prefill_devs[0], im.arena_shards, im.arena_layers, cfg.prefill.load_threads,
-                                cfg.moe.o_direct, perr))
-                return fail("prefill device " + cfg.prefill.device + " expert arena: " + perr);
-            im.arena_layers.clear();
-            im.arena->set_test_delay_us(cfg.prefill.test_load_delay_us);
-            if (!im.arena->init_dense(im.prefill_devs[0], dense_per_layer, im.hook->non_matrix_weights(), perr))
-                return fail("prefill device " + cfg.prefill.device + " dense arena: " + perr);
-            if (im.arena->has_dense())
-                std::fprintf(stderr,
-                             "bmoe: prefill-device dense arena: layer weights through 2 slots, %.1f MiB; %d converted "
-                             "to a type the device takes (%.1f MiB)\n",
-                             (double) im.arena->dense_slot_bytes() / (1024.0 * 1024.0), im.arena->dense_converted(),
-                             (double) im.arena->dense_converted_bytes() / (1024.0 * 1024.0));
-            std::fprintf(stderr,
-                         "bmoe: prefill-device expert arena: %d layers through 2 slots of %.1f MiB, %d loaders\n",
-                         im.arena->n_layers(), (double) im.arena->slot_bytes() / 2.0 / (1024.0 * 1024.0),
-                         cfg.prefill.load_threads);
-        }
-        im.hook->count_device_nodes(true);
-
-        // The context reserved its compute buffers at creation, for the widest graph with every weight
-        // on the CPU — a prefill this session will never run there. At a wide ubatch that reservation is
-        // gigabytes of RAM the expert cache does not get (measured 2.2 GB at 2048 on a 35B-A3B, while the
-        // device's own graph needed 136 MB at 1024). So reserve again, with the weights where a wide
-        // graph will actually find them: toggling a context flag is the public way to have llama.cpp
-        // redo its reservation at the next decode, and one device-placed decode is that decode. The CPU
-        // keeps only what its own graphs (decode, a short tail) need, grown on demand from there.
-        {
-            llama_set_causal_attn(ctx, false);
-            llama_set_causal_attn(ctx, true);
-            const int n = cfg.prefill.min_tokens;
-            llama_token tok = llama_vocab_bos(im.vocab);
-            if (tok < 0) tok = 0;
-            std::vector<llama_token> toks((size_t) n, tok);
-            llama_batch b = llama_batch_init(n, 0, 1);
-            batch_fill(b, toks.data(), n, /*pos0*/ 0, /*all_logits*/ false);
-            im.place_prefill(true);
-            const int rc = im.decode_placed(ctx, b);
-            im.place_prefill(false);
-            llama_batch_free(b);
-            im.clear_memory(ctx);
-            if (rc != 0)
-                return fail("prefill device " + cfg.prefill.device + ": the device-placed reservation decode failed");
-        }
-        std::fprintf(stderr,
-                     "bmoe: prefill-device %s: %zu layer tensors, %.1f MiB copied; graphs >= %d tokens run there\n",
-                     cfg.prefill.device.c_str(), im.prefill_dev->n_tensors(),
-                     (double) im.prefill_dev->bytes() / (1024.0 * 1024.0), cfg.prefill.min_tokens);
+        if (!im.prefill->open(ctx, im.vocab, *im.hook, cfg.prefill, cfg.moe, n_layer_streamed, perr)) return fail(perr);
     }
 
     // Decode traces. Outside the streaming block on purpose: the compute trace measures the graph,
@@ -1604,15 +1470,15 @@ RunResult Session::generate(const GenerateRequest & req,
     // chose and can place: wide pieces on the device, a narrow tail on the CPU. Left to llama_decode,
     // a batch would be split into ubatches whose last one could be one token wide — the shape of the
     // decode graph that follows, which llama.cpp would then reuse without re-scheduling it.
-    const int pf_step = im.prefill_dev ? prefill_piece(im.cfg) : im.cfg.n_batch;
+    const int pf_step = im.prefill ? prefill_piece(im.cfg) : im.cfg.n_batch;
     Impl::PlacementGuard placement_guard{im};
     int prefill_device_tokens = 0;
-    const uint64_t arena_read0 = im.arena ? im.arena->read_bytes() : 0;
-    const double arena_stall0 = im.arena ? im.arena->stall_seconds() : 0.0;
+    const uint64_t arena_read0 = im.prefill ? im.prefill->arena_read_bytes() : 0;
+    const double arena_stall0 = im.prefill ? im.prefill->arena_stall_seconds() : 0.0;
     const long long device_nodes0 = im.hook->device_nodes();
     for (int i = (int) n_common; i < n_prompt; i += pf_step) {
         const int chunk = std::min(pf_step, n_prompt - i);
-        if (im.prefill_dev) {
+        if (im.prefill) {
             const bool on_dev = chunk >= im.cfg.prefill.min_tokens;
             im.place_prefill(on_dev);
             if (on_dev) prefill_device_tokens += chunk;
@@ -1988,9 +1854,9 @@ RunResult Session::generate(const GenerateRequest & req,
     s.prefill_seconds = prefill_seconds;
     s.prefill_device_tokens = prefill_device_tokens;
     s.prefill_device_nodes = prefill_device_nodes;
-    if (im.arena) {
-        s.prefill_device_read_mib = (double) (im.arena->read_bytes() - arena_read0) / (1024.0 * 1024.0);
-        s.prefill_device_stall_seconds = im.arena->stall_seconds() - arena_stall0;
+    if (im.prefill) {
+        s.prefill_device_read_mib = (double) (im.prefill->arena_read_bytes() - arena_read0) / (1024.0 * 1024.0);
+        s.prefill_device_stall_seconds = im.prefill->arena_stall_seconds() - arena_stall0;
     }
     s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
     s.prefill_read_mib = prefill_tally.read_mib;

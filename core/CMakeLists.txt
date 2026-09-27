@@ -32,6 +32,7 @@ if(BMOE_HAVE_LLAMA)
         src/moe/device_arena.cpp
         src/engine/session.cpp
         src/engine/prefill_device.cpp
+        src/engine/prefill_path.cpp
         src/engine/chat_parse.cpp
         src/engine/thinking_control.cpp
         src/engine/runtime.cpp

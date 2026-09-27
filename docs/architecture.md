@@ -30,6 +30,7 @@ core/
                 device_arena - two layer slots on a prefill device, filled from flash (npu-prefill.md)
     engine/     session — composition + the generation loop (open/generate/close)
                 prefill_device - moves layer weights and model state onto a device per graph
+                prefill_path - the prefill device for one session: setup, placement, device decode
                 runtime — the one-shot run() wrapper over a Session
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 thinking_control — how "thinking off" is honoured, probed per model
