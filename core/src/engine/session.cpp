@@ -696,7 +696,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 if (!names.empty()) names += ", ";
                 names += ggml_backend_dev_name(ggml_backend_dev_get(i));
             }
-            return fail("prefill device '" + cfg.prefill.device + "' not found (this build has: " + names + ")");
+            // Absent both when the build lacks the backend and when the backend found no hardware
+            // (a phone without the accelerator's driver registers nothing), so name neither cause.
+            return fail("prefill device '" + cfg.prefill.device + "' is not available here (devices found: " + names +
+                        "); run without --prefill-device");
         }
         im.prefill_devs[0] = dev;
         mparams.devices = im.prefill_devs;
