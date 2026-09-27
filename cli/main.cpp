@@ -16,8 +16,6 @@
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
 
-#include "ggml-backend.h"
-
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -40,31 +38,6 @@
 #endif
 
 using namespace bmoe;
-
-// "rpc:HOST:PORT" names the first device behind a ggml rpc-server, which has to be registered
-// before the engine can find it by name; any other value is already a device name. Resolved here,
-// in the front-end, so the engine only ever sees a registry name. Looked up through the registry
-// rather than linked, so a build without the RPC backend says so instead of failing to link.
-static bool resolve_prefill_device(std::string & dev, std::string & err) {
-    static const std::string pfx = "rpc:";
-    if (dev.compare(0, pfx.size(), pfx) != 0) return true;
-    const std::string endpoint = dev.substr(pfx.size());
-    ggml_backend_reg_t rpc = ggml_backend_reg_by_name("RPC");
-    if (!rpc) {
-        err = "this build has no RPC backend (configure with -DGGML_RPC=ON)";
-        return false;
-    }
-    using add_server_fn = ggml_backend_reg_t (*)(const char *);
-    auto add = (add_server_fn) ggml_backend_reg_get_proc_address(rpc, "ggml_backend_rpc_add_server");
-    ggml_backend_reg_t srv = add ? add(endpoint.c_str()) : nullptr;
-    if (!srv || ggml_backend_reg_dev_count(srv) == 0) {
-        err = "no ggml rpc-server device at " + endpoint;
-        return false;
-    }
-    ggml_backend_register(srv);
-    dev = ggml_backend_dev_name(ggml_backend_reg_dev_get(srv, 0));
-    return true;
-}
 
 static int env_int(const char * k, int dflt) {
     const char * v = std::getenv(k);
@@ -418,9 +391,9 @@ static void print_usage(const char * argv0) {
         "                          decode is unaffected. Measured: a context of 2048 reserves\n"
         "                          320 MiB, falling to 80 MiB at 512.\n"
         "      --prefill-device D  run wide prefill graphs on ggml device D (e.g. HTP0) while decode\n"
-        "                          stays on the CPU; rpc:HOST:PORT names a device behind a ggml\n"
-        "                          rpc-server. With --moe-stream the experts reach it through a\n"
-        "                          two-layer arena. Not with speculation or --row-stream. Off.\n"
+        "                          stays on the CPU. With --moe-stream the experts reach it\n"
+        "                          through a two-layer arena. Not with speculation or --row-stream.\n"
+        "                          Off.\n"
         "      --prefill-min-tokens N  narrowest prefill piece sent to that device (default 32)\n"
         "      --prefill-loaders N  threads that fill the device's layer slots from flash, with\n"
         "                          --moe-stream (1..16, default 8). Decode read lanes stay\n"
@@ -855,13 +828,6 @@ int main(int argc, char ** argv) {
     if (!vr) {
         std::fprintf(stderr, "config error: %s\n", vr.error.c_str());
         return 1;
-    }
-    if (cfg.prefill.enabled()) {
-        std::string perr;
-        if (!resolve_prefill_device(cfg.prefill.device, perr)) {
-            std::fprintf(stderr, "config error: --prefill-device: %s\n", perr.c_str());
-            return 1;
-        }
     }
 
     std::unique_ptr<IMetricsSink> sink;

@@ -168,8 +168,9 @@ returns. This is how `ggml_backend_sched` implements the eval-callback today
 
 ## Per-graph placement (`--prefill-device`)
 
-The prefill device ([npu-prefill.md](npu-prefill.md)) adds no llama.cpp change, but it leans on five
-more behaviours of the public surface, all covered by gates G16 and G17:
+The prefill device ([npu-prefill.md](npu-prefill.md)) adds no llama.cpp change, but it leans on these
+behaviours of the public surface and two naming conventions. All are exercised by gates G16 and G17,
+except where noted:
 
 - **The scheduler assigns a backend per graph, from the weight's buffer.** `ggml_backend_sched` looks
   at each weight's `tensor->buffer` every time it splits a graph, so rebinding `buffer`, `data` and
@@ -191,6 +192,18 @@ more behaviours of the public surface, all covered by gates G16 and G17:
   `llama_set_causal_attn` off and on makes the next decode redo the compute-buffer reservation, which
   the engine uses once, with the weights on the device, so the CPU does not keep a reservation for a
   graph it never runs.
+- **Concurrent uploads into one buffer.** The arena's loader threads call `ggml_backend_tensor_set`
+  on different views of the same slot buffer at once. ggml does not document this as thread-safe; it
+  holds for the CPU, RPC and Hexagon backends today because each write touches only its own bytes.
+  The gates cover the CPU (through RPC); on the NPU only a device run does.
+- **Layer weights are named `blk.N.`** The engine selects the weights it moves by that prefix. It is
+  the GGUF tensor naming every architecture in llama.cpp uses, not an API: a model that named its
+  layers otherwise would keep them on the CPU, correct but not faster.
+- **Model state tensors are named `cache_`.** The capture tells the KV and recurrent state apart from
+  weights by the `cache_` prefix llama.cpp's memory modules give them, so the prefill can place the
+  state where both sides can address it. That prefix is internal naming: if upstream renamed it the
+  state would stay in CPU memory, again correct but slower, and `prefill_dev_nodes` in the telemetry
+  would drop. Check it on each bump.
 
 ## Upgrading llama.cpp
 

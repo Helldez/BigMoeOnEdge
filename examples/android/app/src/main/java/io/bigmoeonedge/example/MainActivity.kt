@@ -99,7 +99,11 @@ private fun Root() {
     val context = LocalContext.current
     var showSettings by remember { mutableStateOf(false) }
     var showMetrics by remember { mutableStateOf(false) }
-    var settings by remember { mutableStateOf(AppSettings.load(context)) }
+    // Without the Hexagon backend in this APK, a saved NPU switch would only make every load fail.
+    val npuAvailable = remember { ModelManager.hasNpuBackend(context) }
+    var settings by remember {
+        mutableStateOf(AppSettings.load(context).let { if (npuAvailable) it else it.copy(npuPrefill = false) })
+    }
 
     // Model-scan state lives here, above the settings/main switch, so opening Settings and
     // coming back does NOT dispose it and trigger a fresh scan. The scan runs once (and again
@@ -120,6 +124,7 @@ private fun Root() {
     if (showSettings) {
         SettingsScreen(
             current = settings,
+            npuAvailable = npuAvailable,
             onChange = { settings = it; it.save(context) },
             onBack = { showSettings = false },
         )

@@ -28,8 +28,8 @@ research harness and keeps the app a thin driver over the CLI.
    powershell -File ../../scripts/stage-hexagon-jnilibs.ps1
    ```
 
-   An APK without it runs as before with the switch off; with it on, the engine refuses to start and
-   names the device it could not find.
+   An APK without it (every release APK, which CI builds without Hexagon) does not show the switch,
+   and ignores it if a previous install saved it on.
 
 2. Build and install the APK. Open this folder in Android Studio, or use the committed
    Gradle wrapper directly. The app has two distribution flavors (see below); build the one

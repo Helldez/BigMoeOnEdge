@@ -452,6 +452,10 @@ void DeviceExpertArena::schedule_dense(int il) {
 
 void DeviceExpertArena::begin_graph() {
     std::unique_lock<std::mutex> lk(mu_);
+    // A failure fails the graph it happened in, not the session: end_graph() drained the last one, so
+    // nothing still running can set it again, and a transient read error must not turn every later
+    // device prefill into a decode failure.
+    failed_ = false;
     std::fill(scheduled_.begin(), scheduled_.end(), false);
     std::fill(dense_scheduled_.begin(), dense_scheduled_.end(), false);
     std::fill(dense_waited_.begin(), dense_waited_.end(), false);

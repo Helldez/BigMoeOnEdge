@@ -358,6 +358,11 @@ int main() {
         c.prefill.min_tokens = c.n_ctx + 1;
         expect_fail("min_tokens above n_ctx could never reach the device", c);
         c.prefill.min_tokens = 32;
+        c.n_ubatch = 16;
+        expect_fail("a ubatch narrower than min_tokens sends no piece to the device", c);
+        c.n_ubatch = 32;
+        expect_ok("a ubatch exactly min_tokens wide reaches the device", c);
+        c.n_ubatch = 0;
         c.moe.enabled = true;
         expect_ok("prefill device with streaming (the expert arena)", c);
         c.moe.row_stream = true;

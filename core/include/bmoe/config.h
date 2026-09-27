@@ -358,7 +358,7 @@ struct SpecConfig {
 // narrower, so two consecutive graphs on different placements never share a shape.
 struct PrefillDeviceConfig {
     // ggml device name as the backend registry reports it (e.g. "HTP0" for the Hexagon NPU).
-    // Empty = off. The front-end resolves anything that needs registering first (an RPC endpoint).
+    // Empty = off. A local device only: no front-end registers a remote (RPC) one.
     std::string device;
 
     // Narrowest prefill graph sent to the device. A prompt is fed in ubatch-wide pieces; pieces at

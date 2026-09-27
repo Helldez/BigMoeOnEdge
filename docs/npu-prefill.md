@@ -134,7 +134,9 @@ instead of the 21 GB the model is.
 Gates G16 and G17 run the whole path against a loopback `rpc-server` fronting the CPU: the same
 kernels, so placement is the only difference, and output, perplexity and the bytes the arena reads
 must all match an all-CPU run bit for bit, with and without a cache, with a slowed loader, and across
-several generates in one session. Removing either wait in the arena fails them (checked).
+several generates in one session. Removing either wait in the arena fails them (checked). The RPC
+backend is only that test fixture: it is built with the tests alone, on 127.0.0.1, and neither the
+CLI nor the app accepts an RPC endpoint.
 
 On the NPU itself the matrix engine computes in fp16, so the output is not bit-identical to the CPU's.
 Price it with `--ppl` on the same Q4_0 model with and without the flag before relying on it.

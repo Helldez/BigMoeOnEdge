@@ -29,7 +29,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack: () -> Unit) {
+fun SettingsScreen(
+    current: AppSettings,
+    npuAvailable: Boolean,
+    onChange: (AppSettings) -> Unit,
+    onBack: () -> Unit,
+) {
     // Reported by the loaded session at BMOE_READY. "none" means this model reasons no matter what
     // it is asked, so the Thinking switch is shown disabled with the reason rather than left there
     // pretending to work (#82). Null = nothing loaded yet, so nothing is claimed either way.
@@ -139,8 +144,9 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 ) { onChange(current.copy(releaseMmap = it)) }
 
                 ExperimentalGroup {
-                    // Measured on one phone and one model; off until more hardware says otherwise.
-                    SwitchRow(
+                    // Measured on one phone and one model; off until more hardware says otherwise. Only
+                    // offered by an APK that carries the Hexagon backend (ModelManager.hasNpuBackend).
+                    if (npuAvailable) SwitchRow(
                         "Prefill on the NPU",
                         "Run the prompt on the Hexagon NPU and keep decoding on the CPU. With streaming, " +
                             "the weights reach the NPU two layers at a time, straight from flash. Needs a " +
@@ -149,7 +155,7 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                             "speculation or row-streamed tables.",
                         current.npuPrefill,
                     ) { onChange(current.copy(npuPrefill = it)) }
-                    IntSetting(
+                    if (npuAvailable) IntSetting(
                         "NPU loader threads", AppSettings.NPU_LOADER_CHOICES, current.npuLoaders,
                         enabled = current.npuPrefill && stream,
                     ) { onChange(current.copy(npuLoaders = it)) }

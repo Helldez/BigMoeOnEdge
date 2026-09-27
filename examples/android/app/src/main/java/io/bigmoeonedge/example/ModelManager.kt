@@ -105,6 +105,14 @@ object ModelManager {
     fun cliPath(ctx: Context): String =
         File(ctx.applicationInfo.nativeLibraryDir, "libbmoe-cli.so").absolutePath
 
+    /**
+     * Whether this APK carries the Hexagon backend. Only a Hexagon build stages it
+     * (scripts/build-hexagon-android.sh); the release APKs are built without it, and there the NPU
+     * prefill could only fail to start, so its switch is not offered.
+     */
+    fun hasNpuBackend(ctx: Context): Boolean =
+        File(ctx.applicationInfo.nativeLibraryDir, "libggml-hexagon.so").exists()
+
     /** Empty-state guidance, phrased for the current flavor's model-acquisition paths. */
     fun pushHint(): String =
         if (BuildConfig.SHARED_STORAGE) {

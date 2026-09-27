@@ -29,15 +29,19 @@ Semantic Versioning.
   first Gemma 4 prefill on it). The buffers llama.cpp first held the model state in are handed
   back to the kernel after the move instead of doubling the KV cache (1760 MiB on Gemma 4 at an
   8192-token context). Gemma 4 26B-A4B prefills 238 tokens in 5.85 s instead of 16.2 s; at an
-  8192-token context and a 2000 MiB cache it does not fit a 12 GB phone with the device path on. The compute-buffer reservation is redone with the weights on the device and the
-  logit rows capped, which kept the CPU's buffer at 154 MB instead of 2.2 GB and decode at 3.25
-  tok/s (3.41 without the flag).
+  8192-token context and a 2000 MiB cache it does not fit a 12 GB phone with the device path on.
+  The compute-buffer reservation is redone with the weights on the device and the logit rows
+  capped, which kept the CPU's buffer at 154 MB instead of 2.2 GB and decode at 3.25 tok/s (3.41
+  without the flag).
 
   Off by default; the app has it as **Prefill on the NPU** under Experimental. Needs a model whose
   expert tensors the NPU takes (Q4_0, Q4_1, Q8_0, IQ4_NL, MXFP4) and the Hexagon backend in the
   build (`scripts/build-hexagon-android.sh`). The NPU computes in fp16, so the output is not
   identical to the CPU's. Gates G16 and G17 prove the placement against a loopback device on the
-  host, bit for bit. See [docs/npu-prefill.md](docs/npu-prefill.md).
+  host, bit for bit; that loopback RPC device is a test fixture only, and no front-end accepts an
+  RPC endpoint. A ubatch narrower than `--prefill-min-tokens` is a config error (no piece could
+  reach the device), and a failed expert read fails only the prefill it happened in. See
+  [docs/npu-prefill.md](docs/npu-prefill.md).
 - **Telemetry:** `prefill_dev_tokens`, `prefill_dev_nodes`, `prefill_dev_read_mib` and
   `prefill_dev_stall_s` in `BMOE_DONE` and the CSV trailer.
 

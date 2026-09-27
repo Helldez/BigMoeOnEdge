@@ -113,6 +113,12 @@ ValidationResult validate(const RunConfig & cfg) {
         if (cfg.prefill.min_tokens > cfg.n_ctx)
             return fail("prefill.min_tokens=" + std::to_string(cfg.prefill.min_tokens) +
                         " exceeds n_ctx=" + std::to_string(cfg.n_ctx) + ": no prefill could ever reach the device.");
+        // A prompt is fed in ubatch-wide pieces (the session prefills in n_ctx-wide batches, so the
+        // ubatch is the width whenever it is set), and a piece narrower than min_tokens stays on the
+        // CPU: without this the only sign would be prefill_dev_tokens=0.
+        if (cfg.n_ubatch > 0 && cfg.n_ubatch < cfg.prefill.min_tokens)
+            return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " is narrower than prefill.min_tokens=" +
+                        std::to_string(cfg.prefill.min_tokens) + ": no prefill could ever reach the device.");
         // The row policy serves dense tables from the eval callback at each gather, and a device graph
         // bypasses the host streaming path in that callback entirely.
         if (cfg.moe.row_stream)

@@ -927,7 +927,7 @@ int main(int argc, char ** argv) {
             struct Variant {
                 const char * name;
                 int cache_mb;
-                int io_threads;
+                int loaders; // the arena's loader threads (--prefill-loaders), not the decode lanes
                 int delay_us;
             };
             const Variant variants[] = {
@@ -947,7 +947,7 @@ int main(int argc, char ** argv) {
                 c.moe.enabled = true;
                 c.moe.cache_mb = v.cache_mb;
                 c.moe.force_cache = v.cache_mb > 0;
-                c.moe.io_threads = v.io_threads;
+                c.prefill.load_threads = v.loaders;
                 c.prefill.test_load_delay_us = v.delay_us;
                 std::unique_ptr<Session> vs = Session::open(session_config_from(c), open_err);
                 if (!vs) {

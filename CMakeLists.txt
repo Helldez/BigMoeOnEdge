@@ -52,8 +52,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     set(LLAMA_BUILD_COMMON  ON  CACHE BOOL "" FORCE)
     set(LLAMA_CURL          OFF CACHE BOOL "" FORCE)  # common's model-download path unused
     # The prefill-device gate (G16) needs a second device to move weights onto, and the one every
-    # host has is a loopback rpc-server fronting the CPU. Host test builds only, and not forced:
-    # -DGGML_RPC=OFF still wins, and G16 then reports itself skipped.
+    # host has is a loopback rpc-server fronting the CPU. A test fixture, not a feature: host test
+    # builds only (releases build without tests), no front-end accepts an RPC endpoint, and it is
+    # not forced: -DGGML_RPC=OFF still wins, and G16 then reports itself skipped.
     if(BMOE_BUILD_TESTS AND NOT ANDROID)
         set(GGML_RPC ON CACHE BOOL "ggml: use RPC")
     endif()
