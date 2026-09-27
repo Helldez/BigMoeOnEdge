@@ -23,7 +23,13 @@ Semantic Versioning.
   by loader threads while the device computes the other one (about 900 MB for the model above).
   The model state moves into the device's host buffer, so decode and prefill share one KV cache.
   A weight type the device's matmul refuses is carried to it in the nearest one it takes, converted
-  once at load. The compute-buffer reservation is redone with the weights on the device and the
+  once at load. Layer weights an op reads other than as a matmul's matrix (norms, biases, Gemma 4's
+  per-expert scale) go to plain device memory, found from the ops of the capture graph: a backend
+  may map its `WEIGHTS` buffers for its matmul alone (Hexagon with DMA64 does, and aborted the
+  first Gemma 4 prefill on it). The buffers llama.cpp first held the model state in are handed
+  back to the kernel after the move instead of doubling the KV cache (1760 MiB on Gemma 4 at an
+  8192-token context). Gemma 4 26B-A4B prefills 238 tokens in 5.85 s instead of 16.2 s; at an
+  8192-token context and a 2000 MiB cache it does not fit a 12 GB phone with the device path on. The compute-buffer reservation is redone with the weights on the device and the
   logit rows capped, which kept the CPU's buffer at 154 MB instead of 2.2 GB and decode at 3.25
   tok/s (3.41 without the flag).
 

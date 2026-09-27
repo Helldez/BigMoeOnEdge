@@ -110,6 +110,11 @@ void vm_drop_file_pages(void * /*p*/, size_t /*sz*/) {
     // File-backed views cannot be decommitted (MEM_DECOMMIT is only valid for VirtualAlloc'd pages),
     // and the host build never mmaps the model for streaming — so there is nothing to drop.
 }
+void vm_drop_anon_pages(void * /*p*/, size_t /*sz*/) {
+    // MEM_DECOMMIT would turn the owner's next write into an access violation, and MEM_RESET is only
+    // defined for VirtualAlloc'd regions, which a heap allocation need not be. The host build has no
+    // prefill device that moves state away, so keeping the pages costs nothing here.
+}
 
 void vm_advise_random(void * /*p*/, size_t /*sz*/) {
     // No readahead to tame on a host build that never streams; the gates do not measure I/O.
@@ -233,6 +238,11 @@ void vm_drop_file_pages(void * p, size_t sz) {
     // MADV_DONTNEED on the model's clean, read-only MAP_PRIVATE mapping drops the resident pages; the
     // next access refaults them from the file. The tensor was rebound onto its anon copy, so nothing
     // touches this range again — the drop just reclaims the double residency, it does not lose data.
+    if (sz) madvise(p, sz, MADV_DONTNEED);
+}
+void vm_drop_anon_pages(void * p, size_t sz) {
+    // On private anonymous memory MADV_DONTNEED frees the pages and leaves the range mapped: a later
+    // read sees zeros, a later write faults in a fresh page. Advice only; a failure keeps the pages.
     if (sz) madvise(p, sz, MADV_DONTNEED);
 }
 

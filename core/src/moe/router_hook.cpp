@@ -177,6 +177,7 @@ void RouterHook::begin_capture() {
     last_node_.assign((size_t) n_layer_, std::string());
     row_gathered_.clear();
     row_disqualified_.clear();
+    non_matrix_weights_.clear();
 }
 void RouterHook::end_capture() {
     capturing_ = false;
@@ -1381,6 +1382,16 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 if (std::strncmp(base->name, "cache_", 6) == 0) {
                     if (captured_state_seen_.insert(base).second) captured_state_objects_.push_back(base);
                     continue;
+                }
+                // Any read of a weight but as a matmul's matrix, through however many views: the leaf
+                // is what a prefill device places, so the verdict belongs to the leaf.
+                {
+                    ggml_tensor * leaf = src;
+                    while (leaf->view_src)
+                        leaf = leaf->view_src;
+                    const bool as_matrix =
+                        s == 0 && src == leaf && (t->op == GGML_OP_MUL_MAT || t->op == GGML_OP_MUL_MAT_ID);
+                    if (leaf->op == GGML_OP_NONE && !as_matrix) non_matrix_weights_.insert(leaf);
                 }
                 int il = -1;
                 const int p = match_expert(src->name, recipe_, il);

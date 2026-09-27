@@ -168,7 +168,7 @@ returns. This is how `ggml_backend_sched` implements the eval-callback today
 
 ## Per-graph placement (`--prefill-device`)
 
-The prefill device ([npu-prefill.md](npu-prefill.md)) adds no llama.cpp change, but it leans on four
+The prefill device ([npu-prefill.md](npu-prefill.md)) adds no llama.cpp change, but it leans on five
 more behaviours of the public surface, all covered by gates G16 and G17:
 
 - **The scheduler assigns a backend per graph, from the weight's buffer.** `ggml_backend_sched` looks
@@ -181,6 +181,12 @@ more behaviours of the public surface, all covered by gates G16 and G17:
 - **`ggml_backend_tensor_set` is where a backend lays weights out its own way.** The arena writes each
   expert through a per-expert view, and writes each slot tensor once whole at load so the backend
   records its layout for the tensor the op actually reads.
+- **A buffer's usage is what a backend reads to decide how to hold it.** `ggml_backend_buffer_set_usage`
+  marks a buffer `WEIGHTS` or not, and a backend may lay out and map a `WEIGHTS` buffer for its
+  matmul alone (Hexagon with DMA64 maps it for DMA only, and most of its other kernels then refuse it
+  at run time). So the engine marks only the matmul matrices `WEIGHTS` and puts every other layer weight
+  (norms, biases, scales), as found from the ops the capture graph applies to it, in plain device
+  memory.
 - **Two context knobs.** `n_outputs_max` bounds the logit rows the context reserves, and toggling
   `llama_set_causal_attn` off and on makes the next decode redo the compute-buffer reservation, which
   the engine uses once, with the weights on the device, so the CPU does not keep a reservation for a

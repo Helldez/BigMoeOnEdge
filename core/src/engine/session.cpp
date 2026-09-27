@@ -1158,7 +1158,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         }
         im.prefill_dev = std::make_unique<detail::PrefillDevice>();
         std::string perr;
-        if (!im.prefill_dev->init(im.prefill_devs[0], layer_weights, perr))
+        if (!im.prefill_dev->init(im.prefill_devs[0], layer_weights, im.hook->non_matrix_weights(), perr))
             return fail("prefill device " + cfg.prefill.device + ": " + perr);
         std::string state_where;
         if (!im.prefill_dev->init_state(im.prefill_devs[0], im.hook->captured_state_objects(), state_where, perr))
@@ -1172,7 +1172,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                 return fail("prefill device " + cfg.prefill.device + " expert arena: " + perr);
             im.arena_layers.clear();
             im.arena->set_test_delay_us(cfg.prefill.test_load_delay_us);
-            if (!im.arena->init_dense(im.prefill_devs[0], dense_per_layer, perr))
+            if (!im.arena->init_dense(im.prefill_devs[0], dense_per_layer, im.hook->non_matrix_weights(), perr))
                 return fail("prefill device " + cfg.prefill.device + " dense arena: " + perr);
             if (im.arena->has_dense())
                 std::fprintf(stderr,

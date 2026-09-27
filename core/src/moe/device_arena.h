@@ -40,6 +40,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace bmoe {
@@ -64,8 +65,16 @@ public:
 
     // Also carry each layer's non-expert weights through two slots. `per_layer[il]` lists layer il's
     // weights (host resident, contiguous); layers may differ in what they hold. Call after init.
-    bool
-    init_dense(ggml_backend_dev_t dev, const std::vector<std::vector<ggml_tensor *>> & per_layer, std::string & err);
+    //
+    // `non_matrix` are the weights some op reads other than as a matmul's matrix (RouterHook::
+    // non_matrix_weights). A backend may keep a WEIGHTS buffer in a form only its matmul kernels
+    // address (Hexagon maps it for DMA only when DMA64 is on, and most other kernels refuse it), so
+    // these ride a second pair of slots marked as plain memory, in their own type. The matrices keep
+    // the WEIGHTS slots, where the backend lays them out for its matmul.
+    bool init_dense(ggml_backend_dev_t dev,
+                    const std::vector<std::vector<ggml_tensor *>> & per_layer,
+                    const std::unordered_set<const ggml_tensor *> & non_matrix,
+                    std::string & err);
 
     // Bind every expert tensor to its slot (true) or back to what it had before (false). The host
     // binding is taken at the moment of the swap, so whatever the streamer bound stays authoritative.
@@ -169,7 +178,8 @@ private:
 
     std::vector<DenseLayer> dense_; // by layer id; empty when init_dense was not called
     ggml_context * dense_ctx_ = nullptr;
-    ggml_backend_buffer_t dense_buf_[2] = {};
+    ggml_backend_buffer_t dense_buf_[2] = {};      // matmul matrices, usage WEIGHTS
+    ggml_backend_buffer_t dense_data_buf_[2] = {}; // every other layer weight, plain memory
     size_t dense_slot_bytes_ = 0;
     int dense_converted_ = 0;
     size_t dense_converted_bytes_ = 0;

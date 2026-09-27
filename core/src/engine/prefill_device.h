@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace bmoe::detail {
@@ -29,8 +30,13 @@ public:
 
     // Allocates `weights` in `dev`'s buffer type and copies them in. Every weight must be host
     // readable (the mmap) and contiguous; anything else is an error, not a skip, because a
-    // silently skipped weight would pin its op to the CPU and cost a split per graph.
-    bool init(ggml_backend_dev_t dev, const std::vector<ggml_tensor *> & weights, std::string & err);
+    // silently skipped weight would pin its op to the CPU and cost a split per graph. `non_matrix`
+    // (RouterHook::non_matrix_weights) go to plain device memory instead of the WEIGHTS buffer, as
+    // DeviceExpertArena::init_dense explains.
+    bool init(ggml_backend_dev_t dev,
+              const std::vector<ggml_tensor *> & weights,
+              const std::unordered_set<const ggml_tensor *> & non_matrix,
+              std::string & err);
 
     // Moves the memory module's state (KV cache, recurrent state) into the device's HOST buffer type
     // for good: memory the CPU reads directly and the device addresses too, so decode on the CPU and
@@ -38,12 +44,17 @@ public:
     // every device graph would fall back to the CPU, which at prefill widths is most of the time. A
     // device without a host buffer type (RPC) gets a plain CPU buffer: nothing gained, same behaviour.
     // Returns the buffer type used through `where`.
+    //
+    // llama.cpp keeps the buffers it allocated the state in, and nothing reads them after the move,
+    // so their pages are handed back (drop_host_state): left resident they would hold a second copy of
+    // the whole cache, which for a model with a large KV is more memory than the device path saves.
     bool init_state(ggml_backend_dev_t dev,
                     const std::vector<ggml_tensor *> & states,
                     std::string & where,
                     std::string & err);
     // Zero the moved state, for every llama_memory_clear(data=true) of the session: that call clears
-    // the buffers llama.cpp allocated, which these tensors no longer live in.
+    // the buffers llama.cpp allocated, which these tensors no longer live in. Its memset faults those
+    // pages back in, so they are handed back again.
     void clear_state();
     size_t state_bytes() const { return state_bytes_; }
 
@@ -67,10 +78,14 @@ private:
         Binding dev;
     };
     static void apply(ggml_tensor * t, const Binding & b);
+    // Release the resident pages of the state's original (host) copies; see init_state.
+    void drop_host_state() const;
 
     std::vector<Entry> entries_;
-    ggml_context * ctx_ = nullptr;        // metadata of the device-side twins
-    ggml_backend_buffer_t buf_ = nullptr; // may be a multi-buffer when a backend caps buffer size
+    ggml_context * ctx_ = nullptr;             // metadata of the device-side twins
+    ggml_backend_buffer_t buf_ = nullptr;      // may be a multi-buffer when a backend caps buffer size
+    ggml_context * data_ctx_ = nullptr;        // the non-matrix twins
+    ggml_backend_buffer_t data_buf_ = nullptr; // ... in plain device memory
     size_t bytes_ = 0;
     bool on_device_ = false;
 

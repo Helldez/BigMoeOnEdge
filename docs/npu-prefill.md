@@ -26,6 +26,20 @@ on the 2026-09-26 llama.cpp base, with 8 loaders:
 Decode after the 1418-token prompt: 3.41 tok/s on the CPU-only run, 3.25 tok/s with the NPU
 prefill (both decode on the CPU; the difference is the memory the NPU's slots hold).
 
+Gemma 4 26B-A4B-it Q4_K_M (17 GB), same phone and settings but `--cache-mb 2000`, a 238-token
+prompt, a 2048-token context:
+
+| | prefill | decode |
+|---|---:|---:|
+| CPU | 16.2 s (14.7 tok/s) | 3.60 tok/s (8192-token context) |
+| NPU | 5.85 s (40.7 tok/s) | 3.30 tok/s |
+
+**Memory is the limit on a model with a large KV cache.** The device path holds the two expert slots
+(1.1 GB on this model), the device's compute buffers (0.8 GB at ubatch 2048) and the model state in
+the device's host buffer. On a 12 GB phone Gemma 4 at an 8192-token context and a 2000 MiB expert
+cache already leaves about 330 MB free on the CPU alone; with the device path on top it thrashes. At
+2048 it fits. A smaller `--cache-mb` or context makes the room.
+
 **Short prompts do not gain.** A prefill graph this wide routes to nearly every expert of every
 layer, so the NPU path reads the whole expert set from flash once per graph (17.4 GB here),
 whatever the prompt length. Past roughly a thousand tokens that read hides behind the NPU's compute;
@@ -74,7 +88,18 @@ instead of the 21 GB the model is.
 - **The KV cache and recurrent state** move once, at load, into the NPU's host buffer type: memory the
   CPU reads directly and the NPU addresses too, so decode and prefill share one cache. Left in plain
   CPU memory, every attention of a device graph would run on the CPU. The Hexagon backend exposes that
-  buffer type only with `GGML_HEXAGON_HOSTBUF=1`, which the app sets.
+  buffer type only with `GGML_HEXAGON_HOSTBUF=1`, which the app sets. The buffers llama.cpp first
+  allocated the state in stay allocated, since only llama.cpp can free them, but nothing reads them
+  after the move, so their pages are handed back to the kernel (and again after each
+  `llama_memory_clear`, which rewrites them). Kept resident they would double the KV cache: 1760 MiB
+  on Gemma 4 26B-A4B at an 8192-token context, where Qwen3.6, mostly linear attention, has 143 MiB.
+- **Weights that are not a matmul's matrix.** A backend may hold a `WEIGHTS` buffer in a form only its
+  matmul kernels address: with DMA64 on (the default above Hexagon v79), the Hexagon backend maps
+  such a buffer for DMA only, and most of its other kernels refuse it at run time, which aborts the
+  graph. Gemma 4 met it first: it broadcasts a per-expert scale with `REPEAT`. The capture pass records every layer weight some op reads other than as the matrix of a
+  `MUL_MAT`/`MUL_MAT_ID` (through views too), and those go to a second pair of slots in plain device
+  memory, in their own type. The matrices keep the `WEIGHTS` slots. No op moves: the scheduler still
+  runs each on the device, now on memory every kernel can read.
 - **Weight types the device refuses.** A "Q4_0" gguf is a mix: the one above keeps its shared experts
   in Q5_0 and four attention projections in Q6_K, which the Hexagon matmul does not take. Left alone
   they ran on the CPU inside every device graph (65 matmuls, 111 splits, 17.6 s instead of 11.2 s).

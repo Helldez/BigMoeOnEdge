@@ -90,6 +90,8 @@ DeviceExpertArena::~DeviceExpertArena() {
     if (ctx_) ggml_free(ctx_);
     for (ggml_backend_buffer_t b : dense_buf_)
         if (b) ggml_backend_buffer_free(b);
+    for (ggml_backend_buffer_t b : dense_data_buf_)
+        if (b) ggml_backend_buffer_free(b);
     if (dense_ctx_) ggml_free(dense_ctx_);
 }
 
@@ -260,6 +262,7 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
 
 bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
                                    const std::vector<std::vector<ggml_tensor *>> & per_layer,
+                                   const std::unordered_set<const ggml_tensor *> & non_matrix,
                                    std::string & err) {
     size_t n_tensors = 0;
     for (const auto & v : per_layer)
@@ -277,35 +280,44 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
     const size_t align = ggml_backend_buft_get_alignment(buft);
     // Each slot must hold the largest layer of its parity: layers differ (a hybrid model alternates
     // attention and recurrent blocks), and each layer is laid out from the start of its slot.
-    // Sized for each weight as the device will hold it, which is not always the file's type.
-    size_t need[2] = {0, 0};
+    // Sized for each weight as the device will hold it, which is not always the file's type: a matrix
+    // may be converted for the device's matmul, a non-matrix weight keeps its own type.
+    size_t need[2][2] = {{0, 0}, {0, 0}}; // [data][parity]; data = 1 for the non-matrix slots
     std::vector<std::vector<ggml_type>> dtype(per_layer.size());
     {
         ggml_init_params sp{};
         sp.mem_size = ggml_tensor_overhead() * 2;
         sp.no_alloc = true;
         for (size_t il = 0; il < per_layer.size(); ++il) {
-            size_t sz = 0;
+            size_t sz[2] = {0, 0};
             for (ggml_tensor * t : per_layer[il]) {
-                const ggml_type dt = device_type_for(dev, t);
+                const bool data = non_matrix.count(t) != 0;
+                const ggml_type dt = data ? t->type : device_type_for(dev, t);
                 dtype[il].push_back(dt);
                 ggml_context * c = ggml_init(sp);
                 ggml_tensor * shaped = ggml_new_tensor(c, dt, GGML_MAX_DIMS, t->ne);
-                sz += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, shaped), align);
+                sz[data] += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, shaped), align);
                 ggml_free(c);
             }
-            need[il % 2] = std::max(need[il % 2], sz);
+            for (int d = 0; d < 2; ++d)
+                need[d][il % 2] = std::max(need[d][il % 2], sz[d]);
         }
     }
-    for (int s = 0; s < 2; ++s) {
-        if (need[s] == 0) continue;
-        dense_buf_[s] = ggml_backend_buft_alloc_buffer(buft, need[s] + align);
-        if (!dense_buf_[s]) {
-            err = std::string("cannot allocate a dense layer slot on ") + ggml_backend_dev_name(dev);
-            return false;
+    for (int d = 0; d < 2; ++d) {
+        ggml_backend_buffer_t * bufs = d ? dense_data_buf_ : dense_buf_;
+        for (int s = 0; s < 2; ++s) {
+            if (need[d][s] == 0) continue;
+            bufs[s] = ggml_backend_buft_alloc_buffer(buft, need[d][s] + align);
+            if (!bufs[s]) {
+                err = std::string("cannot allocate a dense layer slot on ") + ggml_backend_dev_name(dev);
+                return false;
+            }
+            // Before any tensor is set: a backend may choose the layout (and how the device maps the
+            // buffer) from the usage.
+            ggml_backend_buffer_set_usage(bufs[s],
+                                          d ? GGML_BACKEND_BUFFER_USAGE_ANY : GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+            dense_slot_bytes_ += need[d][s];
         }
-        ggml_backend_buffer_set_usage(dense_buf_[s], GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-        dense_slot_bytes_ += need[s];
     }
 
     ggml_init_params ip{};
@@ -319,15 +331,19 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
     dense_.assign(per_layer.size(), DenseLayer{});
     for (size_t il = 0; il < per_layer.size(); ++il) {
         if (per_layer[il].empty()) continue;
-        // A fresh allocator per layer: every layer of a parity starts at the same offset, on purpose.
-        ggml_tallocr ta = ggml_tallocr_new(dense_buf_[il % 2]);
+        // Fresh allocators per layer: every layer of a parity starts at the same offset, on purpose.
+        ggml_tallocr ta[2] = {};
+        for (int d = 0; d < 2; ++d) {
+            ggml_backend_buffer_t b = (d ? dense_data_buf_ : dense_buf_)[il % 2];
+            if (b) ta[d] = ggml_tallocr_new(b);
+        }
         DenseLayer & D = dense_[il];
         for (size_t j = 0; j < per_layer[il].size(); ++j) {
             ggml_tensor * t = per_layer[il][j];
             const ggml_type dt = dtype[il][j];
             ggml_tensor * w = ggml_new_tensor(dense_ctx_, dt, GGML_MAX_DIMS, t->ne);
             ggml_set_name(w, t->name);
-            if (ggml_tallocr_alloc(&ta, w) != GGML_STATUS_SUCCESS) {
+            if (ggml_tallocr_alloc(&ta[non_matrix.count(t) != 0], w) != GGML_STATUS_SUCCESS) {
                 err = std::string("cannot place ") + t->name + " in its dense slot";
                 return false;
             }

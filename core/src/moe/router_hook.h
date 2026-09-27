@@ -115,6 +115,13 @@ public:
     // and a model whose embedding table is multiplied simply never qualifies.
     std::unordered_set<std::string> row_gathered_weights() const;
 
+    // After capture, the weight leaves some node read OTHER than as the matrix of a matmul (src0 of
+    // MUL_MAT / MUL_MAT_ID): a norm's scale, a bias, a per-expert scale broadcast by REPEAT, or any
+    // weight reached through a view or reshape first. A prefill device keeps the rest in its weight
+    // layout; these are plain data every kernel must be able to address (see DeviceExpertArena).
+    // Derived from the graph's ops, so no architecture or tensor name appears in the rule.
+    const std::unordered_set<const ggml_tensor *> & non_matrix_weights() const { return non_matrix_weights_; }
+
     void set_source(IExpertSource * src) { source_ = src; } // non-null → stream mode
 
     // Install the row-gathered residency policy (see bmoe/row_source.h). Non-null makes the stream
@@ -332,7 +339,8 @@ private:
     // gather, and every weight seen in any way that rules that out. The verdict is the difference.
     std::unordered_set<std::string> row_gathered_;
     std::unordered_set<std::string> row_disqualified_; // non-expert weight leaves (see captured_weights)
-    std::vector<int32_t> gathered_;                    // reused scratch for stream-mode id gather
+    std::unordered_set<const ggml_tensor *> non_matrix_weights_;
+    std::vector<int32_t> gathered_; // reused scratch for stream-mode id gather
 
     // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
     // during prefill). Empty when prefetch is off or a layer has not been seen yet.
