@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.27.0] - unreleased
+
+### Changed
+- **App catalog: Nemotron-3.5-Lightning-30B-A3B is now the Q4_0 build from ggml-org** (~18.9 GB)
+  instead of a third-party Q4_K_M (~25.5 GB). ggml-org publishes the reference conversions for
+  llama.cpp and ships the MTP head as a separate file, which the engine does not load.
+- **App catalog: Ornith-1.5-35B-A3B is no longer listed.** The architecture (`qwen35moe`) is still
+  supported and streams unchanged; the model can be downloaded by URL like any other.
+
 ## [0.26.0] - 2026-09-28
 
 ### Added
