@@ -63,13 +63,23 @@ class RunService : Service() {
     // The CPU thermal-zone `temp` node, discovered once on the first sample and reused thereafter.
     @Volatile private var cpuThermalZone: File? = null
 
-    private data class Req(val prompt: String, val nPredict: Int, val think: Boolean, val clearKv: Boolean)
+    // [options] non-null makes this a Choose request (engine decide) instead of a generation.
+    private data class Req(
+        val prompt: String,
+        val nPredict: Int,
+        val think: Boolean,
+        val clearKv: Boolean,
+        val options: List<String>? = null,
+    )
+
+    // The options of the Choose request in flight, to read its BMOE_DECIDE line against.
+    @Volatile private var decideOptions: List<String> = emptyList()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_GENERATE -> sendGenerate(reqFrom(intent))
+            ACTION_GENERATE -> dispatch(reqFrom(intent))
             ACTION_CANCEL -> send("""{"cmd":"cancel"}""")
             ACTION_SHUTDOWN -> shutdownSession()
             else -> startSession(intent)
@@ -90,7 +100,7 @@ class RunService : Service() {
 
         // Already running the requested session? Just generate against the warm process.
         if (proc != null && sig == sessionSig && !shuttingDown) {
-            if (req != null) sendGenerate(req)
+            if (req != null) dispatch(req)
             return
         }
         // Different model/settings (or nothing running): tear down and start fresh. A fresh session
@@ -225,7 +235,7 @@ class RunService : Service() {
                 val topk = Regex(""""n_expert_used":(\d+)""").find(t)?.groupValues?.get(1)?.toIntOrNull()
                 RunBus.update { it.copy(state = EngineState.READY, thinkControl = ctl, nExpertUsed = topk) }
                 main.post { notify("Model ready") }
-                pending?.let { p -> pending = null; sendGenerate(p) } ?: scheduleIdleUnload()
+                pending?.let { p -> pending = null; dispatch(p) } ?: scheduleIdleUnload()
             }
             t.startsWith("BMOE_BEGIN ") -> {
                 telemetry.reset()
@@ -245,6 +255,7 @@ class RunService : Service() {
                 }
             }
             t.startsWith("BMOE_DONE ") -> onDone(t.removePrefix("BMOE_DONE "))
+            t.startsWith("BMOE_DECIDE ") -> onDecide(t.removePrefix("BMOE_DECIDE "))
             t.startsWith("BMOE_ERROR ") -> onError(t.removePrefix("BMOE_ERROR "))
         }
     }
@@ -431,6 +442,27 @@ class RunService : Service() {
         return if (tenths != Int.MIN_VALUE) tenths / 10.0 else null
     }
 
+    /** A Choose turn is answered: commit the options with their probabilities, back to READY. */
+    private fun onDecide(json: String) {
+        runCatching { Choice.parse(json, decideOptions) }
+            .onSuccess { r ->
+                // A stopped Choose turn has nothing to show: its question stays, unanswered.
+                val turn = if (r.cancelled) null else ChatTurn("choice", "", r.metrics, choices = r.scores, best = r.best)
+                RunBus.update {
+                    it.copy(state = EngineState.READY, answer = "", reasoning = "",
+                        transcript = if (turn != null) it.transcript + turn else it.transcript)
+                }
+            }
+            .onFailure { e ->
+                RunBus.update {
+                    it.copy(state = EngineState.READY, error = "The engine's choice could not be read (${e.message}).")
+                }
+            }
+        releaseWake()
+        main.post { notify("Model ready") }
+        scheduleIdleUnload()
+    }
+
     private fun onError(json: String) {
         val fatal = runCatching { JSONObject(json).optBoolean("fatal", true) }.getOrDefault(true)
         val msg = runCatching { JSONObject(json).optString("msg") }.getOrDefault("engine error")
@@ -453,7 +485,34 @@ class RunService : Service() {
         nPredict = intent.getIntExtra(EXTRA_NPREDICT, AppSettings.DEFAULT_N_PREDICT),
         think = intent.getBooleanExtra(EXTRA_THINK, false),
         clearKv = intent.getBooleanExtra(EXTRA_CLEAR_KV, true),
+        options = intent.getStringArrayListExtra(EXTRA_OPTIONS),
     )
+
+    private fun dispatch(req: Req) = if (req.options != null) sendDecide(req, req.options) else sendGenerate(req)
+
+    /**
+     * A Choose turn. It is not a conversation turn: the engine drops the chat it was continuing, so
+     * the transcript does the same unless it already holds Choose turns (a run of questions reads as
+     * one list). The question is the request's prefix, the lettered options its suffix.
+     */
+    private fun sendDecide(req: Req, options: List<String>) {
+        val id = nextId++
+        decideOptions = options
+        RunBus.update {
+            val user = ChatTurn("user", Choice.userText(req.prompt, options))
+            val keep = it.transcript.lastOrNull()?.role == "choice"
+            it.copy(transcript = if (keep) it.transcript + user else listOf(user), answer = "")
+        }
+        val json = buildString {
+            append("""{"cmd":"decide","id":""").append(id)
+            append(""","prefix":"""").append(jsonEscape(req.prompt)).append('"')
+            append(""","suffix":"""").append(jsonEscape(Choice.suffix(options))).append('"')
+            append(""","choices":[""")
+            append(Choice.labels(options.size).joinToString(",") { "\"$it\"" })
+            append("]}")
+        }
+        if (!send(json)) fail("session not ready")
+    }
 
     private fun sendGenerate(req: Req) {
         val id = nextId++
@@ -611,6 +670,7 @@ class RunService : Service() {
         const val EXTRA_NPREDICT = "n_predict"
         const val EXTRA_THINK = "think"
         const val EXTRA_CLEAR_KV = "clear_kv"
+        const val EXTRA_OPTIONS = "options" // present = a Choose request
         private const val CHANNEL = "gen"
         private const val NOTIF_ID = 1
 

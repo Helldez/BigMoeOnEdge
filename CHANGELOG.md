@@ -4,7 +4,45 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.27.0] - unreleased
+## [0.27.0] - 2026-09-28
+
+### Added
+- **`--decide`: choose from a list instead of generating, from one prefill and no decode.** A
+  session opened with `--decide` accepts `{"cmd":"decide"}` requests: a prompt in two parts
+  (`prefix`, the part that repeats from call to call, and `suffix`) and a list of `choices`. The
+  answer is read from the next-token distribution after the prompt, as the log-probability of each
+  choice's first token over the whole vocabulary, so a decision costs its prefill and nothing else.
+  On a model streamed from flash that skips the slow part entirely. Off by default: without the
+  flag the request is refused, not fatally, and nothing is allocated. See `docs/decide.md`.
+
+  The session keeps the model state after the prefix and restores it when the next prefix extends
+  it, the shape of an agent whose history grows step by step (`--decide-prefix-cache auto|on|off`,
+  and `"reuse_prefix":false` per request). The state is the whole sequence state, so hybrid models
+  with recurrent layers work too; a `generate()` drops it, so it holds RAM only while decisions
+  follow one another. Choices that share a first token, and prompts past the context, are refused
+  before anything is prefilled. A decision is always rendered with reasoning off (its answer is the
+  first token, which with reasoning on would be the reasoning opener), and `--decide` without
+  `--session` is a config error.
+
+  Measured on a PC as a correctness run (Qwen3.6-35B-A3B Q4_K_M, streamed, expert cache off, times
+  not a benchmark): an agent's three steps to turn on Wi-Fi were answered right at p 0.986 to 0.998;
+  restoring 31 prefix tokens took 8 ms, and the kept state of this hybrid model is 63 MiB.
+
+  Built as policy over a port (`core/src/engine/decide/`): the prompt split, choice checks, scoring
+  and the kept-state policy have no llama.cpp include and are unit-tested over a scripted backend
+  (`decide_policy`); one adapter drives the live context. Gate G18 checks that a restored prefix
+  scores bit for bit what a fresh session computes, that decide and `perplexity()` read the same
+  distribution, resident == streaming, and that a generation after a decision is unaffected.
+
+  With `--prefill-device`, a decision is prefilled by the same rule as a chat turn (wide pieces on
+  the device, a narrow tail on the CPU, weights back on the host after it), and `BMOE_DECIDE`
+  reports `prefill_dev_tokens`. No prefix state is kept there (`auto` resolves to off, `on` is
+  refused): llama.cpp saves a sequence through KV views that do not follow the moved model state,
+  which gate G18g caught as a restored prefix scoring differently from the same prefix computed.
+- **App: Choose from options.** A switch on the chat screen turns the prompt into a question and
+  adds a field for options, one per line; the model picks one and each option is shown with the
+  probability it put on it. The session always accepts decisions, so switching between Chat and
+  Choose never reloads the model.
 
 ### Changed
 - **App catalog: Nemotron-3.5-Lightning-30B-A3B is now the Q4_0 build from ggml-org** (~18.9 GB)
@@ -12,6 +50,15 @@ Semantic Versioning.
   llama.cpp and ships the MTP head as a separate file, which the engine does not load.
 - **App catalog: Ornith-1.5-35B-A3B is no longer listed.** The architecture (`qwen35moe`) is still
   supported and streams unchanged; the model can be downloaded by URL like any other.
+- `perplexity()` and `generate()` share their log-softmax, batch filling, prefill attribution and
+  chat-turn rendering with `decide()` through internal headers, instead of each keeping a copy.
+- The tiny test models no longer prepend a space to every text: on their byte-only vocabulary it
+  made every string start with the same token.
+
+### Fixed
+- The engine reported version 0.23.0 (`bmoe-cli --version`, the `# engine=` line of the metrics
+  CSV) through 0.24.0, 0.25.0 and 0.26.0: the CMake project version had not been bumped with them.
+  It now matches the release.
 
 ## [0.26.0] - 2026-09-28
 

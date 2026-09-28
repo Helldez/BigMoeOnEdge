@@ -1,13 +1,18 @@
 # bmoe_core — the streaming engine.
 #
 # Pure-policy sources (config validation, the architecture registry, the n-gram draft
-# matcher) build with no native dependency. The streaming adapters compile only when
+# matcher, decide()'s policy) build with no native dependency. The streaming adapters compile only when
 # llama.cpp is present, because they include its public headers (llama.h, ggml.h, gguf.h).
 
 add_library(bmoe_core STATIC
     src/config.cpp
     src/moe/arch_registry.cpp
     src/engine/ngram_draft.cpp
+    src/engine/logits.cpp
+    src/engine/decide/prompt_split.cpp
+    src/engine/decide/choice_scorer.cpp
+    src/engine/decide/prefix_cache.cpp
+    src/engine/decide/decider.cpp
 )
 
 target_include_directories(bmoe_core PUBLIC
@@ -33,6 +38,7 @@ if(BMOE_HAVE_LLAMA)
         src/engine/session.cpp
         src/engine/prefill_device.cpp
         src/engine/prefill_path.cpp
+        src/engine/decide/llama_backend.cpp
         src/engine/chat_parse.cpp
         src/engine/thinking_control.cpp
         src/engine/runtime.cpp

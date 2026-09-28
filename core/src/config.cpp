@@ -4,6 +4,36 @@
 
 namespace bmoe {
 
+namespace {
+
+struct PrefixCacheModeName {
+    PrefixCacheMode mode;
+    const char * name;
+};
+// The one place the spellings live: both directions read this table.
+constexpr PrefixCacheModeName kPrefixCacheModes[] = {
+    {PrefixCacheMode::Auto, "auto"},
+    {PrefixCacheMode::On, "on"},
+    {PrefixCacheMode::Off, "off"},
+};
+
+} // namespace
+
+const char * prefix_cache_mode_name(PrefixCacheMode m) {
+    for (const auto & e : kPrefixCacheModes)
+        if (e.mode == m) return e.name;
+    return kPrefixCacheModes[0].name;
+}
+
+bool parse_prefix_cache_mode(const std::string & s, PrefixCacheMode & out) {
+    for (const auto & e : kPrefixCacheModes)
+        if (s == e.name) {
+            out = e.mode;
+            return true;
+        }
+    return false;
+}
+
 ValidationResult validate(const RunConfig & cfg) {
     ValidationResult r;
     auto fail = [&](std::string msg) {
@@ -127,6 +157,13 @@ ValidationResult validate(const RunConfig & cfg) {
         // Speculation widens CPU graphs past one token and runs a second context over the same
         // weights; both would break the width invariant the rebind relies on.
         if (cfg.spec.enabled()) return fail("prefill.device does not combine with speculative decoding");
+        // llama.cpp saves and restores a sequence through views of the KV cache it made once, over the
+        // buffer the state was allocated in; the move rebinds the cache tensors, not those views, so a
+        // saved or restored state would be read from and written to memory the model no longer uses.
+        if (cfg.decide.enabled && cfg.decide.prefix_cache == PrefixCacheMode::On)
+            return fail("decide.prefix_cache=on does not combine with prefill.device: the kept state would be "
+                        "saved from where the model state was before it moved. Use auto (off with a device) "
+                        "or off.");
     }
 
     // overlap is meaningless without streaming (it gates the streamer's own reads). The

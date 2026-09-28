@@ -50,6 +50,12 @@
 ////   G15 --row-stream, the dense tables the graph only gathers rows from: a) served from flash
 //       inside the default window and b) inside a window of one slab, so nearly every gather
 //       evicts what the last one fetched. Both must be byte-identical to the resident reference.
+//   G18 decide(): a restored prefix state scores == a fresh session computing it (a), a state stored
+//       after a partial restore scores == itself as computed (b), == perplexity's choices after the
+//       same text (c), resident == streaming (d), a generate() after decide() == one without (e), and
+//       a session without decide enabled refuses it harmlessly (f), and with a prefill device
+//       decisions (no prefix state kept) and a generate() after them == all CPU (g). G16 and G17 are
+//       the prefill-device gates.
 //
 // G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
 // RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but
@@ -78,6 +84,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -1038,6 +1045,237 @@ int main(int argc, char ** argv) {
             char c3[64];
             std::snprintf(c3, sizeof(c3), "%.17g/%d", p_arena.nll, p_arena.n_top1);
             fails += check("G17e perplexity through the arena == all CPU (nll/top1, bit for bit)", a, c3);
+        }
+    }
+
+    // G18 — decide(): a choice read from one prefill, with the prefix state kept between calls.
+    //
+    // a) the kept state is the computed state: a call that restores its prefix scores exactly what
+    //    a fresh session computing the same prompt scores (same split, so the same prefill pieces).
+    //    The restore count is asserted too, or a cache that never hit would pass vacuously.
+    // b) when the next prefix extends the kept one (an agent's history growing), the state stored
+    //    after the partial restore answers, restored, exactly as it did when computed.
+    // c) decide and perplexity read the same distribution: with the prefix state off (one whole
+    //    prefill) the choices score exactly as PplRequest::choices scores them after the same text.
+    // d) streamed == resident, cold and warm, with and without an evicting cache.
+    {
+        const std::string prefix = "Pick the next step. Task: open the settings. History: none. ";
+        const std::string grown_prefix = prefix + "Step 1: tapped B. ";
+        auto decide_req = [](const std::string & p, const std::string & s, bool reuse) {
+            DecideRequest q;
+            q.prefix = p;
+            q.suffix = s;
+            q.choices = {"A", "B", "C"};
+            q.reuse_prefix = reuse;
+            return q;
+        };
+        const DecideRequest q1 = decide_req(prefix, "Screen: A) Wi-Fi B) Battery C) Display. Answer:", true);
+        const DecideRequest q2 = decide_req(prefix, "Screen: A) Sound B) Storage C) About. Answer:", true);
+        const DecideRequest q3 = decide_req(grown_prefix, "Screen: A) Back B) Home C) Search. Answer:", true);
+
+        // Open a session on `c` and run `qs` in order. False (with err) if any call fails.
+        auto decide_seq = [&](const RunConfig & c, const std::vector<DecideRequest> & qs,
+                              std::vector<DecideResult> & out) {
+            SessionConfig sc = session_config_from(c);
+            sc.decide.enabled = true;
+            sc.decide.prefix_cache = PrefixCacheMode::On;
+            std::unique_ptr<Session> s = Session::open(sc, err);
+            if (!s) return false;
+            out.clear();
+            for (const DecideRequest & q : qs) {
+                out.push_back(s->decide(q));
+                if (!out.back().ok) {
+                    err = out.back().error;
+                    return false;
+                }
+            }
+            return true;
+        };
+        auto logps = [](const DecideResult & r) {
+            std::string s;
+            char buf[64];
+            for (double v : r.choice_logp) {
+                std::snprintf(buf, sizeof buf, "%a ", v); // hex float: exact, so equal strings mean equal bits
+                s += buf;
+            }
+            return s;
+        };
+
+        std::vector<DecideResult> warm, cold2, grown;
+        if (!decide_seq(stream0, {q1, q2}, warm) || !decide_seq(stream0, {q2}, cold2) ||
+            !decide_seq(stream0, {q1, q3, q3}, grown)) {
+            std::fprintf(stderr, "decide run failed: %s\n", err.c_str());
+            return 2;
+        }
+        if (warm[1].n_reused <= 0) {
+            std::printf("[FAIL] G18a decide must restore its prefix (reused %d tokens)\n", warm[1].n_reused);
+            ++fails;
+        }
+        fails += check("G18a decide(prefix restored) == decide(fresh session)", logps(cold2[0]), logps(warm[1]));
+        // The grown prefix is compared with itself, not with a fresh session: a fresh session prefills
+        // [0, grown) in one piece where the growing one prefilled [0, prefix) and then the growth, and
+        // llama.cpp does not round the same across different piece boundaries (the last bit of the
+        // log-probs moves, as it does for any change of prefill chunking). What must hold exactly is
+        // that the state stored after a partial restore is the state that answered.
+        if (grown[1].n_reused <= 0 || grown[2].n_reused <= grown[1].n_reused) {
+            std::printf("[FAIL] G18b decide must restore the old prefix, then the grown one (reused %d, then %d)\n",
+                        grown[1].n_reused, grown[2].n_reused);
+            ++fails;
+        }
+        fails += check("G18b decide(grown prefix restored) == decide(grown prefix as computed)", logps(grown[1]),
+                       logps(grown[2]));
+
+        std::vector<DecideResult> whole;
+        DecideRequest q_whole = q1;
+        q_whole.reuse_prefix = false;
+        if (!decide_seq(stream0, {q_whole}, whole)) {
+            std::fprintf(stderr, "decide(whole) run failed: %s\n", err.c_str());
+            return 2;
+        }
+        {
+            SessionConfig sc = session_config_from(stream0);
+            std::unique_ptr<Session> s = Session::open(sc, err);
+            if (!s) {
+                std::fprintf(stderr, "perplexity session failed: %s\n", err.c_str());
+                return 2;
+            }
+            PplRequest pq;
+            pq.text = q1.prefix + q1.suffix;
+            pq.choices = q1.choices;
+            PplResult pr = s->perplexity(pq);
+            if (!pr.ok) {
+                std::fprintf(stderr, "perplexity run failed: %s\n", pr.error.c_str());
+                return 2;
+            }
+            DecideResult as_decide;
+            as_decide.choice_logp = pr.choice_logp;
+            fails += check("G18c decide(whole prefill) == perplexity(choices)", logps(as_decide), logps(whole[0]));
+
+            // f) off by default: the same session (decide not enabled) refuses, without harm.
+            const DecideResult off = s->decide(q1);
+            const RunResult after = s->generate(GenerateRequest{stream0.prompt, stream0.n_predict});
+            if (off.ok || off.fatal || !after) {
+                std::printf("[FAIL] G18f decide off must refuse, not fatally (ok=%d fatal=%d, generate after: %s)\n",
+                            (int) off.ok, (int) off.fatal, after ? "ok" : after.error.c_str());
+                ++fails;
+            } else {
+                fails +=
+                    check("G18f decide off: refused, and generate after it == generate", s_s0, after.generated_text);
+            }
+        }
+
+        std::vector<DecideResult> res_seq, cached_seq;
+        if (!decide_seq(resident, {q1, q2, q3}, res_seq) || !decide_seq(streamc, {q1, q2, q3}, cached_seq)) {
+            std::fprintf(stderr, "decide run failed: %s\n", err.c_str());
+            return 2;
+        }
+        std::vector<DecideResult> s0_seq;
+        if (!decide_seq(stream0, {q1, q2, q3}, s0_seq)) {
+            std::fprintf(stderr, "decide run failed: %s\n", err.c_str());
+            return 2;
+        }
+        std::string a, b, c;
+        for (size_t i = 0; i < res_seq.size(); ++i) {
+            a += logps(res_seq[i]) + "| ";
+            b += logps(s0_seq[i]) + "| ";
+            c += logps(cached_seq[i]) + "| ";
+        }
+        fails += check("G18d decide: resident == streaming(cache off)", a, b);
+        fails += check("G18d decide: resident == streaming(LRU cache)", a, c);
+
+        // e) decide leaves nothing behind: after a decision and a refused one, a generate() that asks
+        //    to CONTINUE the conversation (clear_kv=false) must still start from an empty sequence.
+        {
+            SessionConfig sc = session_config_from(stream0);
+            sc.decide.enabled = true;
+            std::unique_ptr<Session> s = Session::open(sc, err);
+            if (!s) {
+                std::fprintf(stderr, "decide+generate session failed: %s\n", err.c_str());
+                return 2;
+            }
+            DecideRequest refused = q1;
+            refused.choices = {"Yes", "Yeah"};
+            const DecideResult d_ok = s->decide(q1);
+            const DecideResult d_refused = s->decide(refused);
+            GenerateRequest g;
+            g.prompt = stream0.prompt;
+            g.n_predict = stream0.n_predict;
+            g.clear_kv = false;
+            const RunResult gr = s->generate(g);
+            if (!d_ok.ok || d_refused.ok || d_refused.fatal || !gr) {
+                std::printf("[FAIL] G18e decide then generate (decide ok=%d, refused ok=%d fatal=%d, generate: %s)\n",
+                            (int) d_ok.ok, (int) d_refused.ok, (int) d_refused.fatal, gr ? "ok" : gr.error.c_str());
+                ++fails;
+            } else {
+                fails += check("G18e generate after decide == generate", s_s0, gr.generated_text);
+            }
+        }
+
+        // g) decide with a prefill device (G16's loopback device and 4-token pieces), prefix cache on
+        //    auto as the app runs it: auto keeps no state with a device (llama.cpp would save it from
+        //    where the model state was before the move), so nothing may be restored, and three
+        //    decisions and a generate() after them must equal the same session all on the CPU with
+        //    the cache off. The generate fails if a decision left the weights on the device or the
+        //    moved state uncleared. Some decision tokens must have gone to the device, or the gate
+        //    passes vacuously.
+        {
+            const std::string dev = loopback_rpc_device();
+            if (dev.empty()) {
+                std::printf("[SKIP] G18g decide on a prefill device: this build has no RPC backend (GGML_RPC=OFF)\n");
+            } else {
+                RunConfig pref = base(model);
+                pref.moe.enabled = false;
+                pref.n_ubatch = 4;
+                RunConfig pdev = pref;
+                pdev.prefill.device = dev;
+                pdev.prefill.min_tokens = 4;
+                auto decide_then_generate = [&](const RunConfig & c, PrefixCacheMode mode, std::string & out,
+                                                int & dev_tokens, int & reused) {
+                    SessionConfig sc = session_config_from(c);
+                    sc.decide.enabled = true;
+                    sc.decide.prefix_cache = mode;
+                    std::unique_ptr<Session> s = Session::open(sc, err);
+                    if (!s) return false;
+                    out.clear();
+                    dev_tokens = 0;
+                    reused = 0;
+                    for (const DecideRequest & q : {q1, q2, q3}) {
+                        const DecideResult d = s->decide(q);
+                        if (!d.ok) {
+                            err = d.error;
+                            return false;
+                        }
+                        dev_tokens += d.prefill.device_tokens;
+                        reused += d.n_reused;
+                        out += logps(d) + "| ";
+                    }
+                    GenerateRequest g;
+                    g.prompt = c.prompt;
+                    g.n_predict = c.n_predict;
+                    g.clear_kv = false;
+                    const RunResult gr = s->generate(g);
+                    if (!gr) {
+                        err = gr.error;
+                        return false;
+                    }
+                    out += gr.generated_text;
+                    return true;
+                };
+                std::string on_cpu, on_dev;
+                int cpu_dev_tokens = 0, cpu_reused = 0, dev_tokens = 0, dev_reused = 0;
+                if (!decide_then_generate(pref, PrefixCacheMode::Off, on_cpu, cpu_dev_tokens, cpu_reused) ||
+                    !decide_then_generate(pdev, PrefixCacheMode::Auto, on_dev, dev_tokens, dev_reused)) {
+                    std::fprintf(stderr, "G18g decide run failed: %s\n", err.c_str());
+                    return 2;
+                }
+                if (dev_tokens <= 0 || dev_reused != 0) {
+                    std::printf("[FAIL] G18g device decisions: %d tokens on the device (want > 0), %d restored "
+                                "(want 0)\n",
+                                dev_tokens, dev_reused);
+                    ++fails;
+                }
+                fails += check("G18g decide + generate on a prefill device == all CPU", on_cpu, on_dev);
+            }
         }
     }
 

@@ -372,6 +372,13 @@ int main() {
         c.spec.source = DraftSource::ngram;
         expect_fail("prefill device with speculation breaks the width invariant", c);
         c.spec.source = DraftSource::none;
+        c.decide.enabled = true;
+        expect_ok("prefill device with decide, prefix cache auto (resolved off)", c);
+        c.decide.prefix_cache = PrefixCacheMode::On;
+        expect_fail("prefill device with a forced decide prefix cache: the state is saved from its old place", c);
+        c.decide.prefix_cache = PrefixCacheMode::Off;
+        expect_ok("prefill device with the decide prefix cache off", c);
+        c.decide = DecideConfig{};
         c.prefill.device.clear();
         c.prefill.min_tokens = 1;
         expect_ok("min_tokens is not checked while the prefill device is off", c);

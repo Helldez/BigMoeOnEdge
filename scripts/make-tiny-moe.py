@@ -79,6 +79,11 @@ def add_tokenizer(w, tokens, scores, toktypes):
     w.add_eos_token_id(2)
     w.add_add_bos_token(True)
     w.add_add_eos_token(False)
+    # SPM prepends a space by default, and a byte-only vocab spells it as the three bytes of U+2581,
+    # so every text would start with the same token. The decide gates score choices by their first
+    # token, and "A", "B", "C" must stay distinguishable. Every other gate compares runs on the same
+    # model, so the setting is arbitrary for them.
+    w.add_add_space_prefix(False)
 
 
 def add_attn_tensors(w, p, s):

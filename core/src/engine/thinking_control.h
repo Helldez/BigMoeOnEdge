@@ -53,4 +53,14 @@ void add_no_think_prefill(common_chat_templates_inputs & inputs);
 // because a probe that itself failed is no evidence that the flag is inert.
 ThinkControl probe_think_control(const common_chat_templates * tmpls);
 
+// The template inputs for the assistant turn that follows `messages`, with a think=false request
+// honoured the way this model supports it (`ctl`, from probe_think_control). One definition for
+// every caller that renders a turn, so a decision and a generation over the same conversation see
+// the same prompt. Returns true when the reasoning span was closed in the prompt, i.e. the output
+// starts mid-answer and there is no reasoning to parse out of it.
+bool build_turn_inputs(common_chat_templates_inputs & inputs,
+                       std::vector<common_chat_msg> messages,
+                       bool think,
+                       ThinkControl ctl);
+
 } // namespace bmoe::detail

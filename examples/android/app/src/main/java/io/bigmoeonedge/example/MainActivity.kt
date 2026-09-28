@@ -161,6 +161,9 @@ private fun MainScreen(
     val ui by RunBus.state.collectAsStateWithLifecycle()
 
     var prompt by rememberSaveable { mutableStateOf("Explain what a mixture-of-experts model is, in two sentences.") }
+    // Choose mode: the model picks one of these options (one per line) instead of writing an answer.
+    var choose by rememberSaveable { mutableStateOf(false) }
+    var optionsText by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
 
     // Item 0 is the controls block; the transcript and the in-flight answer follow it. The live
@@ -245,13 +248,30 @@ private fun MainScreen(
                         onModelReady = onRefresh,
                     )
 
+                    SwitchRow(
+                        label = "Choose from options",
+                        description = "The model picks one of your options instead of writing an answer",
+                        checked = choose,
+                        enabled = !ui.busy,
+                        onChange = { choose = it },
+                    )
+
                     OutlinedTextField(
                         value = prompt,
                         onValueChange = { prompt = it },
-                        label = { Text("Prompt") },
+                        label = { Text(if (choose) "Question" else "Prompt") },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 2,
                     )
+                    if (choose) {
+                        OutlinedTextField(
+                            value = optionsText,
+                            onValueChange = { optionsText = it },
+                            label = { Text("Options, one per line") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3,
+                        )
+                    }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
@@ -259,16 +279,29 @@ private fun MainScreen(
                                 // Drop focus so the soft keyboard retracts: the answer streams into the
                                 // space it was covering, and there is otherwise no in-app way to dismiss it.
                                 focusManager.clearFocus()
-                                if (models.isNotEmpty()) {
+                                val options = if (choose) Choice.parseOptions(optionsText) else null
+                                if (options != null && options.size < 2) {
+                                    RunBus.update { it.copy(error = "Give at least two options, one per line.") }
+                                } else if (models.isNotEmpty()) {
                                     // First message of a conversation clears the KV; a follow-up continues it.
+                                    // A Choose turn ends the conversation, so the next chat message starts one.
                                     launchPrompt(context, models[modelIdx.coerceIn(0, models.size - 1)],
                                         prompt.ifBlank { "The capital of Japan is" }, settings, ui.sessionSig,
-                                        clearKv = ui.transcript.isEmpty())
+                                        clearKv = ui.transcript.isEmpty() || ui.transcript.last().role == "choice",
+                                        options = options)
                                 }
                             },
                             enabled = !ui.busy && models.isNotEmpty(),
                             modifier = Modifier.weight(1f),
-                        ) { Text(if (ui.transcript.isNotEmpty()) "Send" else if (ui.ready) "Send" else "Run") }
+                        ) {
+                            Text(
+                                when {
+                                    choose -> "Choose"
+                                    ui.transcript.isNotEmpty() || ui.ready -> "Send"
+                                    else -> "Run"
+                                }
+                            )
+                        }
 
                         OutlinedButton(
                             onClick = {
@@ -400,6 +433,7 @@ private fun MainScreen(
  */
 @Composable
 private fun TurnView(turn: ChatTurn, reasoningExpanded: Boolean = false) {
+    turn.choices?.let { ChoiceView(it, turn.best, turn.metrics); return }
     val isUser = turn.role == "user"
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
@@ -414,6 +448,43 @@ private fun TurnView(turn: ChatTurn, reasoningExpanded: Boolean = false) {
         }
         if (turn.metrics.isNotEmpty()) {
             Text(turn.metrics, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/**
+ * The model's side of a Choose turn: every option with the probability the model put on it, the
+ * picked one in bold. The bars need not add up to 100%: the rest is what the model would have said
+ * instead of any option, and a large rest is the model saying it is unsure.
+ */
+@Composable
+private fun ChoiceView(choices: List<ChoiceScore>, best: Int, metrics: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            "Assistant", fontSize = 12.sp, fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.tertiary,
+        )
+        choices.forEachIndexed { i, c ->
+            val picked = i == best
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "${c.label}) ${c.text}", fontSize = 14.sp,
+                    fontWeight = if (picked) FontWeight.Bold else FontWeight.Normal,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                )
+                LinearProgressIndicator(
+                    progress = { c.prob.toFloat().coerceIn(0f, 1f) },
+                    modifier = Modifier.width(72.dp).height(6.dp),
+                )
+                Text(
+                    String.format(Locale.US, "%.0f%%", 100.0 * c.prob), fontSize = 12.sp,
+                    modifier = Modifier.width(40.dp),
+                )
+            }
+        }
+        if (metrics.isNotEmpty()) {
+            Text(metrics, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -654,6 +725,7 @@ private fun MeterRow(label: String, value: Double, total: Double, color: android
  * ([currentSig] matches), the prompt just goes to the warm process (no reload, cache intact);
  * otherwise the session is (re)started with this configuration and the prompt runs as soon as it
  * reports ready. Per-prompt options (n_predict, thinking) ride the request, not the session.
+ * With [options] the request is a Choose turn: the model picks one of them (see [Choice]).
  */
 private fun launchPrompt(
     context: android.content.Context,
@@ -662,6 +734,7 @@ private fun launchPrompt(
     settings: AppSettings,
     currentSig: String?,
     clearKv: Boolean,
+    options: List<String>? = null,
 ) {
     RunBus.resetGeneration()
     val sig = settings.sessionSignature(model.absolutePath)
@@ -673,6 +746,7 @@ private fun launchPrompt(
                 .putExtra(RunService.EXTRA_NPREDICT, settings.nPredict)
                 .putExtra(RunService.EXTRA_THINK, settings.thinking)
                 .putExtra(RunService.EXTRA_CLEAR_KV, clearKv)
+                .apply { options?.let { putStringArrayListExtra(RunService.EXTRA_OPTIONS, ArrayList(it)) } }
         )
     } else {
         // A new session starts with an empty KV and a cleared transcript, so its first turn
@@ -691,6 +765,7 @@ private fun launchPrompt(
                 .putExtra(RunService.EXTRA_NPREDICT, settings.nPredict)
                 .putExtra(RunService.EXTRA_THINK, settings.thinking)
                 .putExtra(RunService.EXTRA_CLEAR_KV, true)
+                .apply { options?.let { putStringArrayListExtra(RunService.EXTRA_OPTIONS, ArrayList(it)) } }
         )
     }
 }

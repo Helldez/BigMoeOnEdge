@@ -167,6 +167,10 @@ data class AppSettings(
             // Nothing here selects a format, so it is correct for every model in the catalog.
             "--chatml",
             "--session",
+            // Accept Choose requests. It costs nothing until one arrives (the engine allocates its
+            // decide state on first use), and keeping it on for every session is what lets the chat
+            // screen switch between Chat and Choose without reloading the model.
+            "--decide",
         )
         // Active-expert (top-k) override is a load-time kv_override, valid with or without
         // streaming — so it lives outside the mmap gate below.

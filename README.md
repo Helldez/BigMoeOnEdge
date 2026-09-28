@@ -180,6 +180,11 @@ breaks each token into flash I/O, cache management and compute, next to the cach
 bytes read, and `--csv` adds the memory picture those numbers must be read against. The Android
 app renders the same feed live while you chat. More under [Telemetry](#telemetry).
 
+A session opened with `--decide` also answers **decisions**: which of a list of choices the model
+would pick, read from one prefill with no decode, with the state after a shared prefix kept between
+calls. It is the shape of an agent choosing among lettered UI actions. See
+[docs/decide.md](docs/decide.md).
+
 ### Android demo app
 
 [`examples/android`](examples/android) is a small chat app over the same engine: model downloader,
