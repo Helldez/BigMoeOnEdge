@@ -188,10 +188,11 @@ Defaults are the measured winning recipe for a model near RAM.
 | Architecture | Reference models | Notes |
 |---|---|---|
 | `qwen3moe` | Qwen3-30B-A3B and siblings | Shipped default, validated below |
-| `qwen35moe` | Qwen3.6-35B-A3B and siblings | Hybrid attention/SSM stack; routed experts stream unchanged |
+| `qwen35moe` | Qwen3.6-35B-A3B and siblings, Ornith-1.5-35B-A3B | Hybrid attention/SSM stack; routed experts stream unchanged |
 | `qwen2moe` | Qwen2 MoE family | Same layout as qwen3moe |
 | `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | Fused expert layout, handled by its registry row |
 | `gpt-oss` | OpenAI gpt-oss-20b / 120b | Purely routed; MXFP4 weights stream unchanged |
+| `nemotron_h_moe` | NVIDIA Nemotron 3 / 3.5 MoE (e.g. Nemotron-3.5-Lightning-30B-A3B) | Gate-less experts (up/down only); hybrid Mamba2/attention stack, optional latent projections and a shared expert stay resident |
 | `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
 | `deepseek4` | DeepSeek V4 Flash (284B-A13B), validated on the 0731 release | V3.2-style routing (256 experts + shared); compressed attention is dense-side; ships multi-shard |
 | `bailingmoe3` | Ling 3.0 (e.g. Ling-3.0-flash, 127B-A5B) | 512 routed experts + shared, biased top-k; hybrid KDA/MLA attention is dense-side |

@@ -65,7 +65,10 @@ check). Nothing below needs a storage permission except the last option.
 1. **Built-in catalog** (both flavors) — the "Get a model" card offers the models this engine
    is measured on, each a single tap: **Qwen3-30B-A3B-Q4_K_M** (~18.6 GB, the reference model),
    **Qwen3.6-35B-A3B-Q4_K_M** (~22.3 GB, a hybrid attention/SSM MoE, comfortably past device RAM)
-   and **Gemma-4-26B-A4B-it-Q4_K_M** (~17 GB). Downloads run in a foreground worker, survive the
+   and **Gemma-4-26B-A4B-it-Q4_K_M** (~17 GB). Two newer entries stream through the same path
+   but have no device numbers yet: **Ornith-1.5-35B-A3B-Q4_K_M** (~21.9 GB, the Qwen3.5 MoE
+   architecture) and **Nemotron-3.5-Lightning-30B-A3B-Q4_K_M** (~25.5 GB, a hybrid
+   Mamba2/attention MoE with gate-less experts). Downloads run in a foreground worker, survive the
    app being killed, resume an interrupted transfer instead of restarting, and appear in the
    picker when done.
 2. **Any other model** — under **Other model**, paste a direct gguf URL (e.g. a Hugging Face

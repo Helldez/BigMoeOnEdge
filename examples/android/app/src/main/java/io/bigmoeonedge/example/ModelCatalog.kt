@@ -92,6 +92,24 @@ object ModelCatalog {
             blurb = "3B active of 35B. Hybrid attention/SSM, comfortably past RAM.",
         ),
         Entry(
+            title = "Ornith-1.5-35B-A3B",
+            quant = "Q4_K_M",
+            fileName = "Ornith-1.5-35B-A3B-Q4_K_M.gguf",
+            approxBytes = 21_864_081_056L,
+            url = "https://huggingface.co/bartowski/Ornith-1.5-35B-A3B-GGUF/resolve/main/" +
+                "Ornith-1.5-35B-A3B-Q4_K_M.gguf?download=true",
+            blurb = "3B active of 35B. Qwen3.5 MoE tuned for coding and agents.",
+        ),
+        Entry(
+            title = "Nemotron-3.5-Lightning-30B-A3B",
+            quant = "Q4_K_M",
+            fileName = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_K_M.gguf",
+            approxBytes = 25_477_403_616L,
+            url = "https://huggingface.co/bartowski/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF/resolve/main/" +
+                "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_K_M.gguf?download=true",
+            blurb = "3B active of 30B. Hybrid Mamba2/attention, gate-less experts.",
+        ),
+        Entry(
             title = "Gemma-4-26B-A4B-it",
             quant = "Q4_K_M",
             fileName = "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
