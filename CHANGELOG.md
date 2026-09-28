@@ -21,7 +21,7 @@ Semantic Versioning.
   to target and do nothing on it. The gates check that from the file and report those three
   checks as N/A there instead of passing them vacuously; their byte-identity halves still run.
 - **Ornith-1.5-35B-A3B**, which is the `qwen35moe` architecture and needed no engine change.
-- Both models in the Android catalog at Q4_K_M. Neither has been measured on a device yet.
+- Both models in the Android catalog at Q4_K_M.
 
 ## [0.24.0] - 2026-09-07
 
