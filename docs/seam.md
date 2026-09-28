@@ -204,6 +204,16 @@ except where noted:
   state where both sides can address it. That prefix is internal naming: if upstream renamed it the
   state would stay in CPU memory, again correct but slower, and `prefill_dev_nodes` in the telemetry
   would drop. Check it on each bump.
+- **With no devices given, llama.cpp picks them.** `llama_model_params::devices` left null lists every
+  GPU-type device (integrated ones only when no discrete one is found), and the context opens a
+  backend on each, layers or not. Without `--prefill-device` the engine keeps that choice, except that
+  it drops a device whose capabilities (`host_buffer`, `buffer_from_host_ptr`) say it cannot reach
+  host memory, and then passes the rest explicitly, repeating that integrated-device rule. If upstream
+  changed its selection, only a build carrying such a device (Hexagon) would see the difference. Not
+  gated: the host build has no such device.
+- **A device that fails to open throws.** Hexagon opens its DSP session in `ggml_backend_dev_init`
+  and throws when it cannot. The engine calls it once before the load, catches that, and keeps the run
+  on the CPU; the backend caches the session, so the context's own init reuses it.
 
 ## Upgrading llama.cpp
 

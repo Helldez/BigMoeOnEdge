@@ -119,15 +119,28 @@ instead of the 21 GB the model is.
   A dense weight in any other type is converted for the device (see above); Q3_K and below are not
   taken for experts. gpt-oss is natively MXFP4.
 - The Hexagon backend in the build: `scripts/build-hexagon-android.sh` builds the CLI, the backend and
-  its DSP-side skel inside upstream's Snapdragon toolchain container, and
-  `scripts/stage-hexagon-jnilibs.ps1` stages them into the app.
+  one DSP-side skel per NPU generation (v73 to v81) inside upstream's Snapdragon toolchain container,
+  and `scripts/stage-hexagon-jnilibs.ps1` stages them into the app. The release APK is built the same
+  way by CI, so it carries all of them.
 - `--prefill-loaders N` (default 8) sets the threads that fill the slots, apart from `--io-threads`,
   which stays the decode's read lanes. Each loader reads and repacks, and a K-quant repack is
   CPU-heavy: on a Q4_K_M, 4 loaders left the NPU waiting 10.3 s of a 15.1 s prefill, 8 left it 5.0 of
   10.0.
-- On device: `ADSP_LIBRARY_PATH` pointing at the directory with `libggml-htp-v81.so` (fastrpc resolves
-  the skel through it), and `GGML_HEXAGON_HOSTBUF=1`. `GGML_HEXAGON_OPPOLL=1` makes the host poll for
-  the DSP instead of waiting on an interrupt, which halves the cost of each crossing.
+- On device: `ADSP_LIBRARY_PATH` pointing at the directory with the `libggml-htp-v*.so` skels (fastrpc
+  resolves the one for the phone's NPU through it), and `GGML_HEXAGON_HOSTBUF=1`.
+  `GGML_HEXAGON_OPPOLL=1` makes the host poll for the DSP instead of waiting on an interrupt, which
+  halves the cost of each crossing.
+
+When the device is not there the run does not fail: a name the registry does not know (no backend in
+the build, or a phone without the fastrpc driver, where Hexagon registers nothing) and a device that
+does not open (a Snapdragon older than v73, which registers and then refuses a session) both leave the
+whole run on the CPU, with a `bmoe:` line on stderr saying which, and `prefill_dev_tokens` stays 0.
+The device is opened once before the load to find out, and the context reuses that session.
+
+Without `--prefill-device` a Hexagon build keeps the NPU out of the run altogether. llama.cpp, given
+no devices, lists every GPU-type device and opens a backend on each, and Hexagon reports itself as
+one; the engine drops any such device that can reach neither a host buffer type nor host pointers,
+since with no layer assigned it could do nothing but open a DSP session. See `docs/seam.md`.
 
 ## Correctness
 

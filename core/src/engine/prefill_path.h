@@ -31,10 +31,15 @@ namespace detail {
 
 class PrefillPath {
 public:
-    // Looks `name` up in the backend registry. Null, with `err` naming the devices found, when it is
-    // absent: both when the build lacks the backend and when the backend found no hardware (a phone
-    // without the accelerator's driver registers nothing), so the message names neither cause.
+    // Looks `name` up in the backend registry and opens it once. Null, with `err` saying why, when it
+    // is absent (the build lacks the backend, or the backend found no hardware: a phone without the
+    // accelerator's driver registers nothing) or registered but unable to open. The session then
+    // runs on the CPU: the device is a speed-up, never a condition for the model to load.
     static ggml_backend_dev_t find_device(const std::string & name, std::string & err);
+
+    // The auto-selected devices minus those that could only be dead weight in a run with no prefill
+    // device, or null when none is dropped (llama.cpp's own choice then stands). See the definition.
+    static const ggml_backend_dev_t * devices_without_prefill(std::vector<ggml_backend_dev_t> & keep);
 
     explicit PrefillPath(ggml_backend_dev_t dev) : devs_{dev, nullptr} {}
     PrefillPath(const PrefillPath &) = delete;

@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <exception>
 
 namespace bmoe::detail {
 
@@ -18,15 +19,64 @@ llama_token filler_token(const llama_vocab * vocab) {
 } // namespace
 
 ggml_backend_dev_t PrefillPath::find_device(const std::string & name, std::string & err) {
-    if (ggml_backend_dev_t dev = ggml_backend_dev_by_name(name.c_str())) return dev;
+    if (ggml_backend_dev_t dev = ggml_backend_dev_by_name(name.c_str())) {
+        // A registered device can still fail to open: Hexagon registers on any phone with the fastrpc
+        // driver, and only opening a session finds a DSP its kernels were not built for. Open it here,
+        // before the load, where a failure can still leave the run on the CPU; the backend keeps the
+        // session it opened, so the context's own init reuses it.
+        std::string what = "no backend";
+        ggml_backend_t probe = nullptr;
+        try {
+            probe = ggml_backend_dev_init(dev, nullptr);
+        } catch (const std::exception & e) {
+            what = e.what();
+        }
+        if (probe) {
+            ggml_backend_free(probe);
+            return dev;
+        }
+        err = "prefill device '" + name + "' did not open (" + what + ")";
+        return nullptr;
+    }
     std::string names;
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         if (!names.empty()) names += ", ";
         names += ggml_backend_dev_name(ggml_backend_dev_get(i));
     }
-    err = "prefill device '" + name + "' is not available here (devices found: " + names +
-          "); run without --prefill-device";
+    err = "prefill device '" + name + "' is not available here (devices found: " + names + ")";
     return nullptr;
+}
+
+// With no devices given, llama.cpp lists every GPU it finds, and the context opens a backend on each.
+// This engine never assigns such a device a layer, so all it can do in the run is pick up ops on the
+// host-resident weights, which takes a device that reaches host memory (a host buffer type or buffers
+// over host pointers). One with neither, like the Hexagon NPU, is only a session to open, and one that
+// may fail to open on a DSP its kernels do not cover: it stays out unless named as the prefill device.
+const ggml_backend_dev_t * PrefillPath::devices_without_prefill(std::vector<ggml_backend_dev_t> & keep) {
+    std::vector<ggml_backend_dev_t> gpus, igpus;
+    bool dropped = false;
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        const enum ggml_backend_dev_type type = ggml_backend_dev_type(dev);
+        if (type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) continue;
+        ggml_backend_dev_props props;
+        ggml_backend_dev_get_props(dev, &props);
+        if (!props.caps.host_buffer && !props.caps.buffer_from_host_ptr) {
+            dropped = true;
+            continue;
+        }
+        // llama.cpp's rule for integrated devices: those of the first backend seen only.
+        if (type == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            gpus.push_back(dev);
+        } else if (igpus.empty() || ggml_backend_dev_backend_reg(dev) == ggml_backend_dev_backend_reg(igpus.back())) {
+            igpus.push_back(dev);
+        }
+    }
+    if (!dropped) return nullptr;
+    // And integrated devices only when no discrete one is left.
+    keep = gpus.empty() ? igpus : gpus;
+    keep.push_back(nullptr);
+    return keep.data();
 }
 
 bool PrefillPath::open(llama_context * ctx,

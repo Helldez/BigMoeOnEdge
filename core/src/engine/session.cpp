@@ -664,15 +664,26 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // The prefill device joins the scheduler as the model's only non-CPU device, with no layer
     // assigned to it: every weight still loads from the mmap, and the device runs nothing until
     // PrefillDevice moves the layer weights onto it for a wide graph.
+    // A device that is missing or does not open leaves the whole run on the CPU, exactly as without
+    // the flag: the prefill is slower, the output is the CPU's, and the load does not fail over it.
+    std::vector<ggml_backend_dev_t> auto_devices;
     if (cfg.prefill.enabled()) {
         std::string derr;
-        ggml_backend_dev_t dev = detail::PrefillPath::find_device(cfg.prefill.device, derr);
-        if (!dev) return fail(derr);
-        im.prefill = std::make_unique<detail::PrefillPath>(dev);
-        mparams.devices = im.prefill->model_devices();
-        // With a device listed, llama.cpp would put CPU weights in the device's host buffer type,
-        // which is an allocation and a copy, not the file mapping. The mapping is load-bearing.
-        mparams.no_host = true;
+        if (ggml_backend_dev_t dev = detail::PrefillPath::find_device(cfg.prefill.device, derr)) {
+            im.prefill = std::make_unique<detail::PrefillPath>(dev);
+            mparams.devices = im.prefill->model_devices();
+            // With a device listed, llama.cpp would put CPU weights in the device's host buffer type,
+            // which is an allocation and a copy, not the file mapping. The mapping is load-bearing.
+            mparams.no_host = true;
+        } else {
+            std::fprintf(stderr, "bmoe: %s; prefill stays on the CPU\n", derr.c_str());
+            im.cfg.prefill.device.clear();
+        }
+    }
+    if (!im.prefill) {
+        if (const ggml_backend_dev_t * devs = detail::PrefillPath::devices_without_prefill(auto_devices)) {
+            mparams.devices = const_cast<ggml_backend_dev_t *>(devs);
+        }
     }
 
     // Optional active-expert override: reduce the model's top-k routing (e.g. 8 -> 6) to cut
@@ -767,13 +778,13 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
     // The prefill device needs it once, for the capture that finds the layer weights.
-    if (cfg.moe.enabled || compute_trace || cfg.prefill.enabled()) {
+    if (cfg.moe.enabled || compute_trace || im.prefill) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = im.hook.get();
     }
     // Placement is decided here, by moving weights; a backend's own offload heuristic would move
     // ops of CPU-resident weights to the device on its own (GPU backends do for wide batches).
-    if (cfg.prefill.enabled()) {
+    if (im.prefill) {
         cparams.op_offload = false;
         cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
     }
