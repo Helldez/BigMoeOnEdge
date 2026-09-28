@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.25.0] - unreleased
+## [0.25.0] - 2026-09-28
 
 ### Added
 - **`--prefill-device`: prefill on the NPU, decode on the CPU, on a model larger than RAM.**
@@ -34,10 +34,12 @@ Semantic Versioning.
   capped, which kept the CPU's buffer at 154 MB instead of 2.2 GB and decode at 3.25 tok/s (3.41
   without the flag).
 
-  Off by default; the app has it as **Prefill on the NPU** under Experimental. Needs a model whose
-  expert tensors the NPU takes (Q4_0, Q4_1, Q8_0, IQ4_NL, MXFP4) and the Hexagon backend in the
-  build (`scripts/build-hexagon-android.sh`). The NPU computes in fp16, so the output is not
-  identical to the CPU's. Gates G16 and G17 prove the placement against a loopback device on the
+  Off by default; the app has it as **Prefill on the NPU (Snapdragon only)** in its own **NPU**
+  section of Settings, shown disabled with the reason on a phone without a Hexagon NPU. Needs a
+  model whose expert tensors the NPU takes (Q4_0, Q4_1, Q8_0, IQ4_NL, MXFP4) and the Hexagon backend
+  in the build (`scripts/build-hexagon-android.sh`). The NPU computes in fp16, so the output is not
+  identical to the CPU's. A prefill device that is missing or does not open (a Snapdragon older than
+  the backend's v73 floor) no longer fails the load: the engine says so and the run stays on the CPU. Gates G16 and G17 prove the placement against a loopback device on the
   host, bit for bit; that loopback RPC device is a test fixture only, and no front-end accepts an
   RPC endpoint. A ubatch narrower than `--prefill-min-tokens` is a config error (no piece could
   reach the device), and a failed expert read fails only the prefill it happened in. See
@@ -57,6 +59,17 @@ Semantic Versioning.
   draft parameters' `n_past` to `pos0`.
 - **`--prefill-loaders N`** (default 8) sets the arena's loader threads apart from `--io-threads`, the
   decode's read lanes; the app has it as **NPU loader threads**.
+- **The release APK carries the Hexagon backend** and a DSP skel for each NPU generation it supports
+  (v73, v75, v79, v81). It is built by `scripts/build-hexagon-android.sh` in upstream's Snapdragon
+  toolchain image, in a CI job of its own with a read-only token, no secrets and the image pinned by
+  digest; the job that signs the APK runs no third-party code. The CPU side keeps the CPU-only
+  release's API level and ARM target, so decode is the same code on every phone as before.
+- **A GPU-type device that cannot reach host memory stays out of a run that did not ask for it.**
+  With no devices given, llama.cpp lists every GPU it finds and the context opens a backend on each;
+  the engine never gives one a layer, so a device with neither a host buffer type nor buffers over
+  host pointers (the Hexagon NPU) could only cost a DSP session on every Snapdragon, switch off.
+  Only such devices are dropped, read off each device's capabilities: Metal, CUDA and Vulkan are
+  listed exactly as before.
 
 ## [0.24.0] - 2026-09-07
 

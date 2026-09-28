@@ -5,7 +5,6 @@
 # libbmoe-cli.so because Android only extracts lib*.so from an APK.
 param(
     [string]$BuildDir = "",
-    [string]$HtpArch = "v81",
     [string]$Abi = "arm64-v8a"
 )
 $ErrorActionPreference = "Stop"
@@ -26,8 +25,13 @@ Get-ChildItem $jni -Filter "*.so" | Remove-Item -Force
 
 Copy-Item (Find-One "bmoe-cli") (Join-Path $jni "libbmoe-cli.so") -Force
 $libs = @("libggml.so", "libggml-base.so", "libggml-cpu.so", "libllama.so", "libllama-common.so",
-          "libggml-hexagon.so", "libggml-htp-$HtpArch.so", "libc++_shared.so")
+          "libggml-hexagon.so", "libc++_shared.so")
 foreach ($l in $libs) {
     Copy-Item (Find-One $l) (Join-Path $jni $l) -Force
 }
+# Every DSP skel the build made: the backend picks the one matching the phone's NPU at run time.
+$skels = Get-ChildItem -Path $BuildDir -Recurse -Filter "libggml-htp-v*.so" -File |
+    Sort-Object LastWriteTime -Descending | Group-Object Name | ForEach-Object { $_.Group[0] }
+if (-not $skels) { throw "no libggml-htp-v*.so under $BuildDir" }
+foreach ($s in $skels) { Copy-Item $s.FullName (Join-Path $jni $s.Name) -Force }
 Get-ChildItem $jni -Filter "*.so" | Select-Object Name, Length, LastWriteTime | Format-Table -AutoSize

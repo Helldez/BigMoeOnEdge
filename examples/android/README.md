@@ -28,8 +28,9 @@ research harness and keeps the app a thin driver over the CLI.
    powershell -File ../../scripts/stage-hexagon-jnilibs.ps1
    ```
 
-   An APK without it (every release APK, which CI builds without Hexagon) does not show the switch,
-   and ignores it if a previous install saved it on.
+   The release APK is built this way by CI, with a skel for every NPU generation the backend
+   supports (v73 to v81). A local APK built with `build-android.ps1` has no Hexagon backend: its NPU
+   switch is shown disabled, and ignored if a previous install saved it on.
 
 2. Build and install the APK. Open this folder in Android Studio, or use the committed
    Gradle wrapper directly. The app has two distribution flavors (see below); build the one
@@ -164,6 +165,15 @@ Each category shows the recommended configuration first and folds everything els
 measurement. They ship in the release build deliberately, because testing them on hardware other
 than the one test phone is what this app is for.
 
+The **NPU** section holds **"Prefill on the NPU (Snapdragon only)"** (`--prefill-device HTP0`) and
+its loader threads. It is off by default and sits apart from Experimental because it is a different
+processor with its own requirements: a Snapdragon with a Hexagon NPU of generation v73 or newer (8 Gen
+2 onwards), and a model the NPU kernels take (Q4_0, Q8_0, MXFP4, or a Q4_K_M; not the Q3 and Q2
+builds). On a phone without the NPU the switch is shown disabled with the reason. It runs the prompt
+on the NPU and keeps decode on the CPU, and it widens the prompt batch to 2048 tokens, because each
+batch reads the experts from flash once; short prompts do not gain. If the NPU does not open (an
+older Snapdragon), the prompt simply runs on the CPU. See `../../docs/npu-prefill.md`.
+
 Descriptions in the UI say what a setting does, without measured figures or flag names, because a
 number needs the device, the model and the day beside it to be worth anything. The mapping to the
 CLI flags and the evidence behind each one lives in the docs, and the **metrics screen** keeps the
@@ -179,11 +189,6 @@ Two worth knowing before you turn them on:
 - **"Decide the experts early"** (`--route-ahead`) commits each layer's routing before that layer
   runs, so the reads can never be wasted. It changes the reply, and it is refused alongside guessing
   ahead. See `../../docs/route-ahead.md`.
-- **"Prefill on the NPU"** (`--prefill-device HTP0`) runs the prompt on the Hexagon NPU and keeps
-  decode on the CPU. It needs a model the NPU kernels take (Q4_0, Q8_0, MXFP4, or a Q4_K_M; not the
-  Q3 and Q2 builds), an APK built with the
-  Hexagon backend (see Build), and it widens the prompt batch to 2048 tokens, because each batch
-  reads the experts from flash once. Short prompts do not gain. See `../../docs/npu-prefill.md`.
 - **"Stream row-gathered tables"** (`--row-stream`) serves the token embedding table out of flash
   instead of RAM. Lossless, and which tables it applies to is read off the model's own graph, so
   on a model where none qualify it does nothing. See `../../docs/row-gathered-tables.md`.
