@@ -303,6 +303,26 @@ gap is the protocol (short chat replies never fully warm the cache), not the app
 telemetry panel reports the same fields as the CLI, so you can see it directly. Analysis:
 [docs/warmup-analysis.md](docs/warmup-analysis.md).
 
+### Prefill on the NPU
+
+On a Snapdragon, `--prefill-device` runs prefill on the Hexagon NPU and leaves decode on the CPU.
+Hexagon is the only NPU supported: on any other phone, or a Snapdragon older than Hexagon v73,
+prefill stays on the CPU. The model still streams from flash: the NPU never holds it, only two
+layer-sized slots that loader threads fill while it computes the other one. Measured on a 12 GB
+phone with a Hexagon v81 NPU:
+
+| Model | Prompt | CPU | NPU | Speedup |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B Q4_0 | 1418 tokens | 63.8 s | 8.2 s | 7.8x |
+| Qwen3.6-35B-A3B Q4_0 | 1921 tokens | 106.5 s | 11.2 s | 9.5x |
+| Qwen3.6-35B-A3B Q4_K_M | 1418 tokens | 80.6 s | 10.2 s | 7.9x |
+| Gemma 4 26B-A4B | 238 tokens | 16.2 s | 5.85 s | 2.8x |
+
+Short prompts do not gain (121 tokens: 9.5 s against 9.95 s): the device path reads every expert
+once per graph, and a short prompt is all read. The slots cost decode some memory, about 5% on
+Gemma 4 (3.25 against 3.41 tok/s). The NPU computes in fp16, so the output is not identical to the
+CPU's. Off by default; see [docs/npu-prefill.md](docs/npu-prefill.md).
+
 ### Desktop
 
 **Not the primary target, for now.** The engine builds and runs unmodified on desktop and a model
