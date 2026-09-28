@@ -415,6 +415,10 @@ struct DecideConfig {
     // session that does not use decisions is exactly what it was before the feature existed.
     bool enabled = false;
     PrefixCacheMode prefix_cache = PrefixCacheMode::Auto;
+    // Experimental diagnostic: append one JSONL line per decision to this file, with the experts each
+    // layer routed and the answer read at every layer's exit (see core/src/moe/decide_probe.h).
+    // Empty = off. Needs the eval callback, i.e. --moe-stream or a prefill device.
+    std::string probe_path;
 };
 
 // A full run: model, prompt, decoding, streaming, telemetry.

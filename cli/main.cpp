@@ -498,6 +498,8 @@ static void print_usage(const char * argv0) {
         "                          with --decide: keep the model state after a decide request's\n"
         "                          prefix and restore it when the next prefix extends it:\n"
         "                          auto (default: on where prefill cost scales with tokens) | on | off\n"
+        "      --decide-probe PATH experimental, with --decide: append per decision the experts each\n"
+        "                          layer routed and the answer read at every layer's exit (JSONL)\n"
         "      --csv PATH          also write per-token metrics as CSV\n"
         "      --route-trace PATH  diagnostics: write the per-step per-layer MoE routing trace\n"
         "                          (which experts each layer routed, their weight, cache state).\n"
@@ -773,6 +775,8 @@ int main(int argc, char ** argv) {
             session_mode = true;
         else if (a == "--decide")
             cfg.decide.enabled = true;
+        else if (a == "--decide-probe")
+            cfg.decide.probe_path = next("--decide-probe");
         else if (a == "--decide-prefix-cache") {
             const std::string m = next("--decide-prefix-cache");
             if (!bmoe::parse_prefix_cache_mode(m, cfg.decide.prefix_cache)) {

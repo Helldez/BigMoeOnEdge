@@ -12,6 +12,7 @@
 #include "thinking_control.h"
 #include "prefill_path.h"
 #include "../moe/router_hook.h"
+#include "../moe/decide_probe.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
 #include "../io/platform_io.h"
@@ -325,6 +326,9 @@ struct Session::Impl {
     // answer on prefill cost), null when the policy keeps none.
     std::unique_ptr<detail::IPrefixCache> decide_cache;
     bool decide_cache_chosen = false;
+    // The experimental decide() probe, and how many decisions it has written.
+    std::unique_ptr<DecideProbe> decide_probe;
+    int decide_seq = 0;
 
     // Route trace (diagnostics): null unless requested AND streaming is on — there is no routing
     // to trace otherwise.
@@ -592,7 +596,21 @@ DecideResult Session::decide(const DecideRequest & req) {
                                                     backend.prefill_cost_scales_with_tokens());
         im.decide_cache_chosen = true;
     }
+    if (im.decide_probe) {
+        std::vector<int32_t> ids;
+        for (const std::string & c : req.choices) {
+            const std::vector<detail::Token> t = backend.tokenize_plain(c);
+            ids.push_back(t.empty() ? -1 : t[0]);
+        }
+        im.decide_probe->begin(ids);
+    }
     DecideResult r = detail::run_decide(backend, im.decide_cache.get(), req);
+    if (im.decide_probe) {
+        im.decide_probe->end();
+        if (r.ok)
+            im.decide_probe->write(im.decide_seq, r.n_tokens, r.prefill.seconds, req.choices, r.choice_logp, r.best);
+        ++im.decide_seq;
+    }
     // The abort callback turns a cancel into a failed decode; that is a request honoured, not a
     // context gone bad, and run_decide has already emptied the sequence.
     if (!r.ok && r.fatal && im.cancel_requested.load(std::memory_order_relaxed)) {
@@ -763,6 +781,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.hook->set_predict_log(cfg.moe.predict_log);
     im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
     im.hook->set_route_ahead(cfg.moe.route_ahead);
+    if (cfg.decide.enabled && !cfg.decide.probe_path.empty()) {
+        im.decide_probe = std::make_unique<DecideProbe>(cfg.model_path, im.n_layer, gguf().n_expert,
+                                                        llama_model_n_embd(model), cfg.decide.probe_path);
+        if (!im.decide_probe->ok()) return fail("decide probe: " + im.decide_probe->error());
+        im.hook->set_probe(im.decide_probe.get());
+    }
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
