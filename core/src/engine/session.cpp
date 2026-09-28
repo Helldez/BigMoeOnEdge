@@ -574,17 +574,22 @@ DecideResult Session::decide(const DecideRequest & req) {
     deps.vocab = im.vocab;
     deps.n_vocab = im.n_vocab;
     deps.n_ctx = im.cfg.n_ctx;
-    deps.n_batch = im.cfg.n_batch;
+    // With a prefill device each piece is one graph whose width we choose, as in generate().
+    deps.n_batch = im.prefill ? prefill_piece(im.cfg) : im.cfg.n_batch;
     deps.hook = im.hook.get();
     deps.source = &im.source;
     deps.moe_on = im.cfg.moe.enabled;
     deps.tmpls = im.chat_on ? im.chat_tmpls.get() : nullptr;
     deps.think_ctl = im.think_ctl;
+    deps.prefill = im.prefill.get();
+    deps.prefill_min_tokens = im.cfg.prefill.min_tokens;
     detail::LlamaDecideBackend backend(deps);
 
     if (!im.decide_cache_chosen) {
-        im.decide_cache =
-            detail::make_prefix_cache(im.cfg.decide.prefix_cache, backend.prefill_cost_scales_with_tokens());
+        // No kept state with a prefill device: llama.cpp would save and restore it through KV views
+        // that still point where the state was before PrefillPath moved it (validation refuses `on`).
+        im.decide_cache = detail::make_prefix_cache(im.prefill ? PrefixCacheMode::Off : im.cfg.decide.prefix_cache,
+                                                    backend.prefill_cost_scales_with_tokens());
         im.decide_cache_chosen = true;
     }
     DecideResult r = detail::run_decide(backend, im.decide_cache.get(), req);

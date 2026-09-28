@@ -33,6 +33,12 @@ Semantic Versioning.
   (`decide_policy`); one adapter drives the live context. Gate G18 checks that a restored prefix
   scores bit for bit what a fresh session computes, that decide and `perplexity()` read the same
   distribution, resident == streaming, and that a generation after a decision is unaffected.
+
+  With `--prefill-device`, a decision is prefilled by the same rule as a chat turn (wide pieces on
+  the device, a narrow tail on the CPU, weights back on the host after it), and `BMOE_DECIDE`
+  reports `prefill_dev_tokens`. No prefix state is kept there (`auto` resolves to off, `on` is
+  refused): llama.cpp saves a sequence through KV views that do not follow the moved model state,
+  which gate G18g caught as a restored prefix scoring differently from the same prefix computed.
 - **App: Choose from options.** A switch on the chat screen turns the prompt into a question and
   adds a field for options, one per line; the model picks one and each option is shown with the
   probability it put on it. The session always accepts decisions, so switching between Chat and

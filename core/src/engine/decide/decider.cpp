@@ -87,6 +87,7 @@ DecideResult run_decide(IDecideBackend & backend, IPrefixCache * cache, const De
     r.prefill.io_seconds = head.io_seconds + tail.io_seconds;
     r.prefill.stall_seconds = head.stall_seconds + tail.stall_seconds;
     r.prefill.mgmt_seconds = head.mgmt_seconds + tail.mgmt_seconds;
+    r.prefill.device_tokens = head.device_tokens + tail.device_tokens;
     r.n_reused = n_restored;
     r.n_prefilled = n - n_restored;
 

@@ -53,8 +53,9 @@
 //   G18 decide(): a restored prefix state scores == a fresh session computing it (a), a state stored
 //       after a partial restore scores == itself as computed (b), == perplexity's choices after the
 //       same text (c), resident == streaming (d), a generate() after decide() == one without (e), and
-//       a session without decide enabled refuses it harmlessly (f).
-//       G16 and G17 are reserved for the prefill-device gates.
+//       a session without decide enabled refuses it harmlessly (f), and with a prefill device
+//       decisions (no prefix state kept) and a generate() after them == all CPU (g). G16 and G17 are
+//       the prefill-device gates.
 //
 // G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
 // RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but
@@ -1207,6 +1208,73 @@ int main(int argc, char ** argv) {
                 ++fails;
             } else {
                 fails += check("G18e generate after decide == generate", s_s0, gr.generated_text);
+            }
+        }
+
+        // g) decide with a prefill device (G16's loopback device and 4-token pieces), prefix cache on
+        //    auto as the app runs it: auto keeps no state with a device (llama.cpp would save it from
+        //    where the model state was before the move), so nothing may be restored, and three
+        //    decisions and a generate() after them must equal the same session all on the CPU with
+        //    the cache off. The generate fails if a decision left the weights on the device or the
+        //    moved state uncleared. Some decision tokens must have gone to the device, or the gate
+        //    passes vacuously.
+        {
+            const std::string dev = loopback_rpc_device();
+            if (dev.empty()) {
+                std::printf("[SKIP] G18g decide on a prefill device: this build has no RPC backend (GGML_RPC=OFF)\n");
+            } else {
+                RunConfig pref = base(model);
+                pref.moe.enabled = false;
+                pref.n_ubatch = 4;
+                RunConfig pdev = pref;
+                pdev.prefill.device = dev;
+                pdev.prefill.min_tokens = 4;
+                auto decide_then_generate = [&](const RunConfig & c, PrefixCacheMode mode, std::string & out,
+                                                int & dev_tokens, int & reused) {
+                    SessionConfig sc = session_config_from(c);
+                    sc.decide.enabled = true;
+                    sc.decide.prefix_cache = mode;
+                    std::unique_ptr<Session> s = Session::open(sc, err);
+                    if (!s) return false;
+                    out.clear();
+                    dev_tokens = 0;
+                    reused = 0;
+                    for (const DecideRequest & q : {q1, q2, q3}) {
+                        const DecideResult d = s->decide(q);
+                        if (!d.ok) {
+                            err = d.error;
+                            return false;
+                        }
+                        dev_tokens += d.prefill.device_tokens;
+                        reused += d.n_reused;
+                        out += logps(d) + "| ";
+                    }
+                    GenerateRequest g;
+                    g.prompt = c.prompt;
+                    g.n_predict = c.n_predict;
+                    g.clear_kv = false;
+                    const RunResult gr = s->generate(g);
+                    if (!gr) {
+                        err = gr.error;
+                        return false;
+                    }
+                    out += gr.generated_text;
+                    return true;
+                };
+                std::string on_cpu, on_dev;
+                int cpu_dev_tokens = 0, cpu_reused = 0, dev_tokens = 0, dev_reused = 0;
+                if (!decide_then_generate(pref, PrefixCacheMode::Off, on_cpu, cpu_dev_tokens, cpu_reused) ||
+                    !decide_then_generate(pdev, PrefixCacheMode::Auto, on_dev, dev_tokens, dev_reused)) {
+                    std::fprintf(stderr, "G18g decide run failed: %s\n", err.c_str());
+                    return 2;
+                }
+                if (dev_tokens <= 0 || dev_reused != 0) {
+                    std::printf("[FAIL] G18g device decisions: %d tokens on the device (want > 0), %d restored "
+                                "(want 0)\n",
+                                dev_tokens, dev_reused);
+                    ++fails;
+                }
+                fails += check("G18g decide + generate on a prefill device == all CPU", on_cpu, on_dev);
             }
         }
     }

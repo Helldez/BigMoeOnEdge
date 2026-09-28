@@ -533,7 +533,7 @@ BMOE_DECIDE {"id":<int>,"cancelled":<bool>,"best":<int>,"choice_logp":[<float|nu
              "n_tokens":<int>,"n_reused":<int>,"n_prefilled":<int>,"restore_s":<float>,
              "store_s":<float>,"prefill_s":<float>,"prefill_cpu_s":<float>,"prefill_read_mib":<float>,
              "prefill_io_s":<float>,"prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
-             "prefix_state_mib":<float>}
+             "prefill_dev_tokens":<int>,"prefix_state_mib":<float>}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
 
@@ -542,8 +542,9 @@ lines in between: nothing is decoded ([decide.md](decide.md)). `choice_logp[i]` 
 of the first token of `choices[i]` over the whole vocabulary, in request order, and `null` where it
 is minus infinity. `best` is the index of the highest. `n_reused` tokens were restored from the kept
 prefix state and `n_prefilled` were prefilled; the `prefill_*` keys read exactly as `BMOE_DONE`'s.
-`prefix_state_mib` is the memory the kept state holds after the call. `think` defaults to `false`
-and `reuse_prefix` to `true`. Colliding choices (two sharing a first token), no choices, a prompt past
+`prefill_dev_tokens` is how many of the prefilled tokens ran on the prefill device (`0` without
+`--prefill-device`). `prefix_state_mib` is the memory the kept state holds after the call. There is
+no `think` key: a decision is always rendered with reasoning off. `reuse_prefix` defaults to `true`. Colliding choices (two sharing a first token), no choices, a prompt past
 `n_ctx`, or a session opened without `--decide` answer `BMOE_ERROR` with `fatal:false`.
 
 `BMOE_DONE`'s `mtp_*` keys are the self-speculation counters (all `0` without speculation, and the

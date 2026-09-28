@@ -157,6 +157,13 @@ ValidationResult validate(const RunConfig & cfg) {
         // Speculation widens CPU graphs past one token and runs a second context over the same
         // weights; both would break the width invariant the rebind relies on.
         if (cfg.spec.enabled()) return fail("prefill.device does not combine with speculative decoding");
+        // llama.cpp saves and restores a sequence through views of the KV cache it made once, over the
+        // buffer the state was allocated in; the move rebinds the cache tensors, not those views, so a
+        // saved or restored state would be read from and written to memory the model no longer uses.
+        if (cfg.decide.enabled && cfg.decide.prefix_cache == PrefixCacheMode::On)
+            return fail("decide.prefix_cache=on does not combine with prefill.device: the kept state would be "
+                        "saved from where the model state was before it moved. Use auto (off with a device) "
+                        "or off.");
     }
 
     // overlap is meaningless without streaming (it gates the streamer's own reads). The

@@ -1,5 +1,6 @@
 #include "llama_backend.h"
 
+#include "../prefill_path.h"
 #include "../thinking_control.h"
 #include "../../moe/router_hook.h"
 
@@ -51,6 +52,8 @@ std::vector<Token> LlamaDecideBackend::tokenize_plain(const std::string & text) 
 
 void LlamaDecideBackend::clear() {
     llama_memory_clear(llama_get_memory(d_.ctx), true);
+    // The moved model state is not in the buffers llama.cpp clears (Session::Impl::clear_memory).
+    if (d_.prefill) d_.prefill->clear_state();
     if (d_.ctx_dft) llama_memory_clear(llama_get_memory(d_.ctx_dft), true);
     have_logits_ = false;
 }
@@ -58,6 +61,15 @@ void LlamaDecideBackend::clear() {
 bool LlamaDecideBackend::prefill(const std::vector<Token> & tokens, int from, int to) {
     const int n = (int) tokens.size();
     have_logits_ = false;
+    // generate()'s placement rule: pieces at least min_tokens wide on the device, a narrower tail on
+    // the CPU, so no CPU graph ever shares a shape with a device graph llama.cpp could reuse. Every
+    // exit leaves the weights on the host, where the next graph (a decode, or generate()) reads them.
+    struct HostOnExit {
+        PrefillPath * p;
+        ~HostOnExit() {
+            if (p) p->place(false);
+        }
+    } host_on_exit{d_.prefill};
     for (int i = from; i < to; i += d_.n_batch) {
         const int chunk = std::min(d_.n_batch, to - i);
         // Logits only on the prompt's last position: a decision reads one distribution, and asking
@@ -66,7 +78,14 @@ bool LlamaDecideBackend::prefill(const std::vector<Token> & tokens, int from, in
         if (i + chunk < n) batch_.logits[chunk - 1] = 0;
         // Prefill phase: the decode-only routing policies stay out of it, as they do in generate().
         d_.hook->set_batch_phase(0);
-        if (llama_decode(d_.ctx, batch_) != 0) return false;
+        if (d_.prefill) {
+            const bool on_dev = chunk >= d_.prefill_min_tokens;
+            d_.prefill->place(on_dev);
+            if (on_dev) device_tokens_ += chunk;
+            if (d_.prefill->decode(d_.ctx, batch_) != 0) return false;
+        } else if (llama_decode(d_.ctx, batch_) != 0) {
+            return false;
+        }
     }
     have_logits_ = to == n && to > from;
     return true;
@@ -89,6 +108,7 @@ bool LlamaDecideBackend::load_state(const std::vector<uint8_t> & in) {
 
 void LlamaDecideBackend::begin_prefill_measure() {
     tally_.begin(d_.moe_on, *d_.source);
+    device_tokens_ = 0;
 }
 
 void LlamaDecideBackend::end_prefill_measure(PrefillStats & out) {
@@ -98,6 +118,7 @@ void LlamaDecideBackend::end_prefill_measure(PrefillStats & out) {
     out.io_seconds = tally_.io_seconds;
     out.stall_seconds = tally_.stall_seconds;
     out.mgmt_seconds = tally_.mgmt_seconds;
+    out.device_tokens = device_tokens_;
 }
 
 } // namespace bmoe::detail

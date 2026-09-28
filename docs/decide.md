@@ -83,6 +83,21 @@ lives in. `BMOE_DECIDE` reports it as `prefix_state_mib`, and copying it after t
 `store_s` (not part of `prefill_s`). A `generate()` drops it: it is worth its RAM only while
 decisions follow one another, and the next decision after a chat turn builds a fresh one.
 
+## With a prefill device
+
+A session opened with `--prefill-device` prefills a decision by the same rule as a chat turn: the
+prompt goes in pieces one ubatch wide, pieces at least `--prefill-min-tokens` wide run on the
+device and a narrower tail on the CPU, and the weights are back on the host when the call returns.
+`prefill_dev_tokens` in `BMOE_DECIDE` counts the tokens the device prefilled.
+
+No prefix state is kept with a prefill device: `auto` resolves to off, and `on` is refused at
+startup. llama.cpp saves and restores a sequence through views of the KV cache it creates once,
+over the buffer the cache was first allocated in. The prefill device moves the model state by
+rebinding the cache tensors, which those views do not follow, so a saved state would be read from
+memory the model no longer uses. The gates caught it: a restored prefix scored differently from the
+same prefix computed. Every decision is prefilled whole instead, and gate G18g checks that it scores
+bit for bit what the same session scores all on the CPU.
+
 ## What a decision assumes
 
 - **Reasoning is off.** A decision reads the first token of the answer; with reasoning on, that
@@ -147,5 +162,6 @@ log-softmax is shared with `perplexity()`, and the chat turn is rendered by the 
   computing it scores (a); a state stored after a partial restore answers bit for bit as it did when
   computed (b); a whole-prefill decision equals `perplexity()`'s choices after the same text (c);
   resident == streaming, with and without an evicting cache (d); a `generate()` continuing after a
-  decision and a refused one equals one that never saw them (e); and a session without `--decide`
-  refuses it harmlessly (f).
+  decision and a refused one equals one that never saw them (e); a session without `--decide`
+  refuses it harmlessly (f); and with a prefill device, three decisions (no prefix state kept) and a
+  `generate()` after them equal the same session all on the CPU (g).

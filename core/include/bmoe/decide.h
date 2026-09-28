@@ -46,6 +46,7 @@ struct PrefillStats {
     double io_seconds = 0.0;
     double stall_seconds = 0.0;
     double mgmt_seconds = 0.0;
+    int device_tokens = 0; // prefilled on the prefill device (PrefillDeviceConfig); 0 without one
 };
 
 struct DecideResult {

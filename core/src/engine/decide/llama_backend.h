@@ -20,6 +20,8 @@ class RouterHook;
 
 namespace bmoe::detail {
 
+class PrefillPath;
+
 static_assert(std::is_same<Token, llama_token>::value, "decide's Token must be llama_token");
 
 struct LlamaDecideDeps {
@@ -34,6 +36,11 @@ struct LlamaDecideDeps {
     bool moe_on = false;
     const common_chat_templates * tmpls = nullptr; // null when chat mode is off: the prompt is raw
     ThinkControl think_ctl = ThinkControl::Template;
+    // The session's prefill device, or null. With one, the prompt is fed in pieces `n_batch` wide
+    // (the session passes its prefill piece) and placed by generate()'s rule, and every clear also
+    // clears the moved model state: see PrefillPath.
+    PrefillPath * prefill = nullptr;
+    int prefill_min_tokens = 0;
 };
 
 class LlamaDecideBackend final : public IDecideBackend {
@@ -45,7 +52,8 @@ public:
     std::vector<Token> tokenize_plain(const std::string & text) override;
     int n_ctx() const override { return d_.n_ctx; }
     int n_vocab() const override { return d_.n_vocab; }
-    // The CPU prefill this session runs costs in proportion to the tokens it is fed.
+    // The CPU prefill this session runs costs in proportion to the tokens it is fed. (With a prefill
+    // device the session keeps no prefix state at all, whatever this says: see Session::decide.)
     bool prefill_cost_scales_with_tokens() const override { return true; }
     void clear() override;
     bool prefill(const std::vector<Token> & tokens, int from, int to) override;
@@ -62,6 +70,7 @@ private:
     llama_batch batch_;
     bool have_logits_ = false;
     PrefillTally tally_;
+    int device_tokens_ = 0; // since begin_prefill_measure
 };
 
 } // namespace bmoe::detail
