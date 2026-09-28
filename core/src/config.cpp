@@ -102,6 +102,33 @@ ValidationResult validate(const RunConfig & cfg) {
                     "spec.draft_max.");
     }
 
+    if (cfg.prefill.enabled()) {
+        if (cfg.prefill.min_tokens < PrefillDeviceConfig::min_tokens_floor)
+            return fail("prefill.min_tokens must be >= " + std::to_string(PrefillDeviceConfig::min_tokens_floor) +
+                        ": a one-token device graph would share its shape with a CPU decode graph, and llama.cpp "
+                        "reuses a same-shaped graph without re-scheduling it.");
+        if (cfg.prefill.load_threads < 1 || cfg.prefill.load_threads > PrefillDeviceConfig::load_threads_max)
+            return fail("prefill.load_threads must be in [1, " + std::to_string(PrefillDeviceConfig::load_threads_max) +
+                        "]");
+        if (cfg.prefill.min_tokens > cfg.n_ctx)
+            return fail("prefill.min_tokens=" + std::to_string(cfg.prefill.min_tokens) +
+                        " exceeds n_ctx=" + std::to_string(cfg.n_ctx) + ": no prefill could ever reach the device.");
+        // A prompt is fed in ubatch-wide pieces (the session prefills in n_ctx-wide batches, so the
+        // ubatch is the width whenever it is set), and a piece narrower than min_tokens stays on the
+        // CPU: without this the only sign would be prefill_dev_tokens=0.
+        if (cfg.n_ubatch > 0 && cfg.n_ubatch < cfg.prefill.min_tokens)
+            return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " is narrower than prefill.min_tokens=" +
+                        std::to_string(cfg.prefill.min_tokens) + ": no prefill could ever reach the device.");
+        // The row policy serves dense tables from the eval callback at each gather, and a device graph
+        // bypasses the host streaming path in that callback entirely.
+        if (cfg.moe.row_stream)
+            return fail("prefill.device does not combine with moe.row_stream: the tables it serves are "
+                        "gathered on the host, inside a graph that would run on the device");
+        // Speculation widens CPU graphs past one token and runs a second context over the same
+        // weights; both would break the width invariant the rebind relies on.
+        if (cfg.spec.enabled()) return fail("prefill.device does not combine with speculative decoding");
+    }
+
     // overlap is meaningless without streaming (it gates the streamer's own reads). The
     // hook-availability check is deferred to run(): validate() stays pure (no native).
     if (cfg.moe.overlap && !cfg.moe.enabled) {

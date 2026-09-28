@@ -93,8 +93,10 @@ byte-identical output, and the rest of the phone stays alive.
 **Models that barely fit.** Even a model that technically fits in RAM, say an 8B class MoE on a
 phone with a few GB free, benefits: loaded the ordinary way it squeezes out everything else, and
 the OS claws memory back mid-generation. Streamed with a capped cache, it runs inside a budget you
-choose and leaves the system alone. And this is all plain CPU inference: no GPU, no NPU, four
-cores and the phone's flash storage.
+choose and leaves the system alone. Decode is plain CPU inference: no GPU, no NPU, four cores and
+the phone's flash storage. Prefill can optionally run on a Snapdragon's Hexagon NPU, streamed two
+layers at a time, which is several times faster on long prompts
+([docs/npu-prefill.md](docs/npu-prefill.md)).
 
 The same engine builds unmodified on desktop, where a model past RAM streams from the SSD out of
 the box. Phones stay the focus, because that is where memory is tightest.

@@ -19,6 +19,19 @@ research harness and keeps the app a thin driver over the CLI.
    This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-cli.so` and the
    `libllama`/`libggml` shared libraries.
 
+   For **Prefill on the NPU** the engine needs the Hexagon backend, which builds inside upstream's
+   Snapdragon toolchain container instead (it carries the Hexagon SDK), then stages the same way:
+
+   ```bash
+   docker run --rm -v <repo>:/workspace ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
+       bash /workspace/scripts/build-hexagon-android.sh
+   powershell -File ../../scripts/stage-hexagon-jnilibs.ps1
+   ```
+
+   The release APK is built this way by CI, with a skel for every NPU generation the backend
+   supports (v73 to v81). A local APK built with `build-android.ps1` has no Hexagon backend: its NPU
+   switch is shown disabled, and ignored if a previous install saved it on.
+
 2. Build and install the APK. Open this folder in Android Studio, or use the committed
    Gradle wrapper directly. The app has two distribution flavors (see below); build the one
    you want:
@@ -153,6 +166,15 @@ Each category shows the recommended configuration first and folds everything els
 **Experimental** group: the levers measured on one device, measured once, or still owed a
 measurement. They ship in the release build deliberately, because testing them on hardware other
 than the one test phone is what this app is for.
+
+The **NPU** section holds **"Prefill on the NPU (Snapdragon only)"** (`--prefill-device HTP0`) and
+its loader threads. It is off by default and sits apart from Experimental because it is a different
+processor with its own requirements: a Snapdragon with a Hexagon NPU of generation v73 or newer (8 Gen
+2 onwards), and a model the NPU kernels take (Q4_0, Q8_0, MXFP4, or a Q4_K_M; not the Q3 and Q2
+builds). On a phone without the NPU the switch is shown disabled with the reason. It runs the prompt
+on the NPU and keeps decode on the CPU, and it widens the prompt batch to 2048 tokens, because each
+batch reads the experts from flash once; short prompts do not gain. If the NPU does not open (an
+older Snapdragon), the prompt simply runs on the CPU. See `../../docs/npu-prefill.md`.
 
 Descriptions in the UI say what a setting does, without measured figures or flag names, because a
 number needs the device, the model and the day beside it to be worth anything. The mapping to the

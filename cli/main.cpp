@@ -340,6 +340,8 @@ static int run_session_loop(const RunConfig & cfg,
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
                     "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,"
                     "\"prefill_stall_s\":%.3f,\"prefill_mgmt_s\":%.3f,"
+                    "\"prefill_dev_tokens\":%d,\"prefill_dev_nodes\":%lld,\"prefill_dev_read_mib\":%.1f,"
+                    "\"prefill_dev_stall_s\":%.3f,"
                     "\"token_demand_mib\":%.1f,\"mtp_drafted\":%lld,\"mtp_accepted\":%lld,\"mtp_decodes\":%lld,"
                     "\"mtp_draft_s_tok\":%.4f,\"drafted_steps\":%lld,\"loop_overhead_s_tok\":%.4f,"
                     "\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
@@ -348,9 +350,10 @@ static int run_session_loop(const RunConfig & cfg,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
                     s.majflt_per_token, s.cpu_s_per_token, s.prefill_cpu_seconds, s.prefill_read_mib,
-                    s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.token_demand_mib,
-                    s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token, s.drafted_steps,
-                    s.loop_overhead_s_per_token, json_escape(r.reasoning_text).c_str(),
+                    s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.prefill_device_tokens,
+                    s.prefill_device_nodes, s.prefill_device_read_mib, s.prefill_device_stall_seconds,
+                    s.token_demand_mib, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token,
+                    s.drafted_steps, s.loop_overhead_s_per_token, json_escape(r.reasoning_text).c_str(),
                     json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
@@ -387,6 +390,14 @@ static void print_usage(const char * argv0) {
         "                          RAM back to the expert cache at the cost of prefill speed;\n"
         "                          decode is unaffected. Measured: a context of 2048 reserves\n"
         "                          320 MiB, falling to 80 MiB at 512.\n"
+        "      --prefill-device D  run wide prefill graphs on ggml device D (e.g. HTP0) while decode\n"
+        "                          stays on the CPU. With --moe-stream the experts reach it\n"
+        "                          through a two-layer arena. Not with speculation or --row-stream.\n"
+        "                          Off.\n"
+        "      --prefill-min-tokens N  narrowest prefill piece sent to that device (default 32)\n"
+        "      --prefill-loaders N  threads that fill the device's layer slots from flash, with\n"
+        "                          --moe-stream (1..16, default 8). Decode read lanes stay\n"
+        "                          --io-threads.\n"
         "      --chatml            wrap the prompt in the model family's chat turn (gemma/chatml)\n"
         "      --no-think          render the chat template with reasoning disabled\n"
         "      --progress          emit machine telemetry (one JSON line per token)\n"
@@ -624,6 +635,12 @@ int main(int argc, char ** argv) {
             cfg.n_ctx = std::atoi(next("-c"));
         else if (a == "--ubatch")
             cfg.n_ubatch = std::atoi(next("--ubatch"));
+        else if (a == "--prefill-device")
+            cfg.prefill.device = next("--prefill-device");
+        else if (a == "--prefill-min-tokens")
+            cfg.prefill.min_tokens = std::atoi(next("--prefill-min-tokens"));
+        else if (a == "--prefill-loaders")
+            cfg.prefill.load_threads = std::atoi(next("--prefill-loaders"));
         else if (a == "--n-expert-used")
             cfg.n_expert_used = std::atoi(next("--n-expert-used"));
         else if (a == "--temp")

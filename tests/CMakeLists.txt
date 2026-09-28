@@ -6,6 +6,10 @@
 
 add_executable(bmoe_moe_gates moe_gates.cpp)
 target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
+# G16 probes the loopback rpc-server port before registering it.
+if(WIN32)
+    target_link_libraries(bmoe_moe_gates PRIVATE ws2_32)
+endif()
 target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 
 # Reasoning-parser wiring regression (issue #49). Needs no model — it drives the extracted

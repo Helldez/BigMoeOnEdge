@@ -29,7 +29,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack: () -> Unit) {
+fun SettingsScreen(
+    current: AppSettings,
+    // Why the NPU prefill cannot run on this phone or build; null when it can.
+    npuUnavailable: String?,
+    onChange: (AppSettings) -> Unit,
+    onBack: () -> Unit,
+) {
     // Reported by the loaded session at BMOE_READY. "none" means this model reasons no matter what
     // it is asked, so the Thinking switch is shown disabled with the reason rather than left there
     // pretending to work (#82). Null = nothing loaded yet, so nothing is claimed either way.
@@ -300,6 +306,29 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         "at open, and on a model that fills RAM that comes out of the expert cache. " +
                         "Changing it reopens the session."
                 )
+            }
+
+            // Its own section, not Experimental: a different processor with its own requirements, and
+            // off by default. Always shown, so a phone without the NPU says why instead of hiding it.
+            Section("NPU") {
+                val npuOk = npuUnavailable == null
+                SwitchRow(
+                    "Prefill on the NPU (Snapdragon only)",
+                    "Hexagon NPU only, Snapdragon 8 Gen 2 or newer. Runs the prompt on the NPU and keeps " +
+                        "decoding on the CPU: long prompts start several times sooner. With streaming, the " +
+                        "weights reach the NPU two layers at a time, straight from flash, and those two " +
+                        "layers take about 1 GB that the expert cache no longer has, so decode is a little " +
+                        "slower. Needs a Q4_K_M, Q4_0, Q8_0 or MXFP4 model (not Q3/Q2). Not identical to " +
+                        "the CPU (the NPU computes in fp16). Ignored with speculation or row-streamed " +
+                        "tables. If the NPU does not open, the prompt runs on the CPU.",
+                    current.npuPrefill && npuOk,
+                    enabled = npuOk,
+                ) { onChange(current.copy(npuPrefill = it)) }
+                if (npuUnavailable != null) Hint(npuUnavailable)
+                IntSetting(
+                    "NPU loader threads", AppSettings.NPU_LOADER_CHOICES, current.npuLoaders,
+                    enabled = npuOk && current.npuPrefill && stream,
+                ) { onChange(current.copy(npuLoaders = it)) }
             }
 
             Section("Prompt") {

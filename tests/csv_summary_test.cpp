@@ -48,6 +48,10 @@ int main(int argc, char ** argv) {
     s.prefill_io_seconds = 3.4567;    // %.3f -> 3.457
     s.prefill_stall_seconds = 2.7182; // %.3f -> 2.718
     s.prefill_mgmt_seconds = 1.4142;  // %.3f -> 1.414
+    s.prefill_device_tokens = 1536;
+    s.prefill_device_nodes = 4321;
+    s.prefill_device_read_mib = 18432.04;     // %.1f -> 18432.0
+    s.prefill_device_stall_seconds = 0.12345; // %.3f -> 0.123
     sink->on_summary(s);
     delete sink; // the destructor closes and flushes the file
 
@@ -64,6 +68,10 @@ int main(int argc, char ** argv) {
         expect_key(summary, "prefill_io_s", "3.457");
         expect_key(summary, "prefill_stall_s", "2.718");
         expect_key(summary, "prefill_mgmt_s", "1.414");
+        expect_key(summary, "prefill_dev_tokens", "1536");
+        expect_key(summary, "prefill_dev_nodes", "4321");
+        expect_key(summary, "prefill_dev_read_mib", "18432.0");
+        expect_key(summary, "prefill_dev_stall_s", "0.123");
     }
     std::remove(out.c_str());
     return failures ? 1 : 0;

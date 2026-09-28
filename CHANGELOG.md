@@ -4,6 +4,73 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.26.0] - 2026-09-28
+
+### Added
+- **`--prefill-device`: prefill on the NPU, decode on the CPU, on a model larger than RAM.**
+  Measured on a 12 GB phone with a Hexagon v81 NPU, Qwen3.6-35B-A3B Q4_0 streamed: a 1418-token
+  prompt prefills in **8.2 s instead of 63.8 s (172 against 22.2 tok/s, 7.8x)**, a 1921-token one in
+  11.2 s instead of 106.5 s. Short prompts do not gain (121 tokens: 9.5 against 9.95 s), because
+  the device path reads the whole expert set once per graph and a short prompt is all read.
+
+  Wide prefill graphs run on the device and decode stays on the CPU, exactly as without the flag.
+  The weights are moved per graph, not per model: the scheduler runs each op where its weight
+  lives and re-decides that for every graph, so rebinding a weight's buffer between graphs moves
+  its ops, with no llama.cpp change. Device graphs and CPU graphs are kept to different widths so
+  llama.cpp never reuses one for the other.
+
+  With `--moe-stream` the device never holds the model: two layer-sized slots, filled from flash
+  by loader threads while the device computes the other one (about 900 MB for the model above).
+  The model state moves into the device's host buffer, so decode and prefill share one KV cache.
+  A weight type the device's matmul refuses is carried to it in the nearest one it takes, converted
+  once at load. Layer weights an op reads other than as a matmul's matrix (norms, biases, Gemma 4's
+  per-expert scale) go to plain device memory, found from the ops of the capture graph: a backend
+  may map its `WEIGHTS` buffers for its matmul alone (Hexagon with DMA64 does, and aborted the
+  first Gemma 4 prefill on it). The buffers llama.cpp first held the model state in are handed
+  back to the kernel after the move instead of doubling the KV cache (1760 MiB on Gemma 4 at an
+  8192-token context). Gemma 4 26B-A4B prefills 238 tokens in 5.85 s instead of 16.2 s; at an
+  8192-token context and a 2000 MiB cache it does not fit a 12 GB phone with the device path on.
+  The compute-buffer reservation is redone with the weights on the device and the logit rows
+  capped, which kept the CPU's buffer at 154 MB instead of 2.2 GB and decode at 3.25 tok/s (3.41
+  without the flag).
+
+  Off by default; the app has it as **Prefill on the NPU (Snapdragon only)** in its own **NPU**
+  section of Settings, shown disabled with the reason on a phone without a Hexagon NPU. Needs a
+  model whose expert tensors the NPU takes (Q4_0, Q4_1, Q8_0, IQ4_NL, MXFP4) and the Hexagon backend
+  in the build (`scripts/build-hexagon-android.sh`). The NPU computes in fp16, so the output is not
+  identical to the CPU's. A prefill device that is missing or does not open (a Snapdragon older than
+  the backend's v73 floor) no longer fails the load: the engine says so and the run stays on the CPU. Gates G16 and G17 prove the placement against a loopback device on the
+  host, bit for bit; that loopback RPC device is a test fixture only, and no front-end accepts an
+  RPC endpoint. A ubatch narrower than `--prefill-min-tokens` is a config error (no piece could
+  reach the device), and a failed expert read fails only the prefill it happened in. See
+  [docs/npu-prefill.md](docs/npu-prefill.md).
+- **Telemetry:** `prefill_dev_tokens`, `prefill_dev_nodes`, `prefill_dev_read_mib` and
+  `prefill_dev_stall_s` in `BMOE_DONE` and the CSV trailer.
+
+### Changed
+- **llama.cpp submodule bumped** to upstream master `965f897` of 2026-09-26 (530 commits past
+  `b10666`), as the one-commit fork branch `bmoe/expert-ready-hook-2609`. What it brings here is the
+  Hexagon backend's K-quants: the NPU now takes a Q4_K_M, the quantisation the app's catalog ships,
+  so the NPU prefill needs no special build of the model. Measured on Qwen3.6-35B-A3B Q4_K_M, 1418
+  tokens: **80.6 s on the CPU, 10.0 s on the NPU (8.1x)**, with no weight converted. On the Q4_0 the
+  prefill is unchanged (8.3 against 8.2 s): the device now waits on the flash, not on its own maths.
+  Upstream's CPU `mul_mat_id` gained a tiled path that reads an expert before the classic loop, so
+  the expert-ready hook now fires ahead of it (G4 proves it gates every read); upstream renamed the
+  draft parameters' `n_past` to `pos0`.
+- **`--prefill-loaders N`** (default 8) sets the arena's loader threads apart from `--io-threads`, the
+  decode's read lanes; the app has it as **NPU loader threads**.
+- **The release APK carries the Hexagon backend** and a DSP skel for each NPU generation it supports
+  (v73, v75, v79, v81). It is built by `scripts/build-hexagon-android.sh` in upstream's Snapdragon
+  toolchain image, in a CI job of its own with a read-only token, no secrets and the image pinned by
+  digest; the job that signs the APK runs no third-party code. The CPU side keeps the CPU-only
+  release's API level and ARM target, so decode is the same code on every phone as before.
+- **A GPU-type device that cannot reach host memory stays out of a run that did not ask for it.**
+  With no devices given, llama.cpp lists every GPU it finds and the context opens a backend on each;
+  the engine never gives one a layer, so a device with neither a host buffer type nor buffers over
+  host pointers (the Hexagon NPU) could only cost a DSP session on every Snapdragon, switch off.
+  Only such devices are dropped, read off each device's capabilities: Metal, CUDA and Vulkan are
+  listed exactly as before.
+
 ## [0.25.0] - 2026-09-28
 
 ### Added

@@ -339,6 +339,44 @@ int main() {
         expect_ok("the same narrow ubatch is fine without speculation", c);
     }
 
+    // Prefill device: the rebind is only safe while device graphs and CPU graphs never share a width.
+    {
+        RunConfig c = ok_base();
+        c.prefill.device = "HTP0";
+        expect_ok("a prefill device with the default min_tokens is valid", c);
+        c.prefill.load_threads = 0;
+        expect_fail("no arena loader thread", c);
+        c.prefill.load_threads = PrefillDeviceConfig::load_threads_max + 1;
+        expect_fail("arena loaders above the cap", c);
+        c.prefill.load_threads = PrefillDeviceConfig::load_threads_max;
+        expect_ok("arena loaders at the cap", c);
+        c.prefill.load_threads = 8;
+        c.prefill.min_tokens = PrefillDeviceConfig::min_tokens_floor;
+        expect_ok("min_tokens at the floor is valid", c);
+        c.prefill.min_tokens = 1;
+        expect_fail("a one-token device graph would share the decode graph's shape", c);
+        c.prefill.min_tokens = c.n_ctx + 1;
+        expect_fail("min_tokens above n_ctx could never reach the device", c);
+        c.prefill.min_tokens = 32;
+        c.n_ubatch = 16;
+        expect_fail("a ubatch narrower than min_tokens sends no piece to the device", c);
+        c.n_ubatch = 32;
+        expect_ok("a ubatch exactly min_tokens wide reaches the device", c);
+        c.n_ubatch = 0;
+        c.moe.enabled = true;
+        expect_ok("prefill device with streaming (the expert arena)", c);
+        c.moe.row_stream = true;
+        expect_fail("prefill device with the row policy: its gathers happen on the host", c);
+        c.moe.row_stream = false;
+        c.moe.enabled = false;
+        c.spec.source = DraftSource::ngram;
+        expect_fail("prefill device with speculation breaks the width invariant", c);
+        c.spec.source = DraftSource::none;
+        c.prefill.device.clear();
+        c.prefill.min_tokens = 1;
+        expect_ok("min_tokens is not checked while the prefill device is off", c);
+    }
+
     if (failures == 0) {
         std::printf("all config checks passed\n");
         return 0;

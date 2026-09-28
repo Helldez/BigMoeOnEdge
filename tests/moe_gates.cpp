@@ -71,11 +71,86 @@
 #include "bmoe/session.h"
 #include "gguf_offsets.h"
 
+#include "ggml-backend.h"
+
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <thread>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 using namespace bmoe;
+
+// ── G16 support: a second device on any host ────────────────────────────────────────────────────
+// The prefill-device path moves weights onto another backend's buffers between graphs. The RPC
+// backend fronting this same CPU is a device every host has, and since it computes with the very
+// kernels the local CPU uses, placement is the ONLY thing that differs: the output must be
+// byte-identical. Hexagon's own numerics (fp16 on HMX) are a device question, not this gate's.
+
+static const char * const kRpcEndpoint = "127.0.0.1:50599";
+
+// True once something accepts on the endpoint. The RPC client aborts the process when it cannot
+// connect, so the server has to be seen listening before it is registered.
+static bool port_accepts(int port) {
+#if defined(_WIN32)
+    static bool wsa = [] {
+        WSADATA d;
+        return WSAStartup(MAKEWORD(2, 2), &d) == 0;
+    }();
+    if (!wsa) return false;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return false;
+#else
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) return false;
+#endif
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = htons((unsigned short) port);
+    inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    const bool ok = connect(s, (sockaddr *) &a, sizeof(a)) == 0;
+#if defined(_WIN32)
+    closesocket(s);
+#else
+    close(s);
+#endif
+    return ok;
+}
+
+// Starts an in-process rpc-server over the CPU device and returns the client device's registry
+// name, or "" when this build has no RPC backend.
+static std::string loopback_rpc_device() {
+    ggml_backend_reg_t rpc = ggml_backend_reg_by_name("RPC");
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (!rpc || !cpu) return "";
+    using start_fn = void (*)(const char *, const char *, size_t, size_t, ggml_backend_dev_t *);
+    using add_fn = ggml_backend_reg_t (*)(const char *);
+    auto start = (start_fn) ggml_backend_reg_get_proc_address(rpc, "ggml_backend_rpc_start_server");
+    auto add = (add_fn) ggml_backend_reg_get_proc_address(rpc, "ggml_backend_rpc_add_server");
+    if (!start || !add) return "";
+    // Serves until the process exits; the gates are one process.
+    std::thread([start, cpu] {
+        ggml_backend_dev_t devs[1] = {cpu};
+        start(kRpcEndpoint, nullptr, 2, 1, devs);
+    }).detach();
+    for (int i = 0; i < 200 && !port_accepts(50599); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    if (!port_accepts(50599)) return "";
+    ggml_backend_reg_t srv = add(kRpcEndpoint);
+    if (!srv || ggml_backend_reg_dev_count(srv) == 0) return "";
+    ggml_backend_register(srv);
+    return ggml_backend_dev_name(ggml_backend_reg_dev_get(srv, 0));
+}
 
 // Whether the model's trunk has two adjacent MoE blocks, read from the file: a MoE block is one
 // with a router (blk.<il>.ffn_gate_inp), and a NextN/MTP block (it carries nextn.* tensors) is not
@@ -791,6 +866,178 @@ int main(int argc, char ** argv) {
         } else {
             std::printf("[PASS] G14b route-ahead(1) committed %lld routings (%lld passed through) and generated\n",
                         r.summary.route_ahead_overridden, r.summary.route_ahead_passthrough);
+        }
+    }
+
+    // ── G16: prefill on a device, decode on the CPU ──
+    // The reference prefills in the same 4-token ubatches, all on the CPU, so the graphs are the same
+    // shapes and the only difference is where the wide ones ran. a) one generate: identical, and some
+    // prompt tokens must actually have gone to the device, or the gate passes vacuously (the trap G10b
+    // and G14b guard). b) two generates in one session: the weights go back to the host for decode and
+    // out again for the next prompt, which is where a stale reused graph would read a device buffer
+    // from the CPU. c) perplexity, which compares every position's logits instead of one greedy path.
+    {
+        const std::string dev = loopback_rpc_device();
+        if (dev.empty()) {
+            std::printf("[SKIP] G16 prefill device: this build has no RPC backend (GGML_RPC=OFF)\n");
+        } else {
+            RunConfig pref = base(model);
+            pref.moe.enabled = false;
+            pref.n_ubatch = 4;
+            RunConfig pdev = pref;
+            pdev.prefill.device = dev;
+            pdev.prefill.min_tokens = 4;
+
+            std::string s_pref;
+            if (!gen(pref, s_pref, err)) {
+                std::fprintf(stderr, "G16 reference run failed: %s\n", err.c_str());
+                return 2;
+            }
+            RunResult r = run(pdev);
+            if (!r) {
+                std::fprintf(stderr, "G16 prefill-device run failed: %s\n", r.error.c_str());
+                return 2;
+            }
+            fails += check("G16a prefill on device, decode on CPU == all CPU", s_pref, r.generated_text);
+            // Tokens say the weights were moved; nodes say the device computed. Both, or the in-process
+            // server (whose buffers the CPU could read directly) would let a silent fallback pass.
+            if (r.summary.prefill_device_tokens <= 0 || r.summary.prefill_device_nodes <= 0) {
+                std::printf("[FAIL] G16a the device did not prefill (%d of %d tokens, %lld nodes)\n",
+                            r.summary.prefill_device_tokens, r.summary.n_prompt, r.summary.prefill_device_nodes);
+                ++fails;
+            } else {
+                std::printf("[PASS] G16a the device prefilled %d of %d prompt tokens (%lld nodes)\n",
+                            r.summary.prefill_device_tokens, r.summary.n_prompt, r.summary.prefill_device_nodes);
+            }
+
+            std::string open_err;
+            std::unique_ptr<Session> s = Session::open(session_config_from(pdev), open_err);
+            if (!s) {
+                std::fprintf(stderr, "G16 session open failed: %s\n", open_err.c_str());
+                return 2;
+            }
+            GenerateRequest req;
+            req.prompt = pdev.prompt;
+            req.n_predict = pdev.n_predict;
+            req.clear_kv = true;
+            RunResult g1 = s->generate(req);
+            RunResult g2 = s->generate(req);
+            if (!g1 || !g2) {
+                std::fprintf(stderr, "G16 session generate failed: %s\n", (!g1 ? g1.error : g2.error).c_str());
+                return 2;
+            }
+            fails += check("G16b session generate #1 (device prefill) == all CPU", s_pref, g1.generated_text);
+            fails += check("G16b session generate #2 (device prefill again) == all CPU", s_pref, g2.generated_text);
+
+            PplRequest pr;
+            pr.text = "The quick brown fox jumps over the lazy dog, and then it runs back home to sleep.";
+            pr.skip = 2;
+            std::unique_ptr<Session> sc = Session::open(session_config_from(pref), open_err);
+            if (!sc) {
+                std::fprintf(stderr, "G16 reference session open failed: %s\n", open_err.c_str());
+                return 2;
+            }
+            PplResult p_cpu = sc->perplexity(pr);
+            PplResult p_dev = s->perplexity(pr);
+            if (!p_cpu.ok || !p_dev.ok) {
+                std::fprintf(stderr, "G16 perplexity failed: %s\n", (!p_cpu.ok ? p_cpu.error : p_dev.error).c_str());
+                return 2;
+            }
+            char a[64], b[64];
+            std::snprintf(a, sizeof(a), "%.17g/%d", p_cpu.nll, p_cpu.n_top1);
+            std::snprintf(b, sizeof(b), "%.17g/%d", p_dev.nll, p_dev.n_top1);
+            fails += check("G16c perplexity with device prefill == all CPU (nll/top1, bit for bit)", a, b);
+
+            // ── G17: streamed experts through the device arena ──
+            // The model streams; the device prefill gets its experts from two slots refilled layer by
+            // layer while decode keeps the streamer's cache. Same reference, same pieces. Variants: no
+            // cache, a small evicting cache (decode must not see a trace of the arena), and one loader
+            // (every layer waits at its barrier, the ordering the slots rely on at its tightest). Each
+            // must also show that the arena read experts and the device computed.
+            struct Variant {
+                const char * name;
+                int cache_mb;
+                int loaders; // the arena's loader threads (--prefill-loaders), not the decode lanes
+                int delay_us;
+            };
+            const Variant variants[] = {
+                {"G17a arena, cache off, 4 loaders", 0, 4, 0},
+                {"G17b arena, small forced cache, 4 loaders", 2, 4, 0},
+                // Loads slowed until the graph always reaches a layer first: only the barrier orders them.
+                {"G17c arena, cache off, 1 slowed loader", 0, 1, 20000},
+            };
+            // Greedy text alone is a weak witness here: on the tiny model a slot holding the wrong
+            // layer's experts can still produce the same few tokens (measured, with the barrier
+            // sabotaged). So each variant is also scored for perplexity, bit for bit, and must read the
+            // same bytes as the first: a graph that outran its loads reads less, since the drained
+            // queue is dropped.
+            double arena_mib_ref = -1.0;
+            for (const Variant & v : variants) {
+                RunConfig c = pdev;
+                c.moe.enabled = true;
+                c.moe.cache_mb = v.cache_mb;
+                c.moe.force_cache = v.cache_mb > 0;
+                c.prefill.load_threads = v.loaders;
+                c.prefill.test_load_delay_us = v.delay_us;
+                std::unique_ptr<Session> vs = Session::open(session_config_from(c), open_err);
+                if (!vs) {
+                    std::fprintf(stderr, "%s open failed: %s\n", v.name, open_err.c_str());
+                    return 2;
+                }
+                RunResult rr = vs->generate(req);
+                if (!rr) {
+                    std::fprintf(stderr, "%s failed: %s\n", v.name, rr.error.c_str());
+                    return 2;
+                }
+                fails += check(v.name, s_pref, rr.generated_text);
+                const double mib = rr.summary.prefill_device_read_mib;
+                if (arena_mib_ref < 0.0) arena_mib_ref = mib;
+                if (mib <= 0.0 || mib != arena_mib_ref || rr.summary.prefill_device_nodes <= 0) {
+                    std::printf("[FAIL] %s: the arena read %.3f MiB (expected %.3f), the device computed %lld nodes\n",
+                                v.name, mib, arena_mib_ref, rr.summary.prefill_device_nodes);
+                    ++fails;
+                } else {
+                    std::printf("[PASS] %s: the arena read %.3f MiB, the device computed %lld nodes\n", v.name, mib,
+                                rr.summary.prefill_device_nodes);
+                }
+                PplResult pv = vs->perplexity(pr);
+                if (!pv.ok) {
+                    std::fprintf(stderr, "%s perplexity failed: %s\n", v.name, pv.error.c_str());
+                    return 2;
+                }
+                char cv[64];
+                std::snprintf(cv, sizeof(cv), "%.17g/%d", pv.nll, pv.n_top1);
+                fails += check((std::string(v.name) + ": perplexity bit for bit").c_str(), a, cv);
+            }
+
+            // Two generates and a perplexity pass through one streamed session: the arena refills per
+            // graph and the streamer's cache carries on underneath it.
+            RunConfig cs = pdev;
+            cs.moe.enabled = true;
+            cs.moe.cache_mb = 2;
+            cs.moe.force_cache = true;
+            cs.moe.io_threads = 4;
+            std::unique_ptr<Session> ss = Session::open(session_config_from(cs), open_err);
+            if (!ss) {
+                std::fprintf(stderr, "G17 session open failed: %s\n", open_err.c_str());
+                return 2;
+            }
+            RunResult h1 = ss->generate(req);
+            RunResult h2 = ss->generate(req);
+            if (!h1 || !h2) {
+                std::fprintf(stderr, "G17 session generate failed: %s\n", (!h1 ? h1.error : h2.error).c_str());
+                return 2;
+            }
+            fails += check("G17d streamed session generate #1 == all CPU", s_pref, h1.generated_text);
+            fails += check("G17d streamed session generate #2 == all CPU", s_pref, h2.generated_text);
+            PplResult p_arena = ss->perplexity(pr);
+            if (!p_arena.ok) {
+                std::fprintf(stderr, "G17 perplexity failed: %s\n", p_arena.error.c_str());
+                return 2;
+            }
+            char c3[64];
+            std::snprintf(c3, sizeof(c3), "%.17g/%d", p_arena.nll, p_arena.n_top1);
+            fails += check("G17e perplexity through the arena == all CPU (nll/top1, bit for bit)", a, c3);
         }
     }
 

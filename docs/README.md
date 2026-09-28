@@ -29,6 +29,7 @@ for the idea the project is built on.
 | [ngram.md](ngram.md) | `--ngram`: drafting from text that repeats, with no head and no draft decode — and why a source that abstains costs exactly an unspeculated step. |
 | [expert-prediction.md](expert-prediction.md) | `--predict-log`: how much of a routing can be known a layer early, measured against the predictor `--prefetch` already bets on — and why a good score still would not mean a faster decode. |
 | [route-ahead.md](route-ahead.md) | `--route-ahead N`: committing the routing to the N-layers-early prediction, so a prefetch of it can never miss — and what that costs in quality (experimental, lossy). |
+| [npu-prefill.md](npu-prefill.md) | `--prefill-device`: prefill on the NPU and decode on the CPU, a model larger than RAM fed to the NPU two layers at a time, and why decode stays on the CPU. |
 | [android-memory.md](android-memory.md) | What reclaims the engine's memory on a phone, which levers exist (almost none), and why the cache hit rate is what the kernel judges you by. |
 | [pressure.md](pressure.md) | Cache policy under memory pressure: why an unaffordable budget starts a reclaim war, why the adaptive governor was retired, and what the fixed `--cache-mb` / `--dense-weights` levers do. |
 

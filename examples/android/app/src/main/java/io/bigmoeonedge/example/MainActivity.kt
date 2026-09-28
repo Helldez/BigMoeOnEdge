@@ -99,7 +99,12 @@ private fun Root() {
     val context = LocalContext.current
     var showSettings by remember { mutableStateOf(false) }
     var showMetrics by remember { mutableStateOf(false) }
-    var settings by remember { mutableStateOf(AppSettings.load(context)) }
+    // Where the NPU prefill cannot run (no Hexagon backend in this APK, or no Snapdragon), a saved
+    // switch is read as off, so the settings shown and the argv built always agree.
+    val npuUnavailable = remember { ModelManager.npuUnavailableReason(context) }
+    var settings by remember {
+        mutableStateOf(AppSettings.load(context).let { if (npuUnavailable == null) it else it.copy(npuPrefill = false) })
+    }
 
     // Model-scan state lives here, above the settings/main switch, so opening Settings and
     // coming back does NOT dispose it and trigger a fresh scan. The scan runs once (and again
@@ -120,6 +125,7 @@ private fun Root() {
     if (showSettings) {
         SettingsScreen(
             current = settings,
+            npuUnavailable = npuUnavailable,
             onChange = { settings = it; it.save(context) },
             onBack = { showSettings = false },
         )
