@@ -55,6 +55,11 @@ Semantic Versioning.
 - The tiny test models no longer prepend a space to every text: on their byte-only vocabulary it
   made every string start with the same token.
 
+### Fixed
+- The engine reported version 0.23.0 (`bmoe-cli --version`, the `# engine=` line of the metrics
+  CSV) through 0.24.0, 0.25.0 and 0.26.0: the CMake project version had not been bumped with them.
+  It now matches the release.
+
 ## [0.26.0] - 2026-09-28
 
 ### Added
