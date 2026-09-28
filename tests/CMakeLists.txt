@@ -1,7 +1,8 @@
 # Byte-identity gates. The tiny synthetic models are generated at test time by
 # scripts/make-tiny-moe.py (requires python3 with the gguf package); if it is
 # unavailable the tests are skipped rather than failing the build. One model per expert
-# layout the streamer supports: qwen3moe (split gate/up/down) and gemma4 (fused gate_up).
+# layout the streamer supports: qwen3moe (split gate/up/down), gemma4 (fused gate_up) and
+# nemotron_h_moe (gate-less up/down).
 
 add_executable(bmoe_moe_gates moe_gates.cpp)
 target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
@@ -9,6 +10,7 @@ target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
 if(WIN32)
     target_link_libraries(bmoe_moe_gates PRIVATE ws2_32)
 endif()
+target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 
 # Reasoning-parser wiring regression (issue #49). Needs no model — it drives the extracted
 # bmoe::detail::build_parse_params directly — so it runs unconditionally, unlike the gates below.
@@ -71,7 +73,7 @@ find_program(PYTHON3 NAMES python3 python)
 
 if(PYTHON3)
     # arch → (fixture id, gguf filename). Each gets a generate fixture + a gate run.
-    foreach(spec "qwen3moe" "gemma4")
+    foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe")
         set(_model "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-${spec}.gguf")
         set(_fixture "TINY_MOE_MODEL_${spec}")
 

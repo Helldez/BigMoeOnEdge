@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.25.0] - 2026-09-28
+## [0.26.0] - 2026-09-28
 
 ### Added
 - **`--prefill-device`: prefill on the NPU, decode on the CPU, on a model larger than RAM.**
@@ -70,6 +70,25 @@ Semantic Versioning.
   host pointers (the Hexagon NPU) could only cost a DSP session on every Snapdragon, switch off.
   Only such devices are dropped, read off each device's capabilities: Metal, CUDA and Vulkan are
   listed exactly as before.
+
+## [0.25.0] - 2026-09-28
+
+### Added
+- **Nemotron 3 / 3.5 MoE (`nemotron_h_moe`), the third expert layout: gate-less.** Each expert is
+  up, ReLU², down, so a layer names two expert tensors (`ffn_up_exps`, `ffn_down_exps`) and the
+  registry row leaves the tail slot empty, as the fused `gemma4` row does. The rest of the
+  architecture sits on the resident side of the seam: a hybrid Mamba2 / attention / MoE stack
+  (only the MoE blocks bind), optional latent projections the experts run between, an always-on
+  shared expert, and a trailing MTP block that llama.cpp skips at load. Reference model:
+  Nemotron-3.5-Lightning-30B-A3B. `make-tiny-moe.py --arch nemotron_h_moe` emits that whole shape
+  in miniature, and it is a third byte-identity gate next to `qwen3moe` and `gemma4`.
+
+  No two MoE blocks are adjacent in this architecture, so the forward predictors
+  (`--predict-prefetch`, `--route-ahead`, the stale half of `--predict-log`) have no next layer
+  to target and do nothing on it. The gates check that from the file and report those three
+  checks as N/A there instead of passing them vacuously; their byte-identity halves still run.
+- **Ornith-1.5-35B-A3B**, which is the `qwen35moe` architecture and needed no engine change.
+- Both models in the Android catalog at Q4_K_M. Neither has been measured on a device yet.
 
 ## [0.24.0] - 2026-09-07
 

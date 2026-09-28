@@ -60,9 +60,16 @@
 //
 // Gate numbers are allocated once and never reused: a failing label has to name one thing. G11 and
 // G12 are reserved for the zero-copy branch (PR #143) and must not be taken here.
+//
+// The forward predictors (the stale half of G9b, G10b, G14b) target the layer after the one they
+// stand in, so they only have something to predict when two MoE blocks are adjacent. A hybrid
+// stack that interleaves every MoE block with a Mamba or attention block (nemotron_h_moe) has no
+// such pair: there those three are reported N/A instead of failing, while their identity halves
+// and the G9b control still run and must pass.
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
+#include "gguf_offsets.h"
 
 #include "ggml-backend.h"
 
@@ -143,6 +150,24 @@ static std::string loopback_rpc_device() {
     if (!srv || ggml_backend_reg_dev_count(srv) == 0) return "";
     ggml_backend_register(srv);
     return ggml_backend_dev_name(ggml_backend_reg_dev_get(srv, 0));
+}
+
+// Whether the model's trunk has two adjacent MoE blocks, read from the file: a MoE block is one
+// with a router (blk.<il>.ffn_gate_inp), and a NextN/MTP block (it carries nextn.* tensors) is not
+// part of the trunk the predictors walk. A file it cannot read counts as adjacent, so a parse
+// failure keeps every check strict rather than excusing it.
+static bool has_adjacent_moe_layers(const std::string & model) {
+    const GgufOffsets off = read_gguf_offsets(model.c_str());
+    if (!off.ok) return true;
+    auto has = [&](int il, const char * suffix) {
+        return off.off_by_name.count("blk." + std::to_string(il) + "." + suffix) != 0;
+    };
+    auto is_trunk_moe = [&](int il) { return has(il, "ffn_gate_inp.weight") && !has(il, "nextn.eh_proj.weight"); };
+    for (const auto & kv : off.off_by_name) {
+        int il = -1;
+        if (std::sscanf(kv.first.c_str(), "blk.%d.", &il) == 1 && is_trunk_moe(il) && is_trunk_moe(il + 1)) return true;
+    }
+    return false;
 }
 
 static RunConfig base(const std::string & model) {
@@ -252,6 +277,7 @@ int main(int argc, char ** argv) {
         return 2;
     }
     const std::string model = argv[1];
+    const bool adjacent_moe = has_adjacent_moe_layers(model);
 
     // resident reference
     RunConfig resident = base(model);
@@ -654,7 +680,7 @@ int main(int argc, char ** argv) {
         const PredictorStats & self = r.summary.predict_self;
         const PredictorStats & stale = r.summary.predict_stale;
         const PredictorStats & prev = r.summary.predict_prev;
-        if (!r || self.rows == 0 || stale.rows == 0 || prev.rows == 0) {
+        if (!r || self.rows == 0 || (adjacent_moe && stale.rows == 0) || prev.rows == 0) {
             std::printf("[FAIL] G9b probe scored nothing (self=%lld stale=%lld prev=%lld routings)\n", self.rows,
                         stale.rows, prev.rows);
             ++fails;
@@ -702,7 +728,9 @@ int main(int argc, char ** argv) {
     // fired would pass G10a vacuously. spec_experts counts what the speculative path fully read.
     {
         RunResult r = run(ppf);
-        if (!r || r.summary.moe_spec_experts <= 0) {
+        if (r && !adjacent_moe) {
+            std::printf("[N/A ] G10b predict-prefetch: no two adjacent MoE blocks, nothing to predict forward\n");
+        } else if (!r || r.summary.moe_spec_experts <= 0) {
             std::printf("[FAIL] G10b predict-prefetch speculated nothing (spec_experts=%lld)\n",
                         r.summary.moe_spec_experts);
             ++fails;
@@ -829,7 +857,9 @@ int main(int argc, char ** argv) {
     }
     {
         RunResult r = run(ra_live);
-        if (!r || s_ra_live.empty() || r.summary.route_ahead_overridden <= 0) {
+        if (r && !s_ra_live.empty() && !adjacent_moe) {
+            std::printf("[N/A ] G14b route-ahead(1): no two adjacent MoE blocks, nothing to commit ahead\n");
+        } else if (!r || s_ra_live.empty() || r.summary.route_ahead_overridden <= 0) {
             std::printf("[FAIL] G14b route-ahead(1) must commit routings and generate (committed=%lld, empty=%d)\n",
                         r ? r.summary.route_ahead_overridden : -1, (int) s_ra_live.empty());
             ++fails;
