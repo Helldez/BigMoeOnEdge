@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.25.0] - unreleased
+## [0.25.0] - 2026-09-28
 
 ### Added
 - **Nemotron 3 / 3.5 MoE (`nemotron_h_moe`), the third expert layout: gate-less.** Each expert is
