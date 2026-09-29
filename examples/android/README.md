@@ -19,6 +19,19 @@ research harness and keeps the app a thin driver over the CLI.
    This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-cli.so` and the
    `libllama`/`libggml` shared libraries.
 
+   For **Prefill on the NPU** the engine needs the Hexagon backend, which builds inside upstream's
+   Snapdragon toolchain container instead (it carries the Hexagon SDK), then stages the same way:
+
+   ```bash
+   docker run --rm -v <repo>:/workspace ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
+       bash /workspace/scripts/build-hexagon-android.sh
+   powershell -File ../../scripts/stage-hexagon-jnilibs.ps1
+   ```
+
+   The release APK is built this way by CI, with a skel for every NPU generation the backend
+   supports (v73 to v81). A local APK built with `build-android.ps1` has no Hexagon backend: its NPU
+   switch is shown disabled, and ignored if a previous install saved it on.
+
 2. Build and install the APK. Open this folder in Android Studio, or use the committed
    Gradle wrapper directly. The app has two distribution flavors (see below); build the one
    you want:
@@ -27,6 +40,9 @@ research harness and keeps the app a thin driver over the CLI.
    ./gradlew assembleDevDebug
    adb install app/build/outputs/apk/dev/debug/app-dev-debug.apk
    ```
+
+   The app's pure-Kotlin rules (catalog status and the like) have JVM unit tests under
+   `app/src/test`; CI runs them, and so does `./gradlew testDevDebugUnitTest`.
 
    Published sideload builds are signed with a stable key instead, so an update installs over
    the previous one rather than being refused. That needs a `keystore.properties` next to `app/`
@@ -61,10 +77,11 @@ check). Nothing below needs a storage permission except the last option.
 
 1. **Built-in catalog** (both flavors) — the "Get a model" card offers the models this engine
    is measured on, each a single tap: **Qwen3-30B-A3B-Q4_K_M** (~18.6 GB, the reference model),
-   **Qwen3.6-35B-A3B-Q4_K_M** (~22.3 GB, a hybrid attention/SSM MoE, comfortably past device RAM)
-   and **Gemma-4-26B-A4B-it-Q4_K_M** (~17 GB). Downloads run in a foreground worker, survive the
-   app being killed, resume an interrupted transfer instead of restarting, and appear in the
-   picker when done.
+   **Qwen3.6-35B-A3B-Q4_K_M** (~22.3 GB, a hybrid attention/SSM MoE, comfortably past device RAM),
+   **Gemma-4-26B-A4B-it-Q4_K_M** (~17 GB) and **Nemotron-3.5-Lightning-30B-A3B-Q4_0** (~18.9 GB,
+   a hybrid Mamba2/attention MoE with gate-less experts, from ggml-org). Downloads run in a
+   foreground worker, survive the app being killed, resume an interrupted transfer instead of
+   restarting, and appear in the picker when done.
 2. **Any other model** — under **Other model**, paste a direct gguf URL (e.g. a Hugging Face
    `…/resolve/main/model.gguf` link), or pick a `.gguf` already on the device to import it.
 
@@ -95,7 +112,7 @@ check). Nothing below needs a storage permission except the last option.
    adb shell mv /data/local/tmp/shardllm /data/local/tmp/bmoe
    ```
 
-### Sharded models (gpt-oss-120b, DeepSeek V4 Flash)
+### Sharded models (gpt-oss-120b, DeepSeek V4 Flash, Qwen3.8-Flash-Next)
 
 Models above Hugging Face's 50 GB per-file limit ship as several shard files
 (`-00001-of-0000N.gguf`). The engine streams a split set natively, so these download in-app
@@ -111,7 +128,27 @@ the first one:
 adb push DeepSeek-V4-Flash-0731-UD-IQ2_M-0000*-of-00003.gguf /data/local/tmp/bmoe/
 ```
 
-Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk.
+Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk, Qwen3.8-Flash-Next UD-IQ3_XXS ~82 GB
+and its Q2_K build ~80 GB.
+
+Qwen3.8-Flash-Next needs **Dense weights = Pinned (dma-buf)** in Settings. Its dense side is 4.3 GB
+and every token walks it: with Anon the kernel swaps it to zram and single tokens stall for 10-20 s,
+with Mmap it is refaulted from flash every token. Its 51B n-gram table is held back automatically and
+stays mmap'd whatever the setting; the engine says so on stderr at load. Keep the expert cache at
+1000-1500 MiB on a 12 GB phone: the pinned dense set leaves no room for more.
+
+The catalog also offers a **Q2_K build of Qwen3.8-Flash-Next** (DevQuasar) whose dense side is at
+2-4 bit: 2.4 GB pinned instead of 4.3, which is ~2 GB the expert cache can have back. It is a plain
+`llama-quantize` build without an importance matrix, so its experts are coarser than the UD-IQ3_XXS
+ones; pick it when the cache, not expert precision, is what limits the phone. Every published dynamic
+quant of this model keeps the dense side at 5-8 bit whatever its overall size, which is why the two
+builds sit side by side.
+
+**Stream row-gathered tables** takes ~500 MiB more off that pinned set on this model, and 515 MiB
+on Qwen3.6: the token embedding table is read one row per token, so it does not need to be in
+RAM at all. The reply is identical either way. It is off by default until a long run on a phone
+says whether the RAM it hands back is worth the reads, which is exactly the kind of thing this
+app exists to find out.
 
 ## Expected numbers
 
@@ -122,12 +159,32 @@ sweep point from the benchmark protocol, not the app default: the app ships a fi
 expert cache. See `../../docs/benchmark-method.md` for the full procedure and the cache/thread
 sweep.
 
+## Choose from options
+
+The **Choose from options** switch on the chat screen turns the prompt into a question and adds a
+field for options, one per line. The model picks one without writing an answer: the options are
+lettered, the whole request is one prefill with no decode, and each option comes back with the
+probability the model put on it (they need not add up to 100%; the rest is the model being unsure).
+Asking the same question again with other options reuses the question instead of reading it again.
+A Choose turn ends the chat conversation, so the next chat message starts a new one. The session
+always accepts these requests, so switching between Chat and Choose never reloads the model. The
+engine side is [docs/decide.md](../../docs/decide.md).
+
 ## How Settings are organised
 
 Each category shows the recommended configuration first and folds everything else into a collapsed
 **Experimental** group: the levers measured on one device, measured once, or still owed a
 measurement. They ship in the release build deliberately, because testing them on hardware other
 than the one test phone is what this app is for.
+
+The **NPU** section holds **"Prefill on the NPU (Snapdragon only)"** (`--prefill-device HTP0`) and
+its loader threads. It is off by default and sits apart from Experimental because it is a different
+processor with its own requirements: a Snapdragon with a Hexagon NPU of generation v73 or newer (8 Gen
+2 onwards), and a model the NPU kernels take (Q4_0, Q8_0, MXFP4, or a Q4_K_M; not the Q3 and Q2
+builds). On a phone without the NPU the switch is shown disabled with the reason. It runs the prompt
+on the NPU and keeps decode on the CPU, and it widens the prompt batch to 2048 tokens, because each
+batch reads the experts it routes to from flash once; the shorter the prompt, the fewer it reads. If the NPU does not open (an
+older Snapdragon), the prompt simply runs on the CPU. See `../../docs/npu-prefill.md`.
 
 Descriptions in the UI say what a setting does, without measured figures or flag names, because a
 number needs the device, the model and the day beside it to be worth anything. The mapping to the
@@ -144,3 +201,17 @@ Two worth knowing before you turn them on:
 - **"Decide the experts early"** (`--route-ahead`) commits each layer's routing before that layer
   runs, so the reads can never be wasted. It changes the reply, and it is refused alongside guessing
   ahead. See `../../docs/route-ahead.md`.
+- **"Stream row-gathered tables"** (`--row-stream`) serves the token embedding table out of flash
+  instead of RAM. Lossless, and which tables it applies to is read off the model's own graph, so
+  on a model where none qualify it does nothing. See `../../docs/row-gathered-tables.md`.
+- **"Release the model mapping"** (`--release-mmap`) hands the model file's mapping back to the
+  kernel once every weight has been copied into the app's own memory, so it needs **Dense weights**
+  on Anon or Pinned and is disabled otherwise. Lossless. The mechanism that makes it worth +46% on
+  a Windows desktop does not exist here — on f2fs the read lanes measure the same either way — but
+  keeping a 20 GB mapping registered costs a kernel under memory pressure, and dropping it took
+  ~9% off CPU per token. Two 48-token cells on a device that spreads 20%: a direction, not a
+  number, which is why it is off by default.
+- **"Prefer cached experts"** (`--expert-substitute`) steers each routing toward experts already
+  in RAM, so the same number of experts runs but fewer are read from flash. It changes the reply,
+  and past 20% the reply keeps reading well while the model behind it is much worse: judge it on
+  answers you can check. See `../../docs/cache-aware-substitution.md`.

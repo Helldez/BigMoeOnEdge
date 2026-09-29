@@ -92,6 +92,15 @@ object ModelCatalog {
             blurb = "3B active of 35B. Hybrid attention/SSM, comfortably past RAM.",
         ),
         Entry(
+            title = "Nemotron-3.5-Lightning-30B-A3B",
+            quant = "Q4_0",
+            fileName = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+            approxBytes = 18_898_091_584L,
+            url = "https://huggingface.co/ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF/resolve/main/" +
+                "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf?download=true",
+            blurb = "3B active of 30B. Hybrid Mamba2/attention, gate-less experts.",
+        ),
+        Entry(
             title = "Gemma-4-26B-A4B-it",
             quant = "Q4_K_M",
             fileName = "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
@@ -153,6 +162,88 @@ object ModelCatalog {
                 ),
             ),
         ),
+        Entry(
+            title = "Qwen3.8-Flash-Next",
+            quant = "UD-IQ3_XXS",
+            fileName = "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+            approxBytes = 81_961_823_936L,
+            url = null,
+            // The dense side is 4.3 GB and is walked every token, so on a 12 GB phone this one
+            // runs only with the dense weights pinned (dma-buf); anon swaps, mmap refaults. The
+            // 51B n-gram table stays mmap'd on its own — see docs/android-memory.md.
+            blurb = "6B active of 125B, the Qwen4 preview. ~82 GB on disk; needs Pinned dense weights.",
+            shards = listOf(
+                Shard(
+                    "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf",
+                    "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ3_XXS/" +
+                        "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf?download=true",
+                    10_946_624L,
+                ),
+                Shard(
+                    "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf",
+                    "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ3_XXS/" +
+                        "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf?download=true",
+                    49_567_921_344L,
+                ),
+                Shard(
+                    "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf",
+                    "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ3_XXS/" +
+                        "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf?download=true",
+                    32_382_955_968L,
+                ),
+            ),
+        ),
+        Entry(
+            title = "Qwen3.8-Flash-Next",
+            quant = "Q2_K",
+            fileName = "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00001-of-00006.gguf",
+            approxBytes = 80_447_449_856L,
+            url = null,
+            // The same model with the DENSE side at 2-4 bit: 2.4 GB pinned instead of the UD file's
+            // 4.3 GB, on a phone where that set is walked every token and is what caps the expert
+            // cache. A plain llama-quantize build (no importance matrix), so its experts are coarser
+            // than the UD-IQ3_XXS ones; the trade is RAM for the cache against expert quality. The
+            // published dynamic quants all keep the dense side at 5-8 bit, whatever their size.
+            blurb = "Same model, dense side at 2-4 bit: 2.4 GB pinned instead of 4.3. ~80 GB on disk.",
+            shards = listOf(
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00001-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00001-of-00006.gguf?download=true",
+                    535_376_896L,
+                ),
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00002-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00002-of-00006.gguf?download=true",
+                    28_800_138_432L,
+                ),
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00003-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00003-of-00006.gguf?download=true",
+                    13_998_686_336L,
+                ),
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00004-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00004-of-00006.gguf?download=true",
+                    13_809_369_312L,
+                ),
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00005-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00005-of-00006.gguf?download=true",
+                    13_782_644_992L,
+                ),
+                Shard(
+                    "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00006-of-00006.gguf",
+                    "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/" +
+                        "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00006-of-00006.gguf?download=true",
+                    9_521_233_888L,
+                ),
+            ),
+        ),
     )
 
     /**
@@ -176,7 +267,11 @@ object ModelCatalog {
         // still in flight makes the whole entry DOWNLOADING: the set is downloaded sequentially,
         // so exactly one transfers at a time but the entry is one unit of progress to the user.
         e.shards.isNotEmpty() -> when {
-            e.fileName in present || e.shards.all { it.fileName in present } -> Status.ON_DEVICE
+            // The legacy-name branch must not fire when fileName IS the first shard: that file
+            // lands in seconds and would mark the whole set on-device while shards 2..N are still
+            // in flight (Run on an incomplete set, and no Download button left to resume it).
+            (e.fileName in present && e.shards.none { it.fileName == e.fileName }) ||
+                e.shards.all { it.fileName in present } -> Status.ON_DEVICE
             e.shards.any { it.fileName in downloading } -> Status.DOWNLOADING
             else -> Status.AVAILABLE
         }

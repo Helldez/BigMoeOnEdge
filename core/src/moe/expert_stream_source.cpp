@@ -1,5 +1,7 @@
 #include "expert_stream_source.h"
 
+#include "row_stream.h"
+
 #include "ggml.h"
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
 #include "ggml-cpu.h" // ggml_cpu_set_expert_ready_hook (fork-only)
@@ -95,8 +97,23 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // had already happened.
         if (cfg.dense_weights == DenseWeightsMode::Anonymous || cfg.dense_weights == DenseWeightsMode::Pinned) {
             uint64_t dense_pending = 0;
-            for (const DenseTensorRef & d : dense_tensors_)
-                if (d.tensor) dense_pending += d.size;
+            // The same rule dense_.init applies below: a tensor larger than what is available is
+            // never converted, it stays mmap'd (qwen4exp's ~28.8 GB n-gram table). Counting it here
+            // would reserve the whole of RAM for a conversion that will not happen and size the
+            // cache to nothing.
+            for (const DenseTensorRef & d : dense_tensors_) {
+                if (!d.tensor || d.size > avail) continue;
+                // Nor is a row-gathered table converted: it costs its window, not its size, and
+                // reserving the difference would hand the cache back exactly what this policy freed.
+                bool row = false;
+                for (const DenseTensorRef & r : row_tensors_)
+                    if (r.tensor == d.tensor) {
+                        row = true;
+                        break;
+                    }
+                dense_pending += row ? 0 : d.size;
+            }
+            if (!row_tensors_.empty()) dense_pending += row_budget_ ? row_budget_ : RowStream::default_budget_bytes;
             const uint64_t deduct = std::min(avail, dense_pending);
             if (deduct > 0) {
                 avail -= deduct;
@@ -188,6 +205,14 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
         if (!readers_.back()->open(sp, io_threads_, cfg.o_direct, align_, bounce_cap)) return false;
     }
+    // Each shard resolved direct for itself at open — the platform's answer plus the open-time
+    // verify — so the run-level fact is the weakest shard: a mixed run must not be advertised as
+    // fully direct, and a metadata-only first shard that never carried an expert read must not
+    // flatter the shards that do. Settled here, before any worker thread exists; stats() reads it
+    // cross-thread for the rest of the run.
+    effective_direct_ = true;
+    for (const auto & r : readers_)
+        effective_direct_ = effective_direct_ && r->direct();
     for (const LayerExperts & L : layers_) {
         if (!L.bound) continue;
         for (int p = 0; p < MoeRecipe::max_exps; ++p)
@@ -214,7 +239,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         async_gen_.store(0);
         cur_il_.store(-1);
         fatal_.store(false);
-        stall_ns_.store(0);
+        stall_union_.reset();
         batch_flag_gen_ = 0;
         staged_.reserve(n_expert_);
         texp_.clear();
@@ -246,6 +271,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges(readers_.size());
         for (size_t s = 0; s < readers_.size(); ++s)
             ranges[s] = DenseWeights::byte_ranges(std::move(exp[s]), readers_[s]->file_size());
+        dense_.set_row_gathered(std::move(row_tensors_), row_budget_);
         if (!dense_.init(cfg.dense_weights, shard_paths, align_, std::move(ranges), std::move(dense_tensors_))) {
             std::fprintf(stderr, "bmoe: dense-weights init failed\n");
             return false;
@@ -260,14 +286,22 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     for (int lane = first_worker_lane; lane < io_threads_; ++lane)
         io_pool_.emplace_back(&ExpertStreamSource::io_worker, this, lane);
 
-    // Each shard verified O_DIRECT for itself, so report the weakest: a metadata-only first shard
-    // is too short to verify at all and would flatter the number for the shards carrying experts.
-    bool all_direct = true;
-    for (const auto & r : readers_)
-        all_direct = all_direct && r->direct();
+    // effective_direct_ (set where the readers opened) is the run's o_direct fact — see above.
     std::fprintf(stderr, "bmoe: expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB shards=%zu\n",
-                 n_expert_, (int) all_direct, io_threads_, cache_max_ >> 20, readers_.size());
+                 n_expert_, (int) effective_direct_, io_threads_, cache_max_ >> 20, readers_.size());
     return true;
+}
+
+bool ExpertStreamSource::reopen_readers() {
+    std::lock_guard<std::mutex> lk(io_mtx_);
+    if (!jobs_.empty() || !spec_jobs_.empty()) {
+        std::fprintf(stderr, "bmoe: reopen_readers refused: reads are queued\n");
+        return false;
+    }
+    bool ok = true;
+    for (auto & r : readers_)
+        ok = r->reopen() && ok;
+    return dense_.reopen_readers() && ok;
 }
 
 // ── one aligned slice read on a lane ────────────────────────────────────────────────
@@ -670,6 +704,17 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
     // every resident entry (coldest first) is a valid eviction target.
     while (cresident_ > cache_max_ && ctail_ != -1)
         evict_tail();
+}
+
+size_t ExpertStreamSource::worst_cycle_bytes(int top_k) const {
+    // entry_bytes prices a layer's experts uniformly (one entry = every projection of one expert
+    // of that layer), so the worst token demands top_k entries from every bound layer. Clamped
+    // at n_expert_: a top_k wider than the bank asks for entries that do not exist.
+    if (top_k <= 0) return 0;
+    size_t cycle = 0;
+    for (int il = 0; il < (int) layers_.size(); ++il)
+        if (layers_[il].bound) cycle += entry_bytes(il) * (size_t) std::min(top_k, n_expert_);
+    return cycle;
 }
 
 // ── LRU plumbing ────────────────────────────────────────────────────────────────────
@@ -1294,15 +1339,17 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
     const uint32_t want = async_gen_.load(std::memory_order_relaxed);
     if (ready_[idx].gen.load(std::memory_order_acquire) == want) return; // already resident
 
-    const auto t0 = clock_t_::now();
+    // The stall interval opens the moment the need is unmet — before the spin, since the spin is
+    // already waiting — and closes on whichever exit this thread takes. Union accounting, not a
+    // per-thread sum: see StallUnion.
+    stall_union_.enter();
     // Short spin first: a slice usually lands within microseconds, cheaper than a syscall. The
     // beat is a pause instruction, not yield() — 2048 yields burnt up to a millisecond of
     // sched_yield churn per genuinely slow slice, stealing CPU from the I/O lanes and the
     // sibling compute threads that would have finished the slice sooner.
     for (int s = 0; s < 256; ++s) {
         if (ready_[idx].gen.load(std::memory_order_acquire) == want || fatal_.load(std::memory_order_acquire)) {
-            stall_ns_.fetch_add(
-                (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
+            stall_union_.exit();
             return;
         }
         cpu_relax();
@@ -1320,7 +1367,7 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
         });
     }
     ready_waiters_.fetch_sub(1, std::memory_order_seq_cst);
-    stall_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
+    stall_union_.exit();
 }
 
 void ExpertStreamSource::enable_overlap_hook() {
@@ -1349,9 +1396,10 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.cache_hits = chits_;
     s.cache_lookups = clookups_;
     s.cache_resident_bytes = (uint64_t) cresident_;
-    s.stall_seconds = stall_ns_.load() / 1e9;
+    s.stall_seconds = stall_union_.total_ns() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
+    s.o_direct = effective_direct_;
     s.evictions = evictions_;
     s.rereads = rereads_;
     s.drain_wait_seconds = drain_wait_ns_ / 1e9;
@@ -1410,6 +1458,7 @@ void ExpertStreamSource::shutdown() {
     // contract as the slot and LRU buffers freed above.
     dense_.shutdown();
     dense_tensors_.clear();
+    row_tensors_.clear();
     readers_.clear(); // closes every shard's lane fds and frees the bounces
     jobs_.clear();
     layers_.clear();

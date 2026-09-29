@@ -19,6 +19,7 @@
 #include "../io/file_reader.h"
 #include "../io/platform_io.h"
 #include "bmoe/config.h" // DenseWeightsMode
+#include "bmoe/row_source.h"
 
 #include <cstdint>
 #include <memory>
@@ -30,6 +31,8 @@ struct ggml_tensor;
 
 namespace bmoe {
 
+class RowStream;
+
 // One dense weight tensor: where its bytes live in the gguf, and the tensor whose ->data we rebind.
 // Read whole and contiguous (`size` bytes from `file_off` in shard `file_idx`), unlike an expert slice.
 struct DenseTensorRef {
@@ -37,11 +40,20 @@ struct DenseTensorRef {
     uint64_t file_off = 0;
     uint64_t size = 0;
     int file_idx = 0; // which shard file holds the bytes (0 for a single-file model)
+    // Other tensor objects over the SAME file bytes, which a residency policy must rebind together
+    // with `tensor` or leave together where they are. A tied output head is the case that produces
+    // them: llama.cpp builds the head from the token embedding table, so the model holds two
+    // ggml_tensors, identically named, over one range. Rebinding one and not the other leaves the
+    // graph reading the model's mmap every token, and makes the range unsafe to release. Empty for
+    // every ordinary weight, so the common path allocates nothing.
+    std::vector<ggml_tensor *> aliases;
 };
 
 class DenseWeights {
 public:
-    DenseWeights() = default;
+    // Both defined in the .cpp: the row policy is an incomplete type here, and a defaulted
+    // constructor in the header would have to instantiate its deleter.
+    DenseWeights();
     ~DenseWeights();
 
     DenseWeights(const DenseWeights &) = delete;
@@ -54,14 +66,38 @@ public:
     byte_ranges(std::vector<std::pair<uint64_t, uint64_t>> expert_ranges, uint64_t file_size);
 
     // Apply `mode` for the model files `paths` (per-shard dense `ranges` precomputed via byte_ranges;
-    // `tensors` needed only for Anonymous/Pinned). `align` is the O_DIRECT block size. Runs once at
-    // load, before the streamer's workers start (Anonymous rebinds tensor->data on the caller's
-    // thread). Returns false only on a hard Anonymous failure (alloc/read); Mmap and Warmed cannot fail.
+    // `tensors` is what Anonymous/Pinned read, and what every mode checks for a tensor too large to
+    // be resident — see hold_back_oversized). `align` is the O_DIRECT block size. Runs once at load,
+    // before the streamer's workers start (Anonymous rebinds tensor->data on the caller's thread).
+    // Returns false only on a hard Anonymous failure (alloc/read); Mmap and Warmed cannot fail.
     bool init(DenseWeightsMode mode,
               const std::vector<std::string> & paths,
               size_t align,
               std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges,
               std::vector<DenseTensorRef> tensors);
+
+    // Tables the graph only ever ROW-GATHERS (discovered by RouterHook, never named here): instead
+    // of being made resident, they are bound to reserved address space and served from flash a row
+    // at a time, inside `budget_bytes` of window. Call BEFORE init. A table taken over leaves the
+    // resident dense set entirely — not read, not rebound, not warmed, not sampled — exactly as an
+    // oversized one does, because a sensor that counted it would report a set that is resident by
+    // design only in part. If the takeover fails, the tables silently keep the mode the run asked
+    // for: this is a residency optimisation, never a reason for a run not to start.
+    void set_row_gathered(std::vector<DenseTensorRef> tables, uint64_t budget_bytes);
+
+    // The row policy, once init has run: null when no table qualified or the takeover failed. The
+    // engine's graph adapter needs it to make rows present before a gather node runs.
+    IRowSource * row_source() const;
+
+    // Whether any tensor this module was given still reads through the model file's mapping once
+    // init has run: every tensor under Mmap/Warmed, and under Anonymous/Pinned the ones held back
+    // as oversized. Row-gathered tables are served from our own reader, not the mapping.
+    bool file_mapping_in_use() const;
+
+    // Reopen the readers still in service after init: the row policy's, if any (the dense copy's
+    // own readers have done their one job). See FileReader::reopen for why this exists.
+    bool reopen_readers();
+    RowSourceStats row_stats() const;
 
     // Sample how much of the dense set the kernel still has in RAM (mincore), setting resident_frac().
     // Anonymous samples the anon buffers; Mmap/Warmed sample the mmap ranges via /proc/self/maps.
@@ -74,6 +110,15 @@ public:
     static constexpr int sample_pages = 256; // stratified probe points across the dense bytes
 
 private:
+    // A dense tensor larger than the memory the kernel says is available cannot be resident under
+    // any mode. Moves such tensors from `tensors_` to `mapped_`, carves their bytes out of `ranges_`
+    // (so neither the warm sweep nor the sensor treats them as dense the run could hold), and says so.
+    void hold_back_oversized();
+    // Hand the qualifying tables to the row policy and take them out of the resident dense set.
+    void take_row_gathered();
+    // Random-access advice on the mmap of every held-back tensor: a fault brings in one page, not a
+    // readahead window the gather will never touch.
+    void advise_random_mapped();
     bool read_anonymous(size_t align);
     void warm();
     void drop_mmap_copies(size_t page);
@@ -93,6 +138,11 @@ private:
     // one of which is populated for a given run.
     std::vector<std::unique_ptr<FileReader>> readers_;
     std::vector<DenseTensorRef> tensors_;
+    std::vector<DenseTensorRef> mapped_; // held back by hold_back_oversized: mmap'd under every mode
+    // Row-gathered tables: what was asked for, the window budget, and the policy that owns them.
+    std::vector<DenseTensorRef> row_pending_;
+    uint64_t row_budget_ = 0;
+    std::unique_ptr<RowStream> rows_;
     std::vector<void *> bases_;
     std::vector<void *> bufs_;
     std::vector<pio::PinnedAlloc> pinned_;

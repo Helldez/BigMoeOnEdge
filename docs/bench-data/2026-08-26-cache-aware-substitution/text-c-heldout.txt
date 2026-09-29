@@ -1,0 +1,19 @@
+Bread dough rises because yeast converts sugars into carbon dioxide, and the gluten network formed by kneading traps that gas in thousands of small pockets. Temperature governs the whole process: a dough left at four degrees ferments for a day and develops acids that a two-hour rise at room temperature never produces, which is why slow-fermented loaves taste sour and keep longer. Salt slows the yeast down and tightens the gluten at the same time, so a baker who forgets it gets a dough that rises fast and then collapses.
+
+The oven does something different again. In the first minutes the trapped gas expands and the water in the dough turns to steam, pushing the loaf upward before the crust sets. Once the surface reaches roughly a hundred and forty degrees the sugars and amino acids begin to react and the crust browns and takes on flavour it did not have before.
+
+A matrix is invertible exactly when its determinant is non-zero, and for a two by two matrix the inverse is the adjugate divided by that determinant. The adjugate of a matrix with entries a, b, c, d is the matrix with entries d, minus b, minus c, a. Multiplying the two gives the determinant times the identity, which is the whole proof.
+
+def flatten(nested):
+    out = []
+    stack = [iter(nested)]
+    while stack:
+        it = stack[-1]
+        for item in it:
+            if isinstance(item, list):
+                stack.append(iter(item))
+                break
+            out.append(item)
+        else:
+            stack.pop()
+    return out

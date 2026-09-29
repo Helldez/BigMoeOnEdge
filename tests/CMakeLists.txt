@@ -1,10 +1,16 @@
 # Byte-identity gates. The tiny synthetic models are generated at test time by
 # scripts/make-tiny-moe.py (requires python3 with the gguf package); if it is
 # unavailable the tests are skipped rather than failing the build. One model per expert
-# layout the streamer supports: qwen3moe (split gate/up/down) and gemma4 (fused gate_up).
+# layout the streamer supports: qwen3moe (split gate/up/down), gemma4 (fused gate_up) and
+# nemotron_h_moe (gate-less up/down).
 
 add_executable(bmoe_moe_gates moe_gates.cpp)
 target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
+# G16 probes the loopback rpc-server port before registering it.
+if(WIN32)
+    target_link_libraries(bmoe_moe_gates PRIVATE ws2_32)
+endif()
+target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 
 # Reasoning-parser wiring regression (issue #49). Needs no model — it drives the extracted
 # bmoe::detail::build_parse_params directly — so it runs unconditionally, unlike the gates below.
@@ -36,17 +42,46 @@ add_executable(bmoe_config_test config_test.cpp)
 target_link_libraries(bmoe_config_test PRIVATE bmoe_core)
 add_test(NAME config_validate COMMAND bmoe_config_test)
 
+# release_file_mappings: on Windows it must find and drop this process's own view + section of a
+# file and leave the placeholders in place; on POSIX it must report unsupported and touch nothing.
+add_executable(bmoe_mapping_release_test mapping_release_test.cpp)
+target_link_libraries(bmoe_mapping_release_test PRIVATE bmoe_core)
+target_include_directories(bmoe_mapping_release_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
+add_test(NAME mapping_release COMMAND bmoe_mapping_release_test)
+
 # The n-gram draft matcher. Pure policy over token ids (no llama.cpp, no model), so the drafting
 # decision is covered exhaustively here; what it costs is a bench question, not a test.
 add_executable(bmoe_ngram_test ngram_test.cpp)
 target_link_libraries(bmoe_ngram_test PRIVATE bmoe_core)
 add_test(NAME ngram_draft COMMAND bmoe_ngram_test)
 
+# The interval-union stall clock. Injected timestamps, no wall clock, so overlap/nesting/
+# separation and the open-interval snapshot rule are verified exactly (issue #98).
+add_executable(bmoe_stall_union_test stall_union_test.cpp)
+target_link_libraries(bmoe_stall_union_test PRIVATE bmoe_core)
+target_include_directories(bmoe_stall_union_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
+add_test(NAME stall_union COMMAND bmoe_stall_union_test)
+
+# The CSV `# summary` trailer serialization. Drives the sink directly with a filled RunSummary —
+# no model, no llama.cpp — so the emitted key names and units are pinned by a test rather than by
+# whatever script last read them. The prefill keys must match BMOE_DONE's, token for token.
+add_executable(bmoe_csv_summary_test csv_summary_test.cpp)
+target_link_libraries(bmoe_csv_summary_test PRIVATE bmoe_core)
+add_test(NAME csv_summary COMMAND bmoe_csv_summary_test)
+
+# decide()'s policy (the prompt split, choice checks and scoring, when the prefix state is
+# restored, stored or left alone) over a scripted fake backend. No model, no llama.cpp, so it runs
+# unconditionally; the same path on a real model is gate G18.
+add_executable(bmoe_decide_test decide_test.cpp)
+target_link_libraries(bmoe_decide_test PRIVATE bmoe_core)
+target_include_directories(bmoe_decide_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine/decide)
+add_test(NAME decide_policy COMMAND bmoe_decide_test)
+
 find_program(PYTHON3 NAMES python3 python)
 
 if(PYTHON3)
     # arch → (fixture id, gguf filename). Each gets a generate fixture + a gate run.
-    foreach(spec "qwen3moe" "gemma4")
+    foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe")
         set(_model "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-${spec}.gguf")
         set(_fixture "TINY_MOE_MODEL_${spec}")
 

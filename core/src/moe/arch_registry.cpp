@@ -49,6 +49,39 @@ static const MoeRecipe k_recipes[] = {
     // inside llama.cpp and invisible to the streaming seam. Models this size ship as multi-shard
     // ggufs; the streamer resolves each expert tensor to its (shard, offset) — see gguf_offsets.
     {"deepseek4", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    // bailingmoe3 (Ling 3.0, e.g. Ling-3.0-flash 127B-A5B) combines every pattern above and adds
+    // nothing new to the seam: 512 routed experts with the standard split suffixes (one row),
+    // top-k with a per-expert bias (exp_probs_b, the lfm2moe pattern), an always-on shared expert
+    // (ffn_*_shexp) that stays mmap-resident, leading dense blocks that never bind, and a trailing
+    // NextN/MTP block that names expert tensors but is not even loaded (llama.cpp defaults
+    // load_mtp=false), so its layer simply never streams. The hybrid KDA/MLA attention stack is
+    // dense-side machinery inside llama.cpp and invisible to the seam.
+    {"bailingmoe3", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    // qwen4exp (Qwen3.8-Flash-Next, 125B-A6B, the Qwen4 architecture preview) names its 512
+    // routed experts with the standard split suffixes, so the streaming path is one row. Its
+    // novelties all sit on the resident side of the seam: an always-on shared expert
+    // (ffn_*_shexp), a hybrid stack of gated-delta SSM blocks and sparse attention with its own
+    // indexer, and per-block hyper-connection tensors (hc_*).
+    //
+    // One resident tensor is worth naming because it dominates the model rather than the usual
+    // handful of megabytes: `per_layer_token_embd`, the n-gram embedding table, is a single 2-D
+    // tensor of 320,001,536 rows that carries 51.2 B of the model's parameters (~28.8 GB at
+    // IQ4_NL, about 43 % of a released quant). It matches no expert suffix and is not indexed by
+    // expert, so the streamer does not bind it and the dense policy maps it like any other
+    // non-expert weight. That makes the streamed fraction of this architecture unusually low —
+    // see docs/limitations.md.
+    {"qwen4exp", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    // nemotron_h_moe (NVIDIA Nemotron 3 / 3.5 MoE, e.g. Nemotron-3.5-Lightning-30B-A3B) is the
+    // third expert layout: no gate projection at all. Each expert is up -> ReLU^2 -> down, so a
+    // layer names two expert tensors and the tail slot is nullptr, as in the fused case. The
+    // stack is hybrid (Mamba2, attention and MoE blocks interleaved; only the MoE blocks bind),
+    // the router adds a per-expert bias before a sigmoid top-k (the lfm2moe pattern), and the
+    // resident side carries an always-on shared expert (ffn_*_shexp) and, on the models that
+    // have them, latent projections (ffn_latent_{down,up}) that narrow the experts' rows below
+    // n_embd; the stride is still read from the tensor. The trailing NextN/MTP block names
+    // expert tensors but is skipped at load (load_mtp is off). No two MoE blocks are adjacent,
+    // which leaves the forward predictors nothing to target (see docs/limitations.md).
+    {"nemotron_h_moe", {"ffn_up_exps", "ffn_down_exps", nullptr}},
 };
 
 static const int k_n_recipes = (int) (sizeof(k_recipes) / sizeof(k_recipes[0]));

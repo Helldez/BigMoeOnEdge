@@ -19,7 +19,9 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.compute_trace_layers = cfg.compute_trace_layers;
     sc.sampling = cfg.sampling; // greedy by default; opt-in stochastic decoding
     sc.moe = cfg.moe;
-    sc.spec = cfg.spec; // self-speculation (MTP head or n-gram lookup); off by default
+    sc.spec = cfg.spec;       // self-speculation (MTP head or n-gram lookup); off by default
+    sc.prefill = cfg.prefill; // prefill on an accelerator; off by default
+    sc.decide = cfg.decide;
     return sc;
 }
 

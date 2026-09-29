@@ -6,7 +6,10 @@ selected experts would get if the router split its mass evenly. Off by default.
 
 It is the second lossy knob in the engine, after
 [turbo top-k](../README.md#trading-quality-for-speed), and it exists because the first one
-spends quality in a place it does not have to.
+spends quality in a place it does not have to. Its upstream sibling,
+[cache-aware substitution](cache-aware-substitution.md), steers the routing toward resident experts
+before the question of paying for a miss arises; that page also explains why a cache-dependent
+policy has to be priced with `--ppl --ppl-step`, which applies to this one too.
 
 ## Why cache state belongs in the decision
 

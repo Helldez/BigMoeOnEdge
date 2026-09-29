@@ -216,6 +216,29 @@ effect cannot be excluded (the reversed pair is owed), and it is one device, one
 The general lesson outlives the flag: `compute_ms` has been absorbing zram decompression all along,
 so any earlier conclusion of the form *"this regime is compute-bound"* deserves re-examination.
 
+### A dense tensor larger than RAM
+
+Every mode above assumes the dense set fits. `qwen4exp` (Qwen3.8-Flash-Next) breaks that with one
+tensor: `per_layer_token_embd`, a 51B-parameter n-gram embedding table, ~28.8 GB at IQ4_NL, that the
+graph gathers sixteen rows from per token. No mode can hold it, and each would fail differently:
+`anon` asks for an allocation the OS kills the process over, `ahwb` hits the 2047 MiB dma-buf
+ceiling, `warm` would sweep 28.8 GB through a page cache that evicts it as it goes, and the residency
+sensor would report a dense set that can never be resident. So the engine applies one rule before
+any mode: a dense tensor larger than the kernel's `MemAvailable` is held back. It stays mmap'd, leaves
+the warm sweep and the sensor, and the auto cache budget does not reserve for a conversion that will
+not happen. One stderr line names what was held back.
+
+The held-back mapping also gets `MADV_RANDOM`. Default readahead brings in a window of hundreds of
+KiB per fault, right for a weight read whole and wrong by two orders of magnitude for a row gather:
+the neighbours are never touched and they take page cache the expert cache is competing for. With
+the advice a fault maps one page. Per token that is sixteen 4 KiB reads, under 1 % of a decode step;
+the cost that remains is prefill, where every prompt token faults its rows on the compute thread.
+Not measured on a device yet.
+
+The size bound is deliberate and the access shape is not the criterion: a row-gathered table that
+*fits* keeps its mode, because demand-faulting it costs more in prefill than reading it once at load
+(`token_embd` left mmap'd measured −16 % decode, [PR #135](https://github.com/Helldez/BigMoeOnEdge/pull/135)).
+
 ## Why restoring reclaimed pages cannot win
 
 `MADV_WILLNEED` on anon does swap them back in — but `read_swap_cache_async` puts them on the

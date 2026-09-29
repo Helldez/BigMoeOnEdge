@@ -217,6 +217,29 @@ int main() {
         expect_fail("a NaN threshold is rejected", c);
     }
 
+    // Cache-aware substitution: the same shape of contract as dropping — it needs a cache to have
+    // residency to prefer, and a margin outside [0, 1] has no meaning.
+    {
+        RunConfig c = ok_base();
+        c.moe.enabled = true;
+        c.moe.substitute_lambda = 0.15f;
+        expect_fail("substitution without a cache is rejected (nothing resident to prefer)", c);
+
+        c.moe.cache_mb = MoeStreamConfig::cache_min_mb;
+        c.moe.substitute_lambda = 0.0f;
+        expect_ok("substitution off is the default and valid", c);
+        c.moe.substitute_lambda = 0.15f;
+        expect_ok("a margin inside the range is valid", c);
+        c.moe.substitute_lambda = 1.0f;
+        expect_ok("the full range is valid", c);
+        c.moe.substitute_lambda = 1.01f;
+        expect_fail("a margin above the full range is rejected", c);
+        c.moe.substitute_lambda = -0.1f;
+        expect_fail("a negative margin is rejected", c);
+        c.moe.substitute_lambda = std::numeric_limits<float>::quiet_NaN();
+        expect_fail("a NaN margin is rejected", c);
+    }
+
     // n_ubatch: 0 follows the context; a value above it would reserve compute buffers for a batch
     // that cannot occur, which inverts the memory saving the knob exists for.
     {
@@ -314,6 +337,75 @@ int main() {
         expect_fail("the narrow ubatch is rejected with the n-gram source too", c);
         c.spec.source = DraftSource::none;
         expect_ok("the same narrow ubatch is fine without speculation", c);
+    }
+
+    // Prefill device: the rebind is only safe while device graphs and CPU graphs never share a width.
+    {
+        RunConfig c = ok_base();
+        c.prefill.device = "HTP0";
+        expect_ok("a prefill device with the default min_tokens is valid", c);
+        c.prefill.load_threads = 0;
+        expect_fail("no arena loader thread", c);
+        c.prefill.load_threads = PrefillDeviceConfig::load_threads_max + 1;
+        expect_fail("arena loaders above the cap", c);
+        c.prefill.load_threads = PrefillDeviceConfig::load_threads_max;
+        expect_ok("arena loaders at the cap", c);
+        c.prefill.load_threads = 8;
+        c.prefill.min_tokens = PrefillDeviceConfig::min_tokens_floor;
+        expect_ok("min_tokens at the floor is valid", c);
+        c.prefill.min_tokens = 1;
+        expect_fail("a one-token device graph would share the decode graph's shape", c);
+        c.prefill.min_tokens = c.n_ctx + 1;
+        expect_fail("min_tokens above n_ctx could never reach the device", c);
+        c.prefill.min_tokens = 32;
+        c.n_ubatch = 16;
+        expect_fail("a ubatch narrower than min_tokens sends no piece to the device", c);
+        c.n_ubatch = 32;
+        expect_ok("a ubatch exactly min_tokens wide reaches the device", c);
+        c.n_ubatch = 0;
+        c.moe.enabled = true;
+        expect_ok("prefill device with streaming (the expert arena)", c);
+        c.prefill.routed = true;
+        expect_ok("routed arena with streaming", c);
+        c.prefill.routed_full_frac = 0.0f;
+        expect_fail("routed_full_frac 0 would read every layer whole", c);
+        c.prefill.routed_full_frac = 1.5f;
+        expect_fail("routed_full_frac above 1", c);
+        c.prefill.routed_full_frac = 1.0f;
+        expect_ok("routed_full_frac 1 never falls back", c);
+        c.prefill.routed_full_frac = 0.85f;
+        c.moe.enabled = false;
+        expect_ok("routed (the default) is inert without streaming: there is no arena", c);
+        c.moe.enabled = true;
+        c.prefill.routed = false;
+        expect_ok("whole-layer arena (--no-prefill-routed)", c);
+        c.prefill.routed = true;
+        c.moe.row_stream = true;
+        expect_fail("prefill device with the row policy: its gathers happen on the host", c);
+        c.moe.row_stream = false;
+        c.moe.enabled = false;
+        c.spec.source = DraftSource::ngram;
+        expect_fail("prefill device with speculation breaks the width invariant", c);
+        c.spec.source = DraftSource::none;
+        c.decide.enabled = true;
+        expect_ok("prefill device with decide, prefix cache auto (resolved off)", c);
+        c.decide.prefix_cache = PrefixCacheMode::On;
+        expect_fail("prefill device with a forced decide prefix cache: the state is saved from its old place", c);
+        c.decide.prefix_cache = PrefixCacheMode::Off;
+        expect_ok("prefill device with the decide prefix cache off", c);
+        c.decide = DecideConfig{};
+        c.prefill.device.clear();
+        c.prefill.min_tokens = 1;
+        expect_ok("min_tokens is not checked while the prefill device is off", c);
+        expect_ok("routed (the default) is inert without a prefill device", c);
+        c.decide.probe_path = "probe.jsonl";
+        expect_fail("decide probe without decide", c);
+        c.decide.enabled = true;
+        c.moe.enabled = false;
+        expect_fail("decide probe with no eval callback (no streaming, no device)", c);
+        c.moe.enabled = true;
+        expect_ok("decide probe on a streamed session", c);
+        c.decide = DecideConfig{};
     }
 
     if (failures == 0) {

@@ -19,7 +19,7 @@ cmake_minimum_required(VERSION 3.21)
 # The version is declared here and nowhere else in the build: the engine reports it (bmoe-cli
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName.
-project(bigmoeonedge VERSION 0.19.0 LANGUAGES CXX)
+project(bigmoeonedge VERSION 0.27.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,6 +52,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     set(LLAMA_BUILD_COMMON  ON  CACHE BOOL "" FORCE)
     set(LLAMA_CURL          OFF CACHE BOOL "" FORCE)  # common's model-download path unused
     set(LLAMA_BUILD_MTMD    ON  CACHE BOOL "" FORCE)  # multimodal (mmproj) support
+    # The prefill-device gate (G16) needs a second device to move weights onto, and the one every
+    # host has is a loopback rpc-server fronting the CPU. A test fixture, not a feature: host test
+    # builds only (releases build without tests), no front-end accepts an RPC endpoint, and it is
+    # not forced: -DGGML_RPC=OFF still wins, and G16 then reports itself skipped.
+    if(BMOE_BUILD_TESTS AND NOT ANDROID)
+        set(GGML_RPC ON CACHE BOOL "ggml: use RPC")
+    endif()
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
 endif()
 

@@ -55,9 +55,15 @@ What follows from that:
   base by `file_off % align` so the destination inherits the file's misalignment) does not remove
   the spill, only its size. Not built: the win is a memcpy, the risk is the memory accounting the
   whole engine's budget rests on, and it cannot be judged without a device.
-- The remaining gap between the engine's effective rate and the drive's is **duty cycle, not
-  bandwidth**, and is not yet honestly sized: the ceiling itself falls by a third once the device
-  is hot, so engine and microbench must be measured interleaved at matched entry state. Owed.
+- **The gap between the engine's effective rate and the drive's was the model file's own mapping,
+  on Windows (2026-08-29).** This entry used to call it duty cycle and leave it unsized. It is
+  not duty cycle: while llama.cpp's section of the gguf is alive, NTFS serialises the streamer's
+  concurrent unbuffered reads, so four lanes deliver one lane's throughput — which is also the
+  real reason lanes and threads measured dead on this host, and why the serial path once read at
+  exactly the one-lane rate with four lanes open. `bmoe-iobench --mmap` reproduces it in one
+  cell and `--mmap --reopen-lanes` recovers it; `--release-mmap` is the engine's version and is
+  worth +46% decode on the desktop host, lossless. The same cells are flat on the phone, so this
+  is a platform defect, not a read-path one, and the phone's remaining gap is still unsized.
 
 ## Warm-up
 
@@ -116,19 +122,33 @@ than merged — a measured regression does not belong in the engine.
 The transferable lesson: a hit-rate curve is not a throughput argument. Any future policy has to
 be measured on device, however good its simulation.
 
-What is still worth doing here is **not** a policy but a guard. Global LRU's recency order is
-anti-correlated with the deterministic layer cycle, so below one token cycle it evicts precisely
-what it is about to read and the hit rate goes to **exactly 0 %** — reproduced on device at a
-budget the CLI accepts today. The worst-case cycle is computable at init from model shape alone,
-so refusing or warning on a budget under it costs almost nothing.
+What was still worth doing here was **not** a policy but a guard, and it has shipped. Global LRU's
+recency order is anti-correlated with the deterministic layer cycle, so below one token cycle it
+evicts precisely what it is about to read and the hit rate goes to **exactly 0 %** — reproduced on
+device at a budget the CLI accepts today. Since the worst-case cycle is computable at init from
+model shape alone, the engine now prices it there, records it as `cache_cycle_mb`, and warns when
+the resolved budget falls under it. It warns rather than refuses: the budget is legal and the run is
+byte-correct, it just cannot hit. See [cache-sizing.md](cache-sizing.md).
 
 ## More architectures
 
 `qwen3moe`, `qwen2moe`, `qwen35moe` (the hybrid attention/SSM family, e.g. Qwen3.6-35B-A3B),
-`gemma4` (merged `ffn_gate_up_exps` plus shared experts) and OpenAI `gpt-oss` (MXFP4, purely
-routed) are supported; other `build_moe_ffn` models are one recipe row each. The remaining
-frontier is architectures whose routing node is not the shared `ffn_moe_topk` — custom gating,
-which the capture/stream hook would need to learn. See [adding-a-model.md](adding-a-model.md).
+`gemma4` (merged `ffn_gate_up_exps` plus shared experts), OpenAI `gpt-oss` (MXFP4, purely
+routed) and `nemotron_h_moe` (gate-less `ffn_up_exps`/`ffn_down_exps`) are supported; other
+`build_moe_ffn` models are one recipe row each. The remaining frontier is architectures whose
+routing node is not the shared `ffn_moe_topk` — custom gating, which the capture/stream hook
+would need to learn. See [adding-a-model.md](adding-a-model.md).
+
+## Steering the routing toward what is resident — built, measured on the desktop
+
+`--expert-substitute` ([cache-aware-substitution.md](cache-aware-substitution.md)) re-ranks each
+decode routing toward the experts already in the cache, by a margin that is a fraction of the
+token's own score range. It is the mechanism of Skliar et al. (arXiv:2412.00099) with the cache in
+front of flash instead of DRAM, and on the desktop it is the strongest lever measured at its
+quality cost: half the flash bytes per token and +62% decode for a 1 to 4% perplexity increase at
+`0.15`. What it owes is the same device A/B as dropping, and a task-level quality check, since the
+desktop's flash share of a token is larger than the phone's and the throughput column will
+compress.
 
 ## Skipping reads the router barely wants — built, unmeasured
 

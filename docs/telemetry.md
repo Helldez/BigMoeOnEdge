@@ -26,17 +26,21 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   mgmt_ms` in serial, `wall_ms − stall_ms − mgmt_ms` under overlap. When that residual is the
   number in question, `--compute-trace` measures it directly instead (see [Decode
   traces](#decode-traces)) — at a cost that makes it a diagnostic, not telemetry.
-  `compute_ms` is **clamped at 0**: the subtraction can go slightly negative under overlap (where
-  `stall_ms` is a per-thread mean, not a critical path), and a negative compute would be nonsense.
-  That clamp means the wall-additive identity is not exact in the pathological case — a consumer
-  that recovers the flash-wait term as `wall_ms − compute_ms − mgmt_ms` gets `wall_ms − mgmt_ms`
-  when the clamp fires, over-attributing to flash. Read the wall-additive flash term straight from
-  `io_ms` (serial) / `stall_ms` (overlap) instead of inverting the residual.
-  Precisely: `stall_ms` is the summed per-thread block time divided by `n_threads`, which equals the
-  wall stall only if every compute thread blocks together. When one thread waits on an expert while
-  the others keep working it **under**-states the stall, and `compute_ms` — being the residual —
-  absorbs the difference. Read an attribution between compute and flash as approximate, and reach
-  for `--compute-trace` when the split itself is the question.
+  `compute_ms` is **clamped at 0** — a negative compute would be nonsense. That clamp means the
+  wall-additive identity is not exact in the pathological case — a consumer that recovers the
+  flash-wait term as `wall_ms − compute_ms − mgmt_ms` gets `wall_ms − mgmt_ms` when the clamp
+  fires, over-attributing to flash. Read the wall-additive flash term straight from `io_ms`
+  (serial) / `stall_ms` (overlap) instead of inverting the residual.
+  `stall_ms` is the **union of stalled intervals**: the cumulative wall time during which at least
+  one compute thread was blocked on a streamed expert. Overlapping waits count once, so it is the
+  critical-path quantity — one blocked thread already means the graph is not progressing. (It was
+  previously the summed per-thread block time divided by `n_threads`, a mean that equaled the wall
+  stall only if every compute thread blocked together and understated it whenever a minority of
+  threads did the waiting — with the difference silently landing in `compute_ms`.) The interval
+  opens the moment a thread finds its expert unready — including the short pre-block spin — and a
+  stats snapshot taken mid-stall includes the open interval up to now. Attribution between compute
+  and flash is still approximate (see `--compute-trace` when the split itself is the question), but
+  the flash term no longer depends on how the waiting was distributed across threads.
   In serial mode `io_ms` is the wall time blocked on reads (a subset of `wall_ms`). Under
   `--overlap` its meaning changes: it is the **sum of per-lane busy time**, so it can exceed
   `wall_ms` because lanes read in parallel with compute. Use `stall_ms` for the wall time
@@ -59,9 +63,27 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   **Under [`--drop-cold-experts`](expert-dropping.md) read it with care:** a dropped routing is a
   miss that is never looked up, so it leaves both sides of the ratio and the reported hit rate
   rises without the cache having served anything more. Compare runs at the same drop rate, or read
-  `experts_dropped` next to it.
+  `experts_dropped` next to it. Under [`--expert-substitute`](cache-aware-substitution.md) the
+  hit rate rises for a real reason — the routing was steered toward what is resident — and
+  `experts_substituted` says how much of it was steered.
 - `majflt` / `cpu_ms` **decompose the `compute_ms` residual** — the whole point being that "compute"
   above is a catch-all that silently absorbs page faults and scheduler stalls, not just matmul.
+- **The app panel never reads the residual as compute.** Its four bars are attribution components,
+  not a partition of wall time: **compute** = `cpu_ms ÷ compute threads` — an attribution *proxy*
+  (process CPU time, which includes the I/O lanes' work, divided down to a per-compute-thread
+  figure; it is not a direct measurement of matrix-kernel execution), and because process CPU also
+  covers the I/O lanes and other process threads, it is an **upper bound** on compute-thread
+  CPU-equivalent time rather than a disjoint share of the token. Under heavy streaming the lanes'
+  CPU is large enough to matter: compute + flash wait + mgmt can exceed `wall_ms`, and the panel
+  clamps the unattributed remainder at 0 in that case instead of displaying the overlap.
+  **Flash wait** = `io_ms` (serial) / `stall_ms` (overlap) read as
+  measured in both the live and the end-of-run summary views (`io_s_tok` / `stall_s_tok` in
+  `BMOE_DONE`), **cache mgmt** = `mgmt_ms`, and **unattributed** = the non-negative wall-time
+  remainder — the off-CPU time (zram swap-in, preemption, frequency caps) the residual used to
+  paint as compute. The bars are deliberately not rescaled to total 100 %: measurement noise is
+  preferred to a fabricated normalization. The CPU-busy diagnostic keeps its own denominator —
+  `cpu ÷ (wall × busy threads)`, busy threads including the I/O lanes under overlap — which is a
+  different quantity from the compute bar's and must not be "simplified" into it.
   They are measured directly around `llama_decode` (no submodule patch needed): `majflt` is the
   major page faults served this token — a non-zero count means a mmap-resident (dense) weight was
   re-faulted from flash *inside* the decode, i.e. a >RAM residency stall masquerading as compute.
@@ -94,9 +116,16 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
 === perf ===
 generation: <n> tokens, <s> s/token (<t> tok/s)
 compute: <pct>% CPU occupancy (<c> cpu-s/token over <n> threads), <f> major faults/token
+mode: expert streaming, cache <auto|<n> MiB|off>, dense <mmap|warm|anon|ahwb>[, overlap]
 moe-stream: read <mib> MiB (<mib/tok> MiB/token), decode <s> s/token (compute <c> + cache mgmt <m> + flash I/O <i> s/token, <bw> MiB/s)
 moe-cache: <pct>% hit, resident <mib> MiB
 ```
+
+The `mode:` line is printed on every run, streaming or not, and is the first thing to read: without
+`--moe-stream` the engine is plain llama.cpp on mmap and every `moe-*` line below is absent, so a
+report missing them is a baseline and not a measurement of this engine. On a MoE architecture the
+build has a recipe for, that case names the flag; on any other model it says the architecture is not
+one this build streams.
 
 The `compute:` line decomposes the residual: low CPU occupancy points at a throttled/preempted
 core (a frequency cap, a co-resident process) rather than heavy math, and non-zero major
@@ -120,6 +149,21 @@ with a `[stale-gate]` tag — same counters, different predictor (see
 tag, where the useful fraction sits at ~100% by construction: the "speculated" ids are the
 committed routing itself (see [route-ahead.md](route-ahead.md)). The CSV preamble records which
 was active (`prefetch=` / `predict_prefetch=` / `route_ahead=`).
+
+With `--row-stream` a `moe-rows:` line is added, and only when a table actually qualified:
+
+```
+moe-rows: <mib> MiB of row-gathered table(s) off the resident set, <mib> MiB resident,
+<n> rows gathered, <n> reads (<mib> MiB)
+```
+
+The first two numbers are the trade: what those tables would have occupied under the ordinary
+dense policy, and what they occupy now. The last three are what buying it cost in flash - read
+them against the `moe-stream:` byte count on the same run. A second line appears only on failure
+(`<n> FAILED reads - this run's output is not trustworthy`); since the tables are bound to
+reserved address space, a fetch that did not happen is memory that was never written, so that line
+means the generated text is garbage rather than merely slow. See
+[row-gathered-tables.md](row-gathered-tables.md).
 
 With `--route-ahead N` a `moe-route-ahead:` line is added:
 
@@ -217,9 +261,11 @@ prints just the summary lines.
 # model=<file> arch=<arch> n_layer=<n> n_expert=<n> n_expert_used=<k> threads=<n>
   n_ctx=<n> n_ubatch=<n> chatml=<0|1>
 # moe_stream=<0|1> cache_mb=<n> cache_auto=<0|1> cache_floor_mb=<n> cache_ceil_mb=<n>
-  force_cache=<0|1> load_all=<0|1> io_threads=<n> o_direct=<0|1> overlap=<0|1> io_two_wave=<0|1> prefetch=<n>
+  cache_cycle_mb=<n> force_cache=<0|1> load_all=<0|1> io_threads=<n> o_direct=<0|1>
+  overlap=<0|1> io_two_wave=<0|1> prefetch=<n>
   route_ahead=<n> predict_prefetch=<0|1> predict_log=<0|1> predict_spec_max=<n> prefetch_sync=<0|1>
   dense_weights=<mmap|warm|anon|ahwb> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
+  substitute_lambda=<f>
 # temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n> spec=<off|mtp|ngram>
   spec_draft_max=<n> mtp_p_min=<f> ngram_min_match=<n>
 ```
@@ -240,6 +286,11 @@ effective top-k after any override. Fields to read carefully:
   reader finds a run's name.
 - `n_ubatch` sets the compute-buffer reservation, so it moves the very memory columns below;
   `0` means it follows `n_batch`.
+- `cache_cycle_mb` is one token's **worst-case** routed bytes for this model at this `n_expert_used`,
+  priced at load from tensor shapes. It is here so a budget can be judged without a second run: a
+  `cache_mb` under it cannot hold a token cycle, so the hit rate is near zero however legal the
+  number looks against `cache_min_mb`. The engine warns once at load when that is the case. See
+  [cache-sizing.md](cache-sizing.md).
 - `predict_log=1`, `prefetch_sync=1` or `compute_trace_layers>0` mean **the run was instrumented**.
   A probed or traced run is not a benchmark run — see the warning under [Decode
   traces](#decode-traces).
@@ -247,6 +298,11 @@ effective top-k after any override. Fields to read carefully:
   not reproducible except through `seed`.
 - `load_all=1` reads the whole expert set, so its `read_bytes` means something different from a
   selective run's.
+- `o_direct=<0|1>` is what the shard opens **achieved**, not what the flag asked for: a platform can
+  refuse the request, and the open-time verify can downgrade a shard that mis-serves it to buffered.
+  On a Mac the request is served with `F_NOCACHE` — it turns data caching off for the descriptor
+  without imposing any of Linux `O_DIRECT`'s alignment or DMA semantics — so `o_direct=1` there
+  means "uncached descriptor", never "O_DIRECT".
 - `mtp=1` means the run used the model's MTP head to draft and verified a whole group per decode.
   No weight is skipped and nothing is approximated, but the text is **not** guaranteed identical to
   an unspeculated greedy run: a verify decode is a wide batch, and batch width moves the last bits on
@@ -278,8 +334,11 @@ line likewise gains `stall_s/tok=<s>`, `mgmt_s/tok=<s>`, `majflt/tok=<f>`, `cpu_
 `token_demand_MiB=<f>` (the expert bytes one token routes, measured — where cache hits start, NOT a
 floor to defend; see [pressure.md](pressure.md)), `experts_routed=<n>` / `experts_dropped=<n>` (what
 [cache-aware dropping](expert-dropping.md) actually discarded during generation — the flag sets a
-threshold, not a rate, so this is the only record of the trade a run made) and
-`layer_demand_MiB=<f>` (the widest layer's routed
+threshold, not a rate, so this is the only record of the trade a run made),
+`experts_reranked=<n>` / `experts_substituted=<n>` (the same ledger for
+[cache-aware substitution](cache-aware-substitution.md): slots the re-ranking examined, and slots
+it moved to a resident expert),
+`row_table_MiB=<f>` / `row_resident_MiB=<f>` / `row_rows=<n>` / `row_reads=<n>` / `row_read_MiB=<f>` / `row_evictions=<n>` / `row_io_errors=<n>` (the row-gathered tables described above; all zero when `--row-stream` is off or nothing qualified) and `layer_demand_MiB=<f>` (the widest layer's routed
 bytes: the mechanical floor the cache must be able to stage) and `loop_overhead_s/tok=<s>` (see
 [below](#what-toks-does-not-include)) and, under `--mtp` or `--ngram`, `mtp_drafted=<n>` /
 `mtp_accepted=<n>` / `mtp_decodes=<n>` (the acceptance rate and how many decodes the generation
@@ -293,6 +352,19 @@ CLI's `moe-route-ahead:` report ([route-ahead.md](route-ahead.md)); `drain_s/tok
 average the two wait columns below, and `evictions` / `rereads` are the cache-churn counters from
 the `moe-cache:` line — a read of an entry the cache had already held once is the only way a
 prefetch whose reads are all "useful" can still raise the byte count.
+
+The prefill phase's own split rides the trailer too: `prefill_cpu_s=<s>`, `prefill_read_mib=<f>`,
+`prefill_io_s=<s>`, `prefill_stall_s=<s>`, `prefill_mgmt_s=<s>` — the same raw values, names and
+units as the `BMOE_DONE` keys of those names (see the protocol notes above), appended keys so
+existing readers ignore them. A recorded run can now answer "what did the prompt cost, and in
+what" without the protocol line.
+
+With `--prefill-device`, four more: `prefill_dev_tokens=<int>` (prompt tokens whose graph ran on the
+device), `prefill_dev_nodes=<int>` (graph nodes the device actually computed, i.e. whose output
+landed in a device buffer: the proof it ran, where the token count only says the weights were moved),
+`prefill_dev_read_mib=<f>` (experts the device arena read from flash) and `prefill_dev_stall_s=<s>`
+(wall time the device graph waited at a layer for the arena). All zero when the device is off; the
+last two also without streaming, where there is no arena. Same names in `BMOE_DONE`.
 
 The trailing block is the memory picture, added so a run can be diagnosed from its own file:
 
@@ -426,6 +498,8 @@ Requests (stdin):
 
 ```
 {"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>}
+{"cmd":"decide","id":<int>,"prefix":"<string>","suffix":"<string>","choices":["<string>",...],
+ "reuse_prefix":<bool>}   # needs --decide; always rendered with reasoning off; see decide.md
 {"cmd":"cancel"}          # interrupt the in-flight generation; the session stays loaded
 {"cmd":"close"}           # end the session (EOF on stdin does the same)
 ```
@@ -448,11 +522,35 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
             "stall_s_tok":<float>,"mgmt_s_tok":<float>,"majflt_tok":<float>,"cpu_s_tok":<float>,
+            "prefill_cpu_s":<float>,"prefill_read_mib":<float>,"prefill_io_s":<float>,
+            "prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
+            "prefill_dev_tokens":<int>,"prefill_dev_nodes":<int>,"prefill_dev_read_mib":<float>,
+            "prefill_dev_stall_s":<float>,
             "token_demand_mib":<float>,"mtp_drafted":<int>,"mtp_accepted":<int>,"mtp_decodes":<int>,
             "mtp_draft_s_tok":<float>,"drafted_steps":<int>,"loop_overhead_s_tok":<float>,
             "reasoning":"<string>","text":"<string>"}
+BMOE_DECIDE {"id":<int>,"cancelled":<bool>,"best":<int>,"choice_logp":[<float|null>,...],
+             "n_tokens":<int>,"n_reused":<int>,"n_prefilled":<int>,"restore_s":<float>,
+             "store_s":<float>,"prefill_s":<float>,"prefill_cpu_s":<float>,"prefill_read_mib":<float>,
+             "prefill_io_s":<float>,"prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
+             "prefill_dev_tokens":<int>,"prefill_dev_read_mib":<float>,"prefill_dev_stall_s":<float>,
+             "prefill_dev_routed":<int>,"prefill_dev_demand":<int>,"prefix_state_mib":<float>}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
+
+A `decide` request is answered by `BMOE_BEGIN` and then one `BMOE_DECIDE` line, with no per-token
+lines in between: nothing is decoded ([decide.md](decide.md)). `choice_logp[i]` is the log-probability
+of the first token of `choices[i]` over the whole vocabulary, in request order, and `null` where it
+is minus infinity. `best` is the index of the highest. `n_reused` tokens were restored from the kept
+prefix state and `n_prefilled` were prefilled; the `prefill_*` keys read exactly as `BMOE_DONE`'s.
+`prefill_dev_tokens` is how many of the prefilled tokens ran on the prefill device (`0` without
+`--prefill-device`); `prefill_dev_read_mib` and `prefill_dev_stall_s` are its expert arena's reads and
+the time the graph waited on them, as in `BMOE_DONE` and apart from the streamer's `prefill_read_mib`.
+In routed mode (the default), `prefill_dev_routed` counts the (layer, expert) pairs the prefill routed to
+and `prefill_dev_demand` those the prediction missed and the arena read at the routing node (both `0`
+with `--no-prefill-routed`). `prefix_state_mib` is the memory the kept state holds after the call. There is
+no `think` key: a decision is always rendered with reasoning off. `reuse_prefix` defaults to `true`. Colliding choices (two sharing a first token), no choices, a prompt past
+`n_ctx`, or a session opened without `--decide` answer `BMOE_ERROR` with `fatal:false`.
 
 `BMOE_DONE`'s `mtp_*` keys are the self-speculation counters (all `0` without speculation, and the
 same keys whichever source drafted): `mtp_accepted / mtp_drafted` is the acceptance on that turn,
@@ -462,6 +560,16 @@ excludes both, so `1 / (1/tok_s + loop_overhead_s_tok)` is the rate a user actua
 `drafted_steps` is how many passes drafted at all: it equals `mtp_decodes` for the head and is lower
 for `--ngram`, which decodes plainly when it has no match. See [mtp.md](mtp.md) and
 [ngram.md](ngram.md).
+
+The `prefill_*` keys are the prompt phase's own attribution (#173): `prefill_read_mib` / `_io_s` /
+`_stall_s` / `_mgmt_s` are deltas of the same cumulative streamer counters the decode fields come
+from, taken across this turn's prefill chunks, and `prefill_cpu_s` is process CPU over the same
+window (an upper bound on compute-thread CPU-equivalent time, as everywhere). Read them with the
+same per-phase rules: `prefill_io_s` is summed lane busy time under overlap and can exceed the
+wall; `prefill_stall_s` is the union of stalled intervals. On a >RAM model the prompt is what the
+user actually waits for before the first token, and until these keys it had exactly one number
+(`prefill_s`) with no compute/flash split at all — the phase the decode-oriented counters could
+not see. They are `0` with streaming off (`prefill_cpu_s` still reported).
 
 `BMOE_READY`'s `n_expert_used` is the **effective** routing width, after any `--n-expert-used`
 override (`0` on a non-MoE model). A UI needs it to say anything sensible about

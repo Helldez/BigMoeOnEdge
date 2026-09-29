@@ -58,6 +58,47 @@ data class AppSettings(
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
     val dropColdPct: Int = 75,
+    // Serve the dense tables the graph only GATHERS ROWS from - a token embedding - out of flash
+    // instead of RAM. Which tables qualify is decided by the graph at load, so this is one switch
+    // for every model rather than a per-model list; on a model where nothing qualifies it does
+    // nothing at all. Lossless by construction (the rows read are the rows the graph asks for),
+    // so the only question it raises is whether the reads cost more than the RAM is worth - which
+    // is why it is off until the on-device A/B says otherwise.
+    val rowStream: Boolean = false,
+    // Hand the model file's mapping back to the kernel once every weight has been rebound onto the
+    // app's own memory. Needs a dense policy that does that rebinding (Anon or Pinned), which is why
+    // the switch is disabled under Mmap and Warm — under those the engine looks at its own pointers,
+    // sees weights still reading the mapping, and stands down anyway.
+    //
+    // The mechanism that makes this worth +46% on a Windows desktop (a live mapping serialises the
+    // streamer's unbuffered reads) does NOT exist here: on f2fs the read lanes measure the same with
+    // the mapping and without. What it buys on device is CPU — keeping a 20 GB mapping registered
+    // costs a kernel under memory pressure, and dropping it took ~9% off CPU per token. That is two
+    // 48-token cells against a device whose cells spread 20%, so it is a direction and not a number,
+    // and the switch stays off until a 256-token A/B earns it.
+    val releaseMmap: Boolean = false,
+    // Run wide prefill graphs on the Hexagon NPU while decode stays on the CPU (--prefill-device).
+    // With streaming, the experts and the layer weights reach the NPU through a two-layer arena,
+    // so it costs about two layers of memory, not the model. Needs a model the NPU kernels take
+    // (Q4_K_M, Q4_0, Q8_0, MXFP4; not Q3/Q2), and its numbers are fp16 on the matrix engine, so the
+    // output is not identical to the CPU's. Off until the on-device A/B prices both.
+    val npuPrefill: Boolean = false,
+    // Threads that fill the NPU's two layer slots from flash during a prefill (--prefill-loaders).
+    // The CPU is idle while the NPU computes, and a K-quant repack is CPU-heavy, so this wants more
+    // than the decode's read lanes above, which it no longer shares.
+    val npuLoaders: Int = 8,
+    // Cache-aware substitution, as a PERCENTAGE of the router's score range (0 = off). Before a
+    // routing is committed, every expert already resident gets its score raised by this fraction of
+    // the range and the top-k is taken again, so a resident expert wins a slot only when it was
+    // within that margin of the one it displaces. It runs the SAME number of experts — it just
+    // needs fewer of them read from flash.
+    //
+    // Measured on the host at 15% (docs/cache-aware-substitution.md): half the flash bytes per
+    // token, +62% decode, perplexity up 1-4%. At 30% perplexity is up 25%; at 60% the model is
+    // destroyed (perplexity 31 against 4.2) while the text still reads well, which is why the rungs
+    // stop at 30 and the screen warns from 20. LOSSY and cache-dependent, like dropping. 0 until
+    // the on-device A/B earns it a default.
+    val substitutePct: Int = 0,
     // Which source drafts for self-speculation: "off", "mtp" or "ngram". Both verify the same way —
     // one wider decode, greedy acceptance — and differ only in what a draft costs.
     //
@@ -105,19 +146,31 @@ data class AppSettings(
      *   marks each with a `turn` column, which is the only way to read the two-turn shape this
      *   engine is judged by (a fast turn, an idle, then the turn that pays for it).
      */
+    /**
+     * Whether the NPU prefill is actually requested: the engine refuses it with speculation (the wider
+     * verify graphs would share shapes with device graphs) and with row-streamed tables (their rows
+     * are gathered on the host, inside a graph that would run on the NPU).
+     */
+    fun npuActive(): Boolean = npuPrefill && spec == SPEC_OFF && !(rowStream && !mmap)
+
     fun sessionArgv(cliPath: String, modelPath: String, csvPath: String? = null): List<String> {
         val a = mutableListOf(
             cliPath,
             "-m", modelPath,
             "-t", threads.toString(),
             "-c", sessionCtx.toString(),
-            // Never reserve a graph wider than the context itself.
-            "--ubatch", minOf(SESSION_UBATCH, sessionCtx).toString(),
+            // Never reserve a graph wider than the context itself. Wider under the NPU prefill:
+            // there every graph re-reads the experts once, so the width is what the flash pays.
+            "--ubatch", minOf(if (npuActive()) NPU_UBATCH else SESSION_UBATCH, sessionCtx).toString(),
             // Render the model's OWN chat template, whichever family it belongs to; the flag name
             // is historical (ChatML is only llama.cpp's fallback when a gguf ships no template).
             // Nothing here selects a format, so it is correct for every model in the catalog.
             "--chatml",
             "--session",
+            // Accept Choose requests. It costs nothing until one arrives (the engine allocates its
+            // decide state on first use), and keeping it on for every session is what lets the chat
+            // screen switch between Chat and Choose without reloading the model.
+            "--decide",
         )
         // Active-expert (top-k) override is a load-time kv_override, valid with or without
         // streaming — so it lives outside the mmap gate below.
@@ -164,6 +217,24 @@ data class AppSettings(
             // same cacheOn condition that guards prefetch guards this. The engine takes a fraction
             // of the uniform share; the setting is stored as a percentage.
             if (dropColdPct > 0 && cacheOn) a += listOf("--drop-cold-experts", (dropColdPct / 100.0).toString())
+            // Row-gathered dense tables. Inside the streaming block because the tables are
+            // discovered by the streamer's capture pass; independent of the cache and of the
+            // dense-weight mode, since what it changes is which tensors that mode applies to.
+            if (rowStream) a += "--row-stream"
+            // Only the policies that rebind every weight into the app's own memory can leave the
+            // mapping unreferenced. Sending it under Mmap or Warm is not unsafe — the engine checks
+            // its own pointers and declines — but it would be a switch that silently does nothing.
+            if (releaseMmap && (denseWeights == DenseWeights.ANON || denseWeights == DenseWeights.AHWB)) {
+                a += "--release-mmap"
+            }
+            // Same cacheOn guard and for the same reason: with no cache there is nothing resident
+            // to substitute toward, so the policy would re-rank against an all-miss mask.
+            if (substitutePct > 0 && cacheOn) a += listOf("--expert-substitute", (substitutePct / 100.0).toString())
+        }
+        // Outside the streaming block: it applies to a model that fits too (no arena then).
+        if (npuActive()) {
+            a += listOf("--prefill-device", NPU_DEVICE)
+            if (!mmap) a += listOf("--prefill-loaders", npuLoaders.toString())
         }
         // Outside the streaming block on purpose: speculation is a decode-loop change, not a
         // residency policy, so it applies to the mmap baseline too — which is what makes an A/B of
@@ -209,6 +280,11 @@ data class AppSettings(
             .putInt("predictSpecMax", predictSpecMax)
             .putInt("routeAhead", routeAhead)
             .putInt("dropColdPct", dropColdPct)
+            .putBoolean("rowStream", rowStream)
+            .putBoolean("releaseMmap", releaseMmap)
+            .putBoolean("npuPrefill", npuPrefill)
+            .putInt("npuLoaders", npuLoaders)
+            .putInt("substitutePct", substitutePct)
             .putInt("sessionCtx", sessionCtx)
             .putString("spec", spec).putInt("mtpDraft", mtpDraft).putInt("mtpPMinPct", mtpPMinPct)
             .putBoolean("thinking", thinking)
@@ -231,6 +307,15 @@ data class AppSettings(
         // width). Prefill pays instead, and barely: chunking it costs ~7.7x the flash reads but
         // only ~6% of prefill wall time, because prefill is compute-bound.
         const val SESSION_UBATCH = 512
+
+        // The NPU prefill's graph width. Each graph streams every expert once, so a 4096-token prompt
+        // at 512 would read the model eight times; 2048 halves that twice over for a compute buffer
+        // four times the size. A starting point for the on-device sweep, not a measured optimum.
+        const val NPU_UBATCH = 2048
+        // The Hexagon backend's device name for the first NPU session.
+        const val NPU_DEVICE = "HTP0"
+        // Loader rungs for the NPU slots; the engine accepts 1..16.
+        val NPU_LOADER_CHOICES = intArrayOf(2, 4, 6, 8, 12)
 
         // Context rungs. 4096 is the default a chat wants; the shorter ones exist for a model that
         // already fills RAM, where the KV cache competes with the weights themselves.
@@ -283,9 +368,15 @@ data class AppSettings(
         // per token and returns an 8-13% hit rate from a 2000-3000 MiB budget, so its cache may
         // already be below the floor's intent while sitting well above its number. These rungs are
         // here to measure where the cache stops earning the memory pressure it creates.
+        //
+        // The rungs are dense below 2000 and coarse above it, because that is where the choice is
+        // sharp: on an 8 GB phone 1000 MiB runs and 2000 MiB gets the app killed by the OS, so a
+        // x2 step there hands the user a cliff instead of a setting. Above 2000 a 1000 MiB step is
+        // a small fraction of the budget and needs no refining.
         // See docs/android-memory.md.
         const val CACHE_AUTO = -1
-        val CACHE_CHOICES = intArrayOf(CACHE_AUTO, 0, 500, 1000, 2000, 3000, 4000, 5000, 6000)
+        val CACHE_CHOICES =
+            intArrayOf(CACHE_AUTO, 0, 500, 1000, 1250, 1500, 1750, 2000, 3000, 4000, 5000, 6000)
 
         /** True for a fixed budget the engine would reject without --force-cache. */
         fun cacheNeedsForce(mb: Int) = mb in 1 until CACHE_MIN_MB
@@ -309,6 +400,9 @@ data class AppSettings(
         // above it the threshold could exceed every weight in a routing. The rungs below it are the
         // conservative half of the curve, where the replay already beats a top-k cut on both axes.
         val DROP_COLD_CHOICES = intArrayOf(0, 50, 75, 100)
+        // Stops at 30 deliberately: 60 was measured to destroy the model while still reading well,
+        // and 30 already costs a quarter in perplexity. Below 10 the saving is not worth a rung.
+        val SUBSTITUTE_CHOICES = intArrayOf(0, 10, 15, 20, 30)
         val THREAD_CHOICES = intArrayOf(2, 4, 6, 8)
         val NPREDICT_CHOICES = intArrayOf(16, 32, 48, 64, 128, 256, 512, 1024, 2048)
 
@@ -341,6 +435,11 @@ data class AppSettings(
                 predictSpecMax = p.getInt("predictSpecMax", d.predictSpecMax),
                 routeAhead = p.getInt("routeAhead", d.routeAhead),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
+                rowStream = p.getBoolean("rowStream", d.rowStream),
+                releaseMmap = p.getBoolean("releaseMmap", d.releaseMmap),
+                npuPrefill = p.getBoolean("npuPrefill", d.npuPrefill),
+                npuLoaders = p.getInt("npuLoaders", d.npuLoaders),
+                substitutePct = p.getInt("substitutePct", d.substitutePct),
                 sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
                 spec = run {
                     val saved = p.getString("spec", null)

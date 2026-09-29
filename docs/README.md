@@ -20,13 +20,17 @@ for the idea the project is built on.
 | [adding-a-model.md](adding-a-model.md) | How to support a new MoE architecture (a recipe row plus a gate). |
 | [telemetry.md](telemetry.md) | The `BMOE_*` line protocol and CSV schema — the integration contract. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
+| [decide.md](decide.md) | `--decide`: picking one of a list of choices from a single prefill, with no decode, and keeping the state after a shared prefix between calls. |
 | [cache-sizing.md](cache-sizing.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
 | [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output (with the lossy knobs off). |
-| [expert-dropping.md](expert-dropping.md) | `--drop-cold-experts F`: spending quality only where it buys a flash read, and why it is the one setting whose output is not reproducible. |
+| [expert-dropping.md](expert-dropping.md) | `--drop-cold-experts F`: spending quality only where it buys a flash read, and why a cache-dependent setting's output is not reproducible. |
+| [row-gathered-tables.md](row-gathered-tables.md) | `--row-stream`: serving a dense table the graph only gathers rows from out of flash, and how the engine decides which tables those are without naming one. |
+| [cache-aware-substitution.md](cache-aware-substitution.md) | `--expert-substitute L`: re-ranking a routing toward the experts already in the cache, the paper it comes from, and why a wide scoring batch cannot price it. |
 | [mtp.md](mtp.md) | `--mtp`: drafting with the model's own MTP head and verifying a whole group per decode — lossless by construction, and why a wider decode can lose in the streamed regime. |
 | [ngram.md](ngram.md) | `--ngram`: drafting from text that repeats, with no head and no draft decode — and why a source that abstains costs exactly an unspeculated step. |
 | [expert-prediction.md](expert-prediction.md) | `--predict-log`: how much of a routing can be known a layer early, measured against the predictor `--prefetch` already bets on — and why a good score still would not mean a faster decode. |
 | [route-ahead.md](route-ahead.md) | `--route-ahead N`: committing the routing to the N-layers-early prediction, so a prefetch of it can never miss — and what that costs in quality (experimental, lossy). |
+| [npu-prefill.md](npu-prefill.md) | `--prefill-device`: prefill on the NPU and decode on the CPU, a model larger than RAM fed to the NPU two layers at a time, and why decode stays on the CPU. |
 | [android-memory.md](android-memory.md) | What reclaims the engine's memory on a phone, which levers exist (almost none), and why the cache hit rate is what the kernel judges you by. |
 | [pressure.md](pressure.md) | Cache policy under memory pressure: why an unaffordable budget starts a reclaim war, why the adaptive governor was retired, and what the fixed `--cache-mb` / `--dense-weights` levers do. |
 
@@ -36,7 +40,8 @@ for the idea the project is built on.
 |---|---|
 | [benchmarks.md](benchmarks.md) | Measured results per model on Android, with device-pressure numbers. |
 | [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md) | gpt-oss-120b: a 58 GB model at 5.2× device RAM, and what it costs. |
-| [benchmark-method.md](benchmark-method.md) | How the numbers are produced, so you can reproduce them. |
+| [benchmark-method.md](benchmark-method.md) | How to measure this engine on any machine: what each knob does, when to move it, and the rules that keep a matrix honest. |
+| [community-benchmarks.md](community-benchmarks.md) | Results on hardware we do not own, the one-command protocol (`scripts/bench-report.sh`), and how to submit a row. |
 | [warmup-analysis.md](warmup-analysis.md) | Why first tokens are slow, and the two regimes behind it. |
 | [bench-data/](bench-data/) | Raw per-run CSVs and session notes. A dated archive — see its README. |
 

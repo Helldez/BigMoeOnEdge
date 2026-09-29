@@ -321,7 +321,7 @@ before and at peak. All are read over adb **without root** (`dumpsys battery`,
 (`/proc/pressure/*`) — the cleanest stall metric — returns *Permission denied* without root,
 so it is not recorded. Runs are brought to a common baseline between configs so sustained-decode
 throttling does not confound the comparison — a fixed sleep is **not** sufficient for that; see
-[benchmark-method.md](benchmark-method.md#cool-on-a-condition-not-a-timer--and-log-the-entry-state).
+[benchmark-method.md](benchmark-method.md#cool-on-a-condition-not-a-timer).
 
 **Qwen — device pressure**
 

@@ -30,13 +30,26 @@ using fd_t = int;
 extern const fd_t fd_invalid;
 bool fd_ok(fd_t fd);
 
-// Open path for positioned reads. When direct is true, request cache-bypassing I/O;
-// the caller should be prepared to reopen with direct=false for a sub-alignment tail.
-fd_t open_read(const char * path, bool direct);
+// Open path for positioned reads. When direct is true, request cache-bypassing I/O — O_DIRECT on
+// Linux/Android, FILE_FLAG_NO_BUFFERING on Windows, F_NOCACHE on Apple. The descriptor itself is
+// valid either way; *effective_direct (when not null) reports whether the cache-bypassing mode is
+// actually in effect for it, because every platform can decline the request without failing the
+// open — a caller that cares must ask here, never reconstruct the answer from what it passed.
+// The caller should be prepared to reopen with direct=false for a sub-alignment tail.
+fd_t open_read(const char * path, bool direct, bool * effective_direct = nullptr);
 void close_fd(fd_t fd);
 // Positioned blocking read. Returns bytes read, 0 at EOF, -1 on error.
 long long pread_at(fd_t fd, void * buf, size_t count, uint64_t off);
 uint64_t file_size(fd_t fd);
+
+// Whether the platform's cache-bypassing mode constrains the read mechanics: O_DIRECT and
+// FILE_FLAG_NO_BUFFERING reject unaligned offsets, lengths and buffers, so reads must go through
+// aligned windows into an aligned bounce. Apple's F_NOCACHE — the only uncached mode there, since
+// the platform has no O_DIRECT — is a per-descriptor hint to turn data caching off: no alignment
+// contract, no DMA promise. "Uncached" (a property of the descriptor, what open_read reports) and
+// "alignment-constrained" (a property of the I/O mode, what this reports) are the same thing on
+// every platform except Apple, where they come apart.
+bool direct_needs_alignment();
 
 // Aligned heap allocation for O_DIRECT bounce buffers and shared slots.
 void * alloc_aligned(size_t align, size_t sz);
@@ -83,6 +96,22 @@ void vm_release(void * p, size_t sz);
 // resident until reclaim. A no-op where the platform cannot (Windows host: a file view is not
 // VirtualFree-able, and the host build never streams). The range must be page-aligned by the caller.
 void vm_drop_file_pages(void * p, size_t sz);
+
+// Drop the resident pages of an ANONYMOUS range someone else allocated and still owns, keeping the
+// range valid: the next touch maps a zero page instead of faulting. For memory whose contents moved
+// elsewhere but whose allocation cannot be freed from here (a llama.cpp buffer a tensor no longer
+// points at). Unlike vm_evict it never decommits, so a later write by the owner stays legal. A no-op
+// on Windows (MEM_DECOMMIT would make that write fault; nothing moves memory away on the host build).
+// The range must be page-aligned by the caller.
+void vm_drop_anon_pages(void * p, size_t sz);
+
+// Tell the kernel a FILE-BACKED range will be touched at random, so a fault brings in the page that
+// faulted and nothing around it. The default is sequential readahead sized in the hundreds of KiB
+// per fault, which is right for a weight that is read whole and wrong by two orders of magnitude for
+// a table the graph gathers a few rows from per token: the neighbours are never used, and they
+// occupy page cache the expert cache is competing for. A no-op on the Windows host (no streaming
+// there). The range must be page-aligned by the caller.
+void vm_advise_random(void * p, size_t sz);
 
 // How many of a committed range's pages the kernel still has in RAM. Counts only the pages fully
 // inside [p, p+sz) — the same clipping vm_evict's callers apply — and ADDS to *sampled/*resident,

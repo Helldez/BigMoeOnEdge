@@ -51,9 +51,10 @@ bool fd_ok(fd_t fd) {
     return fd != (void *) INVALID_HANDLE_VALUE;
 }
 
-fd_t open_read(const char * path, bool direct) {
+fd_t open_read(const char * path, bool direct, bool * effective_direct) {
     DWORD flags = FILE_ATTRIBUTE_NORMAL | (direct ? FILE_FLAG_NO_BUFFERING : 0);
     HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, flags, nullptr);
+    if (effective_direct) *effective_direct = direct && fd_ok((fd_t) h);
     return (fd_t) h;
 }
 
@@ -109,6 +110,15 @@ void vm_drop_file_pages(void * /*p*/, size_t /*sz*/) {
     // File-backed views cannot be decommitted (MEM_DECOMMIT is only valid for VirtualAlloc'd pages),
     // and the host build never mmaps the model for streaming — so there is nothing to drop.
 }
+void vm_drop_anon_pages(void * /*p*/, size_t /*sz*/) {
+    // MEM_DECOMMIT would turn the owner's next write into an access violation, and MEM_RESET is only
+    // defined for VirtualAlloc'd regions, which a heap allocation need not be. The host build has no
+    // prefill device that moves state away, so keeping the pages costs nothing here.
+}
+
+void vm_advise_random(void * /*p*/, size_t /*sz*/) {
+    // No readahead to tame on a host build that never streams; the gates do not measure I/O.
+}
 
 // Unmeasured on the host build, like the fault counters below and for the same reason: the gates
 // prove byte-identity, they do not size a cache against a phone's reclaim. QueryWorkingSetEx could
@@ -162,8 +172,21 @@ bool fd_ok(fd_t fd) {
     return fd >= 0;
 }
 
-fd_t open_read(const char * path, bool direct) {
-    return open(path, O_RDONLY | O_CLOEXEC | (direct ? O_DIRECT : 0));
+fd_t open_read(const char * path, bool direct, bool * effective_direct) {
+#if defined(__APPLE__)
+    // No O_DIRECT here (the shim above leaves it 0), so a direct request is an ordinary open plus
+    // F_NOCACHE: ask the kernel not to keep this descriptor's pages. That is the whole of Apple's
+    // uncached mode — a caching hint on the fd, not an I/O mode — so a refusal is a downgrade to
+    // buffered for the caller to report, never a reason to fail a perfectly good descriptor.
+    const fd_t fd = open(path, O_RDONLY | O_CLOEXEC);
+    const bool ok = fd_ok(fd) && direct && fcntl(fd, F_NOCACHE, 1) == 0;
+    if (effective_direct) *effective_direct = ok;
+    return fd;
+#else
+    const fd_t fd = open(path, O_RDONLY | O_CLOEXEC | (direct ? O_DIRECT : 0));
+    if (effective_direct) *effective_direct = direct && fd_ok(fd);
+    return fd;
+#endif
 }
 
 void close_fd(fd_t fd) {
@@ -216,6 +239,17 @@ void vm_drop_file_pages(void * p, size_t sz) {
     // next access refaults them from the file. The tensor was rebound onto its anon copy, so nothing
     // touches this range again — the drop just reclaims the double residency, it does not lose data.
     if (sz) madvise(p, sz, MADV_DONTNEED);
+}
+void vm_drop_anon_pages(void * p, size_t sz) {
+    // On private anonymous memory MADV_DONTNEED frees the pages and leaves the range mapped: a later
+    // read sees zeros, a later write faults in a fresh page. Advice only; a failure keeps the pages.
+    if (sz) madvise(p, sz, MADV_DONTNEED);
+}
+
+void vm_advise_random(void * p, size_t sz) {
+    // MADV_RANDOM disables readahead for the range: each fault maps exactly the page that faulted.
+    // Advice only, so a failure changes nothing but the readahead and is not worth reporting.
+    if (sz) madvise(p, sz, MADV_RANDOM);
 }
 
 bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * resident) {
@@ -363,6 +397,15 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
 }
 
 #endif
+
+// ── Cache-bypass read semantics ─────────────────────────────────────────────────────────
+bool direct_needs_alignment() {
+#if defined(__APPLE__)
+    return false; // F_NOCACHE is a caching hint, not an I/O mode: plain preads stay fully general
+#else
+    return true; // O_DIRECT / FILE_FLAG_NO_BUFFERING reject unaligned windows
+#endif
+}
 
 // ── Reclaim-exempt allocation ────────────────────────────────────────────────────────────
 // Shared across platforms because only Android has one: everywhere else this reports "unsupported"

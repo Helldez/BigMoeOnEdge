@@ -15,19 +15,31 @@ core/
   include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
     config.h        RunConfig + validate()
     expert_source.h IExpertSource — the residency strategy port
+    row_source.h    IRowSource - the row-gathered residency port
     recipe.h        MoeRecipe + registry
     metrics.h       TokenMetrics / RunSummary + IMetricsSink
     runtime.h       run() entry point
   src/
     io/         platform_io — O_DIRECT reads + reserve/commit/evict VM, cross-platform
                 file_reader — pooled positioned reader, per-consumer O_DIRECT
+                mapping_release - releases the model file's mapping after load (--release-mmap)
     moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), arch_registry,
                 expert_stream_source (one reader per shard), router_hook
                 dense_weights — non-expert weight policy + the residency sensor
+                row_stream - row-gathered tables served from flash (see row-gathered-tables.md)
+                device_arena - two layer slots on a prefill device, filled from flash, whole layers
+                  or only the routed experts (npu-prefill.md)
+                decide_probe - experimental per-decision expert usage and layer-exit answers (decide.md)
     engine/     session — composition + the generation loop (open/generate/close)
+                prefill_device - moves layer weights and model state onto a device per graph
+                prefill_path - the prefill device for one session: setup, placement, device decode
                 runtime — the one-shot run() wrapper over a Session
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 thinking_control — how "thinking off" is honoured, probed per model
+                logits, prefill_support — log-softmax, batch filling and prefill attribution,
+                  shared by generate / perplexity / decide
+                decide/ — Session::decide() (see decide.md): pure policy over an IDecideBackend
+                  port (prompt split, choice scoring, IPrefixCache), plus one llama.cpp adapter
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
@@ -49,8 +61,10 @@ already public in llama.cpp:
    node. We ask for the routing nodes (`ffn_moe_topk-<il>`); ggml computes and
    synchronizes each alone, then calls us back with the selected expert ids materialized.
    The route trace and [cache-aware dropping](expert-dropping.md) additionally ask for each
-   layer's `ffn_moe_weights*-<il>` chain — and dropping is the one path that *writes into* a
-   graph tensor's contents rather than only rebinding `->data`. See [seam.md](seam.md).
+   layer's `ffn_moe_weights*-<il>` chain — and dropping and
+   [substitution](cache-aware-substitution.md) are the two paths that *write into* a graph
+   tensor's contents (the weights, and the ids) rather than only rebinding `->data`. See
+   [seam.md](seam.md).
 2. **The expert tensor pointers.** During a one-token warm-up we scan each graph node's
    sources for tensors named `blk.<il>.ffn_{gate,up,down}_exps.weight` and record the
    live `ggml_tensor*`. We then rebind their `->data`.
@@ -87,6 +101,9 @@ The composition root is `Session` (core/src/engine/session.cpp):
 2. `generate()` — prefill the prompt, then greedily decode `n_predict` tokens, reporting
    per-token metrics. Callable repeatedly; the expert cache stays warm between calls (see
    [session.md](session.md)). Cancellable mid-flight via the abort callback.
+   `decide()` is the other way to use an open session: one prefill and no decode, reading which of
+   a list of choices the model would answer (off unless the session is opened with it; see
+   [decide.md](decide.md)).
 3. Destructor — tear down in order: I/O pool, context, hook, model, backend.
 
 `run()` (core/src/engine/runtime.cpp) is a thin one-shot wrapper — open, one generate, close —
@@ -94,5 +111,7 @@ so the gates and the interactive session share the same code path.
 
 Greedy sampling makes the output a deterministic function of the graph — the property the
 [byte-identity gates](../tests/moe_gates.cpp) assert. That holds with the lossy knobs off. Under
-[`--drop-cold-experts`](expert-dropping.md) the hook edits routing weights from live cache state,
-which is not in the graph, so output becomes a function of the graph *and* the run's history.
+[`--drop-cold-experts`](expert-dropping.md) and
+[`--expert-substitute`](cache-aware-substitution.md) the hook edits routing weights or ids from
+live cache state, which is not in the graph, so output becomes a function of the graph *and* the
+run's history.

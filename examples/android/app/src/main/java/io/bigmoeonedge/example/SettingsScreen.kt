@@ -29,7 +29,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack: () -> Unit) {
+fun SettingsScreen(
+    current: AppSettings,
+    // Why the NPU prefill cannot run on this phone or build; null when it can.
+    npuUnavailable: String?,
+    onChange: (AppSettings) -> Unit,
+    onBack: () -> Unit,
+) {
     // Reported by the loaded session at BMOE_READY. "none" means this model reasons no matter what
     // it is asked, so the Thinking switch is shown disabled with the reason rather than left there
     // pretending to work (#82). Null = nothing loaded yet, so nothing is claimed either way.
@@ -117,6 +123,27 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 ) { onChange(current.copy(denseWeights = DenseWeights.values()[it])) }
                 Hint(current.denseWeights.blurb)
 
+                SwitchRow(
+                    "Stream row-gathered tables",
+                    "A dense table the model only reads a few ROWS from per token (the token " +
+                        "embedding) does not need to be in RAM: only the rows are read, from flash. " +
+                        "Lossless - the output is identical. Which tables qualify is read off the " +
+                        "graph at load, so on a model where none do this does nothing.",
+                    current.rowStream,
+                    enabled = stream,
+                ) { onChange(current.copy(rowStream = it)) }
+
+                SwitchRow(
+                    "Release the model mapping",
+                    "Once every weight has been copied into the app's own memory, the model file " +
+                        "does not need to stay mapped. Handing the mapping back frees the kernel " +
+                        "from tracking it, which showed up as less CPU per token. Lossless - the " +
+                        "output is identical. Needs Dense weights on Anon or Pinned.",
+                    current.releaseMmap,
+                    enabled = stream && (current.denseWeights == DenseWeights.ANON ||
+                        current.denseWeights == DenseWeights.AHWB),
+                ) { onChange(current.copy(releaseMmap = it)) }
+
                 ExperimentalGroup {
                     IntSetting(
                         "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
@@ -192,6 +219,28 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 )
 
                 ExperimentalGroup {
+                    // Measured on the desktop only; the phone A/B is what decides whether it earns a
+                    // default, so it sits with the other levers still owed one.
+                    IntSetting(
+                        "Prefer cached experts (% of score range)", AppSettings.SUBSTITUTE_CHOICES,
+                        current.substitutePct,
+                        format = { if (it == 0) "off" else "$it%" },
+                        // Needs the streamer and a live cache, for the same reason dropping does: with
+                        // nothing resident there is nothing to prefer.
+                        enabled = stream && cacheOn,
+                    ) { onChange(current.copy(substitutePct = it)) }
+                    Hint(
+                        "When two experts score close, picks the one already in RAM. Same number of " +
+                            "experts, fewer flash reads, faster decode. Changes the reply; 15% is the " +
+                            "measured sweet spot."
+                    )
+                    if (current.substitutePct >= 20) {
+                        Text(
+                            "Past 15% the model degrades faster than its replies show. Judge it on " +
+                                "answers you can check, not on how fluent it sounds.",
+                            fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     LabeledDropdown(
                         "Guess ahead",
                         listOf("Off", "Model's own head (MTP)", "Repeated text (n-gram)"),
@@ -257,6 +306,29 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                         "at open, and on a model that fills RAM that comes out of the expert cache. " +
                         "Changing it reopens the session."
                 )
+            }
+
+            // Its own section, not Experimental: a different processor with its own requirements, and
+            // off by default. Always shown, so a phone without the NPU says why instead of hiding it.
+            Section("NPU") {
+                val npuOk = npuUnavailable == null
+                SwitchRow(
+                    "Prefill on the NPU (Snapdragon only)",
+                    "Hexagon NPU only, Snapdragon 8 Gen 2 or newer. Runs the prompt on the NPU and keeps " +
+                        "decoding on the CPU: long prompts start several times sooner. With streaming, the " +
+                        "weights reach the NPU two layers at a time, straight from flash, and those two " +
+                        "layers take about 1 GB that the expert cache no longer has, so decode is a little " +
+                        "slower. Needs a Q4_K_M, Q4_0, Q8_0 or MXFP4 model (not Q3/Q2). Not identical to " +
+                        "the CPU (the NPU computes in fp16). Ignored with speculation or row-streamed " +
+                        "tables. If the NPU does not open, the prompt runs on the CPU.",
+                    current.npuPrefill && npuOk,
+                    enabled = npuOk,
+                ) { onChange(current.copy(npuPrefill = it)) }
+                if (npuUnavailable != null) Hint(npuUnavailable)
+                IntSetting(
+                    "NPU loader threads", AppSettings.NPU_LOADER_CHOICES, current.npuLoaders,
+                    enabled = npuOk && current.npuPrefill && stream,
+                ) { onChange(current.copy(npuLoaders = it)) }
             }
 
             Section("Prompt") {

@@ -5,6 +5,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/85652?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85652" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85652/daily?language=C%2B%2B" alt="Helldez%2FBigMoeOnEdge | Trendshift" width="250" height="55"/></a>
+</p>
+
 <p align="center"><b>Run Mixture-of-Experts models bigger than your device's RAM. On a phone, on a PC, CPU only.</b></p>
 
 <p align="center">
@@ -22,21 +26,32 @@ they are needed. The rest of the model stays on disk. That is what lets a model 
 bigger than your RAM generate text on an ordinary phone, losslessly: the output is byte-identical
 to running the same model fully resident.
 
-It is built **on top of llama.cpp's public API**, not as a fork. Every quantization format,
+It is built **on top of llama.cpp's public API**. Every quantization format,
 tokenizer and chat template llama.cpp supports works out of the box, because llama.cpp itself is
 doing that part: MXFP4 and Q4_K_M stream through the same code. Supporting a new MoE architecture
 is one row in a registry, and following a new llama.cpp release is a routine submodule bump.
 
-The most extreme thing it can do today: **DeepSeek V4 Flash 0731**, a 284B-parameter MoE
-(~91 GB on disk at 2-bit expert quantization), generating on a phone with 12 GB of RAM at about
-**1 tok/s**. More than seven times more model than memory, streamed from flash as the three shard
-files Hugging Face ships, with no merge step and no PC in the loop.
+**DeepSeek V4 Flash 0731** is the largest model run this way so far. It generates on a phone with
+12 GB of RAM, streamed from flash as the three shard files Hugging Face ships, with no merge step
+and no PC in the loop.
 
 <p align="center"><img src="docs/assets/hero-dsv4.gif" width="360" alt="DeepSeek V4 Flash 0731 (284B, ~91 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
 <p align="center"><em>DeepSeek V4 Flash 0731: 284B parameters, ~91 GB on disk, on a 12 GB phone.
 0.94 tok/s in the demo app, real time.</em></p>
 
-It is not one model, either. Below: three of them, one after another on the same phone, each past
+**Qwen3.8-Flash-Next**, the Qwen4 architecture preview, ran on the same phone the day the weights
+appeared, before upstream support for it existed, because adding an architecture here is a
+registry row and not a change to the streaming path. A large part of that model is a lookup table,
+and the engine never loads it: it leaves the table on storage and reads only the sixteen entries
+each word actually needs. That is the direction architectures are moving in, and it is the
+direction this engine was built for: the more of a model that is there to be consulted rather than
+held, the less it matters that it does not fit.
+
+<p align="center"><img src="docs/assets/hero-qwen38.gif" width="360" alt="Qwen3.8-Flash-Next (125B, ~80 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
+<p align="center"><em>Qwen3.8-Flash-Next: 125B parameters, ~80 GB on disk (Q2_K), on a 12 GB phone.
+3.48 tok/s in the demo app, real time.</em></p>
+
+It is not one model, either. Below: three more, one after another on the same phone, each past
 what it should be able to hold.
 
 https://github.com/user-attachments/assets/f899b93f-c7c4-4ce9-9fb0-5ed1bae13761
@@ -78,8 +93,10 @@ byte-identical output, and the rest of the phone stays alive.
 **Models that barely fit.** Even a model that technically fits in RAM, say an 8B class MoE on a
 phone with a few GB free, benefits: loaded the ordinary way it squeezes out everything else, and
 the OS claws memory back mid-generation. Streamed with a capped cache, it runs inside a budget you
-choose and leaves the system alone. And this is all plain CPU inference: no GPU, no NPU, four
-cores and the phone's flash storage.
+choose and leaves the system alone. Decode is plain CPU inference: no GPU, no NPU, four cores and
+the phone's flash storage. Prefill can optionally run on a Snapdragon's Hexagon NPU, streamed two
+layers at a time, which is several times faster on long prompts
+([docs/npu-prefill.md](docs/npu-prefill.md)).
 
 The same engine builds unmodified on desktop, where a model past RAM streams from the SSD out of
 the box. Phones stay the focus, because that is where memory is tightest.
@@ -89,16 +106,17 @@ the box. Phones stay the focus, because that is where memory is tightest.
 No build needed. Install the APK from the
 [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest), open the **Get a
 model** card, and tap one of the catalog entries: Qwen3-30B-A3B (~18.6 GB), Qwen3.6-35B-A3B
-(~22.3 GB) or Gemma-4-26B-A4B (~17 GB), each past most phones' RAM. The catalog is only a
+(~22.3 GB), Gemma-4-26B-A4B (~17 GB) or Nemotron-3.5-Lightning-30B-A3B (~18.9 GB), each past
+most phones' RAM. The catalog is only a
 shortcut: the downloader takes any direct gguf URL, so any model from the
 [supported architecture families](#supported-models) streams the same way. When the download
 finishes, pick the model and chat. The telemetry panel shows tok/s and the compute-vs-flash
 split live, and every streaming knob below is in Settings.
 
-Models above Hugging Face's 50 GB per-file limit (gpt-oss-120b, DeepSeek V4 Flash 0731) ship as
-multi-shard ggufs, and both are in the catalog: the app fetches the shards one after another,
-resumable, under a single progress bar. The engine reads a split set natively, so there is no merge
-step anywhere. Outside the catalog the rule is the same: put the shards in one directory and point
+Models above Hugging Face's 50 GB per-file limit (gpt-oss-120b, DeepSeek V4 Flash 0731,
+Qwen3.8-Flash-Next) ship as multi-shard ggufs, and all three are in the catalog: the app fetches
+the shards one after another, resumable, under a single progress bar. The engine reads a split set
+natively, so there is no merge step anywhere. Outside the catalog the rule is the same: put the shards in one directory and point
 at the first (`-00001-of-...`).
 
 ## Features
@@ -120,6 +138,8 @@ flash, at the moment they are needed. Everything below tunes that.
 | Direct I/O | `--no-odirect` disables it &nbsp;(on by default) | Bypasses the OS page cache, so the system holds no second copy of what the expert cache already has. Falls back where unsupported. |
 | I/O and compute overlap | `--overlap` &nbsp;(off in the CLI, on in the app) | Issues the next reads while the current layer computes, hiding flash latency behind work. Byte-identical; needs a small optional add-on to llama.cpp ([seam](docs/seam.md)). |
 | Dense weights | `--dense-weights` &nbsp;`mmap`, `warm`, `anon`, `ahwb` &nbsp;(default `anon`) | How the always-needed non-expert weights are held. Decisive far past RAM. `ahwb` is Android-only and puts them where the kernel cannot reclaim them at all ([data](docs/bench-data/2026-07-21-pinned-dense-ab/findings.md)). |
+| Row-gathered tables | `--row-stream`, with `--row-stream-mb` &nbsp;(default `64`) | Serves a dense table the graph only gathers rows from, typically the token embedding, out of flash instead of RAM: only the rows about to be read are pulled in, inside a bounded window. Which tables qualify is read off the model's own graph. Lossless ([detail](docs/row-gathered-tables.md)). |
+| Release the model mapping | `--release-mmap` &nbsp;(off by default) | Unmaps the gguf once every weight has been rebound into the engine's own memory, and reopens the read lanes. On Windows a live mapping serialises the streamer's unbuffered reads, so this is worth +46% decode there; on Android it saves CPU instead. Needs `--dense-weights anon` or `ahwb`, and the engine declines if any weight still points into the mapping. Lossless ([data](docs/bench-data/2026-08-29-mmap-serialisation/findings.md)). |
 | Temporal prefetch *(experimental)* | `--prefetch` &nbsp;`0` (off), `1`, `2`, `4` layers | Bets a layer reuses the previous token's experts and fetches them on idle lanes. Needs the cache. |
 | Predictive prefetch *(experimental)* | `--predict-prefetch`, with `--predict-spec-max` &nbsp;`0` (retention only), `1`, `2`, `4` | Runs the next layer's own router early and fetches what it names. More accurate than the bet above; reading ahead on it still lost its on-device A/B ([why](docs/expert-prediction.md)). |
 
@@ -128,6 +148,7 @@ flash, at the moment they are needed. Everything below tunes that.
 | Setting | Flag and values | What it does |
 |---|---|---|
 | Drop cold experts | `--drop-cold-experts` &nbsp;`0` (off) to `1.0`; app rungs `50%`, `75%`, `100%` &nbsp;(app default `75%`) | Skips a routed expert only when it is a cache miss *and* the router wanted it less than that share of an even split. Quality is spent only where it buys a read. Lossy and not reproducible: what is skipped depends on what the cache held. |
+| Prefer cached experts *(experimental)* | `--expert-substitute` &nbsp;`0` (off) to `1.0`; app rungs `10%` to `30%` &nbsp;(default off) | Nudges each routing toward experts already in the cache: a resident expert takes a slot only when the router scored it within that margin of the one it displaces. Same number of experts, fewer reads. Lossy and cache-dependent, like dropping ([detail](docs/cache-aware-substitution.md)). |
 | Active experts | `--n-expert-used` &nbsp;`0` (model's own), `6`, `4`, `3`, `2` | Consults fewer experts per token than the model asks for, cutting compute and reads together. Lossy, but reproducible: the same prompt gives the same answer. |
 | Guess ahead *(experimental)* | `--mtp` or `--ngram`, with `--draft` &nbsp;`1` to `5` &nbsp;and, for the head, `--mtp-p-min` &nbsp;`0`, `40%`, `60%`, `80%` | Drafts the next few tokens and verifies the group in one decode, keeping only what the model itself would have produced. Nothing is approximated. Wins when weights move once per group, loses when the wider verify widens each layer's read set ([mtp](docs/mtp.md), [ngram](docs/ngram.md)). |
 | Route-ahead *(experimental)* | `--route-ahead` &nbsp;`0` (off), `1`, `2`, `4` layers | Commits a layer's routing that many layers early, so its reads start early and can never be wasted. Lossy: some slots route differently. Excludes both prefetchers and Guess ahead ([detail](docs/route-ahead.md)). |
@@ -141,11 +162,14 @@ They are not interchangeable. Reducing the active experts cuts the routing tail 
 those experts were already free to run from memory, and it does so identically every time. Dropping
 cold experts spends quality only where it buys back a flash read, which is more surgical but makes
 the answer depend on what the cache happened to hold, so the same prompt can come out differently.
+Preferring cached experts is dropping's upstream sibling: instead of deciding whether to pay for a
+missing expert it decides whether to need one, and it keeps the routing's width.
 Guessing ahead gives up nothing at all: it changes how many tokens a pass confirms, not what the
 model computes.
 
 Each one is measured rather than assumed, and the numbers live with the method that produced them:
-[expert-dropping.md](docs/expert-dropping.md), [mtp.md](docs/mtp.md),
+[expert-dropping.md](docs/expert-dropping.md),
+[cache-aware-substitution.md](docs/cache-aware-substitution.md), [mtp.md](docs/mtp.md),
 [ngram.md](docs/ngram.md), [route-ahead.md](docs/route-ahead.md). Judge any of them on your own
 task before relying on it.
 
@@ -155,6 +179,38 @@ The model stays loaded across chat turns, and every run can account for its own 
 breaks each token into flash I/O, cache management and compute, next to the cache hit rate and
 bytes read, and `--csv` adds the memory picture those numbers must be read against. The Android
 app renders the same feed live while you chat. More under [Telemetry](#telemetry).
+
+### Decisions: choose instead of generate
+
+Many uses of a model are really a choice: which UI action an agent takes next, which tool a router
+calls, which label a classifier assigns, which option a multiple-choice question has. Generating the
+answer spends a decode per token, and on a model streamed from flash decode is the slow part. A
+session opened with `--decide` answers the choice from the **prompt alone**:
+
+1. the prompt lists the options under single-token labels (`A`, `B`, `C`, ...) and asks for the
+   label;
+2. the engine prefills it once and reads the next-token distribution;
+3. each option is scored by the log-probability of its label over the **whole vocabulary**, and the
+   highest wins.
+
+Nothing is decoded, so a decision costs one prefill. The scores are not renormalised over the
+options: the mass the model puts elsewhere is how unsure it is, which is what a caller needs to set
+an abstention threshold (act when the best option is likely enough, ask or fall back otherwise).
+The prompt comes in two parts, a `prefix` that repeats from call to call (instructions, task,
+history) and a `suffix` that changes (the current screen), and on the CPU the model state after the
+prefix is kept and restored, so a sequence of decisions only prefills what is new. Choices that
+share a first token are refused up front rather than answered with a tie.
+
+```
+{"cmd":"decide","id":1,"prefix":"Task: turn on Wi-Fi. ","suffix":"Screen: Settings. Options:
+ A) Network B) Display C) Battery. Answer with the letter.","choices":["A","B","C"]}
+BMOE_DECIDE {"id":1,"best":0,"choice_logp":[-0.014,-6.76,-11.0],"n_tokens":69,...}
+```
+
+On a 12 GB phone with the NPU prefill, a Qwen3.6-35B-A3B decision over a compacted Android screen
+(130 to 480 tokens) takes 3.3 to 4.9 s, the time of one prompt. `--decide-probe` (experimental)
+writes, per decision, which experts each layer routed and the answer the model would give if it
+stopped after each layer. See [docs/decide.md](docs/decide.md).
 
 ### Android demo app
 
@@ -167,12 +223,15 @@ Defaults are the measured winning recipe for a model near RAM.
 | Architecture | Reference models | Notes |
 |---|---|---|
 | `qwen3moe` | Qwen3-30B-A3B and siblings | Shipped default, validated below |
-| `qwen35moe` | Qwen3.6-35B-A3B and siblings | Hybrid attention/SSM stack; routed experts stream unchanged |
+| `qwen35moe` | Qwen3.6-35B-A3B and siblings, Ornith-1.5-35B-A3B | Hybrid attention/SSM stack; routed experts stream unchanged |
 | `qwen2moe` | Qwen2 MoE family | Same layout as qwen3moe |
 | `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | Fused expert layout, handled by its registry row |
 | `gpt-oss` | OpenAI gpt-oss-20b / 120b | Purely routed; MXFP4 weights stream unchanged |
+| `nemotron_h_moe` | NVIDIA Nemotron 3 / 3.5 MoE (e.g. Nemotron-3.5-Lightning-30B-A3B) | Gate-less experts (up/down only); hybrid Mamba2/attention stack, optional latent projections and a shared expert stay resident |
 | `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
 | `deepseek4` | DeepSeek V4 Flash (284B-A13B), validated on the 0731 release | V3.2-style routing (256 experts + shared); compressed attention is dense-side; ships multi-shard |
+| `bailingmoe3` | Ling 3.0 (e.g. Ling-3.0-flash, 127B-A5B) | 512 routed experts + shared, biased top-k; hybrid KDA/MLA attention is dense-side |
+| `qwen4exp` | Qwen3.8-Flash-Next (125B-A6B), the Qwen4 architecture preview | 512 routed experts + shared; a 51B n-gram embedding table stays mmap'd (see limitations). Runs on the 12 GB test phone with pinned dense weights: ~2 tok/s at UD-IQ3_XXS, 3.5 tok/s at the Q2_K build; upstream support merged in `b10666` |
 
 Adding an architecture is one row in the registry; expert counts and layouts are discovered from
 the model file at runtime, so nothing about a specific model is hardcoded in the streaming path.
@@ -276,6 +335,42 @@ gap is the protocol (short chat replies never fully warm the cache), not the app
 telemetry panel reports the same fields as the CLI, so you can see it directly. Analysis:
 [docs/warmup-analysis.md](docs/warmup-analysis.md).
 
+### Prefill on the NPU
+
+On a Snapdragon, `--prefill-device` runs prefill on the Hexagon NPU and leaves decode on the CPU.
+Hexagon is the only NPU supported: on any other phone, or a Snapdragon older than Hexagon v73,
+prefill stays on the CPU. The model still streams from flash: the NPU never holds it, only two
+layer-sized slots that loader threads fill while it computes the other one. Measured on a 12 GB
+phone with a Hexagon v81 NPU:
+
+| Model | Prompt | CPU | NPU | Speedup |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B Q4_0 | 1418 tokens | 63.8 s | 8.2 s | 7.8x |
+| Qwen3.6-35B-A3B Q4_0 | 1921 tokens | 106.5 s | 11.2 s | 9.5x |
+| Qwen3.6-35B-A3B Q4_K_M | 1418 tokens | 80.6 s | 10.2 s | 7.9x |
+| Gemma 4 26B-A4B | 238 tokens | 16.2 s | 5.85 s | 2.8x |
+
+**Short prompts are flash bound**: read whole, the experts cost the same at 121 tokens as at 1418.
+So the arena reads only the experts a graph routes to. It loads ahead the experts the previous
+prompt routed at each layer, and at each layer's routing node it reads what the router actually
+picked and fetches what is missing; the matmul touches only those, so the output is unchanged bit
+for bit. A layer that routes to more than 85% of its experts has the next one read whole, so long
+prompts lose nothing (`--no-prefill-routed` reads whole layers everywhere). Same phone, 130 to
+480-token prompts, top-4 routing, whole layers against routed:
+
+| Model | Experts routed per layer | Whole layers | Routed | Speedup |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B Q4_0 | ~50% of 256 | 7.68 s | 4.16 s | 1.85x |
+| Qwen3.6-35B-A3B Q4_K_M | ~50% of 256 | 9.95 s | 5.37 s | 1.85x |
+| Gemma 4 26B-A4B Q4_K_M | ~58% of 128 | 6.69 s | 3.70 s | 1.81x |
+| Nemotron 3.5 30B-A3B Q4_0 | ~79% of 128 | 7.42 s | 6.81 s | 1.09x |
+
+The gain is what a prompt leaves unrouted, so it is small on a model whose prompts route to most of
+its experts. The slots cost decode some memory, about 5% on Gemma 4 (3.25 against 3.41 tok/s). The
+NPU computes in fp16, so its output is not identical to the CPU's. The NPU prefill is off by
+default (`--prefill-device HTP0`, or the NPU switch in the app); see
+[docs/npu-prefill.md](docs/npu-prefill.md).
+
 ### Desktop
 
 **Not the primary target, for now.** The engine builds and runs unmodified on desktop and a model
@@ -335,6 +430,21 @@ Anything not measured is named as unmeasured. That is the rule the roadmap's
 [recorded negative results](docs/roadmap.md) exist to enforce: a simulation that predicted a win and
 a device that then delivered a 30% loss is why nothing here is published on an argument alone.
 
+### Measure it on your hardware
+
+Every row above comes from one phone and one laptop. NVMe mini PCs, ARM boards with a PCIe slot,
+other phones and unified-memory desktops are the machines we have not measured, and on Linux or
+macOS one command runs the fixed protocol on any supported MoE, in any quant, and prints the
+tables to paste into a
+[benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml):
+
+```bash
+scripts/bench-report.sh /path/to/any-moe-model.gguf
+```
+
+Accepted rows land in [docs/community-benchmarks.md](docs/community-benchmarks.md) with your name,
+next to the stall, cache-hit and flash-per-token columns that make a tok/s figure comparable.
+
 ## Quickstart
 
 ### Host (Linux, macOS, Windows)
@@ -393,11 +503,13 @@ clients format conversations. Use `--no-think` to disable model thinking on reas
 On Android/Termux, run it with `LD_LIBRARY_PATH` pointing at the `build/bin` directory where the
 shared libraries live.
 
-Platform status: Linux is exercised by CI (build + gates) and Windows is where the
+Platform status: Linux is exercised by CI (build + gates), and Windows and macOS are
+compile-checked there on every pull request and release tag. Windows is where the
 [desktop numbers](#desktop) were measured. On Windows, build with CMake directly (Visual Studio
 Build Tools); the script above is bash, and MSVC puts the binary in `build\cli\Release\bmoe-cli.exe`.
-macOS builds from the same sources (the platform branches exist) but is not validated, and it has
-no O_DIRECT, so direct reads fall back to buffered I/O there.
+macOS builds from the same sources and has no O_DIRECT; a direct request is served with `F_NOCACHE`
+instead (uncached, but not alignment-constrained), and `o_direct` in the telemetry reports what the
+open actually achieved.
 
 ### Android
 
@@ -456,6 +568,8 @@ or reproduce the measurements. Most-wanted entry points:
 - [docs/adding-a-model.md](docs/adding-a-model.md): supporting a new MoE architecture.
 - [docs/benchmarks.md](docs/benchmarks.md): measured results and
   [how they were produced](docs/benchmark-method.md).
+- [docs/community-benchmarks.md](docs/community-benchmarks.md): results on hardware we do not own,
+  and how to add yours.
 - [docs/telemetry.md](docs/telemetry.md): the per-token line protocol, the CSV schema and the traces.
 - [docs/android-memory.md](docs/android-memory.md): what reclaims the engine's memory on a phone.
 
@@ -467,6 +581,9 @@ and EdgeMoE, not a novel technique. The closest recent work is
 397B MoE from SSD on Apple Silicon, and on an iPhone through a community fork. BigMoeOnEdge takes
 the other side of that problem: CPU-only, on Android, on llama.cpp's public API (bar one optional
 ~25-line hook, above), across architectures. See [docs/limitations.md](docs/limitations.md).
+The cache-aware routing under *Prefer cached experts* is the cache-conditional rerouting of
+Skliar et al. ([arXiv:2412.00099](https://arxiv.org/abs/2412.00099)), applied to a RAM cache in
+front of flash.
 
 ## License
 

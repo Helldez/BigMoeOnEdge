@@ -17,6 +17,7 @@
 #include "bmoe/expert_source.h"
 #include "bmoe/config.h"
 #include "bmoe/decode_trace.h"
+#include "stall_union.h"
 #include "bmoe/recipe.h"
 #include "../io/platform_io.h"
 #include "../io/file_reader.h"
@@ -74,6 +75,24 @@ public:
     // The runtime builds the list from the captured weight leaves and the gguf offsets.
     void set_dense_tensors(std::vector<DenseTensorRef> dense) { dense_tensors_ = std::move(dense); }
 
+    // Supply the subset of those weights the graph only ROW-GATHERS, which the dense policy serves
+    // from flash inside a `budget_bytes` window instead of making resident (see bmoe/row_source.h).
+    // Call BEFORE init, like set_dense_tensors; an empty list turns the policy off.
+    void set_row_tensors(std::vector<DenseTensorRef> rows, uint64_t budget_bytes) {
+        row_tensors_ = std::move(rows);
+        row_budget_ = budget_bytes;
+    }
+
+    // The row policy after init, for the graph adapter that must make rows present before a gather
+    // node runs; null when nothing qualified. Its accounting, for telemetry, is row_stats().
+    IRowSource * row_source() const { return dense_.row_source(); }
+    bool dense_file_mapping_in_use() const { return dense_.file_mapping_in_use(); }
+    // Reopen every reader that will serve decode (expert lanes and row tables). Only legal between
+    // init and the first decode, when the workers are idle and nothing is queued; checked under the
+    // queue lock. See FileReader::reopen.
+    bool reopen_readers();
+    RowSourceStats row_stats() const { return dense_.row_stats(); }
+
     // IExpertSource
     bool load_layer(int il, const int32_t * ids, int n_ids) override;
     void prefetch(int il, const int32_t * ids, int n_ids) override;
@@ -98,6 +117,14 @@ public:
     // load_layer/generate. Intended for an app's memory-pressure callback (Android onTrimMemory)
     // and exercised by the shrink gate. This is the only thing that moves the budget after init.
     void set_cache_budget(size_t bytes);
+
+    // The cliff from cache-sizing.md, computed at init from model shape alone: the bytes one
+    // token's pass over the layer stack demands in the worst case, i.e. every bound layer's top_k
+    // most expensive experts. A global-LRU budget below this thrashes to exactly 0% hits — it
+    // reads as much as no cache while still paying management and RAM — so the runtime warns
+    // when it sees one. Worst case, not the measured demand: the router picks at runtime, and
+    // the measured token_demand_ needs a decode before it exists.
+    size_t worst_cycle_bytes(int top_k) const;
 
     // ── I/O trace (diagnostics; see bmoe/decode_trace.h) ────────────────────────────
     // When on, every read_slice records one row. Rows are appended under a dedicated leaf mutex
@@ -225,6 +252,10 @@ private:
     // them; the dense-weights loader constructs its own, so their O_DIRECT choices are independent
     // (see docs/architecture.md). FileReader is not movable, hence the unique_ptr.
     std::vector<std::unique_ptr<FileReader>> readers_;
+    // Whether every shard reader actually got cache bypass (see FileReader::direct) — the AND over
+    // shards, settled at init before any worker thread exists and reported verbatim by stats(). The
+    // run-level o_direct fact: what the platform served, not what the flag asked for.
+    bool effective_direct_ = false;
 
     std::vector<LayerExperts> layers_;
 
@@ -247,6 +278,8 @@ private:
     static constexpr unsigned dense_probe_every = 128; // load_layer calls between dense samples (~2-3 tokens)
     unsigned dense_probe_tick_ = 0;
     std::vector<DenseTensorRef> dense_tensors_; // pending, set before init; moved into dense_
+    std::vector<DenseTensorRef> row_tensors_;   // pending row-gathered subset; moved into dense_
+    uint64_t row_budget_ = 0;
     DenseWeights dense_;
 
     // Two measured demands. Both are pure telemetry now that the governor is gone — nothing here
@@ -334,7 +367,10 @@ private:
     // re-check a predicate that was almost never its own. Registration and publication are both
     // seq_cst so the two cannot miss each other — see on_expert_ready.
     std::atomic<int> ready_waiters_{0};
-    std::atomic<long long> stall_ns_{0}; // summed across all stalling compute threads
+    // Overlap stall as the UNION of stalled-thread wall intervals (see stall_union.h),
+    // not the sum of per-thread waits: one blocked thread already means the graph is not
+    // progressing, and sum/n_threads understates whenever a minority of threads waits.
+    StallUnion stall_union_;
     // expert tensor* -> (il<<8)|p. Sorted by pointer and static after init, and probed by every
     // compute thread for every routed expert — a flat binary search beats hashing the pointer.
     std::vector<std::pair<const void *, uint32_t>> texp_;

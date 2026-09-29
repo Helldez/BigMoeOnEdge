@@ -33,12 +33,14 @@ Two optional jobs ask for more: the route trace and
 which is another barrier per node but no new kind of access — same public struct, same read of
 `->data`.
 
-Dropping does go one step further, and it is the only place the engine **writes into** a graph
-tensor's contents rather than repointing `->data` at its own buffer: at the terminal node of the
-weight chain it zeroes a dropped slot's weight and repoints that slot's expert id. Both tensors are
-scratch the graph produced and has not yet consumed, so this alters the values flowing through the
-run — deliberately, that is what the lossy policy *is* — and never llama.cpp's own state, its
-weights, or its control flow. It stays inside the same callback contract; nothing is patched.
+The two lossy routing policies go one step further, and they are the only places the engine
+**writes into** a graph tensor's contents rather than repointing `->data` at its own buffer.
+Dropping, at the terminal node of the weight chain, zeroes a dropped slot's weight and repoints
+that slot's expert id; [substitution](cache-aware-substitution.md), at the `ffn_moe_topk` node,
+rewrites the selected ids toward resident experts. In both cases the tensors are scratch the graph
+produced and has not yet consumed, so this alters the values flowing through the run —
+deliberately, that is what a lossy policy *is* — and never llama.cpp's own state, its weights, or
+its control flow. It stays inside the same callback contract; nothing is patched.
 
 ## 2. gguf offsets
 
@@ -164,6 +166,55 @@ returns. This is how `ggml_backend_sched` implements the eval-callback today
   loudly if the ordering ever changes;
 - CI runs the gates on every submodule bump.
 
+## Per-graph placement (`--prefill-device`)
+
+The prefill device ([npu-prefill.md](npu-prefill.md)) adds no llama.cpp change, but it leans on these
+behaviours of the public surface and two naming conventions. All are exercised by gates G16 and G17,
+except where noted:
+
+- **The scheduler assigns a backend per graph, from the weight's buffer.** `ggml_backend_sched` looks
+  at each weight's `tensor->buffer` every time it splits a graph, so rebinding `buffer`, `data` and
+  `extra` (and, for a weight carried to the device in another type, `type` and `nb`) between graphs
+  moves the weight's ops. The rebind happens only between `llama_decode` calls.
+- **Graph reuse skips that decision.** A graph shaped like the previous one is reused without being
+  re-scheduled, so device graphs and CPU graphs are kept to different widths (`--prefill-min-tokens`).
+  A llama.cpp change that reused graphs across shapes would break this; G16 would show it.
+- **`ggml_backend_tensor_set` is where a backend lays weights out its own way.** The arena writes each
+  expert through a per-expert view, and writes each slot tensor once whole at load so the backend
+  records its layout for the tensor the op actually reads.
+- **A buffer's usage is what a backend reads to decide how to hold it.** `ggml_backend_buffer_set_usage`
+  marks a buffer `WEIGHTS` or not, and a backend may lay out and map a `WEIGHTS` buffer for its
+  matmul alone (Hexagon with DMA64 maps it for DMA only, and most of its other kernels then refuse it
+  at run time). So the engine marks only the matmul matrices `WEIGHTS` and puts every other layer weight
+  (norms, biases, scales), as found from the ops the capture graph applies to it, in plain device
+  memory.
+- **Two context knobs.** `n_outputs_max` bounds the logit rows the context reserves, and toggling
+  `llama_set_causal_attn` off and on makes the next decode redo the compute-buffer reservation, which
+  the engine uses once, with the weights on the device, so the CPU does not keep a reservation for a
+  graph it never runs.
+- **Concurrent uploads into one buffer.** The arena's loader threads call `ggml_backend_tensor_set`
+  on different views of the same slot buffer at once. ggml does not document this as thread-safe; it
+  holds for the CPU, RPC and Hexagon backends today because each write touches only its own bytes.
+  The gates cover the CPU (through RPC); on the NPU only a device run does.
+- **Layer weights are named `blk.N.`** The engine selects the weights it moves by that prefix. It is
+  the GGUF tensor naming every architecture in llama.cpp uses, not an API: a model that named its
+  layers otherwise would keep them on the CPU, correct but not faster.
+- **Model state tensors are named `cache_`.** The capture tells the KV and recurrent state apart from
+  weights by the `cache_` prefix llama.cpp's memory modules give them, so the prefill can place the
+  state where both sides can address it. That prefix is internal naming: if upstream renamed it the
+  state would stay in CPU memory, again correct but slower, and `prefill_dev_nodes` in the telemetry
+  would drop. Check it on each bump.
+- **With no devices given, llama.cpp picks them.** `llama_model_params::devices` left null lists every
+  GPU-type device (integrated ones only when no discrete one is found), and the context opens a
+  backend on each, layers or not. Without `--prefill-device` the engine keeps that choice, except that
+  it drops a device whose capabilities (`host_buffer`, `buffer_from_host_ptr`) say it cannot reach
+  host memory, and then passes the rest explicitly, repeating that integrated-device rule. If upstream
+  changed its selection, only a build carrying such a device (Hexagon) would see the difference. Not
+  gated: the host build has no such device.
+- **A device that fails to open throws.** Hexagon opens its DSP session in `ggml_backend_dev_init`
+  and throws when it cannot. The engine calls it once before the load, catches that, and keeps the run
+  on the CPU; the backend caches the session, so the context's own init reuses it.
+
 ## Upgrading llama.cpp
 
 Because the submodule pins the `bmoe/expert-ready-hook` fork branch (section 3), a bump
@@ -194,6 +245,10 @@ If a future release moves the two hooks (a stable expert-residency API, say) ups
 this seam shrinks further or disappears — `core/` does not change.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook`, commit `5236140` — the single expert-ready-hook commit (section 3)
-on top of upstream `ggml-org/llama.cpp` master `22b69b6` (see `.gitmodules` /
+`bmoe/expert-ready-hook-2609`, commit `dce9698`: the single expert-ready-hook commit
+(section 3) on top of upstream `ggml-org/llama.cpp` master `965f897` of 2026-09-26 (530 commits
+past `b10666`). On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
+before the classic loop does, so the hook fires ahead of it; G4 is what proves it still gates
+every read. Each bump gets its own fork branch and the
+previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /
 `git submodule status` for the current pin).

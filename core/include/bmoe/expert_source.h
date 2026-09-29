@@ -72,12 +72,20 @@ public:
         long long cache_hits = 0;          // expert lookups served from the cache
         long long cache_lookups = 0;       // total expert lookups (hits + misses)
         uint64_t cache_resident_bytes = 0; // currently resident cached slice bytes
-        double stall_seconds = 0.0;        // overlap: summed across compute threads (0 when serial)
+        double stall_seconds = 0.0;        // overlap: cumulative wall time during which at least one compute
+                                           // thread was stalled on a streamed expert — the UNION of stalled
+                                           // intervals, not a per-thread sum (0 when serial). Includes an
+                                           // interval still open at the snapshot.
         uint64_t spec_read_bytes = 0;      // bytes read speculatively by prefetch (subset of read_bytes)
         long long spec_experts = 0;        // experts fully prefetched
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
         uint64_t cache_budget_bytes = 0;   // cache budget in force; fixed for the run once init sizes it
         long long cache_resizes = 0;       // explicit set_cache_budget_mb() calls that moved the budget
+        // Whether cache-bypassing reads are actually in effect for the expert shards — every shard
+        // reader's request honoured by the platform (O_DIRECT open succeeded, F_NOCACHE applied on
+        // Apple), after the open-time downgrades. NOT the config flag: a run can ask for direct and
+        // be served buffered, and the telemetry must say which one it got.
+        bool o_direct = false;
         // Cache churn. `evictions` is how many entries the budget forced out; `rereads` how many
         // reads went to an entry that had been resident before — the cache paying for the same
         // bytes twice. A prefetch cannot reduce what a routing needs (the ideal is the same

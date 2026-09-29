@@ -103,6 +103,40 @@ struct MoeStreamConfig {
     //             and the policy the Android app ships by default — the CLI matches it here.
     DenseWeightsMode dense_weights = DenseWeightsMode::Anonymous;
 
+    // ── row-gathered dense tables served from flash (see bmoe/row_source.h) ──────────
+    // A dense weight the graph only ever GATHERS ROWS from — a token embedding table is the pure
+    // case — is resident for nothing: one row of it is read per decoded token and the rest of the
+    // hundreds of MiB sits in RAM the expert cache is competing for. With this on, such a table is
+    // bound to reserved address space and only the rows the graph asks for are pulled from flash,
+    // inside a bounded window.
+    //
+    // WHICH tables qualify is decided by the graph at capture time and by nothing else: every
+    // reference to the tensor must be a row gather with a readable index. No architecture, tensor
+    // name or size threshold appears in the rule, so a model whose embeddings are also used as the
+    // output head simply never qualifies, on any architecture, without a special case for it.
+    //
+    // Off by default: it trades residency for a read per gather miss, and which way that trade goes
+    // is a measurement per device class, not a foregone conclusion.
+    bool row_stream = false;
+    int row_stream_mb = 64; // resident window across all row-streamed tables, in MiB
+
+    // ── release the model file's mapping after load (Windows) ─────────────────────────
+    // llama.cpp keeps the gguf mapped for the model's lifetime, and on Windows a live section of
+    // the file serialises the streamer's concurrent unbuffered reads: four lanes deliver one
+    // lane's throughput (measured; see core/src/io/mapping_release.h). With this on, once nothing
+    // reads through the mapping any more (dense weights copied out under anon/ahwb, every file
+    // tensor either streamed, copied or row-served) the engine unmaps the file and closes its
+    // section. On POSIX the mapping is munmap'd the same way; Android was measured not to serialise
+    // reads, so there the gain is smaller and of a different kind (see docs/moe-streaming.md).
+    //
+    // Opt-in, and it must stay opt-in until the safety question has a positive answer rather than a
+    // blacklist. The release is correct only while nothing still dereferences the mapping, and
+    // llama.cpp exposes no way to enumerate a loaded model's tensors and prove that. The session
+    // declines on every shape where a surviving pointer is KNOWN — a dense policy that keeps the
+    // weights mmap'd, a tied output head, an unowned tensor under the MTP draft — but a future
+    // architecture can invent another one. See Session::open.
+    bool release_mmap = false;
+
     // ── cache-aware expert dropping (lossy; opt-in) ──────────────────────────────────
     // Skip a routed expert when it is a cache MISS *and* the router weighted it below
     // drop_cold_frac × (1 / n_expert_used) — i.e. below that fraction of the uniform share a
@@ -131,6 +165,24 @@ struct MoeStreamConfig {
     // mass it does in decode (measured; see docs/expert-dropping.md). Prefill is also
     // compute-bound, so there is little to win.
     bool drop_prefill = false;
+
+    // ── cache-aware substitution (lossy; opt-in) ─────────────────────────────────────
+    // Dropping decides whether to PAY for a missing expert. This decides whether to NEED one:
+    // before a routing is committed, every expert's router score is raised by
+    // substitute_lambda × (this token's score range) if that expert is already resident, and the
+    // top-k is taken again. A resident expert therefore wins a slot only when it was within that
+    // margin of the one it displaces — a confident routing is untouched, a near-tie resolves
+    // toward RAM.
+    //
+    // The margin is a fraction of the RANGE, so one value means the same thing whatever scale a
+    // model's router scores live on: no per-model constant, and no calibration state. The weights
+    // are not touched: the graph applies whatever the router itself gives the selected experts.
+    //
+    // It runs the same NUMBER of experts, just cheaper ones. It is still lossy — they are not the
+    // experts the router asked for — and, like dropping, state-dependent. 0 (the default) disables
+    // it and the engine is bit-exact as before. Decode only; needs a live cache to report
+    // residency. See docs/cache-aware-substitution.md.
+    float substitute_lambda = 0.0f;
 
     // Diagnostics: measure how predictable the routing is, without acting on it. For every decoded
     // token the engine ranks each layer's experts a layer early — running the NEXT layer's gate
@@ -290,6 +342,98 @@ struct SpecConfig {
     bool is_ngram() const { return source == DraftSource::ngram; }
 };
 
+// Prefill on an accelerator, decode on the CPU. Off unless `device` names a ggml device.
+//
+// Prefill and decode want opposite hardware. A prefill graph is hundreds of tokens wide, so a
+// matrix engine (the Hexagon HMX, a GPU) runs it at many times the CPU's rate; a decode graph is
+// one token wide, and on unified memory the per-graph boundary cost of an accelerator eats what it
+// saves there. So the weights are moved per GRAPH: before a wide prefill graph the layer weights
+// are rebound onto the device's own buffer, and afterwards back onto the CPU mapping. The llama.cpp
+// scheduler assigns every op to the backend holding its weight, and it re-decides that on every
+// graph it builds, so the rebind is all it takes — no llama.cpp change.
+//
+// The one hazard is graph REUSE: llama.cpp skips rebuilding (and re-scheduling) a graph of the same
+// shape as the previous one. The invariant that makes the rebind safe is therefore about widths:
+// every graph run on the device is at least `min_tokens` wide and every graph run on the CPU is
+// narrower, so two consecutive graphs on different placements never share a shape.
+struct PrefillDeviceConfig {
+    // ggml device name as the backend registry reports it (e.g. "HTP0" for the Hexagon NPU).
+    // Empty = off. A local device only: no front-end registers a remote (RPC) one.
+    std::string device;
+
+    // Narrowest prefill graph sent to the device. A prompt is fed in ubatch-wide pieces; pieces at
+    // least this wide run on the device and a shorter tail runs on the CPU. It must exceed every
+    // graph width the CPU path uses, which is one token for plain decode — speculation's wider
+    // verify batch is excluded by validation for now.
+    int min_tokens = 32;
+
+    // Loader threads of the streamed-expert arena (with moe.enabled). Separate from moe.io_threads,
+    // which sets the decode's read lanes: a prefill graph has the whole CPU idle while the device
+    // computes, and each loader both reads and repacks (a K-quant repack is CPU-heavy), while decode
+    // wants few lanes. Measured on a Q4_K_M: 4 loaders left the device waiting 10.3 s of a 15.1 s
+    // prefill, 8 left it 5.0 of 10.0.
+    int load_threads = 8;
+    static constexpr int load_threads_max = 16;
+
+    // TEST ONLY: sleep this long before the first upload of each layer in the arena. On a tiny
+    // model the loaders always beat the graph to the next layer, so a missing barrier would go
+    // unnoticed; slowed down, the barrier is the only thing keeping compute behind the loads, and the
+    // gate proves it. Never set by a front-end.
+    int test_load_delay_us = 0;
+
+    // Read only the experts each device graph routes to, predicted from the previous graph's routing
+    // and completed at each routing node (DeviceExpertArena::set_routed); the result is bit for bit
+    // the same as reading whole layers, which `false` restores. Only the expert arena of a streamed
+    // model reads experts, so elsewhere it has no effect. `routed_full_frac`: a layer routing more
+    // than this fraction of its experts gets the next layer read whole.
+    bool routed = true;
+    float routed_full_frac = 0.85f;
+    static constexpr float routed_full_frac_min = 0.0f; // exclusive: 0 would read every layer whole
+    static constexpr float routed_full_frac_max = 1.0f; // inclusive: 1 never falls back
+    // TEST ONLY: in routed mode, skip the reads at the routing node, so the graph computes on whatever
+    // the slot held for the experts the prediction missed. The gate uses it to prove it would see that.
+    bool test_routed_skip_demand = false;
+
+    static constexpr int min_tokens_floor = 2; // decode is one token wide; this keeps the shapes apart
+
+    // Logit rows a graph may produce, with the device on. llama.cpp reserves compute memory for as many
+    // as the ubatch is wide, and a row is the whole vocabulary: 2048 rows of a 248k-token vocabulary
+    // were 2 GB of reservation (measured on a 35B-A3B), which starved decode into thrashing. A prompt
+    // needs one row; a perplexity pass is fed in pieces this wide instead.
+    static constexpr int max_outputs = 128;
+
+    bool enabled() const { return !device.empty(); }
+};
+
+// Whether Session::decide() keeps the model state after a request's prefix and restores it when the
+// next request's prefix extends it (bmoe/decide.h).
+enum class PrefixCacheMode {
+    // On where splitting a prompt at the prefix costs only the tokens on each side — the CPU, where
+    // prefill time scales with the tokens fed. Off where every prefill graph costs about the same at
+    // any width, because there a second graph for the few tokens after the prefix costs as much as
+    // prefilling the whole prompt again.
+    Auto,
+    On,
+    Off,
+};
+
+// Stable lowercase spelling ("auto", "on", "off"), shared by the CLI flag and the telemetry.
+const char * prefix_cache_mode_name(PrefixCacheMode m);
+// The inverse of prefix_cache_mode_name. False, and `out` untouched, on any other spelling.
+bool parse_prefix_cache_mode(const std::string & s, PrefixCacheMode & out);
+
+// Session::decide() policy. Fixed for the session.
+struct DecideConfig {
+    // Off by default: decide() then refuses every request and nothing is allocated for it, so a
+    // session that does not use decisions is exactly what it was before the feature existed.
+    bool enabled = false;
+    PrefixCacheMode prefix_cache = PrefixCacheMode::Auto;
+    // Experimental diagnostic: append one JSONL line per decision to this file, with the experts each
+    // layer routed and the answer read at every layer's exit (see core/src/moe/decide_probe.h).
+    // Empty = off. Needs the eval callback, i.e. --moe-stream or a prefill device.
+    std::string probe_path;
+};
+
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
@@ -343,7 +487,9 @@ struct RunConfig {
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
-    SpecConfig spec; // self-speculative decoding (MTP head or n-gram lookup); off by default
+    SpecConfig spec;             // self-speculative decoding (MTP head or n-gram lookup); off by default
+    PrefillDeviceConfig prefill; // prefill graphs on an accelerator; off by default
+    DecideConfig decide;         // decide()'s prefix-state policy; off by default
 };
 
 // Validation result: ok plus a human-readable reason when not.

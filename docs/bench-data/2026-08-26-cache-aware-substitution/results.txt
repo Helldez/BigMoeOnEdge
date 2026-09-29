@@ -1,0 +1,50 @@
+== ppl_b_L0
+ppl: 4.2734  nll: 1.45242  next-token hits: 218/332 (65.7%)  35.72 s
+ppl-policy: 0/0 routed experts dropped, 0/0 reranked slots substituted
+== ppl_b_L0.15
+ppl: 4.2495  nll: 1.44681  next-token hits: 219/332 (66.0%)  32.32 s
+ppl-policy: 0/0 routed experts dropped, 932/109120 reranked slots substituted
+== ppl_b_L0.30
+ppl: 4.2391  nll: 1.44435  next-token hits: 219/332 (66.0%)  29.79 s
+ppl-policy: 0/0 routed experts dropped, 2899/109120 reranked slots substituted
+== ppl_c_L0
+ppl: 4.4169  nll: 1.48544  next-token hits: 210/326 (64.4%)  29.05 s
+ppl-policy: 0/0 routed experts dropped, 0/0 reranked slots substituted
+== ppl_c_L0.15
+ppl: 4.3490  nll: 1.46994  next-token hits: 206/326 (63.2%)  31.60 s
+ppl-policy: 0/0 routed experts dropped, 798/107200 reranked slots substituted
+== ppl_c_L0.30
+ppl: 4.4581  nll: 1.49472  next-token hits: 208/326 (63.8%)  29.00 s
+ppl-policy: 0/0 routed experts dropped, 2819/107200 reranked slots substituted
+== step_b_L0
+ppl: 4.2352  nll: 1.44343  next-token hits: 219/332 (66.0%)  260.85 s
+ppl-policy: 0/0 routed experts dropped, 0/0 reranked slots substituted
+== step_b_L0.15
+ppl: 4.4024  nll: 1.48214  next-token hits: 216/332 (65.1%)  92.75 s
+ppl-policy: 0/0 routed experts dropped, 29669/106240 reranked slots substituted
+== step_b_L0.30
+ppl: 5.3600  nll: 1.67896  next-token hits: 204/332 (61.4%)  59.65 s
+ppl-policy: 0/0 routed experts dropped, 48502/106240 reranked slots substituted
+== step_b_L0.60
+ppl: 31.2730  nll: 3.44275  next-token hits: 121/332 (36.4%)  43.30 s
+ppl-policy: 0/0 routed experts dropped, 79810/106240 reranked slots substituted
+== step_c_L0
+ppl: 4.4063  nll: 1.48303  next-token hits: 209/326 (64.1%)  141.74 s
+ppl-policy: 0/0 routed experts dropped, 0/0 reranked slots substituted
+== step_c_L0.15
+ppl: 4.4463  nll: 1.49207  next-token hits: 210/326 (64.4%)  78.91 s
+ppl-policy: 0/0 routed experts dropped, 26930/104320 reranked slots substituted
+== step_c_L0.30
+ppl: 5.3221  nll: 1.67187  next-token hits: 198/326 (60.7%)  59.66 s
+ppl-policy: 0/0 routed experts dropped, 43734/104320 reranked slots substituted
+== gen_L0
+generation: 64 tokens, 0.423 s/token (2.366 tok/s)
+moe-stream: read 16501.5 MiB (257.84 MiB/token), decode 0.423 s/token (compute 0.123 + cache mgmt 0.044 + flash I/O 0.944 s/token, 273 MiB/s)
+moe-cache: 48.8% hit, resident 1999.9 MiB
+moe-cache: 10973 evictions, 6988 re-reads (109.2/token) — bytes the cache had already paid for once
+== gen_L0.15
+generation: 64 tokens, 0.260 s/token (3.840 tok/s)
+moe-stream: read 7590.3 MiB (118.60 MiB/token), decode 0.260 s/token (compute 0.118 + cache mgmt 0.021 + flash I/O 0.413 s/token, 287 MiB/s)
+moe-cache: 69.4% hit, resident 1999.1 MiB
+moe-cache: 6113 evictions, 3150 re-reads (49.2/token) — bytes the cache had already paid for once
+moe-substitute: 5542/20480 reranked slots went to a resident expert (27.1%), margin 0.15 x score range

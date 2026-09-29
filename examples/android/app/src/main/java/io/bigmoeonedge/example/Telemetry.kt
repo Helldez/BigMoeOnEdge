@@ -14,9 +14,9 @@ data class Telemetry(
     // the token when compute_ms was clamped to 0.
     var ioMs: Double = 0.0,
     var stallMs: Double = 0.0,
-    // Cache-management time this token — the third wall-additive term. wall = compute + flash-wait +
-    // mgmt exactly (the engine defines compute as that residual), so the panel can show a breakdown
-    // that sums to the token time and makes tok/s = 1000/wall self-evident.
+    // Cache-management time this token — measured, unlike the legacy compute_ms residual. The
+    // four-way breakdown no longer sums to the wall exactly (unattributed is the honest remainder),
+    // which is the point: a tidy total was coming from pretending unknown time was compute.
     var mgmtMs: Double = 0.0,
     var cacheHitPct: Double = -1.0,
     // Compute-decomposition of the `computeMs` residual (see docs/telemetry.md). Live per-token
@@ -33,10 +33,19 @@ data class Telemetry(
     // generation finishes. The per-token [tokensPerSecond] is instantaneous (last token only),
     // so the UI shows this average once it is available.
     var avgTokensPerSecond: Double = -1.0,
-    // Per-token AVERAGES over the whole run, from the final summary — shown at the end instead of
-    // the last token's instantaneous [computeMs]. -1 until generation finishes.
+    // Per-token AVERAGES over the whole run, from the final summary. Kept for protocol/benchmark
+    // compatibility — the panel's compute bar deliberately does NOT read this residual anymore
+    // (see breakdown()); compute comes from [avgCpuSPerTok] and what it cannot explain lands in
+    // the unattributed term. -1 until generation finishes.
     var avgComputeMs: Double = -1.0,
     var avgMgmtMs: Double = -1.0,
+    // The measured flash terms of the same run averages, from BMOE_DONE's io_s_tok / stall_s_tok:
+    // serial reads io, overlap reads stall. The summary used to reconstruct flash wait from the
+    // clamped compute residual instead — against the documented contract — which over-attributed
+    // to flash exactly when compute_ms had been clamped to 0 (issue #98). -1 until generation
+    // finishes or on an engine older than the fields.
+    var avgIoMs: Double = -1.0,
+    var avgStallMs: Double = -1.0,
     // End-of-run figures from the final summary (BMOE_DONE); -1 / 0 until generation finishes.
     var prefillTps: Double = -1.0,      // prompt prefill rate (tok/s)
     var ttftS: Double = -1.0,           // time-to-first-token = model load + prompt prefill (s)
@@ -83,15 +92,20 @@ data class Telemetry(
 }
 
 /**
- * One token's time, split into the three wall-additive terms the panel draws, plus the diagnostics
- * that explain the compute term. Derived by [breakdown]; see MetricFields for the same contract as
- * the CSV states it.
+ * One token's time, split into the four terms the panel draws — compute, flash wait, cache mgmt
+ * and the unattributed remainder — plus the diagnostics that explain them. Derived by [breakdown];
+ * see MetricFields for the same contract as the CSV states it.
  */
 data class Breakdown(
     val wallMs: Double,
     val computeMs: Double,
     val flashWaitMs: Double,
     val mgmtMs: Double,
+    // Wall time none of the three measured terms explains (compute, flash wait, cache mgmt):
+    // zram swap-in, preemption, frequency caps — the off-CPU time the old three-bar panel painted
+    // as compute and read as "the model is thinking". Clamped at 0: measurement noise is allowed
+    // to make the terms overlap the wall, and the bars are not rescaled to force a tidy total.
+    val unattributedMs: Double,
     /** These are run averages, not the last token — the panel labels them "avg". */
     val isAverage: Boolean,
     /** CPU-time ÷ (wall × busy threads), or -1 when the platform couldn't measure it. */
@@ -99,40 +113,50 @@ data class Breakdown(
     /** Major faults per token, or -1 when unmeasured. */
     val faultsPerToken: Double,
 ) {
-    /** Denominator for the meter bars: the wall time, or the terms themselves before it is known. */
-    val totalMs: Double get() = if (wallMs > 0.0) wallMs else computeMs + flashWaitMs + mgmtMs
+    /** Denominator for the meter bars: the wall time, or the four terms before it is known. */
+    val totalMs: Double get() =
+        if (wallMs > 0.0) wallMs else computeMs + flashWaitMs + mgmtMs + unattributedMs
 }
 
 /**
- * Split a token's wall time into compute / flash-wait / cache-mgmt.
+ * Split a token's wall time into compute / flash-wait / cache-mgmt / unattributed.
  *
- * While generating this reads the live last token; once the run has a summary it switches to the
- * run averages. The two derive the split differently on purpose. Live, flash wait is the MEASURED
- * wall-additive read term — stall_ms under overlap (the wall time compute sat idle), io_ms in
- * serial (the blocking read) — and compute is the leftover, which keeps the clamp on compute so a
- * near-0 compute stays honest instead of being dumped into "flash wait". The end-of-run average
- * has no per-mode io/stall to read, so it keeps the residual form.
+ * Both branches — live (last token) and end-of-run (averages) — now derive the SAME way (issue
+ * #98; they used to disagree, and the end-of-run one inverted the clamped compute residual, which
+ * the telemetry contract warns against). Flash wait is always the MEASURED wall-additive read
+ * term: stall under overlap (the wall time at least one compute thread sat idle on a read), io in
+ * serial (the blocking read). Compute is process CPU time over the compute threads — a measured
+ * attribution proxy for matmul work, not the legacy `compute_ms` residual, which by definition
+ * absorbs everything unmeasured (zram swap-in, preemption, faults); what that residual used to
+ * hide lands in [Breakdown.unattributedMs] instead. A missing measurement contributes 0 to its
+ * bar and its time stays unattributed — it is never reconstructed from the wall.
  *
- * [busyThreads] must include the I/O lanes under overlap: the CPU numerator is whole-process, so a
- * denominator that counts only compute threads reads occupancy above 100%.
+ * [busyThreads] (CPU-busy diagnostic) must include the I/O lanes under overlap — the CPU numerator
+ * is whole-process. [computeThreads] (displayed compute) divides that same numerator down to a
+ * per-compute-thread figure; the two denominators are different on purpose and must not be
+ * "simplified" into one.
  */
-fun breakdown(t: Telemetry, overlap: Boolean, busyThreads: Int): Breakdown {
-    val useAvg = t.avgTokensPerSecond > 0 && t.avgComputeMs >= 0
-    val mgmt = if (useAvg) t.avgMgmtMs.coerceAtLeast(0.0) else t.mgmtMs
-    val wall = if (useAvg) {
-        if (t.avgTokensPerSecond > 0) 1000.0 / t.avgTokensPerSecond else 0.0
+fun breakdown(t: Telemetry, overlap: Boolean, busyThreads: Int, computeThreads: Int): Breakdown {
+    // Summary mode is gated by the summary itself, not by the legacy residual: the bars no longer
+    // read avgComputeMs at all, so it must not control which branch they take either.
+    val useAvg = t.avgTokensPerSecond > 0
+    val mgmt = (if (useAvg) t.avgMgmtMs else t.mgmtMs).coerceAtLeast(0.0)
+    val wall = if (useAvg) 1000.0 / t.avgTokensPerSecond else t.wallMs
+    // Every component is measured or zero. A missing measurement is NOT reconstructed from the
+    // wall — that is exactly the attribution error #98 exists to fix (the residual silently
+    // absorbed zram, preemption, faults as "compute"). What is unmeasured stays unattributed.
+    val flashWait = (if (useAvg) {
+        if (overlap) t.avgStallMs else t.avgIoMs
     } else {
-        t.wallMs
-    }
-    val compute: Double
-    val flashWait: Double
-    if (useAvg) {
-        compute = t.avgComputeMs
-        flashWait = (wall - compute - mgmt).coerceAtLeast(0.0)
+        if (overlap) t.stallMs else t.ioMs
+    }).coerceAtLeast(0.0)
+    val cpuMs = if (useAvg) {
+        if (t.avgCpuSPerTok >= 0) t.avgCpuSPerTok * 1000.0 else 0.0
     } else {
-        flashWait = if (overlap) t.stallMs else t.ioMs
-        compute = (wall - flashWait - mgmt).coerceAtLeast(0.0)
+        t.cpuMs.coerceAtLeast(0.0)
     }
+    val compute = if (computeThreads > 0) cpuMs / computeThreads else 0.0
+    val unattributed = (wall - compute - flashWait - mgmt).coerceAtLeast(0.0)
 
     val useAvgCpu = useAvg && t.avgCpuSPerTok >= 0
     val cpuSPerTok = if (useAvgCpu) t.avgCpuSPerTok else t.cpuMs / 1000.0
@@ -146,6 +170,7 @@ fun breakdown(t: Telemetry, overlap: Boolean, busyThreads: Int): Breakdown {
         computeMs = compute,
         flashWaitMs = flashWait,
         mgmtMs = mgmt,
+        unattributedMs = unattributed,
         isAverage = useAvg,
         cpuBusyPct = cpuBusy,
         faultsPerToken = if (useAvgCpu) t.avgMajfltPerTok else t.majflt,

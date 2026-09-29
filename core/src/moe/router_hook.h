@@ -31,7 +31,13 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/predict_stats.h"
+#include "bmoe/row_source.h"
 #include "expert_stream_source.h"
+
+namespace bmoe {
+class DeviceExpertArena;
+class DecideProbe;
+} // namespace bmoe
 
 #include <atomic>
 #include <chrono>
@@ -72,7 +78,60 @@ public:
     // against the gguf tensor set, which those do not belong to. Only .tensor is meaningful here.
     const std::unordered_map<std::string, ggml_tensor *> & captured_weights() const { return captured_weights_; }
 
+    // Every distinct weight leaf OBJECT the graph read, deduplicated by address rather than by
+    // name. The map above cannot answer this: a model whose output head is tied to its token
+    // embedding table has two ggml_tensor objects carrying the same name over the same file
+    // bytes, and a name-keyed map keeps one of them. Rebinding only that one leaves the twin
+    // reading the model's mmap for the life of the run, which is what --dense-weights anon and
+    // ahwb exist to prevent. Order is first-seen, so a run is reproducible.
+    const std::vector<ggml_tensor *> & captured_weight_objects() const { return captured_weight_objects_; }
+
+    // After capture, the memory module's state tensors the graph read (KV cache, recurrent state):
+    // llama.cpp names them cache_*, and the graph only ever reaches them through views, so they are
+    // found through view_src. A prefill device needs them in memory it can address.
+    const std::vector<ggml_tensor *> & captured_state_objects() const { return captured_state_objects_; }
+
+    // While set, the graph being computed runs on a prefill device fed by `arena`: the hook isolates
+    // each layer's routing node only to pace the arena there, and does nothing else of the streaming
+    // path — the routing lives on the device and the arena, not the streamer, supplies the experts.
+    void set_device_arena(DeviceExpertArena * arena) { device_arena_ = arena; }
+
+    // Experimental decide() probe (decide_probe.h): while it is armed, the routing, weight and layer-output
+    // nodes are offered to it on every graph, host or device. Observes only.
+    void set_probe(DecideProbe * p) { probe_ = p; }
+
+    // After capture, whether the last node of every layer was seen: what paces a dense arena, which
+    // must load a layer's weights before its first node and so waits at the end of the one before.
+    bool learned_layer_ends() const {
+        for (const std::string & n : last_node_)
+            if (n.empty()) return false;
+        return !last_node_.empty();
+    }
+
+    // After capture, the subset of those weights the graph only ever GATHERS ROWS from — the shape a
+    // token embedding table has, and the one residency policy can exploit (see IRowSource). A name is
+    // in this set only if EVERY node that referenced the tensor was a row gather taking it as the
+    // table, and every such gather's index was materialized before the node ran (a graph input, or a
+    // view of one). One reference of any other kind — a matmul over the same tensor, which is what
+    // tied embeddings used as the output head look like — disqualifies it, because the whole tensor
+    // is then read and row residency would be a fault per row.
+    //
+    // Derived from what the graph did, not from tensor names: no architecture appears in this rule,
+    // and a model whose embedding table is multiplied simply never qualifies.
+    std::unordered_set<std::string> row_gathered_weights() const;
+
+    // After capture, the weight leaves some node read OTHER than as the matrix of a matmul (src0 of
+    // MUL_MAT / MUL_MAT_ID): a norm's scale, a bias, a per-expert scale broadcast by REPEAT, or any
+    // weight reached through a view or reshape first. A prefill device keeps the rest in its weight
+    // layout; these are plain data every kernel must be able to address (see DeviceExpertArena).
+    // Derived from the graph's ops, so no architecture or tensor name appears in the rule.
+    const std::unordered_set<const ggml_tensor *> & non_matrix_weights() const { return non_matrix_weights_; }
+
     void set_source(IExpertSource * src) { source_ = src; } // non-null → stream mode
+
+    // Install the row-gathered residency policy (see bmoe/row_source.h). Non-null makes the stream
+    // pass check every gather node against it and make the rows present before the node runs.
+    void set_row_source(IRowSource * src) { row_source_ = src; }
 
     // Temporal prefetch depth K: while streaming layer l, hint the source to read ahead the
     // experts the previous token used at layers l+1..l+K. 0 (default) disables it.
@@ -167,13 +226,32 @@ public:
     // total mass. Off (frac == 0) the hook behaves exactly as before, bit for bit.
     void set_drop_policy(float frac, bool renorm, bool in_prefill);
 
+    // ── cache-aware substitution (lossy; see MoeStreamConfig::substitute_lambda) ──────
+    // `lambda` > 0 arms it: at every decode routing, resident experts get their router score
+    // raised by lambda × the token's score range and the top-k is re-ranked, so a near-tie goes
+    // to the expert already in RAM. Off (lambda == 0) the hook behaves exactly as before.
+    void set_expert_substitute(float lambda);
+
     // Which phase the batch being decoded belongs to (0 = prefill, 1 = decode). The drop policy
     // is decode-only unless armed for prefill, and unlike the traces it must know this on every
     // run, so it cannot ride on begin_trace_batch.
     void set_batch_phase(int phase) { batch_phase_ = phase; }
 
+    // Graph nodes whose output lives in a non-host buffer, i.e. that a device backend computed. The
+    // proof a prefill device ran, as opposed to merely having the weights moved onto it: a backend
+    // allocates the outputs of the ops IT runs in its own compute buffer. Counted only when armed,
+    // since it costs a test per node on every graph.
+    void count_device_nodes(bool on) { count_device_nodes_ = on; }
+    long long device_nodes() const { return device_nodes_; }
+
     long long experts_routed() const { return experts_routed_; }
     long long experts_dropped() const { return experts_dropped_; }
+    // Substitution's own ledger. Reranked counts every slot the policy examined (its denominator —
+    // experts_routed above is the drop policy's, and stays 0 with dropping off); substituted counts
+    // the slots whose expert it actually changed for one the router had not selected. A re-ranking
+    // that returns the router's own SET, in whatever order, changes nothing and is not counted.
+    long long experts_reranked() const { return experts_reranked_; }
+    long long experts_substituted() const { return experts_substituted_; }
 
     // Prediction accuracy, aggregate and per layer (index = layer). Empty/zero unless the probe
     // was armed. `predict_unscored` counts routings the probe had to skip: the first token, whose
@@ -240,6 +318,8 @@ private:
     void flush_pending();
     bool drop_armed() const;
     void apply_drop(ggml_tensor * weights);
+    bool substitute_armed() const;
+    void apply_substitute(ggml_tensor * ids, int il, int nu, int nt);
     void close_drop_layer();
     void ctrace_close_segment(int interval_layer, const char * tail_name);
 
@@ -250,10 +330,23 @@ private:
     MoeRecipe recipe_;
     int n_layer_ = 0;
     bool capturing_ = false;
-    IExpertSource * source_ = nullptr; // non-null → stream mode
+    IExpertSource * source_ = nullptr;  // non-null → stream mode
+    IRowSource * row_source_ = nullptr; // row-gathered dense tables, when the policy is on
     std::vector<LayerExperts> captured_;
-    std::unordered_map<std::string, ggml_tensor *> captured_weights_; // non-expert weight leaves (see captured_weights)
-    std::vector<int32_t> gathered_;                                   // reused scratch for stream-mode id gather
+    std::unordered_map<std::string, ggml_tensor *> captured_weights_;
+    std::vector<ggml_tensor *> captured_weight_objects_; // same leaves, deduplicated by address
+    std::unordered_set<const ggml_tensor *> captured_weight_seen_;
+    std::vector<ggml_tensor *> captured_state_objects_;
+    std::unordered_set<const ggml_tensor *> captured_state_seen_;
+    DeviceExpertArena * device_arena_ = nullptr;
+    DecideProbe * probe_ = nullptr;
+    std::vector<std::string> last_node_; // per layer: name of its last node in the capture graph
+    // Capture-time evidence for row_gathered_weights(): every weight seen as the TABLE of a row
+    // gather, and every weight seen in any way that rules that out. The verdict is the difference.
+    std::unordered_set<std::string> row_gathered_;
+    std::unordered_set<std::string> row_disqualified_; // non-expert weight leaves (see captured_weights)
+    std::unordered_set<const ggml_tensor *> non_matrix_weights_;
+    std::vector<int32_t> gathered_; // reused scratch for stream-mode id gather
 
     // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
     // during prefill). Empty when prefetch is off or a layer has not been seen yet.
@@ -435,6 +528,22 @@ private:
     bool drop_prefill_ = false;
     int batch_phase_ = 1; // 0 prefill, 1 decode
     long long experts_routed_ = 0, experts_dropped_ = 0;
+    bool count_device_nodes_ = false;
+    long long device_nodes_ = 0;
+
+    // Cache-aware substitution. Inert unless sub_lambda_ > 0.
+    //
+    // Where dropping decides whether to PAY for a missing expert, this decides whether to need it
+    // at all: a resident expert whose router score is close enough is run in its place. It costs
+    // no flash read and no extra matmul, and the weights the graph applies still come from the
+    // router's own scores for whichever experts end up selected. The scratch below is sized once
+    // per layer width and reused for every token, so the steady state allocates nothing.
+    float sub_lambda_ = 0.0f;
+    std::vector<float> sub_scores_; // this token's scores as the graph ranked them, boosted for residents
+    std::vector<int32_t> sub_all_;  // 0..n_expert-1, for the whole-layer residency query
+    std::vector<uint8_t> sub_res_;  // residency of every expert in the layer
+    std::vector<int32_t> sub_pick_; // the re-ranked selection
+    long long experts_reranked_ = 0, experts_substituted_ = 0;
 
     struct PendingDrop {
         int layer = -1;

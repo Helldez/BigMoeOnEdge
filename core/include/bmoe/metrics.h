@@ -99,6 +99,11 @@ struct TokenMetrics {
 };
 
 struct RunSummary {
+    // The loaded model's architecture, as gguf reports it. Carried here so a caller can tell what
+    // the run was capable of and not only what it did: a MoE arch that ran without streaming is the
+    // baseline, not a measurement of this engine (see the CLI's mode line).
+    std::string arch;
+
     int n_generated = 0;
     double gen_seconds = 0.0;
     double s_per_token = 0.0;
@@ -112,6 +117,31 @@ struct RunSummary {
     int n_past = 0;
     double load_seconds = 0.0;
     double prefill_seconds = 0.0;
+
+    // Prefill-phase attribution (#173): the same wall-additive quantities the decode phase
+    // reports, as deltas of the streamer's cumulative counters across THIS turn's prefill
+    // chunks (plus process CPU). Before #169-style attribution existed prefill was a single
+    // bare wall number, so the phase a >RAM prompt actually waits on had no compute/flash
+    // split at all. Zero when streaming is off (prefill_cpu_seconds still reported: CPU is
+    // measured regardless). Same reading rules as the decode fields: io is the summed lane
+    // busy time under overlap, stall is the union of stalled intervals, and cpu covers the
+    // whole process — an upper bound on compute-thread CPU-equivalent time.
+    double prefill_cpu_seconds = 0.0;
+    double prefill_read_mib = 0.0;
+    double prefill_io_seconds = 0.0;
+    double prefill_stall_seconds = 0.0;
+    double prefill_mgmt_seconds = 0.0;
+    // Of n_prompt, the tokens whose prefill graph ran on the prefill device (RunConfig::prefill).
+    // Zero when that is off, and for a prompt too short to reach it. What proves the device ran.
+    int prefill_device_tokens = 0;
+    // Graph nodes a device backend computed during this turn's prefill: the proof the device RAN,
+    // where prefill_device_tokens only says the weights were moved there. Zero when that is off.
+    long long prefill_device_nodes = 0;
+    // With streaming, the experts the device prefill read through its arena, and the wall time the
+    // graph waited at a layer for them: the flash half of a device prefill, which the streamer's
+    // own prefill_read_mib/prefill_stall_seconds above do not see. Zero without an arena.
+    double prefill_device_read_mib = 0.0;
+    double prefill_device_stall_seconds = 0.0;
 
     // MoE streaming totals (zero when streaming is off)
     double moe_read_mib = 0.0;
@@ -140,6 +170,18 @@ struct RunSummary {
     // claiming its reads are useful is doing it here.
     long long cache_evictions = 0;
     long long cache_rereads = 0;
+
+    // Row-gathered dense tables served from flash (MoeStreamConfig::row_stream). The pair that says
+    // whether the policy paid: row_table_mib is what those tables would have occupied resident,
+    // row_resident_mib what they occupy now, and row_read_mib what buying that cost in flash. Zero
+    // throughout when the policy is off or no table qualified.
+    double row_table_mib = 0.0;
+    double row_resident_mib = 0.0;
+    double row_read_mib = 0.0;
+    long long row_rows = 0;       // row indices gathered, duplicates included
+    long long row_slab_reads = 0; // gather misses that went to flash
+    long long row_evictions = 0;
+    long long row_io_errors = 0; // non-zero means a decode read bytes that were never fetched
     // The named eval-thread waits (see TokenMetrics): the async load's previous-batch drain (part
     // of the compute residual) and the route-ahead adoption wait (part of mgmt), per token.
     double moe_drain_s_per_token = 0.0;
@@ -163,6 +205,13 @@ struct RunSummary {
     // the flag. Both cover generation only — prefill drops nothing unless armed for it.
     long long experts_routed = 0;
     long long experts_dropped = 0;
+    // Cache-aware substitution (both zero when --expert-substitute is off): reranked is every slot
+    // the policy examined — its own denominator, since experts_routed above is the drop policy's —
+    // and substituted the slots whose expert it changed for a resident one. Same caveat as dropped:
+    // the flag sets a margin, not a rate, and how often a resident stand-in falls inside it depends
+    // on the cache.
+    long long experts_reranked = 0;
+    long long experts_substituted = 0;
 
     // Temporal prefetch (zero when --prefetch is off): speculative bytes read during generation,
     // experts successfully prefetched, and how many of those a later routing actually used.
@@ -263,6 +312,12 @@ struct RunInfo {
     bool cache_auto = false;
     int cache_floor_mb = 0; // the RAM auto-sizing was told to leave free — the input behind cache_mb
     int cache_ceil_mb = 0;
+    // One token's WORST-CASE routed bytes, priced at load from the model's shape and the effective
+    // top-k. A cache_mb under this cannot hold a token cycle, so the run's hit rate is near zero by
+    // construction — and that is invisible in a committed CSV unless the cycle is recorded next to
+    // the budget, because the cliff is a property of the MODEL, not of the number that was typed.
+    // 0 when streaming is off.
+    int cache_cycle_mb = 0;
     bool force_cache = false;
     bool load_all = false; // whole-expert-set baseline: reads everything, so its bytes mean something else
     int io_threads = 0;
@@ -279,6 +334,7 @@ struct RunInfo {
     float drop_cold_frac = 0.0f;        // cache-aware expert dropping threshold (0 = off)
     bool drop_renorm = true;            // survivors rescaled to keep the routing's total mass
     bool drop_prefill = false;          // dropping armed during prefill too, where it discards far more
+    float substitute_lambda = 0.0f;     // cache-aware substitution margin, a fraction of the score range (0 = off)
 
     // Sampling. Greedy (temp <= 0) is the default and the only deterministic one; the byte-identity
     // gates depend on it. A stochastic run and a greedy one are not comparable, and until these were
