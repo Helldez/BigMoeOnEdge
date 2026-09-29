@@ -20,6 +20,7 @@
 
 #include "llama.h"
 #include "ggml.h"
+#include "mtmd.h"
 
 // llama.cpp's `common` layer (NOT the stable public API): chat-template rendering and
 // reasoning parsing. See the note in the root CMakeLists / docs/seam.md.
@@ -292,6 +293,13 @@ struct Session::Impl {
     // cannot be split between the widened verify union on the trunk and the head's own routing,
     // which are attacked in completely different ways.
     uint64_t mtp_draft_read_bytes = 0;
+
+    // Multimodal (MTMD) context for vision/audio models. Initialized from mmproj_path.
+    // Uses unique_ptr with custom deleter for mtmd_free.
+    struct MtmdContextDeleter {
+        void operator()(mtmd_context * ctx) const { if (ctx) mtmd_free(ctx); }
+    };
+    std::unique_ptr<mtmd_context, MtmdContextDeleter> mtmd_ctx{nullptr};
 
     const llama_vocab * vocab = nullptr;
     int n_vocab = 0;
@@ -844,6 +852,23 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         llama_set_n_threads(ctx_dft, cfg.n_threads, cfg.n_threads);
     }
 
+    // Initialize MTMD (multimodal) context if mmproj_path is provided.
+    // This enables vision/audio input processing for models like Qwen-VL, LLaVA, etc.
+    if (!cfg.mmproj_path.empty()) {
+        mtmd_context_params mparams = mtmd_context_params_default();
+        // Use progress callback for loading feedback
+        mparams.progress_callback = [](float progress, void * user_data) -> bool {
+            (void)user_data; (void)progress;
+            // Could log progress here if needed
+            return true; // Continue loading
+        };
+        im.mtmd_ctx.reset(mtmd_init_from_file(cfg.mmproj_path.c_str(), model, mparams));
+        if (!im.mtmd_ctx) {
+            return fail("failed to create MTMD context from " + cfg.mmproj_path);
+        }
+        fprintf(stderr, "mmproj loaded: %s\n", cfg.mmproj_path.c_str());
+    }
+
     // Opt-in sampling. temp <= 0 leaves smpl null and the decode loop on argmax — the deterministic
     // default the byte-identity gates rely on. temp > 0 builds the standard chain, using only the
     // public llama_sampler_* API (hard rule 1): common_sampler lives in the non-stable common layer.
@@ -1336,6 +1361,11 @@ RunResult Session::generate(const GenerateRequest & req,
             }
             chat_on = false;
         }
+    }
+
+    // Process images through MTMD if provided and MTMD context is available.
+    if (!req.images.empty() && im.mtmd_ctx) {
+        fprintf(stderr, "bmoe: vision input: %zu image(s) provided (MTMD integration pending)\n", req.images.size());
     }
 
     std::vector<llama_token> tokens(prompt.size() + 8);

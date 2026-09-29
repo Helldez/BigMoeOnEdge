@@ -51,6 +51,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     set(LLAMA_BUILD_SERVER  OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_COMMON  ON  CACHE BOOL "" FORCE)
     set(LLAMA_CURL          OFF CACHE BOOL "" FORCE)  # common's model-download path unused
+    set(LLAMA_BUILD_MTMD    ON  CACHE BOOL "" FORCE)  # multimodal (mmproj) support
     # The prefill-device gate (G16) needs a second device to move weights onto, and the one every
     # host has is a loopback rpc-server fronting the CPU. A test fixture, not a feature: host test
     # builds only (releases build without tests), no front-end accepts an RPC endpoint, and it is

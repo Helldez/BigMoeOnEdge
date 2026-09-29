@@ -437,13 +437,18 @@ struct DecideConfig {
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
+    std::string mmproj_path;   // path to multimodal projector (mmproj.gguf) for vision models
     std::string prompt = "The capital of Japan is";
     int n_predict = 128;
     int n_threads = 4;
     int n_ctx = 2048;
 
-    // Largest batch computed in one graph, i.e. the prefill chunk size. 0 (the default) means
-    // "follow n_ctx", which prefills any fitting prompt in a single pass.
+    // Prefill chunk size: how many prompt tokens a single llama_decode pass is fed. 0 (the default)
+    // means 512. Larger chunks prefill faster but grow the resident compute buffers.
+    int n_batch = 0;
+
+    // Largest batch computed in one graph, i.e. the widest prefill pass, and therefore what sizes
+    // the resident compute buffers. 0 (the default) means 512, independent of n_batch.
     //
     // It is worth exposing because it does not only cost time, it costs RESIDENT MEMORY: the
     // scheduler reserves compute buffers for the worst-case graph, which is a full-width prefill,
