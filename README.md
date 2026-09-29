@@ -180,10 +180,37 @@ breaks each token into flash I/O, cache management and compute, next to the cach
 bytes read, and `--csv` adds the memory picture those numbers must be read against. The Android
 app renders the same feed live while you chat. More under [Telemetry](#telemetry).
 
-A session opened with `--decide` also answers **decisions**: which of a list of choices the model
-would pick, read from one prefill with no decode, with the state after a shared prefix kept between
-calls. It is the shape of an agent choosing among lettered UI actions. See
-[docs/decide.md](docs/decide.md).
+### Decisions: choose instead of generate
+
+Many uses of a model are really a choice: which UI action an agent takes next, which tool a router
+calls, which label a classifier assigns, which option a multiple-choice question has. Generating the
+answer spends a decode per token, and on a model streamed from flash decode is the slow part. A
+session opened with `--decide` answers the choice from the **prompt alone**:
+
+1. the prompt lists the options under single-token labels (`A`, `B`, `C`, ...) and asks for the
+   label;
+2. the engine prefills it once and reads the next-token distribution;
+3. each option is scored by the log-probability of its label over the **whole vocabulary**, and the
+   highest wins.
+
+Nothing is decoded, so a decision costs one prefill. The scores are not renormalised over the
+options: the mass the model puts elsewhere is how unsure it is, which is what a caller needs to set
+an abstention threshold (act when the best option is likely enough, ask or fall back otherwise).
+The prompt comes in two parts, a `prefix` that repeats from call to call (instructions, task,
+history) and a `suffix` that changes (the current screen), and on the CPU the model state after the
+prefix is kept and restored, so a sequence of decisions only prefills what is new. Choices that
+share a first token are refused up front rather than answered with a tie.
+
+```
+{"cmd":"decide","id":1,"prefix":"Task: turn on Wi-Fi. ","suffix":"Screen: Settings. Options:
+ A) Network B) Display C) Battery. Answer with the letter.","choices":["A","B","C"]}
+BMOE_DECIDE {"id":1,"best":0,"choice_logp":[-0.014,-6.76,-11.0],"n_tokens":69,...}
+```
+
+On a 12 GB phone with the NPU prefill, a Qwen3.6-35B-A3B decision over a compacted Android screen
+(130 to 480 tokens) takes 3.3 to 4.9 s, the time of one prompt. `--decide-probe` (experimental)
+writes, per decision, which experts each layer routed and the answer the model would give if it
+stopped after each layer. See [docs/decide.md](docs/decide.md).
 
 ### Android demo app
 
@@ -323,12 +350,26 @@ phone with a Hexagon v81 NPU:
 | Qwen3.6-35B-A3B Q4_K_M | 1418 tokens | 80.6 s | 10.2 s | 7.9x |
 | Gemma 4 26B-A4B | 238 tokens | 16.2 s | 5.85 s | 2.8x |
 
-Short prompts are flash bound: read whole, the experts cost the same at 121 tokens as at 1418. The
-arena therefore reads only the experts a graph routes to, which on 130 to 480-token prompts took a
-Qwen3.6-35B-A3B decision from 7.68 s to 4.16 s with identical output (1.8x on Gemma 4 too; little
-on a model whose prompts route to most of its experts). The slots cost decode some memory, about 5% on
-Gemma 4 (3.25 against 3.41 tok/s). The NPU computes in fp16, so the output is not identical to the
-CPU's. Off by default; see [docs/npu-prefill.md](docs/npu-prefill.md).
+**Short prompts are flash bound**: read whole, the experts cost the same at 121 tokens as at 1418.
+So the arena reads only the experts a graph routes to. It loads ahead the experts the previous
+prompt routed at each layer, and at each layer's routing node it reads what the router actually
+picked and fetches what is missing; the matmul touches only those, so the output is unchanged bit
+for bit. A layer that routes to more than 85% of its experts has the next one read whole, so long
+prompts lose nothing (`--no-prefill-routed` reads whole layers everywhere). Same phone, 130 to
+480-token prompts, top-4 routing, whole layers against routed:
+
+| Model | Experts routed per layer | Whole layers | Routed | Speedup |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B Q4_0 | ~50% of 256 | 7.68 s | 4.16 s | 1.85x |
+| Qwen3.6-35B-A3B Q4_K_M | ~50% of 256 | 9.95 s | 5.37 s | 1.85x |
+| Gemma 4 26B-A4B Q4_K_M | ~58% of 128 | 6.69 s | 3.70 s | 1.81x |
+| Nemotron 3.5 30B-A3B Q4_0 | ~79% of 128 | 7.42 s | 6.81 s | 1.09x |
+
+The gain is what a prompt leaves unrouted, so it is small on a model whose prompts route to most of
+its experts. The slots cost decode some memory, about 5% on Gemma 4 (3.25 against 3.41 tok/s). The
+NPU computes in fp16, so its output is not identical to the CPU's. The NPU prefill is off by
+default (`--prefill-device HTP0`, or the NPU switch in the app); see
+[docs/npu-prefill.md](docs/npu-prefill.md).
 
 ### Desktop
 

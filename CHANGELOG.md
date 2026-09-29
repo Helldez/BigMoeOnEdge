@@ -43,6 +43,11 @@ Semantic Versioning.
   exactly what a prefill cut after that layer would answer). Works on the prefill device, where
   `--route-trace` records nothing. See `docs/decide.md`.
 
+### Docs
+- The README explains decisions (`--decide`: choosing from a list with one prefill, scored over
+  the whole vocabulary) in a section of their own, and its NPU prefill section carries the routed
+  arena and its per-model numbers.
+
 ## [0.27.0] - 2026-09-28
 
 ### Added
