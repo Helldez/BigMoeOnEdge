@@ -54,10 +54,11 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.n_ctx <= 0) {
         return fail("n_ctx must be positive");
     }
-    // 0 means "as wide as the context"; anything larger than the context would be reserved for a
-    // batch that can never arrive, which is the opposite of what this knob is for.
+    // 0 means "use the default" (512, set in session_config_from); anything larger than the context
+    // would be reserved for a batch that can never arrive, which is the opposite of what this knob
+    // is for.
     if (cfg.n_ubatch < 0) {
-        return fail("n_ubatch must be >= 0 (0 = as wide as the context)");
+        return fail("n_ubatch must be >= 0 (0 = default 512)");
     }
     if (cfg.n_ubatch > cfg.n_ctx) {
         return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " exceeds n_ctx=" + std::to_string(cfg.n_ctx) +
@@ -122,8 +123,8 @@ ValidationResult validate(const RunConfig & cfg) {
     // The verify pass is 1 + draft_max positions and its whole point is that they are computed
     // TOGETHER. A narrower graph splits it back into single-token passes, which spends the draft
     // and keeps none of the amortisation — the feature would cost time and buy nothing. Rejected
-    // rather than silently degraded: nothing in the output would show that it happened. 0 means
-    // "as wide as the context" and is always wide enough.
+    // rather than silently degraded: nothing in the output would show that it happened. 0 means the
+    // default (512) and is always wide enough for a verify pass.
     if (cfg.spec.enabled() && cfg.n_ubatch > 0 && cfg.n_ubatch < cfg.spec.draft_max + 1) {
         return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " is narrower than the verify batch (" +
                     std::to_string(cfg.spec.draft_max + 1) +

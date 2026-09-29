@@ -15,6 +15,13 @@ Semantic Versioning.
   streaming flags are supported (`--moe-stream`, `--cache-mb`, `--prefetch`, etc.). Usage:
   `bmoe-server -m <model.gguf> [--port N] [--host ADDR] [--no-think]`.
 
+### Changed
+- **Prefill batches are bounded by `n_batch`, not by the context.** `RunConfig::n_batch` (0 = 512)
+  now sets the prefill chunk and `n_ubatch` defaults to 512 instead of following the whole context,
+  so the resident compute buffers scale with the batch rather than `n_ctx`. This reaches every
+  front-end, `bmoe-cli` included: prefill runs in more, smaller passes and reserves less memory.
+  `bmoe-server` exposes the knob as `--batch-size`. The byte-identity gates are unchanged.
+
 ### Fixed
 - **`bmoe-server` handles OpenAI SDK request formats.** Accepts `max_completion_tokens` (sent by the
   OpenAI/Node SDK as `max_completion_tokens`) in addition to `max_tokens`.
