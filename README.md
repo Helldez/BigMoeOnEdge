@@ -324,7 +324,9 @@ phone with a Hexagon v81 NPU:
 | Gemma 4 26B-A4B | 238 tokens | 16.2 s | 5.85 s | 2.8x |
 
 Short prompts do not gain (121 tokens: 9.5 s against 9.95 s): the device path reads every expert
-once per graph, and a short prompt is all read. The slots cost decode some memory, about 5% on
+once per graph, and a short prompt is all read. The experimental `--prefill-routed` reads only the
+experts a graph routes to: on an Android agent's 130 to 480-token prompts, 7.68 s down to 4.16 s,
+with identical output. The slots cost decode some memory, about 5% on
 Gemma 4 (3.25 against 3.41 tok/s). The NPU computes in fp16, so the output is not identical to the
 CPU's. Off by default; see [docs/npu-prefill.md](docs/npu-prefill.md).
 

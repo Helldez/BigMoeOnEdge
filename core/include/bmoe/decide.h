@@ -47,9 +47,10 @@ struct PrefillStats {
     double stall_seconds = 0.0;
     double mgmt_seconds = 0.0;
     int device_tokens = 0; // prefilled on the prefill device (PrefillDeviceConfig); 0 without one
-    // The device's expert arena: MiB it read and seconds the graph waited on it (also added into
-    // read_mib / stall_seconds), and in its routed mode the experts routed and those read at the
-    // routing node because the prediction missed them. All 0 without a device.
+    // The device's expert arena, apart from the streamer's counters above as in RunSummary: MiB it
+    // read, seconds the graph waited on it, and in its routed mode (PrefillDeviceConfig::routed) the
+    // experts routed and those read at the routing node because the prediction missed them. All 0
+    // without a device.
     double device_read_mib = 0.0;
     double device_stall_seconds = 0.0;
     long long device_routed = 0;

@@ -130,8 +130,6 @@ void LlamaDecideBackend::end_prefill_measure(PrefillStats & out) {
         out.device_stall_seconds = d_.prefill->arena_stall_seconds() - arena_stall0_;
         out.device_routed = (long long) (d_.prefill->arena_routed_used() - arena_used0_);
         out.device_demand = (long long) (d_.prefill->arena_routed_demand() - arena_demand0_);
-        out.read_mib += out.device_read_mib;
-        out.stall_seconds += out.device_stall_seconds;
     }
 }
 

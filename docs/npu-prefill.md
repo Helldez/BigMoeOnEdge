@@ -40,11 +40,11 @@ the device's host buffer. On a 12 GB phone Gemma 4 at an 8192-token context and 
 cache already leaves about 330 MB free on the CPU alone; with the device path on top it thrashes. At
 2048 it fits. A smaller `--cache-mb` or context makes the room.
 
-**Short prompts do not gain.** A prefill graph this wide routes to nearly every expert of every
-layer, so the NPU path reads the whole expert set from flash once per graph (17.4 GB here),
-whatever the prompt length. Past roughly a thousand tokens that read hides behind the NPU's compute;
-under a few hundred it is the whole cost, and the CPU path, which reads only the experts the prompt
-routes to and hits its cache, is as fast.
+**Short prompts do not gain, by default.** The NPU path reads the whole expert set from flash once
+per graph (17.4 GB here), whatever the prompt length. Past roughly a thousand tokens that read hides
+behind the NPU's compute; under a few hundred it is the whole cost, and the CPU path, which reads only
+the experts the prompt routes to and hits its cache, is as fast. `--prefill-routed` (below) reads
+only the routed experts instead.
 
 ## How it works
 
@@ -76,12 +76,44 @@ layer k out of one slot, loader threads fill the other with layer k+1:
   so filling them is a copy, not a read.
 
 Pacing uses points the graph already offers. The experts wait at the layer's routing node, which the
-streamer knows how to isolate; the routing itself is not read, since at this width it selects nearly
-every expert and it lives in NPU memory anyway. The other weights are needed before the routing, so
+streamer knows how to isolate; by default the routing itself is not read, and every expert is loaded. The other weights are needed before the routing, so
 they wait at the last node of the previous layer, which the capture pass learns per layer because no
 node name is common to every architecture. A graph that skips a pacing point fails the decode rather
 than compute on a slot that never filled. Measured: the slots cost about 900 MB for the model above,
 instead of the 21 GB the model is.
+
+### Reading only the routed experts (`--prefill-routed`, experimental)
+
+Loading every expert assumes a wide graph routes to nearly all of them. A phone agent's prompt does
+not: measured with `--decide-probe` on the same model with top-4 routing, a 130 to 480-token prompt
+routes to about 128 of each layer's 256 experts, and a 55-token one to about 64.
+
+With `--prefill-routed` a layer is read in two parts. Ahead of its routing, while the NPU computes
+the layer before, the loaders read the experts the previous graph routed at that layer: consecutive
+decisions of an agent route much alike. At the layer's routing node the arena reads the routed ids
+(`ggml_backend_tensor_get`, wherever the tensor lives) and queues what the prediction missed ahead of
+everything else, then waits for it. The expert matmul reads only routed experts, so what the slot
+holds for the others never reaches the result: the output is the same bit for bit. A layer that
+routes to more than `--prefill-routed-full` of its experts (0.85 by default) gets the next layer
+read whole, as without the flag, so a long prompt, which routes to everything, does not pay for a
+prediction it cannot use. The first graph of a session has no prediction and reads whole layers.
+
+Measured on the phone above, Qwen3.6-35B-A3B Q4_0 streamed with the settings of an on-device
+Android UI agent (`--overlap --io-threads 4 --dense-weights ahwb -t 6 -c 2048 --n-expert-used 4`, ubatch 2048), 35
+decisions: 31 over Android screens (129 to 476 tokens) and 4 short questions. Same session, same
+build, with and without the flag:
+
+| | whole layers | `--prefill-routed` |
+|---|---:|---:|
+| prefill, median | 7.68 s | 4.16 s |
+| arena reads, median | 17.4 GB | 9.4 GB |
+| graph waiting on the arena, median | 6.4 s | 2.9 s |
+| `choice_logp` identical | | 35 of 35 |
+
+The prediction missed 11% of the routed experts. It misses more when the prompt changes domain (the
+short questions after the screens: about 40%), and those prompts still ran in 2.6 to 2.9 s. The
+figures are for top-4 routing; with the model's own top-8 a prompt routes to more experts and the
+gain is smaller (not measured). Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
 
 ### What else had to move
 
@@ -147,7 +179,10 @@ since with no layer assigned it could do nothing but open a DSP session. See `do
 Gates G16 and G17 run the whole path against a loopback `rpc-server` fronting the CPU: the same
 kernels, so placement is the only difference, and output, perplexity and the bytes the arena reads
 must all match an all-CPU run bit for bit, with and without a cache, with a slowed loader, and across
-several generates in one session. Removing either wait in the arena fails them (checked). The RPC
+several generates in one session. Removing either wait in the arena fails them (checked). G17f runs
+the routed arena the same way (fallback disabled, so every layer after the first graph is read from
+a prediction plus the routing node) and requires fewer bytes read; G17g skips the routing-node reads
+and requires the perplexity to change, so G17f cannot pass by luck. The RPC
 backend is only that test fixture: it is built with the tests alone, on 127.0.0.1, and neither the
 CLI nor the app accepts an RPC endpoint.
 
@@ -157,7 +192,9 @@ Price it with `--ppl` on the same Q4_0 model with and without the flag before re
 ## Telemetry
 
 `BMOE_DONE` and the CSV trailer carry `prefill_dev_tokens`, `prefill_dev_nodes` (nodes the device
-actually computed), `prefill_dev_read_mib` and `prefill_dev_stall_s`. See [telemetry.md](telemetry.md).
+actually computed), `prefill_dev_read_mib` and `prefill_dev_stall_s`; `BMOE_DECIDE` carries the same
+device counters plus, in routed mode, `prefill_dev_routed` and `prefill_dev_demand` (experts routed,
+and those read at the routing node). See [telemetry.md](telemetry.md).
 
 ## Why not decode
 

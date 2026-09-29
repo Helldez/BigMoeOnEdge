@@ -387,6 +387,8 @@ struct PrefillDeviceConfig {
     // layer read whole.
     bool routed = false;
     float routed_full_frac = 0.85f;
+    static constexpr float routed_full_frac_min = 0.0f; // exclusive: 0 would read every layer whole
+    static constexpr float routed_full_frac_max = 1.0f; // inclusive: 1 never falls back
     // TEST ONLY: in routed mode, skip the reads at the routing node, so the graph computes on whatever
     // the slot held for the experts the prediction missed. The gate uses it to prove it would see that.
     bool test_routed_skip_demand = false;

@@ -88,7 +88,10 @@ decisions follow one another, and the next decision after a chat turn builds a f
 A session opened with `--prefill-device` prefills a decision by the same rule as a chat turn: the
 prompt goes in pieces one ubatch wide, pieces at least `--prefill-min-tokens` wide run on the
 device and a narrower tail on the CPU, and the weights are back on the host when the call returns.
-`prefill_dev_tokens` in `BMOE_DECIDE` counts the tokens the device prefilled.
+`prefill_dev_tokens` in `BMOE_DECIDE` counts the tokens the device prefilled, and the other
+`prefill_dev_*` keys what its expert arena read. `--prefill-routed` makes the arena read only the
+experts a decision routes to, which on an agent's short prompts is about half of them
+([npu-prefill.md](npu-prefill.md)).
 
 No prefix state is kept with a prefill device: `auto` resolves to off, and `on` is refused at
 startup. llama.cpp saves and restores a sequence through views of the KV cache it creates once,
@@ -135,6 +138,28 @@ Two things this run shows that the design has to be honest about:
   dominated by reading the experts its tokens route to, which grows slower than the token count.
   The second decision prefilled 38 tokens in 8.1 s, against 15.8 s for the first one's 70; the
   grown prefix, prefilled in two pieces, took 12.4 s against 13.1 s for the same prompt whole.
+
+## Diagnostics: `--decide-probe FILE` (experimental)
+
+With `--decide`, appends one JSON line per decision to `FILE`: `seq`, `n_tokens`, `prefill_s`, the
+`choices`, decide's own `best` and `logp`, and
+
+- `lens`: per layer, the choice logits read from the last token's state at the end of that layer,
+  put through the model's final norm and the head rows of the choice tokens (read from the gguf). For
+  the last token this is exact, not an estimate: its state after layer L depends on layers 0 to L
+  only, so it is what a prefill cut after layer L would answer. At the last layer it reproduces
+  `logp` up to the device's fp16 rounding;
+- `cnt` and `wsum`: per layer and expert, the (token, slot) routings the prefill made and the router
+  weight they carried; `nu` the experts per token.
+
+It reads the nodes through the router hook, so it works on a prefill device, where `--route-trace`
+records nothing, and it changes nothing the graph computes. It needs `--moe-stream` or
+`--prefill-device`. What it showed on Qwen3.6-35B-A3B, top-4, 35 decisions of an Android agent:
+the answer to a screen is not readable from the lens before layer 35 of 40 (10 of 31 agree with the
+final answer at layer 34, 31 of 31 at 35), and a short general question's from layer 31; both are
+full-attention layers of this hybrid model, where the answer letter is looked up in the prompt. A
+screen's prefill routes to about half of each layer's experts, the observation behind
+`--prefill-routed`.
 
 ## How it is built
 
