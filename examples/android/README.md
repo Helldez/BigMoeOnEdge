@@ -183,7 +183,7 @@ processor with its own requirements: a Snapdragon with a Hexagon NPU of generati
 2 onwards), and a model the NPU kernels take (Q4_0, Q8_0, MXFP4, or a Q4_K_M; not the Q3 and Q2
 builds). On a phone without the NPU the switch is shown disabled with the reason. It runs the prompt
 on the NPU and keeps decode on the CPU, and it widens the prompt batch to 2048 tokens, because each
-batch reads the experts from flash once; short prompts do not gain. If the NPU does not open (an
+batch reads the experts it routes to from flash once; the shorter the prompt, the fewer it reads. If the NPU does not open (an
 older Snapdragon), the prompt simply runs on the CPU. See `../../docs/npu-prefill.md`.
 
 Descriptions in the UI say what a setting does, without measured figures or flag names, because a

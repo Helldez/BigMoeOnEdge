@@ -533,7 +533,8 @@ BMOE_DECIDE {"id":<int>,"cancelled":<bool>,"best":<int>,"choice_logp":[<float|nu
              "n_tokens":<int>,"n_reused":<int>,"n_prefilled":<int>,"restore_s":<float>,
              "store_s":<float>,"prefill_s":<float>,"prefill_cpu_s":<float>,"prefill_read_mib":<float>,
              "prefill_io_s":<float>,"prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
-             "prefill_dev_tokens":<int>,"prefix_state_mib":<float>}
+             "prefill_dev_tokens":<int>,"prefill_dev_read_mib":<float>,"prefill_dev_stall_s":<float>,
+             "prefill_dev_routed":<int>,"prefill_dev_demand":<int>,"prefix_state_mib":<float>}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
 
@@ -543,7 +544,11 @@ of the first token of `choices[i]` over the whole vocabulary, in request order, 
 is minus infinity. `best` is the index of the highest. `n_reused` tokens were restored from the kept
 prefix state and `n_prefilled` were prefilled; the `prefill_*` keys read exactly as `BMOE_DONE`'s.
 `prefill_dev_tokens` is how many of the prefilled tokens ran on the prefill device (`0` without
-`--prefill-device`). `prefix_state_mib` is the memory the kept state holds after the call. There is
+`--prefill-device`); `prefill_dev_read_mib` and `prefill_dev_stall_s` are its expert arena's reads and
+the time the graph waited on them, as in `BMOE_DONE` and apart from the streamer's `prefill_read_mib`.
+In routed mode (the default), `prefill_dev_routed` counts the (layer, expert) pairs the prefill routed to
+and `prefill_dev_demand` those the prediction missed and the arena read at the routing node (both `0`
+with `--no-prefill-routed`). `prefix_state_mib` is the memory the kept state holds after the call. There is
 no `think` key: a decision is always rendered with reasoning off. `reuse_prefix` defaults to `true`. Colliding choices (two sharing a first token), no choices, a prompt past
 `n_ctx`, or a session opened without `--decide` answer `BMOE_ERROR` with `fatal:false`.
 

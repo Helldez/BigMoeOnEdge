@@ -365,6 +365,21 @@ int main() {
         c.n_ubatch = 0;
         c.moe.enabled = true;
         expect_ok("prefill device with streaming (the expert arena)", c);
+        c.prefill.routed = true;
+        expect_ok("routed arena with streaming", c);
+        c.prefill.routed_full_frac = 0.0f;
+        expect_fail("routed_full_frac 0 would read every layer whole", c);
+        c.prefill.routed_full_frac = 1.5f;
+        expect_fail("routed_full_frac above 1", c);
+        c.prefill.routed_full_frac = 1.0f;
+        expect_ok("routed_full_frac 1 never falls back", c);
+        c.prefill.routed_full_frac = 0.85f;
+        c.moe.enabled = false;
+        expect_ok("routed (the default) is inert without streaming: there is no arena", c);
+        c.moe.enabled = true;
+        c.prefill.routed = false;
+        expect_ok("whole-layer arena (--no-prefill-routed)", c);
+        c.prefill.routed = true;
         c.moe.row_stream = true;
         expect_fail("prefill device with the row policy: its gathers happen on the host", c);
         c.moe.row_stream = false;
@@ -382,6 +397,15 @@ int main() {
         c.prefill.device.clear();
         c.prefill.min_tokens = 1;
         expect_ok("min_tokens is not checked while the prefill device is off", c);
+        expect_ok("routed (the default) is inert without a prefill device", c);
+        c.decide.probe_path = "probe.jsonl";
+        expect_fail("decide probe without decide", c);
+        c.decide.enabled = true;
+        c.moe.enabled = false;
+        expect_fail("decide probe with no eval callback (no streaming, no device)", c);
+        c.moe.enabled = true;
+        expect_ok("decide probe on a streamed session", c);
+        c.decide = DecideConfig{};
     }
 
     if (failures == 0) {

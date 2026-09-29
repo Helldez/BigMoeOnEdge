@@ -287,10 +287,13 @@ static bool emit_decide(Session & session, const SessionCmd & cmd) {
     std::printf("BMOE_DECIDE {\"id\":%d,\"cancelled\":%s,\"best\":%d,\"choice_logp\":%s,\"n_tokens\":%d,"
                 "\"n_reused\":%d,\"n_prefilled\":%d,\"restore_s\":%.3f,\"store_s\":%.3f,\"prefill_s\":%.3f,"
                 "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,\"prefill_stall_s\":%.3f,"
-                "\"prefill_mgmt_s\":%.3f,\"prefill_dev_tokens\":%d,\"prefix_state_mib\":%.1f}\n",
+                "\"prefill_mgmt_s\":%.3f,\"prefill_dev_tokens\":%d,\"prefill_dev_read_mib\":%.1f,"
+                "\"prefill_dev_stall_s\":%.3f,\"prefill_dev_routed\":%lld,\"prefill_dev_demand\":%lld,"
+                "\"prefix_state_mib\":%.1f}\n",
                 cmd.id, r.cancelled ? "true" : "false", r.best, logp.c_str(), r.n_tokens, r.n_reused, r.n_prefilled,
                 r.restore_seconds, r.store_seconds, p.seconds, p.cpu_seconds, p.read_mib, p.io_seconds, p.stall_seconds,
-                p.mgmt_seconds, p.device_tokens, (double) r.prefix_state_bytes / (1024.0 * 1024.0));
+                p.mgmt_seconds, p.device_tokens, p.device_read_mib, p.device_stall_seconds, p.device_routed,
+                p.device_demand, (double) r.prefix_state_bytes / (1024.0 * 1024.0));
     std::fflush(stdout);
     return true;
 }
@@ -480,6 +483,12 @@ static void print_usage(const char * argv0) {
         "                          RAM back to the expert cache at the cost of prefill speed;\n"
         "                          decode is unaffected. Measured: a context of 2048 reserves\n"
         "                          320 MiB, falling to 80 MiB at 512.\n"
+        "      --no-prefill-routed with --prefill-device and --moe-stream: read every expert of every\n"
+        "                          layer instead of only the experts each graph routes to (the default,\n"
+        "                          predicted from the previous graph and completed at each routing node)\n"
+        "      --prefill-routed-full F\n"
+        "                          a layer routing more than this fraction of its experts gets the next\n"
+        "                          layer read whole (default 0.85, (0,1])\n"
         "      --prefill-device D  run wide prefill graphs on ggml device D (e.g. HTP0) while decode\n"
         "                          stays on the CPU. With --moe-stream the experts reach it\n"
         "                          through a two-layer arena. Not with speculation or --row-stream.\n"
@@ -498,6 +507,8 @@ static void print_usage(const char * argv0) {
         "                          with --decide: keep the model state after a decide request's\n"
         "                          prefix and restore it when the next prefix extends it:\n"
         "                          auto (default: on where prefill cost scales with tokens) | on | off\n"
+        "      --decide-probe PATH experimental, with --decide: append per decision the experts each\n"
+        "                          layer routed and the answer read at every layer's exit (JSONL)\n"
         "      --csv PATH          also write per-token metrics as CSV\n"
         "      --route-trace PATH  diagnostics: write the per-step per-layer MoE routing trace\n"
         "                          (which experts each layer routed, their weight, cache state).\n"
@@ -733,6 +744,12 @@ int main(int argc, char ** argv) {
             cfg.n_ubatch = std::atoi(next("--ubatch"));
         else if (a == "--prefill-device")
             cfg.prefill.device = next("--prefill-device");
+        else if (a == "--prefill-routed")
+            cfg.prefill.routed = true;
+        else if (a == "--no-prefill-routed")
+            cfg.prefill.routed = false;
+        else if (a == "--prefill-routed-full")
+            cfg.prefill.routed_full_frac = (float) std::atof(next("--prefill-routed-full"));
         else if (a == "--prefill-min-tokens")
             cfg.prefill.min_tokens = std::atoi(next("--prefill-min-tokens"));
         else if (a == "--prefill-loaders")
@@ -773,6 +790,8 @@ int main(int argc, char ** argv) {
             session_mode = true;
         else if (a == "--decide")
             cfg.decide.enabled = true;
+        else if (a == "--decide-probe")
+            cfg.decide.probe_path = next("--decide-probe");
         else if (a == "--decide-prefix-cache") {
             const std::string m = next("--decide-prefix-cache");
             if (!bmoe::parse_prefix_cache_mode(m, cfg.decide.prefix_cache)) {

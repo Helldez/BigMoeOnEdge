@@ -323,8 +323,10 @@ phone with a Hexagon v81 NPU:
 | Qwen3.6-35B-A3B Q4_K_M | 1418 tokens | 80.6 s | 10.2 s | 7.9x |
 | Gemma 4 26B-A4B | 238 tokens | 16.2 s | 5.85 s | 2.8x |
 
-Short prompts do not gain (121 tokens: 9.5 s against 9.95 s): the device path reads every expert
-once per graph, and a short prompt is all read. The slots cost decode some memory, about 5% on
+Short prompts are flash bound: read whole, the experts cost the same at 121 tokens as at 1418. The
+arena therefore reads only the experts a graph routes to, which on 130 to 480-token prompts took a
+Qwen3.6-35B-A3B decision from 7.68 s to 4.16 s with identical output (1.8x on Gemma 4 too; little
+on a model whose prompts route to most of its experts). The slots cost decode some memory, about 5% on
 Gemma 4 (3.25 against 3.41 tok/s). The NPU computes in fp16, so the output is not identical to the
 CPU's. Off by default; see [docs/npu-prefill.md](docs/npu-prefill.md).
 

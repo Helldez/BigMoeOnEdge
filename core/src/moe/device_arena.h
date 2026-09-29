@@ -84,7 +84,24 @@ public:
     void begin_graph();
     // At layer il's routing node: queue the next layer into the slot the previous one just freed,
     // then wait until il's experts are in place. A layer with no slot passes straight through.
-    void barrier(int il);
+    // `topk` is that node (the routed ids); only the routed mode reads it.
+    void barrier(int il, const ggml_tensor * topk = nullptr);
+
+    // Routed mode (the session's default). Off, every layer's whole expert set is read, ahead of its
+    // routing. On, a layer is read in two parts: ahead of its routing, the experts the previous graph routed
+    // at that layer (the prediction); at its routing node, whatever the routing needs that the
+    // prediction missed, ahead of anything else queued. The matmul reads only routed experts, so the
+    // slot's other experts may hold anything and the result is the same bit for bit. A layer whose
+    // routing covers more than `full_frac` of its experts gets the next layer read whole, as off does:
+    // a long prompt routes nearly everything, and there the prediction can only lose.
+    void set_routed(bool on, float full_frac) {
+        routed_ = on;
+        routed_full_frac_ = full_frac;
+    }
+    // Routed mode, summed over graphs: experts routed, and experts read at the routing node (the
+    // reads the prediction missed, which the graph waited for).
+    uint64_t routed_used() const { return routed_used_.load(); }
+    uint64_t routed_demand() const { return routed_demand_.load(); }
     // At the last node of layer il: its dense slot is free, so queue layer il+2 into it, and wait
     // for layer il+1's. With no dense slots this is a no-op.
     void dense_barrier(int il);
@@ -94,6 +111,8 @@ public:
 
     // Test hook: sleep before each layer's first upload (PrefillDeviceConfig::test_load_delay_us).
     void set_test_delay_us(int us) { test_delay_us_ = us; }
+    // Test hook: routed mode skips its reads at the routing node (PrefillDeviceConfig::test_routed_skip_demand).
+    void set_test_skip_demand(bool on) { test_skip_demand_ = on; }
 
     bool failed() const { return failed_.load(); }
     uint64_t read_bytes() const { return read_bytes_.load(); }
@@ -145,7 +164,9 @@ private:
     };
 
     void worker(int lane);
-    void schedule(int k);        // caller holds mu_
+    // Queue layer k's experts that `want` marks (all when null) and are not queued yet this graph;
+    // `front` puts them ahead of everything waiting. Caller holds mu_.
+    void schedule(int k, const std::vector<uint8_t> * want = nullptr, bool front = false);
     void schedule_dense(int il); // caller holds mu_
 
     std::vector<Layer> order_;    // bound layers in graph order
@@ -169,12 +190,20 @@ private:
     std::condition_variable cv_work_;
     std::condition_variable cv_done_;
     std::deque<Task> queue_;
-    std::vector<int> remaining_;  // per order_ index: tasks not yet finished for this graph
-    std::vector<bool> scheduled_; // per order_ index, this graph
+    std::vector<int> remaining_;              // per order_ index: tasks not yet finished for this graph
+    std::vector<std::vector<uint8_t>> sched_; // per order_ index, per expert: queued this graph
+
+    bool routed_ = false;
+    float routed_full_frac_ = 0.85f;
+    // Per order_ index: the experts the last graph routed there (the prediction for the next graph).
+    std::vector<std::vector<uint8_t>> prev_;
+    std::vector<bool> have_prev_;
+    std::atomic<uint64_t> routed_used_{0}, routed_demand_{0};
     int in_flight_ = 0;
     bool stop_ = false;
     bool on_device_ = false;
     int test_delay_us_ = 0;
+    bool test_skip_demand_ = false;
 
     std::vector<DenseLayer> dense_; // by layer id; empty when init_dense was not called
     ggml_context * dense_ctx_ = nullptr;

@@ -160,10 +160,21 @@ ValidationResult validate(const RunConfig & cfg) {
         // llama.cpp saves and restores a sequence through views of the KV cache it made once, over the
         // buffer the state was allocated in; the move rebinds the cache tensors, not those views, so a
         // saved or restored state would be read from and written to memory the model no longer uses.
+        if (!(cfg.prefill.routed_full_frac > PrefillDeviceConfig::routed_full_frac_min &&
+              cfg.prefill.routed_full_frac <= PrefillDeviceConfig::routed_full_frac_max))
+            return fail("prefill.routed_full_frac must be in (0, 1]");
         if (cfg.decide.enabled && cfg.decide.prefix_cache == PrefixCacheMode::On)
             return fail("decide.prefix_cache=on does not combine with prefill.device: the kept state would be "
                         "saved from where the model state was before it moved. Use auto (off with a device) "
                         "or off.");
+    }
+
+    // The decide probe reads graph nodes from the eval callback, which only streaming or a prefill
+    // device installs; without either it would write empty lines.
+    if (!cfg.decide.probe_path.empty()) {
+        if (!cfg.decide.enabled) return fail("decide.probe_path needs decide.enabled");
+        if (!cfg.moe.enabled && !cfg.prefill.enabled())
+            return fail("decide.probe_path needs moe.enabled or prefill.device (the eval callback)");
     }
 
     // overlap is meaningless without streaming (it gates the streamer's own reads). The

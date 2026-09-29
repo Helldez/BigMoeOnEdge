@@ -381,6 +381,19 @@ struct PrefillDeviceConfig {
     // gate proves it. Never set by a front-end.
     int test_load_delay_us = 0;
 
+    // Read only the experts each device graph routes to, predicted from the previous graph's routing
+    // and completed at each routing node (DeviceExpertArena::set_routed); the result is bit for bit
+    // the same as reading whole layers, which `false` restores. Only the expert arena of a streamed
+    // model reads experts, so elsewhere it has no effect. `routed_full_frac`: a layer routing more
+    // than this fraction of its experts gets the next layer read whole.
+    bool routed = true;
+    float routed_full_frac = 0.85f;
+    static constexpr float routed_full_frac_min = 0.0f; // exclusive: 0 would read every layer whole
+    static constexpr float routed_full_frac_max = 1.0f; // inclusive: 1 never falls back
+    // TEST ONLY: in routed mode, skip the reads at the routing node, so the graph computes on whatever
+    // the slot held for the experts the prediction missed. The gate uses it to prove it would see that.
+    bool test_routed_skip_demand = false;
+
     static constexpr int min_tokens_floor = 2; // decode is one token wide; this keeps the shapes apart
 
     // Logit rows a graph may produce, with the device on. llama.cpp reserves compute memory for as many
@@ -415,6 +428,10 @@ struct DecideConfig {
     // session that does not use decisions is exactly what it was before the feature existed.
     bool enabled = false;
     PrefixCacheMode prefix_cache = PrefixCacheMode::Auto;
+    // Experimental diagnostic: append one JSONL line per decision to this file, with the experts each
+    // layer routed and the answer read at every layer's exit (see core/src/moe/decide_probe.h).
+    // Empty = off. Needs the eval callback, i.e. --moe-stream or a prefill device.
+    std::string probe_path;
 };
 
 // A full run: model, prompt, decoding, streaming, telemetry.

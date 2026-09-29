@@ -71,6 +71,8 @@ private:
     bool have_logits_ = false;
     PrefillTally tally_;
     int device_tokens_ = 0; // since begin_prefill_measure
+    uint64_t arena_read0_ = 0, arena_used0_ = 0, arena_demand0_ = 0;
+    double arena_stall0_ = 0.0;
 };
 
 } // namespace bmoe::detail

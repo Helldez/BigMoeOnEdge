@@ -36,7 +36,8 @@
 
 namespace bmoe {
 class DeviceExpertArena;
-}
+class DecideProbe;
+} // namespace bmoe
 
 #include <atomic>
 #include <chrono>
@@ -94,6 +95,10 @@ public:
     // each layer's routing node only to pace the arena there, and does nothing else of the streaming
     // path — the routing lives on the device and the arena, not the streamer, supplies the experts.
     void set_device_arena(DeviceExpertArena * arena) { device_arena_ = arena; }
+
+    // Experimental decide() probe (decide_probe.h): while it is armed, the routing, weight and layer-output
+    // nodes are offered to it on every graph, host or device. Observes only.
+    void set_probe(DecideProbe * p) { probe_ = p; }
 
     // After capture, whether the last node of every layer was seen: what paces a dense arena, which
     // must load a layer's weights before its first node and so waits at the end of the one before.
@@ -334,6 +339,7 @@ private:
     std::vector<ggml_tensor *> captured_state_objects_;
     std::unordered_set<const ggml_tensor *> captured_state_seen_;
     DeviceExpertArena * device_arena_ = nullptr;
+    DecideProbe * probe_ = nullptr;
     std::vector<std::string> last_node_; // per layer: name of its last node in the capture graph
     // Capture-time evidence for row_gathered_weights(): every weight seen as the TABLE of a row
     // gather, and every weight seen in any way that rules that out. The verdict is the difference.

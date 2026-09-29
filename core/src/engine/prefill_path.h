@@ -78,6 +78,8 @@ public:
 
     uint64_t arena_read_bytes() const { return arena_ ? arena_->read_bytes() : 0; }
     double arena_stall_seconds() const { return arena_ ? arena_->stall_seconds() : 0.0; }
+    uint64_t arena_routed_used() const { return arena_ ? arena_->routed_used() : 0; }
+    uint64_t arena_routed_demand() const { return arena_ ? arena_->routed_demand() : 0; }
 
 private:
     bool open_arena(const PrefillDeviceConfig & cfg,

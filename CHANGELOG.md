@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.28.0] - 2026-09-29
+
+### Changed
+- **The NPU prefill reads only the experts a graph routes to.** The expert arena behind
+  `--prefill-device` read every expert of every layer ahead of its routing, on the assumption that
+  a wide prefill graph routes to nearly all of them. For short prompts that is not so: with top-4
+  routing, a 130 to 480-token prompt routes to about half the experts of each layer of
+  Qwen3.6-35B-A3B. The arena now reads a layer in two parts: ahead of its routing, the experts the
+  previous graph routed at that layer (consecutive prompts route much alike); at its routing node,
+  whatever the routing needs that the prediction missed, ahead of anything else queued. The
+  matmul reads only routed experts, so the output is bit for bit the same. A layer routing more
+  than `--prefill-routed-full` (default 0.85) of its experts gets the next layer read whole, so a
+  long prompt loses nothing; `--no-prefill-routed` restores whole layers everywhere.
+
+  Measured on a 12 GB phone with a Hexagon v81 NPU, streamed, top-4, ubatch 2048, decisions over
+  Android screens (130 to 480 tokens), same session with and without, every answer identical:
+
+  | model | experts routed per layer | whole layers | routed | |
+  |---|---:|---:|---:|---:|
+  | Qwen3.6-35B-A3B Q4_0 | ~50% of 256 | 7.68 s | 4.16 s | 1.85x |
+  | Qwen3.6-35B-A3B Q4_K_M | ~50% of 256 | 9.95 s | 5.37 s | 1.85x |
+  | Gemma 4 26B-A4B Q4_K_M | ~58% of 128 | 6.69 s | 3.70 s | 1.81x |
+  | Nemotron 3.5 30B-A3B Q4_0 | ~79% of 128 | 7.42 s | 6.81 s | 1.09x |
+
+  The gain follows how much of each layer a prompt leaves unrouted: Nemotron routes to most of
+  its experts and barely gains. Gates G17f (routed == all CPU, fewer bytes read, with a slowed
+  loader too) and G17g (an arena that skips its routing-node reads is caught). See
+  `docs/npu-prefill.md`.
+- `BMOE_DECIDE` carries the prefill device's own counters, as `BMOE_DONE` does:
+  `prefill_dev_read_mib`, `prefill_dev_stall_s`, `prefill_dev_routed` and `prefill_dev_demand`.
+  Before, a decision on the device reported `prefill_read_mib` 0.
+
+### Added
+- **`--decide-probe FILE` (experimental diagnostic).** Appends one JSON line per decision: the
+  experts each layer routed with their router weight, and the choice logits read from every layer's
+  last-token state through the model's final norm and head (a "logit lens"; for the last token it is
+  exactly what a prefill cut after that layer would answer). Works on the prefill device, where
+  `--route-trace` records nothing. See `docs/decide.md`.
+
 ## [0.27.0] - 2026-09-28
 
 ### Added

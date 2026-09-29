@@ -279,6 +279,7 @@ static int check(const char * name, const std::string & a, const std::string & b
 }
 
 int main(int argc, char ** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0); // a crash must not swallow the verdicts printed before it
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <tiny-moe.gguf>\n", argv[0]);
         return 2;
@@ -966,12 +967,19 @@ int main(int argc, char ** argv) {
                 int cache_mb;
                 int loaders; // the arena's loader threads (--prefill-loaders), not the decode lanes
                 int delay_us;
+                bool routed = false;   // read only routed experts (PrefillDeviceConfig::routed)
+                bool sabotage = false; // routed, with the routing-node reads skipped: must be caught
             };
             const Variant variants[] = {
                 {"G17a arena, cache off, 4 loaders", 0, 4, 0},
                 {"G17b arena, small forced cache, 4 loaders", 2, 4, 0},
                 // Loads slowed until the graph always reaches a layer first: only the barrier orders them.
                 {"G17c arena, cache off, 1 slowed loader", 0, 1, 20000},
+                // Routed: every layer after the first graph is read from a prediction plus what the
+                // routing adds. The fallback to whole layers is disabled so the tiny model exercises it.
+                {"G17f arena routed, 4 loaders", 0, 4, 0, true},
+                {"G17f arena routed, 1 slowed loader", 0, 1, 20000, true},
+                {"G17g arena routed with its routing-node reads sabotaged", 0, 4, 0, true, true},
             };
             // Greedy text alone is a weak witness here: on the tiny model a slot holding the wrong
             // layer's experts can still produce the same few tokens (measured, with the barrier
@@ -986,6 +994,9 @@ int main(int argc, char ** argv) {
                 c.moe.force_cache = v.cache_mb > 0;
                 c.prefill.load_threads = v.loaders;
                 c.prefill.test_load_delay_us = v.delay_us;
+                c.prefill.routed = v.routed;
+                c.prefill.routed_full_frac = 1.0f;
+                c.prefill.test_routed_skip_demand = v.sabotage;
                 std::unique_ptr<Session> vs = Session::open(session_config_from(c), open_err);
                 if (!vs) {
                     std::fprintf(stderr, "%s open failed: %s\n", v.name, open_err.c_str());
@@ -996,10 +1007,26 @@ int main(int argc, char ** argv) {
                     std::fprintf(stderr, "%s failed: %s\n", v.name, rr.error.c_str());
                     return 2;
                 }
+                if (v.sabotage) {
+                    // Only the perplexity pass is a reliable witness (see above); it runs after the
+                    // generate, so its graphs are all predicted ones.
+                    PplResult pv = vs->perplexity(pr);
+                    char cv[64];
+                    std::snprintf(cv, sizeof(cv), "%.17g/%d", pv.nll, pv.n_top1);
+                    if (pv.ok && std::string(cv) == a) {
+                        std::printf("[FAIL] %s: the result did not change (%s); the routed gate proves nothing\n",
+                                    v.name, cv);
+                        ++fails;
+                    } else {
+                        std::printf("[PASS] %s: caught (%s vs %s)\n", v.name, pv.ok ? cv : "failed", a);
+                    }
+                    continue;
+                }
                 fails += check(v.name, s_pref, rr.generated_text);
                 const double mib = rr.summary.prefill_device_read_mib;
                 if (arena_mib_ref < 0.0) arena_mib_ref = mib;
-                if (mib <= 0.0 || mib != arena_mib_ref || rr.summary.prefill_device_nodes <= 0) {
+                const bool mib_ok = v.routed ? (mib > 0.0 && mib < arena_mib_ref) : mib == arena_mib_ref;
+                if (mib <= 0.0 || !mib_ok || rr.summary.prefill_device_nodes <= 0) {
                     std::printf("[FAIL] %s: the arena read %.3f MiB (expected %.3f), the device computed %lld nodes\n",
                                 v.name, mib, arena_mib_ref, rr.summary.prefill_device_nodes);
                     ++fails;

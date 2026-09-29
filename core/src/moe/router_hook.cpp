@@ -2,6 +2,7 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "decide_probe.h"
 #include "device_arena.h"
 #include "../io/platform_io.h"
 
@@ -1423,6 +1424,10 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         return false; // capture never isolates a node
     }
 
+    const bool probe_on = probe_ && probe_->armed();
+    const bool probe_ask = probe_on && ask && probe_->wants(t);
+    if (probe_on && !ask) probe_->observe(t);
+
     // ── device prefill: pace the expert arena at each layer's routing node ──
     // Everything below is the host streaming path, and none of it applies to a graph on the device:
     // the routing ids live in device memory, the streamer does not feed this graph, and validation
@@ -1431,8 +1436,8 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         const int dl = is_moe_node(t->name) ? match_layer_node(t->name, "ffn_moe_topk-") : -1;
         const int nl = node_layer(t->name);
         const bool layer_end = nl >= 0 && nl < (int) last_node_.size() && last_node_[(size_t) nl] == t->name;
-        if (ask) return dl >= 0 || layer_end;
-        if (dl >= 0) device_arena_->barrier(dl);
+        if (ask) return dl >= 0 || layer_end || probe_ask;
+        if (dl >= 0) device_arena_->barrier(dl, t);
         if (layer_end) device_arena_->dense_barrier(nl);
         return true;
     }
@@ -1524,7 +1529,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         // as the prefetch does — the isolated variant measured ~+0.04 s/token of pure barrier and
         // GEMV tax on the host. What makes that safe for a COMMITTED consumer is the watchdog in
         // route_ahead_submit plus the passthrough default, not a barrier.
-        return ctrace_iso || is_topk || weights_iso || (is_logits && predict_log_);
+        return ctrace_iso || is_topk || weights_iso || (is_logits && predict_log_) || probe_ask;
     }
 
     // The probe attaches to the gate matmul rather than to the topk node because this is where the

@@ -109,6 +109,12 @@ bool LlamaDecideBackend::load_state(const std::vector<uint8_t> & in) {
 void LlamaDecideBackend::begin_prefill_measure() {
     tally_.begin(d_.moe_on, *d_.source);
     device_tokens_ = 0;
+    if (d_.prefill) {
+        arena_read0_ = d_.prefill->arena_read_bytes();
+        arena_stall0_ = d_.prefill->arena_stall_seconds();
+        arena_used0_ = d_.prefill->arena_routed_used();
+        arena_demand0_ = d_.prefill->arena_routed_demand();
+    }
 }
 
 void LlamaDecideBackend::end_prefill_measure(PrefillStats & out) {
@@ -119,6 +125,12 @@ void LlamaDecideBackend::end_prefill_measure(PrefillStats & out) {
     out.stall_seconds = tally_.stall_seconds;
     out.mgmt_seconds = tally_.mgmt_seconds;
     out.device_tokens = device_tokens_;
+    if (d_.prefill) {
+        out.device_read_mib = (double) (d_.prefill->arena_read_bytes() - arena_read0_) / (1024.0 * 1024.0);
+        out.device_stall_seconds = d_.prefill->arena_stall_seconds() - arena_stall0_;
+        out.device_routed = (long long) (d_.prefill->arena_routed_used() - arena_used0_);
+        out.device_demand = (long long) (d_.prefill->arena_routed_demand() - arena_demand0_);
+    }
 }
 
 } // namespace bmoe::detail
