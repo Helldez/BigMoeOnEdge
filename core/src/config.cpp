@@ -163,16 +163,12 @@ ValidationResult validate(const RunConfig & cfg) {
         if (!(cfg.prefill.routed_full_frac > PrefillDeviceConfig::routed_full_frac_min &&
               cfg.prefill.routed_full_frac <= PrefillDeviceConfig::routed_full_frac_max))
             return fail("prefill.routed_full_frac must be in (0, 1]");
-        // Routed mode lives in the expert arena, which exists only for a streamed model.
-        if (cfg.prefill.routed && !cfg.moe.enabled)
-            return fail("prefill.routed needs moe.enabled: it chooses what the expert arena reads");
         if (cfg.decide.enabled && cfg.decide.prefix_cache == PrefixCacheMode::On)
             return fail("decide.prefix_cache=on does not combine with prefill.device: the kept state would be "
                         "saved from where the model state was before it moved. Use auto (off with a device) "
                         "or off.");
     }
 
-    if (cfg.prefill.routed && !cfg.prefill.enabled()) return fail("prefill.routed needs prefill.device");
     // The decide probe reads graph nodes from the eval callback, which only streaming or a prefill
     // device installs; without either it would write empty lines.
     if (!cfg.decide.probe_path.empty()) {

@@ -546,9 +546,9 @@ prefix state and `n_prefilled` were prefilled; the `prefill_*` keys read exactly
 `prefill_dev_tokens` is how many of the prefilled tokens ran on the prefill device (`0` without
 `--prefill-device`); `prefill_dev_read_mib` and `prefill_dev_stall_s` are its expert arena's reads and
 the time the graph waited on them, as in `BMOE_DONE` and apart from the streamer's `prefill_read_mib`.
-With `--prefill-routed`, `prefill_dev_routed` counts the (layer, expert) pairs the prefill routed to
+In routed mode (the default), `prefill_dev_routed` counts the (layer, expert) pairs the prefill routed to
 and `prefill_dev_demand` those the prediction missed and the arena read at the routing node (both `0`
-otherwise). `prefix_state_mib` is the memory the kept state holds after the call. There is
+with `--no-prefill-routed`). `prefix_state_mib` is the memory the kept state holds after the call. There is
 no `think` key: a decision is always rendered with reasoning off. `reuse_prefix` defaults to `true`. Colliding choices (two sharing a first token), no choices, a prompt past
 `n_ctx`, or a session opened without `--decide` answer `BMOE_ERROR` with `fatal:false`.
 

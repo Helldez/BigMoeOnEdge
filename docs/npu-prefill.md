@@ -40,11 +40,10 @@ the device's host buffer. On a 12 GB phone Gemma 4 at an 8192-token context and 
 cache already leaves about 330 MB free on the CPU alone; with the device path on top it thrashes. At
 2048 it fits. A smaller `--cache-mb` or context makes the room.
 
-**Short prompts do not gain, by default.** The NPU path reads the whole expert set from flash once
-per graph (17.4 GB here), whatever the prompt length. Past roughly a thousand tokens that read hides
-behind the NPU's compute; under a few hundred it is the whole cost, and the CPU path, which reads only
-the experts the prompt routes to and hits its cache, is as fast. `--prefill-routed` (below) reads
-only the routed experts instead.
+**Short prompts are flash bound.** The table above was measured reading the whole expert set from
+flash once per graph (17.4 GB here), whatever the prompt length. Past roughly a thousand tokens that
+read hides behind the NPU's compute; under a few hundred it is the whole cost. The arena now reads
+only the experts a graph routes to (below), which on short prompts is about half of them.
 
 ## How it works
 
@@ -76,44 +75,56 @@ layer k out of one slot, loader threads fill the other with layer k+1:
   so filling them is a copy, not a read.
 
 Pacing uses points the graph already offers. The experts wait at the layer's routing node, which the
-streamer knows how to isolate; by default the routing itself is not read, and every expert is loaded. The other weights are needed before the routing, so
+streamer knows how to isolate; there the arena reads the routed ids and loads what is missing (below). The other weights are needed before the routing, so
 they wait at the last node of the previous layer, which the capture pass learns per layer because no
 node name is common to every architecture. A graph that skips a pacing point fails the decode rather
 than compute on a slot that never filled. Measured: the slots cost about 900 MB for the model above,
 instead of the 21 GB the model is.
 
-### Reading only the routed experts (`--prefill-routed`, experimental)
+### Reading only the routed experts (default; `--no-prefill-routed` reads whole layers)
 
 Loading every expert assumes a wide graph routes to nearly all of them. A phone agent's prompt does
 not: measured with `--decide-probe` on the same model with top-4 routing, a 130 to 480-token prompt
 routes to about 128 of each layer's 256 experts, and a 55-token one to about 64.
 
-With `--prefill-routed` a layer is read in two parts. Ahead of its routing, while the NPU computes
+A layer is read in two parts. Ahead of its routing, while the NPU computes
 the layer before, the loaders read the experts the previous graph routed at that layer: consecutive
 decisions of an agent route much alike. At the layer's routing node the arena reads the routed ids
 (`ggml_backend_tensor_get`, wherever the tensor lives) and queues what the prediction missed ahead of
 everything else, then waits for it. The expert matmul reads only routed experts, so what the slot
 holds for the others never reaches the result: the output is the same bit for bit. A layer that
 routes to more than `--prefill-routed-full` of its experts (0.85 by default) gets the next layer
-read whole, as without the flag, so a long prompt, which routes to everything, does not pay for a
-prediction it cannot use. The first graph of a session has no prediction and reads whole layers.
+read whole, as `--no-prefill-routed` does everywhere, so a long prompt, which routes to everything,
+does not pay for a prediction it cannot use. The first graph of a session has no prediction and reads whole layers.
 
 Measured on the phone above, Qwen3.6-35B-A3B Q4_0 streamed with the settings of an on-device
 Android UI agent (`--overlap --io-threads 4 --dense-weights ahwb -t 6 -c 2048 --n-expert-used 4`, ubatch 2048), 35
 decisions: 31 over Android screens (129 to 476 tokens) and 4 short questions. Same session, same
-build, with and without the flag:
+build, whole layers and routed:
 
-| | whole layers | `--prefill-routed` |
+| | whole layers | routed |
 |---|---:|---:|
 | prefill, median | 7.68 s | 4.16 s |
-| arena reads, median | 17.4 GB | 9.4 GB |
+| arena reads, median | 17.0 GiB | 9.2 GiB |
 | graph waiting on the arena, median | 6.4 s | 2.9 s |
 | `choice_logp` identical | | 35 of 35 |
 
 The prediction missed 11% of the routed experts. It misses more when the prompt changes domain (the
-short questions after the screens: about 40%), and those prompts still ran in 2.6 to 2.9 s. The
-figures are for top-4 routing; with the model's own top-8 a prompt routes to more experts and the
-gain is smaller (not measured). Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
+short questions after the screens: about 40%), and those prompts still ran in 2.6 to 2.9 s.
+
+Other models on the same phone, same settings, 18 of the screen decisions each, every answer
+identical between the two:
+
+| model | experts routed per layer | whole layers | routed | |
+|---|---:|---:|---:|---:|
+| Qwen3.6-35B-A3B Q4_K_M | ~50% of 256 | 9.95 s | 5.37 s | 1.85x |
+| Gemma 4 26B-A4B Q4_K_M | ~58% of 128 | 6.69 s | 3.70 s | 1.81x |
+| Nemotron 3.5 30B-A3B Q4_0 | ~79% of 128 | 7.42 s | 6.81 s | 1.09x |
+
+The gain is what each layer leaves unrouted: Nemotron's prompts route to most of its experts, many
+of its layers cross the 0.85 fallback, and it barely gains. The figures are for top-4 routing; with
+a model's own top-8 a prompt routes to more experts and the gain is smaller (not measured).
+Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
 
 ### What else had to move
 

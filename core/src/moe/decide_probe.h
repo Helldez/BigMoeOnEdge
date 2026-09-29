@@ -3,11 +3,11 @@
 //
 // Two questions, both about making a decision's prefill cheaper:
 //
-//   Expert usage — per layer, how many (token, slot) routings each expert took and the router weight
+//   Expert usage: per layer, how many (token, slot) routings each expert took and the router weight
 //   they carried. Says how concentrated a task's routing is, i.e. how much of it a resident set sized
 //   to RAM could serve.
 //
-//   Layer exit ("logit lens") — the last token's hidden state at the end of every layer, put through
+//   Layer exit ("logit lens"): the last token's hidden state at the end of every layer, put through
 //   the model's final norm and the lm_head rows of the choice tokens. Causality makes this exact for
 //   the question asked: the last token's state after layer L depends on layers 0..L only, so the
 //   answer read there is the answer a prefill cut after layer L would give. One full prefill thus

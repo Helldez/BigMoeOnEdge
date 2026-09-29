@@ -87,8 +87,8 @@ public:
     // `topk` is that node (the routed ids); only the routed mode reads it.
     void barrier(int il, const ggml_tensor * topk = nullptr);
 
-    // EXPERIMENTAL routed mode. Off, every layer's whole expert set is read, ahead of its routing.
-    // On, a layer is read in two parts: ahead of its routing, the experts the previous graph routed
+    // Routed mode (the session's default). Off, every layer's whole expert set is read, ahead of its
+    // routing. On, a layer is read in two parts: ahead of its routing, the experts the previous graph routed
     // at that layer (the prediction); at its routing node, whatever the routing needs that the
     // prediction missed, ahead of anything else queued. The matmul reads only routed experts, so the
     // slot's other experts may hold anything and the result is the same bit for bit. A layer whose

@@ -483,12 +483,12 @@ static void print_usage(const char * argv0) {
         "                          RAM back to the expert cache at the cost of prefill speed;\n"
         "                          decode is unaffected. Measured: a context of 2048 reserves\n"
         "                          320 MiB, falling to 80 MiB at 512.\n"
-        "      --prefill-routed    experimental, with --prefill-device and --moe-stream: the expert\n"
-        "                          arena reads only the experts each graph routes to, predicted from\n"
-        "                          the previous graph and completed at each routing node\n"
+        "      --no-prefill-routed with --prefill-device and --moe-stream: read every expert of every\n"
+        "                          layer instead of only the experts each graph routes to (the default,\n"
+        "                          predicted from the previous graph and completed at each routing node)\n"
         "      --prefill-routed-full F\n"
-        "                          with --prefill-routed: a layer routing more than this fraction of\n"
-        "                          its experts gets the next layer read whole (default 0.85, (0,1])\n"
+        "                          a layer routing more than this fraction of its experts gets the next\n"
+        "                          layer read whole (default 0.85, (0,1])\n"
         "      --prefill-device D  run wide prefill graphs on ggml device D (e.g. HTP0) while decode\n"
         "                          stays on the CPU. With --moe-stream the experts reach it\n"
         "                          through a two-layer arena. Not with speculation or --row-stream.\n"
@@ -746,6 +746,8 @@ int main(int argc, char ** argv) {
             cfg.prefill.device = next("--prefill-device");
         else if (a == "--prefill-routed")
             cfg.prefill.routed = true;
+        else if (a == "--no-prefill-routed")
+            cfg.prefill.routed = false;
         else if (a == "--prefill-routed-full")
             cfg.prefill.routed_full_frac = (float) std::atof(next("--prefill-routed-full"));
         else if (a == "--prefill-min-tokens")

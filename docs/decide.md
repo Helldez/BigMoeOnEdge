@@ -89,9 +89,8 @@ A session opened with `--prefill-device` prefills a decision by the same rule as
 prompt goes in pieces one ubatch wide, pieces at least `--prefill-min-tokens` wide run on the
 device and a narrower tail on the CPU, and the weights are back on the host when the call returns.
 `prefill_dev_tokens` in `BMOE_DECIDE` counts the tokens the device prefilled, and the other
-`prefill_dev_*` keys what its expert arena read. `--prefill-routed` makes the arena read only the
-experts a decision routes to, which on an agent's short prompts is about half of them
-([npu-prefill.md](npu-prefill.md)).
+`prefill_dev_*` keys what its expert arena read. The arena reads only the experts a decision routes
+to, which on an agent's short prompts is about half of them ([npu-prefill.md](npu-prefill.md)).
 
 No prefix state is kept with a prefill device: `auto` resolves to off, and `on` is refused at
 startup. llama.cpp saves and restores a sequence through views of the KV cache it creates once,
@@ -158,8 +157,8 @@ records nothing, and it changes nothing the graph computes. It needs `--moe-stre
 the answer to a screen is not readable from the lens before layer 35 of 40 (10 of 31 agree with the
 final answer at layer 34, 31 of 31 at 35), and a short general question's from layer 31; both are
 full-attention layers of this hybrid model, where the answer letter is looked up in the prompt. A
-screen's prefill routes to about half of each layer's experts, the observation behind
-`--prefill-routed`.
+screen's prefill routes to about half of each layer's experts, the observation behind the routed
+expert arena.
 
 ## How it is built
 
