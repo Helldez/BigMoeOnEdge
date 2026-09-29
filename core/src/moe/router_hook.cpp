@@ -1437,7 +1437,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         const int nl = node_layer(t->name);
         const bool layer_end = nl >= 0 && nl < (int) last_node_.size() && last_node_[(size_t) nl] == t->name;
         if (ask) return dl >= 0 || layer_end || probe_ask;
-        if (dl >= 0) device_arena_->barrier(dl);
+        if (dl >= 0) device_arena_->barrier(dl, t);
         if (layer_end) device_arena_->dense_barrier(nl);
         return true;
     }

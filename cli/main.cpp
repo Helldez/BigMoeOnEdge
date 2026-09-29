@@ -287,10 +287,13 @@ static bool emit_decide(Session & session, const SessionCmd & cmd) {
     std::printf("BMOE_DECIDE {\"id\":%d,\"cancelled\":%s,\"best\":%d,\"choice_logp\":%s,\"n_tokens\":%d,"
                 "\"n_reused\":%d,\"n_prefilled\":%d,\"restore_s\":%.3f,\"store_s\":%.3f,\"prefill_s\":%.3f,"
                 "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,\"prefill_stall_s\":%.3f,"
-                "\"prefill_mgmt_s\":%.3f,\"prefill_dev_tokens\":%d,\"prefix_state_mib\":%.1f}\n",
+                "\"prefill_mgmt_s\":%.3f,\"prefill_dev_tokens\":%d,\"prefill_dev_read_mib\":%.1f,"
+                "\"prefill_dev_stall_s\":%.3f,\"prefill_dev_routed\":%lld,\"prefill_dev_demand\":%lld,"
+                "\"prefix_state_mib\":%.1f}\n",
                 cmd.id, r.cancelled ? "true" : "false", r.best, logp.c_str(), r.n_tokens, r.n_reused, r.n_prefilled,
                 r.restore_seconds, r.store_seconds, p.seconds, p.cpu_seconds, p.read_mib, p.io_seconds, p.stall_seconds,
-                p.mgmt_seconds, p.device_tokens, (double) r.prefix_state_bytes / (1024.0 * 1024.0));
+                p.mgmt_seconds, p.device_tokens, p.device_read_mib, p.device_stall_seconds, p.device_routed,
+                p.device_demand, (double) r.prefix_state_bytes / (1024.0 * 1024.0));
     std::fflush(stdout);
     return true;
 }
@@ -735,6 +738,10 @@ int main(int argc, char ** argv) {
             cfg.n_ubatch = std::atoi(next("--ubatch"));
         else if (a == "--prefill-device")
             cfg.prefill.device = next("--prefill-device");
+        else if (a == "--prefill-routed")
+            cfg.prefill.routed = true;
+        else if (a == "--prefill-routed-full")
+            cfg.prefill.routed_full_frac = (float) std::atof(next("--prefill-routed-full"));
         else if (a == "--prefill-min-tokens")
             cfg.prefill.min_tokens = std::atoi(next("--prefill-min-tokens"));
         else if (a == "--prefill-loaders")

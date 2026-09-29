@@ -3,6 +3,7 @@
 #include "../io/platform_io.h"
 
 #include "ggml-alloc.h"
+#include "ggml-backend.h"
 #include "ggml.h"
 
 #include <algorithm>
@@ -254,7 +255,9 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
         }
     }
     remaining_.assign(order_.size(), 0);
-    scheduled_.assign(order_.size(), false);
+    sched_.assign(order_.size(), std::vector<uint8_t>((size_t) n_expert_, 0));
+    prev_.assign(order_.size(), std::vector<uint8_t>((size_t) n_expert_, 0));
+    have_prev_.assign(order_.size(), false);
     for (int i = 0; i < threads; ++i)
         threads_.emplace_back(&DeviceExpertArena::worker, this, i);
     return true;
@@ -422,15 +425,28 @@ void DeviceExpertArena::place(bool on_device) {
     on_device_ = on_device;
 }
 
-void DeviceExpertArena::schedule(int k) {
-    if (k < 0 || k >= (int) order_.size() || scheduled_[(size_t) k]) return;
-    scheduled_[(size_t) k] = true;
-    remaining_[(size_t) k] = n_proj_ * n_expert_;
-    in_flight_ += n_proj_ * n_expert_;
+void DeviceExpertArena::schedule(int k, const std::vector<uint8_t> * want, bool front) {
+    if (k < 0 || k >= (int) order_.size()) return;
+    std::vector<uint8_t> & s = sched_[(size_t) k];
+    std::vector<int> es;
+    for (int e = 0; e < n_expert_; ++e)
+        if (!s[(size_t) e] && (!want || (*want)[(size_t) e])) {
+            s[(size_t) e] = 1;
+            es.push_back(e);
+        }
+    if (es.empty()) return;
     // Projection-major, the order the layer's matmuls consume them in.
+    std::vector<Task> add;
+    add.reserve((size_t) n_proj_ * es.size());
     for (int p = 0; p < n_proj_; ++p)
-        for (int e = 0; e < n_expert_; ++e)
-            queue_.push_back(Task{false, k, p, e});
+        for (int e : es)
+            add.push_back(Task{false, k, p, e});
+    remaining_[(size_t) k] += (int) add.size();
+    in_flight_ += (int) add.size();
+    if (front)
+        queue_.insert(queue_.begin(), add.begin(), add.end());
+    else
+        queue_.insert(queue_.end(), add.begin(), add.end());
     cv_work_.notify_all();
 }
 
@@ -456,15 +472,16 @@ void DeviceExpertArena::begin_graph() {
     // nothing still running can set it again, and a transient read error must not turn every later
     // device prefill into a decode failure.
     failed_ = false;
-    std::fill(scheduled_.begin(), scheduled_.end(), false);
+    for (std::vector<uint8_t> & s : sched_)
+        std::fill(s.begin(), s.end(), (uint8_t) 0);
     std::fill(dense_scheduled_.begin(), dense_scheduled_.end(), false);
     std::fill(dense_waited_.begin(), dense_waited_.end(), false);
     // Dense first: layer 0 needs them before anything, and there is no node before layer 0 to wait
     // at, so this waits for them here.
     schedule_dense(0);
     schedule_dense(1);
-    schedule(0);
-    schedule(1);
+    for (int k = 0; k < 2 && k < (int) order_.size(); ++k)
+        schedule(k, routed_ && have_prev_[(size_t) k] ? &prev_[(size_t) k] : nullptr);
     if (!dense_.empty()) {
         cv_done_.wait(lk, [&] { return dense_remaining_[0] == 0; });
         dense_waited_[0] = true;
@@ -485,7 +502,7 @@ void DeviceExpertArena::dense_barrier(int il) {
         (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
 }
 
-void DeviceExpertArena::barrier(int il) {
+void DeviceExpertArena::barrier(int il, const ggml_tensor * topk) {
     // The dense slot of this layer must have been waited for before the layer began: if the graph
     // never passed the node that paces it, its attention already ran on whatever the slot held.
     if (il >= 0 && il < (int) dense_.size() && !dense_[(size_t) il].t.empty()) {
@@ -496,11 +513,46 @@ void DeviceExpertArena::barrier(int il) {
     const int k = k_of_layer_[(size_t) il];
     if (k < 0) return;
     const auto t0 = std::chrono::steady_clock::now();
+    // Routed mode: the ids this layer's matmul will read, as a set. Read before taking the lock: the
+    // loaders are busy with the prediction meanwhile.
+    std::vector<uint8_t> used;
+    int n_used = 0;
+    if (routed_ && topk && topk->type == GGML_TYPE_I32 && topk->ne[1] > 0) {
+        const int nu = (int) topk->ne[0], nt = (int) topk->ne[1];
+        // A view of the full argsort: rows are nb[1] apart.
+        const size_t stride = (size_t) topk->nb[1] / sizeof(int32_t);
+        std::vector<int32_t> rows(stride * (size_t) (nt - 1) + (size_t) nu);
+        ggml_backend_tensor_get(topk, rows.data(), 0, rows.size() * sizeof(int32_t));
+        used.assign((size_t) n_expert_, 0);
+        for (int j = 0; j < nt; ++j)
+            for (int q = 0; q < nu; ++q) {
+                const int32_t e = rows[(size_t) j * stride + (size_t) q];
+                if (e >= 0 && e < n_expert_ && !used[(size_t) e]) {
+                    used[(size_t) e] = 1;
+                    ++n_used;
+                }
+            }
+    }
     std::unique_lock<std::mutex> lk(mu_);
     // The graph has finished everything before this layer's routing, so layer k-1 is done with the
     // slot k+1 shares with it.
-    schedule(k);
-    schedule(k + 1);
+    if (!used.empty()) {
+        int missed = 0;
+        for (int e = 0; e < n_expert_; ++e)
+            missed += used[(size_t) e] && !sched_[(size_t) k][(size_t) e];
+        if (!test_skip_demand_) schedule(k, &used, true);
+        routed_used_ += (uint64_t) n_used;
+        routed_demand_ += (uint64_t) missed;
+        // Layer k's prediction was consumed when k was queued; this routing is the next graph's.
+        prev_[(size_t) k] = used;
+        have_prev_[(size_t) k] = true;
+        const bool whole = (float) n_used > routed_full_frac_ * (float) n_expert_;
+        const int k1 = k + 1;
+        if (k1 < (int) order_.size()) schedule(k1, !whole && have_prev_[(size_t) k1] ? &prev_[(size_t) k1] : nullptr);
+    } else {
+        schedule(k);
+        schedule(k + 1);
+    }
     cv_done_.wait(lk, [&] { return remaining_[(size_t) k] == 0; });
     lk.unlock();
     stall_ns_ +=

@@ -157,6 +157,8 @@ bool PrefillPath::open_arena(const PrefillDeviceConfig & cfg,
     }
     arena_layers_.clear();
     arena_->set_test_delay_us(cfg.test_load_delay_us);
+    arena_->set_routed(cfg.routed, cfg.routed_full_frac);
+    arena_->set_test_skip_demand(cfg.test_routed_skip_demand);
     if (!arena_->init_dense(devs_[0], dense_per_layer, hook_->non_matrix_weights(), perr)) {
         err = "prefill device " + cfg.device + " dense arena: " + perr;
         return false;

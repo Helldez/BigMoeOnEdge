@@ -54,8 +54,8 @@ static int weight_layer(const char * name) {
     return -1;
 }
 
-DecideProbe::DecideProbe(const std::string & model_path, int n_layer, int n_expert, int n_embd,
-                         const std::string & out_path)
+DecideProbe::DecideProbe(
+    const std::string & model_path, int n_layer, int n_expert, int n_embd, const std::string & out_path)
     : n_layer_(n_layer), n_expert_(n_expert), n_embd_(n_embd) {
     out_ = std::fopen(out_path.c_str(), "ab");
     if (!out_) {
@@ -215,8 +215,12 @@ void DecideProbe::observe(ggml_tensor * t) {
     }
 }
 
-void DecideProbe::write(int seq, int n_tokens, double prefill_s, const std::vector<std::string> & choices,
-                        const std::vector<double> & logp, int best) {
+void DecideProbe::write(int seq,
+                        int n_tokens,
+                        double prefill_s,
+                        const std::vector<std::string> & choices,
+                        const std::vector<double> & logp,
+                        int best) {
     if (!out_) return;
     std::string s;
     char buf[64];
@@ -228,8 +232,11 @@ void DecideProbe::write(int seq, int n_tokens, double prefill_s, const std::vect
     for (size_t i = 0; i < choices.size(); ++i) {
         s += i ? ",\"" : "\"";
         for (char c : choices[i])
-            if (c == '"' || c == '\\') { s += '\\'; s += c; }
-            else if ((unsigned char) c >= 0x20) s += c;
+            if (c == '"' || c == '\\') {
+                s += '\\';
+                s += c;
+            } else if ((unsigned char) c >= 0x20)
+                s += c;
         s += '"';
     }
     s += "],\"best\":" + std::to_string(best) + ",\"logp\":[";

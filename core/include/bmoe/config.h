@@ -381,6 +381,16 @@ struct PrefillDeviceConfig {
     // gate proves it. Never set by a front-end.
     int test_load_delay_us = 0;
 
+    // EXPERIMENTAL: read only the experts each device graph routes to, predicted from the previous
+    // graph's routing and completed at each routing node (DeviceExpertArena::set_routed). Off by
+    // default. `routed_full_frac`: a layer routing more than this fraction of its experts gets the next
+    // layer read whole.
+    bool routed = false;
+    float routed_full_frac = 0.85f;
+    // TEST ONLY: in routed mode, skip the reads at the routing node, so the graph computes on whatever
+    // the slot held for the experts the prediction missed. The gate uses it to prove it would see that.
+    bool test_routed_skip_demand = false;
+
     static constexpr int min_tokens_floor = 2; // decode is one token wide; this keeps the shapes apart
 
     // Logit rows a graph may produce, with the device on. llama.cpp reserves compute memory for as many

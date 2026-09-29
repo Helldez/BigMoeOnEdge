@@ -48,8 +48,12 @@ public:
 
     // One JSONL line for the decision just probed. `logp`/`best` are decide()'s own answer, written
     // beside the lens so the last layer's reading can be checked against it.
-    void write(int seq, int n_tokens, double prefill_s, const std::vector<std::string> & choices,
-               const std::vector<double> & logp, int best);
+    void write(int seq,
+               int n_tokens,
+               double prefill_s,
+               const std::vector<std::string> & choices,
+               const std::vector<double> & logp,
+               int best);
 
 private:
     bool load_head(const std::string & model_path);
@@ -72,12 +76,12 @@ private:
     // per decision
     std::vector<int32_t> choice_ids_;
     std::vector<std::vector<float>> choice_rows_;
-    std::vector<std::vector<int32_t>> ids_;   // [layer] the last graph's topk, flattened [nt][nu]
-    std::vector<std::vector<float>> w_;       // [layer] the last-offered weight node, [nt][nu]
-    std::vector<std::vector<uint32_t>> cnt_;  // [layer][expert] routings, summed over graphs
-    std::vector<std::vector<float>> wsum_;    // [layer][expert] router weight, summed
-    std::vector<int> nu_;                     // [layer]
-    std::vector<std::vector<float>> hidden_;  // [layer] last token's l_out
+    std::vector<std::vector<int32_t>> ids_;  // [layer] the last graph's topk, flattened [nt][nu]
+    std::vector<std::vector<float>> w_;      // [layer] the last-offered weight node, [nt][nu]
+    std::vector<std::vector<uint32_t>> cnt_; // [layer][expert] routings, summed over graphs
+    std::vector<std::vector<float>> wsum_;   // [layer][expert] router weight, summed
+    std::vector<int> nu_;                    // [layer]
+    std::vector<std::vector<float>> hidden_; // [layer] last token's l_out
     void flush_layer(int il);
 };
 

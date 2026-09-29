@@ -37,7 +37,7 @@
 namespace bmoe {
 class DeviceExpertArena;
 class DecideProbe;
-}
+} // namespace bmoe
 
 #include <atomic>
 #include <chrono>
