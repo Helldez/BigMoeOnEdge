@@ -51,6 +51,16 @@ pin; do not stash/restore anything for pin builds anymore.*
   `preserve_reasoning` key stays in the documented generate request.
 - **#29085 (`74e1ee6de`) is NOT in the new pin** — verified by ancestry check in
   `third_party/llama.cpp`. The Next-actions playbook for it is unchanged.
+- **Smoke test of the merged engine (Next action 2, done in-session): PASS.**
+  One-shot greedy olmoe-1b-7b coherent (14.5 tok/s, 0 majflt). Three-turn session
+  on olmoe (pure attention): `n_reused` 0 → 60 → 114 with suffix-only prefills
+  (22/25 tokens) — the generic diff-reuse path works on the new pin, and a
+  `preserve_reasoning:true` request executes without error. LFM2.5 session:
+  hybrid policy behaves per design (non-append turn full-clears, `n_reused` 0;
+  turn 3 took the preserve_reasoning append path). `--version` → 0.27.0;
+  `--list-archs` carries both upstream rows (nemotron_h_moe, qwen4exp) and the
+  branch's laguna row. Note: the new pin logs per-tensor graph diagnostics on
+  stderr — cosmetic, not a failure signal.
 
 ## Artifacts touched (this session)
 
@@ -117,18 +127,14 @@ Regeneration: none needed — everything is in the merge commit. Gates re-run:
 1. **Restore the LFM2.5 daily driver** (still DOWN; carried from session 21):
    launch command in Environment state — then assert UP per the MISTAKES rule
    (`pgrep -f "[b]moe-serve.py"`) and record the PID here.
-2. **Sanity-run the merged engine against a real model** (one-shot
-   `bmoe-cli -m <small gguf> -p "…" -n 16` with `build/cli/bmoe-cli`): proves the
-   `preserve_thinking` re-port and the +530-commit pin behave outside the tiny-model
-   gates before any serve work resumes.
-3. **Opencode re-test with `--auto-echo`** on the restored LFM2.5 driver
-   (carried from session 21).
-4. **Verify the `multiple-choice` skill live** (carried from session 21):
-   logprobs round-trip through the bridge on :8017, then the ~50-item demo.
-5. **#29085 playbook** (Open question 2) unchanged; when it merges: reopen
+2. **Opencode re-test with `--auto-echo`** on a serve instance (carried from
+   session 21; the daily driver is deliberately down — model choice undecided).
+3. **Verify the `multiple-choice` skill live** (carried from session 21):
+   logprobs round-trip through the bridge, then the ~50-item demo.
+4. **#29085 playbook** (Open question 2) unchanged; when it merges: reopen
    #29117 → bump + gates + rsbench re-run. When #197 merges: stacked-PR plan
    (Open question 1).
-6. **Kill-process rule** (docs/MISTAKES.md): never chain `pkill -f <pat>` —
+5. **Kill-process rule** (docs/MISTAKES.md): never chain `pkill -f <pat>` —
    bracket the pattern or run standalone and assert afterwards.
 
 ## Resume gates (all must assert positives)
