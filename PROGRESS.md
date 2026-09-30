@@ -6,212 +6,146 @@ the long-form evidence narrative; entries are never rewritten, only falsified ex
 by newer entries. Trust hierarchy: resume section > history > older sections of either.
 Log opened 2026-09-18; earlier project history lives in `CHANGELOG.md` and `git log`.
 
-*Resume last rewritten: 2026-09-22 (session 21, wrap-up rewrite). Phase:
-**docs: collapse bug fixed + per-model serve commands — published to fork/main**.
-Published chain on fork/main: `…52b3e64` → **`2bcdab6` (host-benchmarks.md stray
-`<details>` fixed; recipes.md per-model served/multi-turn commands)**. Upstream:
-#29085 READY FOR REVIEW — user monitors CI.*
-*One-line status: two follow-ups to the recipes publish, both landed. (1) The
-"page-wide collapse" the user reported was a stray raw `<details>` in
-host-benchmarks.md's intro prose ("…its own <details> below…") — GitHub pairs it
-with the first per-model `</details>`, collapsing everything between; fixed by
-code-quoting it. The 8 real per-model tables were never wrapped page-wide and stay
-collapsed per-model. (2) recipes.md: each model's "Add for served / multi-turn
-sessions" paragraph now opens with a `bmoe-serve.py` command block (single-shot
-recipe + served command + the why-notes that remain), per user request. Arc record
-committed AND pushed this time (user asked for the push). Next: restore the LFM2.5
-daily driver (Next action 1), opencode re-test, multiple-choice skill live check.*
+*Resume last rewritten: 2026-09-30 (session 22, wrap-up rewrite). Phase:
+**upstream 0.25.0–0.28.0 merged into `feat/session-residency`; all 16 gates green
+on the new pin**. Merge commit `f3a9517` (amended with the post-merge gate fix) on
+`feat/session-residency`; parent-2 is upstream `374f562` (0.28.0).*
+*One-line status: the merge predicted in the morning assessment landed as predicted —
+7 conflicted files, ~8 hunks, one semantic re-port (`preserve_thinking` kwarg re-added
+on top of upstream's new `detail::build_turn_inputs()`), plus one compile fix in
+`tests/moe_gates.cpp` (upstream's `messages` field broke a positional
+`GenerateRequest` init). Submodule pin moved `0e8c83e51` → `dce969851` (+530 commits).
+`build/` rebuilt clean; `ctest` **16/16 passed** including all four byte-identity
+moe gates. The old "pos0 working-tree port" is RETIRED — upstream's rename is in the
+pin; do not stash/restore anything for pin builds anymore.*
 
 ## State delta (this session)
 
-- **host-benchmarks.md collapse bug fixed (published `2bcdab6` on fork/main).**
-  User reported the lower part of the page collapsing as one block. Root cause: the
-  session-20 intro sentence contained a bare `<details>` in prose; GitHub's HTML
-  pairing married it to the first per-model `</details>` (Ornith, line 187), so the
-  scoreboard + summary + first model all sat inside one accidental block. Fix: quote
-  the token (`` `<details>` ``) so it renders as text. The 8 intentional per-model
-  wrappers are balanced (8 open / 8 close) and keep the requested behavior — only
-  the per-model tables collapse, not "the entire lower part".
-- **recipes.md per-model serve commands added (same commit).** Every model's
-  "Add for served / multi-turn sessions" paragraph now leads with a bash block:
-  `python3 scripts/bmoe-serve.py -m <model> [--auto-echo] --engine-args "<engine
-  flags>"`, then the (shortened) why-notes. `--auto-echo` present only where the
-  verdict says On (Ornith, Cyber-Tiel, LFM2.5); Qwen3.6/Laguna/Qwen3-30B/Ling-mini/
-  OLMoE run without it per their rows. Engine args mirror each model's single-shot
-  recipe plus `--ctx-size 16384 --ubatch 512` and `--rs-seq 64` where eligible;
-  fits-RAM models carry just `--ubatch 512` (LMF2.5 adds `--rs-seq 64`),
-  `--ngram` noted in prose as the workload add-on. `--ctx-size 16384` is the bench
-  protocol default (scoreboard footnote), not a per-model measurement.
-- **Publish flow worked as designed for once:** both changes were edits to existing
-  files, so the standard patch path applied cleanly (no session-19/20 new-file
-  workaround needed). Patches archived on the arc:
-  `scripts/host-bench-details-fix.patch` (17 lines) +
-  `scripts/recipes-serve-blocks.patch` (184 lines); landed tree diffed
-  byte-identical against the worktree after push.
-- **Prior-session state (session 20, unchanged):** recipes.md eight-model matrix,
-  all 16 collapsible tables, the session-19/20 publish lessons, Cyber-Tiel gate
-  verdict, provenance legend — all stand as published on fork/main through
-  `52b3e64`.
+- **Merge `f3a9517`: upstream `origin/main` (0.24.0 → 0.28.0, 56 commits, 4 releases)
+  into `feat/session-residency` (8 commits ahead).** Conflict census matched the
+  pre-merge trial exactly: `CHANGELOG.md`, `CMakeLists.txt`, `README.md`,
+  `core/src/engine/session.cpp`, `docs/README.md`, `docs/telemetry.md`,
+  `examples/android/app/build.gradle`. Engine-critical overlap (`cli/main.cpp`,
+  `config.h`, `session.h`, `runtime.cpp`, `arch_registry.cpp`) auto-merged.
+- **The one semantic resolution:** upstream refactored the inline prompt-building
+  block into `detail::build_turn_inputs()` (`core/src/engine/thinking_control.cpp`);
+  upstream's helper carries everything ours did **except** the ADR-002
+  preserve-reasoning kwarg. Resolution: upstream's call + the
+  `preserve_thinking` kwarg re-added at the call site (session.cpp, after the
+  helper call). `preserve_reasoning` end-to-end (session.h field, CLI flag, bridge
+  JSON key, telemetry doc) survived the merge — `session.h`/`cli/main.cpp`
+  auto-merged.
+- **Post-merge compile fix (amended into `f3a9517`):** upstream added
+  `GenerateRequest::messages` (vector) before `n_predict`; the positional
+  `GenerateRequest{prompt, n_predict}` in `tests/moe_gates.cpp:1183` bound into the
+  wrong member. Now explicit field assignment. Only occurrence in the repo.
+- **Uncommitted `dp.pos0` edit DISCARDED, superseded:** the edit did not compile
+  against the old pin (`pos0` absent there); upstream's line 1637 already carries
+  the rename for the new pin. The PROGRESS doc's "stash the pos0 port for pin
+  builds" doctrine is obsolete as of this merge.
+- **Version fields took upstream** (`project VERSION 0.27.0`; app versionCode 43 /
+  versionName 0.28.0) — newer and monotonic; the branch's 0.24.1–0.24.3 CHANGELOG
+  sections were spliced under upstream's 0.25.0–0.28.0, reverse-chronological order
+  restored. README model table: upstream's `nemotron_h_moe` row + our `laguna` row
+  both kept. docs/README and telemetry.md: union of both sides' additions; the
+  `preserve_reasoning` key stays in the documented generate request.
+- **#29085 (`74e1ee6de`) is NOT in the new pin** — verified by ancestry check in
+  `third_party/llama.cpp`. The Next-actions playbook for it is unchanged.
 
 ## Artifacts touched (this session)
 
 | File | What |
 |---|---|
-| `PROGRESS.md` | this rewrite + the session-21 history entry (at wrap-up) |
-| `scripts/host-bench-details-fix.patch` | the stray-tag fix in host-benchmarks.md, landed as `2bcdab6` |
-| `scripts/recipes-serve-blocks.patch` | the 8 recipes.md serve-command blocks (same commit) |
-| `bench-data/qgate-cyber-2026-09-21/` | the complete gate evidence (4 cell files + stage records) — commits `45d7000`, `083afba`, wrap-up |
-| `~/llm/data/tinyMMLU-test.parquet` | tinyBenchmarks tinyMMLU test split (100 rows) — quality-gate input |
-| `~/llm/data/HumanEval.jsonl.gz` | canonical HumanEval (164 problems) — quality-gate input |
-| `/tmp/feat-ab/q36-regime/` | raw regime-batch evidence (CSV + log per cell) |
-| `/tmp/feat-ab/cyber-qgate/` | quality-gate outputs — FULLY BANKED to `bench-data/qgate-cyber-2026-09-21/`; regenerable by rerunning the gate scripts; safe to delete |
-| Kept | `/tmp/lp-verify/` (mismatch runner), `~/git/lp-ci/` (~9 GB, removable after #29085 lands), `/tmp/nemotron-budget-issue-draft.md` (user's to post) |
+| `core/src/engine/session.cpp` | conflict resolution: `build_turn_inputs` + `preserve_thinking` re-port |
+| `tests/moe_gates.cpp` | G18f positional-init fix (amended into the merge commit) |
+| `CHANGELOG.md`, `README.md`, `docs/README.md`, `docs/telemetry.md`, `CMakeLists.txt`, `examples/android/app/build.gradle` | conflict resolutions (see State delta) |
+| `PROGRESS.md` | this rewrite + the session-22 history entry |
+| `/tmp/progress-resume.md` | scratch splice file, deletable |
+| `third_party/llama.cpp` | working tree at new pin `dce969851` (gguf-v0.19.0-2151) |
+| `build/` | full rebuild against the new pin, green |
 
-Arc state: `feat/session-residency` == `fork/feat/session-residency` at `b83e657`
-+ this session's wrap-up commit (session-21 record, PUSHED — user asked for the
-push in this flow). The `core/src/engine/session.cpp` pos0 port stays
-working-tree-only — NEVER commit it; stash it for pin builds and the ctest gate.
-Engine-side branches: `bench/host-rs` on cjl4hd/llama.cpp (what `build-bench/` links);
-`fix/lfm2-rs-reserve` @ `74e1ee6de` = the #29085 branch (READY FOR REVIEW);
-`fix/rs-rollback-index-shift` upstream, PR #29117 closed until #29085 merges.
+Regeneration: none needed — everything is in the merge commit. Gates re-run:
+`(cd build && ctest --output-on-failure)`.
 
 ## Environment state
 
-- **Quality-gate datasets** `~/llm/data/`: `tinyMMLU-test.parquet` (HF
-  tinyBenchmarks/tinyMMLU `data/test-00000-of-00001.parquet`, 178 082 B) +
-  `HumanEval.jsonl.gz` (openai/human-eval fetched via the GitHub **API** blob
-  endpoint — codeload and raw are blocked by the proxy; base64-decode
-  `content`, 44 877 B, 164 problems). Reader: `/tmp/evalvenv` (regen:
-  `python3 -m venv /tmp/evalvenv && /tmp/evalvenv/bin/pip install pyarrow
-  pandas`) — system python is PEP-668 blocked (no pyarrow) and CANNOT read the
-  parquet; the gate scripts must run under `/tmp/evalvenv/bin/python`.
-- **Daily driver during the quality gate: KILLED by PID** (found ALIVE at 09:59 —
-  a stale engine from Sun 15:04 that survived its session's teardown because
-  `setsid nohup … &` detaches it from the tmux session; resume prose said DOWN,
-  the process table won). Restore when the gate finishes: `setsid nohup python3
+- **The old pin-build ritual is DEAD:** no stash/pop dance anymore — the new pin
+  has upstream's `pos0` rename, the tree builds as committed. Resume gate 1 below
+  is the simple build+ctest now.
+- **Quality-gate datasets** `~/llm/data/`: unchanged (tinyMMLU parquet + HumanEval;
+  reader `/tmp/evalvenv`; system python is PEP-668 blocked).
+- **LFM2.5 daily driver: still DOWN** (was down for the session-21 quality gate;
+  this session did not touch the runtime). Standing recipe: `setsid nohup python3
   -u scripts/bmoe-serve.py -m ~/llm/models/LFM2.5-8B-A1B-UD-Q4_K_M.gguf
   --engine-args "--ctx-size 8192 --chatml" --auto-echo --port 8017 >
-  /tmp/bmoe-serve.log 2>&1 &`.
-- **Swap**: RESIZED 2026-09-20 (user ran the sudo): `/swap.img` now 8G (658Mi used at
-  verification), permanent via fstab line 12; stale `/swapfile_extra` line removed.
-  Impact doctrine: thrash profiles are UNCHANGED (model pages are file-backed — they
-  evict+re-read, not swap); what widens is the anon-allocation margin — c5-style
-  snapshot/KV over-commits that used to OOM now complete. Guard unchanged: majflt/tok
-  stays the pressure sensor before any perf claim (a config error that used to fail
-  fast now degrades slowly instead).
-  LFM2.5 daily driver (standing recipe; currently DOWN for the quality gate —
-  see the bullet above): `setsid nohup python3 -u scripts/bmoe-serve.py -m ~/llm/models/LFM2.5-8B-A1B-UD-Q4_K_M.gguf --engine-args "--ctx-size 8192 --chatml" --auto-echo --port 8017 > /tmp/bmoe-serve.log 2>&1 &`
-  (Ling-mini alternative in the history; `--auto-echo` only for thinking models; run it
-  inside tmux — background processes die between tool calls here).
-- **Models** (`~/llm/models/`): Ling-mini-2.0, LFM2.5-8B-A1B-UD-Q4_K_M (note: no plain
-  `-Q4_K_M` file — sweeps use the UD file), Qwen3.5-9B, olmoe-1b-7b, Laguna-XS-2.1,
-  Ornith-1.5, Qwen3-30B, Qwen3.6-35B, Cyber-Tiel-35B.
-- **Warmup cache** `~/.cache/bmoe-serve/warmup.json`: holds the Qwen3-30B chain (valid,
-  self-regenerating — the next serve on any other model overwrites it).
-- **git-lfs**: user-level install at `~/.local/bin/git-lfs` (v3.8.0 tarball, no sudo) —
-  required by `ci/run.sh`; ensure `~/.local/bin` is on PATH in CI reruns.
-- **Bench build**: `build-bench/` = the arc linked against the clone llama
-  (`bench/host-rs`); requires the session.cpp pos0 working-tree port. The pin build
-  (`build/`) must not see that port.
-- **Remotes**: `origin` = Helldez/BigMoeOnEdge (upstream; PR #197 from fork's
-  `feat/serve-bridge-arm64`), `fork` = cjl4hd/BigMoeOnEdge (push target); `gh` authed
-  as `cjl4hd`. Submodule: `Helldez/llama.cpp` @ `0e8c83e51` (one sanctioned expert-hook
-  commit on upstream).
-- **llama.cpp work area**: `~/git/llama.cpp` — fork `cjl4hd/llama.cpp` (origin),
-  `upstream` = ggml-org, `helldez` = pin archaeology. Clone rests on `bench/host-rs`
-  (the bench stack build-bench links); the #29085 branch is `fix/lfm2-rs-reserve` @
-  `74e1ee6de`; the tip verify worktree lives at `/tmp/lp-verify` (see Artifacts).
-  Release build with fixture models; regenerate via `cmake --build build -j4 --target
-  test-llama-archs && ./build/bin/test-llama-archs -o build/tests/test-models/`.
-- **gh CLI caveat (ggml-org)**: `gh pr edit/view` dies on the Projects-classic GraphQL
-  deprecation — use REST: `gh api repos/ggml-org/llama.cpp/pulls/29085 --jq ...`;
-  body edits via `-X PATCH ... -F body=@file`.
-- **aider scratch repo**: `~/aider-test` — fixture currently has both session-15
-  edits applied (uncommitted); reset with `git checkout -- calculator.py` before a
-  fresh run.
+  /tmp/bmoe-serve.log 2>&1 &` — then assert UP (`pgrep -f "[b]moe-serve.py"`).
+- **Swap** 8G permanent (fstab) — unchanged; majflt/tok stays the pressure sensor
+  before any perf claim.
+- **Models** `~/llm/models/`: unchanged list (Ling-mini-2.0, LFM2.5 UD-Q4_K_M,
+  Qwen3.5-9B, olmoe-1b-7b, Laguna-XS-2.1, Ornith-1.5, Qwen3-30B, Qwen3.6-35B,
+  Cyber-Tiel-35B).
+- **Remotes**: `origin` = Helldez/BigMoeOnEdge, `fork` = cjl4hd/BigMoeOnEdge (push
+  target); `gh` authed as `cjl4hd`. Submodule: `Helldez/llama.cpp` @ `dce969851`
+  (this merge). The `~/git/llama.cpp` work area still rests on `bench/host-rs` and
+  `build-bench/` still links it — but its pos0-port dependency is gone; a bench
+  rebuild against `bench/host-rs` is unaffected by this merge.
+- **`build-bench/`**: still the OLD bench build (llama `bench/host-rs`); stale
+  relative to the new pin until `bench/host-rs` itself is rebased — not needed for
+  the arc's gates, which run against `build/`.
 - Untracked, NOT ours: `.opencode/`, `bmoe-arm64*`, `opencode.json`, `.aider*`, logs.
-- Ephemeral: `/tmp/bmoe-serve.log`, `/tmp/bmoe-reqs.jsonl` (only when `BMOE_DEBUG_ECHO=1`),
-  `/tmp/bf-*` bench outputs, `/tmp/sweep-*.txt` + `/tmp/rsbench-*.err` (this session's
-  matrix evidence, all regenerable via the rsbench commands in the history entry below).
+- Ephemeral: `/tmp/bmoe-serve.log`, `/tmp/bmoe-reqs.jsonl`, `/tmp/bf-*`,
+  `/tmp/sweep-*.txt` (regenerable per history entries).
 
 ## Open questions / blocked items
 
-1. **Stacked PR held until #197 merges** (user decision). Plan: verify ancestry → sync
-   fork main → rebase `feat/session-residency` (serve-bridge commits collapse) →
-   `gh pr create --repo Helldez/BigMoeOnEdge --base main --head cjl4hd:feat/session-residency`.
-   Fallback if #197 stalls: fork-internal PR (`--repo cjl4hd --base feat/serve-bridge-arm64`), retarget later.
-2. **PR #29085 — READY FOR REVIEW; the user monitors CI.** When merged, the playbook
-   in Next actions 4 applies (reopen #29117 → submodule bump + full byte-identity
-   gates + `bmoe-rsbench reserve` re-run). If a reviewer can't reproduce the assert
-   on current master: the shortfall manifests config-dependently at tip (session-10
-   history) — the durable argument is the classification fix + the new fixture
-   coverage.
-3. **NEW — CPU multi-seq split-replay mismatch (real LFM2.5, max diff 11.587):**
-   pre-existing, out of #29085 scope, our single-seq engine paths unaffected. Next:
-   narrow the repro (other real allowlist archs on CPU? a non-lean build? dummy-only
-   CI can't catch it), then decide on an upstream issue. Evidence + commands in the
-   session-10 history entry.
-4. **Shape-dependent-backend caveat for any future bitwise claim:** any exactness
-   comparison against a differently-shaped reference is meaningless here (~3 logits of
-   noise from ubatch splits alone, MoE routing flips). Only identical-shape controls
-   (d=0) or argmax-level verdicts with shape-control rows are admissible evidence.
+1. **Stacked PR held until #197 merges** (user decision) — unchanged, but the
+   rebase step is now "rebase onto a main that contains the merge" (the branch is
+   9 commits ahead of upstream main, one of them the merge). Plan otherwise as
+   recorded in history (session 14).
+2. **PR #29085 — READY FOR REVIEW; user monitors CI.** Verified NOT in the new
+   pin. When merged: reopen #29117, submodule bump + full gates + `bmoe-rsbench
+   reserve` re-run (ADR-001 bump rule).
+3. **CPU multi-seq split-replay mismatch** (session-10): unchanged, upstream-side,
+   out of arc scope.
+4. **Shape-dependent-backend caveat** for bitwise claims: unchanged doctrine.
+5. **NEW — Android app version skew:** the branch's next release must rebase its
+   versionCode/versionName plan on the merged `build.gradle` (43 / 0.28.0);
+   a branch release before upstream's next tag would need 44 / its own version.
 
 ## Next actions (ordered)
 
-1. **Restore the LFM2.5 daily driver** (gate done, it is DOWN for the run):
+1. **Restore the LFM2.5 daily driver** (still DOWN; carried from session 21):
    launch command in Environment state — then assert UP per the MISTAKES rule
-   (`pgrep -f "[b]moe-serve.py"`) and record the PID here before wrap-up.
-2. **Opencode re-test with `--auto-echo`** on the restored LFM2.5 daily driver
-   (last post-queue item).
-3. **Verify the `multiple-choice` skill live** (endpoint unblocked now):
-   logprobs round-trip through the bridge on :8017 (does it forward
-   `top_logprobs`? does the think-block garble a thinking model's first
-   token?), direct `bmoe-cli --server` as fallback; then the demo: ~50
-   judgment items, probe vs short-generation cost + agreement, per the SKILL.md.
-4. **#29085 is READY FOR REVIEW — the user monitors its CI** (do not poll it
-   proactively). When it merges: reopen PR #29117 (humanize first —
-   `/tmp/pr-index-shift-description-draft.md` is the tool draft), then submodule
-   bump + full byte-identity gates + `bmoe-rsbench reserve` re-run (ADR-001
-   bump rule). Watch #28976 (WebGPU GDN) for the snapshot-slot contract. When
-   #197 merges: the stacked-PR plan (Open questions 1). After the PR lands:
-   free ~9 GB — `git worktree remove --force ~/git/lp-ci` (keep `ci-results/`
-   logs).
-5. **User: post the Nemotron-H/H_MOE issue** from
-   `/tmp/nemotron-budget-issue-draft.md` (own wording; AI-content rule). Record
-   the issue number here when posted.
-6. **Kill-process rule (docs/MISTAKES.md):** never chain `pkill -f <pat>` with
-   follow-up statements — bracket the pattern (`pkill -f "[c]ellc.sh"`) or run
-   it standalone and assert afterwards.
-
+   (`pgrep -f "[b]moe-serve.py"`) and record the PID here.
+2. **Sanity-run the merged engine against a real model** (one-shot
+   `bmoe-cli -m <small gguf> -p "…" -n 16` with `build/cli/bmoe-cli`): proves the
+   `preserve_thinking` re-port and the +530-commit pin behave outside the tiny-model
+   gates before any serve work resumes.
+3. **Opencode re-test with `--auto-echo`** on the restored LFM2.5 driver
+   (carried from session 21).
+4. **Verify the `multiple-choice` skill live** (carried from session 21):
+   logprobs round-trip through the bridge on :8017, then the ~50-item demo.
+5. **#29085 playbook** (Open question 2) unchanged; when it merges: reopen
+   #29117 → bump + gates + rsbench re-run. When #197 merges: stacked-PR plan
+   (Open question 1).
+6. **Kill-process rule** (docs/MISTAKES.md): never chain `pkill -f <pat>` —
+   bracket the pattern or run standalone and assert afterwards.
 
 ## Resume gates (all must assert positives)
 
-1. Pin build + tests (the session.cpp pos0 port breaks the pin build — stash first):
-   `git stash push -- core/src/engine/session.cpp` → `cmake --build build -j4 2>&1 |
-   grep -E 'error|warning' | grep -v 'ccache not found'` → empty (ccache is simply not
-   installed here; that advisory is environmental, not a build diagnostic) →
-   `cd build && ctest --output-on-failure` → **13/13 passed** → `git stash pop`.
-   Verify the port is back (`git diff --stat`).
-2. `git status -sb` → `feat/session-residency` pushed to fork (or exactly the current
-   wrap-up ahead of it); the ONLY dirty file is ` M core/src/engine/session.cpp` (the
-   pos0 port — expected, never commit). Anything else dirty: triage before working.
-3. `bash -n scripts/cellc.sh && bash -n scripts/publish-host-bench.sh && python3 -m
-   py_compile scripts/bmoe-serve.py` → silent.
-4. `git fetch fork -q && git merge-base --is-ancestor origin/main fork/main && echo synced`
-   → prints `synced` (fork/main not behind upstream — the publish flow depends on it).
-5. `test -x build/tools/bmoe-rsbench` → exists (`-DBMOE_BUILD_TOOLS=ON`); and
-   `./build/tools/bmoe-rsbench reserve <lfm2 gguf>` → exit 134 on the unfixed pin
-   (flips to 0 after the #29085 bump).
-6. `cd ~/git/llama.cpp && git branch --show-current` → `bench/host-rs` (the clone's
-   resting branch; build-bench links it) and `git rev-parse --short fix/lfm2-rs-reserve`
-   → `74e1ee6de` (the submitted #29085 commit). Cutsweep re-verify (when the index-shift
-   work resumes): `/tmp/bmoe-rsbench-clone cutsweep <lfm2 gguf>` → 9/9 EXACT (rebuild
-   runner + clone llama if moved; /tmp is volatile).
-7. Server gate (only when a serve/agents session needs it): restore per Environment
-   state, then `curl -fsS -m 3 http://127.0.0.1:8017/v1/models` → the `bmoe-local` JSON.
-
-If a gate fails: re-derive from artifacts (git log, docs/adr, history below) before
-continuing. Never weaken a gate to make it pass.
+1. Pin build + tests (simple now — no stash dance):
+   `cmake --build build -j4 2>&1 | grep -E 'error|warning' | grep -v 'ccache not
+   found'` → empty (ccache advisory is environmental) → `cd build && ctest
+   --output-on-failure` → **16/16 passed**.
+2. `git status -sb` → `feat/session-residency` == `fork/feat/session-residency`
+   (pushed; the workflow-scope blocker is resolved); working tree clean except
+   the known-untracked non-ours list (`.opencode/`, `bmoe-arm64*`, `opencode.json`).
+   The old "` M core/src/engine/session.cpp` expected" clause is RETIRED — the tree
+   must be CLEAN now; anything dirty: triage before working.
+3. `bash -n scripts/cellc.sh && bash -n scripts/publish-host-bench.sh && python3
+   -m py_compile scripts/bmoe-serve.py` → silent.
+4. `grep -c '<<<<<<<' CHANGELOG.md README.md docs/telemetry.md
+   core/src/engine/session.cpp` → all 0 (no conflict markers survived).
 
 ---
 
@@ -1303,3 +1237,51 @@ after push.
 **State:** fork/main through `2bcdab6`; arc push DONE this session (user asked:
 "push the arc record when most convenient") — arc at wrap-up commit. Session ends
 here; next session opens at Next actions 1 (LFM2.5 driver restore).
+## 2026-09-30 — Session 22: upstream 0.25.0–0.28.0 merged; gates green on the new pin
+
+**Why:** the branch sat 8/56 against upstream main (fork point 0.24.0; upstream had
+shipped 0.25.0–0.28.0). A read-only `git merge-tree` trial before touching anything
+predicted exactly 7 conflicted files / ~8 hunks and clean auto-merges for every
+engine-critical overlap (`cli/main.cpp`, `config.h`, `session.h`, `runtime.cpp`,
+`arch_registry.cpp`); the real merge matched the census one-for-one. The trial merge
+also caught the only two semantic items before any file was edited: upstream had
+folded our inline prompt-building block into `detail::build_turn_inputs()` **without**
+the ADR-002 `preserve_thinking` kwarg, and (later, at build) upstream's new
+`GenerateRequest::messages` field broke a positional aggregate init in `moe_gates.cpp`.
+
+**Sequence:** uncommitted `dp.pos0` edit discarded first (verified it could not
+compile against the OLD pin — `pos0` absent there — and upstream's line 1637 carries
+the same rename for the new pin; committing dead code past a red flag is exactly what
+the git rule forbids) → `git merge origin/main` → 7 files resolved
+(session.cpp = upstream helper + kwarg re-added at the call site; CHANGELOG =
+upstream's 4 release sections with our 0.24.1–0.24.3 spliced under, order restored;
+README = both architecture rows; docs = unions; version fields = upstream, newer and
+monotonic) → `git commit --no-edit` → `submodule update` to `dce969851` (+530
+commits) → host rebuild (one gate fix, amended into the merge per "never commit past
+a failed check") → `ctest` **16/16 passed**, byte-identity moe gates included
+(qwen3moe, gemma4, nemotron_h_moe, split).
+
+**Resolution notes worth keeping:** the `preserve_reasoning` field survived the merge
+end-to-end (`session.h`, CLI flag, bridge JSON key, telemetry doc) — only the call
+site needed the kwarg re-added, and upstream's helper (thinking_control.cpp) is
+otherwise byte-for-byte our old logic, so the no-think-prefill path and the AUTO
+reasoning-format invariant are upstream's now, unchanged. #29085 (`74e1ee6de`)
+verified NOT an ancestor of the new pin — its playbook is unchanged. The old
+"stash the pos0 port before pin builds" doctrine is RETIRED: the pin has upstream's
+rename, the tree builds as committed, and resume gate 2's "expected dirty file"
+clause is gone.
+
+**Evidence:** merge commit `f3a9517` (parents: `f7f44e8` × `374f562`, amended);
+ctest `16/16 passed`, 36.6 s; build log tail clean (`built: build/cli/bmoe-cli`).
+The PROGRESS resume section now documents the clean-tree gate; the Android app
+carries upstream's 43 / 0.28.0 (version skew note in Open questions 5).
+
+**State:** `feat/session-residency` @ merge `f3a9517` + wrap-up on top.
+Merge landed, gates green, PROGRESS committed, **pushed to
+`fork/feat/session-residency`**. The first push was rejected — the merge
+carries upstream's `.github/workflows/release-apk.yml` and the stored OAuth
+token lacked the `workflow` scope; `gh auth refresh -h github.com -s workflow`
+unblocked it. Lesson for future submodule bumps across upstreams that touch
+workflow files: refresh the scope first.
+Session ends here; next session opens at Next actions 1 (LFM2.5 driver restore),
+with Next action 2 the new one-shot sanity run of the merged engine.
