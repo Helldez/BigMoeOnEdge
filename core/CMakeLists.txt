@@ -1,13 +1,18 @@
 # bmoe_core — the streaming engine.
 #
 # Pure-policy sources (config validation, the architecture registry, the n-gram draft
-# matcher) build with no native dependency. The streaming adapters compile only when
+# matcher, decide()'s policy) build with no native dependency. The streaming adapters compile only when
 # llama.cpp is present, because they include its public headers (llama.h, ggml.h, gguf.h).
 
 add_library(bmoe_core STATIC
     src/config.cpp
     src/moe/arch_registry.cpp
     src/engine/ngram_draft.cpp
+    src/engine/logits.cpp
+    src/engine/decide/prompt_split.cpp
+    src/engine/decide/choice_scorer.cpp
+    src/engine/decide/prefix_cache.cpp
+    src/engine/decide/decider.cpp
 )
 
 target_include_directories(bmoe_core PUBLIC
@@ -29,7 +34,12 @@ if(BMOE_HAVE_LLAMA)
         src/moe/gguf_offsets.cpp
         src/moe/expert_stream_source.cpp
         src/moe/router_hook.cpp
+        src/moe/decide_probe.cpp
+        src/moe/device_arena.cpp
         src/engine/session.cpp
+        src/engine/prefill_device.cpp
+        src/engine/prefill_path.cpp
+        src/engine/decide/llama_backend.cpp
         src/engine/chat_parse.cpp
         src/engine/thinking_control.cpp
         src/engine/runtime.cpp
@@ -54,7 +64,9 @@ if(BMOE_HAVE_LLAMA)
     # Intra-layer I/O–compute overlap needs the fork's expert-ready hook in ggml-cpu.h. Detect
     # it by inspecting the submodule header rather than the git remote, so any tree carrying the
     # hook (a rebase, a different fork) enables the feature. PUBLIC so cli/ and tests/ see it.
-    set(_ggml_cpu_h "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include/ggml-cpu.h")
+    # Relative to this file, not CMAKE_SOURCE_DIR: as a subproject the top-level source dir is the
+    # parent project, and the header would silently not be found.
+    set(_ggml_cpu_h "${CMAKE_CURRENT_LIST_DIR}/../third_party/llama.cpp/ggml/include/ggml-cpu.h")
     if(EXISTS "${_ggml_cpu_h}")
         file(READ "${_ggml_cpu_h}" _ggml_cpu_src)
         if(_ggml_cpu_src MATCHES "ggml_cpu_set_expert_ready_hook")

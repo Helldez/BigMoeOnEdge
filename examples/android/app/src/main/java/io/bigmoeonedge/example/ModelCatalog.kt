@@ -92,6 +92,15 @@ object ModelCatalog {
             blurb = "3B active of 35B. Hybrid attention/SSM, comfortably past RAM.",
         ),
         Entry(
+            title = "Nemotron-3.5-Lightning-30B-A3B",
+            quant = "Q4_0",
+            fileName = "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+            approxBytes = 18_898_091_584L,
+            url = "https://huggingface.co/ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF/resolve/main/" +
+                "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf?download=true",
+            blurb = "3B active of 30B. Hybrid Mamba2/attention, gate-less experts.",
+        ),
+        Entry(
             title = "Gemma-4-26B-A4B-it",
             quant = "Q4_K_M",
             fileName = "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",

@@ -24,14 +24,16 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   NDK_VERSION: "27.2.12479018"
 
 jobs:
-  apk:
+  tag:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - name: Resolve tag
         id: tag
@@ -42,54 +44,84 @@ jobs:
             echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+  # The engine with the Hexagon NPU backend, built by scripts/build-hexagon-android.sh inside
+  # upstream's Snapdragon toolchain image (the Hexagon SDK is not otherwise installable on a runner).
+  # A third-party image, so it gets its own job: read-only token, no credentials left in the
+  # checkout, no secrets, the image pinned by digest. It hands the libraries over as an artifact;
+  # only the job below signs and publishes, and that job runs no third-party code.
+  native:
+    needs: tag
+    runs-on: ubuntu-latest
+    steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          ref: ${{ needs.tag.outputs.tag }}
           submodules: recursive
+          persist-credentials: false
+
+      - name: Build bmoe-cli with the Hexagon backend (arm64)
+        run: |
+          docker run --rm -e OUT=/workspace/build-android -v "$PWD:/workspace" \
+            ghcr.io/snapdragon-toolchain/arm64-android@sha256:91714433626f0d94a926538a1e46ec43756c5b8e3262b91b95df1e812940aed1 \
+            bash /workspace/scripts/build-hexagon-android.sh
+
+      # An explicit list, mirroring scripts/stage-hexagon-jnilibs.ps1: nothing else the build tree
+      # holds can ride into the APK. The CLI ships as libbmoe-cli.so because Android only extracts
+      # lib*.so from an APK.
+      - name: Collect libraries
+        run: |
+          mkdir -p jni
+          cp build-android/cli/bmoe-cli jni/libbmoe-cli.so
+          for f in libggml.so libggml-base.so libggml-cpu.so libllama.so libllama-common.so libggml-hexagon.so \
+                   libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
+            src=$(find build-android -name "$f" | head -1)
+            test -n "$src" || { echo "$f not found"; exit 1; }
+            cp "$src" "jni/$f"
+          done
+          # The libc++ the libraries were built against: the image's NDK, not the runner's.
+          cp build-android/libc++_shared.so jni/
+          ls -la jni
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jnilibs
+          path: jni/
+          retention-days: 1
+
+  apk:
+    needs: [tag, native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Install NDK and ninja
-        run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
-          sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+      - name: Install NDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
 
-      # Mirrors scripts/build-android.ps1: same flags, same explicit staging list.
-      # Keep the two in sync — this one produces what users actually install.
-      - name: Build bmoe-cli (arm64)
-        run: |
-          NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
-          cmake -S . -B build-android -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-29 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBMOE_BUILD_TESTS=OFF \
-            -DGGML_NATIVE=OFF \
-            -DGGML_OPENCL=OFF \
-            -DGGML_OPENMP=OFF \
-            -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" \
-            -DLLAMA_CURL=OFF
-          cmake --build build-android -j
+      - uses: actions/download-artifact@v4
+        with:
+          name: jnilibs
+          path: jni
 
       - name: Stage jniLibs
         run: |
           NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
           JNI=examples/android/app/src/main/jniLibs/arm64-v8a
           mkdir -p "$JNI" && rm -f "$JNI"/*.so
-          cp build-android/cli/bmoe-cli "$JNI/libbmoe-cli.so"
-          for f in libggml.so libggml-base.so libggml-cpu.so libllama.so libllama-common.so; do
-            src=$(find build-android -name "$f" | head -1)
-            test -n "$src" || { echo "$f not found"; exit 1; }
-            cp "$src" "$JNI/$f"
-          done
-          cp "$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$JNI/"
+          cp jni/*.so "$JNI/"
           # Strip here, not in AGP: the Gradle plugin silently skips stripping when its default
           # NDK is absent on the runner, and the first CI build shipped a 77 MB libllama-common.
-          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "$JNI"/*.so
+          # The DSP skels are Hexagon code, not arm64: they stay as the SDK built them.
+          find "$JNI" -name '*.so' ! -name 'libggml-htp-*.so' -print0 |
+            xargs -0 "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded
 
       - name: Materialize signing keystore
         env:
@@ -117,13 +149,17 @@ jobs:
           if unzip -l "$APK" | grep -q libggml-opencl; then
             echo "stray OpenCL backend in APK"; exit 1
           fi
+          # The NPU prefill switch is only offered when the backend is inside.
+          for f in libggml-hexagon.so libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
+            unzip -l "$APK" | grep -q "lib/arm64-v8a/$f" || { echo "missing $f in APK"; exit 1; }
+          done
 
       - name: Upload assets to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           OUT=examples/android/app/build/outputs/apk/dev
-          gh release upload "${{ steps.tag.outputs.tag }}" \
+          gh release upload "${{ needs.tag.outputs.tag }}" \
             "$OUT/release/app-dev-release.apk" \
             "$OUT/debug/app-dev-debug.apk" \
             --clobber

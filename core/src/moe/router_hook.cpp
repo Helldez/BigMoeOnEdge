@@ -1,6 +1,9 @@
 #include "router_hook.h"
 
 #include "ggml.h"
+#include "ggml-backend.h"
+#include "decide_probe.h"
+#include "device_arena.h"
 #include "../io/platform_io.h"
 
 #include <cmath>
@@ -170,8 +173,12 @@ void RouterHook::begin_capture() {
     captured_weights_.clear();
     captured_weight_objects_.clear();
     captured_weight_seen_.clear();
+    captured_state_objects_.clear();
+    captured_state_seen_.clear();
+    last_node_.assign((size_t) n_layer_, std::string());
     row_gathered_.clear();
     row_disqualified_.clear();
+    non_matrix_weights_.clear();
 }
 void RouterHook::end_capture() {
     capturing_ = false;
@@ -1325,6 +1332,9 @@ void RouterHook::end_compute_batch() {
 }
 
 bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
+    // The scheduler asks about every node of every split, whichever backend runs it.
+    if (ask && count_device_nodes_ && t->buffer && !ggml_backend_buffer_is_host(t->buffer)) ++device_nodes_;
+
     // ── compute trace: close the previous node's interval, open the next ──
     // Ordering matters: this runs before every other job below, so the timestamp is as close to the
     // boundary as possible and the streamer's own work (load_layer, the residency query) lands
@@ -1361,9 +1371,29 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // ── capture: harvest expert weight tensors from every node's sources ──
     if (capturing_) {
         if (ask) {
+            // Every node passes through here in graph order, so the last one carrying a layer's
+            // index is that layer's end.
+            const int nl = node_layer(t->name);
+            if (nl >= 0 && nl < (int) last_node_.size()) last_node_[(size_t) nl] = t->name;
             for (int s = 0; s < GGML_MAX_SRC; ++s) {
                 ggml_tensor * src = t->src[s];
                 if (!src || src->name[0] == '\0') continue;
+                // Memory-module state, reached through a view. Not a weight: recorded apart.
+                ggml_tensor * base = src->view_src ? src->view_src : src;
+                if (std::strncmp(base->name, "cache_", 6) == 0) {
+                    if (captured_state_seen_.insert(base).second) captured_state_objects_.push_back(base);
+                    continue;
+                }
+                // Any read of a weight but as a matmul's matrix, through however many views: the leaf
+                // is what a prefill device places, so the verdict belongs to the leaf.
+                {
+                    ggml_tensor * leaf = src;
+                    while (leaf->view_src)
+                        leaf = leaf->view_src;
+                    const bool as_matrix =
+                        s == 0 && src == leaf && (t->op == GGML_OP_MUL_MAT || t->op == GGML_OP_MUL_MAT_ID);
+                    if (leaf->op == GGML_OP_NONE && !as_matrix) non_matrix_weights_.insert(leaf);
+                }
                 int il = -1;
                 const int p = match_expert(src->name, recipe_, il);
                 if (p >= 0) {
@@ -1392,6 +1422,24 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             }
         }
         return false; // capture never isolates a node
+    }
+
+    const bool probe_on = probe_ && probe_->armed();
+    const bool probe_ask = probe_on && ask && probe_->wants(t);
+    if (probe_on && !ask) probe_->observe(t);
+
+    // ── device prefill: pace the expert arena at each layer's routing node ──
+    // Everything below is the host streaming path, and none of it applies to a graph on the device:
+    // the routing ids live in device memory, the streamer does not feed this graph, and validation
+    // keeps the row policy (the one host job a device graph would still need) off this path.
+    if (device_arena_) {
+        const int dl = is_moe_node(t->name) ? match_layer_node(t->name, "ffn_moe_topk-") : -1;
+        const int nl = node_layer(t->name);
+        const bool layer_end = nl >= 0 && nl < (int) last_node_.size() && last_node_[(size_t) nl] == t->name;
+        if (ask) return dl >= 0 || layer_end || probe_ask;
+        if (dl >= 0) device_arena_->barrier(dl, t);
+        if (layer_end) device_arena_->dense_barrier(nl);
+        return true;
     }
 
     // ── row-gathered dense tables: put the rows in place before the node reads them ──
@@ -1481,7 +1529,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         // as the prefetch does — the isolated variant measured ~+0.04 s/token of pure barrier and
         // GEMV tax on the host. What makes that safe for a COMMITTED consumer is the watchdog in
         // route_ahead_submit plus the passthrough default, not a barrier.
-        return ctrace_iso || is_topk || weights_iso || (is_logits && predict_log_);
+        return ctrace_iso || is_topk || weights_iso || (is_logits && predict_log_) || probe_ask;
     }
 
     // The probe attaches to the gate matmul rather than to the topk node because this is where the

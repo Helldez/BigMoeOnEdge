@@ -27,10 +27,19 @@ core/
                 expert_stream_source (one reader per shard), router_hook
                 dense_weights — non-expert weight policy + the residency sensor
                 row_stream - row-gathered tables served from flash (see row-gathered-tables.md)
+                device_arena - two layer slots on a prefill device, filled from flash, whole layers
+                  or only the routed experts (npu-prefill.md)
+                decide_probe - experimental per-decision expert usage and layer-exit answers (decide.md)
     engine/     session — composition + the generation loop (open/generate/close)
+                prefill_device - moves layer weights and model state onto a device per graph
+                prefill_path - the prefill device for one session: setup, placement, device decode
                 runtime — the one-shot run() wrapper over a Session
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 thinking_control — how "thinking off" is honoured, probed per model
+                logits, prefill_support — log-softmax, batch filling and prefill attribution,
+                  shared by generate / perplexity / decide
+                decide/ — Session::decide() (see decide.md): pure policy over an IDecideBackend
+                  port (prompt split, choice scoring, IPrefixCache), plus one llama.cpp adapter
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
@@ -92,6 +101,9 @@ The composition root is `Session` (core/src/engine/session.cpp):
 2. `generate()` — prefill the prompt, then greedily decode `n_predict` tokens, reporting
    per-token metrics. Callable repeatedly; the expert cache stays warm between calls (see
    [session.md](session.md)). Cancellable mid-flight via the abort callback.
+   `decide()` is the other way to use an open session: one prefill and no decode, reading which of
+   a list of choices the model would answer (off unless the session is opened with it; see
+   [decide.md](decide.md)).
 3. Destructor — tear down in order: I/O pool, context, hook, model, backend.
 
 `run()` (core/src/engine/runtime.cpp) is a thin one-shot wrapper — open, one generate, close —

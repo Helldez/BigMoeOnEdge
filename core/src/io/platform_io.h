@@ -97,6 +97,14 @@ void vm_release(void * p, size_t sz);
 // VirtualFree-able, and the host build never streams). The range must be page-aligned by the caller.
 void vm_drop_file_pages(void * p, size_t sz);
 
+// Drop the resident pages of an ANONYMOUS range someone else allocated and still owns, keeping the
+// range valid: the next touch maps a zero page instead of faulting. For memory whose contents moved
+// elsewhere but whose allocation cannot be freed from here (a llama.cpp buffer a tensor no longer
+// points at). Unlike vm_evict it never decommits, so a later write by the owner stays legal. A no-op
+// on Windows (MEM_DECOMMIT would make that write fault; nothing moves memory away on the host build).
+// The range must be page-aligned by the caller.
+void vm_drop_anon_pages(void * p, size_t sz);
+
 // Tell the kernel a FILE-BACKED range will be touched at random, so a fault brings in the page that
 // faulted and nothing around it. The default is sequential readahead sized in the hundreds of KiB
 // per fault, which is right for a weight that is read whole and wrong by two orders of magnitude for
