@@ -223,6 +223,12 @@ public:
     // 1/top-k. 0 when the model is not MoE or the count could not be read.
     int n_expert_used() const;
 
+    // True when the model's memory couples KV cells with recurrent state (Mamba/conv stacks), so
+    // multi-turn reuse is limited to strict appends: any non-append turn full-clears and a caller
+    // must not assert n_reused > 0 on it. Ask the model, never an architecture list — the set of
+    // hybrid stacks changes with every llama.cpp bump.
+    bool hybrid_kv() const;
+
     // Which thinking-off mechanism this model supports (probed at open()). Report it to the user
     // rather than leaving a Thinking toggle that silently does nothing. Always Template when chat
     // mode is off, where no template is rendered and the question does not arise.

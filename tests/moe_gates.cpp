@@ -1309,6 +1309,128 @@ int main(int argc, char ** argv) {
                 fails += check("G18g decide + generate on a prefill device == all CPU", on_cpu, on_dev);
             }
         }
+
+        // G19/G20 — session reuse through the client-owned conversation path, the code this
+        // branch re-ports on top of upstream's build_turn_inputs. The bridge contract: the
+        // client sends the full `messages` array every turn and echoes the assistant reply
+        // back inside it, so turn 2's render strictly extends turn 1's. Both gates must hold
+        // at once: the rendered output is byte-identical to the one-shot reference, and the
+        // turn actually reused the resident prefix (n_reused > 0 — otherwise the identity
+        // chatml is set explicitly: the reuse path arms on template mode and the tiny fixture
+        // carries no template of its own. The chat turns render the growing conversation, so the
+        // local config widens the context — base()'s 256 would not hold the turn-3 render plus
+        // its prediction; every other gate keeps base() untouched.
+        RunConfig chat_cfg = stream0;
+        chat_cfg.n_ctx = 512;
+        {
+            SessionConfig sc = session_config_from(chat_cfg);
+            sc.chatml = true;
+            std::unique_ptr<Session> s = Session::open(sc, err);
+            if (!s) {
+                std::fprintf(stderr, "G19/G20 session failed: %s\n", err.c_str());
+                return 2;
+            }
+            // Reuse is a capability of the memory, not a property of an architecture name: a
+            // hybrid/recurrent stack full-clears non-append turns (session.cpp's reuse policy),
+            // so its echo turn cannot be held to n_reused > 0 — there the byte identity against
+            // the full-clear reference IS the whole contract. Ask the session, not a list.
+            const bool can_reuse = !s->hybrid_kv();
+            std::vector<ChatTurn> hist;
+            hist.push_back({"user", stream0.prompt});
+            GenerateRequest first;
+            first.messages = hist;
+            first.n_predict = stream0.n_predict;
+            first.think = false;
+            const RunResult a1 = s->generate(first);
+            if (!a1) {
+                std::fprintf(stderr, "G19/G20 first turn failed: %s\n", a1.error.c_str());
+                return 2;
+            }
+            // messages[{user, prompt}] must render to exactly what `prompt` alone renders to.
+            // messages[{user, prompt}] must render to exactly what `prompt` alone renders to
+            // (the bridge's turn-1 case). Reference: the same prompt one-shot, chatml on —
+            // the gate's existing references run with templates off, so they render differently.
+            {
+                RunConfig cref = chat_cfg;
+                cref.chatml = true;
+                std::string cm_ref;
+                if (!gen(cref, cm_ref, err)) {
+                    std::fprintf(stderr, "G20 chatml reference failed: %s\n", err.c_str());
+                    return 2;
+                }
+                fails += check("G20 messages first turn == chatml generate", cm_ref, a1.generated_text);
+            }
+
+            hist.push_back({"assistant", a1.generated_text});
+            hist.push_back({"user", "Answer again, differently."});
+
+            // The byte reference for both echo turns: the SAME messages array rendered full-clear
+            // in a fresh session. A reused prefix must produce those exact bytes — the identity is
+            // only meaningful because the n_reused assertions below prove the resident path ran.
+            std::string echo_ref;
+            {
+                SessionConfig rsc = session_config_from(chat_cfg);
+                rsc.chatml = true;
+                std::unique_ptr<Session> r = Session::open(rsc, err);
+                if (!r) {
+                    std::fprintf(stderr, "G19/G20 reference session failed: %s\n", err.c_str());
+                    return 2;
+                }
+                GenerateRequest rreq;
+                rreq.messages = hist;
+                rreq.n_predict = stream0.n_predict;
+                rreq.think = false;
+                const RunResult rr = r->generate(rreq);
+                if (!rr) {
+                    std::fprintf(stderr, "G19/G20 reference turn failed: %s\n", rr.error.c_str());
+                    return 2;
+                }
+                echo_ref = rr.generated_text;
+            }
+
+            // Reuse accounting, the same identity BMOE_DONE prints: n_past - generated - prefilled.
+            auto reused_of = [](const RunResult & r) { return r.summary.n_past - r.summary.n_generated - r.summary.n_prompt; };
+
+            // G19: preserve_reasoning asks the template to keep reasoning in the re-rendered
+            // history turn (LFM2.5's preserve_thinking), which is what makes the echo render a
+            // strict extension the append-reuse path can serve on thinking models. The tiny
+            // fixture's built-in chatml template has no such variable, so this also pins the
+            // safe case: an ignored kwarg must change nothing.
+            GenerateRequest keep;
+            keep.messages = hist;
+            keep.n_predict = stream0.n_predict;
+            keep.think = false;
+            keep.preserve_reasoning = true;
+            keep.clear_kv = false;
+            const RunResult a2 = s->generate(keep);
+            if (!a2) {
+                std::fprintf(stderr, "G19 echo turn failed: %s\n", a2.error.c_str());
+                return 2;
+            }
+            if (can_reuse && reused_of(a2) <= 0) {
+                std::printf("[FAIL] G19 preserve_reasoning echo turn must reuse the prefix (reused %d)\n", reused_of(a2));
+                ++fails;
+            }
+            fails += check("G19 preserve_reasoning echo turn == full-clear echo", echo_ref, a2.generated_text);
+
+            // G20: the same echo WITHOUT the kwarg — the default path the OpenAI bridge runs —
+            // must be equally correct in bytes and reuse.
+            GenerateRequest plain;
+            plain.messages = hist;
+            plain.n_predict = stream0.n_predict;
+            plain.think = false;
+            plain.clear_kv = false;
+            const RunResult a3 = s->generate(plain);
+            if (!a3) {
+                std::fprintf(stderr, "G20 echo turn failed: %s\n", a3.error.c_str());
+                return 2;
+            }
+            if (can_reuse && reused_of(a3) <= 0) {
+                std::printf("[FAIL] G20 messages echo turn must reuse the prefix (reused %d)\n", reused_of(a3));
+                ++fails;
+            }
+            fails += check("G20 messages echo turn == full-clear echo", echo_ref, a3.generated_text);
+        }
     }
 
     if (fails == 0) std::printf("\nall MoE byte-identity gates passed\n");

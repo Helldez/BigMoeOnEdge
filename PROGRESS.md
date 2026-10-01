@@ -61,6 +61,16 @@ pin; do not stash/restore anything for pin builds anymore.*
   `--list-archs` carries both upstream rows (nemotron_h_moe, qwen4exp) and the
   branch's laguna row. Note: the new pin logs per-tensor graph diagnostics on
   stderr — cosmetic, not a failure signal.
+- **Deeper test infrastructure added same session (0.27.1): 19 ctest entries,
+  both trees green.** G19/G20 (messages + preserve_reasoning vs full-clear
+  reference, reuse asserted via `Session::hybrid_kv()` — new public probe); the
+  laguna arch row now runs the full harness (`make-tiny-moe.py --arch laguna`,
+  zero router bias like nemotron's — the G9b control is bias-blind, recorded in
+  docs/limitations.md territory); `BMOE_SANITIZE` ASan+UBSan tree (19/19; found
+  upstream ggml-rpc misaligned reference, device gates excluded there);
+  `tests/session_fuzz.py` interactive driver pins the stdin protocol contract —
+  notably `cancel` fires immediately on the reader thread, so piped bursts
+  cancel in-flight turns (by design, now documented).
 
 ## Artifacts touched (this session)
 
@@ -142,7 +152,10 @@ Regeneration: none needed — everything is in the merge commit. Gates re-run:
 1. Pin build + tests (simple now — no stash dance):
    `cmake --build build -j4 2>&1 | grep -E 'error|warning' | grep -v 'ccache not
    found'` → empty (ccache advisory is environmental) → `cd build && ctest
-   --output-on-failure` → **16/16 passed**.
+   --output-on-failure` → **19/19 passed** (18 original + session_fuzz).
+   Sanitizer check when needed: `cmake -S . -B build-san -DBMOE_SANITIZE=ON
+   -DGGML_RPC=OFF && cmake --build build-san -j4 && (cd build-san && ctest)` →
+   also 19/19.
 2. `git status -sb` → `feat/session-residency` == `fork/feat/session-residency`
    (pushed; the workflow-scope blocker is resolved); working tree clean except
    the known-untracked non-ours list (`.opencode/`, `bmoe-arm64*`, `opencode.json`).

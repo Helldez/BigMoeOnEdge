@@ -41,6 +41,13 @@ for its own tokens, not a full re-prefill — which matters because prefill is t
 device. `BMOE_DONE.n_prompt` reports the tokens actually prefilled this turn; `n_past` is the total
 context length after it.
 
+**Hybrid stacks full-clear instead.** On a hybrid/recurrent model (Mamba2/conv stacks keep
+per-sequence cell state beside the KV), a partial rewind cannot restore the cells, so any turn
+that is not a strict token-append of the resident prefix full-clears. `Session::hybrid_kv()`
+reports which regime a loaded model is in — ask it rather than naming architectures, the set
+changes with every llama.cpp bump. The session gates (G19/G20) hold every architecture to the
+same byte identity and assert reuse only where the memory can actually do it.
+
 **Fallbacks and costs.** SWA-style memory (e.g. Gemma) can refuse a partial `seq_rm`; the engine
 then clears the KV and re-prefills the whole prompt for that turn (correct, just slower). With
 thinking **on**, the template strips the previous turn's reasoning on re-render, so the rendered

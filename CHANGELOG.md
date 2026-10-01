@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.27.1] - 2026-09-30
+
+### Added
+- **Two new session gates (G19, G20) and a laguna gate fixture; sanitizer and fuzz coverage.**
+  G19/G20 hold every architecture's client-owned-conversation path (`GenerateRequest::messages`,
+  with and without `preserve_reasoning`) to the byte identity of a fresh-session render while
+  asserting prefix reuse wherever the memory can actually serve it — gated on the new
+  `Session::hybrid_kv()` probe, not on architecture names. `make-tiny-moe.py --arch laguna`
+  emits the Poolside layout (split experts + shared expert + router bias + attention output
+  gate, one dense lead layer, no sliding window), so the full G1–G20 harness runs on the
+  `laguna` registry row. A new `BMOE_SANITIZE` build option (separate build tree) runs the
+  whole suite under ASan+UBSan; sanitizer builds exclude the RPC loopback device, whose
+  upstream `ggml-rpc` misaligned reference UBSan flags. `tests/session_fuzz.py` drives the
+  CLI's stdin protocol the way a real client does and pins its contract: hostile request lines
+  answer recoverably, never crash, and never poison the session.
+
+### Changed
+- `docs/session.md` documents the hybrid full-clear rule and the reuse regime probe.
+
 ## [0.28.0] - 2026-09-29
 
 ### Changed

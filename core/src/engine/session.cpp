@@ -394,6 +394,9 @@ int Session::n_ctx() const {
 int Session::n_expert_used() const {
     return impl_->n_expert_used;
 }
+bool Session::hybrid_kv() const {
+    return llama_model_is_hybrid(impl_->model.get()) || llama_model_is_recurrent(impl_->model.get());
+}
 ThinkControl Session::think_control() const {
     return impl_->think_ctl;
 }
