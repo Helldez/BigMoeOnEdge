@@ -19,6 +19,11 @@ Semantic Versioning.
   upstream `ggml-rpc` misaligned reference UBSan flags. `tests/session_fuzz.py` drives the
   CLI's stdin protocol the way a real client does and pins its contract: hostile request lines
   answer recoverably, never crash, and never poison the session.
+- **`scripts/humaneval-bench.py` runs dense models.** The harness hardcoded `--moe-stream`,
+  which the engine (rightly) refuses for an architecture without a registry recipe, so dense
+  baselines could not use it; a `--dense` flag omits the streaming flags. The shutdown path now
+  closes the CLI's stdin after `close` — with stdin left open the CLI's reader thread blocks in
+  getline and the process never exits.
 
 ### Changed
 - `docs/session.md` documents the hybrid full-clear rule and the reuse regime probe.

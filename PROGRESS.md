@@ -1349,3 +1349,29 @@ a quality upgrade. Caveats: zero-shot, no chat template, quantized — absolute
 numbers sit below both models' published MMLU, per the tinyMMLU script's own
 docstring; the comparison, not the absolute, is the measurement. The answers
 were read from a full 100/100 scoring on both models.
+
+### 2026-09-30 addendum — HumanEval pass@1, dense A/B (supersedes the "6 points for nothing" reading above)
+
+The tinyMMLU leg measured general knowledge under teacher-forced, no-template, no-thinking
+conditions; the user's pushback (MiMo is newer and coding-focused) prompted the axis that
+can actually see code skill. Same 50-problem HumanEval prefix, greedy, raw completion
+prompts, canonical tests executed per completion (scripts/humaneval-bench.py):
+
+| model | HumanEval pass@1 (first 50) | mean tok/s |
+|---|---|---|
+| MiMo-V2.6-Distill-Qwen-9B | **41/50 = 82.0%** | 2.37 |
+| Qwen3.5-9B | **44/50 = 88.0%** | 2.31 |
+
+Corrected reading: at n=50 the 3-problem gap is inside binomial noise (~±10 pts) — on the
+coding axis the two models are **statistically indistinguishable in the no-think completion
+regime**, while Qwen3.5-9B's general-knowledge lead (74 vs 68, same regime) is the one clear
+measured difference. Neither model's thinking channel was exercised (raw completion mode,
+fair but not either model's best mode); a template-rendered, thinking-enabled HumanEval
+variant is future work. Regenerate:
+`python3 scripts/humaneval-bench.py --data ~/llm/data/HumanEval.jsonl.gz --cli build/cli/bmoe-cli --model <gguf> --out <dir> --lambda 0 --limit 50 --threads 4 --dense`
+Raw cells: /tmp/he-mimo/cell_L0.jsonl, /tmp/he-qwen35/cell_L0.jsonl (temp — re-run to restore).
+
+Tooling note: the harness gained `--dense` (the engine correctly refuses `--moe-stream` on
+a recipe-less arch, so dense cells omit the streaming flags) and now closes the CLI's stdin
+after `close` — with stdin left open the CLI reader thread blocks in getline and the
+process never exits.
