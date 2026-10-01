@@ -105,8 +105,9 @@ Regeneration: none needed — everything is in the merge commit. Gates re-run:
   olmoe-1b-7b, Laguna-XS-2.1, Ornith-1.5, Qwen3-30B, Qwen3.6-35B, Cyber-Tiel-35B,
   **NEW 2026-09-23: MiMo-V2.6-Distill-Qwen-9B-Q4_K_M** (5.4 GB, dense `qwen35`
   arch — verified on the merged engine 2026-09-30: correct one-shot output,
-  session KV reuse n_reused 38 on turn 2, non-MoE dense path, ~2.7 tok/s decode
-  on 4 threads; no registry row needed, dense `qwen35` is pure attention).
+  session KV reuse n_reused 38 on turn 2, non-MoE dense path; benchmarked
+  against Qwen3.5-9B same day, see the session-22 benchmark addendum; no
+  registry row needed, dense `qwen35` is pure attention).
   Also unlogged but pre-2026-07: DeepSeek-R1-Distill-Llama-8B (dense llama,
   outside the arc's MoE scope).
 - **Remotes**: `origin` = Helldez/BigMoeOnEdge, `fork` = cjl4hd/BigMoeOnEdge (push
@@ -1309,3 +1310,42 @@ unblocked it. Lesson for future submodule bumps across upstreams that touch
 workflow files: refresh the scope first.
 Session ends here; next session opens at Next actions 1 (LFM2.5 driver restore),
 with Next action 2 the new one-shot sanity run of the merged engine.
+
+### 2026-09-30 addendum — MiMo-V2.6 vs Qwen3.5-9B, dense baseline on the host
+
+Same arch (`qwen35`), same quant (Q4_K_M), 5.4 GB vs 5.3 GB; host i7-5500U 2C/4T,
+16 GB, all figures from `build/cli/bmoe-cli` 0.27.1, measured this session.
+
+**Speed** (house protocol from scripts/bench-report.sh: the fixed essay prompt,
+`--chatml -n 256 -t 4 --ubatch 512`, mmap dense mode — bench-report.sh itself is
+MoE-only, so the protocol was run manually, two runs each):
+
+| model | decode | prefill (33/36 tok) | TTFT warm |
+|---|---|---|---|
+| MiMo-V2.6-Distill-Qwen-9B | 2.61 / 2.58 tok/s | 5.1 / 5.0 tok/s | ~7.4 s |
+| Qwen3.5-9B | 2.55 / 2.58 tok/s | 5.6 / 5.4 tok/s | ~7.6 s |
+
+Dead heat on decode — same arch and quant, the quantization dominates, the
+weights differ. Qwen3.5 prefills slightly faster (same-token budget).
+
+**Quality** (tinyMMLU-100, the arc's gate set; zero-shot, house prompt format
+via `scripts/tinymmlu-bench.py build_prompts`; engine `--ppl-list` +
+`--ppl-choices " A, B, C, D"`, one wide batch per question, `-c 2048 --ubatch
+2048 -t 4`; scorer: argmax of choice log-probs vs key.json —
+`/tmp/tinymmlu-score.py`, logs `/tmp/tinymmlu-{mimo,q35}.log`, questions
+`/tmp/tinymmlu/` regenerable from `~/llm/data/tinyMMLU-test.parquet` under
+`/tmp/evalvenv`):
+
+| model | tinyMMLU |
+|---|---|
+| MiMo-V2.6-Distill-Qwen-9B | **68/100 = 68.0%** |
+| Qwen3.5-9B | **74/100 = 74.0%** |
+
+Reading: MiMo-V2.6 gives up 6 points of MMLU for nothing in exchange — decode
+speed is identical and prefill is marginally slower. For the arc's purposes
+(quality ceiling of the shared dense path) Qwen3.5-9B remains the reference
+dense baseline; MiMo-V2.6 is a valid drop-in for throughput experiments but not
+a quality upgrade. Caveats: zero-shot, no chat template, quantized — absolute
+numbers sit below both models' published MMLU, per the tinyMMLU script's own
+docstring; the comparison, not the absolute, is the measurement. The answers
+were read from a full 100/100 scoring on both models.
