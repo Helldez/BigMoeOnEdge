@@ -1,5 +1,8 @@
 #include "bmoe/config.h"
 
+#include <ggml.h>
+
+#include <string>
 #include <utility>
 
 namespace bmoe {
@@ -68,6 +71,19 @@ ValidationResult validate(const RunConfig & cfg) {
     // is available — same rationale as the streaming checks that stay out of this pure path.
     if (cfg.n_expert_used < 0) {
         return fail("n_expert_used must be >= 0 (0 = model default)");
+    }
+
+    // Spell-check the KV-cache type names here — a typo should fail validation, not surface as
+    // "unknown cache_type_k" from deep inside open(). The V-needs-flash-attention coupling is
+    // NOT checked here: it is a property of the resolved cparams, the CLI resolves it before
+    // validate(), and library callers get llama.cpp's own error at context creation.
+    for (const auto * field : {&cfg.cache_type_k, &cfg.cache_type_v}) {
+        if (field->empty()) continue;
+        bool known = false;
+        for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+            if (ggml_type_name(static_cast<ggml_type>(t)) == *field) { known = true; break; }
+        }
+        if (!known) return fail("cache_type_k/v: unknown ggml type name '" + *field + "'");
     }
 
     // Sampling ranges are enforced only when sampling is actually on (temp > 0). With temp <= 0

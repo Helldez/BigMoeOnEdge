@@ -580,6 +580,11 @@ static void print_usage(const char * argv0) {
         "                          RAM back to the expert cache at the cost of prefill speed;\n"
         "                          decode is unaffected. Measured: a context of 2048 reserves\n"
         "                          320 MiB, falling to 80 MiB at 512.\n"
+        "      --cache-type-k T    KV-cache element types by ggml name (f16, q8_0, q4_0, …).\n"
+        "      --cache-type-v T    Empty = f16. q8_0 halves KV RAM and the bytes moved per\n"
+        "                          decode token (full attention reads the whole cache); V is\n"
+        "                          the sensitive side — measure with --ppl before trusting\n"
+        "                          it. Quantized V requires flash attention (forced on).\n"
         "      --no-prefill-routed with --prefill-device and --moe-stream: read every expert of every\n"
         "                          layer instead of only the experts each graph routes to (the default,\n"
         "                          predicted from the previous graph and completed at each routing node)\n"
@@ -841,6 +846,10 @@ int main(int argc, char ** argv) {
             cfg.n_rs_seq = std::atoi(next("--rs-seq"));
         else if (a == "--ubatch")
             cfg.n_ubatch = std::atoi(next("--ubatch"));
+        else if (a == "--cache-type-k")
+            cfg.cache_type_k = next("--cache-type-k");
+        else if (a == "--cache-type-v")
+            cfg.cache_type_v = next("--cache-type-v");
         else if (a == "--prefill-device")
             cfg.prefill.device = next("--prefill-device");
         else if (a == "--prefill-routed")
@@ -1050,6 +1059,15 @@ int main(int argc, char ** argv) {
     if (!vr) {
         std::fprintf(stderr, "config error: %s\n", vr.error.c_str());
         return 1;
+    }
+    // Upstream: a quantized V cache requires flash attention (DISABLED throws at context
+    // creation). AUTO resolves on for the CPU backend this engine ships, but the coupling is
+    // resolved here explicitly so it does not rest on a backend default: quantized V forces
+    // flash attention on unless the caller forced something. validate() has already
+    // spell-checked the type names.
+    if (!cfg.cache_type_v.empty() && cfg.cache_type_v != "f16" && cfg.cache_type_v != "f32" &&
+        cfg.cache_type_v != "bf16") {
+        if (cfg.flash_attn.empty()) cfg.flash_attn = "on";
     }
     // Decide requests only travel through the session protocol; a one-shot run would ignore the flag.
     if (cfg.decide.enabled && !session_mode) {

@@ -479,6 +479,22 @@ struct RunConfig {
     // expert_used_count metadata key; must stay in [1, n_expert]. Independent of streaming.
     int n_expert_used = 0;
 
+    // KV-cache data types, by ggml type name ("f16", "q8_0", "q4_0", …). Empty = f16 (the
+    // llama.cpp default). q8_0 halves the KV RAM and — with full attention — halves the bytes
+    // moved per decode token, which on a bandwidth-poor host is the entire decode-time story;
+    // q4_0 on K is usually tolerable, on V it measurably degrades recall. Two upstream
+    // constraints: quantized V requires flash attention (the CLI resolves that coupling before
+    // validate() sees it), and cache clears dequantize V in flight, so a quantized-V context
+    // pays extra on seq_rm-heavy paths.
+    std::string cache_type_k;
+    std::string cache_type_v;
+
+    // Flash attention: "" = upstream default (AUTO), "on" = forced enabled, "off" = forced
+    // disabled. Forced off + quantized V fails at context creation (upstream throws) — that is
+    // the contract, not a silent fallback. Forcing on changes numerics (fused softmax), so
+    // byte-identity gates always run the default.
+    std::string flash_attn;
+
     // Compute-trace granularity. false (default): a barrier per graph node — exact per-op
     // attribution, but it serializes the graph against the expert stream and distorts the run.
     // true: a barrier only at layer boundaries, cheap enough that the traced numbers stay close
@@ -502,7 +518,8 @@ struct ValidationResult {
 
 // Check a RunConfig for internal consistency. Enforces, among others: MoE streaming
 // requires a model path; cache_mb is 0 or >= cache_min_mb (unless force_cache);
-// io_threads in range; n_predict/n_threads positive. Pure function — no I/O.
+// io_threads in range; n_predict/n_threads positive; cache_type_v empty or a known
+// ggml type name. Pure function — no I/O.
 ValidationResult validate(const RunConfig & cfg);
 
 } // namespace bmoe

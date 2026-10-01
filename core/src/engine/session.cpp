@@ -44,6 +44,16 @@
 namespace bmoe {
 
 namespace {
+// ggml_type_name returns the canonical string; parse the reverse direction once. Used by the
+// KV-cache-type config (cache_type_k/v, see RunConfig): type_k/v are set from the public
+// llama_context_params at context creation, and an unknown name must fail the open, not silently
+// fall back to f16.
+ggml_type kv_type_from_name(const std::string & name) {
+    for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+        if (ggml_type_name(static_cast<ggml_type>(t)) == name) return static_cast<ggml_type>(t);
+    }
+    return GGML_TYPE_COUNT;
+}
 
 using detail::batch_fill;
 using detail::PrefillTally;
@@ -798,6 +808,22 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
     cparams.n_batch = cfg.n_batch;
+    // KV-cache element type (RunConfig::cache_type_k/v): empty = f16. Set before creation —
+    // the type is baked in; an unknown name fails the open here rather than mid-run.
+    if (!cfg.cache_type_k.empty()) {
+        ggml_type t = kv_type_from_name(cfg.cache_type_k);
+        if (t == GGML_TYPE_COUNT) return fail("unknown cache_type_k '" + cfg.cache_type_k + "'");
+        cparams.type_k = t;
+    }
+    if (!cfg.cache_type_v.empty()) {
+        ggml_type t = kv_type_from_name(cfg.cache_type_v);
+        if (t == GGML_TYPE_COUNT) return fail("unknown cache_type_v '" + cfg.cache_type_v + "'");
+        cparams.type_v = t;
+    }
+    // "": upstream AUTO default (on for the CPU backend). Forced off + quantized V is
+    // llama.cpp's error to throw at creation, not ours to second-guess.
+    if (cfg.flash_attn == "off") cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    else if (cfg.flash_attn == "on") cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
     // The graph is reserved for the widest ubatch, so this is what sets the resident compute
     // buffers — the memory this engine is always short of. 0 keeps the historical behaviour
     // (one graph as wide as the batch); a smaller value chunks prefill to buy that memory back.

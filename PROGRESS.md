@@ -6,18 +6,19 @@ the long-form evidence narrative; entries are never rewritten, only falsified ex
 by newer entries. Trust hierarchy: resume section > history > older sections of either.
 Log opened 2026-09-18; earlier project history lives in `CHANGELOG.md` and `git log`.
 
-*Resume last rewritten: 2026-09-30 (session 22, wrap-up rewrite). Phase:
-**upstream 0.25.0–0.28.0 merged into `feat/session-residency`; all 16 gates green
-on the new pin**. Merge commit `f3a9517` (amended with the post-merge gate fix) on
-`feat/session-residency`; parent-2 is upstream `374f562` (0.28.0).*
-*One-line status: the merge predicted in the morning assessment landed as predicted —
-7 conflicted files, ~8 hunks, one semantic re-port (`preserve_thinking` kwarg re-added
-on top of upstream's new `detail::build_turn_inputs()`), plus one compile fix in
-`tests/moe_gates.cpp` (upstream's `messages` field broke a positional
-`GenerateRequest` init). Submodule pin moved `0e8c83e51` → `dce969851` (+530 commits).
-`build/` rebuilt clean; `ctest` **16/16 passed** including all four byte-identity
-moe gates. The old "pos0 working-tree port" is RETIRED — upstream's rename is in the
-pin; do not stash/restore anything for pin builds anymore.*
+*Resume last rewritten: 2026-09-30 (session 22, continuing in the same sitting).
+Phase: **merge landed and proven; KV-cache quantization shipped on top — 19 gates
+green, version 0.27.1**. Merge commit `f3a9517` on `feat/session-residency`;
+parent-2 is upstream `374f562` (0.28.0). Submodule pin `dce969851` (+530 commits).
+The old "pos0 working-tree port" is RETIRED — upstream's rename is in the pin; do
+not stash/restore anything for pin builds anymore.*
+*One-line status: after the merge and the 0.27.1 test buildout, the session
+benchmarked the dense pair (tinyMMLU + HumanEval-50, tooling gained `--dense`),
+then implemented and measured KV-cache quantization (`--cache-type-k/v` +
+`flash_attn` override): q8_0/q8_0 halves the KV allocation (64 → 34 MiB @ n_ctx
+2048, linear in context) with mean NLL unchanged (2.17794 → 2.17237); decode at
+short context is a wash (weights-bandwidth floor) — the win is memory/long-context,
+not short-prompt speed.*
 
 ## State delta (this session)
 
@@ -71,6 +72,26 @@ pin; do not stash/restore anything for pin builds anymore.*
   `tests/session_fuzz.py` interactive driver pins the stdin protocol contract —
   notably `cancel` fires immediately on the reader thread, so piped bursts
   cancel in-flight turns (by design, now documented).
+- **KV-cache quantization (same sitting, 0.27.1): `--cache-type-k/-v` shipped
+  and measured.** `RunConfig::cache_type_k/v` (+ `flash_attn` ""/on/off) →
+  `SessionConfig` → `cparams.type_k/type_v`/`flash_attn_type` at creation;
+  validate() spell-checks names; CLI forces FA on for quantized V (upstream
+  throws otherwise; AUTO resolves ON for CPU so default gates are unaffected).
+  Measured (MiMo-V2.6-9B dense, tinyMMLU-100): NLL 2.17794 f16 vs 2.17237 q8/q8
+  (noise), flips 8-for/4-against; KV alloc 64→34 MiB @2048 (llama's own buffer
+  line, linear in ctx); interleaved decode A/B at ~100 tok ctx: 0.39–0.41 s/tok
+  both arms — no short-context speed win (weights-bandwidth floor), the payoff
+  is RAM and long-context decode bytes. Long-context quality unmeasured
+  (compounding-error regime — measure before long-YaRN trust).
+- **Dense A/B benchmark record (history addenda): tinyMMLU 68 vs 74, HumanEval-50
+  82.0% vs 88.0%** (MiMo-V2.6 vs Qwen3.5-9B, no-think completion regime — the
+  HumanEval gap is inside binomial noise; Qwen3.5 keeps the knowledge lead).
+  `humaneval-bench.py --dense` + stdin-close shutdown fix landed `5b955c1`.
+- **Host upgraded 12 GiB → 16 GiB DDR3** (session-side fact): the 35B-A3B quads
+  now cache-resident instead of eviction-storm; KV math for long context is in
+  the history log (qwen35moe 80–82 KiB/tok f16 → 32k fits easily, 64k fits;
+  full-attention archs — attention compute becomes the wall at the top end;
+  Laguna-XS SWA-512 is the long-context bargain).
 
 ## Artifacts touched (this session)
 

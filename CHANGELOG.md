@@ -19,6 +19,14 @@ Semantic Versioning.
   upstream `ggml-rpc` misaligned reference UBSan flags. `tests/session_fuzz.py` drives the
   CLI's stdin protocol the way a real client does and pins its contract: hostile request lines
   answer recoverably, never crash, and never poison the session.
+- **KV-cache element types (`--cache-type-k` / `--cache-type-v`).** `RunConfig::cache_type_k/v`
+  flow to the public `llama_context_params` (`type_k`/`type_v`) at context creation, with a
+  `flash_attn` override ("", "on", "off" — empty keeps upstream's AUTO) next to them; the CLI
+  forces flash attention on when V is quantized, since upstream throws otherwise. Measured on a
+  9B dense model: q8_0/q8_0 halves the KV allocation (64 → 34 MiB at n_ctx 2048, linear in
+  context) and leaves mean NLL unchanged (2.17794 → 2.17237 on the 100-question tinyMMLU
+  protocol, Δ inside noise; answer flips 8 for / 4 against). Long-context quality — where
+  quantization error compounds — is explicitly unmeasured.
 - **`scripts/humaneval-bench.py` runs dense models.** The harness hardcoded `--moe-stream`,
   which the engine (rightly) refuses for an architecture without a registry recipe, so dense
   baselines could not use it; a `--dense` flag omits the streaming flags. The shutdown path now

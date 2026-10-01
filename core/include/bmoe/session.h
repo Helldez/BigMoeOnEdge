@@ -46,6 +46,12 @@ struct SessionConfig {
     // creation (llama.cpp clamps it to 0 for archs without rollback support). DEFAULT 0: restore is
     // not bit-exact on current upstream (see RunConfig::n_rs_seq for the measurement).
     int n_rs_seq = 0;
+    // KV-cache element types by ggml name ("" = f16) and flash attention ("" = upstream AUTO,
+    // "on", "off"). All three are baked into the context at creation. See RunConfig for the
+    // tradeoffs and the quantized-V↔flash-attention coupling.
+    std::string cache_type_k;
+    std::string cache_type_v;
+    std::string flash_attn;
     bool chatml = false;
     // Active-expert (top-k) override applied at load via a kv_override on the arch-prefixed
     // expert_used_count key. 0 = use the model's own count. See RunConfig::n_expert_used.
