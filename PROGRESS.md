@@ -101,9 +101,14 @@ Regeneration: none needed — everything is in the merge commit. Gates re-run:
   /tmp/bmoe-serve.log 2>&1 &` — then assert UP (`pgrep -f "[b]moe-serve.py"`).
 - **Swap** 8G permanent (fstab) — unchanged; majflt/tok stays the pressure sensor
   before any perf claim.
-- **Models** `~/llm/models/`: unchanged list (Ling-mini-2.0, LFM2.5 UD-Q4_K_M,
-  Qwen3.5-9B, olmoe-1b-7b, Laguna-XS-2.1, Ornith-1.5, Qwen3-30B, Qwen3.6-35B,
-  Cyber-Tiel-35B).
+- **Models** `~/llm/models/`: Ling-mini-2.0, LFM2.5 UD-Q4_K_M, Qwen3.5-9B,
+  olmoe-1b-7b, Laguna-XS-2.1, Ornith-1.5, Qwen3-30B, Qwen3.6-35B, Cyber-Tiel-35B,
+  **NEW 2026-09-23: MiMo-V2.6-Distill-Qwen-9B-Q4_K_M** (5.4 GB, dense `qwen35`
+  arch — verified on the merged engine 2026-09-30: correct one-shot output,
+  session KV reuse n_reused 38 on turn 2, non-MoE dense path, ~2.7 tok/s decode
+  on 4 threads; no registry row needed, dense `qwen35` is pure attention).
+  Also unlogged but pre-2026-07: DeepSeek-R1-Distill-Llama-8B (dense llama,
+  outside the arc's MoE scope).
 - **Remotes**: `origin` = Helldez/BigMoeOnEdge, `fork` = cjl4hd/BigMoeOnEdge (push
   target); `gh` authed as `cjl4hd`. Submodule: `Helldez/llama.cpp` @ `dce969851`
   (this merge). The `~/git/llama.cpp` work area still rests on `bench/host-rs` and
