@@ -500,8 +500,12 @@ Then point the client at `http://127.0.0.1:8017/v1`. `--ubatch 512` caps the com
 reservation (it scales with `ubatch × vocabulary` and reached 4.1 GiB at ctx 8192 on a desktop
 host) without touching decode speed, and client `max_tokens` budgets are clamped to the
 bridge's `--max-tokens` ceiling so an oversized request cannot sit in the context window for
-tens of minutes. Reasoning models expose their thinking separately in `reasoning_content`, and
-every response carries the same perf block the CSV sink records.
+tens of minutes. For long-context servers the same logic applies one level up: the logits
+reservation scales with the prefill batch width × vocabulary, and the batch defaults to the
+whole context — a 32k-token prompt on a ~248k-token vocabulary asks for ~30 GiB. Add
+`--batch 512` next to `--ubatch 512` whenever `--ctx-size` is large; a prompt fed in slices
+is scored and answered identically. Reasoning models expose their thinking separately in
+`reasoning_content`, and every response carries the same perf block the CSV sink records.
 ARM64 Linux: `scripts/build-arm64.sh` stages a self-contained bundle to run the server on an
 SBC or ARM box. Details: [docs/serve.md](docs/serve.md).
 

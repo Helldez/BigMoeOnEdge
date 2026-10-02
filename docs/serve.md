@@ -225,6 +225,15 @@ caps the reservation at ~258 MiB and leaves decode speed untouched (only prefill
 more graphs). On RAM-constrained hosts, keep `--ubatch 512` and let `--cache-mb auto` size the
 expert cache to what is left.
 
+The batch width is the same trap one level up. The prefill batch defaults to the whole context
+(the right shape for chat-sized prompts: one graph per prompt), but the output buffer scales
+with `batch × vocabulary` — a 32k-token document on a ~248k-token vocabulary asks for ~30 GiB
+of logits and fails to reserve at all. Pair `--batch 512` with `--ubatch 512` on any long-
+context server (`--ctx-size 32768` and up); the prompt is then fed in ubatch-wide slices.
+Scoring and answers are chunk-invariant — each position attends to the same KV either way —
+so nothing about the model's behavior changes, only the reservation shrinks to what the
+compute buffers already reserved for the ubatch.
+
 ## Prefill is the wall on small hardware
 
 Prompt processing (prefill) is compute-bound, and on modest CPUs it dwarfs everything else:
