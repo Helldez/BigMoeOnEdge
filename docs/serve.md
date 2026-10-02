@@ -234,6 +234,51 @@ Scoring and answers are chunk-invariant — each position attends to the same KV
 so nothing about the model's behavior changes, only the reservation shrinks to what the
 compute buffers already reserved for the ubatch.
 
+The KV cache is the third term, and on a large-context model it is the one that decides
+whether the host survives. It scales linearly in `ctx-size`, and **sliding-window
+attention does not reduce it**: llama.cpp allocates SWA layers at full context rather than
+window width, so a model advertising `sliding_window = 512` can still cost full-price KV
+per token. Budget it from the measured allocation, not from the architecture's metadata —
+Poolside Laguna XS 2.1 measures **160 KiB/token f16** (40 full-attention layers), i.e.
+5 GiB at 32k and 20 GiB at 128k.
+
+### The three allocations stack, and anon memory is what kills you
+
+A `--moe-stream` run holds three separate large allocations at once, and they are
+**additive**:
+
+1. the KV cache,
+2. the dense (non-expert) weights, and
+3. the expert LRU cache.
+
+The failure mode is specific and worth naming. Under the default `--dense-weights anon` the
+dense set is read `O_DIRECT` into *anonymous* memory, so it is reclaimable only to zram —
+never dropped, never refaulted cheaply. `--cache-mb auto` then sizes the expert cache from
+`MemAvailable` **before** those dense buffers exist, and `MemAvailable` counts the model's
+own mmap'd weights as free (see [cache-sizing.md](cache-sizing.md)). The run therefore
+over-asks by roughly the dense size. When the sum exceeds RAM the kernel does not fail the
+allocation politely — it OOM-kills the largest anonymous process, which is yours.
+
+Recognise it in `dmesg` / `journalctl -k` by the shape of the victim:
+
+```
+Out of memory: Killed process 1234 (bmoe-cli) total-vm:40839128kB, anon-rss:14399608kB, file-rss:8kB
+```
+
+`file-rss` near zero on a multi-gigabyte model is the signature: the weights are in anon
+buffers, so nothing about the process is cheap to reclaim.
+
+Keep the sum inside RAM on a host with little headroom:
+
+- `--cache-type-k q8_0 --cache-type-v q8_0` — halves the KV term (measured on Laguna at
+  32k: 5120 → 2720 MiB). Quantized V requires flash attention, which the CLI enables for
+  you.
+- `--batch 512 --ubatch 512` — caps the logits term on long-context servers.
+- `--dense-weights mmap` (or an explicit small `--cache-mb`) — stops the anon dense copy
+  from sitting on top of the cache. `anon` is the right default on a phone with zram and
+  fast flash; on a host without them it converts reclaimable memory into unreclaimable
+  memory.
+
 ## Prefill is the wall on small hardware
 
 Prompt processing (prefill) is compute-bound, and on modest CPUs it dwarfs everything else:

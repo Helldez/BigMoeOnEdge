@@ -6,22 +6,24 @@ the long-form evidence narrative; entries are never rewritten, only falsified ex
 by newer entries. Trust hierarchy: resume section > history > older sections of either.
 Log opened 2026-09-18; earlier project history lives in `CHANGELOG.md` and `git log`.
 
-*Resume last rewritten: 2026-10-01 (session 22, continuing in the same sitting).
+*Resume last rewritten: 2026-10-02 (session 22 wrap-up).
 Phase: **merge landed and proven; KV-cache quantization shipped AND validated at
-long context — 19 gates green, version 0.27.1**. Merge commit `f3a9517` on
-`feat/session-residency`; parent-2 is upstream `374f562` (0.28.0). Submodule pin
-`dce969851` (+530 commits). The old "pos0 working-tree port" is RETIRED —
-upstream's rename is in the pin; do not stash/restore anything for pin builds.*
+long context; two documentation corrections landed — 19 gates green, version
+0.27.1**. Merge commit `f3a9517` on `feat/session-residency`; parent-2 is
+upstream `374f562` (0.28.0). Submodule pin `dce969851` (+530 commits). The old
+"pos0 working-tree port" is RETIRED — upstream's rename is in the pin; do not
+stash/restore anything for pin builds.*
 *One-line status: the long-context KV-quant question is closed empirically — on a
 31.8k-token novel at `-c 32768`, q8_0/q8_0 vs f16 is ΔNLL 0.002 nats (noise,
 SE ≈ 0.017), hits 63.8% both arms; and a 15.3k-fill decode A/B shows q8 KV is a
 RAM tool, not a speed tool (decode +11%, prefill −49% — attention at fill is
-compute-bound on this CPU). The 35B-A3B quads can run `-c 32768` with q8 KV
-(~340 MiB instead of ~640 MiB measured — see the corrected KV geometry below;
-this doc previously claimed ~1.3/~2.5 GiB and was WRONG by 4×) with no
-measured quality cost; 64k is the next validated notch. Also landed:
-`--batch N` prefill-batch override (engine could not run a 32k `--ppl` doc at
-all: one-batch output buffer ≈ 30 GiB).*
+compute-bound on this CPU). Two doc corrections are the session's other result:
+the quads' KV geometry was **4× too high** (hybrid SSM — really 20 KiB/tok,
+not 80), and Laguna-XS's "SWA-512 long-context bargain" is **falsified** — SWA
+buys zero RAM because llama allocates those layers at full `n_ctx`, so Laguna is
+a genuine 160 KiB/tok (5 GiB @ 32k, 20 GiB @ 128k f16). That, plus the default
+`anon` dense policy and `cache_auto`, is what got this host OOM-killed twice —
+see the root-cause bullet; the fix is config, not code.*
 
 ## State delta (this session)
 
@@ -90,7 +92,8 @@ all: one-batch output buffer ≈ 30 GiB).*
   --ubatch 512 --batch 512`: NLL 1.49834 (f16) vs 1.49625 (q8_0/q8_0) — Δ 0.002
   nats against SE ≈ 0.017; next-token hits 20258 vs 20273 / 31765 (63.8% both).
   KV allocation confirmed at scale from llama's own buffer line: 1024 → 544 MiB.
-  Long-YaRN (Laguna-XS rope.scale 32) remains the one unmeasured regime.
+  Long-YaRN (Laguna-XS rope.scale 32) remains the one unmeasured *quality* regime
+  (its KV geometry is now measured — see the Laguna correction below).
 - **Decode at 15.3k fill (same sitting): q8 KV buys RAM, not speed — measured.**
   Generate mode, 15,320-token prompt, `-n 16`, arms sequential: f16 prefill
   2373 s (6.5 tok/s) / decode 0.652 s/tok vs q8 prefill 3539 s (4.3 tok/s,
@@ -125,9 +128,38 @@ all: one-batch output buffer ≈ 30 GiB).*
   Measured identically on Qwen3.6-35B-A3B. Consequence: 64k f16 ≈ 1.25 GiB and
   even 128k f16 ≈ 2.5 GiB fit with room to spare — the memory ceiling for
   these quads is far higher than this doc claimed, and the binding constraint
-  at long context is attention COMPUTE, not KV RAM. The Laguna-XS SWA-512
-  "long-context bargain" claim rests on the same faulty full-attention
-  arithmetic and is likewise suspect — unmeasured.
+  at long context is attention COMPUTE, not KV RAM.
+- **CORRECTION — Laguna-XS's SWA-512 "long-context bargain" is FALSIFIED; the
+  160 KiB/tok number was right, its explanation was not.** Same faulty
+  full-attention arithmetic, but here it landed on the correct answer for the
+  wrong reason. Measured from llama's own buffer lines: n_ctx 1024 → 40 MiB
+  (non-SWA) + 120 MiB (SWA) = 160 MiB, n_ctx 32768 → 1280 MiB + 3840 MiB =
+  5120 MiB. Exactly linear, **160 KiB/tok**, so the old figure stands — but the
+  GGUF census shows why there is no bargain: 40 blocks, **all 40 full-attention**
+  (`attn_k` + `attn_v` + `attn_q_norm` + `attn_gate`), **zero SSM tensors**. And
+  llama prints `llama_kv_cache_iswa: using full-size SWA cache` — it allocates
+  the 30 SWA layers at full `n_ctx` rather than the 512-cell window, precisely
+  because truncating them breaks long-context reuse. So `sliding_window = 512`
+  buys **exactly zero** RAM here. Per-token arithmetic that predicts it with no
+  SWA term at all: 8 KV heads × 128 key length × 2 (K+V) × 2 B × 40 layers =
+  160 KiB. Unlike the quads, Laguna's ceiling really is ~5 GiB at 32k / 20 GiB
+  at 128k f16 — but the wall is still attention compute, not KV.
+- **OOM kills on this host, root-caused (two: Oct 01 23:06, Oct 02 06:12).** Not
+  a bug and not the streamer — a **budget** violation from three anon
+  allocations stacking. Both kills are `bmoe-cli` with identical
+  `total-vm: 40839128kB` and the tell `anon-rss:14399608kB, file-rss:8kB`:
+  **`file-rss: 8 kB` on an 18.9 GiB model.** Under the default
+  `--dense-weights anon` the dense set is copied O_DIRECT into *anonymous*
+  memory (reclaim-to-zram only), and default `cache_auto` sizes the expert
+  cache from `MemAvailable` *before* those dense buffers are allocated and from
+  a signal that counts the model's own mmap'd weights as free — the hazard
+  `docs/cache-sizing.md` already spells out. Add 5120 MiB of f16 KV and a
+  15.4 GiB host has no room; the kernel picks the largest anon hog and kills
+  it. (`freebuff` and `firefox` were in the table too but lost — they are
+  reclaimable file-backed; bmoe-cli won on anon badness.) The composing fix is
+  config, not code: `--cache-type-k q8_0 --cache-type-v q8_0` (measured
+  5120 → 2720 MiB), `--batch 512`, and either `--dense-weights mmap` or an
+  explicit small `--cache-mb`. Recorded in `docs/serve.md`.
 
 ## Artifacts touched (this session)
 
@@ -136,7 +168,9 @@ all: one-batch output buffer ≈ 30 GiB).*
 | `core/src/engine/session.cpp` | conflict resolution: `build_turn_inputs` + `preserve_thinking` re-port |
 | `tests/moe_gates.cpp` | G18f positional-init fix (amended into the merge commit) |
 | `CHANGELOG.md`, `README.md`, `docs/README.md`, `docs/telemetry.md`, `CMakeLists.txt`, `examples/android/app/build.gradle` | conflict resolutions (see State delta) |
-| `PROGRESS.md` | this rewrite + the session-22 history entry |
+| `PROGRESS.md` | this rewrite + the session-22 history entry + the 2026-10-02 Laguna/OOM addendum |
+| `docs/serve.md` | "Memory budget on the host": the KV term, why SWA does not reduce it, and the three-stacking-anon-allocations OOM mode with its `dmesg` signature |
+| `CHANGELOG.md` | clarified that long-YaRN is unmeasured for *quality* only (geometry now measured) |
 | `/tmp/progress-resume.md` | scratch splice file, deletable |
 | `third_party/llama.cpp` | working tree at new pin `dce969851` (gguf-v0.19.0-2151) |
 | `build/` | full rebuild against the new pin, green |
@@ -197,22 +231,39 @@ Regeneration: none needed — everything is in the merge commit. Gates re-run:
 
 ## Next actions (ordered)
 
-1. **Long-context cell on Qwen3.6-35B-A3B with q8 KV** — unblocked, and the
+1. **Long-YaRN q8-vs-f16 quality on Laguna-XS** — the one KV-quant regime still
+   unmeasured, and now the most interesting one: Laguna carries
+   `rope.scaling.factor = 32`, where quantization error compounds over a long
+   effective context, and the same model is the one where KV RAM actually binds
+   (160 KiB/tok). Run `--ppl --ppl-choices` f16 vs q8_0/q8_0 on the Pride &
+   Prejudice corpus (regen: `/tmp/pnp-clean.txt`, 31,765 scored tokens) at
+   `-c 32768 --batch 512 --ubatch 512` — **with the OOM-safe flags below**, since
+   f16 KV at 32k is 5120 MiB on a 15.4 GiB host.
+   **OOM-safe host config (mandatory on this box):**
+   `--cache-type-k q8_0 --cache-type-v q8_0 --batch 512 --ubatch 512 --cache-mb 2000`
+   — or `--dense-weights mmap` instead of the anon default. Confirm no OOM first:
+   `journalctl -k --since "-1h" | grep -a 'oom-kill'`.
+2. **Long-context cell on Qwen3.6-35B-A3B with q8 KV** — unblocked, and the
    memory side is no longer the worry: measured 340 MiB KV at 32k q8, ~680 MiB
    at 64k q8 (geometry corrected above — the old ~1.3 GiB figure was 4× too
    high). Measure with `--ppl --batch 512 --ubatch 512`. The open question is
    decode speed at fill (attention compute), not whether it fits.
-2. **Restore the LFM2.5 daily driver** (still DOWN; carried from session 21):
+3. **q4 KV quality on the quads** — deliberately deferred, and now clearly the
+   *lower* priority of the two: it is a different risk class from q8 (README row:
+   V is the sensitive one; damage shows in recall/CoT before perplexity), it is
+   ~30 min per `--ppl` cell, and the memory case it was invented for is much less
+   urgent now that the quads are 20 KiB/tok.
+4. **Restore the LFM2.5 daily driver** (still DOWN; carried from session 21):
    launch command in Environment state — then assert UP per the MISTAKES rule
    (`pgrep -f "[b]moe-serve.py"`) and record the PID here.
-2. **Opencode re-test with `--auto-echo`** on a serve instance (carried from
+5. **Opencode re-test with `--auto-echo`** on a serve instance (carried from
    session 21; the daily driver is deliberately down — model choice undecided).
-3. **Verify the `multiple-choice` skill live** (carried from session 21):
+6. **Verify the `multiple-choice` skill live** (carried from session 21):
    logprobs round-trip through the bridge, then the ~50-item demo.
-4. **#29085 playbook** (Open question 2) unchanged; when it merges: reopen
+7. **#29085 playbook** (Open question 2) unchanged; when it merges: reopen
    #29117 → bump + gates + rsbench re-run. When #197 merges: stacked-PR plan
    (Open question 1).
-5. **Kill-process rule** (docs/MISTAKES.md): never chain `pkill -f <pat>` —
+8. **Kill-process rule** (docs/MISTAKES.md): never chain `pkill -f <pat>` —
    bracket the pattern or run standalone and assert afterwards.
 
 ## Resume gates (all must assert positives)
@@ -1570,3 +1621,58 @@ this entry does not claim it.
 f16 (session 22b) — so on a prefill-heavy long-context workload, f16 KV is the better default
 even though it costs RAM, and q8/q4 earn their place only in resident sessions where decode
 dominates.
+
+### 2026-10-02 addendum — Laguna-XS KV geometry measured; the SWA-512 bargain is falsified
+
+Requested as "fix laguna numbers". The 160 KiB/token figure **survives**; the reasoning that
+produced it does not, and the difference matters because it inverts the memory ceiling.
+
+| n_ctx | non-SWA (10 layers) | SWA (30 layers) | total | KiB/token |
+|---|---|---|---|---|
+| 1024 | 40 MiB | 120 MiB | 160 MiB | 160 |
+| 32768 | 1280 MiB | 3840 MiB | 5120 MiB | 160 |
+
+Perfectly linear, and 1280 + 3840 = 5120 MiB @ 32768 reproduces the old figure exactly — so
+the number was never the error. Two independent checks say why there is no bargain:
+
+- **Tensor census** (stdlib GGUF header parse, `/tmp/ggufkv.py`): `general.architecture =
+  laguna`, 40 blocks, **all 40 carrying `attn_k` + `attn_v`** (`attn_q_norm`, `attn_gate`
+  present too). **Zero** `ssm_dt`/`ssm_conv1d`/`ssm_a`/`ssm_out` — Laguna is pure attention,
+  the opposite of the `qwen35moe` hybrid case corrected above.
+- **llama's own log:** `llama_kv_cache_iswa: using full-size SWA cache` followed by
+  `creating non-SWA KV cache, size = 32768 cells`. Upstream deliberately sizes the SWA layers
+  at full `n_ctx` instead of the 512-cell window (truncating them breaks long-context reuse).
+  So `laguna.attention.sliding_window = 512` buys **zero** RAM.
+
+Predictive arithmetic with no SWA term at all: 8 KV heads × 128 key length × 2 (K+V) × 2 B ×
+40 layers = 163840 B = 160 KiB/token. Model header also confirms `rope.scaling.factor = 32.0`
+(long YaRN, `original_context_length 8192`) and `context_length = 262144`.
+
+**Contrast with the quads, and the real consequence.** The `qwen35moe` correction *raised*
+its ceiling (20 KiB/tok, so 128k f16 ≈ 2.5 GiB fits). Laguna goes the other way: 5 GiB at
+32k, **20 GiB at 128k** f16 — it genuinely cannot hold a long f16 context on a 16 GiB host.
+The binding constraint is still attention *compute*, but here KV RAM is a genuine wall too,
+and q8 is not optional at long context.
+
+**OOM kills, root-caused (same addendum).** Two `bmoe-cli` kills this week — Oct 01 23:06
+and Oct 02 06:12 — both `total-vm: 40839128kB`, both `anon-rss:14399608kB, file-rss:8kB`.
+`file-rss: 8 kB` on an 18.9 GiB model is the whole story: under the default
+`--dense-weights anon` the dense set is `O_DIRECT`-copied into anonymous memory, and default
+`cache_auto` sized the expert cache from `MemAvailable` *before* those buffers existed, from a
+signal that counts the model's own mmap'd weights as free (`docs/cache-sizing.md` warns of
+exactly this). KV (5120 MiB) + anon dense + expert cache > 15.4 GiB host → the kernel kills
+the largest anon process. Not a streamer bug; a budget-sum problem with a config fix.
+Documented in `docs/serve.md` ("The three allocations stack, and anon memory is what kills
+you") including the `dmesg` signature to recognise it.
+
+**Measurement commands** (reproduce; `-c 1024` is the cheap per-token probe — no need to load
+at 32k just to read the geometry):
+
+```bash
+M=~/llm/models/Laguna-XS-2.1-Q4_K_M.gguf
+build/cli/bmoe-cli -m "$M" -c 1024 --ubatch 512 --batch 512 -t 4 -n 1 -p "hi" 2>&1 \
+  | grep -aiE 'KV buffer size|non-SWA KV cache|SWA cache size'
+# same with --cache-type-k q8_0 --cache-type-v q8_0 at -c 32768 → 680 + 2040 MiB
+python3 /tmp/ggufkv.py "$M"   # arch/KV/rope header keys, stdlib only
+```
+
