@@ -17,9 +17,11 @@ upstream's rename is in the pin; do not stash/restore anything for pin builds.*
 SE ≈ 0.017), hits 63.8% both arms; and a 15.3k-fill decode A/B shows q8 KV is a
 RAM tool, not a speed tool (decode +11%, prefill −49% — attention at fill is
 compute-bound on this CPU). The 35B-A3B quads can run `-c 32768` with q8 KV
-(~1.3 GiB instead of ~2.5 GiB) with no measured quality cost; 64k is the next
-validated notch. Also landed: `--batch N` prefill-batch override (engine could
-not run a 32k `--ppl` doc at all: one-batch output buffer ≈ 30 GiB).*
+(~340 MiB instead of ~640 MiB measured — see the corrected KV geometry below;
+this doc previously claimed ~1.3/~2.5 GiB and was WRONG by 4×) with no
+measured quality cost; 64k is the next validated notch. Also landed:
+`--batch N` prefill-batch override (engine could not run a 32k `--ppl` doc at
+all: one-batch output buffer ≈ 30 GiB).*
 
 ## State delta (this session)
 
@@ -111,10 +113,21 @@ not run a 32k `--ppl` doc at all: one-batch output buffer ≈ 30 GiB).*
   HumanEval gap is inside binomial noise; Qwen3.5 keeps the knowledge lead).
   `humaneval-bench.py --dense` + stdin-close shutdown fix landed `5b955c1`.
 - **Host upgraded 12 GiB → 16 GiB DDR3** (session-side fact): the 35B-A3B quads
-  now cache-resident instead of eviction-storm; KV math for long context is in
-  the history log (qwen35moe 80–82 KiB/tok f16 → 32k fits easily, 64k fits;
-  full-attention archs — attention compute becomes the wall at the top end;
-  Laguna-XS SWA-512 is the long-context bargain).
+  now cache-resident instead of eviction-storm.
+- **CORRECTION — the quads' KV geometry was wrong here by 4× (this doc's
+  fault, now falsified by measurement).** The old claim "qwen35moe 80–82 KiB/
+  tok f16 → 2.5 GiB at 32k" came from GGUF metadata arithmetic over ALL 40
+  blocks. `qwen35moe` is a **hybrid attention/SSM stack**: the tensor census
+  shows 40 blocks of which only **10 carry `attn_k` (full attention); 30 are
+  SSM** (`ssm_dt`/`ssm_conv1d`/`ssm_a`…). llama.cpp allocates KV only for the
+  attention layers, so llama's own buffer line reads **640.00 MiB at n_ctx
+  32768 f16 = 20 KiB/tok** — and exactly 2560 MiB at n_ctx 131072 (linear).
+  Measured identically on Qwen3.6-35B-A3B. Consequence: 64k f16 ≈ 1.25 GiB and
+  even 128k f16 ≈ 2.5 GiB fit with room to spare — the memory ceiling for
+  these quads is far higher than this doc claimed, and the binding constraint
+  at long context is attention COMPUTE, not KV RAM. The Laguna-XS SWA-512
+  "long-context bargain" claim rests on the same faulty full-attention
+  arithmetic and is likewise suspect — unmeasured.
 
 ## Artifacts touched (this session)
 
@@ -184,9 +197,11 @@ Regeneration: none needed — everything is in the merge commit. Gates re-run:
 
 ## Next actions (ordered)
 
-1. **Long-context `-c 32768` cell on Qwen3.6-35B-A3B with q8 KV** — now
-   unblocked: ~1.3 GiB KV instead of ~2.5, leaving ~10 GB expert cache on this
-   16 GB host. Measure with the same `--ppl --batch 512 --ubatch 512` pattern.
+1. **Long-context cell on Qwen3.6-35B-A3B with q8 KV** — unblocked, and the
+   memory side is no longer the worry: measured 340 MiB KV at 32k q8, ~680 MiB
+   at 64k q8 (geometry corrected above — the old ~1.3 GiB figure was 4× too
+   high). Measure with `--ppl --batch 512 --ubatch 512`. The open question is
+   decode speed at fill (attention compute), not whether it fits.
 2. **Restore the LFM2.5 daily driver** (still DOWN; carried from session 21):
    launch command in Environment state — then assert UP per the MISTAKES rule
    (`pgrep -f "[b]moe-serve.py"`) and record the PID here.
@@ -1498,3 +1513,60 @@ tokens ÷ ~5 tok/s (one-time, amortized by KV-reuse across turns).
 **Caveat:** decode sample is 16 tokens per arm — the 11% is directionally reliable (same sign
 as the attention-phase arithmetic) but not precise to a percent. Logs: /tmp/dec16-f16.log,
 /tmp/dec16-q8.log (ephemeral); corpus regen: Gutenberg #1342, strip markers, head -c 66000.
+
+### 2026-10-01 addendum — session 22c: q4 KV on Ornith + the quads' KV geometry was wrong by 4×
+
+**Question:** the user asked whether q4 KV would show *bigger* improvements on a 35B-class MoE
+(Ornith-1.5) than on the 9B dense used for the q8 measurements. While checking, a much larger
+error surfaced, so this entry corrects the record first.
+
+**FALSIFICATION — this doc's "80–82 KiB/tok f16 → 2.5 GiB at 32k" for qwen35moe was wrong by 4×.**
+It came from GGUF metadata arithmetic that counted all 40 blocks as attention. `qwen35moe` is a
+**hybrid attention/SSM stack** (the registry said so at arch_registry.cpp:16 all along): a tensor
+census on Ornith-1.5-35B-A3B finds 40 blocks of which **10 carry `attn_k` (full attention) and
+30 are SSM** (`ssm_dt`, `ssm_conv1d`, `ssm_a`, `ssm_out`). llama.cpp allocates KV only for the
+attention layers. Measured from llama's own buffer line:
+
+| model | n_ctx | f16 | q8_0/q8_0 | q4_0/q4_0 | q4_0 K + q8_0 V |
+|---|---|---|---|---|---|
+| Ornith-1.5-35B-A3B | 32768 | 640.00 MiB | 340.00 MiB | 180.00 MiB | 260.00 MiB |
+| Ornith-1.5-35B-A3B | 131072 | 2560.00 MiB | — | — | — |
+| Qwen3.6-35B-A3B | 32768 | 640.00 MiB | — | — | — |
+
+That is **20 KiB/tok, exactly one quarter of the documented 80–82**, and exactly linear in n_ctx
+(640 → 2560 MiB for 4× the context). Same on both quads. Consequences: 64k f16 is ~1.25 GiB,
+128k f16 ~2.5 GiB — both fit easily on this 16 GB host, so for the quads the long-context wall
+is attention COMPUTE (already measured at ~0.5 s/tok per 16k on this CPU), never KV RAM. The
+"Laguna-XS is the long-context bargain (160 KiB/tok, SWA-512)" claim derives from the same
+faulty arithmetic and is **unverified — treat as suspect**. Lesson recorded (MISTAKES-class):
+metadata geometry arithmetic must be checked against llama's own allocation line, which counts
+only what actually gets allocated.
+
+**The original question, answered with Ornith's own numbers.** q4 does shrink the quads' KV
+further (640 → 180 MiB at 32k, 3.6×) but this matters far *less* than the corrected geometry
+implies: at 32k the entire KV budget is 640 MiB against a 21 GB model — under 3% of RAM, and
+q8 already cuts it to 340 MiB. On the quads, KV quantization is not where the memory pressure
+is; the expert cache is (21 GB model, ~12 GB host RAM). q4's value on an MoE is therefore
+*relative*, not absolute: it is the cheapest way to hand another ~160 MiB back to the expert
+cache at 32k (~320 MiB at 64k), and every MiB of expert cache on a >RAM MoE is decode speed.
+On the 9B dense, by contrast, KV was a genuine fraction of RAM and q8/q4 directly buys context
+length. **The same feature is worth much more RAM-wise on the small dense model and more
+speed-wise on the big MoE** — a different argument for the same flag.
+
+Feasibility verified on the real hybrid model, not just the dense one:
+- `--cache-type-k q4_0 --cache-type-v q4_0` runs clean on Ornith at n_ctx 32768 (exit 0, 180 MiB KV) and on MiMo at 4096 (36 MiB, 3.6× smaller than f16) — no upstream type rejection.
+- Two-turn `--session` run on Ornith with q4/q4: both turns `BMOE_DONE`, coherent text, `n_reused: 0` on turn 2 = the designed hybrid full-clear for a non-append turn. Quantized KV composes with the recurrent-snapshot path.
+- Mixed `q4_0` K + `q8_0` V is accepted (260 MiB) — the config worth considering, since V is the sensitive side (see quality note below).
+
+**Quality: q4 is a different risk class than q8, and is NOT validated here.** q8/q8 has two
+independent clean measurements (short-context tinyMMLU ΔNLL −0.006; 32k novel ΔNLL −0.002). The
+llama.cpp community consensus — and this project's README row — is that K tolerates q4 and V is
+the sensitive one; visible damage starts when V goes to q4 and shows up in recall/CoT before
+perplexity moves. Nobody has a published number for these quads. Pricing q4 on Ornith properly
+is a `--ppl --ppl-choices` run per cell (~30 min each on this host); it is NOT measured, and
+this entry does not claim it.
+
+**Also note the measured asymmetry that survives correction:** q8 prefill is ~1.5× slower than
+f16 (session 22b) — so on a prefill-heavy long-context workload, f16 KV is the better default
+even though it costs RAM, and q8/q4 earn their place only in resident sessions where decode
+dominates.
