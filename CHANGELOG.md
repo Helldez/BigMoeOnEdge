@@ -29,6 +29,10 @@ Semantic Versioning.
   quantization error compounds — the same verdict holds: a 31.8k-token novel document scores
   NLL 1.49834 (f16) vs 1.49625 (q8_0/q8_0), Δ 0.002 nats against a 0.017-nat standard error,
   next-token hits 20258 vs 20273 of 31765 (63.8% both arms). Long-YaRN models stay unmeasured.
+  Speed profile at a 15.3k-token fill (generate mode, 16 tokens): decode 0.652 → 0.586 s/tok
+  (~11% faster with q8) while prefill is 1.49× slower (3539 vs 2373 s; dequant tax in
+  the wide batched attention) — attention at fill is compute-bound on CPU, so q8 KV buys RAM
+  and context length, not throughput.
 - **`--batch N` (`RunConfig::n_batch`): prefill batch-width override.** The one-batch-prefill
   doctrine (`n_batch = n_ctx`) assumed the output buffer fits; that buffer scales
   batch × vocabulary, so a 32k-token teacher-forced run on a ~250k-token vocabulary asks for

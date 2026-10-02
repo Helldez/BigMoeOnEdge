@@ -14,10 +14,12 @@ long context — 19 gates green, version 0.27.1**. Merge commit `f3a9517` on
 upstream's rename is in the pin; do not stash/restore anything for pin builds.*
 *One-line status: the long-context KV-quant question is closed empirically — on a
 31.8k-token novel at `-c 32768`, q8_0/q8_0 vs f16 is ΔNLL 0.002 nats (noise,
-SE ≈ 0.017), hits 63.8% both arms. The 35B-A3B quads can run `-c 32768` with
-q8 KV (~1.3 GiB KV instead of ~2.5 GiB) with no measured quality cost. Also
-landed: `--batch N` prefill-batch override (engine could not run a 32k
-`--ppl` doc at all: one-batch output buffer ≈ 30 GiB).*
+SE ≈ 0.017), hits 63.8% both arms; and a 15.3k-fill decode A/B shows q8 KV is a
+RAM tool, not a speed tool (decode +11%, prefill −49% — attention at fill is
+compute-bound on this CPU). The 35B-A3B quads can run `-c 32768` with q8 KV
+(~1.3 GiB instead of ~2.5 GiB) with no measured quality cost; 64k is the next
+validated notch. Also landed: `--batch N` prefill-batch override (engine could
+not run a 32k `--ppl` doc at all: one-batch output buffer ≈ 30 GiB).*
 
 ## State delta (this session)
 
@@ -87,6 +89,18 @@ landed: `--batch N` prefill-batch override (engine could not run a 32k
   nats against SE ≈ 0.017; next-token hits 20258 vs 20273 / 31765 (63.8% both).
   KV allocation confirmed at scale from llama's own buffer line: 1024 → 544 MiB.
   Long-YaRN (Laguna-XS rope.scale 32) remains the one unmeasured regime.
+- **Decode at 15.3k fill (same sitting): q8 KV buys RAM, not speed — measured.**
+  Generate mode, 15,320-token prompt, `-n 16`, arms sequential: f16 prefill
+  2373 s (6.5 tok/s) / decode 0.652 s/tok vs q8 prefill 3539 s (4.3 tok/s,
+  **1.49× slower**) / decode 0.586 s/tok (**11% faster**), KV 640 → 340 MiB.
+  Attention at fill is compute-bound: 480 MiB of KV reads ≈ 28 ms by bandwidth
+  math vs ~250 ms observed, so halving bytes cannot halve decode. q8 prefill
+  pays a dequant tax in the wide batched attention (1.49× here, 1.87× at the
+  32k `--ppl` arms). Practical rule: f16 for prefill-heavy one-shots when RAM
+  allows, q8 when RAM is the binding constraint (the quads' 64k case).
+  Measured ceiling anchors (MiMo-9B, attention ∝ context, floor 0.40 s/tok):
+  32k ≈ 0.8–0.9 s/tok, 64k ≈ 1.2–1.5, 128k ≈ 2.0–2.5 (quads ~1.5–2× this
+  model's attention work, A3B expert GEMV ~0.15 s/tok on top).
 - **`--batch N` shipped (same sitting): the 32k-`--ppl` blocker fix.** The
   one-batch-prefill doctrine (`n_batch = n_ctx`) asks for batch × vocab logits —
   31.8k × 248k × 4 B ≈ 30 GiB — and fails with `could not reserve space for batch
@@ -1445,3 +1459,42 @@ attention-side, not routing-side). Logs: /tmp/long-f16.log, /tmp/long-q8.log (ep
 regenerate with the command above; corpus via Gutenberg #1342 minus boilerplate, head -c
 134367). Commits: `06616ca` (KV-quant wiring + short-context measurement), this addendum's
 `--batch` commit (see git log for hash).
+
+### 2026-10-01 addendum — session 22b: decode at 15.3k fill — q8 KV is a RAM tool, not a speed tool
+
+**Question:** the 32k arms proved q8 KV's memory win but its *speed* claim ("half the bytes per
+decode token") was only ever measured at ~100-token context, where there was nothing to read.
+Does q8 decode actually win once there is a real KV to stream, and does it pay dequant tax in
+prefill? This decides how far context can be pushed on this host.
+
+**Method:** same corpus extended — 66,000 chars (15,320 tokens) of Pride and Prejudice,
+generate mode `-n 16`, MiMo-V2.6-9B, `-c 20480 --ubatch 512 --batch 512 -t 4`, arms run
+sequentially (f16 then q8/q8), box otherwise idle (verified no competing processes).
+
+**Results:**
+
+| metric | f16 | q8_0/q8_0 | Δ |
+|---|---|---|---|
+| prefill | 2373 s (6.5 tok/s) | 3539 s (4.3 tok/s) | **1.49× slower with q8** |
+| decode | 0.652 s/tok | 0.586 s/tok | **11% faster with q8** |
+| KV alloc | 640 MiB | 340 MiB | 1.88× (again) |
+
+**Reading — attention at fill is compute-bound on this CPU.** 15,320 tokens × 32 KiB/tok
+= 480 MiB of KV read per decode token ≈ 28 ms by bandwidth math, but the observed attention
+overhead (0.652 − ~0.40 floor) is ~250 ms/tok — ~9× more. So halving the bytes cannot halve
+decode: q8's attention phase lands 0.19 vs 0.25 s/tok, an ~11% whole-token win, while its
+prefill pays a ~1.5× dequant tax in the wide batched attention (1.49× here; 1.87× at the 32k
+`--ppl` arms — two independent measurements agree on direction and magnitude).
+
+**Practical rule:** f16 wins prefill-heavy one-shot work when RAM allows; q8 wins when RAM is
+the binding constraint (the 35B quads at 64k) and slightly speeds decode at fill. It buys the
+context length, not throughput — never quote "q8 halves decode" on this class of host.
+
+**Measured ceiling anchors** (MiMo-9B; attention cost ∝ context; short-context floor
+~0.40 s/tok): 32k ≈ 0.8–0.9 s/tok, 64k ≈ 1.2–1.5, 128k ≈ 2.0–2.5. The qwen35moe quads carry
+~1.5–2× this model's attention work plus ~0.15 s/tok expert GEMV; prefill hours scale as
+tokens ÷ ~5 tok/s (one-time, amortized by KV-reuse across turns).
+
+**Caveat:** decode sample is 16 tokens per arm — the 11% is directionally reliable (same sign
+as the attention-phase arithmetic) but not precise to a percent. Logs: /tmp/dec16-f16.log,
+/tmp/dec16-q8.log (ephemeral); corpus regen: Gutenberg #1342, strip markers, head -c 66000.
