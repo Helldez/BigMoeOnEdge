@@ -580,6 +580,10 @@ static void print_usage(const char * argv0) {
         "                          RAM back to the expert cache at the cost of prefill speed;\n"
         "                          decode is unaffected. Measured: a context of 2048 reserves\n"
         "                          320 MiB, falling to 80 MiB at 512.\n"
+        "      --batch N           widest single prefill batch (0 = as wide as the context).\n"
+        "                          The output buffer scales batch × vocab — a 32k-token --ppl\n"
+        "                          document fed as one batch asks for ~30 GiB of logits, so\n"
+        "                          cap this (--batch 512) for long teacher-forced runs.\n"
         "      --cache-type-k T    KV-cache element types by ggml name (f16, q8_0, q4_0, …).\n"
         "      --cache-type-v T    Empty = f16. q8_0 halves KV RAM and the bytes moved per\n"
         "                          decode token (full attention reads the whole cache); V is\n"
@@ -846,6 +850,8 @@ int main(int argc, char ** argv) {
             cfg.n_rs_seq = std::atoi(next("--rs-seq"));
         else if (a == "--ubatch")
             cfg.n_ubatch = std::atoi(next("--ubatch"));
+        else if (a == "--batch")
+            cfg.n_batch = std::atoi(next("--batch"));
         else if (a == "--cache-type-k")
             cfg.cache_type_k = next("--cache-type-k");
         else if (a == "--cache-type-v")

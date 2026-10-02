@@ -66,6 +66,15 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " exceeds n_ctx=" + std::to_string(cfg.n_ctx) +
                     ": the compute buffers would be reserved for a batch that cannot occur.");
     }
+    if (cfg.n_batch < 0) {
+        return fail("n_batch must be >= 0 (0 = follow n_ctx)");
+    }
+    // The batch is sliced into ubatch graphs, so a batch narrower than the ubatch would either
+    // under-fill every graph or (n_ubatch > n_batch) can never be filled at all.
+    if (cfg.n_batch > 0 && cfg.n_ubatch > cfg.n_batch) {
+        return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " exceeds n_batch=" +
+                    std::to_string(cfg.n_batch) + ": no prefill slice could ever fill the ubatch.");
+    }
     // Lower bound only: 0 means "use the model default". The upper bound (<= the model's
     // real expert count) needs the loaded gguf, so it is deferred to run() where the model
     // is available — same rationale as the streaming checks that stay out of this pure path.

@@ -25,8 +25,17 @@ Semantic Versioning.
   forces flash attention on when V is quantized, since upstream throws otherwise. Measured on a
   9B dense model: q8_0/q8_0 halves the KV allocation (64 → 34 MiB at n_ctx 2048, linear in
   context) and leaves mean NLL unchanged (2.17794 → 2.17237 on the 100-question tinyMMLU
-  protocol, Δ inside noise; answer flips 8 for / 4 against). Long-context quality — where
-  quantization error compounds — is explicitly unmeasured.
+  protocol, Δ inside noise; answer flips 8 for / 4 against). At 32k context — the regime where
+  quantization error compounds — the same verdict holds: a 31.8k-token novel document scores
+  NLL 1.49834 (f16) vs 1.49625 (q8_0/q8_0), Δ 0.002 nats against a 0.017-nat standard error,
+  next-token hits 20258 vs 20273 of 31765 (63.8% both arms). Long-YaRN models stay unmeasured.
+- **`--batch N` (`RunConfig::n_batch`): prefill batch-width override.** The one-batch-prefill
+  doctrine (`n_batch = n_ctx`) assumed the output buffer fits; that buffer scales
+  batch × vocabulary, so a 32k-token teacher-forced run on a ~250k-token vocabulary asks for
+  ~30 GiB of logits and cannot run at all on a workstation. `--batch 512` feeds the prompt in
+  ubatch-wide slices; scoring is chunk-invariant (each position attends to the same KV either
+  way), and session semantics are untouched (default 0 keeps the doctrine). Validation rejects
+  `n_ubatch > n_batch` when the override is set.
 - **`scripts/humaneval-bench.py` runs dense models.** The harness hardcoded `--moe-stream`,
   which the engine (rightly) refuses for an architecture without a registry recipe, so dense
   baselines could not use it; a `--dense` flag omits the streaming flags. The shutdown path now

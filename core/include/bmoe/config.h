@@ -456,6 +456,15 @@ struct RunConfig {
     // Decode is unaffected: a decode graph is one token wide whatever this says. The cost is
     // prefill throughput, which processes a long prompt in more, smaller passes.
     int n_ubatch = 0;
+    // Prefill batch width: the widest SINGLE llama_decode call. 0 (default) = follow n_ctx — the
+    // one-batch-prefill doctrine, right for sessions. Exposed because the OUTPUT buffer scales
+    // batch × vocabulary: a 32k-token --ppl document decoded as one batch asks for
+    // 31774 × 248320 × 4 B ≈ 30 GiB of logits and cannot run at all on a workstation. A batch
+    // the width of --ubatch keeps every chunk inside the already-reserved compute buffer.
+    // Teacher-forced scoring is chunk-invariant (each position attends to the same KV either
+    // way), so --ppl runs are free to cap this; session reuse semantics are not affected —
+    // slicing only changes how a prompt is fed, never what is computed.
+    int n_batch = 0;
     // Recurrent-state snapshot budget for hybrid/recurrent models (see session.cpp). Each plane
     // costs mem_size worth of state (50 MiB/plane on a 9B hybrid at Q4). DEFAULT 0 — measured on
     // a qwen35 (gated delta net) model, snapshot restore is not bit-exact: under greedy decoding

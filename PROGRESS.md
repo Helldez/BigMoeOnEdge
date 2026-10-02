@@ -6,19 +6,18 @@ the long-form evidence narrative; entries are never rewritten, only falsified ex
 by newer entries. Trust hierarchy: resume section > history > older sections of either.
 Log opened 2026-09-18; earlier project history lives in `CHANGELOG.md` and `git log`.
 
-*Resume last rewritten: 2026-09-30 (session 22, continuing in the same sitting).
-Phase: **merge landed and proven; KV-cache quantization shipped on top — 19 gates
-green, version 0.27.1**. Merge commit `f3a9517` on `feat/session-residency`;
-parent-2 is upstream `374f562` (0.28.0). Submodule pin `dce969851` (+530 commits).
-The old "pos0 working-tree port" is RETIRED — upstream's rename is in the pin; do
-not stash/restore anything for pin builds anymore.*
-*One-line status: after the merge and the 0.27.1 test buildout, the session
-benchmarked the dense pair (tinyMMLU + HumanEval-50, tooling gained `--dense`),
-then implemented and measured KV-cache quantization (`--cache-type-k/v` +
-`flash_attn` override): q8_0/q8_0 halves the KV allocation (64 → 34 MiB @ n_ctx
-2048, linear in context) with mean NLL unchanged (2.17794 → 2.17237); decode at
-short context is a wash (weights-bandwidth floor) — the win is memory/long-context,
-not short-prompt speed.*
+*Resume last rewritten: 2026-10-01 (session 22, continuing in the same sitting).
+Phase: **merge landed and proven; KV-cache quantization shipped AND validated at
+long context — 19 gates green, version 0.27.1**. Merge commit `f3a9517` on
+`feat/session-residency`; parent-2 is upstream `374f562` (0.28.0). Submodule pin
+`dce969851` (+530 commits). The old "pos0 working-tree port" is RETIRED —
+upstream's rename is in the pin; do not stash/restore anything for pin builds.*
+*One-line status: the long-context KV-quant question is closed empirically — on a
+31.8k-token novel at `-c 32768`, q8_0/q8_0 vs f16 is ΔNLL 0.002 nats (noise,
+SE ≈ 0.017), hits 63.8% both arms. The 35B-A3B quads can run `-c 32768` with
+q8 KV (~1.3 GiB KV instead of ~2.5 GiB) with no measured quality cost. Also
+landed: `--batch N` prefill-batch override (engine could not run a 32k
+`--ppl` doc at all: one-batch output buffer ≈ 30 GiB).*
 
 ## State delta (this session)
 
@@ -81,8 +80,18 @@ not short-prompt speed.*
   (noise), flips 8-for/4-against; KV alloc 64→34 MiB @2048 (llama's own buffer
   line, linear in ctx); interleaved decode A/B at ~100 tok ctx: 0.39–0.41 s/tok
   both arms — no short-context speed win (weights-bandwidth floor), the payoff
-  is RAM and long-context decode bytes. Long-context quality unmeasured
-  (compounding-error regime — measure before long-YaRN trust).
+  is RAM and long-context decode bytes.
+- **Long-context KV-quant validation (2026-10-01): q8 at 32k ≈ f16, measured.**
+  Pride & Prejudice corpus (31,765 scored tokens) via `--ppl` at `-c 32768
+  --ubatch 512 --batch 512`: NLL 1.49834 (f16) vs 1.49625 (q8_0/q8_0) — Δ 0.002
+  nats against SE ≈ 0.017; next-token hits 20258 vs 20273 / 31765 (63.8% both).
+  KV allocation confirmed at scale from llama's own buffer line: 1024 → 544 MiB.
+  Long-YaRN (Laguna-XS rope.scale 32) remains the one unmeasured regime.
+- **`--batch N` shipped (same sitting): the 32k-`--ppl` blocker fix.** The
+  one-batch-prefill doctrine (`n_batch = n_ctx`) asks for batch × vocab logits —
+  31.8k × 248k × 4 B ≈ 30 GiB — and fails with `could not reserve space for batch
+  with 31774 outputs`. `RunConfig::n_batch` (0 = doctrine) → `--batch` flag;
+  validate() rejects `n_ubatch > n_batch > 0`. Scoring is chunk-invariant.
 - **Dense A/B benchmark record (history addenda): tinyMMLU 68 vs 74, HumanEval-50
   82.0% vs 88.0%** (MiMo-V2.6 vs Qwen3.5-9B, no-think completion regime — the
   HumanEval gap is inside binomial noise; Qwen3.5 keeps the knowledge lead).
@@ -161,7 +170,10 @@ Regeneration: none needed — everything is in the merge commit. Gates re-run:
 
 ## Next actions (ordered)
 
-1. **Restore the LFM2.5 daily driver** (still DOWN; carried from session 21):
+1. **Long-context `-c 32768` cell on Qwen3.6-35B-A3B with q8 KV** — now
+   unblocked: ~1.3 GiB KV instead of ~2.5, leaving ~10 GB expert cache on this
+   16 GB host. Measure with the same `--ppl --batch 512 --ubatch 512` pattern.
+2. **Restore the LFM2.5 daily driver** (still DOWN; carried from session 21):
    launch command in Environment state — then assert UP per the MISTAKES rule
    (`pgrep -f "[b]moe-serve.py"`) and record the PID here.
 2. **Opencode re-test with `--auto-echo`** on a serve instance (carried from
@@ -1396,3 +1408,40 @@ Tooling note: the harness gained `--dense` (the engine correctly refuses `--moe-
 a recipe-less arch, so dense cells omit the streaming flags) and now closes the CLI's stdin
 after `close` — with stdin left open the CLI reader thread blocks in getline and the
 process never exits.
+
+### 2026-10-01 addendum — session 22: long-context KV-quant validation + `--batch`
+
+**Question:** q8_0/q8_0 KV vs f16 at 32k context — does quantization error compound enough to
+matter? This was the explicitly-unmeasured regime from the earlier KV-quant entry.
+
+**Method:** Pride and Prejudice (Gutenberg #1342, boilerplate stripped, truncated to 134,367
+chars → 31,773 tokens, 31,765 scored after `--ppl-skip 8`), MiMo-V2.6-Distill-Qwen-9B-Q4_K_M
+(dense qwen35), engine `--ppl /tmp/longdoc.txt -c 32768 --ubatch 512 --batch 512 -t 4`,
+arms run sequentially, f16 first. Deterministic math — arm order and machine state cannot
+affect NLL, only wall time. SE ≈ σ/√31765 ≈ 0.017 nats (token-level σ ≈ 3).
+
+**Results:**
+
+| arm | ppl | NLL | next-token hits | compute time |
+|---|---|---|---|---|
+| f16 | 4.4743 | 1.49834 | 20258/31765 (63.8%) | 6315 s |
+| q8_0/q8_0 | 4.4649 | 1.49625 | 20273/31765 (63.8%) | 11819 s |
+
+ΔNLL = −0.0021 nats (q8 nominally *better*, 8× inside SE) — **no measurable degradation at
+32k**. KV allocation at `n_ctx 32768` from llama's own buffer line: **1024 MiB → 544 MiB**
+(1.9×, confirming the short-context measurement scales). Wall-time difference between arms
+is machine noise only (the box also served a benchmark suite in between); NLL is exact.
+
+**Engine fix this required:** `--ppl` at 32k could not run at all — `session_config_from`
+hard-set `n_batch = n_ctx` (one-batch prefill doctrine) and the output buffer scales
+batch × vocab: 31,774 × 248,320 × 4 B ≈ 30 GiB → `decode: could not reserve space for batch
+with 31774 outputs`. Shipped `RunConfig::n_batch` + `--batch N` (0 = doctrine preserved);
+`validate()` rejects `n_ubatch > n_batch > 0`; scoring is chunk-invariant so the
+measurement is exact regardless of slice width. 19/19 gates green with the change.
+
+**Status:** long-context quality question CLOSED for non-YaRN dense. Remaining unmeasured:
+long-YaRN (Laguna-XS rope.scale 32) and MoE-arch interaction (expected none — KV type is
+attention-side, not routing-side). Logs: /tmp/long-f16.log, /tmp/long-q8.log (ephemeral —
+regenerate with the command above; corpus via Gutenberg #1342 minus boilerplate, head -c
+134367). Commits: `06616ca` (KV-quant wiring + short-context measurement), this addendum's
+`--batch` commit (see git log for hash).
