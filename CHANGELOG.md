@@ -7,6 +7,20 @@ Semantic Versioning.
 ## [0.27.2] - 2026-10-02
 
 ### Fixed
+- **The ARM64 Linux bundle shipped two ABIs of the same library and leaked the builder's
+  absolute path.** `scripts/build-arm64.sh` staged `build-arm64/bin/lib*.so*` with a plain
+  `cp`, which dereferences the soname symlinks into full independent copies, and the build
+  directory is reused across llama.cpp bumps, so the glob also swept in libraries left behind by
+  the previously linked version — the bundle staged before this change carried
+  `libggml-base.so.0.20.1` and `libllama-common.so.1.0` next to the `0.22.0` / `0.3.0` it
+  actually linked. Staging now walks the ELF `NEEDED` closure from the CLI and copies with
+  `-a`, so only the libraries the binary needs ship, as symlinks, and a stale leftover can no
+  longer be reached. Separately, CMake appended the absolute build-tree directory to the staged
+  `RUNPATH` (`$ORIGIN/lib:/home/<user>/…/build-arm64/bin`) despite `CMAKE_BUILD_RPATH`; that is
+  gone via `CMAKE_BUILD_WITH_INSTALL_RPATH=ON`, and the script now fails the build if an
+  absolute path reappears in the staged `RUNPATH`, since a bundle meant to be copied to a phone
+  must not carry the machine it was built on. Net effect on the artifact: `lib/` 44 MB → 12 MB,
+  `bmoe-arm64.tar.gz` 16.6 MB → 4 MB.
 - **`scripts/tinymmlu-bench.py` no longer reports a score over the questions it silently dropped.**
   `--ctx` defaulted to 512 while the longest tinyMMLU prompt is 997 tokens, so the CLI refused
   those items and the script printed a confident percentage over the survivors: a truncated run
@@ -17,6 +31,19 @@ Semantic Versioning.
   (100/100 → exit 0).
 
 ### Added
+- **The ARM64 Linux bundle is installable, and the archive is verifiable.**
+  `scripts/build-arm64.sh --tar` now writes a `bmoe-arm64.tar.gz.sha256` beside the archive — it
+  gets scp'd to a device by hand, where an interrupted copy of a multi-megabyte gz is otherwise
+  indistinguishable from a good one. The bundle also carries an `install.sh` (from
+  `scripts/bundle-install.sh`) that installs to `<prefix>/lib/bmoe` and symlinks `bmoe-cli` and
+  `bmoe-serve.py` into `<prefix>/bin`: default `/usr/local`, `--prefix` to override, `--uninstall`
+  to remove, and it accepts either an extracted bundle directory or a `.tar.gz` as its source.
+  No library is ever copied into a system directory — the symlinks resolve because `RUNPATH` is
+  `$ORIGIN/lib` and `$ORIGIN` is taken from the *resolved* binary path, which is also why the
+  symlinked `bmoe-serve.py` still finds the engine beside its real self. The installer refuses to
+  replace a `<prefix>/bin` entry that is not one of its own symlinks unless given `--force`, so
+  running it cannot silently delete a distro package, and it smoke-tests the installed binary and
+  warns rather than aborting when the host cannot execute it. `build-arm64.sh` gained `--help`.
 - **Weight-quantization tiers measured on a 35B-A3B MoE** (`docs/bench-data/2026-10-02-weight-quant-tiers/`).
   Cyber-Tiel-Coder-35B-A3B-MTP at Q4_K_M / Q3_K_XL / Q2_K_XL, tinyMMLU-100 at `--expert-substitute`
   0.15, compared per question because the tiers answer the same items: 67 / 64 / 63 of 100, exact

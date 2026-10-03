@@ -313,10 +313,26 @@ shrinking what the client sends, which is a client configuration problem:
 plus its shared libraries, RUNPATH `$ORIGIN/lib`, no `LD_LIBRARY_PATH` required:
 
 ```bash
-scripts/build-arm64.sh            # stage bmoe-arm64/ (and bmoe-arm64.tar.gz with --tar)
-scp -r bmoe-arm64/ target:/opt/   # then on the target:
-/opt/bmoe-arm64/bmoe-cli -m model.gguf --moe-stream -p "hello"
+scripts/build-arm64.sh --tar      # stage bmoe-arm64/ plus bmoe-arm64.tar.gz + .sha256
+scp bmoe-arm64.tar.gz target:     # then on the target:
+sha256sum -c bmoe-arm64.tar.gz.sha256
+tar xzf bmoe-arm64.tar.gz
 ```
+
+The bundle carries an `install.sh` for putting it on `PATH`. It installs the tree to
+`<prefix>/lib/bmoe` and symlinks `bmoe-cli` and `bmoe-serve.py` into `<prefix>/bin`; the
+libraries are never copied into a system directory, because the symlinks resolve through the
+`$ORIGIN/lib` RUNPATH. Default prefix is `/usr/local` (no root needed under Termux, `sudo` on a
+Debian/Ubuntu board); `--prefix ~/.local` avoids root elsewhere:
+
+```bash
+cd bmoe-arm64 && ./install.sh                 # or: ./install.sh ../bmoe-arm64.tar.gz
+sudo ./install.sh --uninstall                 # remove it again
+```
+
+Staging walks the ELF `NEEDED` closure rather than globbing the build directory, so the bundle
+carries exactly the libraries the binary links, as symlinks, and never a stale set left over
+from a previously linked llama.cpp.
 
 Baseline is `armv8.2-a+dotprod+fp16` (any 2018+ ARM64 SoC; no i8mm, so older SoCs do not
 SIGILL). The expert-ready hook is compiled in, so `--overlap` works. This is **not** the
