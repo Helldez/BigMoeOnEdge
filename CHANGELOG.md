@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.27.2] - 2026-10-02
+
+### Fixed
+- **`scripts/tinymmlu-bench.py` no longer reports a score over the questions it silently dropped.**
+  `--ctx` defaulted to 512 while the longest tinyMMLU prompt is 997 tokens, so the CLI refused
+  those items and the script printed a confident percentage over the survivors: a truncated run
+  scored 17/100 and reported **82.4 %**. The default is now 2048, and a cell that scores fewer
+  questions than it was given now exits non-zero naming the first missing file instead of
+  summarising a subset. The same check catches a stale cell log whose prompt paths no longer
+  resolve. Verified against the real truncated log (17/100 → exit 1) and a complete one
+  (100/100 → exit 0).
+
+### Added
+- **Weight-quantization tiers measured on a 35B-A3B MoE** (`docs/bench-data/2026-10-02-weight-quant-tiers/`).
+  Cyber-Tiel-Coder-35B-A3B-MTP at Q4_K_M / Q3_K_XL / Q2_K_XL, tinyMMLU-100 at `--expert-substitute`
+  0.15, compared per question because the tiers answer the same items: 67 / 64 / 63 of 100, exact
+  McNemar p = 0.50 (Q4 vs Q2) — the ladder is inside the ±4.7-point noise. All three tiers are
+  verified from the GGUF headers to be the same weights (753 tensors, identical geometry, same
+  base repo), so only the quantization type varies. The distribution tells the story the score
+  hides: every one of 100 items changes at every tier, symmetric KL vs Q4 is 0.463 (Q3) and
+  0.582 (Q2), and argmax agrees with Q4 on only 75 and 70 items. Two method notes recorded there —
+  raw log-probabilities are not comparable across tiers (Q2's compressed logits make it look
+  *better*, +1.43 nats, an artifact that vanishes after normalizing), and a paired design needs
+  ~5× the questions to resolve a 4-point difference.
+
 ## [0.27.1] - 2026-09-30
 
 ### Added

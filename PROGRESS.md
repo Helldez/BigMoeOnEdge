@@ -6,24 +6,27 @@ the long-form evidence narrative; entries are never rewritten, only falsified ex
 by newer entries. Trust hierarchy: resume section > history > older sections of either.
 Log opened 2026-09-18; earlier project history lives in `CHANGELOG.md` and `git log`.
 
-*Resume last rewritten: 2026-10-02 (session 22 wrap-up).
+*Resume last rewritten: 2026-10-02 (session 22 wrap-up, addendum d).
 Phase: **merge landed and proven; KV-cache quantization shipped AND validated at
-long context; two documentation corrections landed — 19 gates green, version
-0.27.1**. Merge commit `f3a9517` on `feat/session-residency`; parent-2 is
-upstream `374f562` (0.28.0). Submodule pin `dce969851` (+530 commits). The old
-"pos0 working-tree port" is RETIRED — upstream's rename is in the pin; do not
-stash/restore anything for pin builds.*
+long context; weight-quantization tiers measured; two documentation corrections
+landed — 19 gates green, version 0.27.2**. Merge commit `f3a9517` on
+`feat/session-residency`; parent-2 is upstream `374f562` (0.28.0). Submodule pin
+`dce969851` (+530 commits). The old "pos0 working-tree port" is RETIRED —
+upstream's rename is in the pin; do not stash/restore anything for pin builds.*
 *One-line status: the long-context KV-quant question is closed empirically — on a
 31.8k-token novel at `-c 32768`, q8_0/q8_0 vs f16 is ΔNLL 0.002 nats (noise,
 SE ≈ 0.017), hits 63.8% both arms; and a 15.3k-fill decode A/B shows q8 KV is a
 RAM tool, not a speed tool (decode +11%, prefill −49% — attention at fill is
-compute-bound on this CPU). Two doc corrections are the session's other result:
-the quads' KV geometry was **4× too high** (hybrid SSM — really 20 KiB/tok,
-not 80), and Laguna-XS's "SWA-512 long-context bargain" is **falsified** — SWA
-buys zero RAM because llama allocates those layers at full `n_ctx`, so Laguna is
-a genuine 160 KiB/tok (5 GiB @ 32k, 20 GiB @ 128k f16). That, plus the default
-`anon` dense policy and `cache_auto`, is what got this host OOM-killed twice —
-see the root-cause bullet; the fix is config, not code.*
+compute-bound on this CPU). Two doc corrections are also landed: the quads' KV
+geometry was **4× too high** (hybrid SSM — really 20 KiB/tok, not 80), and
+Laguna-XS's "SWA-512 long-context bargain" is **falsified** — SWA buys zero RAM
+because llama allocates those layers at full `n_ctx`, so Laguna is a genuine
+160 KiB/tok (5 GiB @ 32k, 20 GiB @ 128k f16). That, plus the default `anon` dense
+policy and `cache_auto`, is what got this host OOM-killed twice — the fix is
+config, not code. Latest: **Cyber-Tiel Q4/Q3/Q2 weight tiers measured** —
+67/64/63 of 100 on tinyMMLU, inside noise (paired McNemar p=0.50) while every
+item's distribution changes; and the bench harness no longer reports a score over
+the questions it silently dropped (`--ctx` 512 → 2048 + a hard short-cell check).*
 
 ## State delta (this session)
 
@@ -1676,3 +1679,84 @@ build/cli/bmoe-cli -m "$M" -c 1024 --ubatch 512 --batch 512 -t 4 -n 1 -p "hi" 2>
 python3 /tmp/ggufkv.py "$M"   # arch/KV/rope header keys, stdlib only
 ```
 
+
+### 2026-10-02 addendum — session 22d: weight-quantization tiers on Cyber-Tiel, measured
+
+The open question from the Q4/Q3 discussion: quantization is a **quality** decision first, so buy
+the smaller GGUF only if it does not cost answers. Measured rather than argued.
+
+**Provenance first, because the model is not what it is called.** All three tiers read out of
+their GGUF headers (`/tmp/ggufkv.py`): 753 tensors, 55 KV pairs, identical geometry (41 blocks,
+256 experts, 8 used, `full_attention_interval` 4, `nextn_predict_layers` 1, ssm inner 4096 /
+conv 4 / 16 groups), and `general.name = Huihui Ornith 1.5 35B A3B Abliterated`, base repo
+`ornith-ai/Ornith-1.5-35B-A3B`. Only `general.file_type` differs (15 / 12 / 10). The
+"Cyber-Tiel" name is the GGUF packaging; the weights are Huihui's abliterated Ornith 1.5. So the
+three arms differ **only** in quantization type, which is what makes the comparison controlled —
+and it means any vendor's numbers for "Ornith 1.5" or "Cyber-Tiel" may not be about the same
+weights.
+
+**Result (tinyMMLU-100, λ=0.15, `--ctx 2048`, `--cache-mb 2000 -t 4`, ~110 min/cell):**
+
+| tier | size | tinyMMLU |
+|---|---:|---:|
+| Q4_K_M | 22.52 GB | 67/100 |
+| Q3_K_XL | 17.23 GB | 64/100 |
+| Q2_K_XL | 12.68 GB | 63/100 |
+
+Monotone but **not resolvable**: the whole ladder is 4 questions against a ±4.7-point SE at
+n=100. Paired on the same items (the right test — same questions, so the unpaired SE overstates
+it): Q4/Q3 discordant 11 vs 8 (n=19, exact p=0.648), Q4/Q2 12 vs 8 (n=20, p=0.503), Q3/Q2
+10 vs 9 (n=19, p=1.000). Unanimous on 71/100 — 49 all right, 22 all wrong, 29 contested.
+
+**The score is the lossy part, not the tiers.** Every one of the 100 items has a *changed*
+distribution at each tier: symmetric KL vs Q4 is 0.463 (Q3) and 0.582 (Q2), argmax agrees with Q4
+on only 75 and 70 items. Quantization damage here is diffuse and largely non-monotonic — it
+perturbs nearly every item and mostly cancels in the mean, which a pass-rate table cannot see.
+If a *specific* answer has to be right (a code edit, a number you will act on), budget for ~25-30 %
+of items differing from the Q4 model regardless of what the aggregate says.
+
+**This contradicts the vendor ratio, and the reason matters.** Unsloth's table for a sibling
+35B-A3B gives KLD 0.548 / 0.954 / 2.909 for Q4 / Q3 / Q2 — Q2 five times worse than Q3. Measured
+here Q2 is 1.26× Q3. Theirs is a calibration-corpus next-token measure, this is 4-way MC; neither
+transfers, so "Q2 is 5× worse" is a property of their probe. Not a reason to distrust the
+publisher, a reason not to launder a probe-specific number into a general claim.
+
+**Method trap, recorded because it nearly produced the wrong headline.** The first distributional
+metric said Q2 was *better*: mean gold log-prob −7.27 vs −8.70 nats, paired **+1.43 ± 0.38
+(t=+3.76)**. Artifact — Q2's logits are compressed (mean spread 4.217 vs 4.817, paired −0.601),
+so every log-prob rises toward zero regardless of correctness. Normalized over the four choices
+the effect vanishes: gold probability −0.0065 ± 0.0320 (t=−0.20), identical. **Raw logits are
+not on a common scale across quantization tiers and the bias favours the more quantized model.**
+
+**Also fixed: the bench harness was reporting a score over the questions it dropped.** `--ctx`
+defaulted to 512 while the longest tinyMMLU prompt is 997 tokens; the CLI refuses those, and the
+script divided by the survivors — a truncated run printed **17/100 = 82.4 %**. Only 3 of the 100
+prompts are long enough to matter (q017 at 997 tokens, q018 and q094 just over 512), which is why
+512 looked survivable: it died at q017 and the 82 questions after it never ran. Default is now
+2048 and a short cell exits non-zero naming the first missing file. Verified against the real
+truncated log (17/100 → exit 1) and a complete one (100/100 → exit 0). The check also catches a
+stale cell log whose prompt paths no longer resolve, which is how the failed run was misread once
+already.
+
+Written up as `docs/bench-data/2026-10-02-weight-quant-tiers/findings.md` (with the archive index
+row), raw per-question log-probabilities under `bench-data/qgate-cyber-q{3,2}-2026-10-02/`, so
+the tables are rebuildable without re-running 5.5 hours of decode. Cross-model tinyMMLU numbers
+live in the same file with provenance marked per row — the MiMo/Qwen3.5-9B pair is `PROGRESS.md`-
+only, wide-batch protocol, ephemeral logs, and is context rather than comparison.
+
+**Not established:** 100 questions cannot resolve 4 points (a paired design needs ~5× more, or a
+probe without a 22-item unanimous-wrong floor); tinyMMLU is teacher-forced single-token MC and
+says nothing about long-form or code correctness, so the HumanEval Q2 arm is scoped and still
+unrun (~3.5 h here); one λ only; the Q4 baseline never recorded its `--ctx`. Whether Q2's 12.68 GB
+decodes faster or escapes the streamed regime on this host is a separate, unmeasured question.
+
+**Measurement commands**
+
+```bash
+M=~/llm/models/Cyber-Tiel-Coder-35B-A3B-MTP-UD-Q2_K_XL.gguf
+/tmp/evalvenv/bin/python -u scripts/tinymmlu-bench.py \
+  --parquet ~/llm/data/tinyMMLU-test.parquet --cli build/cli/bmoe-cli \
+  --model "$M" --out /tmp/ct/mmlu-q2 --lambda 0.15 --limit 100 \
+  --threads 4 --cache-mb 2000 --ctx 2048
+/tmp/evalvenv/bin/python /tmp/ggufkv.py "$M"   # header keys: geometry + provenance
+```

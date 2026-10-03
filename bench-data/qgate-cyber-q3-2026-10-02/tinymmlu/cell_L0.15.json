@@ -1,0 +1,1302 @@
+[
+ {
+  "path": "q000.txt",
+  "subject": "high_school_statistics",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -9.8809,
+   -9.8044,
+   -8.6583,
+   -6.7261
+  ]
+ },
+ {
+  "path": "q001.txt",
+  "subject": "nutrition",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -9.8626,
+   -13.4644,
+   -9.4315,
+   -12.67
+  ]
+ },
+ {
+  "path": "q002.txt",
+  "subject": "clinical_knowledge",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -12.6542,
+   -8.4076,
+   -12.5564,
+   -13.5596
+  ]
+ },
+ {
+  "path": "q003.txt",
+  "subject": "nutrition",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -13.5011,
+   -8.6441,
+   -10.8765,
+   -10.5657
+  ]
+ },
+ {
+  "path": "q004.txt",
+  "subject": "high_school_mathematics",
+  "pred": "B",
+  "answer": "C",
+  "correct": false,
+  "logp": [
+   -7.9167,
+   -2.7124,
+   -4.4787,
+   -8.1479
+  ]
+ },
+ {
+  "path": "q005.txt",
+  "subject": "moral_disputes",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -10.3378,
+   -12.4508,
+   -6.7342,
+   -11.8128
+  ]
+ },
+ {
+  "path": "q006.txt",
+  "subject": "professional_medicine",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -9.7808,
+   -8.6519,
+   -10.2777,
+   -10.2074
+  ]
+ },
+ {
+  "path": "q007.txt",
+  "subject": "prehistory",
+  "pred": "D",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -11.3419,
+   -12.4449,
+   -9.5153,
+   -7.1389
+  ]
+ },
+ {
+  "path": "q008.txt",
+  "subject": "business_ethics",
+  "pred": "C",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -7.6986,
+   -9.0038,
+   -3.632,
+   -7.4687
+  ]
+ },
+ {
+  "path": "q009.txt",
+  "subject": "philosophy",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -11.403,
+   -13.889,
+   -10.653,
+   -6.2175
+  ]
+ },
+ {
+  "path": "q010.txt",
+  "subject": "professional_psychology",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -11.8025,
+   -10.9528,
+   -12.4385,
+   -13.1467
+  ]
+ },
+ {
+  "path": "q011.txt",
+  "subject": "professional_accounting",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -10.9411,
+   -7.9335,
+   -9.7316,
+   -9.3413
+  ]
+ },
+ {
+  "path": "q012.txt",
+  "subject": "high_school_physics",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -10.7322,
+   -8.7877,
+   -11.6497,
+   -13.6622
+  ]
+ },
+ {
+  "path": "q013.txt",
+  "subject": "abstract_algebra",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -10.7636,
+   -12.0602,
+   -9.8793,
+   -7.7027
+  ]
+ },
+ {
+  "path": "q014.txt",
+  "subject": "anatomy",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -7.5899,
+   -3.5669,
+   -6.5928,
+   -5.0926
+  ]
+ },
+ {
+  "path": "q015.txt",
+  "subject": "high_school_world_history",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -11.0893,
+   -14.7514,
+   -7.5644,
+   -10.6063
+  ]
+ },
+ {
+  "path": "q016.txt",
+  "subject": "prehistory",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -11.6108,
+   -7.8693,
+   -9.9601,
+   -9.6894
+  ]
+ },
+ {
+  "path": "q017.txt",
+  "subject": "college_medicine",
+  "pred": "A",
+  "answer": "A",
+  "correct": true,
+  "logp": [
+   -8.9115,
+   -13.8629,
+   -10.1531,
+   -11.6088
+  ]
+ },
+ {
+  "path": "q018.txt",
+  "subject": "professional_law",
+  "pred": "C",
+  "answer": "A",
+  "correct": false,
+  "logp": [
+   -7.7751,
+   -8.3093,
+   -4.4872,
+   -6.8132
+  ]
+ },
+ {
+  "path": "q019.txt",
+  "subject": "high_school_geography",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -12.5113,
+   -16.9683,
+   -12.0295,
+   -8.8278
+  ]
+ },
+ {
+  "path": "q020.txt",
+  "subject": "moral_scenarios",
+  "pred": "C",
+  "answer": "D",
+  "correct": false,
+  "logp": [
+   -9.7818,
+   -13.4366,
+   -6.4965,
+   -7.543
+  ]
+ },
+ {
+  "path": "q021.txt",
+  "subject": "virology",
+  "pred": "C",
+  "answer": "A",
+  "correct": false,
+  "logp": [
+   -13.0515,
+   -15.8549,
+   -12.757,
+   -13.0993
+  ]
+ },
+ {
+  "path": "q022.txt",
+  "subject": "elementary_mathematics",
+  "pred": "A",
+  "answer": "A",
+  "correct": true,
+  "logp": [
+   -9.0007,
+   -15.3881,
+   -12.8241,
+   -14.5593
+  ]
+ },
+ {
+  "path": "q023.txt",
+  "subject": "high_school_chemistry",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -11.8815,
+   -15.645,
+   -11.8145,
+   -8.2474
+  ]
+ },
+ {
+  "path": "q024.txt",
+  "subject": "professional_medicine",
+  "pred": "A",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -9.8131,
+   -12.9973,
+   -10.3577,
+   -10.3079
+  ]
+ },
+ {
+  "path": "q025.txt",
+  "subject": "moral_scenarios",
+  "pred": "D",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -11.5883,
+   -13.5548,
+   -11.6171,
+   -9.4782
+  ]
+ },
+ {
+  "path": "q026.txt",
+  "subject": "high_school_chemistry",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -11.9339,
+   -10.3393,
+   -11.0087,
+   -11.8497
+  ]
+ },
+ {
+  "path": "q027.txt",
+  "subject": "professional_medicine",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -10.0837,
+   -12.361,
+   -9.1968,
+   -6.0559
+  ]
+ },
+ {
+  "path": "q028.txt",
+  "subject": "moral_scenarios",
+  "pred": "B",
+  "answer": "C",
+  "correct": false,
+  "logp": [
+   -10.7839,
+   -8.6221,
+   -11.3126,
+   -9.5568
+  ]
+ },
+ {
+  "path": "q029.txt",
+  "subject": "conceptual_physics",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -10.2547,
+   -12.3404,
+   -9.3432,
+   -7.0742
+  ]
+ },
+ {
+  "path": "q030.txt",
+  "subject": "professional_psychology",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -13.6045,
+   -15.9295,
+   -6.7926,
+   -11.6841
+  ]
+ },
+ {
+  "path": "q031.txt",
+  "subject": "high_school_biology",
+  "pred": "A",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -9.4318,
+   -10.2797,
+   -11.8104,
+   -11.7933
+  ]
+ },
+ {
+  "path": "q032.txt",
+  "subject": "moral_scenarios",
+  "pred": "C",
+  "answer": "A",
+  "correct": false,
+  "logp": [
+   -10.3062,
+   -12.873,
+   -8.5777,
+   -9.4845
+  ]
+ },
+ {
+  "path": "q033.txt",
+  "subject": "high_school_geography",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -10.8423,
+   -12.0312,
+   -7.6374,
+   -10.3378
+  ]
+ },
+ {
+  "path": "q034.txt",
+  "subject": "miscellaneous",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -14.7806,
+   -18.7169,
+   -14.0478,
+   -15.2753
+  ]
+ },
+ {
+  "path": "q035.txt",
+  "subject": "electrical_engineering",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -10.0165,
+   -13.1968,
+   -6.4162,
+   -11.1523
+  ]
+ },
+ {
+  "path": "q036.txt",
+  "subject": "security_studies",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -9.8103,
+   -11.4436,
+   -9.8259,
+   -5.2105
+  ]
+ },
+ {
+  "path": "q037.txt",
+  "subject": "business_ethics",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -13.2974,
+   -17.307,
+   -11.2693,
+   -7.2528
+  ]
+ },
+ {
+  "path": "q038.txt",
+  "subject": "conceptual_physics",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -9.0233,
+   -6.7925,
+   -8.3752,
+   -9.0502
+  ]
+ },
+ {
+  "path": "q039.txt",
+  "subject": "high_school_statistics",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -9.3467,
+   -5.4964,
+   -5.7877,
+   -7.756
+  ]
+ },
+ {
+  "path": "q040.txt",
+  "subject": "world_religions",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -14.0913,
+   -8.5624,
+   -11.1302,
+   -13.0728
+  ]
+ },
+ {
+  "path": "q041.txt",
+  "subject": "moral_scenarios",
+  "pred": "B",
+  "answer": "A",
+  "correct": false,
+  "logp": [
+   -10.2281,
+   -6.7484,
+   -9.6928,
+   -9.3753
+  ]
+ },
+ {
+  "path": "q042.txt",
+  "subject": "professional_law",
+  "pred": "A",
+  "answer": "D",
+  "correct": false,
+  "logp": [
+   -3.9095,
+   -6.4521,
+   -7.2583,
+   -7.3464
+  ]
+ },
+ {
+  "path": "q043.txt",
+  "subject": "sociology",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -11.3564,
+   -10.5154,
+   -12.0015,
+   -11.4523
+  ]
+ },
+ {
+  "path": "q044.txt",
+  "subject": "college_mathematics",
+  "pred": "C",
+  "answer": "D",
+  "correct": false,
+  "logp": [
+   -9.9397,
+   -12.6316,
+   -9.6811,
+   -10.2459
+  ]
+ },
+ {
+  "path": "q045.txt",
+  "subject": "nutrition",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -13.0191,
+   -16.3857,
+   -12.0267,
+   -9.9056
+  ]
+ },
+ {
+  "path": "q046.txt",
+  "subject": "college_biology",
+  "pred": "A",
+  "answer": "A",
+  "correct": true,
+  "logp": [
+   -10.1918,
+   -15.1493,
+   -12.2251,
+   -13.2429
+  ]
+ },
+ {
+  "path": "q047.txt",
+  "subject": "college_computer_science",
+  "pred": "A",
+  "answer": "A",
+  "correct": true,
+  "logp": [
+   -10.7889,
+   -15.3545,
+   -12.6815,
+   -12.5736
+  ]
+ },
+ {
+  "path": "q048.txt",
+  "subject": "high_school_physics",
+  "pred": "B",
+  "answer": "D",
+  "correct": false,
+  "logp": [
+   -11.9408,
+   -7.0733,
+   -9.0315,
+   -9.8911
+  ]
+ },
+ {
+  "path": "q049.txt",
+  "subject": "professional_psychology",
+  "pred": "D",
+  "answer": "A",
+  "correct": false,
+  "logp": [
+   -7.7261,
+   -12.5275,
+   -8.9714,
+   -6.1901
+  ]
+ },
+ {
+  "path": "q050.txt",
+  "subject": "high_school_government_and_politics",
+  "pred": "D",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -10.1531,
+   -10.7148,
+   -10.8643,
+   -9.4932
+  ]
+ },
+ {
+  "path": "q051.txt",
+  "subject": "moral_scenarios",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -12.4608,
+   -14.6881,
+   -11.9355,
+   -8.2668
+  ]
+ },
+ {
+  "path": "q052.txt",
+  "subject": "professional_law",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -9.1174,
+   -10.362,
+   -5.4468,
+   -9.5834
+  ]
+ },
+ {
+  "path": "q053.txt",
+  "subject": "high_school_government_and_politics",
+  "pred": "A",
+  "answer": "C",
+  "correct": false,
+  "logp": [
+   -9.8375,
+   -14.1919,
+   -11.5057,
+   -10.4259
+  ]
+ },
+ {
+  "path": "q054.txt",
+  "subject": "professional_accounting",
+  "pred": "C",
+  "answer": "A",
+  "correct": false,
+  "logp": [
+   -9.4195,
+   -11.8889,
+   -7.7237,
+   -8.4072
+  ]
+ },
+ {
+  "path": "q055.txt",
+  "subject": "jurisprudence",
+  "pred": "D",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -11.3996,
+   -10.5518,
+   -9.5473,
+   -7.0446
+  ]
+ },
+ {
+  "path": "q056.txt",
+  "subject": "international_law",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -10.2698,
+   -12.8669,
+   -9.1918,
+   -11.0037
+  ]
+ },
+ {
+  "path": "q057.txt",
+  "subject": "international_law",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -14.4058,
+   -17.49,
+   -14.4661,
+   -12.5363
+  ]
+ },
+ {
+  "path": "q058.txt",
+  "subject": "professional_law",
+  "pred": "A",
+  "answer": "A",
+  "correct": true,
+  "logp": [
+   -6.5433,
+   -12.0261,
+   -9.4206,
+   -9.6041
+  ]
+ },
+ {
+  "path": "q059.txt",
+  "subject": "marketing",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -10.5749,
+   -14.1633,
+   -8.105,
+   -9.3656
+  ]
+ },
+ {
+  "path": "q060.txt",
+  "subject": "moral_scenarios",
+  "pred": "D",
+  "answer": "C",
+  "correct": false,
+  "logp": [
+   -12.3971,
+   -14.6819,
+   -11.8929,
+   -9.893
+  ]
+ },
+ {
+  "path": "q061.txt",
+  "subject": "public_relations",
+  "pred": "D",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -12.6809,
+   -11.3716,
+   -12.522,
+   -11.0426
+  ]
+ },
+ {
+  "path": "q062.txt",
+  "subject": "professional_law",
+  "pred": "A",
+  "answer": "D",
+  "correct": false,
+  "logp": [
+   -8.6401,
+   -13.1555,
+   -10.9504,
+   -11.6167
+  ]
+ },
+ {
+  "path": "q063.txt",
+  "subject": "high_school_psychology",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -9.8871,
+   -14.0232,
+   -11.0847,
+   -5.5827
+  ]
+ },
+ {
+  "path": "q064.txt",
+  "subject": "jurisprudence",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -12.398,
+   -13.9533,
+   -9.5116,
+   -11.1034
+  ]
+ },
+ {
+  "path": "q065.txt",
+  "subject": "medical_genetics",
+  "pred": "A",
+  "answer": "A",
+  "correct": true,
+  "logp": [
+   -8.9596,
+   -12.7273,
+   -10.6676,
+   -9.642
+  ]
+ },
+ {
+  "path": "q066.txt",
+  "subject": "anatomy",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -12.5552,
+   -16.5301,
+   -10.4261,
+   -10.7126
+  ]
+ },
+ {
+  "path": "q067.txt",
+  "subject": "human_sexuality",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -10.4508,
+   -13.9863,
+   -9.1528,
+   -9.2206
+  ]
+ },
+ {
+  "path": "q068.txt",
+  "subject": "computer_security",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -14.2309,
+   -13.6599,
+   -9.5468,
+   -11.3844
+  ]
+ },
+ {
+  "path": "q069.txt",
+  "subject": "college_computer_science",
+  "pred": "C",
+  "answer": "D",
+  "correct": false,
+  "logp": [
+   -10.7604,
+   -14.9625,
+   -7.9366,
+   -10.8098
+  ]
+ },
+ {
+  "path": "q070.txt",
+  "subject": "high_school_world_history",
+  "pred": "A",
+  "answer": "A",
+  "correct": true,
+  "logp": [
+   -3.5111,
+   -7.968,
+   -6.018,
+   -7.5106
+  ]
+ },
+ {
+  "path": "q071.txt",
+  "subject": "elementary_mathematics",
+  "pred": "A",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -8.9896,
+   -14.7715,
+   -12.5437,
+   -13.1518
+  ]
+ },
+ {
+  "path": "q072.txt",
+  "subject": "human_aging",
+  "pred": "C",
+  "answer": "A",
+  "correct": false,
+  "logp": [
+   -11.2347,
+   -14.4503,
+   -9.3369,
+   -9.4668
+  ]
+ },
+ {
+  "path": "q073.txt",
+  "subject": "high_school_physics",
+  "pred": "A",
+  "answer": "A",
+  "correct": true,
+  "logp": [
+   -5.8808,
+   -8.6063,
+   -6.0657,
+   -8.876
+  ]
+ },
+ {
+  "path": "q074.txt",
+  "subject": "philosophy",
+  "pred": "D",
+  "answer": "C",
+  "correct": false,
+  "logp": [
+   -7.9843,
+   -13.0309,
+   -10.6102,
+   -7.157
+  ]
+ },
+ {
+  "path": "q075.txt",
+  "subject": "professional_law",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -5.288,
+   -7.9856,
+   -4.4304,
+   -3.6381
+  ]
+ },
+ {
+  "path": "q076.txt",
+  "subject": "high_school_macroeconomics",
+  "pred": "A",
+  "answer": "A",
+  "correct": true,
+  "logp": [
+   -7.7718,
+   -13.2098,
+   -11.5447,
+   -11.9078
+  ]
+ },
+ {
+  "path": "q077.txt",
+  "subject": "miscellaneous",
+  "pred": "D",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -13.9478,
+   -12.0344,
+   -13.1254,
+   -10.0904
+  ]
+ },
+ {
+  "path": "q078.txt",
+  "subject": "anatomy",
+  "pred": "A",
+  "answer": "A",
+  "correct": true,
+  "logp": [
+   -8.5772,
+   -13.4174,
+   -10.2017,
+   -9.1599
+  ]
+ },
+ {
+  "path": "q079.txt",
+  "subject": "philosophy",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -13.2339,
+   -15.8052,
+   -11.9332,
+   -7.1913
+  ]
+ },
+ {
+  "path": "q080.txt",
+  "subject": "formal_logic",
+  "pred": "A",
+  "answer": "B",
+  "correct": false,
+  "logp": [
+   -10.7086,
+   -12.7607,
+   -12.4917,
+   -12.8708
+  ]
+ },
+ {
+  "path": "q081.txt",
+  "subject": "professional_medicine",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -12.5336,
+   -13.6259,
+   -11.4765,
+   -6.7474
+  ]
+ },
+ {
+  "path": "q082.txt",
+  "subject": "prehistory",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -8.501,
+   -10.967,
+   -6.6105,
+   -9.4001
+  ]
+ },
+ {
+  "path": "q083.txt",
+  "subject": "elementary_mathematics",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -5.1535,
+   -1.0644,
+   -4.21,
+   -3.854
+  ]
+ },
+ {
+  "path": "q084.txt",
+  "subject": "high_school_psychology",
+  "pred": "D",
+  "answer": "A",
+  "correct": false,
+  "logp": [
+   -7.511,
+   -9.2608,
+   -8.1513,
+   -6.1605
+  ]
+ },
+ {
+  "path": "q085.txt",
+  "subject": "us_foreign_policy",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -9.8972,
+   -12.4054,
+   -9.4227,
+   -7.8103
+  ]
+ },
+ {
+  "path": "q086.txt",
+  "subject": "prehistory",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -9.2224,
+   -12.9785,
+   -5.6194,
+   -9.8071
+  ]
+ },
+ {
+  "path": "q087.txt",
+  "subject": "professional_law",
+  "pred": "A",
+  "answer": "D",
+  "correct": false,
+  "logp": [
+   -8.1627,
+   -13.2341,
+   -11.5622,
+   -9.2244
+  ]
+ },
+ {
+  "path": "q088.txt",
+  "subject": "nutrition",
+  "pred": "A",
+  "answer": "C",
+  "correct": false,
+  "logp": [
+   -10.4354,
+   -15.072,
+   -12.8836,
+   -13.1466
+  ]
+ },
+ {
+  "path": "q089.txt",
+  "subject": "human_sexuality",
+  "pred": "B",
+  "answer": "B",
+  "correct": true,
+  "logp": [
+   -11.3193,
+   -7.4352,
+   -9.778,
+   -9.9991
+  ]
+ },
+ {
+  "path": "q090.txt",
+  "subject": "prehistory",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -14.1708,
+   -15.6339,
+   -9.3836,
+   -10.0791
+  ]
+ },
+ {
+  "path": "q091.txt",
+  "subject": "international_law",
+  "pred": "A",
+  "answer": "C",
+  "correct": false,
+  "logp": [
+   -12.5038,
+   -16.1957,
+   -13.0022,
+   -13.8139
+  ]
+ },
+ {
+  "path": "q092.txt",
+  "subject": "miscellaneous",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -13.2711,
+   -16.8937,
+   -10.4619,
+   -11.3502
+  ]
+ },
+ {
+  "path": "q093.txt",
+  "subject": "professional_law",
+  "pred": "C",
+  "answer": "D",
+  "correct": false,
+  "logp": [
+   -10.3554,
+   -14.7231,
+   -7.7247,
+   -11.5535
+  ]
+ },
+ {
+  "path": "q094.txt",
+  "subject": "high_school_european_history",
+  "pred": "C",
+  "answer": "C",
+  "correct": true,
+  "logp": [
+   -14.4029,
+   -18.4282,
+   -9.6387,
+   -14.2104
+  ]
+ },
+ {
+  "path": "q095.txt",
+  "subject": "college_biology",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -13.2101,
+   -17.655,
+   -13.7836,
+   -9.2946
+  ]
+ },
+ {
+  "path": "q096.txt",
+  "subject": "professional_medicine",
+  "pred": "C",
+  "answer": "A",
+  "correct": false,
+  "logp": [
+   -7.0586,
+   -11.871,
+   -5.4625,
+   -7.8677
+  ]
+ },
+ {
+  "path": "q097.txt",
+  "subject": "formal_logic",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -12.9311,
+   -16.9643,
+   -13.8504,
+   -9.9346
+  ]
+ },
+ {
+  "path": "q098.txt",
+  "subject": "high_school_chemistry",
+  "pred": "B",
+  "answer": "C",
+  "correct": false,
+  "logp": [
+   -14.5997,
+   -13.2775,
+   -13.5701,
+   -15.1201
+  ]
+ },
+ {
+  "path": "q099.txt",
+  "subject": "high_school_physics",
+  "pred": "D",
+  "answer": "D",
+  "correct": true,
+  "logp": [
+   -7.9165,
+   -6.9406,
+   -7.1039,
+   -6.6087
+  ]
+ }
+]
