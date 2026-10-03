@@ -1,0 +1,63 @@
+diff --git a/docs/recipes.md b/docs/recipes.md
+index c4986f4..ae55a1d 100644
+--- a/docs/recipes.md
++++ b/docs/recipes.md
+@@ -24,7 +24,7 @@ anywhere else, so the two docs must move together.
+ ## Contents
+ 
+ - [Cyber-Tiel-Coder-35B-A3B](#cyber-tiel-coder-35b-a3b-qwen35-family-moe-coder-210-gb-2-host-ram)
+-- Future sections: one per measured model, same shape (LFM2.5 next).
++- [LFM2.5-8B-A1B](#lfm25-8b-a1b-lfm-hybrid-moe-50-gb-fits-host-ram-comfortably--the-contrast-case)
+ 
+ ## Cyber-Tiel-Coder-35B-A3B (Qwen3.5-family MoE coder, 21.0 GB, ~2× host RAM)
+ 
+@@ -79,3 +79,49 @@ is substitution's warm-regime win, a bmoe-main mechanism, not a fork-vs-bmoe num
+ 
+ Provenance tally: of the recipe's active flags, decode speed is entirely bmoe-main;
+ the fork contributes the session-residency layer that owns prefill/turn latency.
++
++## LFM2.5-8B-A1B (LFM hybrid MoE, 5.0 GB, fits host RAM comfortably — the contrast case)
++
++The fits-RAM counterpoint to the 35B cells: no thrash to eliminate (0 faults in every
++cell), so the streaming engine has nothing to fix — and the session layer is the whole
++show. Same 3-turn 42/52/62 protocol as Cyber-Tiel; thinking model, LFM hybrid arch
++(the family whose recurrent-rollback node budget seam PR #29085 fixes).
++
++**Recommended recipe (fits RAM — no streaming):**
++
++```bash
++bmoe-cli -m LFM2.5-8B-A1B-UD-Q4_K_M.gguf --ubatch 512
++```
++
++**Add for served / multi-turn sessions** (serve bridge + engine): warmup replay,
++`--auto-echo`, `--rs-seq 64` — here they are the primary value, not an add-on.
++
++### Per-flag table (provenance marked)
++
++| Flag | Provenance | Measured on this model | Verdict |
++|---|---|---|---|
++| streaming stack (b) | **bmoe-main** | **−10.8%** (9.69 → 8.64 tok/s), prefill 1.65 → 7.9 s — no thrash to eliminate, so the stack is pure overhead | **Off** for fits-RAM models |
++| `--ubatch 512` | **mainline** | protocol default | **On** (protocol) |
++| `--ngram` | **mainline** (ngram-mod, upstream PR #19164) | **+7.6%** (7.566 → 8.143), 48.5% acceptance — composes with the rs rollback planes | **Use-when**: repetitive workload |
++| warmup replay (bridge) | **fork** | T1 prefill **7.59 → 1.12 s (6.8×)** — pure prefill speed, no fault storm to fight | **On** for served use |
++| `--auto-echo` (bridge) | **fork** | template natively echoes reasoning: reuse engages from the first follow-up (T2 24/124, T3 24/205), prefill ~1.2 s — no reconcile turn | **On** for served use |
++| `--rs-seq 64` | **fork** (seam PR #29085) | divergence prefill **2.82 → 1.25 s (2.3×)**; composes with warmup — T1 at 0.12 s | **On** for served use |
++| `--mtp` | **bmoe-main** (mainline concept) | not measured on this model (acceptance was measured via ngram verify) | candidate cell |
++| `--expert-substitute` · `--drop-cold-experts` | **bmoe-main** | not measured — a fits-RAM model has ~0 miss headroom to trade | not applicable |
++
++### Totals (two metrics)
++
++**1. bmoe vs llama — negative here, and that is the finding:** with no streaming and no
++faults, bmoe-cli on a fits-RAM model tracks the stock runtime (streaming stack −10.8%;
++do not enable it). The engine's wins are memory-pressure wins, and this model has none.
++
++**2. fork vs bmoe-main — the fork's best case:** session layer only, and it dominates:
++first-turn prefill **6.8× faster** (7.59 → 1.12 s), follow-up prefill **~6× lower**
++(7.56 → ~1.2 s), divergence prefill **2.3× faster** (2.82 → 1.25 s), plus `--ngram`
++(mainline machinery) adding +7.6% decode on repetitive workloads. Decode is otherwise
++unchanged — by design.
++
++**Contrast with Cyber-Tiel, the pattern the two recipes establish:** past-RAM models
++buy bmoe-main's streaming + substitution (+115% decode); fits-RAM models should leave
++the stack off and take the fork's session layer (6.8×/6×/2.3× prefill and turn
++latency). Model size decides which layer pays.

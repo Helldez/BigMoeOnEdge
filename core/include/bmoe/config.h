@@ -456,6 +456,21 @@ struct RunConfig {
     // Decode is unaffected: a decode graph is one token wide whatever this says. The cost is
     // prefill throughput, which processes a long prompt in more, smaller passes.
     int n_ubatch = 0;
+    // Prefill batch width: the widest SINGLE llama_decode call. 0 (default) = follow n_ctx — the
+    // one-batch-prefill doctrine, right for sessions. Exposed because the OUTPUT buffer scales
+    // batch × vocabulary: a 32k-token --ppl document decoded as one batch asks for
+    // 31774 × 248320 × 4 B ≈ 30 GiB of logits and cannot run at all on a workstation. A batch
+    // the width of --ubatch keeps every chunk inside the already-reserved compute buffer.
+    // Teacher-forced scoring is chunk-invariant (each position attends to the same KV either
+    // way), so --ppl runs are free to cap this; session reuse semantics are not affected —
+    // slicing only changes how a prompt is fed, never what is computed.
+    int n_batch = 0;
+    // Recurrent-state snapshot budget for hybrid/recurrent models (see session.cpp). Each plane
+    // costs mem_size worth of state (50 MiB/plane on a 9B hybrid at Q4). DEFAULT 0 — measured on
+    // a qwen35 (gated delta net) model, snapshot restore is not bit-exact: under greedy decoding
+    // a restored state produces different tokens than a fresh prefill of the same prefix. Enable
+    // only for experiments; default behaviour is the full-clear fallback.
+    int n_rs_seq = 0;
     bool chatml = false;   // wrap the prompt in the model family's chat turn (arch-aware)
     bool progress = false; // emit machine telemetry (one JSON line per token)
 
@@ -472,6 +487,22 @@ struct RunConfig {
     // changes the output. Applied at load via a llama.cpp kv_override on the arch-prefixed
     // expert_used_count metadata key; must stay in [1, n_expert]. Independent of streaming.
     int n_expert_used = 0;
+
+    // KV-cache data types, by ggml type name ("f16", "q8_0", "q4_0", …). Empty = f16 (the
+    // llama.cpp default). q8_0 halves the KV RAM and — with full attention — halves the bytes
+    // moved per decode token, which on a bandwidth-poor host is the entire decode-time story;
+    // q4_0 on K is usually tolerable, on V it measurably degrades recall. Two upstream
+    // constraints: quantized V requires flash attention (the CLI resolves that coupling before
+    // validate() sees it), and cache clears dequantize V in flight, so a quantized-V context
+    // pays extra on seq_rm-heavy paths.
+    std::string cache_type_k;
+    std::string cache_type_v;
+
+    // Flash attention: "" = upstream default (AUTO), "on" = forced enabled, "off" = forced
+    // disabled. Forced off + quantized V fails at context creation (upstream throws) — that is
+    // the contract, not a silent fallback. Forcing on changes numerics (fused softmax), so
+    // byte-identity gates always run the default.
+    std::string flash_attn;
 
     // Compute-trace granularity. false (default): a barrier per graph node — exact per-op
     // attribution, but it serializes the graph against the expert stream and distorts the run.
@@ -496,7 +527,8 @@ struct ValidationResult {
 
 // Check a RunConfig for internal consistency. Enforces, among others: MoE streaming
 // requires a model path; cache_mb is 0 or >= cache_min_mb (unless force_cache);
-// io_threads in range; n_predict/n_threads positive. Pure function — no I/O.
+// io_threads in range; n_predict/n_threads positive; cache_type_v empty or a known
+// ggml type name. Pure function — no I/O.
 ValidationResult validate(const RunConfig & cfg);
 
 } // namespace bmoe

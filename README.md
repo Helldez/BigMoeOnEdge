@@ -150,6 +150,7 @@ flash, at the moment they are needed. Everything below tunes that.
 | Drop cold experts | `--drop-cold-experts` &nbsp;`0` (off) to `1.0`; app rungs `50%`, `75%`, `100%` &nbsp;(app default `75%`) | Skips a routed expert only when it is a cache miss *and* the router wanted it less than that share of an even split. Quality is spent only where it buys a read. Lossy and not reproducible: what is skipped depends on what the cache held. |
 | Prefer cached experts *(experimental)* | `--expert-substitute` &nbsp;`0` (off) to `1.0`; app rungs `10%` to `30%` &nbsp;(default off) | Nudges each routing toward experts already in the cache: a resident expert takes a slot only when the router scored it within that margin of the one it displaces. Same number of experts, fewer reads. Lossy and cache-dependent, like dropping ([detail](docs/cache-aware-substitution.md)). |
 | Active experts | `--n-expert-used` &nbsp;`0` (model's own), `6`, `4`, `3`, `2` | Consults fewer experts per token than the model asks for, cutting compute and reads together. Lossy, but reproducible: the same prompt gives the same answer. |
+| KV-cache quantization | `--cache-type-k` / `--cache-type-v` &nbsp;`f16` (default), `q8_0`, `q4_0`, … | Stores the attention cache in a smaller element type: ~half the KV RAM (measured 64 → 34 MiB at n_ctx 2048, 1024 → 544 MiB at n_ctx 32768) and half the bytes moved per decode token at long context, where full attention reads the whole cache. It buys the context length, not speed: at a 15k fill on CPU, decode is ~11% faster but prefill ~1.5× slower (attention at fill is compute-bound, so halving bytes cannot halve time). Measured on a 9B dense model: mean NLL unchanged at q8/q8, both on 100 teacher-forced questions (Δ 0.006 nats) and at 32k context on a 31.8k-token document (Δ 0.002 nats, hits 63.8% in both arms). V is the sensitive side — q4 on V measurably degrades recall. Quantized V forces flash attention on. |
 | Guess ahead *(experimental)* | `--mtp` or `--ngram`, with `--draft` &nbsp;`1` to `5` &nbsp;and, for the head, `--mtp-p-min` &nbsp;`0`, `40%`, `60%`, `80%` | Drafts the next few tokens and verifies the group in one decode, keeping only what the model itself would have produced. Nothing is approximated. Wins when weights move once per group, loses when the wider verify widens each layer's read set ([mtp](docs/mtp.md), [ngram](docs/ngram.md)). |
 | Route-ahead *(experimental)* | `--route-ahead` &nbsp;`0` (off), `1`, `2`, `4` layers | Commits a layer's routing that many layers early, so its reads start early and can never be wasted. Lossy: some slots route differently. Excludes both prefetchers and Guess ahead ([detail](docs/route-ahead.md)). |
 
@@ -228,10 +229,13 @@ Defaults are the measured winning recipe for a model near RAM.
 | `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | Fused expert layout, handled by its registry row |
 | `gpt-oss` | OpenAI gpt-oss-20b / 120b | Purely routed; MXFP4 weights stream unchanged |
 | `nemotron_h_moe` | NVIDIA Nemotron 3 / 3.5 MoE (e.g. Nemotron-3.5-Lightning-30B-A3B) | Gate-less experts (up/down only); hybrid Mamba2/attention stack, optional latent projections and a shared expert stay resident |
+| `laguna` | Poolside Laguna XS 2.1 / S 2.1 (33B-A3B) | Pure attention, agentic-coding tuned; router bias and shared expert stay resident |
 | `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
 | `deepseek4` | DeepSeek V4 Flash (284B-A13B), validated on the 0731 release | V3.2-style routing (256 experts + shared); compressed attention is dense-side; ships multi-shard |
+| `bailingmoe2` | Ling-mini-2.0 (16.5B-A1.4B), Ling-lite-2.0 (16.8B-A2.75B) | Pure attention; shared expert and router bias stay resident |
 | `bailingmoe3` | Ling 3.0 (e.g. Ling-3.0-flash, 127B-A5B) | 512 routed experts + shared, biased top-k; hybrid KDA/MLA attention is dense-side |
 | `qwen4exp` | Qwen3.8-Flash-Next (125B-A6B), the Qwen4 architecture preview | 512 routed experts + shared; a 51B n-gram embedding table stays mmap'd (see limitations). Runs on the 12 GB test phone with pinned dense weights: ~2 tok/s at UD-IQ3_XXS, 3.5 tok/s at the Q2_K build; upstream support merged in `b10666` |
+| `olmoe` | allenai OLMoE-1B-7B (6.9B-A1B) | Smallest supported MoE; plain fused experts, nothing beyond the routing stays resident |
 
 Adding an architecture is one row in the registry; expert counts and layouts are discovered from
 the model file at runtime, so nothing about a specific model is hardcoded in the streaming path.
@@ -480,6 +484,31 @@ macOS builds from the same sources and has no O_DIRECT; a direct request is serv
 instead (uncached, but not alignment-constrained), and `o_direct` in the telemetry reports what the
 open actually achieved.
 
+### Serve it to agent tooling
+
+The CLI has no HTTP server; `scripts/bmoe-serve.py` bridges the `--session` stdin protocol into an
+OpenAI-compatible endpoint, so opencode (or anything speaking `/v1/chat/completions`) can use the
+engine as its local model. The model stays loaded between requests, expert cache warm:
+
+```bash
+python3 scripts/bmoe-serve.py -m ~/llm/models/LFM2.5-8B-A1B-UD-Q4_K_M.gguf \
+    --model-id lfm2.5-8b-a1b \
+    --engine-args "--chatml --moe-stream --ctx-size 16384 --ubatch 512"
+```
+
+Then point the client at `http://127.0.0.1:8017/v1`. `--ubatch 512` caps the compute-buffer
+reservation (it scales with `ubatch × vocabulary` and reached 4.1 GiB at ctx 8192 on a desktop
+host) without touching decode speed, and client `max_tokens` budgets are clamped to the
+bridge's `--max-tokens` ceiling so an oversized request cannot sit in the context window for
+tens of minutes. For long-context servers the same logic applies one level up: the logits
+reservation scales with the prefill batch width × vocabulary, and the batch defaults to the
+whole context — a 32k-token prompt on a ~248k-token vocabulary asks for ~30 GiB. Add
+`--batch 512` next to `--ubatch 512` whenever `--ctx-size` is large; a prompt fed in slices
+is scored and answered identically. Reasoning models expose their thinking separately in
+`reasoning_content`, and every response carries the same perf block the CSV sink records.
+ARM64 Linux: `scripts/build-arm64.sh` stages a self-contained bundle to run the server on an
+SBC or ARM box. Details: [docs/serve.md](docs/serve.md).
+
 ### Android
 
 The demo app is in [`examples/android`](examples/android): build the CLI for arm64 with
@@ -540,6 +569,8 @@ or reproduce the measurements. Most-wanted entry points:
 - [docs/community-benchmarks.md](docs/community-benchmarks.md): results on hardware we do not own,
   and how to add yours.
 - [docs/telemetry.md](docs/telemetry.md): the per-token line protocol, the CSV schema and the traces.
+- [docs/serve.md](docs/serve.md): serving the engine to agent tooling (OpenAI-compatible bridge,
+  ARM64 Linux bundles).
 - [docs/android-memory.md](docs/android-memory.md): what reclaims the engine's memory on a phone.
 
 ## Prior art

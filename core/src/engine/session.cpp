@@ -44,6 +44,16 @@
 namespace bmoe {
 
 namespace {
+// ggml_type_name returns the canonical string; parse the reverse direction once. Used by the
+// KV-cache-type config (cache_type_k/v, see RunConfig): type_k/v are set from the public
+// llama_context_params at context creation, and an unknown name must fail the open, not silently
+// fall back to f16.
+ggml_type kv_type_from_name(const std::string & name) {
+    for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+        if (ggml_type_name(static_cast<ggml_type>(t)) == name) return static_cast<ggml_type>(t);
+    }
+    return GGML_TYPE_COUNT;
+}
 
 using detail::batch_fill;
 using detail::PrefillTally;
@@ -321,6 +331,10 @@ struct Session::Impl {
     // and prefill only the diverging suffix instead of re-running the whole conversation.
     std::vector<common_chat_msg> chat_history;
     std::vector<llama_token> kv_tokens;
+    // Effective recurrent-snapshot budget (0 = rollback unsupported or disabled). Read back after
+    // context creation because llama.cpp clamps it to 0 for archs without rollback support — the
+    // gate the hybrid clear-block below keys on.
+    uint32_t n_rs_seq = 0;
 
     // decide()'s kept prefix state. Chosen at the first decide() (the policy needs the backend's
     // answer on prefill cost), null when the policy keeps none.
@@ -389,6 +403,9 @@ int Session::n_ctx() const {
 }
 int Session::n_expert_used() const {
     return impl_->n_expert_used;
+}
+bool Session::hybrid_kv() const {
+    return llama_model_is_hybrid(impl_->model.get()) || llama_model_is_recurrent(impl_->model.get());
 }
 ThinkControl Session::think_control() const {
     return impl_->think_ctl;
@@ -791,6 +808,22 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
     cparams.n_batch = cfg.n_batch;
+    // KV-cache element type (RunConfig::cache_type_k/v): empty = f16. Set before creation —
+    // the type is baked in; an unknown name fails the open here rather than mid-run.
+    if (!cfg.cache_type_k.empty()) {
+        ggml_type t = kv_type_from_name(cfg.cache_type_k);
+        if (t == GGML_TYPE_COUNT) return fail("unknown cache_type_k '" + cfg.cache_type_k + "'");
+        cparams.type_k = t;
+    }
+    if (!cfg.cache_type_v.empty()) {
+        ggml_type t = kv_type_from_name(cfg.cache_type_v);
+        if (t == GGML_TYPE_COUNT) return fail("unknown cache_type_v '" + cfg.cache_type_v + "'");
+        cparams.type_v = t;
+    }
+    // "": upstream AUTO default (on for the CPU backend). Forced off + quantized V is
+    // llama.cpp's error to throw at creation, not ours to second-guess.
+    if (cfg.flash_attn == "off") cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    else if (cfg.flash_attn == "on") cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
     // The graph is reserved for the widest ubatch, so this is what sets the resident compute
     // buffers — the memory this engine is always short of. 0 keeps the historical behaviour
     // (one graph as wide as the batch); a smaller value chunks prefill to buy that memory back.
@@ -814,9 +847,20 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // the sequence, which would hand back exactly the decode the speculation just saved.
     if (cfg.spec.enabled()) cparams.n_rs_seq = (uint32_t) cfg.spec.draft_max;
 
+    // Session residency on hybrids needs the same mechanism: without snapshots the recurrent side
+    // cannot rewind at all (seq_rm returns false), so every non-append turn had to full-clear.
+    // With a snapshot pool, short rewinds restore per-token state and the generic diff path below
+    // can serve hybrids the way it serves transformers: append reuse, partial reuse within the
+    // budget, full clear beyond it. LFM2.5-class archs without upstream rollback support are
+    // clamped to 0 inside llama.cpp, and llama_n_rs_seq() reads back the effective value.
+    if (cparams.n_rs_seq == 0 && cfg.n_rs_seq > 0)
+        cparams.n_rs_seq = (uint32_t) cfg.n_rs_seq;
+
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return fail("failed to create context");
     im.ctx.reset(ctx);
+    // The requested budget may have been clamped (arch without rollback support reads back 0).
+    im.n_rs_seq = llama_n_rs_seq(ctx);
     llama_set_n_threads(ctx, cfg.n_threads, cfg.n_threads);
 
     // The MTP draft context: same model, same eval callback, but ctx_type = MTP so llama.cpp builds
@@ -1308,22 +1352,43 @@ RunResult Session::generate(const GenerateRequest & req,
     // reasoning is stripped from the shown answer. req.think drives enable_thinking, per prompt.
     std::string prompt = req.prompt;
     bool chat_on = im.chat_on;
+    // Client-owned history (GenerateRequest::messages) replaces the engine's conversation state
+    // wholesale, and the assistant commit below is skipped for such turns: the authoritative
+    // history is whatever the client sends next, so appending would just diverge from it.
+    bool client_history = !req.messages.empty();
     bool history_pushed = false;   // did we append this turn's user message to chat_history?
     bool prefilled_answer = false; // closed the reasoning span in the prompt, so skip reasoning parse
     common_chat_parser_params parse_params;
     if (chat_on) {
         try {
-            common_chat_msg user_msg;
-            user_msg.role = "user";
-            user_msg.content = req.prompt;
-            im.chat_history.push_back(user_msg);
-            history_pushed = true;
+            if (client_history) {
+                im.chat_history.clear();
+                for (const ChatTurn & t : req.messages) {
+                    common_chat_msg m;
+                    m.role = t.role;
+                    m.content = t.content;
+                    im.chat_history.push_back(std::move(m));
+                }
+            } else {
+                common_chat_msg user_msg;
+                user_msg.role = "user";
+                user_msg.content = req.prompt;
+                im.chat_history.push_back(user_msg);
+                history_pushed = true;
+            }
 
             // The full conversation, not just this turn. The reasoning span and the turn header a
             // prefilled turn resumes after are rendered by llama.cpp's own handler for this
             // template, so no marker for any family is spelled out here. See thinking_control.h.
             common_chat_templates_inputs inputs;
             prefilled_answer = detail::build_turn_inputs(inputs, im.chat_history, req.think, im.think_ctl);
+            // Preserve-reasoning requests ask the template to keep reasoning in re-rendered
+            // history turns (LFM2.5 spells the variable `preserve_thinking`). Combined with a
+            // client echoing the reasoning back inside the assistant content, the next turn's
+            // render strictly extends what was generated and the append-reuse path can serve a
+            // thinking model. Templates without such a variable silently ignore it.
+            if (req.preserve_reasoning)
+                inputs.chat_template_kwargs["preserve_thinking"] = "true";
 
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt;
@@ -1348,9 +1413,14 @@ RunResult Session::generate(const GenerateRequest & req,
     }
     if (n_prompt < 1) return fail("empty prompt after tokenization");
     tokens.resize(n_prompt);
-    if (n_prompt + req.n_predict + 8 > im.cfg.n_ctx)
+    if (n_prompt + req.n_predict + 8 > im.cfg.n_ctx) {
+        // Reuse was not consumed yet, but the engine-held history is behind the context and the
+        // next turn's render will differ from the mirror; reset so it full-clears rather than
+        // appends onto a cache the session just overflowed.
+        im.kv_tokens.clear();
         return fail("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
                     "); open the session with a larger n_ctx");
+    }
 
     // The text to surface: with chat on, parse the raw output so a reasoning model's internal
     // thinking is separated from the answer. The answer is shown inline; the reasoning is handed to
@@ -1383,6 +1453,38 @@ RunResult Session::generate(const GenerateRequest & req,
     // kv_tokens empty, so n_common = 0 and this reduces to a full prefill — the one-shot path the
     // byte-identity gates exercise stays unchanged.
     size_t n_common = 0;
+    // Hybrid/recurrent stacks (lfm2moe, qwen35moe, …) keep per-sequence cell state in the same
+    // memory as the KV. A partial seq_rm rewinds positions but not the cells, so decoding after a
+    // mid-sequence rewind fails outright ("llama_decode: failed to decode, ret = 2") — observed on
+    // LFM2.5 the first time a turn diverged from a resident prefix. Worse, a FAILED or CANCELLED
+    // turn leaves that poison behind with kv_tokens already empty (the mirror only grows on
+    // success), so the poison is invisible to any condition keyed on the mirror — it surfaced as a
+    // ret=2 cascade where even a fresh conversation died at pos 0. Prefix reuse is therefore
+    // transformer-only, with one exception: an APPEND. When the incoming render strictly extends
+    // the resident token mirror, the diff below finds n_common == n_prompt: no seq_rm runs at all,
+    // every decode only appends cells, and the failure paths reset the mirror so the next turn
+    // full-clears. A hybrid continuation turn (aider appends the next instruction to an identical
+    // prefix, the common case) then skips its whole prefill without ever rewinding cell state.
+    // A failed/cancelled append turn poisons the mirror on purpose — cells may sit past its end —
+    // which the mirror==0 condition turns into the unconditional clear.
+    // Without recurrent-state snapshots (n_rs_seq == 0: unsupported arch or budget disabled) a
+    // hybrid cannot rewind its state, so any turn that is not a pure APPEND must full-clear: the
+    // diff path below would seq_rm a mid-conversation position, the recurrent side would refuse,
+    // and KV vs cells would diverge. With a snapshot pool the generic diff path is safe for
+    // hybrids too — a rewind within the budget restores from snapshots, one beyond it fails
+    // seq_rm and falls back to the same full clear — and the append shortcut below keeps working
+    // exactly as before.
+    const bool is_hybrid = llama_model_is_hybrid(im.model.get()) || llama_model_is_recurrent(im.model.get());
+    if (is_hybrid && im.n_rs_seq == 0) {
+        const bool append_ok = chat_on && req.n_predict > 0 && !im.kv_tokens.empty() &&
+                               im.kv_tokens.size() < tokens.size() &&
+                               std::equal(im.kv_tokens.begin(), im.kv_tokens.end(), tokens.begin());
+        if (!append_ok) {
+            llama_memory_clear(llama_get_memory(ctx), true);
+            if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+            im.kv_tokens.clear();
+        }
+    }
     if (chat_on && !im.kv_tokens.empty()) {
         const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
         while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
@@ -1522,6 +1624,10 @@ RunResult Session::generate(const GenerateRequest & req,
                 return res;
             }
             if (moe.overlap && im.source.fatal()) return fail("expert stream I/O failed during overlap prefill");
+            // With reuse active, positions past n_common hold cells (hybrid) or KV (transformer)
+            // the mirror no longer describes; reset it so the next turn cannot diff against a
+            // prefix the cache no longer contains.
+            if (n_common > 0) im.kv_tokens.clear();
             return fail("prefill decode failed");
         }
         trace_flush();
@@ -1703,9 +1809,17 @@ RunResult Session::generate(const GenerateRequest & req,
         if (dec != 0) {
             if (im.cancel_requested.load(std::memory_order_relaxed)) {
                 res.cancelled = true;
+                // The aborted decode's commit state is unknowable: on a hybrid the cells may sit
+                // past the mirror even though every token in it decoded cleanly. Reset it so the
+                // next turn takes the full clear instead of trusting an append.
+                if (is_hybrid) im.kv_tokens.clear();
                 break;
             }
-            if (moe.overlap && im.source.fatal()) return fail("expert stream I/O failed during overlap decode");
+            if (moe.overlap && im.source.fatal()) {
+                if (n_common > 0) im.kv_tokens.clear();
+                return fail("expert stream I/O failed during overlap decode");
+            }
+            if (n_common > 0) im.kv_tokens.clear();
             return fail("decode failed during generation");
         }
         trace_flush(); // outside the s0..s1 bracket: the trace's own writes must not bill wall_ms
@@ -1755,8 +1869,10 @@ RunResult Session::generate(const GenerateRequest & req,
                 const auto p0 = clock_t_::now();
                 const uint64_t pb0 = moe.enabled ? im.source.stats().read_bytes : 0;
                 batch_fill(im.mtp_batch, verify_toks.data(), 1 + n_acc, n_past, /*all_logits*/ false);
-                if (!common_speculative_process(im.mtp.get(), im.mtp_batch))
+                if (!common_speculative_process(im.mtp.get(), im.mtp_batch)) {
+                    if (n_common > 0) im.kv_tokens.clear();
                     return fail("MTP draft context failed to process the verify batch");
+                }
                 draft_s += secs(p0, clock_t_::now());
                 if (moe.enabled) im.mtp_draft_read_bytes += im.source.stats().read_bytes - pb0;
             }
@@ -1767,8 +1883,10 @@ RunResult Session::generate(const GenerateRequest & req,
             // needs no rollback of its own — it was never given the tail.
             if (n_acc < n_draft) {
                 const llama_pos keep = n_past + 1 + n_acc;
-                if (!llama_memory_seq_rm(llama_get_memory(ctx), /*seq*/ 0, keep, -1))
+                if (!llama_memory_seq_rm(llama_get_memory(ctx), /*seq*/ 0, keep, -1)) {
+                    if (n_common > 0) im.kv_tokens.clear();
                     return fail("failed to roll back the rejected draft tokens from the KV cache");
+                }
             }
             if (mtp_on) common_speculative_accept(im.mtp.get(), /*seq*/ 0, (uint16_t) n_acc);
         }
@@ -1982,13 +2100,15 @@ RunResult Session::generate(const GenerateRequest & req,
         // Undo the whole turn (KV, fed tokens, and the pushed user message) so the conversation
         // is left exactly as it was before this prompt and stays continuable.
         rollback_turn();
-    } else if (chat_on) {
+    } else if (chat_on && !client_history) {
         // Commit the assistant turn to the running conversation. Parsing separates a thinking
         // model's reasoning from the answer; the next turn re-renders history from these messages.
         // Reuses the parse above. A prefilled turn has no turn header in the stream to parse — the
         // generation is the answer verbatim — and is committed without the prefill, so history holds
         // a normal assistant message and the next turn re-renders cleanly whatever this turn's think
-        // setting was. A parse that threw falls back the same way.
+        // setting was. A parse that threw falls back the same way. A client-history turn skips this:
+        // the next request carries the authoritative array, and appending the reply would diverge
+        // from it.
         common_chat_msg assistant;
         if (final_parsed)
             assistant = std::move(final_msg);

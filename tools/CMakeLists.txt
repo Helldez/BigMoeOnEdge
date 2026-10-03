@@ -22,3 +22,13 @@ if(ANDROID)
     # AHardwareBuffer_* live in libandroid.so.
     target_link_libraries(bmoe-membench PRIVATE android)
 endif()
+
+# The one tool that breaks the no-llama rule above, deliberately: bmoe-rsbench reproduces the
+# hybrid recurrent-state blockers (ADR-004) against the exact llama.cpp this engine links, so its
+# verdicts describe OUR dependency, not some upstream build. Host-only diagnostic — gated on the
+# llama.cpp being configured at all (BMOE_HAVE_LLAMA) and on BMOE_BUILD_TOOLS for the user.
+if(BMOE_HAVE_LLAMA)
+    add_executable(bmoe-rsbench rsbench.cpp)
+    target_compile_features(bmoe-rsbench PRIVATE cxx_std_17)
+    target_link_libraries(bmoe-rsbench PRIVATE llama)
+endif()

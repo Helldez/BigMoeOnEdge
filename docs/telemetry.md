@@ -489,7 +489,9 @@ support, are archived in
 ## Session mode
 
 With `--session`, `bmoe-cli` keeps the model loaded and the expert cache warm across prompts
-instead of exiting after one generation (see [session.md](session.md)). Requests arrive as one
+instead of exiting after one generation (see [session.md](session.md)). For an OpenAI-compatible
+HTTP view of this protocol — agent tooling talks to the engine without speaking `BMOE_*` — see
+[serve.md](serve.md). Requests arrive as one
 JSON object per line on **stdin**; responses interleave control lines with the same per-token
 lines above on **stdout**. The control lines are also `BMOE_<TAG> {json}`, so a per-token parser
 extends to them naturally.
@@ -497,18 +499,23 @@ extends to them naturally.
 Requests (stdin):
 
 ```
-{"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>}
+{"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"preserve_reasoning":<bool>,"clear_kv":<bool>}
 {"cmd":"decide","id":<int>,"prefix":"<string>","suffix":"<string>","choices":["<string>",...],
  "reuse_prefix":<bool>}   # needs --decide; always rendered with reasoning off; see decide.md
 {"cmd":"cancel"}          # interrupt the in-flight generation; the session stays loaded
 {"cmd":"close"}           # end the session (EOF on stdin does the same)
 ```
 
-`prompt` is JSON-escaped (newlines as `\n`); `n_predict`/`think`/`clear_kv` are optional and
-default to the process's flags / `true`. `clear_kv:true` starts a **new chat** (drops the KV and
-the engine-held conversation); `clear_kv:false` **continues** the conversation — send only the new
-user message, the engine re-renders the whole history and reuses the KV prefix (see
-[session.md](session.md)). `cancel` may arrive at any time, including mid-generation.
+`prompt` is JSON-escaped (newlines as `\n`); `n_predict`/`think`/`preserve_reasoning`/`clear_kv` are
+optional and default to the process's flags / `true` / `false` / `true`. `clear_kv:true` starts a
+**new chat** (drops the KV and the engine-held conversation); `clear_kv:false` **continues** the
+conversation — send only the new user message, the engine re-renders the whole history and reuses
+the KV prefix (see [session.md](session.md)). `preserve_reasoning:true` asks the template to keep
+reasoning in re-rendered history turns (LFM2.5's `preserve_thinking` variable): a client that
+echoes the reasoning back inside the assistant content then makes the next render a strict
+extension of what was generated, and the append-reuse path serves a thinking hybrid at
+delta-only prefill. Templates without such a variable ignore the flag.
+`cancel` may arrive at any time, including mid-generation.
 
 Responses (stdout):
 
@@ -519,7 +526,7 @@ BMOE_BEGIN {"id":<int>}                                                # a gener
 BMOE_LOAD / BMOE_PROGRESS ...                                          # per token, as above
 BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "prefill_s":<float>,"prefill_tps":<float>,"load_s":<float>,"cache_hit_pct":<float>,
-            "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
+            "n_prompt":<int>,"n_past":<int>,"n_reused":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
             "stall_s_tok":<float>,"mgmt_s_tok":<float>,"majflt_tok":<float>,"cpu_s_tok":<float>,
             "prefill_cpu_s":<float>,"prefill_read_mib":<float>,"prefill_io_s":<float>,
@@ -537,6 +544,13 @@ BMOE_DECIDE {"id":<int>,"cancelled":<bool>,"best":<int>,"choice_logp":[<float|nu
              "prefill_dev_routed":<int>,"prefill_dev_demand":<int>,"prefix_state_mib":<float>}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
 ```
+
+`n_reused` is the KV prefix carried over from the prior turn — `n_past` minus what this turn added
+(suffix prefill plus generated tokens), `0` on a one-shot prompt or the first turn of a session.
+Requests that carry a `messages` array (client-owned conversation) get it from the engine's
+residency: the template renders over the full array, the longest common prefix against the resident
+KV is kept, and only the diverging suffix is prefilled — `n_prompt` counts those suffix tokens only,
+so `prefill_tps` stays honest under reuse. See [serve.md](serve.md) for the bridge wiring.
 
 A `decide` request is answered by `BMOE_BEGIN` and then one `BMOE_DECIDE` line, with no per-token
 lines in between: nothing is decoded ([decide.md](decide.md)). `choice_logp[i]` is the log-probability

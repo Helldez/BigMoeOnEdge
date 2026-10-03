@@ -242,14 +242,93 @@ static bool json_get_bool(const std::string & line, const char * key, bool dflt)
     return line.compare(p, 4, "true") == 0;
 }
 
+// Read a double-quoted string starting at line[p] (which must be '"'), handling the protocol's
+// escape set the same way json_get_string does, and advancing p past the closing quote.
+static bool json_read_string_at(const std::string & line, size_t & p, std::string & out) {
+    if (p >= line.size() || line[p] != '"') return false;
+    ++p;
+    std::string raw;
+    for (; p < line.size(); ++p) {
+        if (line[p] == '\\' && p + 1 < line.size()) {
+            raw += line[p];
+            raw += line[p + 1];
+            ++p;
+        } else if (line[p] == '"') {
+            out = json_unescape(raw);
+            ++p; // past the closing quote: callers keep scanning from here
+            return true;
+        } else {
+            raw += line[p];
+        }
+    }
+    return false;
+}
+
+// Parse a `"messages":[{"role":..., "content":...}, ...]` array into turns. The session protocol
+// hand-rolls its JSON (see the helpers above), so this is the same brace-matching scanner in the
+// same style: walk objects, match quoted keys, reuse the escape-aware string reader. Returns false
+// only when the key exists but does not parse — a missing key or an empty array means the request
+// is a plain-prompt one.
+static bool json_get_messages(const std::string & line, const char * key, std::vector<ChatTurn> & out) {
+    out.clear();
+    size_t p = json_value_pos(line, key);
+    if (p == std::string::npos) return true; // absent key: plain-prompt request
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t'))
+        ++p;
+    if (p >= line.size() || line[p] != '[') return false;
+    ++p;
+    for (;;) {
+        while (p < line.size() && (line[p] == ' ' || line[p] == '\t' || line[p] == ','))
+            ++p;
+        if (p >= line.size()) return false;
+        if (line[p] == ']') break;
+        if (line[p] != '{') return false;
+        ++p;
+        ChatTurn turn;
+        bool have_role = false, have_content = false;
+        for (;;) {
+            while (p < line.size() && (line[p] == ' ' || line[p] == '\t' || line[p] == ','))
+                ++p;
+            if (p >= line.size()) return false;
+            if (line[p] == '}') {
+                ++p;
+                break;
+            }
+            if (line[p] != '"') return false;
+            std::string k;
+            if (!json_read_string_at(line, p, k)) return false;
+            while (p < line.size() && (line[p] == ' ' || line[p] == '\t'))
+                ++p;
+            if (p >= line.size() || line[p] != ':') return false;
+            ++p;
+            while (p < line.size() && (line[p] == ' ' || line[p] == '\t'))
+                ++p;
+            std::string v;
+            if (!json_read_string_at(line, p, v)) return false;
+            if (k == "role") {
+                turn.role = std::move(v);
+                have_role = true;
+            } else if (k == "content") {
+                turn.content = std::move(v);
+                have_content = true;
+            }
+        }
+        if (have_role && have_content)
+            out.push_back(std::move(turn));
+    }
+    return true;
+}
+
 // A parsed stdin command. cancel is handled inline by the reader thread (it calls
 // Session::cancel directly), so only generate/decide/close travel through the queue.
 struct SessionCmd {
     enum Kind { kGenerate, kDecide, kClose } kind;
     std::string prompt;
+    std::vector<ChatTurn> messages; // client-owned conversation; empty = prompt-only request
     int id = 0;
     int n_predict = 128;
     bool think = true;
+    bool preserve_reasoning = false;
     bool clear_kv = true;
     // decide only (bmoe/decide.h)
     std::string prefix, suffix;
@@ -350,8 +429,16 @@ static int run_session_loop(const RunConfig & cfg,
                 c.kind = SessionCmd::kGenerate;
                 json_get_string(line, "prompt", c.prompt);
                 c.id = json_get_int(line, "id", 0);
+                if (!json_get_messages(line, "messages", c.messages)) {
+                    // The id is parseable even when the array is not, so the error is routable.
+                    std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":false,\"msg\":\"malformed messages array\"}\n",
+                                c.id);
+                    std::fflush(stdout);
+                    continue;
+                }
                 c.n_predict = json_get_int(line, "n_predict", cfg.n_predict);
                 c.think = json_get_bool(line, "think", cfg.think);
+                c.preserve_reasoning = json_get_bool(line, "preserve_reasoning", false);
                 c.clear_kv = json_get_bool(line, "clear_kv", true);
             } else if (cmd == "decide") {
                 c.kind = SessionCmd::kDecide;
@@ -405,8 +492,10 @@ static int run_session_loop(const RunConfig & cfg,
 
         GenerateRequest req;
         req.prompt = cmd.prompt;
+        req.messages = std::move(cmd.messages);
         req.n_predict = cmd.n_predict;
         req.think = cmd.think;
+        req.preserve_reasoning = cmd.preserve_reasoning;
         req.clear_kv = cmd.clear_kv;
         req.render_text = true; // the line protocol carries the parsed answer on every token
 
@@ -427,8 +516,12 @@ static int run_session_loop(const RunConfig & cfg,
             continue;
         }
         const RunSummary & s = r.summary;
+        // n_reused: KV prefix carried over from the prior turn, i.e. n_past minus what THIS turn
+        // added (suffix prefill + generated tokens). 0 on a one-shot prompt, where n_past is exactly
+        // n_prompt + generated. Paired with n_prompt (tokens actually prefilled) it makes the
+        // prefill_tps figure honest under residency.
         std::printf("BMOE_DONE {\"id\":%d,\"cancelled\":%s,\"tokens\":%d,\"tok_s\":%.3f,\"prefill_s\":%.3f,"
-                    "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
+                    "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,\"n_reused\":%d,"
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
                     "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,"
@@ -440,7 +533,8 @@ static int run_session_loop(const RunConfig & cfg,
                     "\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
-                    s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
+                    s.n_prompt, s.n_past, s.n_past - s.n_generated - s.n_prompt,
+                    s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
                     s.majflt_per_token, s.cpu_s_per_token, s.prefill_cpu_seconds, s.prefill_read_mib,
                     s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.prefill_device_tokens,
@@ -478,11 +572,23 @@ static void print_usage(const char * argv0) {
         "  -n, --n-predict N       tokens to generate (default 128)\n"
         "  -t, --threads N         compute threads (default 4)\n"
         "  -c, --ctx-size N        context size (default 2048)\n"
+        "      --rs-seq N          recurrent-state snapshot budget for hybrids (default 0 = off;\n"
+        "                          upstream restore is not yet bit-exact)\n"
+        "\n"
         "      --ubatch N          widest graph computed at once (0 = as wide as the context).\n"
         "                          Compute buffers are reserved for it, so a smaller value hands\n"
         "                          RAM back to the expert cache at the cost of prefill speed;\n"
         "                          decode is unaffected. Measured: a context of 2048 reserves\n"
         "                          320 MiB, falling to 80 MiB at 512.\n"
+        "      --batch N           widest single prefill batch (0 = as wide as the context).\n"
+        "                          The output buffer scales batch × vocab — a 32k-token --ppl\n"
+        "                          document fed as one batch asks for ~30 GiB of logits, so\n"
+        "                          cap this (--batch 512) for long teacher-forced runs.\n"
+        "      --cache-type-k T    KV-cache element types by ggml name (f16, q8_0, q4_0, …).\n"
+        "      --cache-type-v T    Empty = f16. q8_0 halves KV RAM and the bytes moved per\n"
+        "                          decode token (full attention reads the whole cache); V is\n"
+        "                          the sensitive side — measure with --ppl before trusting\n"
+        "                          it. Quantized V requires flash attention (forced on).\n"
         "      --no-prefill-routed with --prefill-device and --moe-stream: read every expert of every\n"
         "                          layer instead of only the experts each graph routes to (the default,\n"
         "                          predicted from the previous graph and completed at each routing node)\n"
@@ -740,8 +846,16 @@ int main(int argc, char ** argv) {
             cfg.n_threads = std::atoi(next("-t"));
         else if (a == "-c" || a == "--ctx-size")
             cfg.n_ctx = std::atoi(next("-c"));
+        else if (a == "--rs-seq")
+            cfg.n_rs_seq = std::atoi(next("--rs-seq"));
         else if (a == "--ubatch")
             cfg.n_ubatch = std::atoi(next("--ubatch"));
+        else if (a == "--batch")
+            cfg.n_batch = std::atoi(next("--batch"));
+        else if (a == "--cache-type-k")
+            cfg.cache_type_k = next("--cache-type-k");
+        else if (a == "--cache-type-v")
+            cfg.cache_type_v = next("--cache-type-v");
         else if (a == "--prefill-device")
             cfg.prefill.device = next("--prefill-device");
         else if (a == "--prefill-routed")
@@ -951,6 +1065,15 @@ int main(int argc, char ** argv) {
     if (!vr) {
         std::fprintf(stderr, "config error: %s\n", vr.error.c_str());
         return 1;
+    }
+    // Upstream: a quantized V cache requires flash attention (DISABLED throws at context
+    // creation). AUTO resolves on for the CPU backend this engine ships, but the coupling is
+    // resolved here explicitly so it does not rest on a backend default: quantized V forces
+    // flash attention on unless the caller forced something. validate() has already
+    // spell-checked the type names.
+    if (!cfg.cache_type_v.empty() && cfg.cache_type_v != "f16" && cfg.cache_type_v != "f32" &&
+        cfg.cache_type_v != "bf16") {
+        if (cfg.flash_attn.empty()) cfg.flash_attn = "on";
     }
     // Decide requests only travel through the session protocol; a one-shot run would ignore the flag.
     if (cfg.decide.enabled && !session_mode) {

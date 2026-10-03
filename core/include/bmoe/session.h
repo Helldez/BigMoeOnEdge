@@ -42,6 +42,16 @@ struct SessionConfig {
     // throughput for resident compute buffers, which on this engine compete with the expert cache.
     // See RunConfig::n_ubatch.
     int n_ubatch = 0;
+    // Recurrent-state snapshot budget for hybrid/recurrent models. Baked into the llama context at
+    // creation (llama.cpp clamps it to 0 for archs without rollback support). DEFAULT 0: restore is
+    // not bit-exact on current upstream (see RunConfig::n_rs_seq for the measurement).
+    int n_rs_seq = 0;
+    // KV-cache element types by ggml name ("" = f16) and flash attention ("" = upstream AUTO,
+    // "on", "off"). All three are baked into the context at creation. See RunConfig for the
+    // tradeoffs and the quantized-V↔flash-attention coupling.
+    std::string cache_type_k;
+    std::string cache_type_v;
+    std::string flash_attn;
     bool chatml = false;
     // Active-expert (top-k) override applied at load via a kv_override on the arch-prefixed
     // expert_used_count key. 0 = use the model's own count. See RunConfig::n_expert_used.
@@ -67,6 +77,16 @@ struct SessionConfig {
 // remembering to touch both. n_batch = n_ctx so any prompt that fits the context prefills in one batch.
 SessionConfig session_config_from(const RunConfig & cfg);
 
+// One message of a client-supplied conversation. A request that carries `messages` replaces the
+// engine's conversation state wholesale: the engine renders its chat template over the full array
+// and reuses whatever KV prefix survives the diff (compaction, edits and retries reduce to the
+// same truncate-and-extend path). One conversation state lives in the engine; an HTTP bridge stays
+// stateless by forwarding its client's array verbatim every turn.
+struct ChatTurn {
+    std::string role;    // "system", "user", "assistant" — validated against the template
+    std::string content;
+};
+
 // How a GenerateRequest::think=false request can be honoured on THIS model. Decided once at
 // open() by rendering the model's own chat template, never from a list of model names.
 //
@@ -89,8 +109,17 @@ const char * think_control_name(ThinkControl c);
 // expert cache stays warm; clear_kv=false continues the KV cache for multi-turn chat.
 struct GenerateRequest {
     std::string prompt;
+    // Client-owned conversation. When non-empty, `prompt` is ignored and the full array is
+    // rendered over; history after the turn is replaced by the client's version on the next
+    // request, so the assistant reply is never double-appended.
+    std::vector<ChatTurn> messages;
     int n_predict = 32;
     bool think = true;
+    // Ask the template to keep reasoning in re-rendered HISTORY turns (LFM2.5's
+    // `preserve_thinking`): paired with a client that echoes the reasoning back inside the
+    // assistant content, the next render strictly extends what was generated and the append-reuse
+    // path can serve a thinking model. Templates that have no such variable ignore the flag.
+    bool preserve_reasoning = false;
     bool clear_kv = true;
     // Populate TokenMetrics::text / ::reasoning on every token. Building them means parsing the
     // WHOLE generation so far — the chat parser cannot resume — so it is O(n) per token and O(n²)
@@ -199,6 +228,12 @@ public:
     // caller needs to interpret MoeStreamConfig::drop_cold_frac, whose threshold is a fraction of
     // 1/top-k. 0 when the model is not MoE or the count could not be read.
     int n_expert_used() const;
+
+    // True when the model's memory couples KV cells with recurrent state (Mamba/conv stacks), so
+    // multi-turn reuse is limited to strict appends: any non-append turn full-clears and a caller
+    // must not assert n_reused > 0 on it. Ask the model, never an architecture list — the set of
+    // hybrid stacks changes with every llama.cpp bump.
+    bool hybrid_kv() const;
 
     // Which thinking-off mechanism this model supports (probed at open()). Report it to the user
     // rather than leaving a Thinking toggle that silently does nothing. Always Template when chat

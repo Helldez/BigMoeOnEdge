@@ -4,6 +4,104 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.27.2] - 2026-10-02
+
+### Fixed
+- **The ARM64 Linux bundle shipped two ABIs of the same library and leaked the builder's
+  absolute path.** `scripts/build-arm64.sh` staged `build-arm64/bin/lib*.so*` with a plain
+  `cp`, which dereferences the soname symlinks into full independent copies, and the build
+  directory is reused across llama.cpp bumps, so the glob also swept in libraries left behind by
+  the previously linked version — the bundle staged before this change carried
+  `libggml-base.so.0.20.1` and `libllama-common.so.1.0` next to the `0.22.0` / `0.3.0` it
+  actually linked. Staging now walks the ELF `NEEDED` closure from the CLI and copies with
+  `-a`, so only the libraries the binary needs ship, as symlinks, and a stale leftover can no
+  longer be reached. Separately, CMake appended the absolute build-tree directory to the staged
+  `RUNPATH` (`$ORIGIN/lib:/home/<user>/…/build-arm64/bin`) despite `CMAKE_BUILD_RPATH`; that is
+  gone via `CMAKE_BUILD_WITH_INSTALL_RPATH=ON`, and the script now fails the build if an
+  absolute path reappears in the staged `RUNPATH`, since a bundle meant to be copied to a phone
+  must not carry the machine it was built on. Net effect on the artifact: `lib/` 44 MB → 12 MB,
+  `bmoe-arm64.tar.gz` 16.6 MB → 4 MB.
+- **`scripts/tinymmlu-bench.py` no longer reports a score over the questions it silently dropped.**
+  `--ctx` defaulted to 512 while the longest tinyMMLU prompt is 997 tokens, so the CLI refused
+  those items and the script printed a confident percentage over the survivors: a truncated run
+  scored 17/100 and reported **82.4 %**. The default is now 2048, and a cell that scores fewer
+  questions than it was given now exits non-zero naming the first missing file instead of
+  summarising a subset. The same check catches a stale cell log whose prompt paths no longer
+  resolve. Verified against the real truncated log (17/100 → exit 1) and a complete one
+  (100/100 → exit 0).
+
+### Added
+- **The ARM64 Linux bundle is installable, and the archive is verifiable.**
+  `scripts/build-arm64.sh --tar` now writes a `bmoe-arm64.tar.gz.sha256` beside the archive — it
+  gets scp'd to a device by hand, where an interrupted copy of a multi-megabyte gz is otherwise
+  indistinguishable from a good one. The bundle also carries an `install.sh` (from
+  `scripts/bundle-install.sh`) that installs to `<prefix>/lib/bmoe` and symlinks `bmoe-cli` and
+  `bmoe-serve.py` into `<prefix>/bin`: default `/usr/local`, `--prefix` to override, `--uninstall`
+  to remove, and it accepts either an extracted bundle directory or a `.tar.gz` as its source.
+  No library is ever copied into a system directory — the symlinks resolve because `RUNPATH` is
+  `$ORIGIN/lib` and `$ORIGIN` is taken from the *resolved* binary path, which is also why the
+  symlinked `bmoe-serve.py` still finds the engine beside its real self. The installer refuses to
+  replace a `<prefix>/bin` entry that is not one of its own symlinks unless given `--force`, so
+  running it cannot silently delete a distro package, and it smoke-tests the installed binary and
+  warns rather than aborting when the host cannot execute it. `build-arm64.sh` gained `--help`.
+- **Weight-quantization tiers measured on a 35B-A3B MoE** (`docs/bench-data/2026-10-02-weight-quant-tiers/`).
+  Cyber-Tiel-Coder-35B-A3B-MTP at Q4_K_M / Q3_K_XL / Q2_K_XL, tinyMMLU-100 at `--expert-substitute`
+  0.15, compared per question because the tiers answer the same items: 67 / 64 / 63 of 100, exact
+  McNemar p = 0.50 (Q4 vs Q2) — the ladder is inside the ±4.7-point noise. All three tiers are
+  verified from the GGUF headers to be the same weights (753 tensors, identical geometry, same
+  base repo), so only the quantization type varies. The distribution tells the story the score
+  hides: every one of 100 items changes at every tier, symmetric KL vs Q4 is 0.463 (Q3) and
+  0.582 (Q2), and argmax agrees with Q4 on only 75 and 70 items. Two method notes recorded there —
+  raw log-probabilities are not comparable across tiers (Q2's compressed logits make it look
+  *better*, +1.43 nats, an artifact that vanishes after normalizing), and a paired design needs
+  ~5× the questions to resolve a 4-point difference.
+
+## [0.27.1] - 2026-09-30
+
+### Added
+- **Two new session gates (G19, G20) and a laguna gate fixture; sanitizer and fuzz coverage.**
+  G19/G20 hold every architecture's client-owned-conversation path (`GenerateRequest::messages`,
+  with and without `preserve_reasoning`) to the byte identity of a fresh-session render while
+  asserting prefix reuse wherever the memory can actually serve it — gated on the new
+  `Session::hybrid_kv()` probe, not on architecture names. `make-tiny-moe.py --arch laguna`
+  emits the Poolside layout (split experts + shared expert + router bias + attention output
+  gate, one dense lead layer, no sliding window), so the full G1–G20 harness runs on the
+  `laguna` registry row. A new `BMOE_SANITIZE` build option (separate build tree) runs the
+  whole suite under ASan+UBSan; sanitizer builds exclude the RPC loopback device, whose
+  upstream `ggml-rpc` misaligned reference UBSan flags. `tests/session_fuzz.py` drives the
+  CLI's stdin protocol the way a real client does and pins its contract: hostile request lines
+  answer recoverably, never crash, and never poison the session.
+- **KV-cache element types (`--cache-type-k` / `--cache-type-v`).** `RunConfig::cache_type_k/v`
+  flow to the public `llama_context_params` (`type_k`/`type_v`) at context creation, with a
+  `flash_attn` override ("", "on", "off" — empty keeps upstream's AUTO) next to them; the CLI
+  forces flash attention on when V is quantized, since upstream throws otherwise. Measured on a
+  9B dense model: q8_0/q8_0 halves the KV allocation (64 → 34 MiB at n_ctx 2048, linear in
+  context) and leaves mean NLL unchanged (2.17794 → 2.17237 on the 100-question tinyMMLU
+  protocol, Δ inside noise; answer flips 8 for / 4 against). At 32k context — the regime where
+  quantization error compounds — the same verdict holds: a 31.8k-token novel document scores
+  NLL 1.49834 (f16) vs 1.49625 (q8_0/q8_0), Δ 0.002 nats against a 0.017-nat standard error,
+  next-token hits 20258 vs 20273 of 31765 (63.8% both arms). Long-YaRN models stay unmeasured
+  for *quality* (their KV geometry is now measured — see `docs/serve.md`).
+  Speed profile at a 15.3k-token fill (generate mode, 16 tokens): decode 0.652 → 0.586 s/tok
+  (~11% faster with q8) while prefill is 1.49× slower (3539 vs 2373 s; dequant tax in
+  the wide batched attention) — attention at fill is compute-bound on CPU, so q8 KV buys RAM
+  and context length, not throughput.
+- **`--batch N` (`RunConfig::n_batch`): prefill batch-width override.** The one-batch-prefill
+  doctrine (`n_batch = n_ctx`) assumed the output buffer fits; that buffer scales
+  batch × vocabulary, so a 32k-token teacher-forced run on a ~250k-token vocabulary asks for
+  ~30 GiB of logits and cannot run at all on a workstation. `--batch 512` feeds the prompt in
+  ubatch-wide slices; scoring is chunk-invariant (each position attends to the same KV either
+  way), and session semantics are untouched (default 0 keeps the doctrine). Validation rejects
+  `n_ubatch > n_batch` when the override is set.
+- **`scripts/humaneval-bench.py` runs dense models.** The harness hardcoded `--moe-stream`,
+  which the engine (rightly) refuses for an architecture without a registry recipe, so dense
+  baselines could not use it; a `--dense` flag omits the streaming flags. The shutdown path now
+  closes the CLI's stdin after `close` — with stdin left open the CLI's reader thread blocks in
+  getline and the process never exits.
+
+### Changed
+- `docs/session.md` documents the hybrid full-clear rule and the reuse regime probe.
+
 ## [0.28.0] - 2026-09-29
 
 ### Changed
@@ -189,6 +287,195 @@ Semantic Versioning.
   checks as N/A there instead of passing them vacuously; their byte-identity halves still run.
 - **Ornith-1.5-35B-A3B**, which is the `qwen35moe` architecture and needed no engine change.
 - Both models in the Android catalog at Q4_K_M.
+
+## [0.24.3] - 2026-09-18
+
+### Changed
+
+- **`bmoe-rsbench` gains `cutsweep`**: the rescuable rollback shape (c tokens cut into the
+  prefill × m single-token steps) with a per-cell no-rollback shape-control row. Baseline
+  results on the unfixed pin: vanilla restores plane d of the last multi-token ubatch —
+  exact only at m=0 (3/9 cells) and silently stale/garbage otherwise (the m-law of 0.24.2's
+  session, plus the resolved "d=8 anomaly": a read of a plane the rm ubatch never wrote).
+  Top-of-file mechanism comment updated to the resolved plane law; the old sweep's EXACT
+  cells are documented as argmax robustness on unrescuable shapes.
+
+### Documented
+
+- **ADR-004 Addendum 3**: the kernel-level snapshot-plane law; the ubatch-shape-noise
+  confound (split prefills move logits by ~3.6 with no rollback anywhere — no bitwise
+  comparison against a differently-shaped reference is admissible on this backend, and
+  upstream's own multi-seq fixture fails on vanilla master for exactly this reason); the
+  decision to implement the upstream index-shift restore (`fix/rs-rollback-index-shift` on
+  `cjl4hd/llama.cpp`, separate from reserve PR #29085) over ubatch-replay-before-restore,
+  with its accepted costs (`seq_rm` honest refusals, no rollback into checkpoint-loaded
+  state). Engine code unchanged; hybrid edit turns still full-clear until the upstream fix
+  lands and a submodule bump carries it.
+
+## [0.24.2] - 2026-09-16
+
+### Added
+
+- **Session residency: engine-side multi-turn conversations** (`feat/session-residency`).
+  **Hybrid/recurrent architectures (lfm2moe, qwen35moe, …) are excluded:** a partial `seq_rm`
+  rewinds positions but not the per-sequence cell state, so decoding after a mid-sequence rewind
+  fails (`llama_decode: failed to decode, ret = 2`); those models re-prefill every turn (the
+  pre-residency behavior) while keeping their engine-held `chat_history`. A
+  `generate` request may carry a `messages` array (role/content pairs) alongside — or instead of —
+  the flat `prompt`: the engine renders its chat template over the client-owned conversation and
+  reuses the KV prefix of the longest common history, prefilling only the diverging suffix. This
+  makes a stateless HTTP bridge (or any OpenAI-style client) cheap on the second turn: appending
+  one message re-prefills a few hundred tokens instead of the whole conversation, while compaction,
+  edited messages and retries reduce to the same truncate-and-extend path — no cache-coherence
+  logic anywhere, because every request carries the authoritative history. `BMOE_DONE` gains
+  `n_reused` (KV prefix carried over) so `prefill_tps` stays honest under reuse; `bmoe-serve.py`
+  forwards plain-text OpenAI conversations verbatim (non-text content falls back to the flattened
+  prompt path). The assistant commit is skipped for client-history turns: the next request carries
+  the authoritative array, so appending the reply would only diverge from it.
+- **Append-only prefix reuse on hybrids.** When a hybrid turn's rendered prompt strictly extends
+  the resident token mirror (client echoed the previous reply verbatim, then added messages), the
+  unconditional hybrid clear is skipped: the diff finds the full prompt resident, no `seq_rm`
+  runs, and cells only grow — a continuation turn skips its whole prefill. Every failure, cancel,
+  overflow and decode-fail path resets the mirror so the next turn full-clears. Measured limits,
+  both structural: LFM2.5-class reasoning lands in the cache between prompt and answer, which no
+  client echoes back, and qwen3.5's template silences thinking by baking an empty `<think>` span
+  into the generation prompt — so the two mainstream hybrid families cannot hit the path today;
+  the mechanism is proven and waiting on templates, not code.
+- **`--rs-seq N`: recurrent-state snapshot budget** (default 0 = off). Wires the engine to
+  upstream's experimental per-token recurrent-state snapshots, which make a bounded partial
+  `seq_rm` legal on hybrids: the generic diff path then serves them like transformers (rewind
+  within budget restores, beyond it falls back to the full clear). Measured on a 9B qwen35:
+  reuse engages, but restore is **not bit-exact** — greedy decoding yields different output for
+  restored vs freshly-prefilled prefixes — so the flag ships off by default and tracks the
+  upstream fix. The bridge's `/v1/chat/completions` also accepts a per-request `think` flag
+  (default true) for templates that honour it.
+- **`preserve_reasoning`: append-reuse for thinking hybrids.** A new request field (session
+  protocol and HTTP bridge) asks the template to keep reasoning in re-rendered history turns
+  (LFM2.5's `preserve_thinking` variable; templates without one ignore the flag). A client that
+  echoes the reply's reasoning back inside the assistant content then makes the next turn's
+  render a strict extension of what was generated, so the append-reuse path — previously limited
+  to non-thinking stacks — serves a thinking hybrid at delta-only prefill. Measured on
+  LFM2.5-8B-A1B: continuation turns prefill 17 tokens (`n_reused` 101 → 235 across the chain)
+  with correct answers, vs a full re-prefill without the echo. Also documented: lfm2moe is on
+  upstream's rollback allowlist but crashes during graph reserve with snapshots enabled —
+  a fixed node-pool overflow, invariant to context/ubatch/budget — recorded as the third
+  upstream gate for hybrid residency.
+- **`--auto-echo` on the bridge: append reuse for unmodified OpenAI clients**
+  ([ADR-003](docs/adr/003-bridge-auto-echo.md)). The bridge records each reply's exact
+  `(reasoning, answer)` span and rewrites matching assistant history turns to
+  `<think>reasoning</think>answer` before the engine sees them, so thinking hybrids get
+  delta-only prefill without any client cooperation. Against aider it also canonicalizes
+  the message array — aider's edit-format boilerplate rides only the newest user turn, so
+  the bridge strips it from user turns and relocates it into the system prompt once.
+  Measured with aider on LFM2.5: edit turns still full-clear (aider re-adds the edited
+  file with fresh content; a hybrid cannot rewind), but pure-question follow-ups prefill
+  ~26 tokens reusing ~1700 in ~1.6 s instead of ~40 s of full prefill. Exact-match only:
+  edited or regenerated answers, turns already containing `<think>`, and unknown replies
+  are never rewritten — they fall back to the safe full re-prefill. Off by default.
+- **The LFM2 graph-reserve blocker is root-caused and upstreamed.** The crash
+  (`GGML_ASSERT(obj_new)`, needed 836640 vs available 836272 — one ggml_tensor object
+  short) reproduces on pristine upstream master and is a budget-list omission:
+  `graph_max_nodes()` gives the linear-attention family an elevated node budget, but the
+  LFM2 archs — though on the rollback allowlist — were missing from it. Fix contributed
+  upstream ([ggml-org/llama.cpp#29085](https://github.com/ggml-org/llama.cpp/pull/29085):
+  2-line arch addition plus lfm2/lfm2moe rows for `test-recurrent-state-rollback`, which
+  previously never exercised either arch; 7/7 with the fix). Routing supersedes ADR-004
+  §2: the PR came from the user's own fork per mainline contribution flow, not from
+  `Helldez/llama.cpp` — the Helldez fork-branch option remains reserved for anything that
+  must touch the submodule pin before an upstream merge. *(Correction, same release: the
+  "snapshot restore is still not bit-exact at depths 3 and 8" claim in this bullet was
+  falsified the same day — the measuring harness cleared its own pending rollback before
+  comparing. See the `bmoe-rsbench` bullet and ADR-004 Addendum 2 for the corrected
+  mechanism.)*
+  `--rs-seq` stays default-off. Evidence: new `tools/bmoe-rsbench` (`reserve` / `diverge`
+  / `sweep` / sensitivity probe), built with `-DBMOE_BUILD_TOOLS=ON`.
+- **`bmoe-rsbench` rewritten: the exactness "blocker" was a harness bug, and the real law
+  is snapshot-plane staleness ([ADR-004](docs/adr/004-hybrid-residency-blockers.md)
+  Addendum 2).** The original `diverge` mode compared a rolled-back context against a fresh
+  one — but its continuation helper opened with a full `seq_rm(-1,-1)`, wiping the pending
+  rollback it was supposed to exercise; every earlier "non-bit-exact restore" result
+  (`40` vs `420`, depth-3/8 DIFFERs on both GDN families) measured that artifact. The
+  rewritten tool feeds both sides of every comparison cell identical token sequences,
+  never touches the pending rollback, and adds a `sweep` mode (rollback depth ×
+  post-prefill single-token steps × rm batch shape, with a per-prompt state-sensitivity
+  probe) plus predicted-vs-observed output. Measured law on both qwen35 and lfm2moe, pin
+  and patched clone agreeing: rollback directly after the last multi-token ubatch is
+  **exact at every tested depth**; one or more single-token decode steps before the
+  rollback diverge on **both families at every depth** — snapshot planes d ≥ 1 go stale
+  because a ubatch writes only `min(n_seq_tokens, K)` planes. That staleness (not a
+  general non-exactness) is why `--rs-seq` stays default-off, and it suggests a cheap
+  upstream fix: replay the trailing tokens through one ubatch before restoring. Open
+  anomaly: lfm2moe at m=0, d=8 diverges identically in both rm shapes, unexplained by the
+  law and unreproduced elsewhere in the matrix.
+- **`scripts/bench-features.sh`: one-command before/after proof of the residency features.**
+  Serves the model through the bridge on an isolated port (default 8019; a server on another
+  port is untouched), runs a 3-turn chain with verified answers (a faster run with wrong answers
+  reports FAIL, never a win), and prints per-feature markdown rows: warmup off/on, reasoning
+  echo off/on (skipped behaviorally when the model emits no `reasoning_content`), and `--rs-seq`
+  off/on. Measured on Ling-mini-2.0, warmup cut the first turn's prefill ~35× (2.19 s → 0.06 s);
+  see [serve.md](docs/serve.md) for the table.
+- **Warmup: frontload the conversation prefix at server start** (`bmoe-serve.py`). After each
+  request the bridge persists the stable prefix (everything but the in-flight user turn) to
+  `~/.cache/bmoe-serve/warmup.json` (0600); at startup it replays that prefix through the
+  messages path in short segments (`n_predict=0`, prefill-only), so a client's FIRST query of a
+  session pays delta-only prefill instead of the whole conversation — speculative-safe by
+  construction, since the residency diff truncates at the first divergence. Segments release the
+  engine lock between segments, so a real request preempts a running warmup; `--no-warmup`
+  disables the replay. The bridge also logs one greppable `TELEMETRY` line per request
+  (`n_prompt`/`n_reused`/`tokens`/`prefill_s`/`tok_s`/…) because agent clients discard the perf
+  block. The debug request-dump to `/tmp` was removed (it wrote conversation contents to a
+  world-readable file).
+- **`bailingmoe2` recipe row** (inclusionAI Ling-mini-2.0 / Ling-lite-2.0, 16.5B-~1.4B and
+  16.8B-2.75B active). Pure attention stack — not in llama.cpp's hybrid list, so residency
+  applies; 256 routed experts name the standard split suffixes, shared expert and router bias
+  stay resident.
+- **`laguna` recipe row** (Poolside Laguna XS 2.1 / S 2.1, 33B-A3B agentic coding MoE). Pure
+  attention stack — not in llama.cpp's hybrid list, so residency applies. Routed experts name the
+  canonical split suffixes; router bias and one always-on shared expert stay resident.
+- **`olmoe` recipe row** (allenai OLMoE-1B-7B, 6.9B total / 0.99B active). The smallest supported
+  MoE; pure attention, residency applies. Standard split expert suffixes — no shared expert, no
+  router bias, no leading dense blocks.
+
+## [0.24.1] - 2026-09-16
+
+### Added
+
+- **Serve the engine to agent tooling (`scripts/bmoe-serve.py`,
+  [docs/serve.md](docs/serve.md)).** The engine has no HTTP server — it serves prompts over the
+  `--session` stdin protocol — so a stdlib-only Python bridge now wraps that protocol in an
+  OpenAI-compatible endpoint (`/v1/chat/completions`, streaming and not, plus `/v1/models`),
+  keeping the model loaded and the expert cache warm between requests. opencode (or anything
+  speaking `/v1/chat/completions`) can use the engine as its local model; reasoning arrives
+  separately in `reasoning_content`, and every response carries the same perf block the CSV sink
+  records. Requests are serialised: one engine session, one generation at a time. The bridge is
+  the single entry point — it resolves engine and model itself (`--engine`/`--model`, else
+  `$BMOE_ENGINE`/`$BMOE_MODEL`, else the host build or a bundle's `bmoe-cli` beside it), clamps
+  client `max_tokens` to its `--max-tokens` ceiling so an oversized budget cannot sit in the
+  context window for tens of minutes, and retries once with a halved budget when a request
+  overflows `n_ctx`. Also `scripts/build-arm64.sh`: a cross-built, self-contained ARM64
+  GNU/Linux bundle (`bmoe-arm64/`, RUNPATH `$ORIGIN/lib`, baseline `armv8.2-a+dotprod+fp16`)
+  that stages the bridge alongside the CLI, so the server runs standalone on an SBC or ARM box.
+
+### Fixed
+
+- **The engine self-reported 0.23.0 after the 0.24.0 cut.** `project(VERSION)` in the top-level
+  `CMakeLists.txt` is the single source of `BMOE_VERSION` and is supposed to move with the app
+  version in the release PR (the rule after the same bug bit the 0.20.0 release); the 0.24.0
+  release PR missed it, so `--version` and the `engine=` preamble of every 0.24.0 metrics file
+  named an engine that no release cut. `project(VERSION)` moves with this release instead, and
+  the versions ship in step from here on. A stray `</content>` line at the end of this file
+  (leaked fence from the 0.24.0 changelog commit) is removed in the same pass. App version
+  0.24.1 (versionCode 40).
+
+### Documented
+
+- [docs/serve.md](docs/serve.md) now records the two lessons from serving a real agent on a
+  small host: the memory-budget rule for `--ubatch`, and that prefill is the wall on modest
+  CPUs (~20 tok/s measured on a 2015 dual-core laptop — threads, batch width and governor all
+  inside noise, while `--n-expert-used` trades answer quality for speed). The client-side
+  recipe that actually helps lives there too: set the model's real `limit` so the client
+  compacts before overflowing, prefer a minimal agent prompt with fewer enabled tools, and
+  keep conversations short.
 
 ## [0.24.0] - 2026-09-07
 

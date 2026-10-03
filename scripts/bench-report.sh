@@ -38,7 +38,7 @@ CACHE_MB="${CACHE_MB:-auto}"
 UBATCH="${UBATCH:-512}"   # matches the app: a wider graph reserves buffers the expert cache wants
 BENCH_OUT="${BENCH_OUT:-$ROOT/.bench-report}"
 BMOE_CLI="${BMOE_CLI:-$ROOT/build/cli/bmoe-cli}"
-PROMPT="Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field"
+PROMPT="${PROMPT:-Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field}"
 
 # --- 1. binary ------------------------------------------------------------------------------
 if [ ! -x "$BMOE_CLI" ]; then

@@ -1,0 +1,43 @@
+diff --git a/docs/cache-aware-substitution.md b/docs/cache-aware-substitution.md
+index 2b5419b..20758a8 100644
+--- a/docs/cache-aware-substitution.md
++++ b/docs/cache-aware-substitution.md
+@@ -181,5 +181,6 @@ Every number above is from a desktop, where flash is a large share of a token. O
+ share is between 15 % and 56 % depending on the model and the budget, so the throughput column will
+ compress, and by how much is the device A/B this feature is owed before it earns a default or a
+ place outside Experimental. The quality evidence is two held-out texts, 100 tinyMMLU questions and
+-50 HumanEval problems, on one model; a second architecture (Gemma 4, gpt-oss) is the obvious next
+-cell.
++50 HumanEval problems, now on two architectures: Qwen3.6 and Cyber-Tiel (a Qwen3.5-family
++coder MoE) — both quality-neutral (Cyber-Tiel: tinyMMLU 66.0 % → 67.0 %, HumanEval pass@1
++43/50 → 43/50). A third architecture (Gemma 4, gpt-oss) is the obvious next cell.
+diff --git a/docs/host-benchmarks.md b/docs/host-benchmarks.md
+index 8f87816..776fc77 100644
+--- a/docs/host-benchmarks.md
++++ b/docs/host-benchmarks.md
+@@ -49,7 +49,7 @@ sections; each feature's own doc carries its dedicated protocol.
+ 
+ | Feature | Best model | Improvement | Verdict | Quality / caveat |
+ |---|---|---|---|---|
+-| **`--expert-substitute 0.15`** | Cyber-Tiel (~18% miss headroom) | **+47.2%** (1.88 → 2.77 tok/s) | **Use-when**: thrash profile — the worst hit rates pay most | accuracy gate on record for Qwen3.6 (HumanEval50/TinyMMLU); this cell's text ungated |
++| **`--expert-substitute 0.15`** | Cyber-Tiel (~18% miss headroom) | **+47.2%** (1.88 → 2.77 tok/s) · **+161%** in warm edit-turn sessions (0.96 → 2.49 tok/s) | **Use-when**: thrash profile — the worst hit rates pay most | gated on two models, both neutral: Qwen3.6 and Cyber-Tiel (HumanEval50 43/50 vs 43/50, tinyMMLU 66.0% → 67.0%) |
+ | `--drop-cold-experts 0.75` | device curve · Cyber-Tiel (matched host cell) | **+55%** at the 0.75 knee · **+32.3%** host (1.88 → 2.49) | **Use-when**: thrash models (the app default is 75%) | non-deterministic — always report the drop rate; and see the prefill row below |
+ | `--mtp --draft 3` | Qwen3.6-MXFP4 (DRAM-bound host) | **+29%** clean · +15.1% under the drop recipe | **Use-when**: compute/DRAM-bound — not on flash-bound cells | verified speculation, not byte-identical; only +5.2% on the flash-bound carrier cell (Cyber-Tiel Q4_K_M) |
+ | `--n-expert-used 6` | Qwen3-30B (device) | **+24.3%** (Gemma-4-26B: +22.1%) | **Use-when**: accepting the quality trade | text diverges from the first differing routing; single-prompt check only |
+@@ -495,10 +495,12 @@ Reading the cells:
+ 
+ - **Substitution is the biggest single win measured on this host** (+47.2%): 18.1% of routing
+   slots reranked to already-resident experts (14788/81920 at margin 0.15× score range) turns
+-  hard faults into cache hits — stall s/tok collapses 0.180 → 0.060. Lossy: per the quality-gate
+-  rule, the accuracy evidence lives in the substitution doc's protocol (HumanEval50/TinyMMLU);
+-  the gate was measured on Qwen3.6, so treat this cell's text as ungated until the same gate
+-  runs on Cyber-Tiel.
++  hard faults into cache hits — stall s/tok collapses 0.180 → 0.060. **Quality-gated on this
++  model** (2026-09-21, same protocol as the Qwen3.6 gate — 100 tinyMMLU + 50 HumanEval, λ=0 vs
++  λ=0.15): tinyMMLU 66.0% → 67.0%, HumanEval pass@1 43/50 → 43/50 (three problems swap each
++  way, net zero) — quality-neutral. The gate harness runs the warm-session regime the knob
++  targets: 0.96 → 2.49 tok/s (+161%), cache hit 49.5% → 85.7%, flash reads/token 288 → 56 MiB
++  (−81%).
+ - **Drop 0.75 confirms its published recipe** (+32.3%): stall halved. **`--drop-in-prefill`
+   actively hurts** (−11.6% vs drop alone): dropping during prefill churns a cold cache and the
+   decode-time fault count explodes (26.6 → 158.5 majflt/tok). Keep prefill dropping off.

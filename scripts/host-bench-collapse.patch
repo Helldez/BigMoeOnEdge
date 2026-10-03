@@ -1,0 +1,168 @@
+diff --git a/docs/host-benchmarks.md b/docs/host-benchmarks.md
+index 2143275..61c65ab 100644
+--- a/docs/host-benchmarks.md
++++ b/docs/host-benchmarks.md
+@@ -23,6 +23,11 @@ branches until #197 merges — the cell (c) rows were measured from the arc tree
+ | **b) bmoe streaming** | `--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon` (the engine's lossless stack) |
+ | **c) bmoe + llama-side features** | (b) served over the bridge with session residency: warmup replay, `--auto-echo` append reuse; engine built on the `bench/host-rs` llama branch (recurrent snapshot rollback fixes) with `--rs-seq` eligible |
+ 
++Each model's raw cell table is collapsed under its own <details> below the section heading —
++open it for the engine commits and fault/hit columns; the narrative bullets carry the
++interpretation. The runnable flag sets derived from these rows live in
++[recipes.md](recipes.md).
++
+ ## Contents
+ 
+ - [Feature scoreboard — best measured result per feature](#feature-scoreboard--best-measured-result-per-feature)
+@@ -179,6 +184,9 @@ divergence turn with rs-seq OFF — the generic diff path chops freely — while
+ 
+ ## Ornith 1.5-35B (Qwen3.5-family MoE, 20.2 GB, ~2× host RAM)
+ 
++<details>
++<summary><strong>Measured cells — click to expand</strong></summary>
++
+ | Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
+ |---|---|---:|---:|---:|---:|---:|---:|
+ | a) mmap baseline | arc `238aef6` | 145 | 31.9 | **1.39** | — | — | **470** |
+@@ -188,6 +196,8 @@ divergence turn with rs-seq OFF — the generic diff path chops freely — while
+ | c) warmup + auto-echo | `bench/host-rs@2a8d47ac9` | — | **12.8 (T3, −50%)** | **2.54 (T3, +69%)** | — | — |
+ | c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 16.7 / 14.5 (T2) | 1.65 / 1.62 | — | — |
+ | c5) divergence, rs-seq 64 | `bench/host-rs@2a8d47ac9` | — | 20.1 / **15.5 (T2)** | 1.15 / 1.18 | **T2: 33 prompt / 23 reused** | — | — |
++</details>
++
+ 
+ Reading the cells:
+ 
+@@ -221,6 +231,9 @@ Reading the cells:
+ > — lives in
+ > [recipes.md](recipes.md#cyber-tiel-coder-35b-a3b-qwen35-family-moe-coder-210-gb-2-host-ram).
+ 
++<details>
++<summary><strong>Measured cells — click to expand</strong></summary>
++
+ | Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
+ |---|---|---:|---:|---:|---:|---:|---:|
+ | a) mmap baseline | arc `2070368` | 47 | 61.8 | **1.29** | — | — | **616** |
+@@ -229,6 +242,8 @@ Reading the cells:
+ | c) warmup + auto-echo | `bench/host-rs@2a8d47ac9` | — | **11.6 (T3)** | **1.6 (T3)** | — | — | — |
+ | c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 47.6 / 42.6 (T2) | 1.2 / 1.3 | — | — | — |
+ | c5) divergence, rs-seq 64 | `bench/host-rs@2a8d47ac9` | — | 2.6 / **19.3 (T2)** | 1.0 / 1.1 | **T1: 1 prompt / 203 reused; T2: 33 prompt / 203 reused** | — | — |
++</details>
++
+ 
+ Reading the cells:
+ 
+@@ -259,6 +274,9 @@ Reading the cells:
+ 
+ ## LFM2.5-8B-A1B (LFM hybrid MoE, 5.0 GB, fits host RAM comfortably — the contrast case)
+ 
++<details>
++<summary><strong>Measured cells — click to expand</strong></summary>
++
+ | Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
+ |---|---|---:|---:|---:|---:|---:|---:|
+ | a) mmap baseline | arc `14cdfe8` | 10.5 | 1.65 | **9.69** | — | — | 0 |
+@@ -268,6 +286,8 @@ Reading the cells:
+ | c) warmup + auto-echo | `bench/host-rs@2a8d47ac9` | — | **1.23 (T3)** | 9.3 (T3) | — | — | — |
+ | c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 7.56 / 2.82 (T2) | 7.5 / 9.1 | — | — | — |
+ | c5) divergence, rs-seq 64 | `bench/host-rs@2a8d47ac9` | — | 0.12 / **1.25 (T2)** | 8.0 / 9.4 | **T1: 1 prompt / 22 reused; T2: 26 prompt / 22 reused** | — | — |
++</details>
++
+ 
+ Reading the cells:
+ 
+@@ -298,6 +318,9 @@ nor the snapshot-rollback arch lists (verified in `llama-arch.cpp`), and the ggu
+ recurrent/conv state keys or tensors, only standard attention with a sliding window. Every
+ difference below follows from that classification.
+ 
++<details>
++<summary><strong>Measured cells — click to expand</strong></summary>
++
+ | Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
+ |---|---|---:|---:|---:|---:|---:|---:|
+ | a) mmap baseline | arc `8958e88` | 41.9 | 47.5 | **1.37** | — | — | **642** |
+@@ -307,6 +330,8 @@ difference below follows from that classification.
+ | c) warmup + auto-echo | `bench/host-rs@2a8d47ac9` | — | 44.0 (T2) / **13.7 (T3)** | 2.7 (T3) | **T2: 252 prompt / 55 reused; T3: 25 prompt / 310 reused** | — | — |
+ | c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 28.0 / 10.9 (T2) | 2.0 / 2.0 | **T2: 28 prompt / 55 reused** | — | — |
+ | c5) divergence, rs-seq 64 | `bench/host-rs@2a8d47ac9` | — | 1.45 / 11.0 (T2) | 2.0 / 2.2 | **T1: 1 prompt / 54 reused; T2: 28 prompt / 55 reused** | — | — |
++</details>
++
+ 
+ Reading the cells:
+ 
+@@ -339,6 +364,9 @@ Second plain-transformer MoE in the matrix (`bailingmoe2` is in neither the hybr
+ the snapshot-rollback arch lists; the rollback list's BAILINGMOE3 is a different arch).
+ Non-thinking model — its replies carry no reasoning span, which shapes the c-suite below.
+ 
++<details>
++<summary><strong>Measured cells — click to expand</strong></summary>
++
+ | Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
+ |---|---|---:|---:|---:|---:|---:|---:|
+ | a) mmap baseline | arc `b7f3cd0` | 21.3 | 2.26 | **12.59** | — | — | 0.86 |
+@@ -348,6 +376,8 @@ Non-thinking model — its replies carry no reasoning span, which shapes the c-s
+ | c) warmup + auto-echo | `bench/host-rs@2a8d47ac9` | — | **1.07 (T3)** | 12.0–12.7 (T2/T3) | **T2: 27 prompt / 34 reused; T3: 27 prompt / 63 reused** | — | — |
+ | c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 34.4 / 4.94 (T2) | 1.0 / 5.3 | **T2: 27 prompt / 34 reused** | — | — |
+ | c5) divergence, rs-seq 64 | `bench/host-rs@2a8d47ac9` | — | 0.13 / **1.64 (T2)** | 9.4 / 7.5 | **T1: 1 prompt / 31 reused; T2: 27 prompt / 34 reused** | — | — |
++</details>
++
+ 
+ Reading the cells:
+ 
+@@ -375,6 +405,9 @@ characters before terminating — the MAXTOK ladder needed two rungs (192 and 38
+ truncated r1: empty content, FAIL by design; 768 passes). Its template renders history
+ reasoning natively.
+ 
++<details>
++<summary><strong>Measured cells — click to expand</strong></summary>
++
+ | Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
+ |---|---|---:|---:|---:|---:|---:|---:|
+ | a) mmap baseline | arc `9624b13` | 117.7 | 44.5 | 2.44 | — | — | **340.4** |
+@@ -384,6 +417,8 @@ reasoning natively.
+ | c) warmup + auto-echo (c3) | `bench/host-rs@2a8d47ac9` | — | 1.04 (T1) | 2.0–2.4 | T2: 28 prompt / 22 reused; T3: 28 prompt / 50 reused | — | — |
+ | c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 1.16 / 10.2 (T1/T2) | 2.2 / 2.3 | T1: 1 prompt / 21 reused; T2: 28 prompt / 22 reused | — | — |
+ | c5) divergence, rs-seq 64 | `bench/host-rs@2a8d47ac9` | — | 0.75 / **9.5 (T2)** | 2.4 / 2.4 | T1: 1 prompt / 21 reused; T2: 28 prompt / 22 reused | — | — |
++</details>
++
+ 
+ Reading the cells:
+ 
+@@ -410,6 +445,9 @@ thinker than both: the c-suite ran at MAXTOK=192 (r1's think span terminated at
+ chars), but its T1 turn is long enough that the divergence rewind — which must reach
+ past the whole previous turn — exceeded the 64-plane snapshot budget.
+ 
++<details>
++<summary><strong>Measured cells — click to expand</strong></summary>
++
+ | Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
+ |---|---|---:|---:|---:|---:|---:|---:|
+ | a) mmap baseline | arc `dd43788` | 93.2 | 31.9 | 1.43 | — | — | **533.0** |
+@@ -419,6 +457,8 @@ past the whole previous turn — exceeded the 64-plane snapshot budget.
+ | c) warmup + auto-echo (c3) | `bench/host-rs@2a8d47ac9` | — | 35.7 (T2) | 1.3–1.6 | **T2/T3: echo ENGAGED, reuse 0** | — | — |
+ | c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 15.5 (T2) | 1.5 | **T2: 52 prompt / 0 reused** | — | — |
+ | c5) divergence, rs-seq 64 | `bench/host-rs@2a8d47ac9` | — | 21.9 (T2) | 0.84 | **T1: 2 prompt / 22 reused; T2: rewind REFUSED (depth 135 > 64), 52 / 0** | — | — |
++</details>
++
+ 
+ Reading the cells:
+ 
+@@ -456,6 +496,9 @@ neither the hybrid nor the snapshot-rollback arch lists (verified in llama-arch.
+ and the behavior below matches. Non-thinking model — r1 is a plain sentence with no
+ reasoning span.
+ 
++<details>
++<summary><strong>Measured cells — click to expand</strong></summary>
++
+ | Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
+ |---|---|---:|---:|---:|---:|---:|---:|
+ | a) mmap baseline | arc `dd43788` | 8.2 | 1.67 | **10.75** | — | — | 0.00 |
+@@ -465,6 +508,8 @@ reasoning span.
+ | c) warmup + auto-echo (c3) | `bench/host-rs@2a8d47ac9` | — | 0.10 (T1) | 11.2–11.9 | T2: 26 / 36; T3: 26 / 74 — ≡ c2 (no-op) | — | — |
+ | c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 6.9 / 0.99 (T1/T2) | 6.3 / 11.5 | T2: 26 prompt / 34 reused | — | — |
+ | c5) divergence, rs-seq 64 | `bench/host-rs@2a8d47ac9` | — | 0.07 / 0.94 (T1/T2) | 10.1 / 12.6 | T1: 1 prompt / 24 reused; T2: 26 / 34 — ≡ c4 (pool unused) | — | — |
++</details>
++
+ 
+ Reading the cells:
+ 

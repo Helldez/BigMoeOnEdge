@@ -1,0 +1,3 @@
+mmlu rc=0
+he rc=1
+he15 rc=1

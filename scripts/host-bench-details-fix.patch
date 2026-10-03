@@ -1,0 +1,17 @@
+diff --git a/docs/host-benchmarks.md b/docs/host-benchmarks.md
+index 61c65ab..9b580f0 100644
+--- a/docs/host-benchmarks.md
++++ b/docs/host-benchmarks.md
+@@ -23,9 +23,9 @@ branches until #197 merges — the cell (c) rows were measured from the arc tree
+ | **b) bmoe streaming** | `--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon` (the engine's lossless stack) |
+ | **c) bmoe + llama-side features** | (b) served over the bridge with session residency: warmup replay, `--auto-echo` append reuse; engine built on the `bench/host-rs` llama branch (recurrent snapshot rollback fixes) with `--rs-seq` eligible |
+ 
+-Each model's raw cell table is collapsed under its own <details> below the section heading —
+-open it for the engine commits and fault/hit columns; the narrative bullets carry the
+-interpretation. The runnable flag sets derived from these rows live in
++Each model's raw cell table is collapsed under its own `<details>` block below the section
++heading — open it for the engine commits and fault/hit columns; the narrative bullets
++carry the interpretation. The runnable flag sets derived from these rows live in
+ [recipes.md](recipes.md).
+ 
+ ## Contents

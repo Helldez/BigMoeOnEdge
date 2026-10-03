@@ -1,0 +1,390 @@
+diff --git a/docs/recipes.md b/docs/recipes.md
+new file mode 100644
+index 0000000..ddadf28
+--- /dev/null
++++ b/docs/recipes.md
+@@ -0,0 +1,384 @@
++# Recipes — the measured configuration per model
++
++The feature scoreboard in [host-benchmarks.md](host-benchmarks.md) answers "which feature
++wins"; this doc answers "what should I actually run". One section per model: the
++recommended flag set, where each flag comes from, what it measured on that model, and the
++total speedup against the plain-mmap baseline that any llama.cpp-based runtime starts
++from. Every number is copied from [host-benchmarks.md](host-benchmarks.md) (host: 4-core
++x86-64, 11 GB RAM, SSD — [method](benchmark-method.md)); nothing here is measured
++anywhere else, so the two docs must move together.
++
++**Provenance legend:**
++
++- **bmoe-main** — ships in Helldez's BigMoeOnEdge (`origin/main`): the streaming engine,
++  its compute/io knobs, and the expert-ready seam commit in the submodule. This fork
++  builds on that engine; these are not the fork's to claim.
++- **fork (this repo)** — added by the `cjl4hd` fork: the session-residency layer
++  (`--rs-seq`, the serve bridge, warmup replay, `--auto-echo`) and seam PR #29085.
++- **mainline (llama.cpp)** — inherited from llama.cpp (e.g. ubatch; the ngram-mod
++  drafting stack, upstream PR #19164).
++- **refuted / superseded** — implemented, measured, and rejected; kept per
++  [ADR-005](adr/005-keep-off-features-policy.md). Provenance for these is bmoe-main's
++  unless marked fork.
++
++Each model's per-flag table is collapsed; open it for the flag-by-flag measurements and
++verdicts. The models are grouped by memory regime, because the regime — not the
++architecture — decides which layer pays.
++
++## Contents
++
++**Past RAM (~2× host RAM) — bmoe-main's streaming engine pays:**
++
++- [Ornith 1.5-35B](#ornith-15-35b-qwen35moe-hybrid-202-gb--2-host-ram)
++- [Cyber-Tiel-Coder-35B-A3B](#cyber-tiel-coder-35b-a3b-qwen35moe-hybrid-coder-210-gb--2-host-ram)
++- [Qwen3.6-35B-A3B](#qwen36-35b-a3b-qwen35moe-hybrid-221-gb--2-host-ram)
++- [Qwen3-30B-A3B](#qwen3-30b-a3b-qwen3moe-plain-moe-186-gb--2-host-ram)
++- [Laguna-XS-2.1](#laguna-xs-21-laguna-plain-moe-189-gb--2-host-ram)
++
++**Fits RAM — the stack is off; the fork's session layer is the value:**
++
++- [Ling-mini-2.0](#ling-mini-20-bailingmoe2-plain-moe-99-gb--barely-fits-host-ram)
++- [LFM2.5-8B-A1B](#lfm25-8b-a1b-lfm2moe-hybrid-50-gb--fits-host-ram-comfortably)
++- [OLMoE-1B-7B](#olmoe-1b-7b-olmoe-plain-moe-40-gb--fits-host-ram-comfortably)
++
++The pattern all eight establish: **past-RAM models buy bmoe-main's streaming + substitution
++(+42–70% streaming decode, +47% substitution on the best cell); fits-RAM models leave the
++stack off (−6% to −31%) and take the fork's session layer (warmup ~10–56×, follow-up
++prefill ~4–6× lower, divergence rewind 2.2–2.3× where it engages).** Model size decides
++which layer pays.
++
++## Past-RAM models — bmoe-main's decode, the fork's turn latency
++
++Three `qwen35moe` hybrids and two plain-transformer MoEs at ~2× host RAM. The mmap
++baseline thrashes (129–642 majflt/tok); the streaming stack reads instead and wins
+++42–70% decode, and on the plain MoEs prefill speeds up too. The fork's session layer
++then owns prefill and turn latency; its decode contribution is 0% by design.
++
++### Ornith 1.5-35B (`qwen35moe` hybrid, 20.2 GB, ~2× host RAM)
++
++**Recommended recipe (single-shot / cold sessions):**
++
++```bash
++bmoe-cli -m Ornith-1.5-35B-Q4_K_M.gguf \
++  --moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon
++```
++
++**Add for served / multi-turn sessions:** warmup replay + `--auto-echo` (the bridge).
++`--rs-seq 64` is eligible on the bench build — its divergence rewind engaged (33 prompt /
++23 reused, answer verified) but on this IO-bound host it proved mechanism, not latency:
++the rewind's wall-clock win needs a host where skipped tokens are worth skipping (see
++Cyber-Tiel). `--auto-echo` echo-reuse cannot engage on the qwen35 template (empty `<think>`
++baked into re-rendered history) until the first echoed turn reconciles.
++
++<details>
++<summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
++
++| Flag | Provenance | Measured on this model | Verdict |
++|---|---|---|---|
++| streaming stack (a→b) | **bmoe-main** | **+48%** (1.39 → 2.06 tok/s), majflt/tok 470 → 129 | **On** — the base for past-RAM models |
++| `--ubatch 512` | **mainline** | protocol default | **On** (protocol) |
++| warmup replay (bridge) | **fork** | T1 prefill 40.7 → **8.6 s (4.7×)** — the largest absolute warmup in the matrix (32 s cut) | **On** for served use |
++| `--auto-echo` (bridge) | **fork** | T3 prefill −50% (28 prompt / 98 reused), T3 decode **+69%**; T2 stays a full clear (first echoed turn reconciles) | **On** for served use |
++| `--rs-seq 64` | **fork** (seam PR #29085) | divergence rewind ENGAGED (T2 33 prompt / 23 reused, 62 correct, no degeneration) — but prefill ≈ unchanged (15.5 vs 14.5 s): IO-bound host, cached-token compute is not the bottleneck | **On** for served use; latency win is host-dependent |
++| `--mtp` | **bmoe-main** (mainline concept) | not measured on this model | candidate cell |
++| `--expert-substitute` · `--drop-cold-experts` | **bmoe-main** | not measured on this model (+47.2% / +32.3% on Cyber-Tiel, same family) | Use-when: thrash (by family evidence) |
++
++</details>
++
++**Totals (two metrics).** (1) bmoe vs llama: baseline 1.39 → **2.06 tok/s (+48%)** with
++faults collapsing 470 → 129 — all bmoe-main. (2) fork vs bmoe-main: warmup 4.7×, T3
++prefill halved with auto-echo, divergence rewind proven live (the index-shift fix's first
++end-to-end proof through the real engine); decode contribution 0% by design.
++
++### Cyber-Tiel-Coder-35B-A3B (`qwen35moe` hybrid coder, 21.0 GB, ~2× host RAM)
++
++The deepest-thrash coder cell (~18% routing miss headroom) and the substitution + MTP
++carrier. The engine's headline numbers live here.
++
++**Recommended recipe (single-shot / cold sessions):**
++
++```bash
++bmoe-cli -m Cyber-Tiel-Coder-35B-A3B-MTP-UD-Q4_K_M.gguf \
++  --moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon \
++  --expert-substitute 0.15
++```
++
++**Add for served / multi-turn sessions:** warmup replay, `--auto-echo`, `--rs-seq 64` —
++the residency trio (fork work, on top of the streaming engine).
++
++<details>
++<summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
++
++| Flag | Provenance | Measured on this model | Verdict |
++|---|---|---|---|
++| streaming stack (`--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon`) | **bmoe-main** | **+70%** (1.29 → 2.19 tok/s), majflt/tok 616 → 72 | **On** — the base for past-RAM models |
++| `--expert-substitute 0.15` | **bmoe-main** | **+47.2%** (→ 2.773 tok/s); quality-neutral: tinyMMLU 66.0 → 67.0%, HumanEval pass@1 43/50 → 43/50 | **Use-when**: thrash — the biggest single decode win |
++| `--drop-cold-experts 0.75` | **bmoe-main** | **+32.3%** (→ 2.493) | **Use-when**: thrash (substitute is the bigger win; the two are not yet measured together) |
++| `--mtp --draft 3` | **bmoe-main** (mainline concept) | **+5.2%** — the cell is flash-bound, so speculation can't pay | off here; **Use-when**: compute-bound |
++| `--io-two-wave` · `--release-mmap` | **bmoe-main** | not yet measured on this model (+25.2% / +5.2% on Qwen3.6, the other deep-thrash cell) | next cells to run here |
++| `--ubatch 512` | **mainline** | protocol default | **On** (protocol) |
++| `--ngram` | **mainline** (ngram-mod, upstream PR #19164) | not measured here (+7.6% on LFM2.5) | workload-dependent |
++| `--rs-seq 64` | **fork** (seam PR #29085) | divergence-turn prefill 42.6 → 19.3 s; composes with warmup — first turn 2.6 s | **On** for served use |
++| warmup replay + `--auto-echo` (bridge) | **fork** (serve bridge) | follow-up prefill 42 → 10–12 s (222/265 tokens reused) | **On** for served use |
++| `--n-expert-used 6` | **bmoe-main** | +24.3% (Qwen3-30B, device) | only with the quality trade accepted |
++| `--route-ahead 2` | **bmoe-main** (experimental) | — | experimental, lossy |
++| `--prefetch 1` · `--predict-prefetch` · `--drop-in-prefill` · `--dense-odirect` | **bmoe-main**, refuted/superseded | −24% / −16% / −11.6% / −0.6% | **Keep-off** |
++
++</details>
++
++**Totals (two metrics).** (1) bmoe vs llama — decode: streaming stack +
++`--expert-substitute 0.15`: **1.29 → 2.77 tok/s = +115%**, at quality-neutral cost on
++both gates (tinyMMLU 66.0 → 67.0%, HumanEval pass@1 43/50 → 43/50). All mechanisms are
++**bmoe-main's** — it is the engine's headline, not the fork's. (2) fork vs bmoe-main —
++session/turn latency, not decode: divergence-turn prefill **2.2× faster** (42.6 → 19.3 s),
++follow-up prefill **~4× lower** (42 → 10–12 s), warmup+rs-seq composition putting T1 at
++2.6 s; the fork's decode contribution on this model is 0% by design. (The gate harness's
++warm-session 0.96 → 2.49 tok/s is substitution's warm-regime win, a bmoe-main mechanism.)
++
++### Qwen3.6-35B-A3B (`qwen35moe` hybrid, 22.1 GB, ~2× host RAM)
++
++The largest model measured, the matrix's deepest thrash, and its first honest rewind
++refusal. Also the compute-bound cell where MTP pays (+29%), and the io-two-wave cell.
++
++**Recommended recipe (single-shot / cold sessions):**
++
++```bash
++bmoe-cli -m Qwen3.6-35B-A3B-UD-Q4_K_M.gguf \
++  --moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon \
++  --io-two-wave --release-mmap
++```
++
++**Add for served / multi-turn sessions:** warmup replay + `--auto-echo` — with a
++template check first: on this model the echo rewrite ENGAGED but never reconciled
++(`n_reused` 0 at every turn; prompts ballooned 52 → 185 → 350), so echo costs prefill and
++buys nothing until the template renders echoed reasoning the way the rewrite produces it.
++`--rs-seq 64` still buys the warmup composition (T1 2.6 s vs 13.2 s full-clear), but the
++divergence rewind REFUSED (depth 135 > 64 planes): a heavy thinker's single turn can
++outrun any affordable snapshot budget — the documented worst case, observed live.
++
++<details>
++<summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
++
++| Flag | Provenance | Measured on this model | Verdict |
++|---|---|---|---|
++| streaming stack (a→b) | **bmoe-main** | **+43%** (1.43 → 2.05 tok/s), majflt/tok **533 → 3.7** (~145× collapse, the deepest in the matrix), prefill 1.7× faster | **On** — the base for past-RAM models |
++| `--io-two-wave` | **bmoe-main** | **+25.2%** (1.763 → 2.208 tok/s, 256-tok regime), hard faults 5.1× lower (175.3 → 34.6/tok) | **Use-when**: past-RAM/thrash |
++| `--release-mmap` | **bmoe-main** | **+5.2%** (1.916 → 2.015, 256-tok regime), majflt/tok 50 → **0.83** (60×), decode reads −24%, load 7 s faster | **Use-when**: past-RAM/thrash |
++| `--mtp --draft 3` | **bmoe-main** (mainline concept) | **+29% clean** (Qwen3.6-MXFP4, DRAM-bound host cell; +15.1% under the drop recipe) — the compute-bound profile where speculation pays | **Use-when**: compute/DRAM-bound |
++| `--expert-substitute 0.15` | **bmoe-main** | quality-gated on this model, neutral (tinyMMLU 66.0 → 67.0% off→on vs stock, HumanEval pass@1 43/50 → 43/50 — per the substitution doc's device-protocol gate); the bench-cell A/B on Cyber-Tiel is the host speed number (+47.2%) | **Use-when**: thrash — quality-gated, neutral |
++| `--ubatch 512` | **mainline** | protocol default | **On** (protocol) |
++| `--ngram` | **mainline** (ngram-mod, upstream PR #19164) | not measured here on host | workload-dependent |
++| `--rs-seq 64` | **fork** (seam PR #29085) | T1 composes (2 prompt / 22 reused, 2.6 s vs 13.2 s); divergence rewind **REFUSED** (depth 135 > 64) — full clear, honest refusal costs ~6 s | **On** for served use (warmup composition); rewind budget-bounded |
++| warmup + `--auto-echo` (bridge) | **fork** (serve bridge) | warmup T1 17.9 → 13.2 s (cold-start only); echo ENGAGED, reuse 0 — never reconciled on this template | warmup **On**; echo **off here** until the template reconciles |
++| `--prefetch 1` · `--predict-prefetch` | **bmoe-main**, refuted | −24% (1.916 → 1.456, faults 50 → 245/tok) / −16% retention-only (1.612, faults 14.8/tok but observer tax) | **Keep-off** |
++
++</details>
++
++**Totals (two metrics).** (1) bmoe vs llama: baseline 1.43 → **2.05 tok/s (+43%)**,
++faults 533 → 3.7 (~145×), prefill 1.7× faster; the deepest-thrash cell also carries the
++biggest relative fault collapse — all bmoe-main. (2) fork vs bmoe-main: warmup+snapshot
++T1 composition (13.2 → 2.6 s) is real; the divergence rewind refuses at depth 135 and the
++echo rewrite never reconciles on this template — the two honest limits of the session
++layer, both documented. Decode contribution 0% by design.
++
++### Qwen3-30B-A3B (`qwen3moe` plain MoE, 18.6 GB, ~2× host RAM)
++
++The reference thinker (MAXTOK ladder needed 768 — r1's think span ran 1313 chars). Third
++plain-transformer in the matrix: every fork classification prediction reproduced.
++
++**Recommended recipe (single-shot / cold sessions):**
++
++```bash
++bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf \
++  --moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon
++```
++
++**Add for served / multi-turn sessions:** warmup replay. `--auto-echo` is a verified
++no-op on this template (it renders history reasoning natively — reuse engages from the
++first follow-up without echoing anything back), and `--rs-seq` is not applicable: as a
++plain transformer, divergence turns are free partial chops without snapshots (c4 reused
++22 tokens with rs-seq OFF; c5 ≡ c4, the snapshot pool simply unused).
++
++<details>
++<summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
++
++| Flag | Provenance | Measured on this model | Verdict |
++|---|---|---|---|
++| streaming stack (a→b) | **bmoe-main** | **+47%** (2.44 → 3.59 tok/s), majflt/tok 340.4 → 1.91, prefill **halved** (44.5 → 22.1 s) — streaming speeds up prefill too on a ~2×-RAM baseline | **On** — the base for past-RAM models |
++| `--ubatch 512` | **mainline** | protocol default | **On** (protocol) |
++| warmup replay (bridge) | **fork** | T1 prefill 24.3 → **1.23 s (~20×)** | **On** for served use |
++| `--auto-echo` (bridge) | **fork** | **verified no-op** (c3 ≡ c2) — the template renders history reasoning natively | **Off** (redundant here, harmless) |
++| `--rs-seq 64` | **fork** (seam PR #29085) | not applicable — divergence turns are free partial chops with rs-seq OFF (c4 T2 28 prompt / 22 reused); c5 ≡ c4 (snapshot pool unused) | **Off** (nothing for it to fix on a plain transformer) |
++| `--n-expert-used 6` | **bmoe-main** | **+24.3%** (device cell) | only with the quality trade accepted |
++| `--mtp` · `--expert-substitute` · `--drop-cold-experts` · `--io-two-wave` | **bmoe-main** | not measured on this model (mtp +29% on Qwen3.6-MXFP4, substitute +47.2% on Cyber-Tiel, two-wave +25.2% on Qwen3.6) | Use-when per their model rows |
++
++</details>
++
++**Totals (two metrics).** (1) bmoe vs llama: baseline 2.44 → **3.59 tok/s (+47%)**,
++prefill halved — all bmoe-main. (2) fork vs bmoe-main: warmup ~20× on first-turn prefill;
++echo and rs-seq are both correctly inert here (native-reuse template, plain transformer)
++— the fork's session layer has nothing to fix beyond warmup, and says so.
++
++### Laguna-XS-2.1 (`laguna` plain MoE, 18.9 GB, ~2× host RAM)
++
++The matrix's first NON-hybrid. Upstream classifies `laguna` as a plain-transformer MoE
++(verified in `llama-arch.cpp`), and every difference below follows from that.
++
++**Recommended recipe (single-shot / cold sessions):**
++
++```bash
++bmoe-cli -m Laguna-XS-2.1-Q4_K_M.gguf \
++  --moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon
++```
++
++**Add for served / multi-turn sessions:** warmup replay only — and leave `--auto-echo`
++off: this template renders history reasoning natively, so the echo rewrite is redundant
++and actually COSTS a 252-fresh reconcile turn (T2: 44 s) before its decode-side T3 win.
++`--rs-seq` is not applicable (free partial chops without it: c4 reused 55 tokens with
++rs-seq OFF; c5 ≡ c4). Reasoning-heavy note: the 192/256-token budgets truncated think
++spans (measured FAIL, then pass at 384); the honest lever today is the request's
++`max_tokens`.
++
++<details>
++<summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
++
++| Flag | Provenance | Measured on this model | Verdict |
++|---|---|---|---|
++| streaming stack (a→b) | **bmoe-main** | **+42%** (1.37 → 1.95 tok/s), majflt/tok 642 → 65, **prefill 47.5 → 34.1 s — the first arch where streaming sped up prefill too** | **On** — the base for past-RAM models |
++| `--ubatch 512` | **mainline** | protocol default | **On** (protocol) |
++| warmup replay (bridge) | **fork** | T1 prefill 30.4 → **1.28 s (~24×)** — composes with the first turn via the free suffix-chop (1 fresh / 54 reused) | **On** for served use |
++| `--auto-echo` (bridge) | **fork** | **redundant and briefly harmful on this template**: T2 buys a 252-fresh reconcile turn (252 prompt / 55 reused, 44 s); visible win is decode-side only (T3 2.75 vs 1.87 tok/s) | **Off** on laguna-class templates |
++| `--rs-seq 64` | **fork** (seam PR #29085) | not applicable — c4 reused 55 tokens with rs-seq OFF; c5 ≡ c4 (snapshot pool unused) | **Off** (nothing for it to fix on a plain transformer) |
++| `--mtp` · `--expert-substitute` · `--drop-cold-experts` · `--io-two-wave` | **bmoe-main** | not measured on this model | Use-when per their model rows |
++
++</details>
++
++**Totals (two metrics).** (1) bmoe vs llama: baseline 1.37 → **1.95 tok/s (+42%)**,
++faults 642 → 65, prefill 1.4× faster — all bmoe-main. (2) fork vs bmoe-main: warmup ~24×
++on first-turn prefill, composing for free on a plain transformer; echo and rs-seq
++correctly inert (native-reuse template). Decode contribution 0% by design.
++
++## Fits-RAM models — the stack is off; the fork's session layer is the value
++
++One barely-fitting edge (9.9 GB), one comfortable hybrid (5.0 GB), one comfortable plain
++MoE (4.0 GB). Zero to near-zero faults in the baseline — the streaming engine has no
++thrash to eliminate and pays its overhead instead (−6% to −31%). The fork's session
++layer is the whole show, and the plain transformers get its warmup for free.
++
++### Ling-mini-2.0 (`bailingmoe2` plain MoE, 9.9 GB, ~barely fits host RAM)
++
++The matrix's sharpest fits-RAM result: the streaming stack's own 7.5 GiB cache pushed a
++9.9 GB model INTO swap — the cache became the memory pressure. Non-thinking model.
++
++**Recommended recipe (single-shot / cold sessions):**
++
++```bash
++bmoe-cli -m Ling-mini-2.0-Q4_K_M.gguf --ubatch 512
++```
++
++**Add for served / multi-turn sessions:** warmup replay — reuse engages from the first
++follow-up with no echo (native reuse, non-thinking template). The aider agent session is
++the highlight: cross-edit-turn reuse **87.5%** (turn B: 576 prompt tokens, 504 reused,
++prefill 20.7 s), divergence anchored at the re-sent changed-file snapshot — batch edits;
++non-edit follow-ups ride the cache.
++
++<details>
++<summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
++
++| Flag | Provenance | Measured on this model | Verdict |
++|---|---|---|---|
++| streaming stack (a→b) | **bmoe-main** | **−31%** (12.59 → 8.63 tok/s), prefill 5.6× slower, faults 0.86 → **19.27**/tok — the 7.5 GiB expert cache plus anon dense copy pushed the model into swap: the cache became the memory pressure | **Off** — the model-plus-cache sum exceeded RAM |
++| `--ubatch 512` | **mainline** | protocol default | **On** (protocol) |
++| warmup replay (bridge) | **fork** | T1 prefill 7.9 → **0.80 s (~10×)** | **On** for served use |
++| `--auto-echo` (bridge) | **fork** | verified no-op (c3 ≈ c2, plus warm-cache decode gains); native reuse from the first follow-up (c1 T2 27/34) | **Off** (redundant on a non-thinking template) |
++| `--rs-seq 64` | **fork** (seam PR #29085) | not applicable — c4 divergence a free partial chop (27/34) with rs-seq OFF; c5 ≡ c4 (pool unused) | **Off** |
++| `--ngram` | **mainline** (ngram-mod) | not measured on this model | workload-dependent |
++
++</details>
++
++**Totals (two metrics).** (1) bmoe vs llama: **negative** (−31%) — the one regime where
++the engine actively loses, and the reason the streaming stack is not a default. (2) fork
++vs bmoe-main: warmup ~10×; native reuse from the first follow-up; and the aider
++edit-turn proof (87.5% cross-edit reuse) is the fork's headline agentic number — the
++session layer paying exactly where agent workloads diverge.
++
++### LFM2.5-8B-A1B (`lfm2moe` hybrid, 5.0 GB, ~fits host RAM comfortably)
++
++The fits-RAM counterpoint to the 35B cells: no thrash to eliminate (0 faults in every
++cell), so the streaming engine has nothing to fix — and the session layer is the whole
++show. Same 3-turn 42/52/62 protocol as Cyber-Tiel; thinking model, LFM hybrid arch
++(the family whose recurrent-rollback node budget seam PR #29085 fixes).
++
++**Recommended recipe (fits RAM — no streaming):**
++
++```bash
++bmoe-cli -m LFM2.5-8B-A1B-UD-Q4_K_M.gguf --ubatch 512
++```
++
++**Add for served / multi-turn sessions** (serve bridge + engine): warmup replay,
++`--auto-echo`, `--rs-seq 64` — here they are the primary value, not an add-on.
++
++<details>
++<summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
++
++| Flag | Provenance | Measured on this model | Verdict |
++|---|---|---|---|
++| streaming stack (b) | **bmoe-main** | **−10.8%** (9.69 → 8.64 tok/s), prefill 1.65 → 7.9 s — no thrash to eliminate, so the stack is pure overhead | **Off** for fits-RAM models |
++| `--ubatch 512` | **mainline** | protocol default | **On** (protocol) |
++| `--ngram` | **mainline** (ngram-mod, upstream PR #19164) | **+7.6%** (7.566 → 8.143), 48.5% acceptance — composes with the rs rollback planes | **Use-when**: repetitive workload |
++| warmup replay (bridge) | **fork** | T1 prefill **7.59 → 1.12 s (6.8×)** — pure prefill speed, no fault storm to fight | **On** for served use |
++| `--auto-echo` (bridge) | **fork** | template natively echoes reasoning: reuse engages from the first follow-up (T2 24/124, T3 24/205), prefill ~1.2 s — no reconcile turn | **On** for served use |
++| `--rs-seq 64` | **fork** (seam PR #29085) | divergence prefill **2.82 → 1.25 s (2.3×)**; composes with warmup — T1 at 0.12 s | **On** for served use |
++| `--mtp` | **bmoe-main** (mainline concept) | not measured on this model (acceptance was measured via ngram verify) | candidate cell |
++| `--expert-substitute` · `--drop-cold-experts` | **bmoe-main** | not measured — a fits-RAM model has ~0 miss headroom to trade | not applicable |
++
++</details>
++
++**Totals (two metrics).** (1) bmoe vs llama — negative here, and that is the finding:
++with no streaming and no faults, bmoe-cli on a fits-RAM model tracks the stock runtime
++(streaming stack −10.8%; do not enable it). The engine's wins are memory-pressure wins,
++and this model has none. (2) fork vs bmoe-main — the fork's best case: session layer
++only, and it dominates: first-turn prefill **6.8× faster** (7.59 → 1.12 s), follow-up
++prefill **~6× lower** (7.56 → ~1.2 s), divergence prefill **2.3× faster** (2.82 → 1.25 s),
++plus `--ngram` (mainline machinery) adding +7.6% decode on repetitive workloads. Decode
++is otherwise unchanged — by design.
++
++### OLMoE-1B-7B (`olmoe` plain MoE, 4.0 GB, ~fits host RAM comfortably)
++
++The mildest fits-RAM penalty in the matrix (−6%) with zero faults in both cells: the
++3.7 GiB expert cache coexists with the 4 GB model — compare Ling-mini, where the same
++cache pushed a 9.9 GB model into swap. The fits-RAM verdict is set by the
++**model-plus-cache sum**, not the model alone. Non-thinking model.
++
++**Recommended recipe (single-shot / cold sessions):**
++
++```bash
++bmoe-cli -m olmoe-1b-7b-0924-instruct-q4_k_m.gguf --ubatch 512
++```
++
++**Add for served / multi-turn sessions:** warmup replay — the largest warmup ratio in
++the matrix (**~56×**, 6.6 → 0.12 s; the whole conversation reuses natively, so the
++replayed prefix is almost entirely recoverable). Echo and rs-seq correctly inert
++(non-thinking template, plain transformer: c4 26/34 free chop, c5 ≡ c4).
++
++<details>
++<summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
++
++| Flag | Provenance | Measured on this model | Verdict |
++|---|---|---|---|
++| streaming stack (a→b) | **bmoe-main** | **−6%** (10.75 → 10.13 tok/s), zero faults in both cells — the cache coexists, but the streamer still pays its overhead | **Off** for fits-RAM models |
++| `--ubatch 512` | **mainline** | confirmed with numbers (256: −0.9% · 1024: −1.7%) | **On** (protocol) |
++| `--dense-odirect` | **bmoe-main**, superseded | −0.6% (neutral — dense reads barely happen post-warmup on a fits-RAM model) | **Keep-off** — superseded by `--dense-weights` |
++| `--ngram` | **mainline** (ngram-mod) | prompt-dependent: **+3.3%** on a repetition prompt (64.5% acceptance, 1.45 tok/verify), **−4.3%** on prose (5.6% draft coverage) | **Use-when**: repetitive workload |
++| warmup replay (bridge) | **fork** | T1 prefill 6.6 → **0.12 s (~56×)** — the largest warmup ratio in the matrix | **On** for served use |
++| `--auto-echo` (bridge) | **fork** | verified no-op (c3 ≡ c2 — nothing to echo); native reuse from the first follow-up (c1 T2 26/34, T3 26/69) | **Off** (redundant on a non-thinking template) |
++| `--rs-seq 64` | **fork** (seam PR #29085) | not applicable — c4 free partial chop (26/34); c5 ≡ c4 (pool unused) | **Off** |
++| `--mtp` · `--expert-substitute` · `--drop-cold-experts` · `--io-two-wave` | **bmoe-main** | not measured on this model | Use-when per their model rows |
++
++</details>
++
++**Totals (two metrics).** (1) bmoe vs llama: mildly negative (−6%) — the friendliest
++fits-RAM case, still nothing for the stack to fix. (2) fork vs bmoe-main: warmup ~56×
++(the matrix's largest), native reuse from the first follow-up, everything else correctly
++inert. The fits-RAM trio (LFM2.5, Ling-mini, OLMoE) completes the pattern with the fork
++as the only paying layer.

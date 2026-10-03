@@ -81,7 +81,7 @@ find_program(PYTHON3 NAMES python3 python)
 
 if(PYTHON3)
     # arch → (fixture id, gguf filename). Each gets a generate fixture + a gate run.
-    foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe")
+    foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe" "laguna")
         set(_model "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-${spec}.gguf")
         set(_fixture "TINY_MOE_MODEL_${spec}")
 
@@ -110,6 +110,16 @@ if(PYTHON3)
     add_test(NAME moe_gates_split
              COMMAND bmoe_moe_gates "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-split-00001-of-00004.gguf")
     set_tests_properties(moe_gates_split PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_split)
+
+    # Session-mode request fuzzing (tests/session_fuzz.py): malformed, type-bent and oversized
+    # request lines against the CLI's stdin protocol must answer recoverably, never crash, and
+    # never poison the session — the valid generate after the garbage must equal the one before
+    # it. Needs the CLI binary and the qwen3moe fixture.
+    if(TARGET bmoe-cli)
+        add_test(NAME session_fuzz COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/session_fuzz.py
+                 $<TARGET_FILE:bmoe-cli> "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
+        set_tests_properties(session_fuzz PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
+    endif()
 else()
     message(WARNING "python3 not found: MoE gates will not run (models cannot be generated)")
 endif()

@@ -20,6 +20,7 @@ for the idea the project is built on.
 | [adding-a-model.md](adding-a-model.md) | How to support a new MoE architecture (a recipe row plus a gate). |
 | [telemetry.md](telemetry.md) | The `BMOE_*` line protocol and CSV schema — the integration contract. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
+| [serve.md](serve.md) | Serving the engine to agent tooling: the OpenAI-compatible bridge, host memory budget, ARM64 Linux bundles. |
 | [decide.md](decide.md) | `--decide`: picking one of a list of choices from a single prefill, with no decode, and keeping the state after a shared prefix between calls. |
 | [cache-sizing.md](cache-sizing.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
 | [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output (with the lossy knobs off). |
@@ -33,6 +34,18 @@ for the idea the project is built on.
 | [npu-prefill.md](npu-prefill.md) | `--prefill-device`: prefill on the NPU and decode on the CPU, a model larger than RAM fed to the NPU two layers at a time, and why decode stays on the CPU. |
 | [android-memory.md](android-memory.md) | What reclaims the engine's memory on a phone, which levers exist (almost none), and why the cache hit rate is what the kernel judges you by. |
 | [pressure.md](pressure.md) | Cache policy under memory pressure: why an unaffordable budget starts a reclaim war, why the adaptive governor was retired, and what the fixed `--cache-mb` / `--dense-weights` levers do. |
+
+## Architecture decisions
+
+ADRs record why it is built this way — read one before "fixing" what it decided.
+
+| ADR | Decision |
+|---|---|
+| [adr/001-hybrid-session-reuse-policy.md](adr/001-hybrid-session-reuse-policy.md) | Hybrid sessions: append-only reuse, snapshot rollback off by default, full-clear fallback. |
+| [adr/002-reasoning-echo.md](adr/002-reasoning-echo.md) | `preserve_reasoning`: keep reasoning resident by echoing it back instead of rewinding state. |
+| [adr/003-bridge-auto-echo.md](adr/003-bridge-auto-echo.md) | `--auto-echo`: the bridge re-embeds reasoning into history server-side, so unmodified OpenAI clients get append reuse. |
+| [adr/004-hybrid-residency-blockers.md](adr/004-hybrid-residency-blockers.md) | Hybrid edit-turn rewind waits on two upstream llama.cpp defects; the reserve fix goes upstream, exactness is not forked now. |
+| [adr/005-keep-off-features-policy.md](adr/005-keep-off-features-policy.md) | Refuted/harmful knobs stay in the CLI default-off; the verdict is documentation (scoreboard, `--help`, findings), not deletion. |
 
 ## Measurements
 

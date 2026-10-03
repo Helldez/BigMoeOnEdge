@@ -1,0 +1,22 @@
+diff --git a/docs/host-benchmarks.md b/docs/host-benchmarks.md
+index fbf75fb..3b00510 100644
+--- a/docs/host-benchmarks.md
++++ b/docs/host-benchmarks.md
+@@ -34,7 +34,7 @@ faults collapse 3.6–9.9× (470 → 129, 616 → 72, 642 → 65 per token): the
+ thrashes, the streamed run reads — and on Laguna prefill speeds up too (47.5 → 34.1 s),
+ since a ~2×-RAM baseline thrashes its prefill as well. Where the model fits, streaming
+ loses: −11% decode on LFM2.5 (0 faults both ways) and −31% on Ling-mini, where the
+-streaming stack's own cache (7.7 GiB) pushed a 9.9 GB model into swap (0.86 → 19.3
++streaming stack's own cache (7.5 GiB) pushed a 9.9 GB model into swap (0.86 → 19.3
+ faults/token) — the cache became the memory pressure. The (b) stack is a tool for memory
+ pressure, not a default. Session residency (c rows) removes most of the per-turn prefill:
+ append reuse with `--auto-echo` reuses 34–310 tokens per follow-up turn (prefill to
+@@ -278,7 +278,7 @@ Reading the cells:
+ - **(a) → (b)**: the sharpest fits-RAM result in the matrix — streaming LOSES 31%
+   decode (12.59 → 8.63 tok/s) and prefill runs 5.6× slower, and for a clean reason:
+   at 9.9 GB the mmap baseline stays essentially resident (0.86 faults/token), while the
+-  streaming stack's expert cache (7.7 GiB) plus its anon dense copy tip the host into
++  streaming stack's expert cache (7.5 GiB) plus its anon dense copy tip the host into
+   swap (19.27 faults/token). Faults went UP, not down — the cache itself became the
+   memory pressure. Confirms the recommendation: streaming is for at-or-past-RAM models.
+ - **(c) suite, second plain transformer, now a non-thinking one**: reuse engages from

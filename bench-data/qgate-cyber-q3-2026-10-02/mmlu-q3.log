@@ -1,0 +1,7 @@
+100 questions
+cell L=0.15 ...
+L=0.15: 64/100 (64.0%), 30.2% of slots substituted
+
+| `--expert-substitute` | tinyMMLU | slots substituted |
+|---|---:|---:|
+| 0.15 | 64/100 (64.0 %) | 30.2 % |

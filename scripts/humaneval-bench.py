@@ -15,6 +15,9 @@ Usage:
         --model M.gguf --out results/ --lambda 0 --lambda 0.15 [--limit 50]
 
 HumanEval.jsonl.gz is data/HumanEval.jsonl.gz from github.com/openai/human-eval (MIT).
+
+Pass --dense for a model without a MoE recipe (plain completion path): the streaming flags are
+omitted and the streaming fields are expected to be zero/absent in the results.
 """
 
 import argparse
@@ -84,8 +87,10 @@ def run_cell(args, lam, problems, results_path):
 
     cmd = [
         args.cli, "-m", args.model, "-t", str(args.threads), "-c", str(args.ctx), "--ubatch", str(args.ctx),
-        "--moe-stream", "--cache-mb", str(args.cache_mb), "--io-threads", "4", "--overlap", "--session",
     ]
+    if not args.dense:
+        cmd += ["--moe-stream", "--cache-mb", str(args.cache_mb), "--overlap"]
+    cmd += ["--io-threads", "4", "--session"]
     if lam > 0:
         cmd += ["--expert-substitute", str(lam)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -124,6 +129,9 @@ def run_cell(args, lam, problems, results_path):
             print(f"  {p['task_id']}: {'pass' if r['passed'] else 'FAIL'}  ({len(done)}/{len(problems)})", flush=True)
     proc.stdin.write(json.dumps({"cmd": "close"}) + "\n")
     proc.stdin.flush()
+    # EOF also ends the session (see the CLI reader): with stdin left open the reader thread
+    # blocks in getline and the process never exits.
+    proc.stdin.close()
     proc.wait(timeout=60)
     return done
 
@@ -141,6 +149,8 @@ def main():
     ap.add_argument("--cache-mb", type=int, default=2000)
     ap.add_argument("--ctx", type=int, default=1024)
     ap.add_argument("--timeout", type=float, default=10.0)
+    ap.add_argument("--dense", action="store_true",
+                    help="model has no MoE recipe: run the plain completion path (no streaming flags)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)

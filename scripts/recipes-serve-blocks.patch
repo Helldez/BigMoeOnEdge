@@ -1,0 +1,184 @@
+diff --git a/docs/recipes.md b/docs/recipes.md
+index ddadf28..65c44db 100644
+--- a/docs/recipes.md
++++ b/docs/recipes.md
+@@ -1,8 +1,9 @@
+ # Recipes — the measured configuration per model
+ 
+ The feature scoreboard in [host-benchmarks.md](host-benchmarks.md) answers "which feature
+-wins"; this doc answers "what should I actually run". One section per model: the
+-recommended flag set, where each flag comes from, what it measured on that model, and the
++wins"; this doc answers "what should I actually run". One section per model: a single-shot
++recipe plus a served/multi-turn command (over the `bmoe-serve.py` bridge — see
++[serve.md](serve.md)), where each flag comes from, what it measured on that model, and the
+ total speedup against the plain-mmap baseline that any llama.cpp-based runtime starts
+ from. Every number is copied from [host-benchmarks.md](host-benchmarks.md) (host: 4-core
+ x86-64, 11 GB RAM, SSD — [method](benchmark-method.md)); nothing here is measured
+@@ -63,8 +64,16 @@ bmoe-cli -m Ornith-1.5-35B-Q4_K_M.gguf \
+   --moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon
+ ```
+ 
+-**Add for served / multi-turn sessions:** warmup replay + `--auto-echo` (the bridge).
+-`--rs-seq 64` is eligible on the bench build — its divergence rewind engaged (33 prompt /
++**Add for served / multi-turn sessions** (serve bridge + engine):
++
++```bash
++python3 scripts/bmoe-serve.py -m Ornith-1.5-35B-Q4_K_M.gguf \
++  --auto-echo \
++  --engine-args "--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon --ctx-size 16384 --ubatch 512 --rs-seq 64"
++```
++
++Warmup replay + `--auto-echo` (the bridge). `--rs-seq 64` is eligible on the bench build
++— its divergence rewind engaged (33 prompt /
+ 23 reused, answer verified) but on this IO-bound host it proved mechanism, not latency:
+ the rewind's wall-clock win needs a host where skipped tokens are worth skipping (see
+ Cyber-Tiel). `--auto-echo` echo-reuse cannot engage on the qwen35 template (empty `<think>`
+@@ -103,8 +112,16 @@ bmoe-cli -m Cyber-Tiel-Coder-35B-A3B-MTP-UD-Q4_K_M.gguf \
+   --expert-substitute 0.15
+ ```
+ 
+-**Add for served / multi-turn sessions:** warmup replay, `--auto-echo`, `--rs-seq 64` —
+-the residency trio (fork work, on top of the streaming engine).
++**Add for served / multi-turn sessions** (serve bridge + engine):
++
++```bash
++python3 scripts/bmoe-serve.py -m Cyber-Tiel-Coder-35B-A3B-MTP-UD-Q4_K_M.gguf \
++  --auto-echo \
++  --engine-args "--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon --expert-substitute 0.15 --ctx-size 16384 --ubatch 512 --rs-seq 64"
++```
++
++Warmup replay, `--auto-echo`, `--rs-seq 64` — the residency trio (fork work, on top of
++the streaming engine), with the substitution recipe carried in the engine args.
+ 
+ <details>
+ <summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
+@@ -148,13 +165,20 @@ bmoe-cli -m Qwen3.6-35B-A3B-UD-Q4_K_M.gguf \
+   --io-two-wave --release-mmap
+ ```
+ 
+-**Add for served / multi-turn sessions:** warmup replay + `--auto-echo` — with a
+-template check first: on this model the echo rewrite ENGAGED but never reconciled
+-(`n_reused` 0 at every turn; prompts ballooned 52 → 185 → 350), so echo costs prefill and
+-buys nothing until the template renders echoed reasoning the way the rewrite produces it.
+-`--rs-seq 64` still buys the warmup composition (T1 2.6 s vs 13.2 s full-clear), but the
+-divergence rewind REFUSED (depth 135 > 64 planes): a heavy thinker's single turn can
+-outrun any affordable snapshot budget — the documented worst case, observed live.
++**Add for served / multi-turn sessions** (serve bridge + engine):
++
++```bash
++python3 scripts/bmoe-serve.py -m Qwen3.6-35B-A3B-UD-Q4_K_M.gguf \
++  --engine-args "--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon --io-two-wave --release-mmap --ctx-size 16384 --ubatch 512 --rs-seq 64"
++```
++
++Warmup replay on, `--auto-echo` deliberately OFF — on this model the echo rewrite ENGAGED
++but never reconciled (`n_reused` 0 at every turn; prompts ballooned 52 → 185 → 350), so
++echo costs prefill and buys nothing until the template renders echoed reasoning the way
++the rewrite produces it. `--rs-seq 64` still buys the warmup composition (T1 2.6 s vs
++13.2 s full-clear), but the divergence rewind REFUSED (depth 135 > 64 planes): a heavy
++thinker's single turn can outrun any affordable snapshot budget — the documented worst
++case, observed live.
+ 
+ <details>
+ <summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
+@@ -193,11 +217,18 @@ bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf \
+   --moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon
+ ```
+ 
+-**Add for served / multi-turn sessions:** warmup replay. `--auto-echo` is a verified
+-no-op on this template (it renders history reasoning natively — reuse engages from the
+-first follow-up without echoing anything back), and `--rs-seq` is not applicable: as a
+-plain transformer, divergence turns are free partial chops without snapshots (c4 reused
+-22 tokens with rs-seq OFF; c5 ≡ c4, the snapshot pool simply unused).
++**Add for served / multi-turn sessions** (serve bridge + engine):
++
++```bash
++python3 scripts/bmoe-serve.py -m Qwen3-30B-A3B-Q4_K_M.gguf \
++  --engine-args "--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon --ctx-size 16384 --ubatch 512"
++```
++
++Warmup replay. No `--auto-echo` (verified no-op on this template: it renders history
++reasoning natively — reuse engages from the first follow-up without echoing anything
++back) and no `--rs-seq` (as a plain transformer, divergence turns are free partial chops
++without snapshots: c4 reused 22 tokens with rs-seq OFF; c5 ≡ c4, the snapshot pool simply
++unused).
+ 
+ <details>
+ <summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
+@@ -231,13 +262,19 @@ bmoe-cli -m Laguna-XS-2.1-Q4_K_M.gguf \
+   --moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon
+ ```
+ 
+-**Add for served / multi-turn sessions:** warmup replay only — and leave `--auto-echo`
+-off: this template renders history reasoning natively, so the echo rewrite is redundant
+-and actually COSTS a 252-fresh reconcile turn (T2: 44 s) before its decode-side T3 win.
+-`--rs-seq` is not applicable (free partial chops without it: c4 reused 55 tokens with
+-rs-seq OFF; c5 ≡ c4). Reasoning-heavy note: the 192/256-token budgets truncated think
+-spans (measured FAIL, then pass at 384); the honest lever today is the request's
+-`max_tokens`.
++**Add for served / multi-turn sessions** (serve bridge + engine):
++
++```bash
++python3 scripts/bmoe-serve.py -m Laguna-XS-2.1-Q4_K_M.gguf \
++  --engine-args "--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon --ctx-size 16384 --ubatch 512"
++```
++
++Warmup replay only; no `--auto-echo` — this template renders history reasoning natively,
++so the echo rewrite is redundant and actually COSTS a 252-fresh reconcile turn (T2:
++44 s) before its decode-side T3 win — and no `--rs-seq` (free partial chops without it:
++c4 reused 55 tokens with rs-seq OFF; c5 ≡ c4). Reasoning-heavy note: the 192/256-token
++budgets truncated think spans (measured FAIL, then pass at 384); the honest lever today
++is the request's `max_tokens`.
+ 
+ <details>
+ <summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
+@@ -276,7 +313,14 @@ The matrix's sharpest fits-RAM result: the streaming stack's own 7.5 GiB cache p
+ bmoe-cli -m Ling-mini-2.0-Q4_K_M.gguf --ubatch 512
+ ```
+ 
+-**Add for served / multi-turn sessions:** warmup replay — reuse engages from the first
++**Add for served / multi-turn sessions** (serve bridge + engine):
++
++```bash
++python3 scripts/bmoe-serve.py -m Ling-mini-2.0-Q4_K_M.gguf \
++  --engine-args "--ubatch 512"
++```
++
++Warmup replay — reuse engages from the first
+ follow-up with no echo (native reuse, non-thinking template). The aider agent session is
+ the highlight: cross-edit-turn reuse **87.5%** (turn B: 576 prompt tokens, 504 reused,
+ prefill 20.7 s), divergence anchored at the re-sent changed-file snapshot — batch edits;
+@@ -315,8 +359,16 @@ show. Same 3-turn 42/52/62 protocol as Cyber-Tiel; thinking model, LFM hybrid ar
+ bmoe-cli -m LFM2.5-8B-A1B-UD-Q4_K_M.gguf --ubatch 512
+ ```
+ 
+-**Add for served / multi-turn sessions** (serve bridge + engine): warmup replay,
+-`--auto-echo`, `--rs-seq 64` — here they are the primary value, not an add-on.
++**Add for served / multi-turn sessions** (serve bridge + engine):
++
++```bash
++python3 scripts/bmoe-serve.py -m LFM2.5-8B-A1B-UD-Q4_K_M.gguf \
++  --auto-echo \
++  --engine-args "--ctx-size 16384 --ubatch 512 --rs-seq 64"
++```
++
++Warmup replay, `--auto-echo`, `--rs-seq 64` — here they are the primary value, not an
++add-on. `--ngram` is the workload add-on (+7.6% decode on repetitive prompts).
+ 
+ <details>
+ <summary><strong>Per-flag table (provenance marked) — click to expand</strong></summary>
+@@ -356,7 +408,14 @@ cache pushed a 9.9 GB model into swap. The fits-RAM verdict is set by the
+ bmoe-cli -m olmoe-1b-7b-0924-instruct-q4_k_m.gguf --ubatch 512
+ ```
+ 
+-**Add for served / multi-turn sessions:** warmup replay — the largest warmup ratio in
++**Add for served / multi-turn sessions** (serve bridge + engine):
++
++```bash
++python3 scripts/bmoe-serve.py -m olmoe-1b-7b-0924-instruct-q4_k_m.gguf \
++  --engine-args "--ubatch 512"
++```
++
++Warmup replay — the largest warmup ratio in
+ the matrix (**~56×**, 6.6 → 0.12 s; the whole conversation reuses natively, so the
+ replayed prefix is almost entirely recoverable). Echo and rs-seq correctly inert
+ (non-thinking template, plain transformer: c4 26/34 free chop, c5 ≡ c4).

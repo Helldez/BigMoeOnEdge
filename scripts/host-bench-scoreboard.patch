@@ -1,0 +1,49 @@
+diff --git a/docs/host-benchmarks.md b/docs/host-benchmarks.md
+index 72cb24b..c9dbfbb 100644
+--- a/docs/host-benchmarks.md
++++ b/docs/host-benchmarks.md
+@@ -23,6 +23,44 @@ branches until #197 merges — the cell (c) rows were measured from the arc tree
+ | **b) bmoe streaming** | `--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon` (the engine's lossless stack) |
+ | **c) bmoe + llama-side features** | (b) served over the bridge with session residency: warmup replay, `--auto-echo` append reuse; engine built on the `bench/host-rs` llama branch (recurrent snapshot rollback fixes) with `--rs-seq` eligible |
+ 
++## Feature scoreboard — best measured result per feature
++
++One row per engine feature: the model where it measured best, the delta, and what to read the
++number with. Lossless and lossy are separate tables on purpose — a lossy row is a speed/quality
++trade and is only quotable with its quality evidence next to it
++([benchmark-method.md](benchmark-method.md) §knob groups). Full mechanism columns per cell:
++[§Feature A/B](#feature-ab-the-computelatency-hiding-layer-2026-09-20) below and the per-model
++sections; each feature's own doc carries its dedicated protocol.
++
++**Lossless — same output, different speed:**
++
++| Feature | Best model | Improvement | Read with |
++|---|---|---|---|
++| **Streaming stack** (cell a→b: `--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon`) | Cyber-Tiel (21.0 GB, ~2× RAM) | **+70%** (1.29 → 2.19 tok/s) | all five past-RAM models +42–70%; thrash collapse 533 → 3.7 majflt/tok at best (Qwen3.6) |
++| Warmup replay (bridge, cell c) | OLMoE (fastest) | **T1 prefill 6.6 → 0.12 s (~56×)** | largest warmup in the matrix; pays on every served session |
++| Auto-echo append reuse (bridge) | Ling-mini via aider (turn B) | **87.5% of the prompt's tokens reused** (504/576) | template-sensitive: check the first follow-up's `n_reused` on any new template |
++| `--io-two-wave` | Qwen3.6 (deepest thrash) | **+25.2%** (1.76 → 2.21 tok/s) | hard faults 5.1× lower (175.3 → 34.6/tok) |
++| `--ubatch 512` (protocol default) | OLMoE | 256: −0.9% · 1024: −1.7% | 512 confirmed with numbers; the alternatives only lose |
++| `--dense-odirect` | OLMoE (fits RAM) | −0.6% (neutral) | dense reads barely happen post-warmup on fits-RAM |
++| `--row-stream` | device (embedding rows) | ~0% (2.27–2.31 vs 2.30 tok/s) | neutral by design — a footprint lever, not a speed one |
++
++**Lossy — output changes; never quote without the quality evidence:**
++
++| Feature | Best model | Improvement | Quality / caveat |
++|---|---|---|---|
++| **`--expert-substitute 0.15`** | Cyber-Tiel (~18% miss headroom) | **+47.2%** (1.88 → 2.77 tok/s) | accuracy gate on record for Qwen3.6 (HumanEval50/TinyMMLU); this cell's text ungated |
++| `--drop-cold-experts 0.75` | device curve · Cyber-Tiel (matched host cell) | **+55%** at the 0.75 knee · **+32.3%** host (1.88 → 2.49) | non-deterministic — always report the drop rate; and see the prefill row below |
++| `--mtp --draft 3` | Qwen3.6-MXFP4 (DRAM-bound host) | **+29%** clean · +15.1% under the drop recipe | verified speculation, not byte-identical; only +5.2% on the flash-bound carrier cell (Cyber-Tiel Q4_K_M) |
++| `--n-expert-used 6` | Qwen3-30B (device) | **+24.3%** (Gemma-4-26B: +22.1%) | text diverges from the first differing routing; single-prompt check only |
++| `--route-ahead 2` | host overlapped A/B | **+20–21%** | overlap stall −83% (0.060 → 0.010 s/tok), 97% of early reads useful; changes routing selection |
++| `--ngram` | LFM2.5 (hybrid) | **+7.6%** | composes with the rs rollback planes; prompt-dependent (OLMoE: repetition +3.3%, prose −4.3%) |
++| `--drop-in-prefill` (with drop 0.75) | Cyber-Tiel | **−11.6%** vs drop alone | measured harmful: churns a cold cache, decode faults 26.6 → 158.5/tok — keep off |
++| `--prefetch 1` | gpt-oss (device) | **~−50%** (2× slowdown) | premise refuted: popularity signal too weak at top-2 (~908 vs 587 MiB/token speculated) |
++| `--predict-prefetch` | Qwen3-30B (device) | **−21%** matched re-run (−38% raw, thermally contaminated) | acting on the predictor refuted; the predictor's own accuracy is proven (88.6% / 80.7%) |
++
++Still unmeasured: `--release-mmap` (load-peak metric only — the last open row). Negative rows are
++kept on purpose: a refuted knob documented is a knob nobody re-litigates.
++
+ ## Summary, conclusions, recommendations
+ 
+ **Summary.** Eight models measured end to end across five cells each: three 35B-class MoE

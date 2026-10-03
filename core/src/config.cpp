@@ -1,5 +1,8 @@
 #include "bmoe/config.h"
 
+#include <ggml.h>
+
+#include <string>
 #include <utility>
 
 namespace bmoe {
@@ -63,11 +66,33 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " exceeds n_ctx=" + std::to_string(cfg.n_ctx) +
                     ": the compute buffers would be reserved for a batch that cannot occur.");
     }
+    if (cfg.n_batch < 0) {
+        return fail("n_batch must be >= 0 (0 = follow n_ctx)");
+    }
+    // The batch is sliced into ubatch graphs, so a batch narrower than the ubatch would either
+    // under-fill every graph or (n_ubatch > n_batch) can never be filled at all.
+    if (cfg.n_batch > 0 && cfg.n_ubatch > cfg.n_batch) {
+        return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " exceeds n_batch=" +
+                    std::to_string(cfg.n_batch) + ": no prefill slice could ever fill the ubatch.");
+    }
     // Lower bound only: 0 means "use the model default". The upper bound (<= the model's
     // real expert count) needs the loaded gguf, so it is deferred to run() where the model
     // is available — same rationale as the streaming checks that stay out of this pure path.
     if (cfg.n_expert_used < 0) {
         return fail("n_expert_used must be >= 0 (0 = model default)");
+    }
+
+    // Spell-check the KV-cache type names here — a typo should fail validation, not surface as
+    // "unknown cache_type_k" from deep inside open(). The V-needs-flash-attention coupling is
+    // NOT checked here: it is a property of the resolved cparams, the CLI resolves it before
+    // validate(), and library callers get llama.cpp's own error at context creation.
+    for (const auto * field : {&cfg.cache_type_k, &cfg.cache_type_v}) {
+        if (field->empty()) continue;
+        bool known = false;
+        for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+            if (ggml_type_name(static_cast<ggml_type>(t)) == *field) { known = true; break; }
+        }
+        if (!known) return fail("cache_type_k/v: unknown ggml type name '" + *field + "'");
     }
 
     // Sampling ranges are enforced only when sampling is actually on (temp > 0). With temp <= 0

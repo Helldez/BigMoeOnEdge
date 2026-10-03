@@ -1,0 +1,33 @@
+diff --git a/docs/benchmark-method.md b/docs/benchmark-method.md
+index dd4f566..1b91ff6 100644
+--- a/docs/benchmark-method.md
++++ b/docs/benchmark-method.md
+@@ -243,3 +243,28 @@ the on-device suites:
+   depth, not context — a heavy thinker's single turn can outrun any affordable plane count
+   (Qwen3.6: depth 135 vs 64 planes). The engine refuses honestly and full-clears; correctness is
+   never at risk.
++
++### Feature A/B matrix: which model measures which knob
++
++The matrix above measures the engine's baseline thesis (streaming vs mmap). The engine also ships
++a compute/latency-hiding layer that the per-model cells do not touch: speculative decode
++(`--mtp`, `--ngram`), cache-aware routing (`--expert-substitute`, `--drop-cold-experts`,
++`--drop-in-prefill`, `--route-ahead`), I/O timing (`--io-two-wave`, `--prefetch`), and the
++serve/load variants (`--row-stream`, `--dense-odirect`, `--release-mmap`). Each gets its A/B on
++the model that isolates its mechanism with the least confound; where two models give the same
++insight, the faster one runs first. All of these are our own implementations except the ngram
++draft source (mainline `ngram-cache`, consumed by our verify loop).
++
++| Priority | Model (profile) | Feature A/B | Insight sought |
++|---|---|---|---|
++| 1 | OLMoE (fastest, fits RAM) | `--ngram` (standard + code-repetition prompt) | pure speculation gain, zero thrash confound; ngram feeds on prompt repetition, so the edit/code workload is its habitat |
++| 2 | OLMoE | `--dense-odirect`, `--ubatch` | cheapest runs; dense reads are its only remaining I/O, so the delta is unambiguous; fills the ubatch-512 protocol-justification row |
++| 3 | LFM2.5 (hybrid, fits RAM) | `--ngram` | does speculative verify compose with recurrent-state rollback planes? |
++| 4 | Ling-mini (marginal fits-RAM) | `--row-stream` | can serve-time dense row streaming shrink the resident sum and recover the −31 % penalty? |
++| 5 | Cyber-Tiel (MTP carrier) | `--mtp` | the only model with MTP heads; the only multiplicative lever we've built; A/B vs its cell (b), quality column alongside per the lossy rule |
++| 6 | Cyber-Tiel (highest miss headroom) | `--expert-substitute`, `--drop-cold-experts`, `--drop-in-prefill`, `--route-ahead` | ~18 % cache misses to win back on the worst-case model; report `experts_substituted`/`experts_dropped`/`experts_routed` with the tok/s |
++| 7 | Qwen3.6 (deepest thrash) | `--io-two-wave`, `--prefetch` | maximum stall signal (533 majflt/tok); short runs — the metrics are majflt/stall, not answer length; `--release-mmap` load-peak metric rides along |
++| 8 | Cyber-Tiel | `--predict-prefetch` (+`--predict-spec-max`) | composition test: prefetch driven by speculated tokens; only after the MTP row exists |
++
++Cyber-Tiel rows 5/6/8 share one load session (load is the expensive part at 21 GB). Lossy knobs
++report their quality evidence in the same row — that is the rule, not a preference.

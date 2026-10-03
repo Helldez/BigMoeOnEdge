@@ -1,0 +1,45 @@
+diff --git a/docs/benchmark-method.md b/docs/benchmark-method.md
+index a99c2f2..dd4f566 100644
+--- a/docs/benchmark-method.md
++++ b/docs/benchmark-method.md
+@@ -223,3 +223,23 @@ A 12 GB, UFS 4.x Snapdragon-class phone and a 16 GB x86 laptop with an NVMe driv
+ models, two `--overlap` rows among them) and `scripts/bench-analyze.py` (mean/min/max, median,
+ p5/p95, plus the pressure table). Community rows are in
+ [community-benchmarks.md](community-benchmarks.md).
++
++### The host campaign (docs/host-benchmarks.md)
++
++The host matrix covers eight models spanning every profile — qwen35moe hybrids at ~2× RAM
++(Cyber-Tiel, Ornith, Qwen3.6), an LFM hybrid, Qwen3-30B, and four fits-RAM transformers
++(LFM2.5, Ling-mini, OLMoE) — with three cells per model: (a) mmap baseline, (b) streaming, and
++a five-cell correctness suite (c1–c5) driving warmup, auto-echo and divergence shapes through the
++serve bridge. Its protocol carries three rules learned the hard way, all of which generalize to
++the on-device suites:
++
++- **MAXTOK must be laddered per model, not assumed.** A thinking model whose answer-check FAILs
++  may simply have its think span truncated (empty content) — Qwen3-30B needed 768 tokens where
++  192 truncated its 1313-char reasoning. Raise the budget until the reply terminates.
++- **Check `n_reused` on the first follow-up of any new chat template.** Echo reuse is
++  template-sensitive: two same-family archs diverged (Cyber-Tiel reused from the second turn,
++  Qwen3.6 never reconciled). The template, not the arch, decides.
++- **On a rewind refusal, read the `depth=` in the log.** The rs-seq snapshot budget bounds turn
++  depth, not context — a heavy thinker's single turn can outrun any affordable plane count
++  (Qwen3.6: depth 135 vs 64 planes). The engine refuses honestly and full-clears; correctness is
++  never at risk.
+diff --git a/docs/session.md b/docs/session.md
+index 2dd865b..d23e17b 100644
+--- a/docs/session.md
++++ b/docs/session.md
+@@ -46,7 +46,11 @@ then clears the KV and re-prefills the whole prompt for that turn (correct, just
+ thinking **on**, the template strips the previous turn's reasoning on re-render, so the rendered
+ prefix diverges at the last answer and up to one answer's worth of tokens is re-prefilled per turn;
+ with thinking **off** (the app default) the re-fed suffix is just the new user turn plus a few
+-wrapper tokens.
++wrapper tokens. How much of that cost reuse claws back is **template-sensitive**, not
++arch-sensitive: measured across the host matrix (see
++[host-benchmarks.md](host-benchmarks.md)), two same-family archs diverged — one reused from the
++turn after echo was enabled, one never reconciled despite the rewrite engaging — so the
++first follow-up's `n_reused` is the signal to check on any new chat template.
+ 
+ **Reasoning is returned, not discarded.** On a thinking model the Session parses the reasoning span
+ out of the raw stream and carries it in its own field (`TokenMetrics`/`RunResult::reasoning`,

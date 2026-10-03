@@ -1,0 +1,44 @@
+diff --git a/docs/host-benchmarks.md b/docs/host-benchmarks.md
+index d9c85c2..136fa56 100644
+--- a/docs/host-benchmarks.md
++++ b/docs/host-benchmarks.md
+@@ -28,9 +28,9 @@ branches until #197 merges — the cell (c) rows were measured from the arc tree
+ **Summary.** Four models measured end to end across five cells each: two 35B-class MoE
+ hybrids ~2× host RAM (Qwen3.5-family: Ornith 1.5, Cyber-Tiel-Coder), one 8B hybrid that
+ fits RAM comfortably (LFM2.5), and one 18.9 GB plain-transformer MoE ~2× host RAM
+-(Laguna-XS, arch `laguna`, the MTP-capable family). Where the model is past RAM, streaming
++(Laguna-XS, arch `laguna`, a plain-transformer MoE). Where the model is past RAM, streaming
+ (a → b) roughly doubles decode (1.39 → 2.06, 1.29 → 2.19, 1.37 → 1.95 tok/s) while major
+-faults collapse ~6–9× (470 → 129, 616 → 72, 642 → 65 per token): the mmap baseline
++faults collapse 3.6–9.9× (470 → 129, 616 → 72, 642 → 65 per token): the mmap baseline
+ thrashes, the streamed run reads — and on Laguna prefill speeds up too (47.5 → 34.1 s),
+ since a ~2×-RAM baseline thrashes its prefill as well. Where the model fits, streaming is
+ a small net loss (9.69 → 8.64 tok/s, 0 faults both ways) — the (b) stack is a tool for
+@@ -139,7 +139,7 @@ Reading the cells:
+   engage** (c5 rewound and reused 23 tokens), so the earlier "reuse cannot engage on it
+   structurally" claim holds only for the echo mechanism, not for rewind.
+ 
+-## Cyber-Tiel-Coder-35B-A3B (Qwen3.5-family MoE coder, 21.0 GB, ~2× host RAM; carries MTP tensors — the `laguna` arch below is the MTP-capable one)
++## Cyber-Tiel-Coder-35B-A3B (Qwen3.5-family MoE coder, 21.0 GB, ~2× host RAM; the MTP carrier for a future `--mtp` host row)
+ 
+ | Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
+ |---|---|---:|---:|---:|---:|---:|---:|
+@@ -215,15 +215,14 @@ Reading the cells:
+ 
+ Upstream classifies `laguna` as a plain-transformer MoE — it is in neither the hybrid
+ nor the snapshot-rollback arch lists (verified in `llama-arch.cpp`), and the gguf has no
+-recurrent/conv state keys or tensors, only standard attention with a sliding window. It
+-is also the arch family with a trained MTP head (`--mtp` targets it). Every difference
+-below follows from that classification.
++recurrent/conv state keys or tensors, only standard attention with a sliding window. Every
++difference below follows from that classification.
+ 
+ | Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
+ |---|---|---:|---:|---:|---:|---:|---:|
+ | a) mmap baseline | arc `8958e88` | 41.9 | 47.5 | **1.37** | — | — | **642** |
+ | b) bmoe streaming | arc `8958e88` | 113.0 | **34.1** | **1.95** | 76.0 MiB | 82.1% | 65 |
+-| c) warmup off | `bench/host-rs@2a8d47ac9` | — | 30.4 (T1) | 1.9–2.1 | — | — | — |
++| c) warmup off | `bench/host-rs@2a8d47ac9` | — | 30.4 (T1) | 1.9–2.0 | — | — | — |
+ | c) warmup on | `bench/host-rs@2a8d47ac9` | — | **1.28 (T1, ~24×)** | 2.0–2.9 | — | — | — |
+ | c) warmup + auto-echo | `bench/host-rs@2a8d47ac9` | — | 44.0 (T2) / **13.7 (T3)** | 2.7 (T3) | **T2: 252 prompt / 55 reused; T3: 25 prompt / 310 reused** | — | — |
+ | c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 28.0 / 10.9 (T2) | 2.0 / 2.0 | **T2: 28 prompt / 55 reused** | — | — |

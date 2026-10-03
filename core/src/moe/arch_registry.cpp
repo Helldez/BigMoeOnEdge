@@ -70,6 +70,24 @@ static const MoeRecipe k_recipes[] = {
     // expert, so the streamer does not bind it and the dense policy maps it like any other
     // non-expert weight. That makes the streamed fraction of this architecture unusually low —
     // see docs/limitations.md.
+    // laguna (Poolside Laguna XS 2.1 / S 2.1, 33B-A3B agentic coding MoE) is a pure attention
+    // stack — it is not in llama.cpp's hybrid list, so conversation residency applies. 256 routed
+    // experts at top-8 name the standard split suffixes, so streaming is one row. Two familiar
+    // resident-side details lower the streamed fraction: the router applies a per-expert bias
+    // (ffn_exp_probs_b, the lfm2moe pattern) and there is one always-on shared expert (ffn_*_shexp)
+    // that stays mmap-resident. No leading dense blocks — see docs/limitations.md.
+    // olmoe (allenai OLMoE-1B-7B, 6.9B total / 0.99B active) is the smallest supported MoE and a
+    // pure attention stack — not in llama.cpp's hybrid list, so conversation residency applies.
+    // 64 routed experts at top-8 name the standard split suffixes and nothing else is exotic: no
+    // shared expert, no router bias, no leading dense blocks.
+    {"olmoe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    // bailingmoe2 (inclusionAI Ling-mini-2.0 / Ling-lite-2.0, 16.5B-~1.4B / 16.8B-2.75B active) is a
+    // pure attention stack — not in llama.cpp's hybrid list, so conversation residency applies.
+    // 256 routed experts name the standard split suffixes; one always-on shared expert
+    // (ffn_*_shexp) and a per-expert router bias (ffn_exp_probs_b) stay resident, mirroring the
+    // laguna/lfm2moe pattern. No leading dense blocks.
+    {"bailingmoe2", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    {"laguna", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
     {"qwen4exp", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
     // nemotron_h_moe (NVIDIA Nemotron 3 / 3.5 MoE, e.g. Nemotron-3.5-Lightning-30B-A3B) is the
     // third expert layout: no gate projection at all. Each expert is up -> ReLU^2 -> down, so a

@@ -142,7 +142,10 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--cache-mb", type=int, default=2000)
-    ap.add_argument("--ctx", type=int, default=512)
+    ap.add_argument("--ctx", type=int, default=2048,
+                    help="session context; must exceed the longest prompt (tinyMMLU's longest is "
+                         "997 tokens), or the CLI skips the long questions and the score is "
+                         "computed over the survivors only")
     args = ap.parse_args()
 
     keys = build_prompts(args.parquet, os.path.join(args.out, "prompts"), args.limit)
@@ -154,6 +157,16 @@ def main():
         print(f"cell L={lam:g} ...", flush=True)
         run_cell(args.cli, args.model, list_path, lam, log_path, args.threads, args.cache_mb, args.ctx)
         correct, n, sub, rer, rows = parse_cell(log_path, keys)
+        # A question the CLI refused (too long for the session) leaves no record here. Scoring
+        # the survivors anyway reports a real-looking percentage over a subset, which is how a
+        # truncated run once scored 17/100 and printed 82.4%. Refuse to report instead.
+        if n < len(keys):
+            missing = sorted({os.path.basename(k["path"]) for k in keys} -
+                             {r["path"] for r in rows})
+            print(f"cell L={lam:g}: only {n}/{len(keys)} questions scored; {missing[0]} and "
+                  f"{len(missing) - 1} more were not. Raise --ctx (the session must hold the "
+                  f"longest prompt), or check {log_path} for the CLI's reason.", file=sys.stderr)
+            return 1
         pct = 100.0 * correct / n if n else 0.0
         frac = 100.0 * sub / rer if rer else 0.0
         summary.append((lam, correct, n, pct, frac))
@@ -165,6 +178,7 @@ def main():
     print("|---|---:|---:|")
     for lam, correct, n, pct, frac in summary:
         print(f"| {lam:g} | {correct}/{n} ({pct:.1f} %) | {frac:.1f} % |")
+    return 0
 
 
 if __name__ == "__main__":

@@ -1,0 +1,53 @@
+diff --git a/docs/host-benchmarks.md b/docs/host-benchmarks.md
+index 615d6f3..8f30cf3 100644
+--- a/docs/host-benchmarks.md
++++ b/docs/host-benchmarks.md
+@@ -3,7 +3,10 @@
+ Measured on the maintainer's host: 4-core x86-64, 11 GB RAM, SSD, Linux. Protocol:
+ 256-token greedy generations with the fixed essay prompt (`scripts/bench-report.sh`),
+ unless a row says otherwise; cell (c) rows use the verified 3-turn 42/52/62 chain
+-(`scripts/cellc.sh`, 160-token budget). Every number is a real measurement; the exact
++(`scripts/cellc.sh`, 160-token budget); divergence rows (c4/c5) use the two-turn shape
++where the second request resends T1 plus the engine's own plain reply and asks a NEW
++question, so the hybrid must rewind its recurrent state to just after the first answer
++to reuse anything. Every number is a real measurement; the exact
+ commit each cell was measured on is listed per row, because a benchmark without its
+ engine commit is an anecdote.
+ 
+@@ -26,7 +29,9 @@ branches until #197 merges — the cell (c) rows were measured from the arc tree
+ | b) bmoe streaming | arc `238aef6` | 86 | 23.4 | **2.06** | 47.1 MiB | 88.6% | 129 |
+ | c) warmup off | `bench/host-rs@2a8d47ac9` | — | 40.7 (T1) | 1.2–2.0 | — | — | — |
+ | c) warmup on | `bench/host-rs@2a8d47ac9` | — | **8.6 (T1, 4.7×)** | 1.7 | — | — | — |
+-| c) warmup + auto-echo | `bench/host-rs@2a8d47ac9` | — | **12.8 (T3, −50%)** | **2.54 (T3, +69%)** | — | — | — |
++| c) warmup + auto-echo | `bench/host-rs@2a8d47ac9` | — | **12.8 (T3, −50%)** | **2.54 (T3, +69%)** | — | — |
++| c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 16.7 / 14.5 (T2) | 1.65 / 1.62 | — | — |
++| c5) divergence, rs-seq 64 | `bench/host-rs@2a8d47ac9` | — | 20.1 / **15.5 (T2)** | 1.15 / 1.18 | **T2: 33 prompt / 23 reused** | — | — |
+ 
+ Reading the cells:
+ 
+@@ -37,12 +42,21 @@ Reading the cells:
+ - **(c) auto-echo**: turn 3 prefills 28 tokens reusing 98 (`n_reused` 0 → 98) and decodes
+   69% faster with verified answers. Turn 2 stays a full clear — the first echoed turn's
+   render must reconcile with what was generated; every later turn rides the cache.
++- **(c4) → (c5) divergence**: with rs-seq off, the divergence turn is a full clear
++  (56 prompt tokens, 0 reused). With `--rs-seq 64` the engine restores the recurrent
++  state to just after the first answer and prefills only the plain-rendered reply plus
++  the new question — **33 prompt tokens, 23 reused**, answer 62 correct with no
++  degeneration. This is the first live end-to-end proof of the upstream snapshot
++  rollback fix (`fix/rs-rollback-index-shift`) through the real engine on a 35B hybrid;
++  the c5 budget is 64, not MAXTOK — 160 planes reserve ~10 GiB on this host and the
++  kernel OOM-killer ends the run.
+ - Bridge-mode tok/s is lower than the CLI cells by design: short answers, reasoning
+   headroom and per-request overhead are included there and not in a raw 256-token run.
+-- `--rs-seq` was left off for Ornith: it is a hybrid where snapshot rollback needs the
+-  upstream fixes (present in `bench/host-rs`), but Ornith's qwen35 template bakes an
+-  empty `<think>` span into re-rendered history, so echo-style reuse cannot engage on it
+-  structurally — same finding as Qwen3.5-9B (docs/serve.md).
++- `--rs-seq` echo-style reuse cannot engage on Ornith: its qwen35 template bakes an
++  empty `<think>` span into re-rendered history (same finding as Qwen3.5-9B,
++  docs/serve.md) — but the **divergence rows show the snapshot-rollback path does
++  engage** (c5 rewound and reused 23 tokens), so the earlier "reuse cannot engage on it
++  structurally" claim holds only for the echo mechanism, not for rewind.
+ 
+ Queued next: Cyber-Tiel-Coder-35B-A3B-MTP (qwen35moe, MTP-carrying), LFM2.5-8B-A1B,
+ Laguna-XS-2.1, Ling-mini-2.0, Qwen3-30B-A3B, Qwen3.6-35B-A3B, OLMoE-1B-7B.

@@ -1,0 +1,59 @@
+diff --git a/docs/host-benchmarks.md b/docs/host-benchmarks.md
+index c9dbfbb..5f786ef 100644
+--- a/docs/host-benchmarks.md
++++ b/docs/host-benchmarks.md
+@@ -34,32 +34,31 @@ sections; each feature's own doc carries its dedicated protocol.
+ 
+ **Lossless — same output, different speed:**
+ 
+-| Feature | Best model | Improvement | Read with |
+-|---|---|---|---|
+-| **Streaming stack** (cell a→b: `--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon`) | Cyber-Tiel (21.0 GB, ~2× RAM) | **+70%** (1.29 → 2.19 tok/s) | all five past-RAM models +42–70%; thrash collapse 533 → 3.7 majflt/tok at best (Qwen3.6) |
+-| Warmup replay (bridge, cell c) | OLMoE (fastest) | **T1 prefill 6.6 → 0.12 s (~56×)** | largest warmup in the matrix; pays on every served session |
+-| Auto-echo append reuse (bridge) | Ling-mini via aider (turn B) | **87.5% of the prompt's tokens reused** (504/576) | template-sensitive: check the first follow-up's `n_reused` on any new template |
+-| `--io-two-wave` | Qwen3.6 (deepest thrash) | **+25.2%** (1.76 → 2.21 tok/s) | hard faults 5.1× lower (175.3 → 34.6/tok) |
+-| `--ubatch 512` (protocol default) | OLMoE | 256: −0.9% · 1024: −1.7% | 512 confirmed with numbers; the alternatives only lose |
+-| `--dense-odirect` | OLMoE (fits RAM) | −0.6% (neutral) | dense reads barely happen post-warmup on fits-RAM |
+-| `--row-stream` | device (embedding rows) | ~0% (2.27–2.31 vs 2.30 tok/s) | neutral by design — a footprint lever, not a speed one |
++| Feature | Best model | Improvement | Verdict | Read with |
++|---|---|---|---|---|
++| **Streaming stack** (cell a→b: `--moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon`) | Cyber-Tiel (21.0 GB, ~2× RAM) | **+70%** (1.29 → 2.19 tok/s) | **On** for past-RAM models; **off** for fits-RAM (−6% to −31%: (b) is a memory-pressure tool, not a default) | all five past-RAM models +42–70%; thrash collapse 533 → 3.7 majflt/tok at best (Qwen3.6) |
++| Warmup replay (bridge, cell c) | OLMoE (fastest) | **T1 prefill 6.6 → 0.12 s (~56×)** | **On** (bridge) | largest warmup in the matrix; pays on every served session |
++| Auto-echo append reuse (bridge) | Ling-mini via aider (turn B) | **87.5% of the prompt's tokens reused** (504/576) | **On** (bridge, thinking models) | template-sensitive: check the first follow-up's `n_reused` on any new template |
++| `--io-two-wave` | Qwen3.6 (deepest thrash) | **+25.2%** (1.76 → 2.21 tok/s) | **Use-when**: past-RAM/thrash profiles (host-measured; the on-device A/B its `--help` waits for is still open) | hard faults 5.1× lower (175.3 → 34.6/tok) |
++| `--ubatch 512` (protocol default) | OLMoE | 256: −0.9% · 1024: −1.7% | **On** (protocol default) | 512 confirmed with numbers; the alternatives only lose |
++| `--dense-odirect` | OLMoE (fits RAM) | −0.6% (neutral) | **Keep-off** — superseded by `--dense-weights` (deprecated alias), neutral at best | dense reads barely happen post-warmup on fits-RAM |
++| `--row-stream` | device (embedding rows) | ~0% (2.27–2.31 vs 2.30 tok/s) | **Use-when**: footprint pressure — a footprint lever, not a speed one | neutral by design |
+ 
+ **Lossy — output changes; never quote without the quality evidence:**
+ 
+-| Feature | Best model | Improvement | Quality / caveat |
+-|---|---|---|---|
+-| **`--expert-substitute 0.15`** | Cyber-Tiel (~18% miss headroom) | **+47.2%** (1.88 → 2.77 tok/s) | accuracy gate on record for Qwen3.6 (HumanEval50/TinyMMLU); this cell's text ungated |
+-| `--drop-cold-experts 0.75` | device curve · Cyber-Tiel (matched host cell) | **+55%** at the 0.75 knee · **+32.3%** host (1.88 → 2.49) | non-deterministic — always report the drop rate; and see the prefill row below |
+-| `--mtp --draft 3` | Qwen3.6-MXFP4 (DRAM-bound host) | **+29%** clean · +15.1% under the drop recipe | verified speculation, not byte-identical; only +5.2% on the flash-bound carrier cell (Cyber-Tiel Q4_K_M) |
+-| `--n-expert-used 6` | Qwen3-30B (device) | **+24.3%** (Gemma-4-26B: +22.1%) | text diverges from the first differing routing; single-prompt check only |
+-| `--route-ahead 2` | host overlapped A/B | **+20–21%** | overlap stall −83% (0.060 → 0.010 s/tok), 97% of early reads useful; changes routing selection |
+-| `--ngram` | LFM2.5 (hybrid) | **+7.6%** | composes with the rs rollback planes; prompt-dependent (OLMoE: repetition +3.3%, prose −4.3%) |
+-| `--drop-in-prefill` (with drop 0.75) | Cyber-Tiel | **−11.6%** vs drop alone | measured harmful: churns a cold cache, decode faults 26.6 → 158.5/tok — keep off |
+-| `--prefetch 1` | gpt-oss (device) | **~−50%** (2× slowdown) | premise refuted: popularity signal too weak at top-2 (~908 vs 587 MiB/token speculated) |
+-| `--predict-prefetch` | Qwen3-30B (device) | **−21%** matched re-run (−38% raw, thermally contaminated) | acting on the predictor refuted; the predictor's own accuracy is proven (88.6% / 80.7%) |
+-
+-Still unmeasured: `--release-mmap` (load-peak metric only — the last open row). Negative rows are
+-kept on purpose: a refuted knob documented is a knob nobody re-litigates.
++| Feature | Best model | Improvement | Verdict | Quality / caveat |
++|---|---|---|---|---|
++| **`--expert-substitute 0.15`** | Cyber-Tiel (~18% miss headroom) | **+47.2%** (1.88 → 2.77 tok/s) | **Use-when**: thrash profile — the worst hit rates pay most | accuracy gate on record for Qwen3.6 (HumanEval50/TinyMMLU); this cell's text ungated |
++| `--drop-cold-experts 0.75` | device curve · Cyber-Tiel (matched host cell) | **+55%** at the 0.75 knee · **+32.3%** host (1.88 → 2.49) | **Use-when**: thrash models (the app default is 75%) | non-deterministic — always report the drop rate; and see the prefill row below |
++| `--mtp --draft 3` | Qwen3.6-MXFP4 (DRAM-bound host) | **+29%** clean · +15.1% under the drop recipe | **Use-when**: compute/DRAM-bound — not on flash-bound cells | verified speculation, not byte-identical; only +5.2% on the flash-bound carrier cell (Cyber-Tiel Q4_K_M) |
++| `--n-expert-used 6` | Qwen3-30B (device) | **+24.3%** (Gemma-4-26B: +22.1%) | **Use-when**: accepting the quality trade | text diverges from the first differing routing; single-prompt check only |
++| `--route-ahead 2` | host overlapped A/B | **+20–21%** | **Use-when**: with `--overlap` (experimental) | overlap stall −83% (0.060 → 0.010 s/tok), 97% of early reads useful; changes routing selection |
++| `--ngram` | LFM2.5 (hybrid) | **+7.6%** | **Use-when**: repetitive workload — ships off ([ngram.md](ngram.md)) | composes with the rs rollback planes; prompt-dependent (OLMoE: repetition +3.3%, prose −4.3%) |
++| `--drop-in-prefill` (with drop 0.75) | Cyber-Tiel | **−11.6%** vs drop alone | **Keep-off** — measured harmful | churns a cold cache, decode faults 26.6 → 158.5/tok |
++| `--prefetch 1` | gpt-oss (device) | **~−50%** (2× slowdown) | **Keep-off** — refuted | premise refuted: popularity signal too weak at top-2 (~908 vs 587 MiB/token speculated) |
++| `--predict-prefetch` | Qwen3-30B (device) | **−21%** matched re-run (−38% raw, thermally contaminated) | **Keep-off** — refuted | acting on the predictor refuted; the predictor's own accuracy is proven (88.6% / 80.7%) |
++
++Still unmeasured: `--release-mmap` (load-peak metric only — the last open row). **Verdicts:** `On` = measured default; `Use-when` = pays only in its named regime; `Keep-off` = refuted or superseded. Keep-off knobs stay in the CLI default-off on purpose — they are the instruments their refutations were measured with, and removal would orphan the evidence and invite re-implementation; the refuted verdict lives in this table, in `--help`, and in the findings docs. Negative rows are kept on purpose: a refuted knob documented is a knob nobody re-litigates.
+ 
+ ## Summary, conclusions, recommendations
+ 

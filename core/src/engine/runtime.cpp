@@ -11,8 +11,15 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.model_path = cfg.model_path;
     sc.n_threads = cfg.n_threads;
     sc.n_ctx = cfg.n_ctx;
-    sc.n_batch = cfg.n_ctx;     // one-batch prefill for any prompt that fits the context
+    // One-batch prefill for any prompt that fits the context — unless the caller capped the
+    // batch width (RunConfig::n_batch): the output buffer scales batch × vocab, so very long
+    // --ppl documents must be fed in slices to fit memory at all.
+    sc.n_batch = cfg.n_batch > 0 ? cfg.n_batch : cfg.n_ctx;
     sc.n_ubatch = cfg.n_ubatch; // 0 = follow n_batch; smaller trades prefill speed for memory
+    sc.n_rs_seq = cfg.n_rs_seq; // hybrid snapshot budget; llama.cpp clamps for unsupporting archs
+    sc.cache_type_k = cfg.cache_type_k; // KV element types; empty = f16 (session.cpp → cparams)
+    sc.cache_type_v = cfg.cache_type_v;
+    sc.flash_attn = cfg.flash_attn;     // "" = upstream AUTO default; CLI forces "on" for quantized V
     sc.chatml = cfg.chatml;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.compute_trace_layers = cfg.compute_trace_layers;

@@ -19,7 +19,7 @@ cmake_minimum_required(VERSION 3.21)
 # The version is declared here and nowhere else in the build: the engine reports it (bmoe-cli
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName.
-project(bigmoeonedge VERSION 0.27.0 LANGUAGES CXX)
+project(bigmoeonedge VERSION 0.27.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +31,18 @@ endif()
 
 option(BMOE_BUILD_TESTS "Build byte-identity gates and unit tests" ON)
 option(BMOE_BUILD_CLI   "Build the bmoe-cli host tool"              ON)
+# Diagnostic builds under AddressSanitizer + UBSan, in a SEPARATE build tree
+# (-DBMOE_SANITIZE=ON), never in a release configuration. UBSan is set to abort rather than
+# print-and-continue, so a ctest run fails on the first undefined behavior it sees; ASan fails
+# the process on its own. Sanitizing llama.cpp too is deliberate: the seam (public API calls,
+# tensor data rebinding, mapping release) is exactly where a stale pointer or an overflow
+# would hide, and the gate fixtures are small enough that the slowdown does not matter.
+option(BMOE_SANITIZE "Build everything with ASan+UBSan (diagnostic builds only)" OFF)
+if(BMOE_SANITIZE)
+    add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=undefined
+                        -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address,undefined)
+endif()
 # Off by default: diagnostics, not part of the product. They need no llama.cpp, so they can be
 # configured and cross-compiled on their own without building the engine.
 option(BMOE_BUILD_TOOLS "Build standalone diagnostic tools (bmoe-iobench)" OFF)
@@ -55,7 +67,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     # host has is a loopback rpc-server fronting the CPU. A test fixture, not a feature: host test
     # builds only (releases build without tests), no front-end accepts an RPC endpoint, and it is
     # not forced: -DGGML_RPC=OFF still wins, and G16 then reports itself skipped.
-    if(BMOE_BUILD_TESTS AND NOT ANDROID)
+    # Sanitizer builds exclude it: upstream ggml-rpc binds a misaligned reference
+    # (ggml-rpc.cpp, caught by UBSan) — an upstream bug to report, not ours to patch in-tree,
+    # and the device path is the one gate whose loss the sanitizer run does not care about.
+    if(BMOE_BUILD_TESTS AND NOT ANDROID AND NOT BMOE_SANITIZE)
         set(GGML_RPC ON CACHE BOOL "ggml: use RPC")
     endif()
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)

@@ -1,0 +1,49 @@
+diff --git a/docs/host-benchmarks.md b/docs/host-benchmarks.md
+index 8f30cf3..6d18fdc 100644
+--- a/docs/host-benchmarks.md
++++ b/docs/host-benchmarks.md
+@@ -58,5 +58,42 @@ Reading the cells:
+   engage** (c5 rewound and reused 23 tokens), so the earlier "reuse cannot engage on it
+   structurally" claim holds only for the echo mechanism, not for rewind.
+ 
+-Queued next: Cyber-Tiel-Coder-35B-A3B-MTP (qwen35moe, MTP-carrying), LFM2.5-8B-A1B,
+-Laguna-XS-2.1, Ling-mini-2.0, Qwen3-30B-A3B, Qwen3.6-35B-A3B, OLMoE-1B-7B.
++## Cyber-Tiel-Coder-35B-A3B (Qwen3.5-family MoE coder, 21.0 GB, ~2× host RAM; the MTP carrier for a future `--mtp` host row)
++
++| Cell | Engine commit | load s | prefill s | tok/s | flash/token | cache hit | majflt/tok |
++|---|---|---:|---:|---:|---:|---:|---:|
++| a) mmap baseline | arc `2070368` | 47 | 61.8 | **1.29** | — | — | **616** |
++| b) bmoe streaming | arc `2070368` | 178 | 28.1 | **2.19** | 68.0 MiB | 81.9% | 72 |
++| c) warmup off / on | `bench/host-rs@2a8d47ac9` | — | 45.6 / 42.4 (T1) | 1.2 | — | — | — |
++| c) warmup + auto-echo | `bench/host-rs@2a8d47ac9` | — | **11.6 (T3)** | **1.6–1.7 (T3)** | — | — | — |
++| c4) divergence, rs-seq off | `bench/host-rs@2a8d47ac9` | — | 47.6 / 42.6 (T2) | 1.2 / 1.3 | — | — | — |
++| c5) divergence, rs-seq 64 | `bench/host-rs@2a8d47ac9` | — | 2.6 / **19.3 (T2)** | 1.0 / 1.1 | **T1: 1 prompt / 203 reused; T2: 33 prompt / 203 reused** | — | — |
++
++Reading the cells:
++
++- **(a) → (b)**: streaming nearly doubles decode (+70%) while major faults collapse from
++  616 to 72 per token — the same thrash-vs-reading contrast as Ornith, wider here (a coder
++  model routes more distinct experts per token).
++- **(c) warmup**: T1 prefill improves only 45.6 → 42.4 s. The replay makes the prefix
++  resident, but Cyber-Tiel thinks, so the resident render (reasoning included) diverges from
++  the first plain-rendered turn — and on a hybrid without `--rs-seq` any non-append turn
++  full-clears by design, so the replay cannot be *reused* this way. What survives is the
++  cold-start part: flash reads come warm, and c4's later identical T1 shows 47.6 s without
++  that warmth. Warmup *reuse* needs the snapshot pool (next rows), not the replay alone.
++- **(c) auto-echo**: turn 2 reuses 222 of 232 prompt tokens and turn 3 reuses 265 of 293
++  (prefill 42 → 10–12 s), answers verified — the echo mechanism composing with a coder
++  model's longer reasoning.
++- **(c4) → (c5) divergence**: with rs-seq off, the divergence turn is a full clear (236
++  prompt tokens, 0 reused). With `--rs-seq 64` the engine restores the recurrent state to
++  just after the first answer and prefills only the plain-rendered reply plus the new
++  question — **33 prompt / 203 reused**, answer 62 correct, no degeneration. Unlike Ornith
++  (IO-bound: the rewind proved mechanism, not latency), the skip pays wall-clock here:
++  T2 prefill halves, 42.6 → 19.3 s. Also visible in c5: warmup and rs-seq **compose** —
++  T1 prefill is **1 prompt / 203 reused** (the replayed history restored, 1 fresh token),
++  2.6 s where every other cell prefills ~45 s.
++- The c-suite on this model is fully consistent with the session-residency rules:
++  every `n_reused` 0 above (warmup T1, c1–c4 turns) is a *designed* full clear or a
++  structural no-echo mismatch, not a failure — with snapshots on, every divergence
++  becomes a bounded rewind instead.
++
++Queued next: LFM2.5-8B-A1B, Laguna-XS-2.1, Ling-mini-2.0, Qwen3-30B-A3B, Qwen3.6-35B-A3B, OLMoE-1B-7B.

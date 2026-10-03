@@ -18,6 +18,11 @@ Three architectures are emitted, selected with --arch:
             (ffn_up_exps / ffn_down_exps, ReLU^2) in a hybrid Mamba2 / attention / MoE
             stack with latent projections, a resident shared expert and a trailing MTP
             block that is never loaded, so the gates cover the up+down streaming path.
+  laguna    split expert layout (gate/up/down) with a resident shared expert, a
+            per-expert router bias, a softplus attention output gate the streamer must
+            never touch, and one leading dense layer. Sliding window is deliberately
+            absent (all layers full attention) so the session gates exercise the
+            generic KV-reuse path, not a hybrid's.
 
 Requires: pip install gguf numpy
 
@@ -379,9 +384,85 @@ def build_nemotron_h_moe(out):
           f"{N_EXPERT} experts (top-{N_EXPERT_USED}), vocab {n_vocab}")
 
 
+# --- laguna: sigmoid-routed MoE with a shared expert + an attention gate ------------
+# Laguna (poolside) streams the same three split expert tensors as qwen3moe, but the
+# layer carries three extra residents the streamer must leave alone: the always-on
+# shared expert (ffn_*_shexp), the per-expert router bias (ffn_exp_probs_b), and the
+# softplus attention output gate (attn_gate). leading_dense_block_count=1 gives the
+# gates a dense/MoE interleave; the sliding window is omitted so every layer is full
+# attention and the KV-reuse paths (G13, G19, G20) run the generic diff code.
+LAGUNA_DENSE_LEAD = 1
+
+
+def build_laguna(out):
+    tokens, scores, toktypes = build_vocab()
+    n_vocab = len(tokens)
+
+    w = gguf.GGUFWriter(out, "laguna")
+    w.add_name("tiny-moe")
+    w.add_context_length(N_CTX)
+    w.add_embedding_length(N_EMBD)
+    w.add_block_count(N_LAYER)
+    w.add_feed_forward_length(N_FF)  # the dense-lead layers' FFN
+    w.add_head_count(N_HEAD)
+    w.add_head_count_kv(N_HEAD_KV)
+    w.add_key_length(N_EMBD_HEAD)
+    w.add_value_length(N_EMBD_HEAD)
+    w.add_rope_freq_base(ROPE_BASE)
+    w.add_layer_norm_rms_eps(RMS_EPS)
+    w.add_leading_dense_block_count(LAGUNA_DENSE_LEAD)
+    w.add_expert_count(N_EXPERT)
+    w.add_expert_used_count(N_EXPERT_USED)
+    w.add_expert_feed_forward_length(N_FF_EXP)
+    w.add_expert_shared_count(1)
+    w.add_expert_shared_feed_forward_length(N_FF_EXP)
+    w.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
+    w.add_file_type(gguf.LlamaFileType.ALL_F32)
+    add_tokenizer(w, tokens, scores, toktypes)
+
+    w.add_tensor("token_embd.weight",  rnd(n_vocab, N_EMBD, seed=1))
+    w.add_tensor("output_norm.weight", rnd(N_EMBD, seed=2))
+    w.add_tensor("output.weight",      rnd(n_vocab, N_EMBD, seed=3))
+
+    s = 300
+    for i in range(N_LAYER):
+        p = f"blk.{i}."
+        w.add_tensor(p + "attn_norm.weight", rnd(N_EMBD, seed=s + 0))
+        add_attn_tensors(w, p, s)
+        # per-head gate width (n_head), the XS shape; per-element (n_embd) is the M.1 shape
+        w.add_tensor(p + "attn_gate.weight", rnd(N_HEAD, N_EMBD, seed=s + 7))
+        w.add_tensor(p + "ffn_norm.weight", rnd(N_EMBD, seed=s + 8))
+        if i >= LAGUNA_DENSE_LEAD:
+            w.add_tensor(p + "ffn_gate_inp.weight", rnd(N_EXPERT, N_EMBD, seed=s + 9))
+            # Zero selection bias, as in nemotron_h_moe: the loader requires the tensor, but the
+            # G9b probe control ranks experts from the raw gate GEMV and cannot see a router bias
+            # the graph adds afterwards (docs/limitations.md). A random bias would fail that
+            # control without any streaming bug being present.
+            w.add_tensor(p + "exp_probs_b.bias", np.zeros(N_EXPERT, dtype=np.float32))  # file name: blk.%d.exp_probs_b
+            w.add_tensor(p + "ffn_gate_exps.weight", rnd(N_EXPERT, N_FF_EXP, N_EMBD, seed=s + 11))
+            w.add_tensor(p + "ffn_down_exps.weight", rnd(N_EXPERT, N_EMBD, N_FF_EXP, seed=s + 12))
+            w.add_tensor(p + "ffn_up_exps.weight",   rnd(N_EXPERT, N_FF_EXP, N_EMBD, seed=s + 13))
+            # the shared expert stays resident
+            w.add_tensor(p + "ffn_gate_shexp.weight", rnd(N_FF_EXP, N_EMBD, seed=s + 14))
+            w.add_tensor(p + "ffn_up_shexp.weight",   rnd(N_FF_EXP, N_EMBD, seed=s + 15))
+            w.add_tensor(p + "ffn_down_shexp.weight", rnd(N_EMBD, N_FF_EXP, seed=s + 16))
+        else:
+            w.add_tensor(p + "ffn_gate.weight", rnd(N_FF, N_EMBD, seed=s + 14))
+            w.add_tensor(p + "ffn_up.weight",   rnd(N_FF, N_EMBD, seed=s + 15))
+            w.add_tensor(p + "ffn_down.weight", rnd(N_EMBD, N_FF, seed=s + 16))
+        s += 100
+
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    print(f"wrote {out}: laguna, {N_LAYER} layers ({LAGUNA_DENSE_LEAD} dense lead), "
+          f"{N_EXPERT} experts (top-{N_EXPERT_USED}) + shared, vocab {n_vocab}")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arch", choices=["qwen3moe", "gemma4", "nemotron_h_moe"], default="qwen3moe")
+    ap.add_argument("--arch", choices=["qwen3moe", "gemma4", "nemotron_h_moe", "laguna"], default="qwen3moe")
     ap.add_argument("--out", default="tiny-moe.gguf")
     ap.add_argument("--split-max-tensors", type=int, default=0,
                     help="emit a sharded gguf (N tensors per shard, metadata-only first shard)")
@@ -393,6 +474,8 @@ def main():
         build_gemma4(args.out)
     elif args.arch == "nemotron_h_moe":
         build_nemotron_h_moe(args.out)
+    elif args.arch == "laguna":
+        build_laguna(args.out)
     else:
         build_qwen3moe(args.out, args.split_max_tensors)
 
