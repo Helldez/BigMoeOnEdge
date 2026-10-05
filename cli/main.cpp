@@ -251,6 +251,13 @@ struct SessionCmd {
     int n_predict = 128;
     bool think = true;
     bool clear_kv = true;
+    // generate only: a saved conversation to seed (GenerateRequest::history). The wire form is two
+    // parallel arrays because the reader is a flat extractor; a request whose arrays differ in length
+    // is flagged here and refused when it reaches the loop, so the reader thread never answers.
+    bool replace_history = false;
+    bool history_mismatch = false;
+    std::vector<std::string> history_roles, history_contents;
+    bool fit_ctx = false;
     // decide only (bmoe/decide.h)
     std::string prefix, suffix;
     std::vector<std::string> choices;
@@ -353,6 +360,16 @@ static int run_session_loop(const RunConfig & cfg,
                 c.n_predict = json_get_int(line, "n_predict", cfg.n_predict);
                 c.think = json_get_bool(line, "think", cfg.think);
                 c.clear_kv = json_get_bool(line, "clear_kv", true);
+                c.fit_ctx = json_get_bool(line, "fit_ctx", false);
+                // The roles array marks a seeded history, empty or not, so an app can ask for
+                // "no history" explicitly.
+                if (json_get_string_array(line, "history_roles", c.history_roles)) {
+                    c.replace_history = true;
+                    // Contents missing, or of another length, is refused when the loop reaches it.
+                    if (!json_get_string_array(line, "history_contents", c.history_contents) ||
+                        c.history_contents.size() != c.history_roles.size())
+                        c.history_mismatch = true;
+                }
             } else if (cmd == "decide") {
                 c.kind = SessionCmd::kDecide;
                 c.id = json_get_int(line, "id", 0);
@@ -403,20 +420,35 @@ static int run_session_loop(const RunConfig & cfg,
         std::printf("BMOE_BEGIN {\"id\":%d}\n", cmd.id);
         std::fflush(stdout);
 
+        if (cmd.history_mismatch) {
+            std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":false,\"msg\":\"history_roles and history_contents differ "
+                        "in length\"}\n",
+                        cmd.id);
+            std::fflush(stdout);
+            continue;
+        }
+
         GenerateRequest req;
         req.prompt = cmd.prompt;
         req.n_predict = cmd.n_predict;
         req.think = cmd.think;
         req.clear_kv = cmd.clear_kv;
+        req.replace_history = cmd.replace_history;
+        for (size_t i = 0; i < cmd.history_roles.size(); ++i)
+            req.history.push_back({cmd.history_roles[i], cmd.history_contents[i]});
+        req.fit_ctx = cmd.fit_ctx;
         req.render_text = true; // the line protocol carries the parsed answer on every token
 
         ProgressDelta pd; // fresh per generation: the first line extends the empty state
         RunResult r = session->generate(req, [&](const TokenMetrics & m) { emit_progress_line(m, pd); }, sink);
         if (!r) {
-            // A bad request (empty prompt, context overflow) leaves the session usable; a decode
-            // failure means the context is compromised, so end the loop.
+            // A bad request (empty prompt, context overflow, a history the session cannot take)
+            // leaves the session usable; a decode failure means the context is compromised, so end
+            // the loop.
             bool recoverable = r.error.find("exceeds the session n_ctx") != std::string::npos ||
-                               r.error.find("empty prompt") != std::string::npos;
+                               r.error.find("empty prompt") != std::string::npos ||
+                               r.error.find("history needs chat mode") != std::string::npos ||
+                               r.error.find("unknown history role") != std::string::npos;
             std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"msg\":\"%s\"}\n", cmd.id, recoverable ? "false" : "true",
                         json_escape(r.error).c_str());
             std::fflush(stdout);
@@ -437,7 +469,7 @@ static int run_session_loop(const RunConfig & cfg,
                     "\"prefill_dev_stall_s\":%.3f,"
                     "\"token_demand_mib\":%.1f,\"mtp_drafted\":%lld,\"mtp_accepted\":%lld,\"mtp_decodes\":%lld,"
                     "\"mtp_draft_s_tok\":%.4f,\"drafted_steps\":%lld,\"loop_overhead_s_tok\":%.4f,"
-                    "\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
+                    "\"reasoning\":\"%s\",\"text\":\"%s\",\"history_dropped\":%d}\n",
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
@@ -447,7 +479,7 @@ static int run_session_loop(const RunConfig & cfg,
                     s.prefill_device_nodes, s.prefill_device_read_mib, s.prefill_device_stall_seconds,
                     s.token_demand_mib, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token,
                     s.drafted_steps, s.loop_overhead_s_per_token, json_escape(r.reasoning_text).c_str(),
-                    json_escape(r.generated_text).c_str());
+                    json_escape(r.generated_text).c_str(), r.history_dropped);
         std::fflush(stdout);
     }
 

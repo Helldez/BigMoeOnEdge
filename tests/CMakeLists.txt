@@ -107,6 +107,13 @@ if(PYTHON3)
     )
     set_tests_properties(moe_make_tiny_model_split PROPERTIES FIXTURES_SETUP TINY_MOE_MODEL_split)
 
+    # The session request protocol through the real bmoe-cli: history fields, their errors, and the
+    # key BMOE_DONE gains. Runs against the qwen3moe fixture the gates already generate.
+    add_test(NAME session_protocol
+             COMMAND ${PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/session_protocol_test.py
+                     $<TARGET_FILE:bmoe-cli> "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
+    set_tests_properties(session_protocol PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
+
     add_test(NAME moe_gates_split
              COMMAND bmoe_moe_gates "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-split-00001-of-00004.gguf")
     set_tests_properties(moe_gates_split PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_split)

@@ -497,7 +497,8 @@ extends to them naturally.
 Requests (stdin):
 
 ```
-{"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>}
+{"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>,
+ "history_roles":["<string>",...],"history_contents":["<string>",...],"fit_ctx":<bool>}
 {"cmd":"decide","id":<int>,"prefix":"<string>","suffix":"<string>","choices":["<string>",...],
  "reuse_prefix":<bool>}   # needs --decide; always rendered with reasoning off; see decide.md
 {"cmd":"cancel"}          # interrupt the in-flight generation; the session stays loaded
@@ -509,6 +510,15 @@ default to the process's flags / `true`. `clear_kv:true` starts a **new chat** (
 the engine-held conversation); `clear_kv:false` **continues** the conversation — send only the new
 user message, the engine re-renders the whole history and reuses the KV prefix (see
 [session.md](session.md)). `cancel` may arrive at any time, including mid-generation.
+
+`history_roles` and `history_contents` seed the conversation before `prompt` is appended
+([session.md](session.md#seeding-a-saved-conversation)): two parallel arrays of equal length, roles
+`system`, `user` or `assistant` (flat arrays because the request reader is a flat extractor, not a
+JSON parser). The presence of `history_roles` is what seeds the history, so `[]` seeds an empty
+one; the KV is kept unless `clear_kv:true`. Arrays of unequal length (or roles without contents),
+an unknown role, and a history without `--chatml` are each a `BMOE_ERROR` with `fatal:false`.
+`fit_ctx:true` drops the oldest exchanges that do not fit `n_ctx` instead of refusing the request;
+the count is `history_dropped` on `BMOE_DONE`. All three keys are optional.
 
 Responses (stdout):
 
@@ -528,7 +538,7 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "prefill_dev_stall_s":<float>,
             "token_demand_mib":<float>,"mtp_drafted":<int>,"mtp_accepted":<int>,"mtp_decodes":<int>,
             "mtp_draft_s_tok":<float>,"drafted_steps":<int>,"loop_overhead_s_tok":<float>,
-            "reasoning":"<string>","text":"<string>"}
+            "reasoning":"<string>","text":"<string>","history_dropped":<int>}
 BMOE_DECIDE {"id":<int>,"cancelled":<bool>,"best":<int>,"choice_logp":[<float|null>,...],
              "n_tokens":<int>,"n_reused":<int>,"n_prefilled":<int>,"restore_s":<float>,
              "store_s":<float>,"prefill_s":<float>,"prefill_cpu_s":<float>,"prefill_read_mib":<float>,
@@ -609,7 +619,8 @@ AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not jus
 `cache_resident_mib`/`cache_budget_mib` track the fixed cache, `read_mib` is the
 total flash streamed this generation, and `stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and
 cache-management cost. `text` is the final answer and `reasoning` the final thinking span (empty
-unless the model reasoned), same split as the per-token lines. `BMOE_ERROR` with `fatal:false` is a rejected
+unless the model reasoned), same split as the per-token lines. `history_dropped` is the number of
+messages `fit_ctx` removed from the front of the conversation (0 without it); it is the last key. `BMOE_ERROR` with `fatal:false` is a rejected
 request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
 `fatal:true` means the process is ending.
 

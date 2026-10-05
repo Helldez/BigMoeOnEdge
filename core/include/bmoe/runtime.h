@@ -31,6 +31,9 @@ struct RunResult {
     // in generated_text already has it stripped. See TokenMetrics::reasoning.
     std::string reasoning_text;
     RunSummary summary;
+    // Messages fit_ctx removed from the front of the conversation to make this turn fit n_ctx
+    // (GenerateRequest::fit_ctx). 0 when nothing was dropped.
+    int history_dropped = 0;
     explicit operator bool() const { return ok; }
 };
 

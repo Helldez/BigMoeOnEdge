@@ -56,6 +56,9 @@
 //       a session without decide enabled refuses it harmlessly (f), and with a prefill device
 //       decisions (no prefix state kept) and a generate() after them == all CPU (g). G16 and G17 are
 //       the prefill-device gates.
+//   G19 seeding a saved conversation: a history handed in == the same conversation held live (a), a
+//       re-sent history is not prefilled again (b), fit_ctx drops whole exchanges and never a system
+//       message (c), and a refused history leaves the session usable (d).
 //
 // G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
 // RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but
@@ -1303,6 +1306,173 @@ int main(int argc, char ** argv) {
                 }
                 fails += check("G18g decide + generate on a prefill device == all CPU", on_cpu, on_dev);
             }
+        }
+    }
+
+    // G19 — seeding a saved conversation (GenerateRequest::history, fit_ctx). A front-end whose own
+    // store is the source of truth re-sends the whole conversation each turn; the engine must treat
+    // that as if it had held it all along.
+    //
+    // a) seeded == live: the answer to turn two, and the context length after it, are the same
+    //    whether the engine decoded turn one itself or was handed it as history (and so prefilled it).
+    // b) prefix reuse: re-sending the conversation the session already holds prefills only the new
+    //    turn, not the history again.
+    // c) fit_ctx drops the oldest exchanges and says how many; without it the same request is
+    //    refused, and a system message is never what gets dropped.
+    // d) a refused request is harmless: non-chat sessions and unknown roles are non-fatal errors, and
+    //    the session answers the next request.
+    {
+        RunConfig cc = base(model);
+        cc.moe.enabled = false;
+        cc.chatml = true;
+        cc.n_ctx = 512;
+        cc.n_predict = 12;
+        const std::string u1 = "Hello there.", u2 = "And then?", u3 = "ok?";
+
+        auto turn = [&](Session & s, const std::string & prompt, bool clear, const std::vector<ChatMessage> * hist,
+                        bool fit = false) {
+            GenerateRequest g;
+            g.prompt = prompt;
+            g.n_predict = cc.n_predict;
+            g.clear_kv = clear;
+            if (hist) {
+                g.replace_history = true;
+                g.history = *hist;
+            }
+            g.fit_ctx = fit;
+            return s.generate(g);
+        };
+
+        std::unique_ptr<Session> s = Session::open(session_config_from(cc), err);
+        if (!s) {
+            std::fprintf(stderr, "G19 session open failed: %s\n", err.c_str());
+            return 2;
+        }
+        const RunResult t1 = turn(*s, u1, true, nullptr);
+        const RunResult t2 = turn(*s, u2, false, nullptr);
+        if (!t1 || !t2) {
+            std::fprintf(stderr, "G19 live turns failed: %s\n", (!t1 ? t1.error : t2.error).c_str());
+            return 2;
+        }
+        const std::vector<ChatMessage> h1 = {{"user", u1}, {"assistant", t1.generated_text}};
+        const RunResult t2s = turn(*s, u2, true, &h1);
+        if (!t2s) {
+            std::fprintf(stderr, "G19 seeded turn failed: %s\n", t2s.error.c_str());
+            return 2;
+        }
+        fails += check("G19a seeded answer == live answer", t2.generated_text, t2s.generated_text);
+        fails += check("G19a seeded n_past == live n_past", std::to_string(t2.summary.n_past),
+                       std::to_string(t2s.summary.n_past));
+
+        const std::vector<ChatMessage> h2 = {
+            {"user", u1}, {"assistant", t1.generated_text}, {"user", u2}, {"assistant", t2s.generated_text}};
+        const RunResult t3 = turn(*s, u3, false, &h2);
+        if (!t3) {
+            std::fprintf(stderr, "G19 reuse turn failed: %s\n", t3.error.c_str());
+            return 2;
+        }
+        // What "reused" means is what the session would have prefilled had it held the conversation
+        // all along, so the reference is a session that did. A fixed bound on the new turn's size does
+        // not do: on this byte-level vocab the template's own markers are dozens of tokens, and the
+        // tail of the last answer is re-rendered whatever happens. The cold figure keeps the equality
+        // from passing when nothing was reused at all.
+        std::unique_ptr<Session> held = Session::open(session_config_from(cc), err);
+        if (!held) {
+            std::fprintf(stderr, "G19 live session open failed: %s\n", err.c_str());
+            return 2;
+        }
+        turn(*held, u1, true, nullptr);
+        turn(*held, u2, false, nullptr);
+        const RunResult t3_live = turn(*held, u3, false, nullptr);
+        const RunResult t3_cold = turn(*s, u3, true, &h2);
+        if (!t3_live || !t3_cold) {
+            std::fprintf(stderr, "G19 reference turns failed: %s\n",
+                         (!t3_live ? t3_live.error : t3_cold.error).c_str());
+            return 2;
+        }
+        const int n_reused = t3.summary.n_prompt, n_live = t3_live.summary.n_prompt, n_cold = t3_cold.summary.n_prompt;
+        // A recurrent state cannot be rewound to the middle of a conversation, so a hybrid stack
+        // re-prefills every turn whether or not the history was seeded: the equality still holds and
+        // is checked, but there is no saving for the cold figure to show.
+        const bool rewindable = s->arch() != "nemotron_h_moe";
+        if (n_reused != n_live || (rewindable && n_reused * 2 >= n_cold)) {
+            std::printf("[FAIL] G19b re-sent history prefilled %d tokens (held live: %d, cold: %d)\n", n_reused, n_live,
+                        n_cold);
+            ++fails;
+        } else {
+            std::printf("[PASS] G19b re-sent history prefilled %d tokens (held live: %d, cold: %d)%s\n", n_reused,
+                        n_live, n_cold, rewindable ? "" : "; no prefix reuse on a recurrent stack");
+        }
+
+        // c) a window too small for the history. 40 bytes of text is roughly 40 tokens on this
+        //    byte-level vocab, so four exchanges cannot share 256 positions with a system message.
+        RunConfig small = cc;
+        small.n_ctx = 256;
+        std::unique_ptr<Session> sm = Session::open(session_config_from(small), err);
+        if (!sm) {
+            std::fprintf(stderr, "G19 small session open failed: %s\n", err.c_str());
+            return 2;
+        }
+        const std::string pad(40, 'x');
+        std::vector<ChatMessage> big = {{"system", "Be brief."}};
+        for (int i = 0; i < 4; ++i) {
+            big.push_back({"user", pad});
+            big.push_back({"assistant", pad});
+        }
+        const RunResult unfit = turn(*sm, u3, true, &big, /*fit*/ false);
+        const RunResult fitted = turn(*sm, u3, true, &big, /*fit*/ true);
+        const bool refused = !unfit.ok && unfit.error.find("exceeds the session n_ctx") != std::string::npos;
+        if (!refused) {
+            std::printf("[FAIL] G19c without fit_ctx an oversized history is refused (%s)\n",
+                        unfit.ok ? "it ran" : unfit.error.c_str());
+            ++fails;
+        } else {
+            std::printf("[PASS] G19c without fit_ctx an oversized history is refused\n");
+        }
+        // Whole exchanges only: an even count of messages, at least one, and fewer than all eight (the
+        // system message is not one of them, so it cannot be what makes the count reach nine).
+        if (!fitted.ok || fitted.history_dropped <= 0 || fitted.history_dropped % 2 != 0 ||
+            fitted.history_dropped > (int) big.size() - 1) {
+            std::printf("[FAIL] G19c fit_ctx drops whole exchanges (ok=%d dropped=%d: %s)\n", (int) fitted.ok,
+                        fitted.history_dropped, fitted.ok ? "" : fitted.error.c_str());
+            ++fails;
+        } else {
+            std::printf("[PASS] G19c fit_ctx drops whole exchanges (dropped %d of %d messages)\n",
+                        fitted.history_dropped, (int) big.size() - 1);
+        }
+        // A system message that is itself too big has nothing droppable behind it: still refused.
+        const std::vector<ChatMessage> huge_sys = {
+            {"system", std::string(400, 's')}, {"user", pad}, {"assistant", pad}};
+        const RunResult sys_only = turn(*sm, u3, true, &huge_sys, /*fit*/ true);
+        if (sys_only.ok) {
+            std::printf("[FAIL] G19c fit_ctx never drops a system message (the request ran, dropped %d)\n",
+                        sys_only.history_dropped);
+            ++fails;
+        } else {
+            std::printf("[PASS] G19c fit_ctx never drops a system message\n");
+        }
+
+        // d) refusals leave the session usable.
+        const std::vector<ChatMessage> bad_role = {{"tool", "x"}};
+        const RunResult r_role = turn(*s, u3, true, &bad_role);
+        const RunResult after = turn(*s, u3, true, nullptr);
+        RunConfig raw = cc;
+        raw.chatml = false;
+        std::unique_ptr<Session> sr = Session::open(session_config_from(raw), err);
+        if (!sr) {
+            std::fprintf(stderr, "G19 raw session open failed: %s\n", err.c_str());
+            return 2;
+        }
+        const RunResult r_raw = turn(*sr, u3, true, &h1);
+        const bool d_ok = !r_role.ok && r_role.error.find("unknown history role") != std::string::npos && after.ok &&
+                          !r_raw.ok && r_raw.error.find("history needs chat mode") != std::string::npos;
+        if (!d_ok) {
+            std::printf("[FAIL] G19d refused histories (role: %s; next turn ok=%d; raw: %s)\n",
+                        r_role.ok ? "ran" : r_role.error.c_str(), (int) after.ok,
+                        r_raw.ok ? "ran" : r_raw.error.c_str());
+            ++fails;
+        } else {
+            std::printf("[PASS] G19d refused histories are non-fatal errors\n");
         }
     }
 

@@ -85,6 +85,12 @@ enum class ThinkControl {
 // Stable lowercase name ("template", "prefill", "none") for logs and the telemetry protocol.
 const char * think_control_name(ThinkControl c);
 
+// One message of a conversation handed to the engine (GenerateRequest::history).
+struct ChatMessage {
+    std::string role; // "system" | "user" | "assistant"
+    std::string content;
+};
+
 // Per-prompt request. clear_kv=true (the default) makes each prompt independent while the
 // expert cache stays warm; clear_kv=false continues the KV cache for multi-turn chat.
 struct GenerateRequest {
@@ -99,6 +105,18 @@ struct GenerateRequest {
     // default output, and every benchmark run) does not, and should turn it off. Default on so an
     // embedder that does not know about this flag keeps the old behaviour.
     bool render_text = true;
+    // Replace the engine-held conversation with `history` before this turn's user message is
+    // appended. The KV is NOT dropped: the usual prefix diff keeps whatever still matches, so
+    // re-sending the conversation the session already holds costs nothing, and a different one
+    // re-prefills from the first divergent token. This is how a front-end whose store is the source
+    // of truth (a saved chat, a retried turn) drives the engine without tracking what it holds.
+    // Chat mode only: refused (not fatal) otherwise.
+    bool replace_history = false;
+    std::vector<ChatMessage> history;
+    // When the rendered prompt + n_predict would overflow n_ctx, drop the oldest exchanges (never a
+    // system message, never this turn's user message) until it fits, and report how many messages
+    // went in RunResult::history_dropped. Off, an overflow is the usual non-fatal error.
+    bool fit_ctx = false;
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token

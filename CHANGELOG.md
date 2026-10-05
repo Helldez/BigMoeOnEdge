@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.28.1] - 2026-10-04
+
+### Added
+- **Seeding a saved conversation, and fitting it to the context.** A front-end that keeps its own
+  record of a chat (a database, an undo, a retried turn) no longer has to track what the engine
+  holds. `GenerateRequest::replace_history` + `history` replace the engine-held conversation before
+  the turn's user message is appended; the KV is not dropped, so the usual prefix diff keeps
+  whatever still matches. Re-sending the conversation the session already holds prefills only the
+  new turn, and a different one re-prefills from the first token that differs. A history seeded
+  from an earlier answer yields the same next answer and the same context length as the session
+  that decoded it (gate G19a). `fit_ctx` drops the oldest whole exchanges, never a system message
+  or the turn's own user message, until the prompt and `n_predict` fit `n_ctx`, instead of refusing
+  the request; `RunResult::history_dropped` says how many messages went. Chat mode only.
+  On the line protocol: `generate` takes `history_roles` and `history_contents` (parallel string
+  arrays; the presence of `history_roles` seeds the history, `[]` seeds an empty one) and
+  `fit_ctx`, and `BMOE_DONE` ends with `history_dropped`. See `docs/session.md` and
+  `docs/telemetry.md`.
+
+### Fixed
+- A turn refused for overflow or an empty prompt used to leave its user message in the
+  engine-held conversation, so the next turn rendered two user messages in a row. The conversation
+  is now restored to what it was before the request.
+
 ## [0.28.0] - 2026-09-29
 
 ### Changed

@@ -1288,6 +1288,15 @@ RunResult Session::generate(const GenerateRequest & req,
         return res;
     };
 
+    // A seeded history is checked before anything is cleared: a refused request must leave the
+    // session as it found it.
+    if (req.replace_history) {
+        if (!im.chat_on) return fail("history needs chat mode (--chatml)");
+        for (const ChatMessage & m : req.history)
+            if (m.role != "system" && m.role != "user" && m.role != "assistant")
+                return fail("unknown history role '" + m.role + "' (want system, user or assistant)");
+    }
+
     // clear_kv = "new chat": drop the KV and the engine-held conversation. Otherwise this turn
     // continues the conversation, reusing the KV prefix already decoded from earlier turns.
     if (req.clear_kv) {
@@ -1303,6 +1312,21 @@ RunResult Session::generate(const GenerateRequest & req,
         if (im.smpl) llama_sampler_reset(im.smpl);
     }
 
+    // What the engine held before this request touched it. A turn that is refused after the
+    // conversation was edited (seeded, or trimmed by fit_ctx) puts it back, so a bad request leaves
+    // the session as it found it. The KV needs no such care: nothing has been decoded yet.
+    const std::vector<common_chat_msg> held_history = im.chat_history;
+    if (req.replace_history) {
+        im.chat_history.clear();
+        im.chat_history.reserve(req.history.size() + 1);
+        for (const ChatMessage & m : req.history) {
+            common_chat_msg cm;
+            cm.role = m.role;
+            cm.content = m.content;
+            im.chat_history.push_back(std::move(cm));
+        }
+    }
+
     // Format the prompt. With chat on, render the model's OWN chat template (real Jinja) over the
     // WHOLE conversation so far, and set up reasoning parsing so a thinking model's internal
     // reasoning is stripped from the shown answer. req.think drives enable_thinking, per prompt.
@@ -1312,45 +1336,88 @@ RunResult Session::generate(const GenerateRequest & req,
     bool prefilled_answer = false; // closed the reasoning span in the prompt, so skip reasoning parse
     common_chat_parser_params parse_params;
     if (chat_on) {
-        try {
-            common_chat_msg user_msg;
-            user_msg.role = "user";
-            user_msg.content = req.prompt;
-            im.chat_history.push_back(user_msg);
-            history_pushed = true;
+        common_chat_msg user_msg;
+        user_msg.role = "user";
+        user_msg.content = req.prompt;
+        im.chat_history.push_back(user_msg);
+        history_pushed = true;
+    }
 
-            // The full conversation, not just this turn. The reasoning span and the turn header a
-            // prefilled turn resumes after are rendered by llama.cpp's own handler for this
-            // template, so no marker for any family is spelled out here. See thinking_control.h.
-            common_chat_templates_inputs inputs;
-            prefilled_answer = detail::build_turn_inputs(inputs, im.chat_history, req.think, im.think_ctl);
+    // Render the conversation (chat on) and tokenize it. Run again after fit_ctx drops an exchange.
+    std::vector<llama_token> tokens;
+    int n_prompt = 0;
+    auto render_and_tokenize = [&]() {
+        if (chat_on) {
+            try {
+                // The full conversation, not just this turn. The reasoning span and the turn header a
+                // prefilled turn resumes after are rendered by llama.cpp's own handler for this
+                // template, so no marker for any family is spelled out here. See thinking_control.h.
+                common_chat_templates_inputs inputs;
+                prefilled_answer = detail::build_turn_inputs(inputs, im.chat_history, req.think, im.think_ctl);
 
-            common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
-            prompt = cp.prompt;
-            parse_params = detail::build_parse_params(cp);
-        } catch (const std::exception & e) {
-            std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
-            if (history_pushed) {
-                im.chat_history.pop_back();
-                history_pushed = false;
+                common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
+                prompt = cp.prompt;
+                parse_params = detail::build_parse_params(cp);
+            } catch (const std::exception & e) {
+                std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
+                if (history_pushed) {
+                    im.chat_history.pop_back();
+                    history_pushed = false;
+                }
+                chat_on = false;
+                prompt = req.prompt;
             }
-            chat_on = false;
         }
-    }
-
-    std::vector<llama_token> tokens(prompt.size() + 8);
-    int n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
-                                  /*add_special*/ true, /*parse_special*/ true);
-    if (n_prompt < 0) {
-        tokens.resize(-n_prompt);
+        tokens.assign(prompt.size() + 8, 0);
         n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
-                                  true, true);
+                                  /*add_special*/ true, /*parse_special*/ true);
+        if (n_prompt < 0) {
+            tokens.resize(-n_prompt);
+            n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
+                                      true, true);
+        }
+        if (n_prompt > 0) tokens.resize(n_prompt);
+    };
+
+    // fit_ctx: remove the oldest exchange from the front, one whole turn at a time. System messages
+    // stay (they are the persona, not the history), and so does the last message, this turn's user
+    // message. Returns how many messages went; 0 when nothing more can be dropped.
+    auto drop_oldest_exchange = [&]() -> int {
+        std::vector<common_chat_msg> & h = im.chat_history;
+        const size_t last = h.size() - 1; // chat_on: the pushed user message is always there
+        size_t first = 0;
+        while (first < last && h[first].role == "system")
+            ++first;
+        if (first >= last) return 0;
+        size_t end_ex = first + 1;
+        while (end_ex < last && h[end_ex].role != "user")
+            ++end_ex;
+        int dropped = 0;
+        for (size_t i = end_ex; i-- > first;) {
+            if (h[i].role == "system") continue;
+            h.erase(h.begin() + (std::ptrdiff_t) i);
+            ++dropped;
+        }
+        return dropped;
+    };
+
+    // A refused turn after the conversation was edited restores it (see held_history above).
+    auto refuse = [&](std::string msg) {
+        if (im.chat_on) im.chat_history = held_history;
+        res.history_dropped = 0;
+        return fail(std::move(msg));
+    };
+
+    for (;;) {
+        render_and_tokenize();
+        if (n_prompt < 1) return refuse("empty prompt after tokenization");
+        if (n_prompt + req.n_predict + 8 <= im.cfg.n_ctx) break;
+        const int dropped = (req.fit_ctx && chat_on) ? drop_oldest_exchange() : 0;
+        if (dropped == 0)
+            return refuse("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
+                          "); open the session with a larger n_ctx");
+        res.history_dropped += dropped;
     }
-    if (n_prompt < 1) return fail("empty prompt after tokenization");
-    tokens.resize(n_prompt);
-    if (n_prompt + req.n_predict + 8 > im.cfg.n_ctx)
-        return fail("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
-                    "); open the session with a larger n_ctx");
 
     // The text to surface: with chat on, parse the raw output so a reasoning model's internal
     // thinking is separated from the answer. The answer is shown inline; the reasoning is handed to

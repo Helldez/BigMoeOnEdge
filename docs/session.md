@@ -48,6 +48,34 @@ prefix diverges at the last answer and up to one answer's worth of tokens is re-
 with thinking **off** (the app default) the re-fed suffix is just the new user turn plus a few
 wrapper tokens.
 
+### Seeding a saved conversation
+
+A front-end whose own store is the source of truth (a chat database, an edited or retried turn)
+should not have to remember what the engine holds. `GenerateRequest::replace_history` with
+`history` (a list of `{role, content}`, roles `system`, `user` or `assistant`) replaces the
+engine-held conversation before this turn's user message is appended; `prompt` is still only the
+new message. Nothing is cleared for it: the KV prefix diff above does the work, so re-sending
+exactly what the session already holds costs nothing beyond the new turn, and a different history
+re-prefills from the first token that differs. Send `clear_kv:true` with it to start from an empty
+KV (a conversation loaded from storage); `clear_kv:false` to keep whatever prefix still matches
+(the usual turn, with the history re-sent). Chat mode only: without `--chatml` the request is
+refused, as is an unknown role, and in both cases the session is left as it was.
+
+An assistant message seeded from an earlier answer re-tokenizes to the tokens the engine decoded
+when the text round-trips, so the seeded and the live conversation produce the same next answer and
+the same `n_past` (gate G19a). Models that reason and strip the previous turn's thinking on
+re-render already pay for that divergence each turn (see above); seeding does not change it. A
+hybrid stack with a recurrent state cannot be rewound to the middle of a conversation, so it
+re-prefills each turn either way.
+
+`fit_ctx:true` makes an overflowing request fit instead of failing: while the rendered prompt plus
+`n_predict` would exceed `n_ctx`, the oldest exchange goes (the first non-system message and every
+message after it up to the next `user` message), the prompt is rendered again, and
+`RunResult::history_dropped` counts the messages removed. System messages stay, and so does the
+turn's own user message; when nothing more can go, the usual non-fatal overflow error is returned.
+The dropped messages are gone from the engine's conversation too, so a caller that keeps its own
+record should re-send it in full next time and let `fit_ctx` trim it again.
+
 **Reasoning is returned, not discarded.** On a thinking model the Session parses the reasoning span
 out of the raw stream and carries it in its own field (`TokenMetrics`/`RunResult::reasoning`,
 `delta_reasoning` on `BMOE_PROGRESS`, `reasoning` on `BMOE_DONE`) rather than dropping it. The answer text stays free of
@@ -68,7 +96,7 @@ Cancel is distinct from a fatal streaming error, which is sticky and ends the se
 
 `n_ctx` and `n_batch` are baked into the llama context at `open()`, before any prompt is known, so
 size them for the longest prompt + generation the session will serve. A request that would overflow
-`n_ctx` is rejected without tearing the session down.
+`n_ctx` is rejected without tearing the session down, unless it asked for `fit_ctx` (above).
 
 ## CLI and app
 
