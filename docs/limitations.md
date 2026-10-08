@@ -32,12 +32,19 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   GPU offload of the streamed experts is not supported (the dense parts can still use the
   GPU). Decode is flash-I/O-bound anyway, so this is rarely the bottleneck.
 - **Shared experts stay resident.** Architectures with an always-on shared expert (e.g.
-  `gemma4`, `deepseek4`) stream the routed experts but keep the shared expert — and any dense layers —
+  `gemma4`, `deepseek4`, `nemotron_h_moe`) stream the routed experts but keep the shared expert — and any dense layers —
   resident (in the page cache, or in the engine's own buffers under `--dense-weights anon`),
   so the streamed fraction (and the memory saving) is smaller than for a purely routed model
   like `qwen3moe`. The same applies to architectures whose first blocks are dense by design
   (`lfm2moe` has a `leading_dense_block_count`): those blocks name no expert tensors, so they
   are never streamed.
+- **The forward expert predictors assume adjacent MoE blocks.** `--predict-log`'s stale predictor,
+  `--predict-prefetch` and `--route-ahead` predict layer `il+1` from layer `il`. `nemotron_h_moe`
+  never puts two MoE blocks next to each other (every one sits between Mamba2 or attention
+  blocks), so on it they have nothing to target: they stay byte-identical and harmless, and do
+  nothing. The probe also ranks the router's raw logits, so on architectures that add a
+  per-expert selection bias before the top-k (`lfm2moe`, `deepseek4`, `bailingmoe3`,
+  `nemotron_h_moe`) its numbers approximate the routing rather than reproduce it.
 - **A resident tensor can be larger than RAM, and then it is only ever mmap'd.** `qwen4exp`
   (Qwen3.8-Flash-Next) carries a 51B n-gram embedding table (`per_layer_token_embd`, ~28.8 GB at
   IQ4_NL) that the graph reads sixteen rows at a time through `get_rows`. It is not indexed by

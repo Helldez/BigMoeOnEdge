@@ -22,6 +22,7 @@
 #include "llama.h"
 
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -124,8 +125,9 @@ static void emit_progress_line(const TokenMetrics & m, ProgressDelta & st) {
 }
 
 // ── minimal flat-JSON reading for the --session request protocol ──
-// The session request objects are flat (string/int/bool fields only), so a tiny hand-rolled
-// extractor keeps the CLI dependency-free, mirroring the hand-written JSON it already emits.
+// The session request objects are flat (string/int/bool fields, and decide's one array of
+// strings), so a tiny hand-rolled extractor keeps the CLI dependency-free, mirroring the hand-written JSON it already
+// emits.
 
 static std::string json_unescape(const std::string & s) {
     std::string o;
@@ -182,12 +184,12 @@ static size_t json_value_pos(const std::string & line, const char * key) {
     return c + 1;
 }
 
-static bool json_get_string(const std::string & line, const char * key, std::string & out) {
-    size_t p = json_value_pos(line, key);
-    if (p == std::string::npos) return false;
+// Read the JSON string that starts at `p` (at or before its opening quote, after any blanks).
+// Returns the index just past its closing quote, or npos when there is no string there.
+static size_t json_read_string(const std::string & line, size_t p, std::string & out) {
     while (p < line.size() && (line[p] == ' ' || line[p] == '\t'))
         ++p;
-    if (p >= line.size() || line[p] != '"') return false;
+    if (p >= line.size() || line[p] != '"') return std::string::npos;
     ++p;
     std::string raw;
     for (; p < line.size(); ++p) {
@@ -202,7 +204,34 @@ static bool json_get_string(const std::string & line, const char * key, std::str
         }
     }
     out = json_unescape(raw);
-    return true;
+    return p < line.size() ? p + 1 : std::string::npos;
+}
+
+static bool json_get_string(const std::string & line, const char * key, std::string & out) {
+    size_t p = json_value_pos(line, key);
+    if (p == std::string::npos) return false;
+    return json_read_string(line, p, out) != std::string::npos;
+}
+
+// An array of strings, e.g. "choices":["A","B"]. False unless every element is a string.
+static bool json_get_string_array(const std::string & line, const char * key, std::vector<std::string> & out) {
+    size_t p = json_value_pos(line, key);
+    if (p == std::string::npos) return false;
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t'))
+        ++p;
+    if (p >= line.size() || line[p] != '[') return false;
+    ++p;
+    out.clear();
+    for (;;) {
+        while (p < line.size() && (line[p] == ' ' || line[p] == '\t' || line[p] == ','))
+            ++p;
+        if (p >= line.size()) return false;
+        if (line[p] == ']') return true;
+        std::string item;
+        p = json_read_string(line, p, item);
+        if (p == std::string::npos) return false;
+        out.push_back(std::move(item));
+    }
 }
 
 static int json_get_int(const std::string & line, const char * key, int dflt) {
@@ -220,15 +249,60 @@ static bool json_get_bool(const std::string & line, const char * key, bool dflt)
 }
 
 // A parsed stdin command. cancel is handled inline by the reader thread (it calls
-// Session::cancel directly), so only generate/close travel through the queue.
+// Session::cancel directly), so only generate/decide/close travel through the queue.
 struct SessionCmd {
-    enum Kind { kGenerate, kClose } kind;
+    enum Kind { kGenerate, kDecide, kClose } kind;
     std::string prompt;
     int id = 0;
     int n_predict = 128;
     bool think = true;
     bool clear_kv = true;
+    // decide only (bmoe/decide.h)
+    std::string prefix, suffix;
+    std::vector<std::string> choices;
+    bool reuse_prefix = true;
 };
+
+// Answer one decide request with a BMOE_DECIDE line, or a BMOE_ERROR one. Returns false when the
+// session cannot go on (DecideResult::fatal).
+static bool emit_decide(Session & session, const SessionCmd & cmd) {
+    DecideRequest req;
+    req.prefix = cmd.prefix;
+    req.suffix = cmd.suffix;
+    req.choices = cmd.choices;
+    req.reuse_prefix = cmd.reuse_prefix;
+    const DecideResult r = session.decide(req);
+    if (!r.ok && !r.cancelled) {
+        std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"msg\":\"%s\"}\n", cmd.id, r.fatal ? "true" : "false",
+                    json_escape(r.error).c_str());
+        std::fflush(stdout);
+        return !r.fatal;
+    }
+    std::string logp = "[";
+    for (size_t i = 0; i < r.choice_logp.size(); ++i) {
+        char buf[32];
+        // A choice the model gives no mass to is -inf, which JSON cannot carry: send null.
+        if (std::isfinite(r.choice_logp[i]))
+            std::snprintf(buf, sizeof buf, "%s%.6f", i ? "," : "", r.choice_logp[i]);
+        else
+            std::snprintf(buf, sizeof buf, "%snull", i ? "," : "");
+        logp += buf;
+    }
+    logp += "]";
+    const PrefillStats & p = r.prefill;
+    std::printf("BMOE_DECIDE {\"id\":%d,\"cancelled\":%s,\"best\":%d,\"choice_logp\":%s,\"n_tokens\":%d,"
+                "\"n_reused\":%d,\"n_prefilled\":%d,\"restore_s\":%.3f,\"store_s\":%.3f,\"prefill_s\":%.3f,"
+                "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,\"prefill_stall_s\":%.3f,"
+                "\"prefill_mgmt_s\":%.3f,\"prefill_dev_tokens\":%d,\"prefill_dev_read_mib\":%.1f,"
+                "\"prefill_dev_stall_s\":%.3f,\"prefill_dev_routed\":%lld,\"prefill_dev_demand\":%lld,"
+                "\"prefix_state_mib\":%.1f}\n",
+                cmd.id, r.cancelled ? "true" : "false", r.best, logp.c_str(), r.n_tokens, r.n_reused, r.n_prefilled,
+                r.restore_seconds, r.store_seconds, p.seconds, p.cpu_seconds, p.read_mib, p.io_seconds, p.stall_seconds,
+                p.mgmt_seconds, p.device_tokens, p.device_read_mib, p.device_stall_seconds, p.device_routed,
+                p.device_demand, (double) r.prefix_state_bytes / (1024.0 * 1024.0));
+    std::fflush(stdout);
+    return true;
+}
 
 // Interactive session: keep the model loaded and the expert cache warm across prompts, reading
 // one JSON request per line from stdin and emitting the BMOE_* line protocol on stdout. See
@@ -285,6 +359,13 @@ static int run_session_loop(const RunConfig & cfg,
                 c.n_predict = json_get_int(line, "n_predict", cfg.n_predict);
                 c.think = json_get_bool(line, "think", cfg.think);
                 c.clear_kv = json_get_bool(line, "clear_kv", true);
+            } else if (cmd == "decide") {
+                c.kind = SessionCmd::kDecide;
+                c.id = json_get_int(line, "id", 0);
+                json_get_string(line, "prefix", c.prefix);
+                json_get_string(line, "suffix", c.suffix);
+                json_get_string_array(line, "choices", c.choices);
+                c.reuse_prefix = json_get_bool(line, "reuse_prefix", true);
             } else {
                 continue;
             }
@@ -297,7 +378,9 @@ static int run_session_loop(const RunConfig & cfg,
         {
             std::lock_guard<std::mutex> lk(mtx);
             stop.store(true);
-            queue.push_back({SessionCmd::kClose, "", 0, 0, true, true});
+            SessionCmd close;
+            close.kind = SessionCmd::kClose;
+            queue.push_back(std::move(close));
         }
         cv.notify_one();
     });
@@ -312,6 +395,16 @@ static int run_session_loop(const RunConfig & cfg,
             queue.pop_front();
         }
         if (cmd.kind == SessionCmd::kClose) break;
+        if (cmd.kind == SessionCmd::kDecide) {
+            // Framed like a generation, so a front-end's busy state and wake lock need no special case.
+            std::printf("BMOE_BEGIN {\"id\":%d}\n", cmd.id);
+            std::fflush(stdout);
+            if (!emit_decide(*session, cmd)) {
+                rc = 1;
+                break;
+            }
+            continue;
+        }
 
         std::printf("BMOE_BEGIN {\"id\":%d}\n", cmd.id);
         std::fflush(stdout);
@@ -346,6 +439,8 @@ static int run_session_loop(const RunConfig & cfg,
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
                     "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,"
                     "\"prefill_stall_s\":%.3f,\"prefill_mgmt_s\":%.3f,"
+                    "\"prefill_dev_tokens\":%d,\"prefill_dev_nodes\":%lld,\"prefill_dev_read_mib\":%.1f,"
+                    "\"prefill_dev_stall_s\":%.3f,"
                     "\"token_demand_mib\":%.1f,\"mtp_drafted\":%lld,\"mtp_accepted\":%lld,\"mtp_decodes\":%lld,"
                     "\"mtp_draft_s_tok\":%.4f,\"drafted_steps\":%lld,\"loop_overhead_s_tok\":%.4f,"
                     "\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
@@ -354,9 +449,10 @@ static int run_session_loop(const RunConfig & cfg,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
                     s.majflt_per_token, s.cpu_s_per_token, s.prefill_cpu_seconds, s.prefill_read_mib,
-                    s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.token_demand_mib,
-                    s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token, s.drafted_steps,
-                    s.loop_overhead_s_per_token, json_escape(r.reasoning_text).c_str(),
+                    s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.prefill_device_tokens,
+                    s.prefill_device_nodes, s.prefill_device_read_mib, s.prefill_device_stall_seconds,
+                    s.token_demand_mib, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token,
+                    s.drafted_steps, s.loop_overhead_s_per_token, json_escape(r.reasoning_text).c_str(),
                     json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
@@ -844,6 +940,11 @@ int main(int argc, char ** argv) {
     ValidationResult vr = validate(cfg);
     if (!vr) {
         std::fprintf(stderr, "config error: %s\n", vr.error.c_str());
+        return 1;
+    }
+    // Decide requests only travel through the session protocol; a one-shot run would ignore the flag.
+    if (cfg.decide.enabled && !session_mode) {
+        std::fprintf(stderr, "config error: --decide needs --session\n");
         return 1;
     }
 

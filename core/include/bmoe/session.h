@@ -15,6 +15,7 @@
 #pragma once
 
 #include "bmoe/config.h"
+#include "bmoe/decide.h"
 #include "bmoe/metrics.h"
 #include "bmoe/runtime.h"
 
@@ -60,6 +61,10 @@ struct SessionConfig {
     // open() builds the wider verify batch, and — for the MTP source only — the draft context.
     // See RunConfig::spec.
     SpecConfig spec;
+    // Wide prefill graphs on an accelerator, decode on the CPU. Fixed for the session: the device
+    // joins the scheduler at load. See RunConfig::prefill.
+    PrefillDeviceConfig prefill;
+    DecideConfig decide; // decide()'s prefix-state policy. See RunConfig::decide.
 };
 
 // The RunConfig → SessionConfig mapping, in one place. Both entry points that open a session from a
@@ -213,6 +218,13 @@ public:
 
     // Score a fixed text under teacher forcing. Clears the KV; leaves no conversation state behind.
     PplResult perplexity(const PplRequest & req);
+
+    // Read one decision (bmoe/decide.h): which of req.choices the model would answer next, from a
+    // single prefill and no decode. Ends any conversation generate() was continuing — a decision is
+    // not a turn — and keeps only the prefix state, which the next decide() may restore.
+    // cancel() stops it between prefill chunks. Refused (not fatal) unless the session was opened
+    // with SessionConfig::decide.enabled.
+    DecideResult decide(const DecideRequest & req);
 
 private:
     Session();

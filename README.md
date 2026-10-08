@@ -93,8 +93,10 @@ byte-identical output, and the rest of the phone stays alive.
 **Models that barely fit.** Even a model that technically fits in RAM, say an 8B class MoE on a
 phone with a few GB free, benefits: loaded the ordinary way it squeezes out everything else, and
 the OS claws memory back mid-generation. Streamed with a capped cache, it runs inside a budget you
-choose and leaves the system alone. And this is all plain CPU inference: no GPU, no NPU, four
-cores and the phone's flash storage.
+choose and leaves the system alone. Decode is plain CPU inference: no GPU, no NPU, four cores and
+the phone's flash storage. Prefill can optionally run on a Snapdragon's Hexagon NPU, streamed two
+layers at a time, which is several times faster on long prompts
+([docs/npu-prefill.md](docs/npu-prefill.md)).
 
 The same engine builds unmodified on desktop, where a model past RAM streams from the SSD out of
 the box. Phones stay the focus, because that is where memory is tightest.
@@ -104,7 +106,8 @@ the box. Phones stay the focus, because that is where memory is tightest.
 No build needed. Install the APK from the
 [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest), open the **Get a
 model** card, and tap one of the catalog entries: Qwen3-30B-A3B (~18.6 GB), Qwen3.6-35B-A3B
-(~22.3 GB) or Gemma-4-26B-A4B (~17 GB), each past most phones' RAM. The catalog is only a
+(~22.3 GB), Gemma-4-26B-A4B (~17 GB) or Nemotron-3.5-Lightning-30B-A3B (~18.9 GB), each past
+most phones' RAM. The catalog is only a
 shortcut: the downloader takes any direct gguf URL, so any model from the
 [supported architecture families](#supported-models) streams the same way. When the download
 finishes, pick the model and chat. The telemetry panel shows tok/s and the compute-vs-flash
@@ -177,6 +180,38 @@ breaks each token into flash I/O, cache management and compute, next to the cach
 bytes read, and `--csv` adds the memory picture those numbers must be read against. The Android
 app renders the same feed live while you chat. More under [Telemetry](#telemetry).
 
+### Decisions: choose instead of generate
+
+Many uses of a model are really a choice: which UI action an agent takes next, which tool a router
+calls, which label a classifier assigns, which option a multiple-choice question has. Generating the
+answer spends a decode per token, and on a model streamed from flash decode is the slow part. A
+session opened with `--decide` answers the choice from the **prompt alone**:
+
+1. the prompt lists the options under single-token labels (`A`, `B`, `C`, ...) and asks for the
+   label;
+2. the engine prefills it once and reads the next-token distribution;
+3. each option is scored by the log-probability of its label over the **whole vocabulary**, and the
+   highest wins.
+
+Nothing is decoded, so a decision costs one prefill. The scores are not renormalised over the
+options: the mass the model puts elsewhere is how unsure it is, which is what a caller needs to set
+an abstention threshold (act when the best option is likely enough, ask or fall back otherwise).
+The prompt comes in two parts, a `prefix` that repeats from call to call (instructions, task,
+history) and a `suffix` that changes (the current screen), and on the CPU the model state after the
+prefix is kept and restored, so a sequence of decisions only prefills what is new. Choices that
+share a first token are refused up front rather than answered with a tie.
+
+```
+{"cmd":"decide","id":1,"prefix":"Task: turn on Wi-Fi. ","suffix":"Screen: Settings. Options:
+ A) Network B) Display C) Battery. Answer with the letter.","choices":["A","B","C"]}
+BMOE_DECIDE {"id":1,"best":0,"choice_logp":[-0.014,-6.76,-11.0],"n_tokens":69,...}
+```
+
+On a 12 GB phone with the NPU prefill, a Qwen3.6-35B-A3B decision over a compacted Android screen
+(130 to 480 tokens) takes 3.3 to 4.9 s, the time of one prompt. `--decide-probe` (experimental)
+writes, per decision, which experts each layer routed and the answer the model would give if it
+stopped after each layer. See [docs/decide.md](docs/decide.md).
+
 ### Android demo app
 
 [`examples/android`](examples/android) is a small chat app over the same engine: model downloader,
@@ -196,10 +231,11 @@ configuration for your model on your machine and shows the fact behind each choi
 | Architecture | Reference models | Notes |
 |---|---|---|
 | `qwen3moe` | Qwen3-30B-A3B and siblings | Shipped default, validated below |
-| `qwen35moe` | Qwen3.6-35B-A3B and siblings | Hybrid attention/SSM stack; routed experts stream unchanged |
+| `qwen35moe` | Qwen3.6-35B-A3B and siblings, Ornith-1.5-35B-A3B | Hybrid attention/SSM stack; routed experts stream unchanged |
 | `qwen2moe` | Qwen2 MoE family | Same layout as qwen3moe |
 | `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | Fused expert layout, handled by its registry row |
 | `gpt-oss` | OpenAI gpt-oss-20b / 120b | Purely routed; MXFP4 weights stream unchanged |
+| `nemotron_h_moe` | NVIDIA Nemotron 3 / 3.5 MoE (e.g. Nemotron-3.5-Lightning-30B-A3B) | Gate-less experts (up/down only); hybrid Mamba2/attention stack, optional latent projections and a shared expert stay resident |
 | `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
 | `deepseek4` | DeepSeek V4 Flash (284B-A13B), validated on the 0731 release | V3.2-style routing (256 experts + shared); compressed attention is dense-side; ships multi-shard |
 | `bailingmoe3` | Ling 3.0 (e.g. Ling-3.0-flash, 127B-A5B) | 512 routed experts + shared, biased top-k; hybrid KDA/MLA attention is dense-side |
@@ -306,6 +342,42 @@ the best gpt-oss config reads **1.9 tok/s** in the app against 2.2 over adb, abo
 gap is the protocol (short chat replies never fully warm the cache), not the app. The app's
 telemetry panel reports the same fields as the CLI, so you can see it directly. Analysis:
 [docs/warmup-analysis.md](docs/warmup-analysis.md).
+
+### Prefill on the NPU
+
+On a Snapdragon, `--prefill-device` runs prefill on the Hexagon NPU and leaves decode on the CPU.
+Hexagon is the only NPU supported: on any other phone, or a Snapdragon older than Hexagon v73,
+prefill stays on the CPU. The model still streams from flash: the NPU never holds it, only two
+layer-sized slots that loader threads fill while it computes the other one. Measured on a 12 GB
+phone with a Hexagon v81 NPU:
+
+| Model | Prompt | CPU | NPU | Speedup |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B Q4_0 | 1418 tokens | 63.8 s | 8.2 s | 7.8x |
+| Qwen3.6-35B-A3B Q4_0 | 1921 tokens | 106.5 s | 11.2 s | 9.5x |
+| Qwen3.6-35B-A3B Q4_K_M | 1418 tokens | 80.6 s | 10.2 s | 7.9x |
+| Gemma 4 26B-A4B | 238 tokens | 16.2 s | 5.85 s | 2.8x |
+
+**Short prompts are flash bound**: read whole, the experts cost the same at 121 tokens as at 1418.
+So the arena reads only the experts a graph routes to. It loads ahead the experts the previous
+prompt routed at each layer, and at each layer's routing node it reads what the router actually
+picked and fetches what is missing; the matmul touches only those, so the output is unchanged bit
+for bit. A layer that routes to more than 85% of its experts has the next one read whole, so long
+prompts lose nothing (`--no-prefill-routed` reads whole layers everywhere). Same phone, 130 to
+480-token prompts, top-4 routing, whole layers against routed:
+
+| Model | Experts routed per layer | Whole layers | Routed | Speedup |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B Q4_0 | ~50% of 256 | 7.68 s | 4.16 s | 1.85x |
+| Qwen3.6-35B-A3B Q4_K_M | ~50% of 256 | 9.95 s | 5.37 s | 1.85x |
+| Gemma 4 26B-A4B Q4_K_M | ~58% of 128 | 6.69 s | 3.70 s | 1.81x |
+| Nemotron 3.5 30B-A3B Q4_0 | ~79% of 128 | 7.42 s | 6.81 s | 1.09x |
+
+The gain is what a prompt leaves unrouted, so it is small on a model whose prompts route to most of
+its experts. The slots cost decode some memory, about 5% on Gemma 4 (3.25 against 3.41 tok/s). The
+NPU computes in fp16, so its output is not identical to the CPU's. The NPU prefill is off by
+default (`--prefill-device HTP0`, or the NPU switch in the app); see
+[docs/npu-prefill.md](docs/npu-prefill.md).
 
 ### Desktop
 

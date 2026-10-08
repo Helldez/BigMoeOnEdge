@@ -105,6 +105,23 @@ object ModelManager {
     fun cliPath(ctx: Context): String =
         File(ctx.applicationInfo.nativeLibraryDir, "libbmoe-cli.so").absolutePath
 
+    /**
+     * Why the NPU prefill cannot run here, or null when it can be offered: the APK carries the
+     * Hexagon backend (release builds do; a plain local build does not) and the phone has the
+     * Hexagon's fastrpc driver, which only Snapdragon phones ship. A Snapdragon whose NPU the
+     * kernels do not cover (older than 8 Gen 2) still passes; the engine then finds the device
+     * will not open and keeps the prefill on the CPU.
+     */
+    fun npuUnavailableReason(ctx: Context): String? = when {
+        !File(ctx.applicationInfo.nativeLibraryDir, "libggml-hexagon.so").exists() ->
+            "This build does not include the Hexagon backend."
+        NPU_DRIVER_DIRS.none { File(it, "libcdsprpc.so").exists() } ->
+            "No Hexagon NPU on this phone: it needs a Snapdragon."
+        else -> null
+    }
+
+    private val NPU_DRIVER_DIRS = listOf("/vendor/lib64", "/system/vendor/lib64", "/odm/lib64")
+
     /** Empty-state guidance, phrased for the current flavor's model-acquisition paths. */
     fun pushHint(): String =
         if (BuildConfig.SHARED_STORAGE) {

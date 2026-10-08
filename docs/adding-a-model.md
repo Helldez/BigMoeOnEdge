@@ -46,6 +46,15 @@ with a larger per-expert stride, discovered at runtime like any other.
     { "gemma4", { "ffn_gate_up_exps", "ffn_down_exps", nullptr } },
 ```
 
+Some models have **no gate projection at all**: each expert is up, an activation, then down.
+`nemotron_h_moe` (Nemotron 3 / 3.5 MoE, ReLU²) is one. The row names the two tensors it has and
+leaves the tail `nullptr`, exactly like the fused case; the slots carry no meaning to the engine,
+which streams whatever the row names.
+
+```cpp
+    { "nemotron_h_moe", { "ffn_up_exps", "ffn_down_exps", nullptr } },
+```
+
 Models with **shared/always-on experts** (a dense expert applied to every token, as in
 `gemma4`, DeepSeek and some Qwen variants) work, but the shared expert stays resident and
 reduces the streaming saving proportionally. Note it in the model's entry when you add one.

@@ -344,6 +344,98 @@ struct SpecConfig {
     bool is_ngram() const { return source == DraftSource::ngram; }
 };
 
+// Prefill on an accelerator, decode on the CPU. Off unless `device` names a ggml device.
+//
+// Prefill and decode want opposite hardware. A prefill graph is hundreds of tokens wide, so a
+// matrix engine (the Hexagon HMX, a GPU) runs it at many times the CPU's rate; a decode graph is
+// one token wide, and on unified memory the per-graph boundary cost of an accelerator eats what it
+// saves there. So the weights are moved per GRAPH: before a wide prefill graph the layer weights
+// are rebound onto the device's own buffer, and afterwards back onto the CPU mapping. The llama.cpp
+// scheduler assigns every op to the backend holding its weight, and it re-decides that on every
+// graph it builds, so the rebind is all it takes — no llama.cpp change.
+//
+// The one hazard is graph REUSE: llama.cpp skips rebuilding (and re-scheduling) a graph of the same
+// shape as the previous one. The invariant that makes the rebind safe is therefore about widths:
+// every graph run on the device is at least `min_tokens` wide and every graph run on the CPU is
+// narrower, so two consecutive graphs on different placements never share a shape.
+struct PrefillDeviceConfig {
+    // ggml device name as the backend registry reports it (e.g. "HTP0" for the Hexagon NPU).
+    // Empty = off. A local device only: no front-end registers a remote (RPC) one.
+    std::string device;
+
+    // Narrowest prefill graph sent to the device. A prompt is fed in ubatch-wide pieces; pieces at
+    // least this wide run on the device and a shorter tail runs on the CPU. It must exceed every
+    // graph width the CPU path uses, which is one token for plain decode — speculation's wider
+    // verify batch is excluded by validation for now.
+    int min_tokens = 32;
+
+    // Loader threads of the streamed-expert arena (with moe.enabled). Separate from moe.io_threads,
+    // which sets the decode's read lanes: a prefill graph has the whole CPU idle while the device
+    // computes, and each loader both reads and repacks (a K-quant repack is CPU-heavy), while decode
+    // wants few lanes. Measured on a Q4_K_M: 4 loaders left the device waiting 10.3 s of a 15.1 s
+    // prefill, 8 left it 5.0 of 10.0.
+    int load_threads = 8;
+    static constexpr int load_threads_max = 16;
+
+    // TEST ONLY: sleep this long before the first upload of each layer in the arena. On a tiny
+    // model the loaders always beat the graph to the next layer, so a missing barrier would go
+    // unnoticed; slowed down, the barrier is the only thing keeping compute behind the loads, and the
+    // gate proves it. Never set by a front-end.
+    int test_load_delay_us = 0;
+
+    // Read only the experts each device graph routes to, predicted from the previous graph's routing
+    // and completed at each routing node (DeviceExpertArena::set_routed); the result is bit for bit
+    // the same as reading whole layers, which `false` restores. Only the expert arena of a streamed
+    // model reads experts, so elsewhere it has no effect. `routed_full_frac`: a layer routing more
+    // than this fraction of its experts gets the next layer read whole.
+    bool routed = true;
+    float routed_full_frac = 0.85f;
+    static constexpr float routed_full_frac_min = 0.0f; // exclusive: 0 would read every layer whole
+    static constexpr float routed_full_frac_max = 1.0f; // inclusive: 1 never falls back
+    // TEST ONLY: in routed mode, skip the reads at the routing node, so the graph computes on whatever
+    // the slot held for the experts the prediction missed. The gate uses it to prove it would see that.
+    bool test_routed_skip_demand = false;
+
+    static constexpr int min_tokens_floor = 2; // decode is one token wide; this keeps the shapes apart
+
+    // Logit rows a graph may produce, with the device on. llama.cpp reserves compute memory for as many
+    // as the ubatch is wide, and a row is the whole vocabulary: 2048 rows of a 248k-token vocabulary
+    // were 2 GB of reservation (measured on a 35B-A3B), which starved decode into thrashing. A prompt
+    // needs one row; a perplexity pass is fed in pieces this wide instead.
+    static constexpr int max_outputs = 128;
+
+    bool enabled() const { return !device.empty(); }
+};
+
+// Whether Session::decide() keeps the model state after a request's prefix and restores it when the
+// next request's prefix extends it (bmoe/decide.h).
+enum class PrefixCacheMode {
+    // On where splitting a prompt at the prefix costs only the tokens on each side — the CPU, where
+    // prefill time scales with the tokens fed. Off where every prefill graph costs about the same at
+    // any width, because there a second graph for the few tokens after the prefix costs as much as
+    // prefilling the whole prompt again.
+    Auto,
+    On,
+    Off,
+};
+
+// Stable lowercase spelling ("auto", "on", "off"), shared by the CLI flag and the telemetry.
+const char * prefix_cache_mode_name(PrefixCacheMode m);
+// The inverse of prefix_cache_mode_name. False, and `out` untouched, on any other spelling.
+bool parse_prefix_cache_mode(const std::string & s, PrefixCacheMode & out);
+
+// Session::decide() policy. Fixed for the session.
+struct DecideConfig {
+    // Off by default: decide() then refuses every request and nothing is allocated for it, so a
+    // session that does not use decisions is exactly what it was before the feature existed.
+    bool enabled = false;
+    PrefixCacheMode prefix_cache = PrefixCacheMode::Auto;
+    // Experimental diagnostic: append one JSONL line per decision to this file, with the experts each
+    // layer routed and the answer read at every layer's exit (see core/src/moe/decide_probe.h).
+    // Empty = off. Needs the eval callback, i.e. --moe-stream or a prefill device.
+    std::string probe_path;
+};
+
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
@@ -427,7 +519,9 @@ struct RunConfig {
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;
-    SpecConfig spec; // self-speculative decoding (MTP head or n-gram lookup); off by default
+    SpecConfig spec;             // self-speculative decoding (MTP head or n-gram lookup); off by default
+    PrefillDeviceConfig prefill; // prefill graphs on an accelerator; off by default
+    DecideConfig decide;         // decide()'s prefix-state policy; off by default
 };
 
 // Validation result: ok plus a human-readable reason when not.

@@ -68,6 +68,192 @@ Semantic Versioning.
   one applied the capacity fitter's placement and counted one pool twice. It now also watches
   this process's own footprint, which nothing else writes to.
 
+## [0.28.0] - 2026-09-29
+
+### Changed
+- **The NPU prefill reads only the experts a graph routes to.** The expert arena behind
+  `--prefill-device` read every expert of every layer ahead of its routing, on the assumption that
+  a wide prefill graph routes to nearly all of them. For short prompts that is not so: with top-4
+  routing, a 130 to 480-token prompt routes to about half the experts of each layer of
+  Qwen3.6-35B-A3B. The arena now reads a layer in two parts: ahead of its routing, the experts the
+  previous graph routed at that layer (consecutive prompts route much alike); at its routing node,
+  whatever the routing needs that the prediction missed, ahead of anything else queued. The
+  matmul reads only routed experts, so the output is bit for bit the same. A layer routing more
+  than `--prefill-routed-full` (default 0.85) of its experts gets the next layer read whole, so a
+  long prompt loses nothing; `--no-prefill-routed` restores whole layers everywhere.
+
+  Measured on a 12 GB phone with a Hexagon v81 NPU, streamed, top-4, ubatch 2048, decisions over
+  Android screens (130 to 480 tokens), same session with and without, every answer identical:
+
+  | model | experts routed per layer | whole layers | routed | |
+  |---|---:|---:|---:|---:|
+  | Qwen3.6-35B-A3B Q4_0 | ~50% of 256 | 7.68 s | 4.16 s | 1.85x |
+  | Qwen3.6-35B-A3B Q4_K_M | ~50% of 256 | 9.95 s | 5.37 s | 1.85x |
+  | Gemma 4 26B-A4B Q4_K_M | ~58% of 128 | 6.69 s | 3.70 s | 1.81x |
+  | Nemotron 3.5 30B-A3B Q4_0 | ~79% of 128 | 7.42 s | 6.81 s | 1.09x |
+
+  The gain follows how much of each layer a prompt leaves unrouted: Nemotron routes to most of
+  its experts and barely gains. Gates G17f (routed == all CPU, fewer bytes read, with a slowed
+  loader too) and G17g (an arena that skips its routing-node reads is caught). See
+  `docs/npu-prefill.md`.
+- `BMOE_DECIDE` carries the prefill device's own counters, as `BMOE_DONE` does:
+  `prefill_dev_read_mib`, `prefill_dev_stall_s`, `prefill_dev_routed` and `prefill_dev_demand`.
+  Before, a decision on the device reported `prefill_read_mib` 0.
+
+### Added
+- **`--decide-probe FILE` (experimental diagnostic).** Appends one JSON line per decision: the
+  experts each layer routed with their router weight, and the choice logits read from every layer's
+  last-token state through the model's final norm and head (a "logit lens"; for the last token it is
+  exactly what a prefill cut after that layer would answer). Works on the prefill device, where
+  `--route-trace` records nothing. See `docs/decide.md`.
+
+### Docs
+- The README explains decisions (`--decide`: choosing from a list with one prefill, scored over
+  the whole vocabulary) in a section of their own, and its NPU prefill section carries the routed
+  arena and its per-model numbers.
+
+## [0.27.0] - 2026-09-28
+
+### Added
+- **`--decide`: choose from a list instead of generating, from one prefill and no decode.** A
+  session opened with `--decide` accepts `{"cmd":"decide"}` requests: a prompt in two parts
+  (`prefix`, the part that repeats from call to call, and `suffix`) and a list of `choices`. The
+  answer is read from the next-token distribution after the prompt, as the log-probability of each
+  choice's first token over the whole vocabulary, so a decision costs its prefill and nothing else.
+  On a model streamed from flash that skips the slow part entirely. Off by default: without the
+  flag the request is refused, not fatally, and nothing is allocated. See `docs/decide.md`.
+
+  The session keeps the model state after the prefix and restores it when the next prefix extends
+  it, the shape of an agent whose history grows step by step (`--decide-prefix-cache auto|on|off`,
+  and `"reuse_prefix":false` per request). The state is the whole sequence state, so hybrid models
+  with recurrent layers work too; a `generate()` drops it, so it holds RAM only while decisions
+  follow one another. Choices that share a first token, and prompts past the context, are refused
+  before anything is prefilled. A decision is always rendered with reasoning off (its answer is the
+  first token, which with reasoning on would be the reasoning opener), and `--decide` without
+  `--session` is a config error.
+
+  Measured on a PC as a correctness run (Qwen3.6-35B-A3B Q4_K_M, streamed, expert cache off, times
+  not a benchmark): an agent's three steps to turn on Wi-Fi were answered right at p 0.986 to 0.998;
+  restoring 31 prefix tokens took 8 ms, and the kept state of this hybrid model is 63 MiB.
+
+  Built as policy over a port (`core/src/engine/decide/`): the prompt split, choice checks, scoring
+  and the kept-state policy have no llama.cpp include and are unit-tested over a scripted backend
+  (`decide_policy`); one adapter drives the live context. Gate G18 checks that a restored prefix
+  scores bit for bit what a fresh session computes, that decide and `perplexity()` read the same
+  distribution, resident == streaming, and that a generation after a decision is unaffected.
+
+  With `--prefill-device`, a decision is prefilled by the same rule as a chat turn (wide pieces on
+  the device, a narrow tail on the CPU, weights back on the host after it), and `BMOE_DECIDE`
+  reports `prefill_dev_tokens`. No prefix state is kept there (`auto` resolves to off, `on` is
+  refused): llama.cpp saves a sequence through KV views that do not follow the moved model state,
+  which gate G18g caught as a restored prefix scoring differently from the same prefix computed.
+- **App: Choose from options.** A switch on the chat screen turns the prompt into a question and
+  adds a field for options, one per line; the model picks one and each option is shown with the
+  probability it put on it. The session always accepts decisions, so switching between Chat and
+  Choose never reloads the model.
+
+### Changed
+- **App catalog: Nemotron-3.5-Lightning-30B-A3B is now the Q4_0 build from ggml-org** (~18.9 GB)
+  instead of a third-party Q4_K_M (~25.5 GB). ggml-org publishes the reference conversions for
+  llama.cpp and ships the MTP head as a separate file, which the engine does not load.
+- **App catalog: Ornith-1.5-35B-A3B is no longer listed.** The architecture (`qwen35moe`) is still
+  supported and streams unchanged; the model can be downloaded by URL like any other.
+- `perplexity()` and `generate()` share their log-softmax, batch filling, prefill attribution and
+  chat-turn rendering with `decide()` through internal headers, instead of each keeping a copy.
+- The tiny test models no longer prepend a space to every text: on their byte-only vocabulary it
+  made every string start with the same token.
+
+### Fixed
+- The engine reported version 0.23.0 (`bmoe-cli --version`, the `# engine=` line of the metrics
+  CSV) through 0.24.0, 0.25.0 and 0.26.0: the CMake project version had not been bumped with them.
+  It now matches the release.
+
+## [0.26.0] - 2026-09-28
+
+### Added
+- **`--prefill-device`: prefill on the NPU, decode on the CPU, on a model larger than RAM.**
+  Measured on a 12 GB phone with a Hexagon v81 NPU, Qwen3.6-35B-A3B Q4_0 streamed: a 1418-token
+  prompt prefills in **8.2 s instead of 63.8 s (172 against 22.2 tok/s, 7.8x)**, a 1921-token one in
+  11.2 s instead of 106.5 s. Short prompts do not gain (121 tokens: 9.5 against 9.95 s), because
+  the device path reads the whole expert set once per graph and a short prompt is all read.
+
+  Wide prefill graphs run on the device and decode stays on the CPU, exactly as without the flag.
+  The weights are moved per graph, not per model: the scheduler runs each op where its weight
+  lives and re-decides that for every graph, so rebinding a weight's buffer between graphs moves
+  its ops, with no llama.cpp change. Device graphs and CPU graphs are kept to different widths so
+  llama.cpp never reuses one for the other.
+
+  With `--moe-stream` the device never holds the model: two layer-sized slots, filled from flash
+  by loader threads while the device computes the other one (about 900 MB for the model above).
+  The model state moves into the device's host buffer, so decode and prefill share one KV cache.
+  A weight type the device's matmul refuses is carried to it in the nearest one it takes, converted
+  once at load. Layer weights an op reads other than as a matmul's matrix (norms, biases, Gemma 4's
+  per-expert scale) go to plain device memory, found from the ops of the capture graph: a backend
+  may map its `WEIGHTS` buffers for its matmul alone (Hexagon with DMA64 does, and aborted the
+  first Gemma 4 prefill on it). The buffers llama.cpp first held the model state in are handed
+  back to the kernel after the move instead of doubling the KV cache (1760 MiB on Gemma 4 at an
+  8192-token context). Gemma 4 26B-A4B prefills 238 tokens in 5.85 s instead of 16.2 s; at an
+  8192-token context and a 2000 MiB cache it does not fit a 12 GB phone with the device path on.
+  The compute-buffer reservation is redone with the weights on the device and the logit rows
+  capped, which kept the CPU's buffer at 154 MB instead of 2.2 GB and decode at 3.25 tok/s (3.41
+  without the flag).
+
+  Off by default; the app has it as **Prefill on the NPU (Snapdragon only)** in its own **NPU**
+  section of Settings, shown disabled with the reason on a phone without a Hexagon NPU. Needs a
+  model whose expert tensors the NPU takes (Q4_0, Q4_1, Q8_0, IQ4_NL, MXFP4) and the Hexagon backend
+  in the build (`scripts/build-hexagon-android.sh`). The NPU computes in fp16, so the output is not
+  identical to the CPU's. A prefill device that is missing or does not open (a Snapdragon older than
+  the backend's v73 floor) no longer fails the load: the engine says so and the run stays on the CPU. Gates G16 and G17 prove the placement against a loopback device on the
+  host, bit for bit; that loopback RPC device is a test fixture only, and no front-end accepts an
+  RPC endpoint. A ubatch narrower than `--prefill-min-tokens` is a config error (no piece could
+  reach the device), and a failed expert read fails only the prefill it happened in. See
+  [docs/npu-prefill.md](docs/npu-prefill.md).
+- **Telemetry:** `prefill_dev_tokens`, `prefill_dev_nodes`, `prefill_dev_read_mib` and
+  `prefill_dev_stall_s` in `BMOE_DONE` and the CSV trailer.
+
+### Changed
+- **llama.cpp submodule bumped** to upstream master `965f897` of 2026-09-26 (530 commits past
+  `b10666`), as the one-commit fork branch `bmoe/expert-ready-hook-2609`. What it brings here is the
+  Hexagon backend's K-quants: the NPU now takes a Q4_K_M, the quantisation the app's catalog ships,
+  so the NPU prefill needs no special build of the model. Measured on Qwen3.6-35B-A3B Q4_K_M, 1418
+  tokens: **80.6 s on the CPU, 10.0 s on the NPU (8.1x)**, with no weight converted. On the Q4_0 the
+  prefill is unchanged (8.3 against 8.2 s): the device now waits on the flash, not on its own maths.
+  Upstream's CPU `mul_mat_id` gained a tiled path that reads an expert before the classic loop, so
+  the expert-ready hook now fires ahead of it (G4 proves it gates every read); upstream renamed the
+  draft parameters' `n_past` to `pos0`.
+- **`--prefill-loaders N`** (default 8) sets the arena's loader threads apart from `--io-threads`, the
+  decode's read lanes; the app has it as **NPU loader threads**.
+- **The release APK carries the Hexagon backend** and a DSP skel for each NPU generation it supports
+  (v73, v75, v79, v81). It is built by `scripts/build-hexagon-android.sh` in upstream's Snapdragon
+  toolchain image, in a CI job of its own with a read-only token, no secrets and the image pinned by
+  digest; the job that signs the APK runs no third-party code. The CPU side keeps the CPU-only
+  release's API level and ARM target, so decode is the same code on every phone as before.
+- **A GPU-type device that cannot reach host memory stays out of a run that did not ask for it.**
+  With no devices given, llama.cpp lists every GPU it finds and the context opens a backend on each;
+  the engine never gives one a layer, so a device with neither a host buffer type nor buffers over
+  host pointers (the Hexagon NPU) could only cost a DSP session on every Snapdragon, switch off.
+  Only such devices are dropped, read off each device's capabilities: Metal, CUDA and Vulkan are
+  listed exactly as before.
+
+## [0.25.0] - 2026-09-28
+
+### Added
+- **Nemotron 3 / 3.5 MoE (`nemotron_h_moe`), the third expert layout: gate-less.** Each expert is
+  up, ReLU², down, so a layer names two expert tensors (`ffn_up_exps`, `ffn_down_exps`) and the
+  registry row leaves the tail slot empty, as the fused `gemma4` row does. The rest of the
+  architecture sits on the resident side of the seam: a hybrid Mamba2 / attention / MoE stack
+  (only the MoE blocks bind), optional latent projections the experts run between, an always-on
+  shared expert, and a trailing MTP block that llama.cpp skips at load. Reference model:
+  Nemotron-3.5-Lightning-30B-A3B. `make-tiny-moe.py --arch nemotron_h_moe` emits that whole shape
+  in miniature, and it is a third byte-identity gate next to `qwen3moe` and `gemma4`.
+
+  No two MoE blocks are adjacent in this architecture, so the forward predictors
+  (`--predict-prefetch`, `--route-ahead`, the stale half of `--predict-log`) have no next layer
+  to target and do nothing on it. The gates check that from the file and report those three
+  checks as N/A there instead of passing them vacuously; their byte-identity halves still run.
+- **Ornith-1.5-35B-A3B**, which is the `qwen35moe` architecture and needed no engine change.
+- Both models in the Android catalog at Q4_K_M.
+
 ## [0.24.0] - 2026-09-07
 
 ### Added

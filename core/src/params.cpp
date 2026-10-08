@@ -490,6 +490,89 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
 
+    // ── prefill device ───────────────────────────────────────────────────────────────
+    {
+        ParamDesc d = row("prefill-device", "Prefill device", G::Streaming, L::Experimental,
+                          "Run wide prefill graphs on this ggml device (e.g. HTP0, MTL0) while decode stays on "
+                          "the CPU. With streaming the experts reach it through a two-layer arena. Not with "
+                          "speculation or row streaming. Empty is off.");
+        d.type = ParamType::Text;
+        d.value_hint = "D";
+        bind_string(d, [](RunConfig & c) -> std::string & { return c.prefill.device; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("prefill-min-tokens", "Prefill device width", G::Streaming, L::Experimental,
+                          "Narrowest prefill piece sent to the prefill device; a shorter tail runs on the CPU.");
+        d.value_hint = "N";
+        bounds(d, PrefillDeviceConfig::min_tokens_floor, std::numeric_limits<int>::max(), "tokens");
+        bind_int(d, [](RunConfig & c) -> int & { return c.prefill.min_tokens; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("prefill-loaders", "Prefill loaders", G::Streaming, L::Experimental,
+                          "Threads that fill the prefill device's layer slots from flash, with streaming. "
+                          "Decode read lanes stay on the read-lane setting.");
+        d.value_hint = "N";
+        bounds(d, 1, PrefillDeviceConfig::load_threads_max);
+        bind_int(d, [](RunConfig & c) -> int & { return c.prefill.load_threads; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("prefill-routed", "Routed prefill reads", G::Streaming, L::Experimental,
+                          "With a prefill device and streaming: read only the experts each graph routes to "
+                          "(predicted from the previous graph and completed at each routing node) instead of "
+                          "every expert of every layer. Output is identical either way.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--prefill-routed", "true"}, {"--no-prefill-routed", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.prefill.routed; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("prefill-routed-full", "Routed prefill fallback", G::Streaming, L::Experimental,
+                          "A layer routing more than this fraction of its experts gets the next layer read "
+                          "whole. In (0, 1].");
+        d.type = ParamType::Float;
+        d.value_hint = "F";
+        bounds(d, PrefillDeviceConfig::routed_full_frac_min, PrefillDeviceConfig::routed_full_frac_max);
+        bind_float(d, [](RunConfig & c) -> float & { return c.prefill.routed_full_frac; });
+        t.push_back(d);
+    }
+
+    // ── decide ───────────────────────────────────────────────────────────────────────
+    {
+        ParamDesc d = row("decide", "Decide requests", G::Generation, L::Advanced,
+                          "With --session: accept decide requests (pick one of a list of choices from a single "
+                          "prefill, no decode).");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--decide", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.decide.enabled; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("decide-prefix-cache", "Decide prefix cache", G::Generation, L::Advanced,
+                          "With decide: keep the model state after a request's prefix and restore it when the "
+                          "next prefix extends it. auto turns it on where prefill cost scales with tokens.");
+        d.type = ParamType::Choice;
+        d.value_hint = "auto|on|off";
+        bind_choice<PrefixCacheMode>(d, [](RunConfig & c) -> PrefixCacheMode & { return c.decide.prefix_cache; },
+                                     {{PrefixCacheMode::Auto, {"auto", "auto"}},
+                                      {PrefixCacheMode::On, {"on", "on"}},
+                                      {PrefixCacheMode::Off, {"off", "off"}}});
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("decide-probe", "Decide probe", G::Diagnostics, L::Experimental,
+                          "With decide: append per decision the experts each layer routed and the answer read "
+                          "at every layer's exit (JSONL).");
+        d.type = ParamType::Path;
+        d.value_hint = "PATH";
+        bind_string(d, [](RunConfig & c) -> std::string & { return c.decide.probe_path; });
+        t.push_back(d);
+    }
+
     // ── prefetch ─────────────────────────────────────────────────────────────────────
     {
         ParamDesc d = row("prefetch", "Temporal prefetch", G::Prefetch, L::Advanced,

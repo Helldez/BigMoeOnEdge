@@ -71,6 +71,17 @@ static const MoeRecipe k_recipes[] = {
     // non-expert weight. That makes the streamed fraction of this architecture unusually low —
     // see docs/limitations.md.
     {"qwen4exp", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    // nemotron_h_moe (NVIDIA Nemotron 3 / 3.5 MoE, e.g. Nemotron-3.5-Lightning-30B-A3B) is the
+    // third expert layout: no gate projection at all. Each expert is up -> ReLU^2 -> down, so a
+    // layer names two expert tensors and the tail slot is nullptr, as in the fused case. The
+    // stack is hybrid (Mamba2, attention and MoE blocks interleaved; only the MoE blocks bind),
+    // the router adds a per-expert bias before a sigmoid top-k (the lfm2moe pattern), and the
+    // resident side carries an always-on shared expert (ffn_*_shexp) and, on the models that
+    // have them, latent projections (ffn_latent_{down,up}) that narrow the experts' rows below
+    // n_embd; the stride is still read from the tensor. The trailing NextN/MTP block names
+    // expert tensors but is skipped at load (load_mtp is off). No two MoE blocks are adjacent,
+    // which leaves the forward predictors nothing to target (see docs/limitations.md).
+    {"nemotron_h_moe", {"ffn_up_exps", "ffn_down_exps", nullptr}},
 };
 
 static const int k_n_recipes = (int) (sizeof(k_recipes) / sizeof(k_recipes[0]));

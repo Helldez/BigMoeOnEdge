@@ -1,8 +1,8 @@
 # bmoe_core — the streaming engine.
 #
 # Pure-policy sources (config validation, the architecture registry, the n-gram draft
-# matcher, the hardware planner) build with no native dependency. The streaming adapters
-# compile only when llama.cpp is present, because they include its public headers
+# matcher, the hardware planner, decide()'s policy) build with no native dependency. The streaming
+# adapters compile only when llama.cpp is present, because they include its public headers
 # (llama.h, ggml.h, gguf.h).
 
 add_library(bmoe_core STATIC
@@ -13,6 +13,11 @@ add_library(bmoe_core STATIC
     src/plan/plan.cpp
     src/plan/allocate.cpp
     src/plan/planner.cpp
+    src/engine/logits.cpp
+    src/engine/decide/prompt_split.cpp
+    src/engine/decide/choice_scorer.cpp
+    src/engine/decide/prefix_cache.cpp
+    src/engine/decide/decider.cpp
 )
 
 target_include_directories(bmoe_core PUBLIC
@@ -41,7 +46,12 @@ if(BMOE_HAVE_LLAMA)
         src/plan/model_probe.cpp
         src/moe/expert_stream_source.cpp
         src/moe/router_hook.cpp
+        src/moe/decide_probe.cpp
+        src/moe/device_arena.cpp
         src/engine/session.cpp
+        src/engine/prefill_device.cpp
+        src/engine/prefill_path.cpp
+        src/engine/decide/llama_backend.cpp
         src/engine/chat_parse.cpp
         src/engine/thinking_control.cpp
         src/engine/runtime.cpp
@@ -74,7 +84,10 @@ if(BMOE_HAVE_LLAMA)
     # Reaching it in that build would mean exposing the hook through
     # `ggml_backend_reg_get_proc_address`, the way ggml exposes every other backend-specific
     # function; that is a change to the fork commit, not to this file.
-    set(_ggml_cpu_h "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include/ggml-cpu.h")
+    #
+    # Relative to this file, not CMAKE_SOURCE_DIR: as a subproject the top-level source dir is the
+    # parent project, and the header would silently not be found.
+    set(_ggml_cpu_h "${CMAKE_CURRENT_LIST_DIR}/../third_party/llama.cpp/ggml/include/ggml-cpu.h")
     if(GGML_BACKEND_DL)
         message(STATUS "bmoe: dynamic backends - overlap unavailable (the CPU backend is not linked)")
     elseif(EXISTS "${_ggml_cpu_h}")
