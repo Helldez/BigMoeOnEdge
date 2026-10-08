@@ -30,6 +30,11 @@
 #if defined(__ANDROID__)
 #include <android/hardware_buffer.h> // reclaim-exempt allocation; see pinned_alloc
 #endif
+#if defined(__APPLE__)
+#include <libproc.h> // this process's own regions; see file_mapped_regions
+#include <mach/mach.h>
+#include <sys/sysctl.h>
+#endif
 #endif
 
 namespace bmoe::pio {
@@ -268,6 +273,29 @@ bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * re
     return true;
 }
 
+#if defined(__APPLE__)
+namespace {
+// Darwin's counterpart of /proc/meminfo is the host's own page accounting.
+bool host_vm(vm_statistics64_data_t * vm) {
+    static const mach_port_t host = mach_host_self(); // a send right; taken once, not per call
+    mach_msg_type_number_t n = HOST_VM_INFO64_COUNT;
+    return host_statistics64(host, HOST_VM_INFO64, (host_info64_t) vm, &n) == KERN_SUCCESS;
+}
+// Pages nobody is using, as the kernel counts them: free_count includes the speculative read-ahead
+// pages, which are file-backed and counted again under external.
+uint64_t host_free_pages(const vm_statistics64_data_t & vm) {
+    return vm.free_count > vm.speculative_count ? vm.free_count - vm.speculative_count : 0;
+}
+// The same definition as MemAvailable, built from the parts Darwin publishes: what can be handed
+// out without compressing anything — free pages, file-backed pages (dropped, not compressed) and
+// purgeable ones. It inherits MemAvailable's blind spot on purpose, so the two stay comparable: a
+// mapped model's resident pages are file-backed and count as available here too.
+uint64_t host_available_pages(const vm_statistics64_data_t & vm) {
+    return host_free_pages(vm) + vm.external_page_count + vm.purgeable_count;
+}
+} // namespace
+#endif
+
 uint64_t mem_total_bytes() {
     if (FILE * f = std::fopen("/proc/meminfo", "re")) {
         char line[256];
@@ -289,6 +317,10 @@ uint64_t mem_total_bytes() {
 }
 
 uint64_t mem_available_bytes() {
+#if defined(__APPLE__)
+    vm_statistics64_data_t vm;
+    if (host_vm(&vm)) return host_available_pages(vm) * (uint64_t) vm_page();
+#endif
     // Linux/Android: MemAvailable is the kernel's own estimate of what can be allocated without
     // swapping (it accounts for reclaimable page cache), which is exactly the sizing signal we want.
     if (FILE * f = std::fopen("/proc/meminfo", "re")) {
@@ -302,7 +334,7 @@ uint64_t mem_available_bytes() {
         }
         std::fclose(f);
     }
-    // Fallback where /proc is absent (e.g. macOS): free physical pages. An underestimate — it omits
+    // Fallback where /proc is absent (the BSDs): free physical pages. An underestimate — it omits
     // reclaimable cache — but non-zero and safe to size a cache against.
 #if defined(_SC_AVPHYS_PAGES)
     const long pages = sysconf(_SC_AVPHYS_PAGES);
@@ -361,6 +393,33 @@ bool scan_kb_file(const char * path, const char * const * keys, uint64_t * out, 
 }
 } // namespace
 
+#if defined(__APPLE__)
+// The task's own ledger carries the same split /proc/self/status does: internal pages are the
+// anonymous ones, external the file-backed ones, and what the compressor holds is the anonymous
+// memory already taken back — the role zram plays in VmSwap.
+bool process_memory(ProcessMemory * out) {
+    task_vm_info_data_t ti;
+    mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &ti, &n) != KERN_SUCCESS) return false;
+    out->rss_bytes = ti.resident_size;
+    out->rss_anon_bytes = ti.internal;
+    out->rss_file_bytes = ti.external;
+    out->swap_bytes = ti.compressed;
+    return true;
+}
+
+bool device_memory(DeviceMemory * out) {
+    vm_statistics64_data_t vm;
+    if (!host_vm(&vm)) return false;
+    out->available_bytes = host_available_pages(vm) * (uint64_t) vm_page();
+    out->free_bytes = host_free_pages(vm) * (uint64_t) vm_page();
+    // Swap files are created on demand, so "free" is what is left of the ones that exist now.
+    struct xsw_usage sw;
+    size_t len = sizeof(sw);
+    out->swap_free_bytes = sysctlbyname("vm.swapusage", &sw, &len, nullptr, 0) == 0 ? sw.xsu_avail : 0;
+    return true;
+}
+#else
 bool process_memory(ProcessMemory * out) {
     static const char * const keys[] = {"VmRSS", "RssAnon", "RssFile", "VmSwap"};
     uint64_t v[4] = {0, 0, 0, 0};
@@ -381,7 +440,34 @@ bool device_memory(DeviceMemory * out) {
     out->swap_free_bytes = v[2];
     return true;
 }
+#endif
 
+#if defined(__APPLE__)
+// Darwin has no /proc. The same question — which of this process's regions map this file, and from
+// which file offset — is answered by walking its own address space: PROC_PIDREGIONPATHINFO returns
+// the region containing or following an address together with the vnode path behind it, and asking
+// about oneself needs no entitlement.
+bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out) {
+    const size_t blen = std::strlen(basename);
+    const pid_t pid = getpid();
+    bool any = false;
+    uint64_t addr = 0;
+    for (;;) {
+        struct proc_regionwithpathinfo info;
+        if (proc_pidinfo(pid, PROC_PIDREGIONPATHINFO, addr, &info, sizeof(info)) != (int) sizeof(info)) break;
+        const uint64_t start = info.prp_prinfo.pri_address;
+        const uint64_t size = info.prp_prinfo.pri_size;
+        if (size == 0 || start + size <= addr) break; // no forward progress: the walk is over
+        addr = start + size;
+        const char * path = info.prp_vip.vip_path;
+        const size_t plen = strnlen(path, sizeof(info.prp_vip.vip_path));
+        if (plen < blen || std::strncmp(path + plen - blen, basename, blen) != 0) continue;
+        out.push_back({(uintptr_t) start, (uintptr_t) (start + size), info.prp_prinfo.pri_offset});
+        any = true;
+    }
+    return any;
+}
+#else
 bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out) {
     FILE * f = std::fopen("/proc/self/maps", "re");
     if (!f) return false;
@@ -411,6 +497,7 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
     std::fclose(f);
     return any;
 }
+#endif
 
 #endif
 

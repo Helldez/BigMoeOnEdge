@@ -63,8 +63,10 @@ Tri measure_shared_memory(ggml_backend_dev_t dev) {
     ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
     if (!buft) return Tri::Unknown;
 
+    pio::ProcessMemory own_before, own_after;
+    const bool own_known = pio::process_memory(&own_before);
     const uint64_t before = pio::mem_available_bytes();
-    if (before == 0) return Tri::Unknown; // the host does not publish it: nothing to compare against
+    if (before == 0 && !own_known) return Tri::Unknown; // neither ledger is published: nothing to compare
 
     ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, (size_t) k_probe_alloc);
     if (!buf) return Tri::Unknown;
@@ -74,10 +76,18 @@ Tri measure_shared_memory(ggml_backend_dev_t dev) {
     void * base = ggml_backend_buffer_get_base(buf);
     if (base) ggml_backend_buffer_clear(buf, 0);
 
+    const bool own_still_known = own_known && pio::process_memory(&own_after);
     const uint64_t after = pio::mem_available_bytes();
     ggml_backend_buffer_free(buf);
 
-    if (after == 0) return Tri::Unknown;
+    // This process's own ledger is the quiet witness: nobody else writes to it, so pages that
+    // appear in it during the allocation are the allocation. It can only say yes - a driver that
+    // keeps a shared pool's pages off the process's books leaves it flat, and then the host's
+    // figure below is the one left to ask. On a unified-memory desktop the host figure alone gave
+    // both answers on consecutive runs, and the wrong one counts a single pool twice.
+    if (own_still_known && own_after.rss_bytes >= own_before.rss_bytes + k_probe_alloc / 2) return Tri::Yes;
+
+    if (before == 0 || after == 0) return Tri::Unknown;
     const uint64_t lost = before > after ? before - after : 0;
     return lost >= k_probe_alloc / 2 ? Tri::Yes : Tri::No;
 }

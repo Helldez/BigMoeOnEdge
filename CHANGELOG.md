@@ -54,6 +54,20 @@ Semantic Versioning.
 - The Android build (`scripts/build-android.ps1`, CI) configures with `-DBMOE_BUILD_SERVER=OFF`;
   CI formats `server/` too and compile-checks `bmoe-server` on macOS.
 
+### Fixed
+- **macOS: the planner, `--release-mmap` and the memory telemetry work.** Everything the engine
+  asked of `/proc` and `/sys` returned nothing on Darwin, so `--auto` saw a machine with 0 MiB
+  available and declined to stream, `--release-mmap` failed with "cannot read /proc/self/maps",
+  and the per-token memory columns stayed empty. The mapped regions now come from
+  `proc_pidinfo`, available memory and swap from the host's page accounting, the process split
+  from the task's own ledger, and the core classes from `hw.perflevel*`. The gates had never been
+  run on macOS; all 16 pass there now, with and without Metal.
+- **A unified-memory GPU is no longer taken for one with memory of its own.** The probe that asks
+  whether a device shares the host's memory compared the system's available figure around an
+  allocation, and on an Apple-silicon machine gave both answers on consecutive runs; the wrong
+  one applied the capacity fitter's placement and counted one pool twice. It now also watches
+  this process's own footprint, which nothing else writes to.
+
 ## [0.24.0] - 2026-09-07
 
 ### Added

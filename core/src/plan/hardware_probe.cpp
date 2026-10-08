@@ -22,6 +22,7 @@
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
+#include <sys/sysctl.h>
 #endif
 
 namespace bmoe {
@@ -118,6 +119,21 @@ void probe_core_classes(HardwareProfile & h) {
         h.core_classes.push_back((uint32_t) (j - i));
         i = j;
     }
+#elif defined(__APPLE__)
+    // The kernel publishes the classes themselves, fastest first, each with its CPU count.
+    uint32_t levels = 0;
+    size_t len = sizeof(levels);
+    if (sysctlbyname("hw.nperflevels", &levels, &len, nullptr, 0) != 0 || levels == 0) return;
+    std::vector<uint32_t> classes;
+    for (uint32_t i = 0; i < levels; ++i) {
+        char name[64];
+        std::snprintf(name, sizeof(name), "hw.perflevel%u.logicalcpu", i);
+        uint32_t n = 0;
+        len = sizeof(n);
+        if (sysctlbyname(name, &n, &len, nullptr, 0) != 0 || n == 0) return; // all the classes or none
+        classes.push_back(n);
+    }
+    h.core_classes = classes;
 #else
     // Nothing here reports classes for free. A machine whose cores are alike is still describable,
     // but claiming that without evidence is exactly the guess this design refuses to make.
