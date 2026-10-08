@@ -786,12 +786,13 @@ Plan plan_run(const RunConfig & base,
     // a placement: a registered backend collects work on its own, and every piece it collects is a
     // crossing. Measured with zero layers placed - 61 splits a token, and a build carrying the
     // backend losing to one without it. A caller who wants the device anyway pins the knob.
-    if (!req.is_pinned("devices") && p.config.n_gpu_layers == 0 && !p.config.dense_on_device) {
+    if (!req.is_pinned("devices") && p.config.n_gpu_layers == 0 && !p.config.dense_on_device &&
+        !p.config.prefill.enabled()) {
         size_t non_cpu = 0;
         for (const ComputeDevice & d : hw.devices)
             if (!d.is_cpu) ++non_cpu;
         if (non_cpu > 0) {
-            p.config.devices_cpu_only = true;
+            p.config.device_use = DeviceUse::CpuOnly;
             note("devices", "cpu only", Source::Derived,
                  u64s(non_cpu) +
                      " device(s) registered and no weight going to any of them: a backend left in the graph "

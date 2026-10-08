@@ -436,6 +436,13 @@ struct DecideConfig {
     std::string probe_path;
 };
 
+// Which compute devices llama.cpp is handed at load.
+enum class DeviceUse {
+    Auto,    // every device when a layer is placed on one, the CPU alone otherwise
+    All,     // every device llama.cpp finds, placed on or not
+    CpuOnly, // the CPU and nothing else
+};
+
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
@@ -515,7 +522,12 @@ struct RunConfig {
     // is a boundary the graph crosses twice. Measured with nothing placed on the device at all:
     // 61 graph splits per token, and a build with the backend compiled in losing to one without it.
     // A device we are not using should not be in the room.
-    bool devices_cpu_only = false;
+    //
+    // So the default decides by what was placed: with a layer on a device, llama.cpp gets every
+    // device it finds; with none, the CPU alone. A build that merely carries a GPU backend then runs
+    // like one that does not, to the bit. The prefill device is asked for by name and is outside
+    // this choice: it joins the graph whatever this says.
+    DeviceUse device_use = DeviceUse::Auto;
 
     SamplingConfig sampling; // greedy by default (temp <= 0); opt-in stochastic decoding
     MoeStreamConfig moe;

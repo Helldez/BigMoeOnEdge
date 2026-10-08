@@ -223,8 +223,11 @@ except where noted:
   would drop. Check it on each bump.
 - **With no devices given, llama.cpp picks them.** `llama_model_params::devices` left null lists every
   GPU-type device (integrated ones only when no discrete one is found), and the context opens a
-  backend on each, layers or not. Without `--prefill-device` the engine keeps that choice, except that
-  it drops a device whose capabilities (`host_buffer`, `buffer_from_host_ptr`) say it cannot reach
+  backend on each, layers or not. The engine keeps that choice only when a layer is placed on a
+  device (`--devices auto`, the default) or when told to (`--devices all`); with nothing placed it
+  passes the CPU alone, because a backend that is merely present takes nodes and rounds wide graphs
+  differently. Where it does keep the choice and there is no `--prefill-device`, it drops a device
+  whose capabilities (`host_buffer`, `buffer_from_host_ptr`) say it cannot reach
   host memory, and then passes the rest explicitly, repeating that integrated-device rule. If upstream
   changed its selection, only a build carrying such a device (Hexagon) would see the difference. Not
   gated: the host build has no such device.

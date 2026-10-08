@@ -66,6 +66,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     if(BMOE_BUILD_TESTS AND NOT ANDROID)
         set(GGML_RPC ON CACHE BOOL "ggml: use RPC")
     endif()
+    # Apple: Metal is in every build. It is what gives the planner a device to measure and
+    # `--prefill-device` one to run on; without it the binary reports a machine with no accelerator,
+    # which on this hardware is never true. Carrying it costs a host-only run nothing, because a
+    # device with nothing placed on it is not handed to llama.cpp (RunConfig::device_use). Said here
+    # rather than left to llama.cpp's own default so that it is this project's decision; not forced,
+    # so -DGGML_METAL=OFF still wins.
+    if(APPLE)
+        set(GGML_METAL ON CACHE BOOL "ggml: use Metal")
+    endif()
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
 endif()
 

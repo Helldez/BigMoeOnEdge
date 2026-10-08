@@ -7,6 +7,18 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **macOS builds carry Metal, and the prefill device runs on it.** `--prefill-device MTL0` sends
+  wide prefill graphs to the GPU through the same two-layer arena the NPU uses, with no change to
+  that path. On a 16 GB Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M streamed, a 1473-token
+  prompt prefills in 3.3 to 3.4 s against 81 to 82 s on the CPU, with the same generated text;
+  see `docs/npu-prefill.md`. The planner does not choose it yet.
+- **`--devices auto`, the new default.** llama.cpp is handed every device when a layer is placed on
+  one and the CPU alone otherwise, so a build that merely carries a GPU backend runs a host-only
+  plan like a build without it: no nodes drifting to an idle device, and the gates pass to the bit
+  with Metal compiled in. `all` and `cpu` still force either. Before this a Metal build with
+  nothing placed ran slower than a CPU build and failed gate G18c.
+- **The prefill-device and decide flags are parameter-table rows**, so `--describe-params` and the
+  desktop UI list them like every other setting.
 - **Hardware planner: `--auto`, `--plan`, `--probe`, and `/api/plan` in the desktop UI.** The engine
   measures the machine and reads the model, then resolves the streaming knobs with the fact behind
   each one; a knob set by hand is never touched and nothing lossy arms itself. The planner's

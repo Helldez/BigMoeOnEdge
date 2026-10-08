@@ -486,7 +486,9 @@ compile-checked there on every pull request and release tag. Windows is where th
 Build Tools); the script above is bash, and MSVC puts the binary in `build\cli\Release\bmoe-cli.exe`.
 macOS builds from the same sources and has no O_DIRECT; a direct request is served with `F_NOCACHE`
 instead (uncached, but not alignment-constrained), and `o_direct` in the telemetry reports what the
-open actually achieved. The gates pass on an Apple-silicon Mac, with and without Metal, but CI only
+open actually achieved. A macOS build carries Metal by default: decode stays on
+the CPU, and `--prefill-device MTL0` runs wide prefill graphs on the GPU
+([npu-prefill.md](docs/npu-prefill.md)). The gates pass on an Apple-silicon Mac, with and without Metal, but CI only
 compiles that path, so a regression there is caught by a local run and not by a pull request.
 
 ### Desktop app

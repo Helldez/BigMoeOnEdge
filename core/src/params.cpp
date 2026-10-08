@@ -481,12 +481,16 @@ std::vector<ParamDesc> build() {
     }
     {
         ParamDesc d = row("devices", "Compute devices", G::Memory, L::Advanced,
-                          "Which compute devices llama.cpp may use: all it finds, or the CPU only. A device left "
-                          "registered but unused still takes graph nodes, each one a boundary crossing.");
+                          "Which compute devices llama.cpp may use. auto gives it all of them when a layer is "
+                          "placed on one and the CPU alone otherwise: a device left registered but unused "
+                          "still takes graph nodes, each one a boundary crossing. The prefill device is "
+                          "named separately and is not affected.");
         d.type = ParamType::Choice;
-        d.value_hint = "all|cpu";
-        bind_choice<bool>(d, [](RunConfig & c) -> bool & { return c.devices_cpu_only; },
-                          {{false, {"all", "all"}}, {true, {"cpu", "CPU only"}}});
+        d.value_hint = "auto|all|cpu";
+        bind_choice<DeviceUse>(d, [](RunConfig & c) -> DeviceUse & { return c.device_use; },
+                               {{DeviceUse::Auto, {"auto", "auto"}},
+                                {DeviceUse::All, {"all", "all"}},
+                                {DeviceUse::CpuOnly, {"cpu", "CPU only"}}});
         t.push_back(d);
     }
 

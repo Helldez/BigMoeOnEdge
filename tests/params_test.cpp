@@ -202,7 +202,7 @@ int main() {
     expect_flag({"--predict-spec-max", "0"}, [](const RunConfig & c) { return c.moe.predict_spec_max == 0; });
     // The planner's placement knobs, carried by the table so an applied plan keeps them.
     expect_flag({"--gpu-layers", "12"}, [](const RunConfig & c) { return c.n_gpu_layers == 12; });
-    expect_flag({"--devices", "cpu"}, [](const RunConfig & c) { return c.devices_cpu_only; });
+    expect_flag({"--devices", "cpu"}, [](const RunConfig & c) { return c.device_use == bmoe::DeviceUse::CpuOnly; });
     expect_flag({"--tensor-overrides", "blk\\.1\\..*_exps;blk\\.2\\..*_exps"}, [](const RunConfig & c) {
         return c.buft_overrides.size() == 2 && c.buft_overrides[1] == "blk\\.2\\..*_exps";
     });

@@ -207,6 +207,11 @@ What is still owed is measurement rather than design, and every knob the plan ca
   is not missing. What is missing is a guarantee that the cache can hold one layer's ubatch working
   set: the derived floor is the *decode* token cycle, and a wide prefill batch touches many more
   experts per layer than a token does.
+- **Choosing the prefill device.** `--prefill-device` exists and is measured on an NPU and on a
+  Metal GPU ([npu-prefill.md](npu-prefill.md)), but a caller has to name the device. The planner's
+  bandwidth probe times a one-token GEMV, which is the decode shape and says nothing about a graph
+  a thousand tokens wide; the rule needs that second measurement, and the memory the device's two
+  slots and compute buffers take from the expert cache as a budget line.
 - **`--ubatch`** has no rule because it has no measurement: the compute-buffer reservation's
   crossover against the cache is unmeasured on every machine here.
 
