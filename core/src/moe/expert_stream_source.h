@@ -205,6 +205,7 @@ private:
 
     // Commit the pages of one (layer, expert, projection) cache slice so a read can land in it.
     bool commit_proj_pages(int il, int e, int p);
+    void pin_pages(void * p, size_t sz);
 
     // LRU helpers (active only when cache_max_ > 0)
     void lru_unlink(int32_t id);
@@ -221,6 +222,8 @@ private:
 
     bool active_ = false;
     bool load_all_ = false;
+    bool pin_ = false; // pin committed cache pages (MoeStreamConfig::cache_pin); cleared on refusal
+    bool pin_said_ = false;
     bool overlap_ = false;
     bool two_wave_ = false;                  // publish the first projection's jobs before committing the rest (#118)
     bool prefetch_sync_ = false;             // test only: drain prefetch reads synchronously (serial mode)

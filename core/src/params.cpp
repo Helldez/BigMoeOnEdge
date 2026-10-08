@@ -743,6 +743,16 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("cache-pin", "Pin the cache", G::Cache, L::Advanced,
+                          "Keep cached experts in RAM where the platform allows it, so the kernel cannot swap "
+                          "or compress them. Pinned memory is taken from everything else on the machine.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--no-cache-pin", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_pin; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("force-cache", "Force cache size", G::Diagnostics, L::Debug,
                           "Allow a cache budget in the pathological band below one token's working set.");
         d.type = ParamType::Bool;

@@ -39,19 +39,22 @@ prompt, a 2048-token context:
 Nothing in the path is specific to an NPU: the device is a ggml device name, and on macOS that is
 `MTL0`. Measured on a 16 GB Apple-silicon laptop with the model on its internal SSD,
 Qwen3.6-35B-A3B Q4_K_M (20.7 GiB) streamed with `--moe-stream --cache-mb 4691 -t 8 -c 4096`,
-ubatch 2048 on the GPU and 512 on the CPU, two runs of each:
+ubatch 2048 on the GPU and 512 on the CPU, the expert cache pinned (the default there), two runs of
+each:
 
 | prompt | CPU prefill | GPU prefill | |
 |---|---:|---:|---:|
-| 37 tokens | 2.46 s (15.1 tok/s) | 1.26 s (29.4 tok/s) | 2.0x, one run each |
-| 1473 tokens, prose | 82.1 and 81.2 s (17.9 and 18.1 tok/s) | 3.41 and 3.33 s (432 and 442 tok/s) | 24x |
+| 37 tokens | 2.49 and 2.35 s (14.8 and 15.7 tok/s) | 1.24 and 1.21 s (29.9 and 30.7 tok/s) | 2.0x |
+| 1473 tokens, prose | 25.4 and 25.8 s (58.1 and 57.0 tok/s) | 3.40 and 3.38 s (434 and 436 tok/s) | 7.6x |
 
-The 32 tokens generated after the long prompt are the same text on both. The GPU runs read
-16.3 GiB of experts through the arena and waited 1.4 to 1.5 s of the prefill on its loaders.
-Decode over those 32 tokens ran at 8.8 and 9.0 tok/s after the GPU prefill against 2.2 and 2.4
-after the CPU one; that is a short window straight after a prefill and not a decode figure.
-Decode itself stays on the CPU here as on the phone: the same GEMV measured on both gives the
-GPU 64 GiB/s against the cores' 109.
+The text generated after the long prompt is the same on both, and decode over the next 128 tokens
+runs at 15.3 to 15.9 tok/s either way: decode stays on the CPU here as on the phone, because the
+same one-token GEMV measured on both gives the GPU 64 GiB/s against the cores' 109. The GPU runs
+read 16.3 GiB of experts through the arena and waited 1.4 to 1.5 s of the prefill on its loaders.
+
+With the cache left unpinned (`--no-cache-pin`) the CPU prefill of the same prompt took 81 to 82 s
+and the GPU's was unchanged at 3.3 to 3.4 s: the kernel was compressing the cache underneath the
+CPU path ([cache-sizing.md](cache-sizing.md)), and the arena does not go through the cache.
 
 **Memory is the limit on a model with a large KV cache.** The device path holds the two expert slots
 (1.1 GB on this model), the device's compute buffers (0.8 GB at ubatch 2048) and the model state in

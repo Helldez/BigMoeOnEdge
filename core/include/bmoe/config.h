@@ -66,6 +66,13 @@ struct MoeStreamConfig {
     bool load_all = false;    // debug/A-B: load ALL experts each token (full-sweep baseline)
     bool force_cache = false; // allow a cache_mb in the pathological band (tests/experiments)
 
+    // Keep cached experts in RAM where the platform lets a process say so (pio::vm_pin). Quantized
+    // weights barely compress, so a kernel that answers pressure by compressing anonymous memory
+    // spends RAM holding the cache badly and every hit then pays a decompression: on a 16 GB
+    // unified-memory desktop that was 2 GB/s of compression during decode and a third of the
+    // decode rate. Where pinning is refused the cache is ordinary memory, as it always was.
+    bool cache_pin = true;
+
     // Overlap async expert reads with FFN compute instead of blocking on them: load_layer()
     // publishes the reads and returns immediately, and the CPU mul_mat_id kernel blocks per
     // expert (via the fork's expert-ready hook) only if that expert's slice is not yet in.

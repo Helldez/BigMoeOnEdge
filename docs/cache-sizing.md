@@ -119,6 +119,36 @@ see the ordering warning below.
 > net loss (see [pressure.md](pressure.md)); `auto` now sizes **once at load** and stays fixed, so
 > bound it with `--cache-ceil-mb` on a model whose expert set dwarfs the device, or use cache-off.
 
+## Pinning: a cache the kernel compresses is not a cache
+
+Sizing the cache decides how many experts are kept; it does not decide that they stay in RAM. A
+kernel that answers pressure by compressing anonymous memory takes the cache first, because the
+cache is most of the process, and quantized weights barely compress - so the compressor spends RAM
+holding them and every hit pays a decompression. Nothing in the engine's counters shows it: there
+are no major faults, the time lands in compute, and adding threads does not help.
+
+Measured on a 16 GB Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M, a 4691 MiB cache and 8 threads:
+during decode the system compressed 2.0 GiB/s and decompressed 1.3, the compressor occupied 8 GiB of
+RAM, and only about 3.4 GiB of the process stayed resident. The same file with Q2_K experts
+(12.8 GB, which fits) ran at 23 tok/s streamed on the same machine, which is what gave it away.
+
+So the cache is pinned where a process may ask for that (`pio::vm_pin`, `mlock` underneath), on by
+default and turned off with `--no-cache-pin`:
+
+| | decode | compute | process compressed |
+|---|---:|---:|---:|
+| unpinned, two runs | 7.4 and 7.2 tok/s | 0.100 and 0.103 s/token | 3.5 GiB |
+| pinned, two runs | 18.2 and 18.3 tok/s | 0.030 s/token | under 10 MiB |
+
+256 tokens, arms off on on off, an 82.2 % cache hit in all four and the same generated text. With
+`--auto`, which gives the cache 9766 MiB on that machine: 24.2 tok/s at a 92.4 % hit.
+
+Pinned memory is taken from everything else on the machine, so the budget matters more, not less.
+Where the platform refuses - Android caps locked memory at 64 KiB - the first refusal ends the
+attempts, the cache is ordinary memory as before, and the run prints which it got. This is the
+desktop's answer to the problem [android-memory.md](android-memory.md) describes; the dense weights
+have theirs in `--dense-weights ahwb`.
+
 ## Flags
 
 | Flag | Meaning |

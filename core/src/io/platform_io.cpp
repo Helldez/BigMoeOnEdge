@@ -1,5 +1,7 @@
 #include "platform_io.h"
 
+#include <atomic>
+
 // System headers MUST be included at global scope, never inside the namespace below:
 // <cstdlib> etc. do `using ::abs;` and would otherwise be pulled into bmoe::pio, where
 // ::abs is not visible (GCC hard-errors; MSVC happened to tolerate it).
@@ -104,6 +106,9 @@ void * vm_reserve(size_t sz) {
 }
 bool vm_commit(void * p, size_t sz) {
     return VirtualAlloc(p, sz, MEM_COMMIT, PAGE_READWRITE) != nullptr;
+}
+bool vm_pin(void * /*p*/, size_t /*sz*/) {
+    return false; // VirtualLock is bounded by the working-set quota, which is not ours to raise
 }
 void vm_evict(void * p, size_t sz) {
     if (sz) VirtualFree(p, sz, MEM_DECOMMIT);
@@ -239,8 +244,34 @@ void * vm_reserve(size_t sz) {
 bool vm_commit(void * /*p*/, size_t /*sz*/) {
     return true; // POSIX commits on first touch
 }
+namespace {
+std::atomic<bool> g_pinned_any{false};
+}
+bool vm_pin(void * p, size_t sz) {
+    if (!sz) return true;
+    if (mlock(p, sz) != 0) return false;
+    g_pinned_any.store(true, std::memory_order_relaxed);
+    return true;
+}
 void vm_evict(void * p, size_t sz) {
-    if (sz) madvise(p, sz, MADV_DONTNEED);
+    if (!sz) return;
+#if defined(__APPLE__)
+    // Darwin's MADV_DONTNEED is advice and frees nothing: the pages of an evicted expert stay
+    // dirty and anonymous, so the process grows towards the whole expert set whatever the cache
+    // budget says, and the kernel answers by compressing it - the live cache included. Every hit
+    // then pays a decompression that no fault counter shows. Measured on a 16 GB machine with a
+    // 9 GB budget: 8.4 GB of this process in the compressor and decode at a third of its rate.
+    // Mapping fresh zero-fill pages over the span is the release that cannot be declined; the
+    // address stays valid, which is the contract.
+    if (mmap(p, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0) !=
+        MAP_FAILED)
+        return;
+    madvise(p, sz, MADV_FREE); // lazily, if the remap was refused
+#else
+    // A locked range refuses MADV_DONTNEED, so a pinned slice is unlocked before it is dropped.
+    if (g_pinned_any.load(std::memory_order_relaxed)) munlock(p, sz);
+    madvise(p, sz, MADV_DONTNEED);
+#endif
 }
 void vm_release(void * p, size_t sz) {
     if (p) munmap(p, sz);

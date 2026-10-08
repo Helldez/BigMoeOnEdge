@@ -85,6 +85,12 @@ void pinned_free(PinnedAlloc * a);
 size_t vm_page();
 void * vm_reserve(size_t sz);
 bool vm_commit(void * p, size_t sz);
+// Ask the kernel to keep a committed span in RAM: not swapped, not compressed. False where the
+// platform refuses (a locked-memory limit, or no such call), and the span is then ordinary memory.
+// vm_evict releases a pinned span like any other. Whether this is available is the whole
+// difference between platforms: macOS grants it to any process up to most of RAM, Android caps it
+// at 64 KiB, and where it is granted it is what stops a cache hit from paying a decompression.
+bool vm_pin(void * p, size_t sz);
 void vm_evict(void * p, size_t sz);
 void vm_release(void * p, size_t sz);
 

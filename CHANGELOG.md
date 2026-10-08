@@ -10,8 +10,16 @@ Semantic Versioning.
 - **macOS builds carry Metal, and the prefill device runs on it.** `--prefill-device MTL0` sends
   wide prefill graphs to the GPU through the same two-layer arena the NPU uses, with no change to
   that path. On a 16 GB Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M streamed, a 1473-token
-  prompt prefills in 3.3 to 3.4 s against 81 to 82 s on the CPU, with the same generated text;
-  see `docs/npu-prefill.md`. The planner does not choose it yet.
+  prompt prefills in 3.4 s against 25 s on the CPU, with the same generated text; see
+  `docs/npu-prefill.md`. The planner does not choose it yet.
+- **The expert cache is pinned in RAM where the platform allows it (`--no-cache-pin` turns it
+  off).** macOS answers memory pressure by compressing anonymous memory, quantized weights barely
+  compress, and so the compressor ended up holding 8 GB of RAM to store the cache badly while
+  every hit paid a decompression that no fault counter shows: 2 GB/s compressed during decode.
+  Same model, cache and threads on that laptop, arms off on on off: 7.4 and 7.2 tok/s unpinned,
+  18.2 and 18.3 pinned, same text; 24.2 tok/s with `--auto`, which gives the cache 9.8 GB. Where
+  the platform refuses (Android caps locked memory at 64 KiB) the cache is ordinary memory as
+  before, and the run says which it got.
 - **`--devices auto`, the new default.** llama.cpp is handed every device when a layer is placed on
   one and the CPU alone otherwise, so a build that merely carries a GPU backend runs a host-only
   plan like a build without it: no nodes drifting to an idle device, and the gates pass to the bit
@@ -74,6 +82,9 @@ Semantic Versioning.
   `proc_pidinfo`, available memory and swap from the host's page accounting, the process split
   from the task's own ledger, and the core classes from `hw.perflevel*`. The gates had never been
   run on macOS; all 16 pass there now, with and without Metal.
+- **macOS: an evicted expert's pages are released.** Darwin's `MADV_DONTNEED` is advice and frees
+  nothing, so the process grew past its cache budget towards the whole expert set (10.6 GB
+  compressed against a 4.7 GB budget). Eviction now maps fresh pages over the span.
 - **A unified-memory GPU is no longer taken for one with memory of its own.** The probe that asks
   whether a device shares the host's memory compared the system's available figure around an
   allocation, and on an Apple-silicon machine gave both answers on consecutive runs; the wrong

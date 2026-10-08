@@ -45,6 +45,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     layers_ = std::move(layers);
     n_layer_ = (int) layers_.size();
     load_all_ = cfg.load_all;
+    pin_ = cfg.cache_pin;
     overlap_ = cfg.overlap;
     two_wave_ = cfg.io_two_wave;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
@@ -466,6 +467,7 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
                 ok = false;
                 break;
             }
+            pin_pages((void *) a0, (size_t) (a1 - a0));
             staged.push_back({dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, (int16_t) L.proj[p].file_idx,
                               e, (int16_t) il, (int8_t) p, 1});
             ++njobs;
@@ -923,7 +925,24 @@ bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
         std::fprintf(stderr, "bmoe: commit failed\n");
         return false;
     }
+    pin_pages((void *) a0, (size_t) (a1 - a0));
     return true;
+}
+
+// The first refusal ends the attempts: a limit that refused one slice refuses the next, and what is
+// not pinned is ordinary memory, as all of it was before. Both outcomes are said once, when they
+// are known and not before: whether a platform grants this is only learnt by asking. Eval-thread
+// only, like the commits it follows.
+void ExpertStreamSource::pin_pages(void * p, size_t sz) {
+    if (!pin_ || cache_max_ == 0) return; // no cache: a slice lives one token
+    if (pio::vm_pin(p, sz)) {
+        if (!pin_said_) std::fprintf(stderr, "bmoe: expert cache pinned in RAM\n");
+        pin_said_ = true;
+        return;
+    }
+    pin_ = false;
+    std::fprintf(stderr, "bmoe: cache pinning refused by the platform%s\n",
+                 pin_said_ ? "; the rest of the cache is ordinary memory" : "; the cache is ordinary memory");
 }
 
 bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, int commit_only_proj) {
