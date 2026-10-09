@@ -5,13 +5,48 @@ serves the UI's static files, and exposes a small JSON API plus an OpenAI-compat
 endpoint, so any OpenAI client can use it too.
 
 It binds to `127.0.0.1` by default and has no authentication: it is a local program, like the
-CLI. Binding to another address is an explicit choice (`--host`), and the server says so at start.
-On loopback it answers only to loopback host names (a DNS-rebinding page cannot reach it), and a
-state-changing request carrying a browser `Origin` other than its own is refused with `403`
-(`--allow-origin URL` admits one more, for a UI dev server).
+CLI. See [Security model](#security-model) for exactly what that does and does not protect.
 
 All request and response bodies are JSON (UTF-8). Errors are `{"error": "<message>"}` with a 4xx
 or 5xx status.
+
+## Security model
+
+The server is a local program for one person, and it is protected as one. What it defends against
+is the browser: other web pages open on the same machine. What it does not defend against is
+other software, or other people, on that machine or on a network it was told to listen on.
+
+**What is enforced**
+
+- It binds to `127.0.0.1` unless `--host` says otherwise. There is no environment variable that
+  widens it, and the server prints a warning at start when the address is not loopback.
+- On loopback it answers only to loopback host names, so a DNS-rebinding page cannot reach it
+  through a name of its own.
+- A browser request to `/api/*` or `/v1/*` from another site is refused with `403`, whatever the
+  method: one that carries an `Origin` other than the server's own, or one the browser marks
+  `Sec-Fetch-Site: cross-site`. No CORS header is ever sent. `--allow-origin URL` admits one more
+  origin, for a UI dev server.
+- Downloads take a catalog id, never a URL or a path. `DELETE` on a download cancels it and
+  removes no model.
+- Over the API a client may name one file, the model, and it is only read. Parameters that make
+  the engine write a file are set at launch and are refused over `PUT /api/config`.
+- Request bodies are capped at 8 MiB. Loads, unloads and plan measurements are serialised; a
+  second measurement while one runs gets `409`.
+
+**What is not**
+
+- **Any local process, and any local user, can drive it.** A request without an `Origin` is a
+  local program and is accepted; loopback is not per-user. On a shared machine another account can
+  chat, read `/api/config` (which contains paths), and have the server open any file its user can
+  read as a model.
+- **`--host` with a non-loopback address removes the host-name check and adds nothing in its
+  place.** No authentication, no TLS: prompts and answers cross the network in clear, and anyone
+  who can reach the port has everything in the previous point. Use it on a network you trust, or
+  put a reverse proxy that authenticates in front.
+- **Model output is rendered as sanitised Markdown**, which stops scripts but not an image link:
+  text that talks the model into emitting one makes the browser fetch it.
+- **Downloads run the system's `curl`**, found on `PATH`, against the URLs in the catalog file
+  beside the executable. Both are trusted as installed.
 
 ## Concepts
 

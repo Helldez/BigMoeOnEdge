@@ -77,7 +77,13 @@ private:
     std::function<json()> host_info_;
     std::atomic<bool> planner_available_{false};
 
-    mutable std::mutex m_; // guards everything below except history_
+    // Held across load() and unload(), so the loader thread is joined and replaced by one caller
+    // at a time. Without it two unloads join the same thread, and a load racing an unload assigns
+    // onto a thread that is still joinable, which ends the process. The loader itself never takes
+    // it, so waiting for a load under it cannot deadlock.
+    std::mutex life_m_;
+
+    mutable std::mutex m_; // guards everything below except history_ and loader_ (see life_m_)
     State state_ = State::Empty;
     std::string error_;
     std::shared_ptr<Session> session_;

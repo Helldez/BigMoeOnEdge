@@ -240,6 +240,13 @@ struct App {
     // The plan last shown, so "apply" applies what the person saw: the probes measure a live
     // machine, and a second run could plan differently.
     std::mutex plan_m;
+    // One measurement at a time. The probes own the machine while they run - every core, and
+    // gigabytes of uncached reads - so two at once measure each other, and nothing below them was
+    // written to be entered twice.
+    std::mutex measure_m;
+    // One load at a time, from "unload the old model" to "the loader has the new one": a second
+    // request waits its turn instead of planning for a machine the first is still changing.
+    std::mutex load_m;
     PlanOutcome last_plan;
     // The plan the loaded model runs with, made on a quiet machine by the last auto load. Kept apart
     // from last_plan: a plan measured by hand with that model resident is a different, pessimistic
@@ -281,9 +288,12 @@ struct App {
     // follows the model unless the user set it themselves.
     std::string load_current() {
         if (store.config().model_path.empty()) return "no model selected";
+        std::lock_guard<std::mutex> load(load_m);
         if (auto_plan()) {
             host.unload();
+            std::unique_lock<std::mutex> measuring(measure_m);
             PlanOutcome p = make_plan(store.config(), store.operator_keys());
+            measuring.unlock();
             if (p.ok) {
                 store.apply_plan(p.values, p.decisions);
                 std::lock_guard<std::mutex> lk(plan_m);
@@ -340,7 +350,20 @@ void register_routes(httplib::Server & svr, App & app) {
         std::vector<std::string> reset_keys;
         for (const json & k : reset)
             if (k.is_string()) reset_keys.push_back(k.get<std::string>());
-        const json rejected = app.store.apply(values, reset_keys);
+        // A path the engine WRITES to is not a setting a client may choose: whoever can reach this
+        // port could otherwise have the server create or append to any file its user can. The model
+        // path is the one path a client names, and it is only ever read.
+        json accepted = json::object();
+        json refused = json::object();
+        for (auto it = values.begin(); it != values.end(); ++it) {
+            const ParamDesc * d = find_param(it.key());
+            if (d && d->type == ParamType::Path && it.key() != "model")
+                refused[it.key()] = "a file path other than the model is set at launch, not over the API";
+            else
+                accepted[it.key()] = it.value();
+        }
+        json rejected = app.store.apply(accepted, reset_keys);
+        rejected.update(refused);
         send_json(res, app.config_object(&rejected));
         app.publish_config();
     });
@@ -545,7 +568,10 @@ void register_routes(httplib::Server & svr, App & app) {
         }
         if (app.host.generating())
             return send_error(res, 409, "busy: a plan measures the machine, and a running generation would skew it");
+        std::unique_lock<std::mutex> measuring(app.measure_m, std::try_to_lock);
+        if (!measuring) return send_error(res, 409, "busy: a plan is already being measured");
         PlanOutcome p = make_plan(app.store.config(), app.store.operator_keys());
+        measuring.unlock();
         if (!p.ok) return send_json(res, json{{"available", true}, {"error", p.error}});
         json body = p.body;
         if (app.host.loaded_or_loading())
@@ -575,25 +601,41 @@ void register_routes(httplib::Server & svr, App & app) {
 }
 
 // A loopback server answers only to loopback names (a DNS-rebinding page cannot reach it through
-// its own hostname), and a state-changing request from a browser must come from the UI's own
-// origin (another site open in the same browser cannot drive the engine).
+// its own hostname), and a request from a browser must come from the UI's own origin: another
+// site open in the same browser can neither drive the engine nor make it work.
+//
+// The second half covers every method on the API, not only the ones that change state. A GET is
+// not harmless here - one of them measures the machine, another holds a worker for as long as the
+// page stays open - and a page can issue either with an image tag. Two headers settle it, because
+// neither alone does: a cross-site write carries `Origin`, a cross-site read carries none and is
+// told apart by `Sec-Fetch-Site`, which the browser sets and a page cannot. A client that is not a
+// browser sends neither and is the local program this server is for.
 void register_guards(httplib::Server & svr, const Options & o) {
     std::set<std::string> origins = {"http://127.0.0.1:" + std::to_string(o.port),
                                      "http://localhost:" + std::to_string(o.port)};
+    origins.insert("http://[::1]:" + std::to_string(o.port));
     origins.insert(o.allow_origins.begin(), o.allow_origins.end());
     const bool loopback = is_loopback(o.host);
     svr.set_pre_routing_handler([origins, loopback](const httplib::Request & req, httplib::Response & res) {
         if (loopback) {
             std::string host = req.get_header_value("Host");
+            // Strip the port: after the bracket for an IPv6 literal, after the last colon otherwise.
+            const size_t bracket = host.rfind(']');
             const size_t colon = host.rfind(':');
-            if (colon != std::string::npos && host.find(']') == std::string::npos) host = host.substr(0, colon);
+            if (bracket != std::string::npos)
+                host = host.substr(0, bracket + 1);
+            else if (colon != std::string::npos)
+                host = host.substr(0, colon);
             if (!host.empty() && !is_loopback(host) && host != "[::1]") {
                 send_error(res, 403, "this server only answers to loopback host names");
                 return httplib::Server::HandlerResponse::Handled;
             }
         }
-        if (req.method != "GET" && req.method != "HEAD" && req.has_header("Origin") &&
-            !origins.count(req.get_header_value("Origin"))) {
+        const bool api = req.path.compare(0, 5, "/api/") == 0 || req.path.compare(0, 4, "/v1/") == 0;
+        const bool write = req.method != "GET" && req.method != "HEAD";
+        const bool foreign = req.has_header("Origin") ? !origins.count(req.get_header_value("Origin"))
+                                                      : req.get_header_value("Sec-Fetch-Site") == "cross-site";
+        if ((api || write) && foreign) {
             send_error(res, 403, "cross-origin request refused (start the server with --allow-origin to permit one)");
             return httplib::Server::HandlerResponse::Handled;
         }
@@ -630,6 +672,9 @@ int main(int argc, char ** argv) {
     // Every open UI holds one /api/events stream for its lifetime, and a chat holds another: the
     // pool must be wider than the handful of tabs a person keeps open.
     svr.new_task_queue = [] { return new httplib::ThreadPool(32); };
+    // A request body here is a chat history or a handful of settings. The library's default would
+    // let every worker buffer a hundred times that.
+    svr.set_payload_max_length(8ull << 20);
     register_guards(svr, o);
     register_routes(svr, app);
     if (!ui_dir.empty()) {

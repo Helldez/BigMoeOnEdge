@@ -40,6 +40,7 @@ void EngineHost::set_host_info(std::function<json()> provider) {
 std::string EngineHost::load(const RunConfig & effective, const RunConfig & requested) {
     const ValidationResult v = validate(effective);
     if (!v) return v.error;
+    std::lock_guard<std::mutex> life(life_m_);
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == State::Loading) return "a model is already loading";
@@ -87,6 +88,7 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
 }
 
 void EngineHost::unload() {
+    std::lock_guard<std::mutex> life(life_m_);
     cancel();
     if (loader_.joinable()) loader_.join();
     {

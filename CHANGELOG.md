@@ -24,6 +24,13 @@ Semantic Versioning.
   dense set and a 4.1 GB cache asked for: 0.27 tok/s without it, 2.48 with it; `--auto` on the
   same model 2.48, with no refusal. Separately, a pinned dense store that runs out during load
   falls back to ordinary buffers for the remaining tensors and the run continues.
+- **The desktop server refuses cross-site requests on every method, and says what it does not
+  protect.** A request to `/api/*` or `/v1/*` from another site is refused whether it carries a
+  foreign `Origin` or is marked `Sec-Fetch-Site: cross-site`, so a web page can no longer make the
+  server measure the machine or hold its workers with an image tag. Loads, unloads and plan
+  measurements are serialised (two racing requests could end the process), request bodies are
+  capped at 8 MiB, parameters that make the engine write a file are refused over the API, and an
+  IPv6 loopback host name is accepted. `docs/server-api.md` gains a security model section.
 - **macOS builds carry Metal, and the prefill device runs on it.** `--prefill-device MTL0` sends
   wide prefill graphs to the GPU through the same two-layer arena the NPU uses, with no change to
   that path. On a 16 GB Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M streamed, a 1473-token
