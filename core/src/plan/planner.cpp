@@ -645,8 +645,15 @@ Plan plan_run(const RunConfig & base,
     auto prefill_need = [&](int slots) {
         return (uint64_t) slots * model.largest_expert_layer_bytes + 2 * model.largest_layer_dense_bytes;
     };
+    //
+    // "Its own memory" is believed only where it comes with a size. A device measured as not
+    // drawing on the host and reporting no memory of its own is one whose buffers this process
+    // cannot see being taken - an accelerator fed through a kernel allocator answers exactly so -
+    // and a pool with no stated size cannot be budgeted against. It is charged here, which is the
+    // reading that cannot overcommit: seen on a phone whose NPU was armed at a cost of 0 MiB.
+    auto own_pool = [](const ComputeDevice * dev) { return dev && dev->has_own_memory() && dev->memory_total > 0; };
     auto prefill_cost = [&](const ComputeDevice * dev, AllocationInputs & in, int slots) {
-        if (dev && dev->has_own_memory()) return;
+        if (own_pool(dev)) return;
         in.device_bytes = prefill_need(slots) + placement.device_compute_bytes;
         in.device_locked = !dev || dev->charges_lockable();
     };
@@ -743,7 +750,7 @@ Plan plan_run(const RunConfig & base,
                  n >= PrefillDeviceConfig::slots_min; --n) {
                 with = ai;
                 prefill_cost(best, with, n);
-                own_short = best->has_own_memory() && best->memory_free > 0 && best->memory_free < prefill_need(n);
+                own_short = own_pool(best) && best->memory_free > 0 && best->memory_free < prefill_need(n);
                 armed = allocate(hw, host_model, with, pol);
                 streams = armed.cache_bytes >= host_model.token_cycle_bytes && armed.cache_bytes > 0;
                 // "Protection" is the dense set's pin and the cache's lock alike: a device that

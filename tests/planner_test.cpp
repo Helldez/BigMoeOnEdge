@@ -1095,11 +1095,20 @@ int main() {
         // A device with memory of its own costs this pool nothing, and is refused only by its own.
         HardwareProfile disc = machine(1500.0, Tri::Yes);
         disc.devices[1].shares_host_memory = Tri::No;
+        disc.devices[1].memory_total = 8 * GiB;
         disc.devices[1].memory_free = 8 * GiB;
         const Plan own = plan_run(base_cfg(), disc, mm, PlanRequest{});
         check(own.config.prefill.device == "accel" && ledger_row(own, "device") == nullptr &&
                   own.cache_budget_bytes == off.cache_budget_bytes,
               "prefill: a device with its own memory is armed and charged nothing here");
+        // "Its own memory" with no size is not a pool to budget against: charged to this one.
+        HardwareProfile sizeless = machine(1500.0, Tri::Yes);
+        sizeless.devices[1].shares_host_memory = Tri::No;
+        const Plan sz = plan_run(base_cfg(), sizeless, mm, PlanRequest{});
+        const LedgerRow * szr = ledger_row(sz, "device");
+        check(sz.config.prefill.device == "accel" && szr && szr->bytes == two_layers,
+              "prefill: a device that claims its own memory and states no size is charged to the host");
+
         disc.devices[1].memory_free = 256 * MiB;
         check(!plan_run(base_cfg(), disc, mm, PlanRequest{}).config.prefill.enabled(),
               "prefill: and refused when its own memory cannot take even one layer");

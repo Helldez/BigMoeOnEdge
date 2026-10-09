@@ -12,7 +12,7 @@ Semantic Versioning.
   of memory; the result is the same, and the gates score both bit for bit. `--auto` uses two
   where they fit the ledger and one where only one does. On a 16 GB Apple-silicon laptop,
   Qwen3.6-35B-A3B Q4_K_M, a 1461-token prompt: 3.43 s with two slots, 3.94 and 4.19 s with one,
-  498 MiB less held.
+  498 MiB less held. On a 12 GB phone's NPU, the model at Q4_0: 10.2 s with two, 11.7 s with one.
 - **`--auto` chooses the prefill device.** The planner measures this model's matmul 128 tokens
   wide on the host and on every device - the shape of a prefill, which ranks devices in the
   opposite order to the one-token decode - and arms the fastest device that gave the host's
@@ -89,6 +89,11 @@ Semantic Versioning.
   detail stays in the docs each flag points to.
 
 ### Fixed
+- **A prefill device could be armed at a cost of 0 MiB.** A device that measures as not drawing
+  on the host and reports no memory of its own - an NPU fed through a kernel allocator answers so -
+  was read as having its own pool and charged nothing. It is charged to the host now. Found on a
+  phone, where the plan otherwise recognises the NPU on its own (40x the cores on the wide
+  matmul, same result) and arms or refuses it on what the ledger has room for.
 - **A device was reported as computing a wrong result when it was right.** The agreement check
   between a device and the host used a relative tolerance of 1e-4, inside the range by which two
   correct kernels differ on a 2-bit quantization (1.9e-4) and on any wide matmul (3e-4 to 4e-4).
