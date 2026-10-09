@@ -151,7 +151,7 @@ bool PrefillPath::open_arena(const PrefillDeviceConfig & cfg,
                              std::string & err) {
     arena_ = std::make_unique<DeviceExpertArena>();
     std::string perr;
-    if (!arena_->init(devs_[0], arena_shards_, arena_layers_, cfg.load_threads, moe.o_direct, perr)) {
+    if (!arena_->init(devs_[0], arena_shards_, arena_layers_, cfg.load_threads, moe.o_direct, cfg.slots, perr)) {
         err = "prefill device " + cfg.device + " expert arena: " + perr;
         return false;
     }
@@ -169,8 +169,9 @@ bool PrefillPath::open_arena(const PrefillDeviceConfig & cfg,
                      "to a type the device takes (%.1f MiB)\n",
                      (double) arena_->dense_slot_bytes() / (1024.0 * 1024.0), arena_->dense_converted(),
                      (double) arena_->dense_converted_bytes() / (1024.0 * 1024.0));
-    std::fprintf(stderr, "bmoe: prefill-device expert arena: %d layers through 2 slots of %.1f MiB, %d loaders\n",
-                 arena_->n_layers(), (double) arena_->slot_bytes() / 2.0 / (1024.0 * 1024.0), cfg.load_threads);
+    std::fprintf(stderr, "bmoe: prefill-device expert arena: %d layers through %d slot%s of %.1f MiB, %d loaders\n",
+                 arena_->n_layers(), arena_->n_slots(), arena_->n_slots() == 1 ? "" : "s",
+                 (double) arena_->slot_bytes() / (double) arena_->n_slots() / (1024.0 * 1024.0), cfg.load_threads);
     return true;
 }
 

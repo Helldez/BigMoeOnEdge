@@ -969,6 +969,7 @@ int main(int argc, char ** argv) {
                 int delay_us;
                 bool routed = false;   // read only routed experts (PrefillDeviceConfig::routed)
                 bool sabotage = false; // routed, with the routing-node reads skipped: must be caught
+                int slots = 2;         // expert slots on the device (PrefillDeviceConfig::slots)
             };
             const Variant variants[] = {
                 {"G17a arena, cache off, 4 loaders", 0, 4, 0},
@@ -980,6 +981,12 @@ int main(int argc, char ** argv) {
                 {"G17f arena routed, 4 loaders", 0, 4, 0, true},
                 {"G17f arena routed, 1 slowed loader", 0, 1, 20000, true},
                 {"G17g arena routed with its routing-node reads sabotaged", 0, 4, 0, true, true},
+                // One slot: every layer goes into the slot the previous one just left, so nothing is
+                // read ahead and the barrier is all that stands between a layer and stale experts.
+                {"G17h arena, one slot, 4 loaders", 0, 4, 0, false, false, 1},
+                {"G17h arena, one slot, 1 slowed loader", 0, 1, 20000, false, false, 1},
+                {"G17h arena routed, one slot, 4 loaders", 0, 4, 0, true, false, 1},
+                {"G17h arena routed, one slot, sabotaged", 0, 4, 0, true, true, 1},
             };
             // Greedy text alone is a weak witness here: on the tiny model a slot holding the wrong
             // layer's experts can still produce the same few tokens (measured, with the barrier
@@ -997,6 +1004,7 @@ int main(int argc, char ** argv) {
                 c.prefill.routed = v.routed;
                 c.prefill.routed_full_frac = 1.0f;
                 c.prefill.test_routed_skip_demand = v.sabotage;
+                c.prefill.slots = v.slots;
                 std::unique_ptr<Session> vs = Session::open(session_config_from(c), open_err);
                 if (!vs) {
                     std::fprintf(stderr, "%s open failed: %s\n", v.name, open_err.c_str());

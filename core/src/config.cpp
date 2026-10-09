@@ -140,6 +140,8 @@ ValidationResult validate(const RunConfig & cfg) {
         if (cfg.prefill.load_threads < 1 || cfg.prefill.load_threads > PrefillDeviceConfig::load_threads_max)
             return fail("prefill.load_threads must be in [1, " + std::to_string(PrefillDeviceConfig::load_threads_max) +
                         "]");
+        if (cfg.prefill.slots < PrefillDeviceConfig::slots_min || cfg.prefill.slots > PrefillDeviceConfig::slots_max)
+            return fail("prefill.slots must be 1 or 2");
         if (cfg.prefill.min_tokens > cfg.n_ctx)
             return fail("prefill.min_tokens=" + std::to_string(cfg.prefill.min_tokens) +
                         " exceeds n_ctx=" + std::to_string(cfg.n_ctx) + ": no prefill could ever reach the device.");

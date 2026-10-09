@@ -355,11 +355,22 @@ A device is armed when four things hold, each a fact and none a name:
    a backend's batched kernel is not the kernel its one-token path runs.
 3. **It wins by the margin** every other device decision uses (`min_backend_win`).
 4. **It fits the ledger.** Under streaming a prefill device carries a layer's experts and a layer's
-   other weights through two slots each - the layer being computed and the one being loaded behind
-   it - plus its compute buffer. That is charged as a row; the run must still stream, with a cache
-   of at least one token cycle, and the dense set must keep the protection it had. Both of those
+   other weights through slots - the layer being computed and the one being loaded behind it -
+   plus its compute buffer. That is charged as a row; the run must still stream, with a cache of at
+   least one token cycle, and the dense set and the cache must keep the protection they had. Those
    are paid on every decoded token, and a prefill is paid once. A device with memory of its own
    costs this pool nothing and is checked against its own free memory instead.
+
+**One expert slot or two.** The experts are the large part of that row and the part with a choice
+in it. Two slots read a layer while the one before it computes; one slot reads each layer at its
+own routing node, with the device waiting, and holds a layer less. The result is the same - the
+gates score both bit for bit - so it is a trade of prefill time for memory, and the ledger makes
+it: two where they fit, one where only one does, and the plan says which (`--prefill-slots`, which
+a caller can also fix). Measured on the laptop above, the same 1461-token prompt: 3.43 s with two
+slots, 3.94 and 4.19 s with one, the same generated text, and 498 MiB less held on a model whose
+layer of experts is that size. On the phone's NPU, the same prompt and the model at Q4_0: 10.2 s
+with two slots, 11.7 s with one, the same generated text, 448 MiB less. One slot also reads less in routed mode, since every read is made
+with the routing already known and none from a prediction.
 
 Anything else in the run that cannot share a session with a device prefill - row streaming,
 speculative decoding, a kept prefix state - declines it with the reason, instead of producing a
@@ -381,6 +392,23 @@ how long the prompts will be; it arms the device because a prefill gain of that 
 tenth of the decode rate on any prompt long enough to reach it, and says how to turn it off. On
 the 91 GB model the same rule refuses in under four seconds: two layers and the compute buffer
 are 6.1 GB there, and the cache would fall under one token cycle.
+
+The same rule on a phone, with nothing written for it: a 12 GB phone with a Hexagon v81 NPU, the
+same model at Q4_0 and at Q4_K_M. The NPU is found, measured 128 tokens wide at 40x the cores (1480
+to 1520 GiB/s against 27 to 38) with the same result, and reads no faster than they do one token
+wide (28 against 26 to 33) - the two axes again, further apart than on the laptop. Whether it is
+then armed is the ledger's answer and depends on the day. With the phone in ordinary use, 2.9 GB
+reported available, it is refused: the dense set takes 1.6 to 1.8 GB of the 2.6 the plan may
+hold, the cache needs its token cycle, and one expert slot with the compute buffer is another
+1.0. That is the reported figure being a floor on a machine that compresses (see the headroom
+probe): the same phone runs that prefill when asked by hand, 1461 tokens in 10.2 s, because the
+system makes the room. The plan does not count on room it has not measured.
+
+A device can also be wrong about whose memory it uses, and the ledger does not take its word. The
+NPU measures as not drawing on the host when it allocates, and reports no memory of its own: its
+buffers come from a kernel allocator this process cannot see being charged. Read as "its own
+memory", that armed it at a cost of 0 MiB. A pool with no stated size cannot be budgeted against,
+so a device that claims one and gives no size is charged to the host.
 
 **The output is not the host's to the last bit.** No weight is dropped or approximated - this is
 not one of the lossy levers, which never arm themselves - but a device's arithmetic is its own, and
