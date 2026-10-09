@@ -53,7 +53,9 @@ core/
     plan/       the hardware planner (hardware-planning.md). Two halves that must not mix:
                 planner, allocate, plan - pure rules over the profiles; no I/O, no platform names
                 hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,
-                  device_probe, placement_probe - the adapters that measure a machine and read a
+                  device_probe, placement_probe, isolated_probe (a device asked in a second
+                  process, so a driver that ends it ends only that) - the adapters that measure a
+                  machine and read a
                   gguf; the only place in the planner where a platform or llama.cpp may appear
     params.cpp  the parameter table's rows (see params.h)
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink

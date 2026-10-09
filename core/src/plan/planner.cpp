@@ -686,9 +686,14 @@ Plan plan_run(const RunConfig & base,
         const ComputeDevice * best = nullptr;
         const ComputeDevice * wrong = nullptr;
         uint32_t n_accel = 0, n_measured = 0;
+        uint32_t n_broken = 0;
         for (const ComputeDevice & d : hw.devices) {
             if (d.is_cpu || d.is_host_helper) continue;
             ++n_accel;
+            if (d.usable == Tri::No) { // it did not survive being probed: nothing to weigh
+                ++n_broken;
+                continue;
+            }
             if (d.wide_matmul_gibs <= 0.0) continue;
             ++n_measured;
             if (d.wide_identity_ok != Tri::Yes) {
@@ -721,8 +726,17 @@ Plan plan_run(const RunConfig & base,
             conflict = "the context is shorter than the narrowest graph a device is handed";
 
         if (n_accel == 0) {
-            note("prefill-device", "off", hw.backends_looked ? Source::Measured : Source::Unprobed,
-                 "no compute device beyond the host CPU was enumerated, so the prefill runs where the decode does");
+            // The same three answers as the offload line: only one of them is about this machine.
+            const bool build_blind = hw.backends_looked && hw.backends_linked <= 1 && hw.backends_loaded == 0;
+            note("prefill-device", "off", hw.backends_looked && !build_blind ? Source::Measured : Source::Unprobed,
+                 build_blind ? "this build carries no accelerator backend, so there was no device to consider: a "
+                               "property of the build, not of this machine"
+                             : "no compute device beyond the host CPU was enumerated, so the prefill runs where "
+                               "the decode does");
+        } else if (n_broken == n_accel) {
+            note("prefill-device", "off", Source::Measured,
+                 "every device here failed its own probe, so the prefill runs where the decode does; see the "
+                 "devices line for what each one did");
         } else if (host_wide <= 0.0 || n_measured == 0) {
             note("prefill-device", "off", Source::Unprobed,
                  "a prefill is many tokens wide and bound by compute, not by the bandwidth a one-token graph "
@@ -1075,7 +1089,33 @@ Plan plan_run(const RunConfig & base,
     // a placement: a registered backend collects work on its own, and every piece it collects is a
     // crossing. Measured with zero layers placed - 61 splits a token, and a build carrying the
     // backend losing to one without it. A caller who wants the device anyway pins the knob.
-    if (!req.is_pinned("devices") && p.config.n_gpu_layers == 0 && !p.config.dense_on_device &&
+    // A device that did not survive its probe stays out of the run, whatever else is decided. This
+    // is not a preference: what ended the probe - a driver without a function the backend calls, a
+    // device that never answers - would end the run the same way, at load. The host carries it,
+    // unless a different device was armed for the prefill, which is then the only one listed.
+    bool any_broken = false;
+    {
+        std::string broken;
+        for (const ComputeDevice & d : hw.devices)
+            if (!d.is_cpu && d.usable == Tri::No)
+                broken += (broken.empty() ? "" : "; ") + d.name + ": " + d.unusable_reason;
+        any_broken = !broken.empty();
+        if (!broken.empty()) {
+            if (req.is_pinned("devices")) {
+                note("devices", "as set", Source::Operator,
+                     "set by the caller, and left alone - but a device here failed its probe (" + broken +
+                         "), and a run that lists it may end the same way");
+            } else {
+                if (!p.config.prefill.enabled()) p.config.device_use = DeviceUse::CpuOnly;
+                p.config.n_gpu_layers = 0;
+                note("devices", p.config.prefill.enabled() ? "prefill device only" : "cpu only", Source::Measured,
+                     "a device was probed in a process of its own and did not survive it (" + broken +
+                         "): it is kept out of the run, which is the only way the run starts");
+            }
+        }
+    }
+
+    if (!any_broken && !req.is_pinned("devices") && p.config.n_gpu_layers == 0 && !p.config.dense_on_device &&
         !p.config.prefill.enabled()) {
         size_t non_cpu = 0;
         for (const ComputeDevice & d : hw.devices)

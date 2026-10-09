@@ -10,6 +10,10 @@
 #include "bmoe/model_profile.h"
 #include "bmoe/placement.h"
 
+#include <functional>
+#include <string>
+#include <vector>
+
 namespace bmoe {
 
 // Everything this machine will tell us for free: memory accounting, what a reclaim costs, whether a
@@ -83,6 +87,47 @@ void probe_device_costs(HardwareProfile & hw, const ModelProfile & model);
 // sweep answered 2 threads - the same wrong answer as the rule it replaced, and the engine is 58%
 // faster at 4. The instrument has to be made of the same material as the workload.
 void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model);
+
+// ── probing a device where it cannot take the plan down with it ──────────────────────────────
+//
+// Every probe above that touches a device does so by using it, and a device is only as sound as
+// its driver. Seen on a phone whose graphics driver predates what a backend assumes: the backend
+// loads, lists the device, and the first allocation calls a function the driver does not have -
+// the process is gone, with no error to catch. A probe in this process cannot survive that, so the
+// plan that was meant to find the right hardware instead stops the program on the wrong one.
+//
+// So a device can be probed in ANOTHER process. `probe_one_device` is that process's whole job:
+// everything above that touches `device`, and its facts as one line of text. `probe_devices_isolated`
+// is the parent's side: for each device it asks a runner for that line, takes the facts if it comes
+// back, and otherwise marks the device unusable with the reason - after which no probe here and no
+// rule above will touch it. How a second process is started is the front-end's business, which is
+// why the runner is a parameter; `self_process_runner` is the common answer, this same executable.
+//
+// Where no runner is given the probes run here as before: correct on every device that works,
+// and exactly as exposed as it always was to one that does not.
+using DeviceProbeRunner = std::function<bool(const std::string & device, std::string & facts, std::string & why)>;
+
+void probe_devices_isolated(HardwareProfile & hw, const DeviceProbeRunner & run);
+
+// The child's side. Backends must be registered and llama_backend_init() called first, as for the
+// probes it runs. False when the device is not there to probe.
+bool probe_one_device(const char * model_path, const std::string & device, std::string & facts);
+
+// A device's measured facts as one line of text, and back. The name is not carried: the caller
+// knows which device it asked about. `from_text` leaves the device untouched and returns false on
+// anything it does not recognise as a complete line.
+std::string device_facts_to_text(const ComputeDevice & d);
+bool device_facts_from_text(const std::string & text, ComputeDevice & d);
+// The marker a child prints its facts line after, so a parent can find it among a backend's own
+// output on the same stream.
+extern const char * const device_facts_marker;
+
+// A runner that starts this same executable again with `argv_for(device)` and gives it
+// `timeout_seconds` to answer. Fails - with the reason - when the child exits abnormally, runs out
+// of time or prints no facts; and, where this platform has no way to do it, returns a runner that
+// is empty (`!runner`), which a caller reads as "probe here instead".
+DeviceProbeRunner self_process_runner(std::function<std::vector<std::string>(const std::string & device)> argv_for,
+                                      double timeout_seconds);
 
 // How much memory this process can hold and expect to keep, which is not what the machine reports
 // as available: where a reclaim compresses, that figure is a floor for what could be taken and an

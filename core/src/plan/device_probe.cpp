@@ -216,7 +216,8 @@ void probe_device_costs(HardwareProfile & hw, const ModelProfile & model) {
     ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
 
     for (ComputeDevice & d : hw.devices) {
-        if (d.is_cpu) continue; // the host is not a device to cross to
+        if (d.is_cpu) continue;        // the host is not a device to cross to
+        if (!d.probe_here()) continue; // asked in another process, or found unusable there
         ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
         if (!dev) continue;
 

@@ -572,6 +572,10 @@ static void print_usage(const char * argv0) {
                 "      --plan-explain      with --auto: print the plan, then run it\n"
                 "      --probe             --plan, plus the memory probe below\n"
                 "      --no-probe-io       plan without the storage read probe (touches no drive)\n"
+                "      --no-isolated-probes  probe compute devices in this process instead of a child each.\n"
+                "                          The child exists so a driver that crashes or hangs costs the\n"
+                "                          device, not the run\n"
+                "      --probe-device D    internal: probe device D, print its facts, exit (the child above)\n"
                 "      --probe-mem         measure how much memory this machine will let us KEEP, by holding\n"
                 "                          it until the kernel takes some back. The one probe that puts a live\n"
                 "                          machine under real pressure, so it is off unless asked\n"
@@ -675,6 +679,11 @@ static void print_predict_report(const RunSummary & s) {
     }
 }
 
+// How long a device gets to answer its probe in a process of its own. Generous on purpose: the
+// child also measures the host as its reference, and a phone that is throttled takes its time. What
+// it bounds is the case with no other end - a device that never answers.
+static constexpr double k_device_probe_seconds = 120.0;
+
 int main(int argc, char ** argv) {
     RunConfig cfg;
     std::string csv_path;
@@ -695,6 +704,10 @@ int main(int argc, char ** argv) {
     bool plan_only = false;
     bool probe_io = true;
     bool probe_mem = false; // off by default: it is the one probe that puts the machine under real pressure
+    // Devices are probed in a child process each, so a driver that ends the process ends the child.
+    // `probe_device` is that child's mode: probe the one device named, print its facts, exit.
+    bool isolated_probes = true;
+    std::string probe_device;
 
     // Which parameters the user actually typed, by key. The env overrides below consult this rather
     // than comparing against the default, so passing a flag its default value still wins.
@@ -740,6 +753,10 @@ int main(int argc, char ** argv) {
             probe_io = true;
         } else if (a == "--no-probe-io")
             probe_io = false;
+        else if (a == "--probe-device")
+            probe_device = next("--probe-device");
+        else if (a == "--no-isolated-probes")
+            isolated_probes = false;
         else if (a == "--probe-mem") {
             auto_plan = true;
             probe_mem = true;
@@ -859,6 +876,21 @@ int main(int argc, char ** argv) {
     double predicted_s_per_token = 0.0;
     double predicted_hit_pct = -1.0;
     if (seen.count("dense-on-device")) auto_plan = true; // a request to the planner, as before
+    // The child of an isolated device probe: one device, its facts on one line, nothing else. If
+    // the driver ends this process, or it never returns, that is the parent's answer about the device.
+    if (!probe_device.empty()) {
+        register_backends();
+        llama_backend_init();
+        std::string facts;
+        if (!probe_one_device(cfg.model_path.c_str(), probe_device, facts)) {
+            std::fprintf(stderr, "bmoe: no such device to probe: %s\n", probe_device.c_str());
+            return 3;
+        }
+        std::printf("%s %s\n", device_facts_marker, facts.c_str());
+        std::fflush(stdout);
+        return 0;
+    }
+
     if (auto_plan && !cfg.model_path.empty()) {
         PlanRequest req;
         req.pinned.assign(seen.begin(), seen.end());
@@ -872,6 +904,20 @@ int main(int argc, char ** argv) {
         // kernel busy and anything measured after it measures the recovery.
         register_backends();
         HardwareProfile hw = probe_hardware(cfg.model_path.c_str());
+        // Every device beyond the host is asked in a process of its own first. A device is only as
+        // sound as its driver, and a driver that ends the process it is used from would otherwise
+        // end this plan - seen on a phone whose graphics driver lacks a function a backend calls
+        // without checking. What comes back is that device's facts, or the reason it has none; the
+        // probes below then leave it alone either way. Where a second process cannot be started
+        // the runner is empty and they run here, as they always did.
+        if (isolated_probes) {
+            const std::string model = cfg.model_path;
+            probe_devices_isolated(hw, self_process_runner(
+                                           [model](const std::string & dev) {
+                                               return std::vector<std::string>{"-m", model, "--probe-device", dev};
+                                           },
+                                           k_device_probe_seconds));
+        }
         const ModelProfile mp = probe_model(cfg.model_path.c_str());
         probe_device_support(hw, mp);
         // The cache term is the FLOOR the engine will enforce, not one token cycle. Written without
@@ -898,9 +944,14 @@ int main(int argc, char ** argv) {
                 const auto verdict = [](Tri t) {
                     return t == Tri::Yes ? "same result" : t == Tri::No ? "WRONG result" : "unverified";
                 };
-                std::fprintf(stderr, "plan: device %s%s: one token %.0f GiB/s (%s), %u tokens wide %.0f GiB/s (%s)\n",
+                if (d.usable == Tri::No) {
+                    std::fprintf(stderr, "plan: device %s: UNUSABLE - %s\n", d.name.c_str(), d.unusable_reason.c_str());
+                    continue;
+                }
+                std::fprintf(stderr, "plan: device %s%s: one token %.0f GiB/s (%s), %u tokens wide %.0f GiB/s (%s)%s\n",
                              d.name.c_str(), d.is_cpu ? " (host)" : "", d.memory_bandwidth_gibs, verdict(d.identity_ok),
-                             hw.wide_batch, d.wide_matmul_gibs, verdict(d.wide_identity_ok));
+                             hw.wide_batch, d.wide_matmul_gibs, verdict(d.wide_identity_ok),
+                             d.probed_out_of_process ? ", probed in a process of its own" : "");
             }
             if (mp.ok) {
                 std::fprintf(stderr, "plan: model %s, %u experts top-%u over %u of %u blocks\n", mp.arch.c_str(),

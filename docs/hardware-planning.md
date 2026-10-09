@@ -451,10 +451,41 @@ device typically by the float - measured at 4e-5 on a 4-bit type, 1.9e-4 on a 2-
 which reported the 2-bit type and every wide result as wrong; it is a hundredth now, still two
 orders below "wrong".
 
+## A device is probed in a process of its own
+
+Every probe that touches a device does so by using it, and a device is only as sound as its
+driver. The planner is meant to be handed a binary that carries every backend and to find out for
+itself what the machine has - which only works if finding out cannot end the program.
+
+It could. On a phone from 2020, a build carrying the Vulkan backend loaded it, listed the GPU, and
+died at the first allocation: the backend calls a function that driver does not have, without
+checking, and there is no error to catch. The OpenCL backend could not be linked for the same phone
+at all, for two functions its driver lacks. Neither is a property the profile could have carried in
+advance; both are the driver's.
+
+So each device beyond the host is asked in a second process first: this same executable, started
+again with the device's name, which runs everything that touches that device and prints its facts
+as one line. If the line comes back the facts are taken; if the child dies, or does not answer in
+its time, the device is marked unusable with the reason. Either way the probes in this process
+leave it alone. An unusable device is weighed by nothing and kept out of the run - the fitter is
+not asked about it, no layer is placed on it, and the host carries the run - because what ended the
+probe would end the load the same way.
+
+The same phone, the same build: the plan now completes in 23 s, prints
+`device Vulkan0: UNUSABLE - its probe ended the process that ran it (signal 11)`, keeps it out, and
+the run decodes at 1.87 and 2.02 tok/s on the cores with the backend's library still beside the
+executable. On the laptop, where the device works, the plan is the same as before and the second
+process costs about 3.5 s, most of it the child measuring the host again as its own reference.
+
+Starting a second process is the front-end's business, so the probe takes a runner; `bmoe-cli`
+gives it one (`--probe-device` is the child's mode, `--no-isolated-probes` turns it off). Where a
+platform has no way to start one the runner is empty and the probes run here, as they always did:
+that is the case on Windows today, and in the desktop server, which plans through its own adapter.
+The time limit is two minutes, and it has not been seen to fire.
+
 What this does not do: it measures a matmul, not a prefill. The loaders that fill the device's
 slots from flash, and the storage under them, are not in the probe, so on a machine whose storage
-is the bottleneck the real gain is smaller than the ratio. It does not isolate the probe either: a
-device that hangs on the wide graph hangs the plan. And it does not arm a device where the whole
+is the bottleneck the real gain is smaller than the ratio. And it does not arm a device where the whole
 model fits and nothing streams, because there the device would need a resident copy of every
 layer, which is the capacity fitter's question and not this one.
 

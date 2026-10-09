@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace bmoe::pio {
@@ -92,6 +93,22 @@ void pinned_free(PinnedAlloc * a);
 constexpr uint64_t lock_unbounded = ~0ull;
 uint64_t lockable_bytes();
 uint64_t lock_in_place_bytes();
+
+// Run this same executable again as a child, with `args`, and wait at most `timeout_seconds` for
+// it. Its stdout and stderr come back together in `out` (the tail of them, if there is a great
+// deal). This exists for one job: doing something that can end a process - asking a device driver
+// to work - somewhere other than here. A child that outlives its time is killed, and how it ended
+// is reported rather than interpreted.
+//
+// `can_run_self()` is false where this platform has no implementation, and `run_self` then
+// reports CouldNotStart; a caller falls back to doing the work in its own process.
+enum class ChildOutcome { CouldNotStart, Exited, Signalled, TimedOut };
+struct ChildResult {
+    ChildOutcome outcome = ChildOutcome::CouldNotStart;
+    int code = 0; // the exit status, or the signal number
+};
+bool can_run_self();
+ChildResult run_self(const std::vector<std::string> & args, double timeout_seconds, std::string * out);
 
 // Reserved (address-only) region; physical pages appear on commit, vanish on evict.
 size_t vm_page();
