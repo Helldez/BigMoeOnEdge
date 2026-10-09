@@ -381,6 +381,12 @@ struct PrefillDeviceConfig {
     // Empty = off. A local device only: no front-end registers a remote (RPC) one.
     std::string device;
 
+    // What a device that was found but fails to OPEN its prefill path does to the load. Off, the
+    // load fails and says why: a caller who named a device wants to know it is not being used. On,
+    // the session falls back to the CPU and runs, which is what a plan that armed the device on
+    // its own must ask for - a speed-up the planner chose is never a reason for a model not to load.
+    bool best_effort = false;
+
     // Narrowest prefill graph sent to the device. A prompt is fed in ubatch-wide pieces; pieces at
     // least this wide run on the device and a shorter tail runs on the CPU. It must exceed every
     // graph width the CPU path uses, which is one token for plain decode — speculation's wider

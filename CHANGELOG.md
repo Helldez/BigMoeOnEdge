@@ -7,6 +7,20 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **`--auto` chooses the prefill device.** The planner measures this model's matmul 128 tokens
+  wide on the host and on every device - the shape of a prefill, which ranks devices in the
+  opposite order to the one-token decode - and arms the fastest device that gave the host's
+  result, wins by a margin, and whose two layer slots still fit the memory ledger. Every refusal
+  names its reason and its figures, and `--plan` prints one line per device with both
+  measurements. On a 16 GB Apple-silicon laptop the GPU measures 7.6x the cores on the wide
+  matmul and 0.6x on the one-token one; Qwen3.6-35B-A3B Q4_K_M with `--auto` alone prefills a
+  1461-token prompt in 3.4 s against 21.2 s on the cores, and gives up 1.55 GB of expert cache
+  for it (decode on a short prompt 20.9 tok/s against 23.3). The text after a device prefill can
+  differ from the text after a host one at a near tie; an empty `--prefill-device` keeps the
+  prefill on the host. See `docs/hardware-planning.md`.
+- **`--prefill-best-effort`**: a prefill device that cannot be set up leaves the prefill on the
+  host instead of failing the load. Set by `--auto` when it chose the device; a device named by
+  hand still fails loudly.
 - **The planner keeps one memory ledger, with two ceilings.** Everything a run holds - context
   and compute buffers, a device armed for prefill, the dense set, the expert cache - is a row
   charged against what the process may hold and, separately, against what it may hold
@@ -69,6 +83,10 @@ Semantic Versioning.
   detail stays in the docs each flag points to.
 
 ### Fixed
+- **A device was reported as computing a wrong result when it was right.** The agreement check
+  between a device and the host used a relative tolerance of 1e-4, inside the range by which two
+  correct kernels differ on a 2-bit quantization (1.9e-4) and on any wide matmul (3e-4 to 4e-4).
+  It is 1e-2 now; a wrong kernel is off by the size of the answer.
 - **macOS: the planner, `--release-mmap` and the memory telemetry work.** Everything the engine
   asked of `/proc` and `/sys` returned nothing on Darwin, so `--auto` saw a machine with 0 MiB
   available and declined to stream, `--release-mmap` failed with "cannot read /proc/self/maps",
