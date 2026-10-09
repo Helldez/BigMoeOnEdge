@@ -15,6 +15,7 @@
 #include "bmoe/config.h"
 #include "bmoe/allocate.h"
 #include "bmoe/planner.h"
+#include "bmoe/probe.h"
 
 #include <cstdio>
 #include <string>
@@ -1133,6 +1134,101 @@ int main() {
         disc.devices[1].memory_free = 256 * MiB;
         check(!plan_run(base_cfg(), disc, mm, PlanRequest{}).config.prefill.enabled(),
               "prefill: and refused when its own memory cannot take even one layer");
+    }
+
+    // ── a device probed where it cannot take the plan with it ──────────────────────
+    // A device is a claim by a driver, and a driver can end the process that uses it. So a device
+    // is asked in another process, and what comes back is its facts or the reason it has none.
+    {
+        // The facts survive the trip, whole.
+        ComputeDevice src;
+        src.name = "accel";
+        src.shares_host_memory = Tri::Yes;
+        src.host_buffer = Tri::Yes;
+        src.host_ptr_buffers = Tri::Unknown;
+        src.async_copies = Tri::No;
+        src.rebindable = true;
+        src.runs_expert_op = Tri::Yes;
+        src.needs_repack = Tri::No;
+        src.memory_bandwidth_gibs = 63.5;
+        src.identity_ok = Tri::Yes;
+        src.host_ptr_verified = Tri::No;
+        src.split_seconds = 0.000125;
+        src.graph_splits = 96;
+        src.wide_matmul_gibs = 1502.25;
+        src.wide_identity_ok = Tri::Yes;
+        src.buffers_locked = Tri::Yes;
+        ComputeDevice dst;
+        dst.name = "accel";
+        const std::string line = device_facts_to_text(src);
+        check(device_facts_from_text(line, dst), "isolated: a device's facts parse back", line);
+        check(dst.shares_host_memory == Tri::Yes && dst.host_ptr_buffers == Tri::Unknown &&
+                  dst.async_copies == Tri::No && dst.rebindable && dst.runs_expert_op == Tri::Yes &&
+                  dst.needs_repack == Tri::No && dst.memory_bandwidth_gibs == 63.5 && dst.identity_ok == Tri::Yes &&
+                  dst.host_ptr_verified == Tri::No && dst.split_seconds == 0.000125 && dst.graph_splits == 96 &&
+                  dst.wide_matmul_gibs == 1502.25 && dst.wide_identity_ok == Tri::Yes && dst.buffers_locked == Tri::Yes,
+              "isolated: and every one of them is what was sent");
+        // A line cut short - a child that died while printing - is applied not at all.
+        ComputeDevice untouched;
+        untouched.memory_bandwidth_gibs = 7.0;
+        check(!device_facts_from_text(line.substr(0, line.size() / 2), untouched) &&
+                  untouched.memory_bandwidth_gibs == 7.0,
+              "isolated: half a line changes nothing");
+        check(!device_facts_from_text("", untouched) && !device_facts_from_text("garbage in the stream", untouched),
+              "isolated: nor does noise");
+
+        // The parent's side: one device answers, one ends its probe, the host is never asked.
+        HardwareProfile h = unified();
+        ComputeDevice bad;
+        bad.name = "broken";
+        bad.shares_host_memory = Tri::Yes;
+        h.devices.push_back(bad);
+        std::vector<std::string> asked;
+        probe_devices_isolated(h, [&](const std::string & dev, std::string & facts, std::string & why) {
+            asked.push_back(dev);
+            if (dev == "broken") {
+                why = "its probe ended the process that ran it (signal 11)";
+                return false;
+            }
+            ComputeDevice m = src;
+            facts = device_facts_to_text(m);
+            return true;
+        });
+        check(asked.size() == 2 && asked[0] == "accel" && asked[1] == "broken",
+              "isolated: every device but the host is asked");
+        check(h.devices[1].usable == Tri::Yes && h.devices[1].wide_matmul_gibs == 1502.25 && !h.devices[1].probe_here(),
+              "isolated: a device that answered carries its facts and is left alone by the probes here");
+        check(h.devices[2].usable == Tri::No && !h.devices[2].probe_here() &&
+                  h.devices[2].unusable_reason.find("signal 11") != std::string::npos,
+              "isolated: a device that ended its probe is marked unusable, with the reason");
+
+        // And the plan: the broken device is kept out of the run, and the good one is still weighed.
+        h.host_wide_matmul_gibs = 200.0;
+        h.host_bandwidth_gibs = 100.0;
+        h.wide_batch = 128;
+        ModelProfile mm = model;
+        mm.largest_expert_layer_bytes = 384 * MiB;
+        const Plan with_good = plan_run(base_cfg(), h, mm, PlanRequest{});
+        check(with_good.config.prefill.device == "accel",
+              "isolated: the device that works is still armed for the prefill");
+        const Decision * dv = find(with_good, "devices");
+        check(dv && dv->source == Source::Measured && dv->reason.find("broken") != std::string::npos,
+              "isolated: and the plan names the one that is kept out");
+        HardwareProfile only_bad = unified();
+        only_bad.devices[1].usable = Tri::No;
+        only_bad.devices[1].unusable_reason = "its probe did not finish in 120 s and was stopped";
+        only_bad.devices[1].probed_out_of_process = true;
+        const Plan cpu_only = plan_run(base_cfg(), only_bad, mm, PlanRequest{});
+        check(cpu_only.config.device_use == DeviceUse::CpuOnly && !cpu_only.config.prefill.enabled() &&
+                  cpu_only.config.moe.enabled,
+              "isolated: with nothing else to use the run is the host's, and it still streams");
+        check(validate(cpu_only.config).ok, "isolated: and that plan is a valid config",
+              validate(cpu_only.config).error);
+        // No runner: nothing is marked, and the probes here do the asking as they always did.
+        HardwareProfile plain = unified();
+        probe_devices_isolated(plain, nullptr);
+        check(plain.devices[1].usable == Tri::Unknown && plain.devices[1].probe_here(),
+              "isolated: without a runner nothing changes");
     }
 
     // Informational: the rationale as a user would read it. Printed rather than asserted, because

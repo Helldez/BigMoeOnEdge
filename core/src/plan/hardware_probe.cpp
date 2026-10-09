@@ -327,6 +327,7 @@ void probe_device_support(HardwareProfile & hw, const ModelProfile & model) {
 
         if (op) {
             for (ComputeDevice & d : hw.devices) {
+                if (!d.is_cpu && !d.probe_here()) continue; // asked in another process
                 ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
                 if (!dev) continue;
                 d.runs_expert_op = ggml_backend_dev_supports_op(dev, op) ? Tri::Yes : Tri::No;
