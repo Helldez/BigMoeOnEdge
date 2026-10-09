@@ -974,6 +974,110 @@ int main() {
               mibs_of(ph.cache_budget_bytes) + " against " + mibs_of(fx.cache_budget_bytes));
     }
 
+    // ── the prefill plan: a second placement, decided at prefill width ─────────────
+    // A device that loses the one-token graph can win a wide one several times over, so the
+    // prefill is decided from the wide measurement and from nothing else - and armed only when
+    // the device also gave the host's answer and its memory still leaves the ledger closed.
+    {
+        ModelProfile mm = model;
+        mm.largest_expert_layer_bytes = 384 * MiB;
+        mm.largest_layer_dense_bytes = 64 * MiB;
+        const uint64_t two_layers = 2 * (384 + 64) * MiB;
+
+        // The accelerator of `unified()`, slower than the cores on one token and faster on many.
+        const auto machine = [](double wide, Tri same) {
+            HardwareProfile h = unified();
+            h.host_bandwidth_gibs = 100.0;
+            h.host_wide_matmul_gibs = 200.0;
+            h.wide_batch = 128;
+            h.devices[1].memory_bandwidth_gibs = 60.0; // loses the decode's graph
+            h.devices[1].wide_matmul_gibs = wide;
+            h.devices[1].wide_identity_ok = same;
+            return h;
+        };
+        const auto reason = [](const Plan & p) {
+            const Decision * d = find(p, "prefill-device");
+            return d ? d->reason : std::string();
+        };
+
+        const Plan off = plan_run(base_cfg(), unified(), mm, PlanRequest{});
+        check(!off.config.prefill.enabled() && find(off, "prefill-device") &&
+                  find(off, "prefill-device")->source == Source::Unprobed,
+              "prefill: a device nobody measured at prefill width is not armed, and the plan says unprobed");
+
+        const Plan on = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, PlanRequest{});
+        const LedgerRow * row = ledger_row(on, "device");
+        check(on.config.prefill.device == "accel",
+              "prefill: a device that wins wide and agrees is armed by its own name");
+        check(on.config.prefill.best_effort, "prefill: a device the plan armed is never a condition for the load");
+        check(row && row->locked && row->bytes == two_layers, "prefill: it is charged two layers, experts and the rest",
+              row ? std::to_string((unsigned long long) (row->bytes >> 20)) + " MiB" : "no row");
+        check(off.cache_budget_bytes - on.cache_budget_bytes == two_layers,
+              "prefill: and the cache gives up exactly that");
+        check(on.allocation.ledger.locked <= on.allocation.ledger.lockable_cap, "prefill: the ledger still closes");
+        check(on.config.device_use != DeviceUse::CpuOnly, "prefill: an armed device is not taken out of the run");
+        check(validate(on.config).ok, "prefill: the armed plan is a valid config", validate(on.config).error);
+        check(on.to_flags().find("--prefill-device accel") != std::string::npos &&
+                  on.to_flags().find("--prefill-best-effort") != std::string::npos,
+              "prefill: the reproduce line carries it");
+
+        const Plan wrong = plan_run(base_cfg(), machine(1500.0, Tri::No), mm, PlanRequest{});
+        check(!wrong.config.prefill.enabled() && reason(wrong).find("did not reproduce") != std::string::npos,
+              "prefill: a faster device with a different answer is refused on correctness");
+
+        const Plan slow = plan_run(base_cfg(), machine(205.0, Tri::Yes), mm, PlanRequest{});
+        check(!slow.config.prefill.enabled() && reason(slow).find("not a win") != std::string::npos,
+              "prefill: a device inside the margin is not a second placement");
+
+        // Too large for what is left: refused, with the figures, and the plan is the one without it.
+        ModelProfile big = mm;
+        big.largest_expert_layer_bytes = 5 * GiB;
+        const Plan nofit = plan_run(base_cfg(), machine(1500.0, Tri::Yes), big, PlanRequest{});
+        const Plan nodev = plan_run(base_cfg(), unified(), big, PlanRequest{});
+        check(!nofit.config.prefill.enabled() && reason(nofit).find("refused on memory") != std::string::npos,
+              "prefill: a device that does not fit is refused with the reason");
+        check(nofit.cache_budget_bytes == nodev.cache_budget_bytes && ledger_row(nofit, "device") == nullptr,
+              "prefill: and a refusal leaves the ledger as it was");
+
+        // Something else in the run that cannot share a session with it.
+        RunConfig rows = base_cfg();
+        rows.moe.row_stream = true;
+        const Plan conflict = plan_run(rows, machine(1500.0, Tri::Yes), mm, PlanRequest{});
+        check(!conflict.config.prefill.enabled() && reason(conflict).find("not armed, because") != std::string::npos,
+              "prefill: a setting it cannot coexist with declines it instead of producing an invalid config");
+
+        // The caller's word, either way.
+        PlanRequest none;
+        none.pinned = {"prefill-device"};
+        const Plan pinned_off = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, none);
+        check(!pinned_off.config.prefill.enabled() && find(pinned_off, "prefill-device")->source == Source::Operator,
+              "prefill: a caller who set it empty is not overruled");
+
+        // A library the host calls into is not somewhere a prefill can be placed, however it measures.
+        HardwareProfile helper = machine(0.0, Tri::Unknown);
+        ComputeDevice lib;
+        lib.name = "lib";
+        lib.is_host_helper = true;
+        lib.shares_host_memory = Tri::Yes;
+        lib.wide_matmul_gibs = 5000.0;
+        lib.wide_identity_ok = Tri::Yes;
+        helper.devices.push_back(lib);
+        check(!plan_run(base_cfg(), helper, mm, PlanRequest{}).config.prefill.enabled(),
+              "prefill: a host helper library is never the prefill device");
+
+        // A device with memory of its own costs this pool nothing, and is refused only by its own.
+        HardwareProfile disc = machine(1500.0, Tri::Yes);
+        disc.devices[1].shares_host_memory = Tri::No;
+        disc.devices[1].memory_free = 8 * GiB;
+        const Plan own = plan_run(base_cfg(), disc, mm, PlanRequest{});
+        check(own.config.prefill.device == "accel" && ledger_row(own, "device") == nullptr &&
+                  own.cache_budget_bytes == off.cache_budget_bytes,
+              "prefill: a device with its own memory is armed and charged nothing here");
+        disc.devices[1].memory_free = 512 * MiB;
+        check(!plan_run(base_cfg(), disc, mm, PlanRequest{}).config.prefill.enabled(),
+              "prefill: and refused when its own memory cannot take two layers");
+    }
+
     // Informational: the rationale as a user would read it. Printed rather than asserted, because
     // its wording is meant to change as the rules learn; what is asserted is that it exists, names
     // the regime, and tags every decision with where its authority came from.

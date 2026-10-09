@@ -161,6 +161,7 @@ void probe_devices(HardwareProfile & h) {
             d.memory_free = props.memory_free;
             d.memory_total = props.memory_total;
             d.is_cpu = props.type == GGML_BACKEND_DEVICE_TYPE_CPU;
+            d.is_host_helper = props.type == GGML_BACKEND_DEVICE_TYPE_ACCEL;
             // The device TYPE may only ever narrow this to "shared", never to "its own". The CPU's
             // memory is the host's by definition, and a device that calls itself integrated is
             // claiming shared memory - a claim worth believing, because believing it errs safe.

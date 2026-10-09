@@ -506,6 +506,16 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("prefill-best-effort", "Prefill device is optional", G::Streaming, L::Experimental,
+                          "If the prefill device cannot be set up, run the prefill on the CPU instead of failing "
+                          "the load. --auto sets it when it chose the device itself.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--prefill-best-effort", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.prefill.best_effort; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("prefill-min-tokens", "Prefill device width", G::Streaming, L::Experimental,
                           "Narrowest prefill piece sent to the prefill device; a shorter tail runs on the CPU.");
         d.value_hint = "N";
