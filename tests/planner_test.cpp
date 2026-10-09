@@ -1066,6 +1066,44 @@ int main() {
         check(nofit.cache_budget_bytes == nodev.cache_budget_bytes && ledger_row(nofit, "device") == nullptr,
               "prefill: and a refusal leaves the ledger as it was");
 
+        // A decision waiting on memory. On a machine whose lock has no total of its own, what
+        // refuses the device is how much the process was TOLD it may hold - a reported figure. The
+        // plan says how much it would have to hold for the answer to change, and with that much
+        // measured, it changes.
+        const auto tight_phone = [&](uint64_t reported) {
+            HardwareProfile h = phone();
+            h.residency_budget = reported;
+            h.host_bandwidth_gibs = 30.0;
+            h.host_wide_matmul_gibs = 30.0;
+            h.wide_batch = 128;
+            h.devices[0].wide_matmul_gibs = 1500.0;
+            h.devices[0].wide_identity_ok = Tri::Yes;
+            return h;
+        };
+        const Plan waiting = plan_run(base_cfg(), tight_phone(4 * GiB), mm, PlanRequest{});
+        check(!waiting.config.prefill.enabled() && waiting.headroom_wanted_bytes > 4 * GiB,
+              "headroom: a device refused on a reported figure says how much would have to be held",
+              std::to_string((unsigned long long) (waiting.headroom_wanted_bytes >> 20)) + " MiB");
+        check(reason(waiting).find("measuring that") != std::string::npos,
+              "headroom: and the plan says a measurement can change it");
+        HardwareProfile measured_phone = tight_phone(4 * GiB);
+        measured_phone.holdable_bytes = waiting.headroom_wanted_bytes;
+        measured_phone.holdable_from = Headroom::Measured;
+        const Plan after = plan_run(base_cfg(), measured_phone, mm, PlanRequest{});
+        check(after.config.prefill.enabled() && after.headroom_wanted_bytes == 0,
+              "headroom: with that much measured the device is armed, and nothing more is asked");
+        HardwareProfile short_phone = tight_phone(4 * GiB);
+        short_phone.holdable_bytes = 4 * GiB + 64 * MiB;
+        short_phone.holdable_from = Headroom::Measured;
+        const Plan still = plan_run(base_cfg(), short_phone, mm, PlanRequest{});
+        check(!still.config.prefill.enabled() && still.headroom_wanted_bytes == 0,
+              "headroom: a measured figure that is still short is an answer, not a question");
+        // Where the store that refuses has a size of its own, headroom is not what is missing.
+        check(nofit.headroom_wanted_bytes == 0,
+              "headroom: a lock total that refuses is not asked to be measured again");
+        check(on.headroom_wanted_bytes == 0 && off.headroom_wanted_bytes == 0,
+              "headroom: nothing is asked when nothing was refused on memory");
+
         // Something else in the run that cannot share a session with it.
         RunConfig rows = base_cfg();
         rows.moe.row_stream = true;

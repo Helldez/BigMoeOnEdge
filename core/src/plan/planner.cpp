@@ -772,6 +772,45 @@ Plan plan_run(const RunConfig & base,
                          u64s(mib(best->memory_free)) + " MiB free of the " + u64s(mib(least)) +
                          " MiB even one layer of this model takes there: refused on memory");
             } else if (slots == 0) {
+                // Would it fit if this process could hold more than it was told it can? Only the
+                // holdable ceiling moves in the question: the smallest scheme, the cache at its
+                // floor, everything else as it is. Where the lockable total is what refuses - a
+                // store with a size of its own - no amount of headroom changes the answer, and
+                // nothing is asked.
+                if (hw.holdable_from != Headroom::Measured) {
+                    AllocationInputs least_in = ai;
+                    prefill_cost(best, least_in,
+                                 slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_min);
+                    const uint64_t need =
+                        host_fixed + dense_pending + least_in.device_bytes + host_model.token_cycle_bytes;
+                    const double frac = (double) margin_frac(hw, pol);
+                    const uint64_t want = std::max(need + pol.margin_min_bytes,
+                                                   (uint64_t) ((double) need / (1.0 - frac)) + ((uint64_t) 1 << 20));
+                    if (want > holdable && (hw.memory_total == 0 || want <= hw.memory_total)) {
+                        auto cap_at = [&](uint64_t reported) {
+                            const uint64_t bounded = std::min(reported, want);
+                            const uint64_t m = std::max((uint64_t) ((double) bounded * (double) pol.lock_margin),
+                                                        pol.margin_min_bytes);
+                            return bounded > m ? bounded - m : 0;
+                        };
+                        least_in.holdable_bytes = want;
+                        least_in.budget_bytes =
+                            want - std::max((uint64_t) ((double) want * frac), pol.margin_min_bytes);
+                        least_in.lockable_bytes = cap_at(hw.lockable_bytes);
+                        least_in.lock_in_place_bytes = cap_at(hw.lock_in_place_bytes);
+                        const Allocation roomy = allocate(hw, host_model, least_in, pol);
+                        const Allocation plain = [&] {
+                            AllocationInputs base_in = least_in;
+                            base_in.device_bytes = 0;
+                            base_in.device_locked = false;
+                            return allocate(hw, host_model, base_in, pol);
+                        }();
+                        if (roomy.cache_bytes >= host_model.token_cycle_bytes && roomy.cache_bytes > 0 &&
+                            roomy.dense_pinned == plain.dense_pinned &&
+                            (roomy.cache_locked_bytes > 0) == (plain.cache_locked_bytes > 0))
+                            p.headroom_wanted_bytes = want;
+                    }
+                }
                 note("prefill-device", "off", Source::Derived,
                      best->name + " computes a wide prefill at " + ratio(*best) +
                          " the host's rate and is refused on memory: with a single expert slot it would still "
@@ -781,7 +820,13 @@ Plan plan_run(const RunConfig & base,
                          (streams ? "the dense set or the cache without the protection it has"
                                   : "the expert cache " + u64s(mib(armed.cache_bytes)) +
                                         " MiB against a token cycle of " + u64s(mib(host_model.token_cycle_bytes))) +
-                         ". That is paid on every decoded token, and a prefill is paid once");
+                         ". That is paid on every decoded token, and a prefill is paid once" +
+                         (p.headroom_wanted_bytes
+                              ? ". What this process may hold is the reported figure here, not a measured one, and "
+                                "it would fit if " +
+                                    u64s(mib(p.headroom_wanted_bytes)) +
+                                    " MiB could be held: measuring that is the one thing that can change this"
+                              : ""));
             } else {
                 ai = with;
                 p.config.prefill.device = best->name;

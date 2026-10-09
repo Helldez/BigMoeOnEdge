@@ -87,6 +87,16 @@ struct Plan {
     uint64_t cache_budget_bytes = 0;
     uint64_t dense_pending_bytes = 0;
 
+    // What this process would have to be able to HOLD for a decision this plan refused to come out
+    // the other way; 0 when no decision is waiting on that figure. Set when a device won on
+    // measurement and was refused on memory alone, and only where the ceiling it missed is the
+    // holdable one - which a plan reads as "reported available" unless it was measured, and which
+    // on a machine that reclaims by compressing or by ending background work is a floor, not a
+    // limit. It is the one case where measuring the headroom can change what the run does, so a
+    // front-end can spend that measurement here and nowhere else. Never set when the headroom
+    // was already measured: asking twice changes nothing.
+    uint64_t headroom_wanted_bytes = 0;
+
     // Where every group of weights ended up and what that is predicted to cost. The config above is
     // what the engine can be TOLD; this is what the plan actually decided, and the two differ
     // wherever the engine has no way to express a per-group choice. Keeping both is what makes a

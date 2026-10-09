@@ -7,6 +7,12 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **`--auto` measures the memory headroom when a decision depends on it.** The intrusive memory
+  probe stays off by default, with one exception: a faster prefill device was refused for lack of
+  room, and the room was a reported figure rather than a measured one. The plan then measures
+  whether exactly that much can be held and plans again. On a 16 GB Apple-silicon laptop with
+  7 GB occupied by another process, the device went from refused to armed in 7.4 s all told.
+  `--no-probe-mem` turns it off.
 - **`--prefill-slots 1|2`: a prefill device can hold one layer of experts instead of two.** One
   slot reads each layer at its own routing node with the device waiting, and costs a layer less
   of memory; the result is the same, and the gates score both bit for bit. `--auto` uses two

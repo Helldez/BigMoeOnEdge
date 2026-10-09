@@ -572,6 +572,9 @@ static void print_usage(const char * argv0) {
                 "      --plan-explain      with --auto: print the plan, then run it\n"
                 "      --probe             --plan, plus the memory probe below\n"
                 "      --no-probe-io       plan without the storage read probe (touches no drive)\n"
+                "      --no-probe-mem      never measure memory unasked. By default --auto measures it in one\n"
+                "                          case only: a faster device was refused for lack of room, and the\n"
+                "                          room was a reported figure rather than a measured one\n"
                 "      --probe-mem         measure how much memory this machine will let us KEEP, by holding\n"
                 "                          it until the kernel takes some back. The one probe that puts a live\n"
                 "                          machine under real pressure, so it is off unless asked\n"
@@ -695,6 +698,9 @@ int main(int argc, char ** argv) {
     bool plan_only = false;
     bool probe_io = true;
     bool probe_mem = false; // off by default: it is the one probe that puts the machine under real pressure
+    // ...and on by itself in exactly one case: a plan that says a decision is waiting on that figure
+    // (Plan::headroom_wanted_bytes). Then it is bounded to what the decision needs.
+    bool probe_mem_when_decisive = true;
 
     // Which parameters the user actually typed, by key. The env overrides below consult this rather
     // than comparing against the default, so passing a flag its default value still wins.
@@ -743,7 +749,9 @@ int main(int argc, char ** argv) {
         else if (a == "--probe-mem") {
             auto_plan = true;
             probe_mem = true;
-        } else if (a == "--session")
+        } else if (a == "--no-probe-mem")
+            probe_mem_when_decisive = false;
+        else if (a == "--session")
             session_mode = true;
         else if (a == "--csv")
             csv_path = next("--csv");
@@ -884,7 +892,24 @@ int main(int argc, char ** argv) {
         if (probe_io) probe_storage(hw, cfg.model_path.c_str(), mp.expert_slice_bytes);
         probe_headroom(hw, probe_mem, mp.dense_bytes + cache_floor);
         const Placement placement = probe_placement(cfg.model_path.c_str(), mp, hw, (uint32_t) cfg.n_ctx);
-        const Plan plan = plan_run(cfg, hw, mp, placement, req);
+        Plan plan = plan_run(cfg, hw, mp, placement, req);
+        // The memory probe is intrusive, so it is spent only where it can change what the run does:
+        // the plan refused something on memory alone, against a headroom it was told rather than
+        // one it measured. Measure for exactly that much, and plan again. One round: a plan made
+        // on a measured figure asks for nothing more.
+        if (plan.headroom_wanted_bytes > 0 && probe_mem_when_decisive && !probe_mem) {
+            const uint64_t before = hw.holdable_bytes ? hw.holdable_bytes : hw.residency_budget;
+            std::fprintf(stderr,
+                         "plan: a decision is waiting on memory: measuring whether %llu MiB can be held "
+                         "(%llu reported; --no-probe-mem skips this)\n",
+                         (unsigned long long) (plan.headroom_wanted_bytes >> 20), (unsigned long long) (before >> 20));
+            probe_headroom(hw, true, plan.headroom_wanted_bytes);
+            const uint64_t after = hw.holdable_bytes ? hw.holdable_bytes : hw.residency_budget;
+            std::fprintf(stderr, "plan: %llu MiB %s\n", (unsigned long long) (after >> 20),
+                         hw.holdable_from == Headroom::Measured ? "held and kept: planning again on the measured figure"
+                                                                : "is still all that can be counted on");
+            if (hw.holdable_from == Headroom::Measured) plan = plan_run(cfg, hw, mp, placement, req);
+        }
         cfg = plan.config;
         predicted_s_per_token = plan.allocation.seconds_per_token;
         if (plan.allocation.cache_bytes > 0 && mp.expert_bytes > 0)

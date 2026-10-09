@@ -432,6 +432,31 @@ device that hangs on the wide graph hangs the plan. And it does not arm a device
 model fits and nothing streams, because there the device would need a resident copy of every
 layer, which is the capacity fitter's question and not this one.
 
+### Measured when it decides something
+
+The measurement is intrusive, so it never ran unasked; and the plans that needed it most were then
+made on the reported figure. A phone in ordinary use reported 2.9 GB available, the plan refused a
+prefill device for want of 0.3 GB, and the same prefill ran when asked for by hand, because the
+system makes room the plan had not measured.
+
+So the probe is spent in one case, and only there. When a device won on measurement and was
+refused on memory alone, and the ceiling it missed is the holdable one read from a reported
+figure, the plan says so and says how much would have to be held for the answer to change
+(`headroom_wanted_bytes`: the smallest device scheme, the cache at its token cycle, everything else
+as planned, plus the margin). A front-end then measures for exactly that much and plans again,
+once. Every other plan - no device, a slower one, a wrong one, room already there, or a refusal by
+the lockable total, which no headroom changes - asks for nothing and costs nothing.
+
+Exercised on the laptop by occupying 7 GB with another process, which leaves the plan where the
+phone was: 2.1 to 2.5 GB reported, the device refused. With the rule the probe held and kept
+4075 MiB, the second plan armed the device with one expert slot, and the whole of it took 7.4 s.
+`--no-probe-mem` turns the rule off; `--probe-mem` still measures unconditionally.
+
+It is a photograph. Between the measurement and the load the machine can change, which is what the
+run-time fallbacks are for: a device that cannot be set up leaves the prefill on the host, and a
+lock refused part way shrinks the cache. And the probe holds ordinary memory, while a device's
+buffers may come from another allocator: a close reading of the same pool, not the same thing.
+
 ## The storage probe
 
 **Nothing to run beforehand.** The probe is part of `--auto`, happens once inside the load, and
