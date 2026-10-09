@@ -100,6 +100,12 @@ struct AllocationInputs {
     uint64_t device_bytes = 0;
     bool device_locked = false;
 
+    // The part of an armed device that takes TURNS with the expert cache instead of standing beside
+    // it: slots held only while a prefill runs there, when the cache is idle, and given back for
+    // decode, when the slots are. It is not added to what is held; it has to fit in what the cache
+    // can yield, and where the cache is not locked and the device is, in the lock that is left.
+    uint64_t device_turn_bytes = 0;
+
     // The caller chose the pinned dense store. It is charged and reported like any other line and
     // never overruled: a pin is the caller's authority, including over a ledger that does not close.
     bool pin_forced = false;
@@ -138,6 +144,9 @@ struct LedgerRow {
     std::string name;
     uint64_t bytes = 0;
     bool locked = false;
+    // Held in turn with the expert cache rather than with it: not part of `held`, which is the
+    // account while decoding. During a prefill the cache has yielded this much.
+    bool in_turn = false;
 };
 
 struct Ledger {
@@ -159,6 +168,11 @@ struct Allocation {
     // says by how much.
     bool dense_pinned = false;
     uint64_t pinned_shortfall_bytes = 0;
+
+    // Whether what takes turns with the cache (AllocationInputs::device_turn_bytes) fits when its
+    // turn comes: the cache can yield that much, or what is left over still fits both ceilings.
+    // True when nothing takes turns.
+    bool turn_fits = true;
 
     // The part of `cache_bytes` the platform can be asked to keep in place; 0 when the cache is
     // ordinary memory, because it was not asked for or because not even one token cycle fits.
