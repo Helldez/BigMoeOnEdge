@@ -24,6 +24,13 @@ Semantic Versioning.
   dense set and a 4.1 GB cache asked for: 0.27 tok/s without it, 2.48 with it; `--auto` on the
   same model 2.48, with no refusal. Separately, a pinned dense store that runs out during load
   falls back to ordinary buffers for the remaining tensors and the run continues.
+- **The desktop server refuses cross-site requests on every method, and says what it does not
+  protect.** A request to `/api/*` or `/v1/*` from another site is refused whether it carries a
+  foreign `Origin` or is marked `Sec-Fetch-Site: cross-site`, so a web page can no longer make the
+  server measure the machine or hold its workers with an image tag. Loads, unloads and plan
+  measurements are serialised (two racing requests could end the process), request bodies are
+  capped at 8 MiB, parameters that make the engine write a file are refused over the API, and an
+  IPv6 loopback host name is accepted. `docs/server-api.md` gains a security model section.
 - **macOS builds carry Metal, and the prefill device runs on it.** `--prefill-device MTL0` sends
   wide prefill graphs to the GPU through the same two-layer arena the NPU uses, with no change to
   that path. On a 16 GB Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M streamed, a 1473-token
@@ -42,13 +49,34 @@ Semantic Versioning.
   plan like a build without it: no nodes drifting to an idle device, and the gates pass to the bit
   with Metal compiled in. `all` and `cpu` still force either. Before this a Metal build with
   nothing placed ran slower than a CPU build and failed gate G18c.
-- **The prefill-device and decide flags are parameter-table rows**, so `--describe-params` lists
-  them like every other setting.
-- **Hardware planner: `--auto`, `--plan` and `--probe`.** The engine
+- **The prefill-device and decide flags are parameter-table rows**, so `--describe-params` and the
+  desktop UI list them like every other setting.
+- **Hardware planner: `--auto`, `--plan`, `--probe`, and `/api/plan` in the desktop UI.** The engine
   measures the machine and reads the model, then resolves the streaming knobs with the fact behind
   each one; a knob set by hand is never touched and nothing lossy arms itself. The planner's
   placement knobs join the parameter table (`--gpu-layers`, `--threads-batch`, `--devices`,
   `--dense-on-device`). See `docs/hardware-planning.md`.
+- **A desktop app: `bmoe-server` and a local web UI.** A second front-end next to `bmoe-cli` that
+  keeps one model loaded and serves a browser UI on `127.0.0.1:8765`: chat with the reasoning
+  channel, live engine metrics per token (decode rate, flash read rate, stall share, cache hit,
+  memory), model management and every engine setting. The settings form is rendered from the
+  parameter table alone, so a knob added to the engine appears in the UI with no UI change. The
+  same server speaks an OpenAI-compatible `/v1/chat/completions` (streaming, with reasoning and
+  metrics as extensions), so any OpenAI client can drive the engine; the API is in
+  `docs/server-api.md`. It binds to loopback only and refuses a foreign `Host` or `Origin`.
+  - Settings live in layers (server defaults, plan, launch flags, user); only the user's are
+    saved, so an improved default still reaches someone who never touched that knob.
+  - A chat continues the engine's KV cache when the request extends the previous conversation
+    by exactly one message, and starts fresh (and says so) otherwise.
+  - Models: the ggufs in the models folder (a split set listed once), a curated catalog kept as
+    data in `catalog/models.json`, and resumable downloads through the system `curl`.
+  - `/api/plan` offers the hardware planner's plan, with the fact behind each decision, when the
+    engine carries the planner; values set by hand are never overridden. With the planner built
+    in, every load plans first by default (auto mode), with the previous model unloaded so the
+    probes measure the machine rather than the model already in it; a plan measured with a model
+    loaded says so.
+  - Release builds attach a `bmoe-desktop-<tag>-<target>` archive: the server with the UI and the
+    catalog beside it. On Windows a double click starts it and opens the browser.
 - **One parameter table for every engine tunable** (`bmoe/params.h`). Each `RunConfig` knob is one
   row: key, type, group, level, scope, bounds written with the same constants `validate()` checks,
   help text, and its reader and writer. Keys are the long flag without dashes, the name a planner
@@ -67,6 +95,8 @@ Semantic Versioning.
   and `BMOE_CACHE_MB=auto` now means auto-sizing (it used to parse as 0, cache off).
 - The per-flag usage text is the table's help, shorter than the hand-written one; the measured
   detail stays in the docs each flag points to.
+- The Android build (`scripts/build-android.ps1`, CI) configures with `-DBMOE_BUILD_SERVER=OFF`;
+  CI formats `server/` too and compile-checks `bmoe-server` on macOS.
 
 ### Fixed
 - **macOS: the planner, `--release-mmap` and the memory telemetry work.** Everything the engine

@@ -27,6 +27,11 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   `RunConfig`, described once. The CLI parses and documents its flags from it; front-ends render
   their settings from its JSON (`bmoe-cli --describe-params`).
 - `cli/main.cpp`: `bmoe-cli`; the ONLY place engine environment overrides are read.
+- `server/`: `bmoe-server`, the engine behind the desktop web UI (`docs/server-api.md`). A
+  front-end like the CLI: HTTP, files and the platform live here, never in `core/`. Its only env
+  read is the per-user data folder on POSIX (`server/platform.cpp`).
+- `ui/`: the web UI (Svelte + TypeScript). Settings are rendered from `GET /api/params`: never
+  name an engine parameter in the UI. `catalog/models.json`: the model catalog, as data.
 - `third_party/llama.cpp` — stock upstream submodule.
 - `tests/` — byte-identity gates. `examples/android/` — the demo APK.
 
@@ -37,6 +42,9 @@ git submodule update --init --recursive
 scripts/build-host.sh
 cd build && ctest --output-on-failure         # byte-identity gates (needs python3 + gguf)
 ```
+
+Desktop app: `cd ui && npm ci && npm test && npm run build`, then the CMake build above stages
+`ui/dist` and the catalog beside `build/bin/bmoe-server` (run it, open `http://127.0.0.1:8765/`).
 
 Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the APK in
 `examples/android`.
@@ -53,7 +61,7 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
 3. **No env vars in the library.** `core/` never calls `getenv`. Config flows through
    `RunConfig`; the CLI resolves any env overrides before building it.
 4. **No hardcoding.** A new tunable is a `RunConfig` field plus one row in `params.cpp` (its flag,
-   bounds from named constants, help); never a hand-written flag or usage line.
+   bounds from named constants, help); never a hand-written flag, usage line or UI control.
    New architectures are recipe rows in `arch_registry.cpp`; expert
    counts, strides and offsets are discovered at runtime. No model-specific constants in
    the streaming path.
