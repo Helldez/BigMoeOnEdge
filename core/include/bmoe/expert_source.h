@@ -79,8 +79,14 @@ public:
         uint64_t spec_read_bytes = 0;      // bytes read speculatively by prefetch (subset of read_bytes)
         long long spec_experts = 0;        // experts fully prefetched
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
-        uint64_t cache_budget_bytes = 0;   // cache budget in force; fixed for the run once init sizes it
+        uint64_t cache_budget_bytes = 0;   // cache budget in force; set at init, moved only by a resize
         long long cache_resizes = 0;       // explicit set_cache_budget_mb() calls that moved the budget
+        // Where the platform stopped granting locks. `cache_pin_refused_bytes` is the cache that
+        // was resident when a pin was first refused part way - the size the budget then shrank to -
+        // and `dense_pin_refused_bytes` the dense tensors that fell back to ordinary memory. Both 0
+        // on a run whose plan closed, and on a platform that grants no lock at all.
+        uint64_t cache_pin_refused_bytes = 0;
+        uint64_t dense_pin_refused_bytes = 0;
         // Whether cache-bypassing reads are actually in effect for the expert shards — every shard
         // reader's request honoured by the platform (O_DIRECT open succeeded, F_NOCACHE applied on
         // Apple), after the open-time downgrades. NOT the config flag: a run can ask for direct and

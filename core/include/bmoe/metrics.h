@@ -164,7 +164,8 @@ struct RunSummary {
     double loop_overhead_s_per_token = 0.0;
     double cache_resident_mib = 0.0;
     double cache_budget_mib = 0.0; // the fixed cache budget the run used (explicit, or auto-sized at load)
-    long long cache_resizes = 0;   // runtime budget changes — now only an app's explicit set_cache_budget
+    long long cache_resizes =
+        0; // runtime budget changes: an app's explicit set_cache_budget, or a pin refused part way
     // Cache churn (see IExpertSource::Stats): entries the budget forced out, and reads that went
     // to an entry the cache had held before. Any prefetch that raises the byte count while
     // claiming its reads are useful is doing it here.
