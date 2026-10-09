@@ -59,6 +59,9 @@ Semantic Versioning.
   `validate()` verdict, then exits.
 - `--ngram-max-match N`: the n-gram source's longest suffix had a field and a validation rule but
   no flag.
+- **`docs/backends.md`: every compute backend the pinned llama.cpp carries, and which of them this
+  engine has run on.** Eighteen in the submodule, three with a measurement behind them here (CPU,
+  Hexagon, Metal); the rest are listed as unknown, with what each use of a device asks of a backend.
 
 ### Changed
 - Malformed numeric flag values are rejected (`--threads 4x` used to run with 4 threads,
