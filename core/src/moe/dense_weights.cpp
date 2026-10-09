@@ -56,7 +56,7 @@ bool DenseWeights::init(DenseWeightsMode mode,
         }
         if (mode_ == DenseWeightsMode::Pinned && pio::pinned_max_bytes() == 0) {
             std::fprintf(stderr, "bmoe: --dense-weights ahwb needs reclaim-exempt memory, which this "
-                                 "platform does not provide (Android only)\n");
+                                 "platform does not provide\n");
             return false;
         }
         // Single-lane readers (one per shard) with a bounce large enough for our chunk; O_DIRECT
@@ -250,10 +250,16 @@ void DenseWeights::advise_random_mapped() {
 //
 // Pinned allocates PER TENSOR, so the 2047 MiB ceiling on a single dma-buf is not a constraint in
 // practice: the largest dense tensor here is an embedding or lm_head, far below it. A tensor that
-// did exceed it fails the run rather than quietly taking an anon buffer, because a silent mix would
-// make the comparison meaningless in exactly the direction that flatters the feature.
+// exceeds it, or that arrives after the store has run out, takes an ordinary buffer - and the run
+// says how many MiB did, on stderr and in pin_refused_bytes(), because a SILENT mix would make an
+// A/B against anon meaningless in exactly the direction that flatters the feature.
 bool DenseWeights::read_anonymous(size_t align) {
-    const bool pinned = mode_ == DenseWeightsMode::Pinned;
+    // Not const: the store can run out part way. A plan sizes the pinned set against a total that
+    // is read once and then moves, so a refusal here is something that happens rather than a bug,
+    // and a run that stopped loading for it would be worse than one a little slower. From the
+    // first refusal on, the remaining tensors are ordinary buffers - the mode every other
+    // platform already runs in - and the amount is kept for the telemetry.
+    bool pinned = mode_ == DenseWeightsMode::Pinned;
     const uint64_t chunk = 8ull << 20;
     uint64_t total = 0;
     bufs_.reserve(tensors_.size());
@@ -266,16 +272,25 @@ bool DenseWeights::read_anonymous(size_t align) {
             return false;
         }
         void * buf = nullptr;
-        if (pinned) {
-            pio::PinnedAlloc pa;
-            if (!pio::pinned_alloc((size_t) d.size, &pa)) {
-                std::fprintf(stderr, "bmoe: pinned dense buffer %llu MiB failed (ceiling %llu MiB)\n",
-                             (unsigned long long) (d.size >> 20), (unsigned long long) (pio::pinned_max_bytes() >> 20));
-                return false;
-            }
+        pio::PinnedAlloc pa;
+        // A tensor larger than one buffer may be was never going to fit and says nothing about
+        // the store's total: it takes an ordinary buffer alone, and the tensors after it still pin.
+        const bool too_big = pinned && d.size > pio::pinned_max_bytes();
+        bool pin_this = pinned && !too_big;
+        if (pin_this && !pio::pinned_alloc((size_t) d.size, &pa)) {
+            std::fprintf(stderr,
+                         "bmoe: pinned dense buffer %llu MiB refused after %llu MiB (per-buffer ceiling %llu MiB); "
+                         "the rest of the dense set is ordinary memory\n",
+                         (unsigned long long) (d.size >> 20), (unsigned long long) (total >> 20),
+                         (unsigned long long) (pio::pinned_max_bytes() >> 20));
+            pinned = false;
+            pin_this = false;
+        }
+        if (pin_this) {
             pinned_.push_back(pa); // tracked for shutdown even if a chunk read below fails
             buf = pa.base;
         } else {
+            if (mode_ == DenseWeightsMode::Pinned) pin_refused_bytes_ += d.size;
             buf = pio::alloc_aligned(align, (size_t) d.size);
             if (!buf) {
                 std::fprintf(stderr, "bmoe: dense buffer alloc %llu failed\n", (unsigned long long) d.size);
@@ -295,8 +310,13 @@ bool DenseWeights::read_anonymous(size_t align) {
             alias->data = buf; // and every twin over the same bytes, onto the same copy
         total += d.size;
     }
-    std::fprintf(stderr, "bmoe: dense-weights=%s — %llu MiB in %zu %s buffers\n", pinned ? "ahwb" : "anon",
-                 (unsigned long long) (total >> 20), buf_sz_.size(), pinned ? "pinned" : "anon");
+    if (pin_refused_bytes_)
+        std::fprintf(stderr, "bmoe: dense-weights=ahwb — %llu MiB in %zu buffers, %llu MiB of it pinned\n",
+                     (unsigned long long) (total >> 20), buf_sz_.size(),
+                     (unsigned long long) ((total - pin_refused_bytes_) >> 20));
+    else
+        std::fprintf(stderr, "bmoe: dense-weights=%s — %llu MiB in %zu %s buffers\n", pinned ? "ahwb" : "anon",
+                     (unsigned long long) (total >> 20), buf_sz_.size(), pinned ? "pinned" : "anon");
     return true;
 }
 

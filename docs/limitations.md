@@ -70,6 +70,10 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   fewer reads but the buffered arm's page-cache pollution doubling the compute residual
   (1.22 → 0.60 s/tok) while stall stays flat (0.43 → 0.46 s/tok). The `o_direct` field records
   the open's real outcome on every platform, so a refused or downgraded run reports `0`.
+  On an internal SSD the gap is small: a 16 GB Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M
+  (20.7 GiB), a 4691 MiB cache and 8 threads, same protocol, arms A B B A: 6.66 and 6.97 tok/s
+  against 6.54 and 6.46 buffered, with 23 077 MiB read and an 81.4 % cache hit in all four and
+  the same generated text. Two runs an arm is a direction, not a figure.
 - **No iOS target.** The core is portable C++ and the streaming path has no Android dependency, but
   there is no Xcode project here and iOS does not run command-line binaries, so there is no
   supported way to run or benchmark the engine on an iPhone or iPad.

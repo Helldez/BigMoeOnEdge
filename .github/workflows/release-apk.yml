@@ -71,7 +71,7 @@ jobs:
       - name: Collect libraries
         run: |
           mkdir -p jni
-          cp build-android/cli/bmoe-cli jni/libbmoe-cli.so
+          cp build-android/bin/bmoe-cli jni/libbmoe-cli.so
           for f in libggml.so libggml-base.so libggml-cpu.so libllama.so libllama-common.so libggml-hexagon.so \
                    libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
             src=$(find build-android -name "$f" | head -1)

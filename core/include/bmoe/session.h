@@ -36,6 +36,7 @@ class IIoTraceSink;
 struct SessionConfig {
     std::string model_path;
     int n_threads = 4;
+    int n_threads_batch = 0; // 0 = same as n_threads. See RunConfig::n_threads_batch.
     int n_ctx = 2048;
     int n_batch = 512; // prefill chunk capacity; longer prompts are prefilled in n_batch slices
     // Widest graph actually computed at once. 0 = follow n_batch. Sizing this down trades prefill
@@ -46,6 +47,11 @@ struct SessionConfig {
     // Active-expert (top-k) override applied at load via a kv_override on the arch-prefixed
     // expert_used_count key. 0 = use the model's own count. See RunConfig::n_expert_used.
     int n_expert_used = 0;
+    // The first stage's placement, applied at load. See RunConfig::n_gpu_layers.
+    int n_gpu_layers = 0;
+    std::vector<std::string> buft_overrides;
+    // See RunConfig::device_use.
+    DeviceUse device_use = DeviceUse::Auto;
     // Compute-trace granularity: false = a barrier per graph node, true = per layer boundary.
     // Only read when a compute-trace sink is attached. See RunConfig::compute_trace_layers.
     bool compute_trace_layers = false;

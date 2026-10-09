@@ -137,7 +137,7 @@ flash, at the moment they are needed. Everything below tunes that.
 | Parallel I/O lanes | `--io-threads` &nbsp;`1`, `2`, `4`, `8` &nbsp;(default `4`) | Reads several expert slices at once. Helps until the flash saturates, which this engine's own measurements put at two lanes on the test device. |
 | Direct I/O | `--no-odirect` disables it &nbsp;(on by default) | Bypasses the OS page cache, so the system holds no second copy of what the expert cache already has. Falls back where unsupported. |
 | I/O and compute overlap | `--overlap` &nbsp;(off in the CLI, on in the app) | Issues the next reads while the current layer computes, hiding flash latency behind work. Byte-identical; needs a small optional add-on to llama.cpp ([seam](docs/seam.md)). |
-| Dense weights | `--dense-weights` &nbsp;`mmap`, `warm`, `anon`, `ahwb` &nbsp;(default `anon`) | How the always-needed non-expert weights are held. Decisive far past RAM. `ahwb` is Android-only and puts them where the kernel cannot reclaim them at all ([data](docs/bench-data/2026-07-21-pinned-dense-ab/findings.md)). |
+| Dense weights | `--dense-weights` &nbsp;`mmap`, `warm`, `anon`, `ahwb` &nbsp;(default `anon`) | How the always-needed non-expert weights are held. Decisive far past RAM. `ahwb` puts them where the kernel cannot reclaim them at all, on the platforms that have such a store (Android, macOS) ([data](docs/bench-data/2026-07-21-pinned-dense-ab/findings.md)). |
 | Row-gathered tables | `--row-stream`, with `--row-stream-mb` &nbsp;(default `64`) | Serves a dense table the graph only gathers rows from, typically the token embedding, out of flash instead of RAM: only the rows about to be read are pulled in, inside a bounded window. Which tables qualify is read off the model's own graph. Lossless ([detail](docs/row-gathered-tables.md)). |
 | Release the model mapping | `--release-mmap` &nbsp;(off by default) | Unmaps the gguf once every weight has been rebound into the engine's own memory, and reopens the read lanes. On Windows a live mapping serialises the streamer's unbuffered reads, so this is worth +46% decode there; on Android it saves CPU instead. Needs `--dense-weights anon` or `ahwb`, and the engine declines if any weight still points into the mapping. Lossless ([data](docs/bench-data/2026-08-29-mmap-serialisation/findings.md)). |
 | Temporal prefetch *(experimental)* | `--prefetch` &nbsp;`0` (off), `1`, `2`, `4` layers | Bets a layer reuses the previous token's experts and fetches them on idle lanes. Needs the cache. |
@@ -455,7 +455,7 @@ cd BigMoeOnEdge
 scripts/build-host.sh
 
 # stream a MoE model with a device-sized expert cache and 4 read lanes
-build/cli/bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf --moe-stream \
+build/bin/bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf --moe-stream \
   --cache-mb auto --cache-ceil-mb 4000 --io-threads 4 -t 4 -n 48 \
   --chatml -p "Explain MoE routing."
 ```
@@ -463,7 +463,7 @@ build/cli/bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf --moe-stream \
 For a model several × device RAM, the shape that produced the gpt-oss numbers is:
 
 ```bash
-build/cli/bmoe-cli -m gpt-oss-120b-Q4_K_M.gguf --moe-stream --overlap \
+build/bin/bmoe-cli -m gpt-oss-120b-Q4_K_M.gguf --moe-stream --overlap \
   --dense-weights anon --cache-mb 2000 --io-threads 8 -t 4 -n 256 \
   --chatml --no-think -p "Explain MoE routing."
 ```
@@ -475,10 +475,13 @@ The model must live on a real filesystem (on Android `/data/local/tmp/...`, not 
 Platform status: Linux is exercised by CI (build + gates), and Windows and macOS are
 compile-checked there on every pull request and release tag. Windows is where the
 [desktop numbers](#desktop) were measured. On Windows, build with CMake directly (Visual Studio
-Build Tools); the script above is bash, and MSVC puts the binary in `build\cli\Release\bmoe-cli.exe`.
+Build Tools); the script above is bash, and MSVC puts the binary in `build\bin\Release\bmoe-cli.exe`.
 macOS builds from the same sources and has no O_DIRECT; a direct request is served with `F_NOCACHE`
 instead (uncached, but not alignment-constrained), and `o_direct` in the telemetry reports what the
-open actually achieved.
+open actually achieved. A macOS build carries Metal by default: decode stays on
+the CPU, and `--prefill-device MTL0` runs wide prefill graphs on the GPU
+([npu-prefill.md](docs/npu-prefill.md)). The gates pass on an Apple-silicon Mac, with and without Metal, but CI only
+compiles that path, so a regression there is caught by a local run and not by a pull request.
 
 ### Android
 

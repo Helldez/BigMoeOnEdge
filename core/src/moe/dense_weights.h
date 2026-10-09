@@ -105,6 +105,10 @@ public:
     void sample_residency(size_t page);
     double resident_frac() const { return resident_frac_; }
 
+    // Bytes of the dense set that asked for the reclaim-exempt store and were refused it, and so
+    // are held as ordinary memory. 0 when the store granted everything, or was never asked.
+    uint64_t pin_refused_bytes() const { return pin_refused_bytes_; }
+
     void shutdown();
 
     static constexpr int sample_pages = 256; // stratified probe points across the dense bytes
@@ -134,8 +138,8 @@ private:
 
     // Anonymous/Pinned: our own readers (one per shard; FileReader is not movable, hence the
     // unique_ptr), the tensors we read, and the buffers backing them. `bases_` is what the sensor
-    // probes and is filled by both modes; `bufs_` and `pinned_` are the two release lists, exactly
-    // one of which is populated for a given run.
+    // probes and is filled by both modes; `bufs_` and `pinned_` are the two release lists. Both
+    // are populated only on a run whose pinned store ran out part way.
     std::vector<std::unique_ptr<FileReader>> readers_;
     std::vector<DenseTensorRef> tensors_;
     std::vector<DenseTensorRef> mapped_; // held back by hold_back_oversized: mmap'd under every mode
@@ -155,6 +159,7 @@ private:
     bool vmas_tried_ = false;
 
     double resident_frac_ = -1.0; // last sampled dense residency; -1 = never/unmeasured
+    uint64_t pin_refused_bytes_ = 0;
 };
 
 } // namespace bmoe
