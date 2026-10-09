@@ -65,6 +65,20 @@ struct ComputeDevice {
     // gets silently excluded from a question that was only ever meant to exclude the CPU.
     bool is_cpu = false;
 
+    // Whether this device survived being used at all. A registered device is a claim by a driver,
+    // and a driver can be wrong in the one way no in-process check survives: a backend that calls
+    // into a function the driver does not have ends the process, and one that waits on hardware
+    // that never answers ends the run just as surely. So a device can be probed somewhere it
+    // cannot take this process with it, and this is what came back: Yes when it answered, No when
+    // the probe died or ran out of time - with `unusable_reason` saying which - and Unknown where
+    // nobody asked that way. A device that is No is measured by nothing and used by nothing.
+    Tri usable = Tri::Unknown;
+    std::string unusable_reason;
+    // Set once this device's facts came from such a probe (or its failure): the probes that run in
+    // this process then leave it alone, which is the whole point of having asked elsewhere.
+    bool probed_out_of_process = false;
+    bool probe_here() const { return !probed_out_of_process; }
+
     // True for a device that is not somewhere work can be PLACED: a library the host's own graphs
     // call into for some operations, registered as a device because that is how a backend is made
     // known. It computes on the host's memory with the host's cores and holds no weights of its
