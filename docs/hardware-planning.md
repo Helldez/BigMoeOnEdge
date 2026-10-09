@@ -452,6 +452,19 @@ phone was: 2.1 to 2.5 GB reported, the device refused. With the rule the probe h
 4075 MiB, the second plan armed the device with one expert slot, and the whole of it took 7.4 s.
 `--no-probe-mem` turns the rule off; `--probe-mem` still measures unconditionally.
 
+**On the phone it came from, it did not help, and that is the finding.** The rule fired - it asked
+whether 3687 MiB could be held against 3117 reported - and the probe answered that the reported
+figure is still all that can be counted on, so the device stayed refused. The probe holds
+ordinary anonymous memory and stops when the kernel takes some of it back; a phone compresses
+exactly that kind of memory early, which is the reason the dense set is kept in a reclaim-exempt
+store there in the first place. What a prefill device and a pinned dense set need on such a
+machine is exempt memory, and how much of that the system will make room for - by ending
+background work - is a different quantity, which this probe does not measure and no fact in the
+profile yet carries. So the rule is right where a reclaim compresses and the store is ordinary
+(the laptop case above), and a known miss where the memory that matters is exempt. It cost about
+40 s on a phone that was dozing, on top of a plan that took minutes in that state; no timing from
+that run is representative.
+
 It is a photograph. Between the measurement and the load the machine can change, which is what the
 run-time fallbacks are for: a device that cannot be set up leaves the prefill on the host, and a
 lock refused part way shrinks the cache. And the probe holds ordinary memory, while a device's
