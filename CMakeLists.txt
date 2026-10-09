@@ -29,6 +29,13 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
+# Everything runnable lands beside the libraries it needs. llama.cpp sets this for its own targets
+# but only inside its subdirectory scope, so ours were landing elsewhere - which broke two things
+# that look unrelated and are not. Running a test needed the library directory on PATH by hand; and
+# `ggml_backend_load_all()` looks for dynamically loadable backends NEXT TO THE EXECUTABLE, so a
+# GGML_BACKEND_DL build would have found none of them and reported a machine with no accelerator.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
 option(BMOE_BUILD_TESTS "Build byte-identity gates and unit tests" ON)
 option(BMOE_BUILD_CLI   "Build the bmoe-cli host tool"              ON)
 # Off by default: diagnostics, not part of the product. They need no llama.cpp, so they can be
@@ -57,6 +64,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     # not forced: -DGGML_RPC=OFF still wins, and G16 then reports itself skipped.
     if(BMOE_BUILD_TESTS AND NOT ANDROID)
         set(GGML_RPC ON CACHE BOOL "ggml: use RPC")
+    endif()
+    # Apple: Metal is in every build. It is what gives the planner a device to measure and
+    # `--prefill-device` one to run on; without it the binary reports a machine with no accelerator,
+    # which on this hardware is never true. Carrying it costs a host-only run nothing, because a
+    # device with nothing placed on it is not handed to llama.cpp (RunConfig::device_use). Said here
+    # rather than left to llama.cpp's own default so that it is this project's decision; not forced,
+    # so -DGGML_METAL=OFF still wins.
+    if(APPLE)
+        set(GGML_METAL ON CACHE BOOL "ggml: use Metal")
     endif()
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
 endif()

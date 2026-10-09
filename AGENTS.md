@@ -19,7 +19,14 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `core/src/moe/` — `gguf_offsets`, `arch_registry`, `expert_stream_source`, `router_hook`;
   `dense_weights` (the non-expert weight policy: mmap / warm / anon, plus the residency sensor).
 - `core/src/engine/runtime.cpp` — composition + greedy generation loop.
-- `cli/main.cpp` — `bmoe-cli`; the ONLY place environment variables are read.
+- `core/src/plan/` — the hardware planner behind `--auto` (`docs/hardware-planning.md`). The rules
+  (`planner`, `allocate`, `plan`) are pure functions over `hardware_profile.h` / `model_profile.h`
+  and name no platform, vendor, device or architecture; the `*_probe` adapters are the only files
+  that may. A rule that needs to know the platform is missing a fact: add the field, not the branch.
+- `core/include/bmoe/params.h` + `core/src/params.cpp` — the parameter table: every tunable of a
+  `RunConfig`, described once. The CLI parses and documents its flags from it; front-ends render
+  their settings from its JSON (`bmoe-cli --describe-params`).
+- `cli/main.cpp`: `bmoe-cli`; the ONLY place engine environment overrides are read.
 - `third_party/llama.cpp` — stock upstream submodule.
 - `tests/` — byte-identity gates. `examples/android/` — the demo APK.
 
@@ -45,7 +52,9 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
    This is load-bearing, not a tunable.
 3. **No env vars in the library.** `core/` never calls `getenv`. Config flows through
    `RunConfig`; the CLI resolves any env overrides before building it.
-4. **No hardcoding.** New architectures are recipe rows in `arch_registry.cpp`; expert
+4. **No hardcoding.** A new tunable is a `RunConfig` field plus one row in `params.cpp` (its flag,
+   bounds from named constants, help); never a hand-written flag or usage line.
+   New architectures are recipe rows in `arch_registry.cpp`; expert
    counts, strides and offsets are discovered at runtime. No model-specific constants in
    the streaming path.
 5. **Gates must pass before merge.** `bmoe_moe_gates` proves streamed == resident. If you

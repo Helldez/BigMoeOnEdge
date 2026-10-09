@@ -14,11 +14,20 @@ cli/            bmoe-cli — parses flags, the only place env vars are read
 core/
   include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
     config.h        RunConfig + validate()
+    params.h        the parameter table: every RunConfig tunable described once (flag, type,
+                    bounds, help); the CLI parses from it, front-ends render settings from its JSON
     expert_source.h IExpertSource — the residency strategy port
     row_source.h    IRowSource - the row-gathered residency port
     recipe.h        MoeRecipe + registry
     metrics.h       TokenMetrics / RunSummary + IMetricsSink
     runtime.h       run() entry point
+    hardware_profile.h, model_profile.h, placement.h
+                    the planner's inputs: a machine, a model and llama.cpp's capacity placement as
+                    facts, with no platform, vendor or architecture name in them
+    planner.h, allocate.h, plan.h
+                    the planning rules: (machine, model, request) -> a resolved RunConfig with the
+                    reason for each knob; the cost model and the memory ledger; the plan as a value
+    probe.h         the adapters' entry points: what fills the two profiles
   src/
     io/         platform_io — O_DIRECT reads + reserve/commit/evict VM, cross-platform
                 file_reader — pooled positioned reader, per-consumer O_DIRECT
@@ -40,6 +49,12 @@ core/
                   shared by generate / perplexity / decide
                 decide/ — Session::decide() (see decide.md): pure policy over an IDecideBackend
                   port (prompt split, choice scoring, IPrefixCache), plus one llama.cpp adapter
+    plan/       the hardware planner (hardware-planning.md). Two halves that must not mix:
+                planner, allocate, plan - pure rules over the profiles; no I/O, no platform names
+                hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,
+                  device_probe, placement_probe - the adapters that measure a machine and read a
+                  gguf; the only place in the planner where a platform or llama.cpp may appear
+    params.cpp  the parameter table's rows (see params.h)
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook

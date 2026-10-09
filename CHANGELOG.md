@@ -4,6 +4,87 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The planner keeps one memory ledger, with two ceilings.** Everything a run holds - context
+  and compute buffers, a device armed for prefill, the dense set, the expert cache - is a row
+  charged against what the process may hold and, separately, against what it may hold
+  reclaim-exempt, net of what is already locked. The dense set is pinned whole or not at all, and
+  the cache is sized to what can be locked where it can be locked at all. Before this a plan
+  could ask for more locked memory than the machine grants; `--plan` prints the ledger row by
+  row. Context and compute buffers are now charged on machines whose devices share the host's
+  memory, where they were charged nowhere. See `docs/hardware-planning.md`.
+- **`--dense-weights ahwb` on macOS**, as wired memory. The planner chooses it when the dense set
+  fits the lockable total.
+- **`--cache-pin-fit`: a lock refused part way can shrink the cache instead of ending pinning.**
+  The budget steps down to what the platform grants and stays locked. `--auto` sets it when it
+  sized the cache to the lockable total; by hand it is off, so a budget set by hand is never
+  shrunk unasked. On a 16 GB Apple-silicon laptop, DeepSeek V4 Flash at UD-IQ2_M with a pinned
+  dense set and a 4.1 GB cache asked for: 0.27 tok/s without it, 2.48 with it; `--auto` on the
+  same model 2.48, with no refusal. Separately, a pinned dense store that runs out during load
+  falls back to ordinary buffers for the remaining tensors and the run continues.
+- **macOS builds carry Metal, and the prefill device runs on it.** `--prefill-device MTL0` sends
+  wide prefill graphs to the GPU through the same two-layer arena the NPU uses, with no change to
+  that path. On a 16 GB Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M streamed, a 1473-token
+  prompt prefills in 3.4 s against 25 s on the CPU, with the same generated text; see
+  `docs/npu-prefill.md`. The planner does not choose it yet.
+- **The expert cache is pinned in RAM where the platform allows it (`--no-cache-pin` turns it
+  off).** macOS answers memory pressure by compressing anonymous memory, quantized weights barely
+  compress, and so the compressor ended up holding 8 GB of RAM to store the cache badly while
+  every hit paid a decompression that no fault counter shows: 2 GB/s compressed during decode.
+  Same model, cache and threads on that laptop, arms off on on off: 7.4 and 7.2 tok/s unpinned,
+  18.2 and 18.3 pinned, same text; 24.2 tok/s with `--auto`, which gives the cache 9.8 GB. Where
+  the platform refuses (Android caps locked memory at 64 KiB) the cache is ordinary memory as
+  before, and the run says which it got.
+- **`--devices auto`, the new default.** llama.cpp is handed every device when a layer is placed on
+  one and the CPU alone otherwise, so a build that merely carries a GPU backend runs a host-only
+  plan like a build without it: no nodes drifting to an idle device, and the gates pass to the bit
+  with Metal compiled in. `all` and `cpu` still force either. Before this a Metal build with
+  nothing placed ran slower than a CPU build and failed gate G18c.
+- **The prefill-device and decide flags are parameter-table rows**, so `--describe-params` lists
+  them like every other setting.
+- **Hardware planner: `--auto`, `--plan` and `--probe`.** The engine
+  measures the machine and reads the model, then resolves the streaming knobs with the fact behind
+  each one; a knob set by hand is never touched and nothing lossy arms itself. The planner's
+  placement knobs join the parameter table (`--gpu-layers`, `--threads-batch`, `--devices`,
+  `--dense-on-device`). See `docs/hardware-planning.md`.
+- **One parameter table for every engine tunable** (`bmoe/params.h`). Each `RunConfig` knob is one
+  row: key, type, group, level, scope, bounds written with the same constants `validate()` checks,
+  help text, and its reader and writer. Keys are the long flag without dashes, the name a planner
+  decision already uses. `bmoe-cli` now parses its engine flags and prints their usage from the
+  table, so a knob added there is parsed, documented and exposed to a front-end in one place.
+- `bmoe-cli --describe-params` prints the table as JSON (the schema a settings form is rendered
+  from); `--show-config` prints the fully resolved configuration, the equivalent flags and the
+  `validate()` verdict, then exits.
+- `--ngram-max-match N`: the n-gram source's longest suffix had a field and a validation rule but
+  no flag.
+
+### Changed
+- Malformed numeric flag values are rejected (`--threads 4x` used to run with 4 threads,
+  `--threads abc` with 0). Exit code 2, as for other invalid values.
+- `--cache-mb` given twice takes the last value instead of failing validation when one was `auto`,
+  and `BMOE_CACHE_MB=auto` now means auto-sizing (it used to parse as 0, cache off).
+- The per-flag usage text is the table's help, shorter than the hand-written one; the measured
+  detail stays in the docs each flag points to.
+
+### Fixed
+- **macOS: the planner, `--release-mmap` and the memory telemetry work.** Everything the engine
+  asked of `/proc` and `/sys` returned nothing on Darwin, so `--auto` saw a machine with 0 MiB
+  available and declined to stream, `--release-mmap` failed with "cannot read /proc/self/maps",
+  and the per-token memory columns stayed empty. The mapped regions now come from
+  `proc_pidinfo`, available memory and swap from the host's page accounting, the process split
+  from the task's own ledger, and the core classes from `hw.perflevel*`. The gates had never been
+  run on macOS; all 16 pass there now, with and without Metal.
+- **macOS: an evicted expert's pages are released.** Darwin's `MADV_DONTNEED` is advice and frees
+  nothing, so the process grew past its cache budget towards the whole expert set (10.6 GB
+  compressed against a 4.7 GB budget). Eviction now maps fresh pages over the span.
+- **A unified-memory GPU is no longer taken for one with memory of its own.** The probe that asks
+  whether a device shares the host's memory compared the system's available figure around an
+  allocation, and on an Apple-silicon machine gave both answers on consecutive runs; the wrong
+  one applied the capacity fitter's placement and counted one pool twice. It now also watches
+  this process's own footprint, which nothing else writes to.
+
 ## [0.28.0] - 2026-09-29
 
 ### Changed
