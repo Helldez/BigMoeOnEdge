@@ -85,6 +85,15 @@ struct ComputeDevice {
     bool has_own_memory() const { return shares_host_memory == Tri::No; }
     // True where the device's memory is, or must be assumed to be, the host's.
     bool reads_host_memory() const { return shares_host_memory != Tri::No; }
+
+    // Whether the buffers this device allocates are held reclaim-exempt, and so come out of the
+    // same total the dense set and the expert cache are locked against. Where they are, a device
+    // that is merely USED shrinks what can be protected, without a byte of it appearing in any
+    // figure this process reads about itself. Unknown is charged like a yes, for the reason an
+    // unknown `shares_host_memory` is read as shared: the error that overcommits is the costly one.
+    Tri buffers_locked = Tri::Unknown;
+    bool charges_lockable() const { return buffers_locked != Tri::No; }
+
     // True when this device can execute over a HOST buffer - pinned memory it reads directly rather
     // than a buffer of its own. It is the property that decides whether streamed experts can be
     // computed here at all, and it is not the same as having host memory: a discrete accelerator
@@ -255,6 +264,23 @@ struct HardwareProfile {
     // Largest single reclaim-exempt allocation available, 0 where the platform has none. A store
     // the kernel may not take back is the only way to keep the dense set out of a compressed swap.
     uint64_t reclaim_exempt_max = 0;
+
+    // How many bytes this process may still hold reclaim-exempt IN TOTAL, net of whatever is
+    // already held that way by anyone the limit counts; 0 where nothing can be. A different fact
+    // from the per-buffer figure above, and reading one for the other is how a plan asks for more
+    // than the machine will grant: every buffer fits and the sum does not, the grant stops part
+    // way, and what was refused is ordinary memory on a machine that then compresses it. A
+    // platform whose store publishes no total reports the largest value there is, and the ledger
+    // bounds it by what the process may hold at all.
+    uint64_t lockable_bytes = 0;
+
+    // The same question for memory the process ALREADY owns and asks to keep in place - which is
+    // how the expert cache is protected, since its pages are committed one slice at a time. Two
+    // facts rather than one because the two mechanisms are not the same store everywhere: a
+    // machine can offer a reclaim-exempt allocation and refuse to lock a page in place, and then
+    // the dense set can be protected and the cache cannot. Where they are one pool the two
+    // figures are equal, and the ledger charges both against the smaller.
+    uint64_t lock_in_place_bytes = 0;
 
     // Whether clean file-backed pages count against `residency_budget`. Where they do not, leaving
     // a weight mmap'd is free of the budget entirely — which inverts the dense policy on a platform

@@ -1261,6 +1261,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // would put a budget on the wrong side of the cliff in exactly the borderline case.
         ri.cache_cycle_mb =
             (int) ((im.source.worst_cycle_bytes(ri.n_expert_used) + 1024ull * 1024ull - 1) / (1024ull * 1024ull));
+        im.source.set_pin_floor(im.source.worst_cycle_bytes(ri.n_expert_used));
     }
 
     // The effective routing width, resolved once: an override IS the applied width, otherwise the

@@ -183,8 +183,10 @@ and `BMOE_*` env overrides both count as the caller speaking.
 3. `fits` **declines streaming and says so**: on that machine reading experts from flash only adds
    reads that resident weights do not need.
 4. **Dense policy**, from what a reclaim costs here.
-5. **Cache budget** = usable memory, less what the dense policy is about to make non-reclaimable,
-   capped at the experts' own size — and floored at the model's token cycle.
+5. **The memory ledger**: one account for everything the run holds — context and compute buffers,
+   an armed device, the dense set, the expert cache — against two ceilings, what can be held and
+   what can be held reclaim-exempt. The cache is what is left under both, capped at the experts'
+   own size and floored at the model's token cycle. See [The memory ledger](#the-memory-ledger).
 6. **I/O policy** from the storage facts.
 7. **Emit the plan with its rationale.** A decline is a plan too: the config it carries still runs.
 
@@ -199,6 +201,9 @@ and `BMOE_*` env overrides both count as the caller speaking.
 | host memory bandwidth, and a device's | whether moving that compute is worth anything |
 | what happens to anonymous memory under pressure | the dense policy, and the margin |
 | whether a reclaim-exempt allocation exists | whether the dense set can be pinned |
+| how much may be held reclaim-exempt in total, net of what already is | whether the dense set fits there whole, and what is left for the cache |
+| how much may be locked where it already sits | whether the cache is sized to what can be locked or to what can be held |
+| whether a device's buffers are held reclaim-exempt | whether arming it is charged to that total too |
 | whether mapped file pages count against the fatal limit | whether leaving the dense set mapped is free |
 | whether uncached reads work on this path | `--no-odirect` |
 | whether a live mapping serialises concurrent reads | `--release-mmap` |
@@ -250,6 +255,78 @@ fact stays unknown and every rule falls back to the reported budget and says whi
 first of it back. It is the real answer and it is intrusive by nature, so it never runs unasked; it
 grows in steps and stops at the first sign of loss, so it usually never reaches its ceiling, and it
 releases everything on every path out.
+
+## The memory ledger
+
+Everything the run holds for its whole length is a row in one account, and the account has two
+ceilings. The first is what the process may **hold**: the headroom above, less the margin. The
+second is what it may hold **reclaim-exempt** — memory the kernel may neither swap nor compress —
+and it is the smaller wherever it exists. They are different totals, and sizing against the first
+alone is how a plan comes to ask for locks the machine stops granting part way.
+
+| row | from | charged to |
+|---|---|---|
+| context and compute buffers | llama.cpp's own projection for this model and context | holdable |
+| a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for it | holdable; lockable too where its buffers are |
+| dense set | the gguf | holdable; lockable if it is pinned |
+| expert cache | what is left | holdable; lockable for the part that can be locked in place |
+
+The order is the order of what a byte is worth. The fixed rows come off the top because nothing
+chooses them. The dense set is next because it is read whole on every token, and it is pinned
+**whole or not at all**: a set pinned part way is reclaimed from the part that was refused, on
+every token. Where it does not fit the lockable total it is held as ordinary memory and the plan
+says how far short it fell. The cache takes the rest, and where it can be locked in place it is
+sized to what can be locked rather than to what can be held — a byte past that is one the machine
+is free to take back.
+
+The lockable total is two facts, not one, because the two mechanisms are not the same store
+everywhere. One machine offers a reclaim-exempt allocation with no published total and will lock
+almost nothing in place: its dense set can be protected and its cache cannot, so the cache there is
+ordinary memory bounded by what can be held, exactly as before. Another grants any process a lock
+up to a system-wide total, the same store either way. No rule names either machine; each adapter
+answers the two questions, and a machine that grants no lock answers zero to both.
+
+That total is **net of what is already locked, by anyone it counts**. On the laptop this was
+measured on it is system-wide and counts the kernel's own wired memory: locking in 32 MiB steps
+until the kernel refused granted 10336 MiB where the limit less the system's wired count stood at
+10368, against a limit of 12451. So it is read when the plan is made rather than derived from the
+limit, and it carries a margin of its own (`lock_margin`), because another process — or a device
+that wires its buffers — can take from it between the plan and the load.
+
+A plan can still be overtaken, so **a refusal is data, not an error**. If the platform stops
+locking the cache part way, the cache budget steps down to what is granted and the pinning goes
+on, never under one token cycle. That is `--cache-pin-fit`, which the plan arms exactly when it
+sized the cache to the lock and which is off otherwise: the engine cannot tell what a reclaim costs,
+so a budget set by hand is never shrunk unasked, and without the flag a part-way refusal ends
+pinning and leaves the budget alone. Likewise if the pinned store runs out during load, the remaining dense
+tensors are ordinary buffers and the run continues. Both are recorded in the streamer's statistics
+(`cache_pin_refused_bytes`, `dense_pin_refused_bytes`), which nothing reads yet: they are the
+signal the next plan is to be corrected from. A platform that refuses the very first
+lock is not in this case, and neither is one whose total is smaller than a token cycle - a
+per-process limit of a few MiB grants the first slices and then nothing: both grant no lock worth
+having, and the cache there is ordinary memory at its full budget.
+
+Giving up at the first part-way refusal is what the ledger was written to stop, and the mechanism
+is worth stating because it is not the obvious one. The refused slices are a small part of the
+cache; what does the damage is that every slice committed *afterwards* is ordinary memory too, so
+a cache that turns over replaces its locked slices with unlocked ones until none are left. On a
+16 GB laptop, a 91 GB model at 2 bits per weight with its 6.7 GB dense set pinned and a 4.1 GB
+cache asked for: 0.27 tok/s. The same request with the budget stepping down instead settled at
+3.2 GB and ran at 2.48, which is also what `--auto` now reaches by asking for 3.2 GB in the first
+place. A model whose cache barely turns over - 92% hits - took the same refusal without loss,
+which is how this stayed hidden.
+
+The margin on the lockable total is not there to absorb a misreading, since a refusal is
+survivable. It is there because the platform's limit is not a place to run: what is locked is
+taken from everything that is not, this process's own context and compute buffers included. Same
+laptop, a 35B model at Q4_K_M, same cache hit rate: 23.1, 23.2 and 23.5 tok/s asking for 95% of the
+total, 7.4 and 14.6 asking for 98%.
+
+What the ledger does not do yet: it charges a device only when the caller armed it
+(`--prefill-device`); choosing the device, and deriving its cost from a measurement rather than
+from the fitter's projection, is the prefill plan. And where not even one token cycle of cache can
+be locked after the dense set, it does not ask whether un-pinning the dense set to protect the
+cache would have been the better trade — it reports the cache as ordinary memory and stops there.
 
 ## The storage probe
 

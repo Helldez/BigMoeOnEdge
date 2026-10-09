@@ -394,7 +394,7 @@ std::vector<ParamDesc> build() {
                           "How the dense (non-expert) weights stay resident. mmap leaves them to the kernel; "
                           "warm page-caches them at load (best when the model fits); anon reads them into "
                           "our own buffers so a reclaim hits zram, not flash; ahwb is anon in memory the "
-                          "kernel may not reclaim at all (Android only).");
+                          "kernel may not reclaim at all, where the platform has such a store.");
         d.type = ParamType::Choice;
         d.value_hint = "mmap|warm|anon|ahwb";
         d.switches = {{"--no-warm-dense", "mmap", true}, {"--dense-odirect", "anon", true}};
@@ -402,7 +402,7 @@ std::vector<ParamDesc> build() {
                                       {{DenseWeightsMode::Mmap, {"mmap", "mmap"}},
                                        {DenseWeightsMode::Warmed, {"warm", "warm"}},
                                        {DenseWeightsMode::Anonymous, {"anon", "anon"}},
-                                       {DenseWeightsMode::Pinned, {"ahwb", "ahwb (Android)"}}});
+                                       {DenseWeightsMode::Pinned, {"ahwb", "ahwb (pinned)"}}});
         t.push_back(d);
     }
     {
@@ -750,6 +750,17 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--no-cache-pin", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_pin; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("cache-pin-fit", "Fit the cache to the lock", G::Cache, L::Advanced,
+                          "When the platform stops pinning the cache part way, shrink the budget to what it "
+                          "pinned instead of holding the rest as ordinary memory. Worth it where memory "
+                          "pressure compresses; --auto sets it when it sized the cache that way.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--cache-pin-fit", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_pin_fit; });
         t.push_back(d);
     }
     {

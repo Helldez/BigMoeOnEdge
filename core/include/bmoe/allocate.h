@@ -71,7 +71,42 @@ struct GroupPlacement {
 // What the allocator is allowed to spend and what it must leave alone.
 struct AllocationInputs {
     uint64_t budget_bytes = 0; // RAM this plan may commit, after margins and reservations
-    bool can_pin = false;      // a reclaim-exempt store exists and is large enough to matter
+    bool can_pin = false;      // a reclaim-exempt store exists; whether the dense set FITS in it is the ledger's
+
+    // ── the ledger's other lines, and its second ceiling ─────────────────────────────────────
+    // `budget_bytes` bounds what is HELD. These bound what is held reclaim-exempt, which is a
+    // smaller number on every machine that has one and a separate one: the dense set, the expert
+    // cache and a device's own buffers can each fit under it and still not fit together, and the
+    // part that is refused is ordinary memory on a machine that will then reclaim it.
+    uint64_t lockable_bytes = 0;      // everything held reclaim-exempt, after the margin
+    uint64_t lock_in_place_bytes = 0; // the part that may be locked where it already is (the cache)
+
+    // What the holdable ceiling was before its margin, and the margin's terms. The margin is room
+    // left for memory the machine can take back, and locked memory is not that: so where the cache
+    // is locked, the margin is recomputed on the part of the budget that stays ordinary, and the
+    // lockable ceiling - which has a margin of its own - is what bounds the rest. 0 leaves
+    // `budget_bytes` as the only holdable ceiling.
+    uint64_t holdable_bytes = 0;
+    double margin_frac = 0.0;
+    uint64_t margin_min_bytes = 0;
+
+    // Held whatever this concludes: the context and the compute buffers. They are not weights and
+    // nothing here chooses them, but they come out of the same memory, so they are a line rather
+    // than something the budget is assumed to have left room for.
+    uint64_t fixed_bytes = 0;
+
+    // What a device the run is ARMED to compute on costs this pool, and whether it is charged to
+    // the lockable ceiling too. Zero where no device is armed or its memory is its own.
+    uint64_t device_bytes = 0;
+    bool device_locked = false;
+
+    // The caller chose the pinned dense store. It is charged and reported like any other line and
+    // never overruled: a pin is the caller's authority, including over a ledger that does not close.
+    bool pin_forced = false;
+
+    // The expert cache asks to be locked in place. Where there is room for at least one token
+    // cycle of it, the cache is sized to what can be locked rather than to what can be held.
+    bool cache_lock = false;
 
     // The engine's own fixed cache guard, REPORTED and never enforced here. It is a generic
     // constant that predates the per-model floor and is the weaker of the two: a budget above this
@@ -96,8 +131,38 @@ struct AllocationInputs {
     uint64_t cacheable_bytes = 0;
 };
 
+// One line of the memory ledger: something the run holds for its whole length, and whether it is
+// held reclaim-exempt. The rows are what a reader checks a run against - the two ceilings are only
+// meaningful next to what was charged to them.
+struct LedgerRow {
+    std::string name;
+    uint64_t bytes = 0;
+    bool locked = false;
+};
+
+struct Ledger {
+    std::vector<LedgerRow> rows;
+    uint64_t holdable_cap = 0; // what the process may hold, after the margin
+    uint64_t lockable_cap = 0; // what it may hold reclaim-exempt, after its own margin
+    uint64_t held = 0;         // every row
+    uint64_t locked = 0;       // the rows held reclaim-exempt
+};
+
 struct Allocation {
     GroupPlacement groups[(int) WeightGroup::count];
+
+    Ledger ledger;
+
+    // Whether the dense set goes in the reclaim-exempt store. It is all or nothing because the
+    // engine's dense mode is one setting, and a set that is pinned part way is the case this
+    // exists to prevent. When a store exists and the set did not fit, `pinned_shortfall_bytes`
+    // says by how much.
+    bool dense_pinned = false;
+    uint64_t pinned_shortfall_bytes = 0;
+
+    // The part of `cache_bytes` the platform can be asked to keep in place; 0 when the cache is
+    // ordinary memory, because it was not asked for or because not even one token cycle fits.
+    uint64_t cache_locked_bytes = 0;
 
     uint64_t cache_bytes = 0; // expert cache budget; 0 means the expert lane is not used
 

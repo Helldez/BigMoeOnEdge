@@ -176,8 +176,10 @@ ModelProfile probe_model(const char * model_path) {
         }
     }
 
-    for (const auto & kv : per_layer_expert_bytes)
+    for (const auto & kv : per_layer_expert_bytes) {
         m.expert_bytes += kv.second;
+        m.largest_expert_layer_bytes = std::max(m.largest_expert_layer_bytes, kv.second);
+    }
     for (const auto & kv : per_layer_one_expert) {
         // The granule the streamer issues as a read is one expert of one projection; the LARGEST
         // of them is what should be looked up on the storage rate curve, because that is the

@@ -46,6 +46,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     n_layer_ = (int) layers_.size();
     load_all_ = cfg.load_all;
     pin_ = cfg.cache_pin;
+    pin_fit_ = cfg.cache_pin_fit;
     overlap_ = cfg.overlap;
     two_wave_ = cfg.io_two_wave;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
@@ -929,10 +930,20 @@ bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
     return true;
 }
 
-// The first refusal ends the attempts: a limit that refused one slice refuses the next, and what is
-// not pinned is ordinary memory, as all of it was before. Both outcomes are said once, when they
-// are known and not before: whether a platform grants this is only learnt by asking. Eval-thread
-// only, like the commits it follows.
+// Whether a platform grants this is only learnt by asking, and there are two different refusals.
+// One refused from the very first slice grants no lock at all: the attempts end and the cache is
+// ordinary memory, as all of it was before pinning existed.
+//
+// One refused part way, with at least a token cycle already granted, has a total worth having, and
+// it has run out. Giving up there is what was measured to
+// collapse a run: every slice committed afterwards is ordinary memory, the cache keeps turning
+// over, and within a few hundred tokens the locked slices have all been replaced by ones the
+// machine is free to compress - 0.27 tok/s where the same cache, never over-asked, runs at 3.0. So
+// the BUDGET comes down to what was granted and the pinning goes on: evictions release locked
+// pages, and the next commit finds room again. Never under one token cycle, where a cache returns
+// no hits; a refusal that arrives with the budget already at that floor ends the attempts like the
+// first kind. Only the budget moves here - the eviction is the per-layer one that skips what the current
+// token staged. Eval-thread only, like the commits it follows.
 void ExpertStreamSource::pin_pages(void * p, size_t sz) {
     if (!pin_ || cache_max_ == 0) return; // no cache: a slice lives one token
     if (pio::vm_pin(p, sz)) {
@@ -940,9 +951,61 @@ void ExpertStreamSource::pin_pages(void * p, size_t sz) {
         pin_said_ = true;
         return;
     }
+    if (!pin_said_) {
+        pin_ = false;
+        std::fprintf(stderr, "bmoe: cache pinning refused by the platform; the cache is ordinary memory\n");
+        return;
+    }
+    const bool first = pin_refused_at_ == 0;
+    // A total too small to hold one token cycle is the first kind of refusal arriving late: a
+    // per-process limit of a few MiB grants the first slices and then nothing. Shrinking to it
+    // would trade a working cache for a locked one that returns no hits, so the cache keeps its
+    // budget and is ordinary memory, as it is where nothing is granted at all.
+    if (first && (pin_floor_ == 0 || cresident_ < pin_floor_)) {
+        pin_ = false;
+        std::fprintf(stderr,
+                     "bmoe: cache pinning refused after %zu MiB, less than one token cycle; the cache is ordinary "
+                     "memory\n",
+                     cresident_ >> 20);
+        return;
+    }
+    // Stepping the budget down is a trade the engine cannot price: it is right where what is not
+    // locked gets compressed, and a plain loss where it would only have been left alone. So it is
+    // done when asked (MoeStreamConfig::cache_pin_fit) and otherwise the budget is the caller's.
+    if (!pin_fit_) {
+        pin_ = false;
+        pin_refused_at_ = std::max<size_t>(1, cresident_);
+        std::fprintf(stderr,
+                     "bmoe: cache pinning refused after %zu MiB; the rest of the cache is ordinary memory "
+                     "(--cache-pin-fit shrinks it to what was pinned instead)\n",
+                     cresident_ >> 20);
+        return;
+    }
+    if (first) pin_refused_at_ = std::max<size_t>(1, cresident_);
+    // One step per load: the eviction that makes room runs after the reads, so several commits of
+    // the same load can be refused before any of it is released, and they are one event.
+    if (pin_shrunk_gen_ == cgen_ && !first) return;
+    pin_shrunk_gen_ = cgen_;
+    // Below what is resident, by the room a load needs: a layer's slices are committed before the
+    // previous ones are evicted, so a budget equal to what was granted is over it by that much on
+    // every load, and the refusal would simply repeat.
+    const size_t slack = std::max({layer_demand_, sz, cache_max_ / 64});
+    // From the smaller of the budget and what is resident: a load can run past the budget before
+    // its eviction, and a refusal there says the budget is still too high, not that it was reached.
+    const size_t from = std::min(cresident_, cache_max_);
+    const size_t keep = std::max(from > slack ? from - slack : 0, std::max<size_t>(1, pin_floor_));
+    if (keep < cache_max_) {
+        if (first)
+            std::fprintf(stderr,
+                         "bmoe: cache pinning refused after %zu MiB; the cache budget shrinks from %zu to %zu MiB\n",
+                         cresident_ >> 20, cache_max_ >> 20, keep >> 20);
+        cache_max_ = keep;
+        ++cache_resizes_;
+        return;
+    }
     pin_ = false;
-    std::fprintf(stderr, "bmoe: cache pinning refused by the platform%s\n",
-                 pin_said_ ? "; the rest of the cache is ordinary memory" : "; the cache is ordinary memory");
+    std::fprintf(stderr, "bmoe: cache pinning refused with the cache at %zu MiB; the rest of it is ordinary memory\n",
+                 cresident_ >> 20);
 }
 
 bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, int commit_only_proj) {
@@ -1418,6 +1481,8 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.stall_seconds = stall_union_.total_ns() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
+    s.cache_pin_refused_bytes = (uint64_t) pin_refused_at_;
+    s.dense_pin_refused_bytes = dense_.pin_refused_bytes();
     s.o_direct = effective_direct_;
     s.evictions = evictions_;
     s.rereads = rereads_;

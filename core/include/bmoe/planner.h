@@ -60,6 +60,14 @@ struct PlannerPolicy {
     // Never leave less than this free, whatever the fractions say on a small machine.
     uint64_t margin_min_bytes = 256ull << 20;
 
+    // Fraction of the LOCKABLE total left unasked-for, and it is not there to absorb a misreading:
+    // a refusal is survivable, the budget steps down to what is granted. It is there because the
+    // platform's limit is not a place to run. What is locked is taken from everything that is
+    // not - this process's own context and compute buffers included - and a run that sits on the
+    // limit leaves those to be reclaimed. Measured on one 16 GB machine, same model and cache hit
+    // rate: 23.1 tok/s asking for 95% of the total, 7.4 and 14.6 asking for 98%.
+    float lock_margin = 0.05f;
+
     // How much room a model must leave BEYOND itself before residency is called safe, as a multiple
     // of what it would hold. Fitting and being left alone are different claims: on a machine whose
     // reclaim can take pages back, a model that fits just barely is reclaimed from underneath and

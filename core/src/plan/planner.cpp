@@ -47,7 +47,7 @@ uint64_t budget_bytes(const HardwareProfile & hw) {
 // How much of the residency budget to leave for everything that is not us. The fraction is chosen
 // by what losing memory costs here, which is the honest axis: it is cheap where a reclaim only
 // compresses, and fatal where exceeding the share ends the process.
-uint64_t margin_bytes(const HardwareProfile & hw, const PlannerPolicy & pol) {
+float margin_frac(const HardwareProfile & hw, const PlannerPolicy & pol) {
     float frac = pol.margin_when_unknown;
     switch (hw.anon_overflow) {
     case Overflow::Compress:
@@ -64,7 +64,11 @@ uint64_t margin_bytes(const HardwareProfile & hw, const PlannerPolicy & pol) {
     case Overflow::Unknown:
         break;
     }
-    const uint64_t by_frac = (uint64_t) ((double) budget_bytes(hw) * frac);
+    return frac;
+}
+
+uint64_t margin_bytes(const HardwareProfile & hw, const PlannerPolicy & pol) {
+    const uint64_t by_frac = (uint64_t) ((double) budget_bytes(hw) * margin_frac(hw, pol));
     return std::max(by_frac, pol.margin_min_bytes);
 }
 
@@ -257,9 +261,22 @@ Plan plan_run(const RunConfig & base,
         if (d.has_own_memory()) devices_share_host_memory = false;
     const uint64_t device_on_host = devices_share_host_memory ? placement.device_bytes : 0;
 
-    const uint64_t host_all =
-        placement.fitted ? placement.host_resident_bytes + host_expert_bytes + device_on_host : model.file_bytes;
-    const uint64_t host_dense = placement.fitted ? placement.host_resident_bytes + device_on_host : model.dense_bytes;
+    // The context and the compute buffers, as their own line. A fitted placement already carries
+    // them inside its host figure; an unfitted one never charged them at all, which on a machine
+    // whose devices share the host's memory - where the fitter's answer is always set aside - meant
+    // they were charged nowhere. There the context is counted wherever the fitter put it, because
+    // a context is the same size on either side of a boundary this machine does not have; the
+    // compute buffer is the host's own, since what a device reserves to compute is not what the
+    // cores will.
+    uint64_t host_fixed = placement.raw_host_context_bytes + placement.raw_host_compute_bytes;
+    if (placement.shared_memory_placement) host_fixed += placement.device_context_bytes;
+    if (placement.fitted) host_fixed = std::min(host_fixed, placement.host_resident_bytes);
+    const uint64_t unfitted_fixed = placement.fitted ? 0 : host_fixed;
+
+    const uint64_t host_all = placement.fitted ? placement.host_resident_bytes + host_expert_bytes + device_on_host
+                                               : model.file_bytes + unfitted_fixed;
+    const uint64_t host_dense =
+        placement.fitted ? placement.host_resident_bytes + device_on_host : model.dense_bytes + unfitted_fixed;
     if (host_all <= usable) {
         p.regime = Regime::Fits;
     } else if (host_dense <= usable) {
@@ -520,6 +537,11 @@ Plan plan_run(const RunConfig & base,
     }
 
     // ── the dense policy: decided by what a reclaim COSTS here, nothing else ────────
+    // One branch is only a candidate at this point. That a reclaim-exempt store exists says the
+    // dense set MAY be pinned; whether it is depends on what else is charged to the same total,
+    // which is the ledger's to say. So that branch is settled after the allocation, below.
+    bool pin_candidate = false;
+    const bool dense_by_caller = req.is_pinned("dense-weights");
     if (!pinned("dense-weights", dense_mode_name(p.config.moe.dense_weights))) {
         if (hw.anon_overflow == Overflow::Kill && hw.file_pages_counted == Tri::No) {
             // Where the process is killed for holding too much and clean file pages are outside
@@ -534,10 +556,7 @@ Plan plan_run(const RunConfig & base,
             // where every touch costs a decompression that no I/O counter shows. A store the
             // kernel may not reclaim is the only thing that closes that gap.
             p.config.moe.dense_weights = DenseWeightsMode::Pinned;
-            note("dense-weights", "ahwb", Source::Derived,
-                 "anonymous memory here is " + std::string(overflow_name(hw.anon_overflow)) +
-                     ", and this machine offers a reclaim-exempt allocation of up to " +
-                     u64s(mib(hw.reclaim_exempt_max)) + " MiB per buffer");
+            pin_candidate = true;
         } else if (hw.anon_overflow == Overflow::Unknown) {
             p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
             note("dense-weights", "anon", Source::Policy,
@@ -559,7 +578,7 @@ Plan plan_run(const RunConfig & base,
     // conversion the engine will then refuse would be worse than one that is merely conservative.
     const bool converts_dense = p.config.moe.dense_weights == DenseWeightsMode::Anonymous ||
                                 p.config.moe.dense_weights == DenseWeightsMode::Pinned;
-    uint64_t dense_pending = converts_dense ? host_dense : 0;
+    uint64_t dense_pending = converts_dense ? host_dense - host_fixed : 0;
     if (converts_dense && model.largest_dense_tensor > hw.residency_budget)
         dense_pending = dense_pending > model.largest_dense_tensor ? dense_pending - model.largest_dense_tensor : 0;
     p.dense_pending_bytes = dense_pending;
@@ -587,10 +606,104 @@ Plan plan_run(const RunConfig & base,
     ai.budget_bytes = usable;
     ai.engine_cache_min = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
     ai.can_pin = p.config.moe.dense_weights == DenseWeightsMode::Pinned;
+    ai.pin_forced = ai.can_pin && dense_by_caller;
     ai.reserved_bytes = dense_pending;
     ai.cacheable_bytes = host_expert_bytes;
+    ai.fixed_bytes = host_fixed;
+    ai.cache_lock = p.config.moe.cache_pin;
+    ai.holdable_bytes = holdable;
+    ai.margin_frac = margin_frac(hw, pol);
+    ai.margin_min_bytes = pol.margin_min_bytes;
+
+    // The second ceiling, with its own margin. A store that publishes no total is bounded by what
+    // the process may hold, which is the only bound there is on it.
+    auto lock_cap = [&](uint64_t reported) {
+        const uint64_t bounded = std::min(reported, holdable);
+        const uint64_t m = std::max((uint64_t) ((double) bounded * (double) pol.lock_margin), pol.margin_min_bytes);
+        return bounded > m ? bounded - m : 0;
+    };
+    ai.lockable_bytes = lock_cap(hw.lockable_bytes);
+    ai.lock_in_place_bytes = lock_cap(hw.lock_in_place_bytes);
+
+    // A device the caller armed for prefill. Its cost is the model's own arithmetic - room for the
+    // layer being computed and the one being loaded behind it - plus the compute buffer the fitter
+    // projects for it, and it is charged here only where the device's memory is this pool. The
+    // name is the caller's, matched to find that device's facts and for nothing else; a device the
+    // profile does not know is charged as if it shared the pool, which is the safe reading.
+    if (p.config.prefill.enabled()) {
+        const ComputeDevice * dev = nullptr;
+        for (const ComputeDevice & d : hw.devices)
+            if (!d.is_cpu && d.name == p.config.prefill.device) dev = &d;
+        if (!dev || dev->reads_host_memory()) {
+            ai.device_bytes = 2 * model.largest_expert_layer_bytes + placement.device_compute_bytes;
+            ai.device_locked = !dev || dev->charges_lockable();
+        }
+    }
+
     const Allocation alloc = allocate(hw, host_model, ai, pol);
     p.allocation = alloc;
+
+    // The dense candidate, settled by the ledger.
+    if (pin_candidate && alloc.dense_pinned) {
+        note("dense-weights", "ahwb", Source::Derived,
+             "anonymous memory here is " + std::string(overflow_name(hw.anon_overflow)) + ", and the " +
+                 u64s(mib(dense_pending)) + " MiB dense set fits whole in the " + u64s(mib(ai.lockable_bytes)) +
+                 " MiB this process may hold reclaim-exempt (up to " + u64s(mib(hw.reclaim_exempt_max)) +
+                 " MiB per buffer)");
+    } else if (pin_candidate) {
+        p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
+        note("dense-weights", "anon", Source::Derived,
+             "anonymous memory here is " + std::string(overflow_name(hw.anon_overflow)) +
+                 " and a reclaim-exempt store exists, but the " + u64s(mib(dense_pending)) + " MiB dense set is " +
+                 u64s(mib(alloc.pinned_shortfall_bytes)) +
+                 " MiB more than can still be held that way: pinned part way it would be reclaimed from the "
+                 "part that was refused, so it is held whole as ordinary memory");
+    }
+
+    // The plan and the run must agree about the cache's lock. Where the ledger sized it to what
+    // can be locked, the run is told to keep it there if the platform stops short; where it could
+    // not be locked at all, the run is told not to try - a lock that is granted for part of an
+    // ordinary cache protects nothing, and takes from the total the dense set was sized against.
+    // Neither is touched when the caller set it.
+    const bool cache_by_caller = req.is_pinned("cache-mb");
+    if (!req.is_pinned("cache-pin-fit") && !cache_by_caller) p.config.moe.cache_pin_fit = alloc.cache_locked_bytes > 0;
+    if (!req.is_pinned("cache-pin") && p.config.moe.cache_pin && alloc.cache_locked_bytes == 0 && !cache_by_caller) {
+        p.config.moe.cache_pin = false;
+        note("cache-pin", "off", Source::Derived,
+             "not even one token cycle of the cache can be locked in place here after what is ahead of it, so "
+             "the cache is ordinary memory and no lock is asked for");
+    }
+
+    // A cache the caller sized is the row, whatever the ledger would have chosen: the account is
+    // of what the run will hold, and a figure the run does not use would make it close on paper only.
+    if (cache_by_caller) {
+        Ledger & l = p.allocation.ledger;
+        const uint64_t asked = (uint64_t) std::max(0, p.config.moe.cache_mb) << 20;
+        l.rows.erase(
+            std::remove_if(l.rows.begin(), l.rows.end(), [](const LedgerRow & r) { return r.name == "expert cache"; }),
+            l.rows.end());
+        if (asked) l.rows.push_back({"expert cache", asked, false});
+        l.held = l.locked = 0;
+        for (const LedgerRow & r : l.rows) {
+            l.held += r.bytes;
+            if (r.locked) l.locked += r.bytes;
+        }
+        if (l.held > l.holdable_cap)
+            note("memory-ledger", "over", Source::Operator,
+                 "the cache the caller set takes what is held to " + u64s(mib(l.held)) + " MiB, over the " +
+                     u64s(mib(l.holdable_cap)) + " MiB this process may hold: charged as asked");
+    }
+
+    {
+        const Ledger & ledger = p.allocation.ledger;
+        std::string lines;
+        for (const LedgerRow & r : ledger.rows)
+            lines += (lines.empty() ? "" : ", ") + r.name + " " + u64s(mib(r.bytes)) + (r.locked ? " locked" : "");
+        note("memory-ledger", u64s(mib(ledger.held)) + " MiB", Source::Derived,
+             "held " + u64s(mib(ledger.held)) + " of " + u64s(mib(ledger.holdable_cap)) +
+                 " MiB holdable, of which locked " + u64s(mib(ledger.locked)) + " of " +
+                 u64s(mib(ledger.lockable_cap)) + " MiB lockable: " + lines);
+    }
 
     for (const std::string & n : alloc.notes)
         note("cost", "-", Source::Derived, n);

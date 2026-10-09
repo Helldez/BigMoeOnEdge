@@ -19,6 +19,10 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `core/src/moe/` — `gguf_offsets`, `arch_registry`, `expert_stream_source`, `router_hook`;
   `dense_weights` (the non-expert weight policy: mmap / warm / anon, plus the residency sensor).
 - `core/src/engine/runtime.cpp` — composition + greedy generation loop.
+- `core/src/plan/` — the hardware planner behind `--auto` (`docs/hardware-planning.md`). The rules
+  (`planner`, `allocate`, `plan`) are pure functions over `hardware_profile.h` / `model_profile.h`
+  and name no platform, vendor, device or architecture; the `*_probe` adapters are the only files
+  that may. A rule that needs to know the platform is missing a fact: add the field, not the branch.
 - `core/include/bmoe/params.h` + `core/src/params.cpp` — the parameter table: every tunable of a
   `RunConfig`, described once. The CLI parses and documents its flags from it; front-ends render
   their settings from its JSON (`bmoe-cli --describe-params`).

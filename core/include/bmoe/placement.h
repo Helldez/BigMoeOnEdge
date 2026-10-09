@@ -51,6 +51,12 @@ struct Placement {
     uint64_t raw_host_context_bytes = 0;
     uint64_t raw_host_compute_bytes = 0;
 
+    // The compute buffers the fitter projects on the devices, summed. Kept apart from
+    // `device_bytes` because it is the part a device costs for being COMPUTED on, whatever weights
+    // are or are not placed there - which is what a device prefill pays.
+    uint64_t device_compute_bytes = 0;
+    uint64_t device_context_bytes = 0; // the context the fitter put on the devices, summed
+
     // The override patterns the fitter wrote, kept verbatim so the session can reapply them at load
     // (they are what routes the placed experts to a device buffer type).
     std::vector<std::string> override_patterns;

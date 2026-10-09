@@ -140,6 +140,14 @@ default and turned off with `--no-cache-pin`:
 | unpinned, two runs | 7.4 and 7.2 tok/s | 0.100 and 0.103 s/token | 3.5 GiB |
 | pinned, two runs | 18.2 and 18.3 tok/s | 0.030 s/token | under 10 MiB |
 
+A lock has a total, and a cache larger than what is left of it is pinned only in part. What happens
+then is `--cache-pin-fit`. Off, pinning ends at the refusal and the cache keeps its budget as
+ordinary memory, which is right wherever a reclaim is cheap to recover from. On, the budget steps
+down to what was granted and pinning continues, which is right where reclaim compresses: a cache
+that turns over otherwise replaces its locked slices with unlocked ones until none are left.
+`--auto` sizes the cache to the lockable total and sets the flag itself; see the memory ledger in
+[hardware-planning.md](hardware-planning.md).
+
 256 tokens, arms off on on off, an 82.2 % cache hit in all four and the same generated text. With
 `--auto`, which gives the cache 9766 MiB on that machine: 24.2 tok/s at a 92.4 % hit.
 

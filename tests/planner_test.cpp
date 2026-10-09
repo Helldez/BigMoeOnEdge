@@ -110,6 +110,10 @@ static HardwareProfile phone() {
     h.memory_total = 12 * GiB;
     h.anon_overflow = Overflow::Compress;
     h.reclaim_exempt_max = 2047 * MiB;
+    // What this class of machine answers: a store that publishes no total, and a lock-in-place
+    // limit of a few pages. The dense set can be protected and the cache cannot.
+    h.lockable_bytes = ~0ull;
+    h.lock_in_place_bytes = 64 * KiB;
     h.file_pages_counted = Tri::Yes;
     h.n_cores = 8;
     h.storage.align = 4096;
@@ -142,6 +146,38 @@ static HardwareProfile hard_capped() {
     h.storage.direct_ok = Tri::Yes;
     h.storage.mapping_serialises_reads = Tri::Unknown;
     return h;
+}
+
+// One pool of memory for the cores and the accelerator, a compressing reclaim, and a lock the
+// kernel grants to any process up to a system-wide total - the same store whether the memory is
+// locked as it is allocated or where it already sits.
+static HardwareProfile unified() {
+    HardwareProfile h = phone();
+    h.label = "unified memory, a system-wide lock total";
+    h.residency_budget = 13 * GiB;
+    h.memory_total = 16 * GiB;
+    h.reclaim_exempt_max = 12 * GiB;
+    h.lockable_bytes = 10 * GiB;
+    h.lock_in_place_bytes = 10 * GiB;
+    h.devices.clear();
+    ComputeDevice cpu;
+    cpu.name = "CPU";
+    cpu.is_cpu = true;
+    cpu.shares_host_memory = Tri::Yes;
+    cpu.buffers_locked = Tri::No;
+    h.devices.push_back(cpu);
+    ComputeDevice accel;
+    accel.name = "accel";
+    accel.shares_host_memory = Tri::Yes;
+    accel.buffers_locked = Tri::Yes;
+    h.devices.push_back(accel);
+    return h;
+}
+
+static const LedgerRow * ledger_row(const Plan & p, const char * name) {
+    for (const LedgerRow & r : p.allocation.ledger.rows)
+        if (r.name == name) return &r;
+    return nullptr;
 }
 
 static RunConfig base_cfg() {
@@ -796,6 +832,146 @@ int main() {
             check(a.at(WeightGroup::Attention).lane == Lane::Mmap,
                   "with the refault price unmeasured, residency is not bought");
         }
+    }
+
+    // ── the memory ledger: one account, two ceilings ───────────────────────────────
+    // What is held and what is held reclaim-exempt are different totals, and the second is the
+    // smaller wherever it exists. Sized against the first alone, a plan asks for locks the machine
+    // stops granting part way - measured at a tenth of the throughput of the plan that closes.
+    {
+        const auto mibs_of = [](uint64_t b) { return std::to_string((unsigned long long) (b >> 20)) + " MiB"; };
+
+        // Room for both: the dense set is pinned whole, and the cache is what can be locked after
+        // it - less than what could merely be held.
+        const Plan p = plan_run(base_cfg(), unified(), model, PlanRequest{});
+        const Ledger & l = p.allocation.ledger;
+        check(p.config.moe.dense_weights == DenseWeightsMode::Pinned,
+              "ledger: the dense set fits the lock and is pinned");
+        check(l.lockable_cap > 0 && l.locked <= l.lockable_cap,
+              "ledger: what is locked stays under the lockable ceiling",
+              mibs_of(l.locked) + " of " + mibs_of(l.lockable_cap));
+        check(l.held <= l.holdable_cap, "ledger: what is held stays under the holdable ceiling",
+              mibs_of(l.held) + " of " + mibs_of(l.holdable_cap));
+        check(p.allocation.cache_locked_bytes == p.cache_budget_bytes && p.cache_budget_bytes > 0,
+              "ledger: the whole cache is the part that can be locked");
+        uint64_t rows = 0;
+        for (const LedgerRow & r : l.rows)
+            rows += r.bytes;
+        check(rows == l.held, "ledger: the rows add up to what is held");
+        check(find(p, "memory-ledger") != nullptr, "ledger: the plan states it");
+        check(validate(p.config).ok, "ledger: the plan is a valid config", validate(p.config).error);
+
+        // The same machine with nothing bounding the lock but what can be held: the cache is larger.
+        // It is the lockable total, and nothing else, that made the difference above.
+        HardwareProfile roomy = unified();
+        roomy.lockable_bytes = ~0ull;
+        roomy.lock_in_place_bytes = ~0ull;
+        const Plan q = plan_run(base_cfg(), roomy, model, PlanRequest{});
+        check(q.cache_budget_bytes > p.cache_budget_bytes, "ledger: the lockable total is what bounded the cache",
+              mibs_of(p.cache_budget_bytes) + " against " + mibs_of(q.cache_budget_bytes));
+
+        // A lock too small for the dense set. It is not pinned part way: it is held whole as
+        // ordinary memory, the plan says by how much it missed, and the lock goes to the cache.
+        HardwareProfile tight = unified();
+        tight.lockable_bytes = 3 * GiB; // the dense set is 3 GiB, and the margin comes off this
+        tight.lock_in_place_bytes = 3 * GiB;
+        const Plan t = plan_run(base_cfg(), tight, model, PlanRequest{});
+        check(t.config.moe.dense_weights == DenseWeightsMode::Anonymous,
+              "ledger: a dense set that does not fit the lock whole is not pinned at all");
+        check(t.allocation.pinned_shortfall_bytes > 0, "ledger: the shortfall is recorded");
+        const Decision * dw = find(t, "dense-weights");
+        check(dw && dw->value == "anon" && dw->reason.find("more than can still be held") != std::string::npos,
+              "ledger: the dense decision says why it was not pinned");
+        check(t.allocation.ledger.locked <= t.allocation.ledger.lockable_cap,
+              "ledger: the cache alone stays under the lockable ceiling");
+        check(t.cache_budget_bytes >= model.token_cycle_bytes, "ledger: the cache still clears the token cycle");
+
+        // The caller's pin is the caller's authority, including over a ledger that does not close:
+        // it is charged as asked, and the cache - which no longer has a cycle's worth of lock - is
+        // ordinary memory bounded by what can be held.
+        RunConfig forced = base_cfg();
+        forced.moe.dense_weights = DenseWeightsMode::Pinned;
+        PlanRequest fr;
+        fr.pinned = {"dense-weights"};
+        const Plan f = plan_run(forced, tight, model, fr);
+        check(f.config.moe.dense_weights == DenseWeightsMode::Pinned,
+              "ledger: a caller's pinned dense store is not overruled");
+        check(f.allocation.cache_locked_bytes == 0 && f.cache_budget_bytes >= model.token_cycle_bytes,
+              "ledger: with the lock spent, the cache is ordinary memory");
+
+        // The plan and the run agree about the cache's lock: sized to it, the run is told to keep
+        // it there; a caller's own budget is never one the run may shrink.
+        check(p.config.moe.cache_pin && p.config.moe.cache_pin_fit,
+              "ledger: a cache sized to the lock is fitted to it");
+        check(!f.config.moe.cache_pin && !f.config.moe.cache_pin_fit,
+              "ledger: a cache that cannot be locked asks for no lock");
+        RunConfig own = base_cfg();
+        own.moe.cache_mb = 12000;
+        PlanRequest orq;
+        orq.pinned = {"cache-mb"};
+        const Plan o = plan_run(own, unified(), model, orq);
+        const LedgerRow * oc = ledger_row(o, "expert cache");
+        check(!o.config.moe.cache_pin_fit && o.config.moe.cache_mb == 12000,
+              "ledger: a caller's cache budget is not fitted");
+        check(oc && oc->bytes == 12000 * MiB && o.allocation.ledger.held > o.allocation.ledger.holdable_cap,
+              "ledger: a caller's cache is the row, even over the ceiling");
+
+        // Two stores that are not one pool: no reclaim-exempt allocation, a generous lock in place.
+        // The ceiling reported is the one the locked rows were charged to.
+        HardwareProfile inplace = unified();
+        inplace.reclaim_exempt_max = 0;
+        inplace.lockable_bytes = 0;
+        inplace.lock_in_place_bytes = 8 * GiB;
+        const Plan ip = plan_run(base_cfg(), inplace, model, PlanRequest{});
+        check(ip.allocation.ledger.locked > 0 && ip.allocation.ledger.locked <= ip.allocation.ledger.lockable_cap,
+              "ledger: a lock-in-place store is the ceiling its rows are checked against",
+              mibs_of(ip.allocation.ledger.locked) + " of " + mibs_of(ip.allocation.ledger.lockable_cap));
+
+        // A machine that offers a reclaim-exempt allocation and no lock in place: the dense set is
+        // pinned and the cache is bounded only by what can be held, as it always was there.
+        const Plan ph = plan_run(base_cfg(), phone(), model, PlanRequest{});
+        const LedgerRow * pc = ledger_row(ph, "expert cache");
+        const LedgerRow * pd = ledger_row(ph, "dense");
+        check(pd && pd->locked && pc && !pc->locked, "ledger: two stores, and only the dense set is in the locked one");
+        check(!ph.config.moe.cache_pin, "ledger: and no lock is asked for the cache there");
+        check(ph.cache_budget_bytes > 1 * GiB, "ledger: a cache that cannot be locked is not sized to the lock",
+              mibs_of(ph.cache_budget_bytes));
+
+        // No lock at all: nothing is charged to a ceiling that does not exist.
+        const Plan dk = plan_run(base_cfg(), desktop(), model, PlanRequest{});
+        check(dk.allocation.ledger.locked == 0 && dk.allocation.ledger.lockable_cap == 0,
+              "ledger: a machine with no lock locks nothing");
+
+        // A device armed for prefill is a line, charged to both ceilings where its buffers are
+        // locked: two of the model's largest expert layer, and the cache gives up exactly that.
+        ModelProfile mm = model;
+        mm.largest_expert_layer_bytes = 384 * MiB;
+        RunConfig armed = base_cfg();
+        armed.prefill.device = "accel";
+        PlanRequest ar;
+        ar.pinned = {"prefill-device"};
+        const Plan off = plan_run(base_cfg(), unified(), mm, PlanRequest{});
+        const Plan on = plan_run(armed, unified(), mm, ar);
+        const LedgerRow * dev = ledger_row(on, "device");
+        check(dev && dev->locked && dev->bytes == 768 * MiB,
+              "ledger: an armed device is charged two expert layers, locked", dev ? mibs_of(dev->bytes) : "no row");
+        check(ledger_row(off, "device") == nullptr, "ledger: a device nobody armed is not a line");
+        check(off.cache_budget_bytes - on.cache_budget_bytes == 768 * MiB,
+              "ledger: the cache gives up what the device takes",
+              mibs_of(off.cache_budget_bytes) + " against " + mibs_of(on.cache_budget_bytes));
+
+        // The context and the compute buffers are a line even when the capacity fitter's answer
+        // was set aside - which on shared memory is always, and where they used to be charged nowhere.
+        Placement pl;
+        pl.shared_memory_placement = true;
+        pl.raw_host_context_bytes = 500 * MiB;
+        pl.raw_host_compute_bytes = 100 * MiB;
+        const Plan fx = plan_run(base_cfg(), phone(), model, pl, PlanRequest{});
+        const LedgerRow * fr_row = ledger_row(fx, "context and compute");
+        check(fr_row && fr_row->bytes == 600 * MiB,
+              "ledger: context and compute are charged without a fitted placement");
+        check(ph.cache_budget_bytes - fx.cache_budget_bytes == 600 * MiB, "ledger: and the cache is sized after them",
+              mibs_of(ph.cache_budget_bytes) + " against " + mibs_of(fx.cache_budget_bytes));
     }
 
     // Informational: the rationale as a user would read it. Printed rather than asserted, because

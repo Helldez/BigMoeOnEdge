@@ -32,9 +32,11 @@ enum class DenseWeightsMode {
     Mmap,      // leave mmap'd, no help (the A/B baseline)
     Warmed,    // mmap'd, but page-cached once at load
     Anonymous, // read via O_DIRECT into our own anon buffers and rebind (swaps to zram, not flash)
-    Pinned,    // as Anonymous, but into reclaim-exempt dma-buf memory the kernel may not take back.
-               // Android-only (pio::pinned_alloc); init fails where unsupported rather than falling
-               // back, so an A/B against Anonymous can never silently compare a mode to itself.
+    Pinned,    // as Anonymous, but into reclaim-exempt memory the kernel may not take back
+               // (pio::pinned_alloc: a dma-buf on Android, wired memory on Darwin). Init fails where
+               // the platform has no such store, so an A/B against Anonymous can never silently
+               // compare a mode to itself; a store that runs out part way falls back per tensor
+               // and says how much, loudly.
 };
 
 // MoE expert-selective streaming knobs.
@@ -72,6 +74,15 @@ struct MoeStreamConfig {
     // unified-memory desktop that was 2 GB/s of compression during decode and a third of the
     // decode rate. Where pinning is refused the cache is ordinary memory, as it always was.
     bool cache_pin = true;
+
+    // What a lock refused PART WAY does. Off, pinning ends there and the cache keeps its budget as
+    // ordinary memory - right wherever losing a page is cheap to recover, and the only safe
+    // default, since the engine cannot tell what a reclaim costs here. On, the budget steps down
+    // to what the platform grants and pinning continues: right where reclaim compresses, because
+    // there a cache that turns over replaces its locked slices with ones the machine squeezes
+    // (0.27 tok/s against 2.48 on one 16 GB machine, same request). The planner arms it exactly
+    // when it sized the cache to the lockable total; a hand-set budget is never shrunk unasked.
+    bool cache_pin_fit = false;
 
     // Overlap async expert reads with FFN compute instead of blocking on them: load_layer()
     // publishes the reads and returns immediately, and the CPU mul_mat_id kernel blocks per

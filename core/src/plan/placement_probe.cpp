@@ -152,8 +152,11 @@ probe_placement(const char * model_path, const ModelProfile & model, const Hardw
             n_layer ? (uint64_t) ((double) model.dense_bytes * (double) (n_layer - on_devices) / (double) n_layer)
                     : model.dense_bytes;
         pl.host_resident_bytes = dense_on_host + (uint64_t) cpu.context + (uint64_t) cpu.compute;
-        for (size_t i = 0; i + 1 < dm.size(); ++i)
+        for (size_t i = 0; i + 1 < dm.size(); ++i) {
             pl.device_bytes += (uint64_t) dm[i].model + (uint64_t) dm[i].context + (uint64_t) dm[i].compute;
+            pl.device_compute_bytes += (uint64_t) dm[i].compute;
+            pl.device_context_bytes += (uint64_t) dm[i].context;
+        }
     }
 
     // Set aside last, with its numbers kept. Everything above ran, so the plan can quote what the

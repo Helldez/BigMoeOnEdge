@@ -96,6 +96,11 @@ struct ModelProfile {
     uint64_t dense_bytes = 0;          // everything else: embeddings, attention, norms, head
     uint64_t largest_dense_tensor = 0; // the one a residency policy may not be able to hold
 
+    // Every expert tensor of the MoE layer that has the most of them, in bytes. It is the unit a
+    // device prefill reserves in: the layer being computed and the one being loaded behind it each
+    // need room for a whole layer's experts, so two of these is what arming one costs.
+    uint64_t largest_expert_layer_bytes = 0;
+
     // The same bytes again, decomposed by access shape. `groups[...].bytes` sums to `file_bytes`,
     // and Experts::bytes equals `expert_bytes`; both spellings are kept because a capacity check
     // wants the totals and the cost model wants the per-group demand.

@@ -143,7 +143,31 @@ Allocation allocate(const HardwareProfile & hw,
     };
     std::vector<Candidate> candidates;
 
-    const Lane resident_lane = in.can_pin ? Lane::Pinned : Lane::Resident;
+    // ── the ledger's fixed lines, charged before anything is ranked ──────────────────────────
+    // The context, the compute buffers and an armed device are held whatever is decided below, so
+    // they come off the top of both ceilings rather than out of whatever the weights leave.
+    const uint64_t fixed = in.fixed_bytes + in.device_bytes;
+    const uint64_t spendable = in.budget_bytes > fixed ? in.budget_bytes - fixed : 0;
+    uint64_t locked = in.device_locked ? in.device_bytes : 0;
+
+    // The dense set is read whole on every token, so it is protected before the cache is - and
+    // only whole. Pinning what fits and leaving the rest is the shape that was measured to
+    // collapse: the grant stops part way and the remainder is reclaimed on every token.
+    const uint64_t lock_room = in.lockable_bytes > locked ? in.lockable_bytes - locked : 0;
+    a.dense_pinned = in.can_pin && in.reserved_bytes > 0 && (in.pin_forced || in.reserved_bytes <= lock_room);
+    if (in.can_pin && in.reserved_bytes > lock_room) {
+        a.pinned_shortfall_bytes = in.reserved_bytes - lock_room;
+        a.notes.push_back("the dense set is " + mibs(in.reserved_bytes) + " and " + mibs(lock_room) +
+                          " can still be held reclaim-exempt, " + mibs(a.pinned_shortfall_bytes) + " short" +
+                          (in.pin_forced
+                               ? ": the caller chose the pinned store, so it is charged as asked and part of it "
+                                 "will be refused"
+                               : ": it is held as ordinary memory instead, whole, because a set pinned part way "
+                                 "is reclaimed from the part that was not"));
+    }
+    if (a.dense_pinned) locked += in.reserved_bytes;
+
+    const Lane resident_lane = a.dense_pinned ? Lane::Pinned : Lane::Resident;
 
     for (int i = 0; i < (int) WeightGroup::count; ++i) {
         const WeightGroup g = (WeightGroup) i;
@@ -249,7 +273,7 @@ Allocation allocate(const HardwareProfile & hw,
         return x.bytes > y.bytes;
     });
 
-    uint64_t remaining = in.budget_bytes;
+    uint64_t remaining = spendable;
     for (const Candidate & c : candidates) {
         GroupPlacement & p = a.at(c.group);
         if (c.fractional) {
@@ -295,10 +319,48 @@ Allocation allocate(const HardwareProfile & hw,
     // decided that the experts stream, so the cache must have some size, and the honest answer is
     // what remains. That is the old residual - kept, but now clearly labelled as the unpriced
     // fallback rather than presented as a decision.
-    const uint64_t after_reserved = in.budget_bytes > in.reserved_bytes ? in.budget_bytes - in.reserved_bytes : 0;
+    const uint64_t after_reserved = spendable > in.reserved_bytes ? spendable - in.reserved_bytes : 0;
     if (in.cacheable_bytes > 0 && model.is_moe) {
         const uint64_t priced = a.cache_bytes;
         uint64_t sized = std::min(after_reserved, in.cacheable_bytes) & ~((1ull << 20) - 1);
+
+        // The second ceiling. Where the cache can be kept in place, it is sized to what can be
+        // kept: a byte past that is a byte the machine is free to take back, and on the machine
+        // this was measured on taking it back cost nine tenths of the throughput. Where not even
+        // one token cycle can be protected the question does not arise - the cache is ordinary
+        // memory, as it is on every platform that grants no lock, and it is bounded by what can be
+        // held like everything else.
+        const uint64_t cache_lock_room =
+            (in.lock_in_place_bytes > locked ? in.lock_in_place_bytes - locked : 0) & ~((1ull << 20) - 1);
+        const bool cache_protected = in.cache_lock && cache_lock_room >= model.token_cycle_bytes;
+        uint64_t holdable_cap = in.budget_bytes;
+        if (cache_protected && in.holdable_bytes > 0) {
+            // With the cache locked, most of what this run holds cannot be taken back, and a margin
+            // sized on all of it would be room left for a reclaim that cannot happen. It is sized on
+            // what stays ordinary instead, and never lowers the ceiling the caller was given.
+            // "Ordinary" is never less than the rows that really are: an unpinned dense set is
+            // memory the machine can take back however much lock is left unused beside it.
+            const uint64_t locked_all = locked + std::min(cache_lock_room, in.cacheable_bytes);
+            const uint64_t ordinary_rows =
+                in.fixed_bytes + (in.device_locked ? 0 : in.device_bytes) + (a.dense_pinned ? 0 : in.reserved_bytes);
+            const uint64_t ordinary =
+                std::max(in.holdable_bytes > locked_all ? in.holdable_bytes - locked_all : 0, ordinary_rows);
+            const uint64_t m = std::max((uint64_t) ((double) ordinary * in.margin_frac), in.margin_min_bytes);
+            holdable_cap = std::max(holdable_cap, in.holdable_bytes > m ? in.holdable_bytes - m : 0);
+            const uint64_t taken = fixed + in.reserved_bytes;
+            sized = std::min(holdable_cap > taken ? holdable_cap - taken : 0, in.cacheable_bytes) & ~((1ull << 20) - 1);
+        }
+        a.ledger.holdable_cap = holdable_cap;
+        if (cache_protected && sized > cache_lock_room) {
+            a.notes.push_back("the expert cache is bounded by what can be locked in place (" + mibs(cache_lock_room) +
+                              ") rather than by what can be held (" + mibs(sized) +
+                              "): past that it would be memory the machine may take back");
+            sized = cache_lock_room;
+        } else if (in.cache_lock && !cache_protected && in.lock_in_place_bytes >= model.token_cycle_bytes) {
+            a.notes.push_back("the expert cache is ordinary memory: " + mibs(cache_lock_room) +
+                              " can still be locked in place after what is ahead of it, and one token cycle is " +
+                              mibs(model.token_cycle_bytes));
+        }
         a.cache_available_bytes = priced > 0 ? std::min(priced, sized) : sized;
 
         // The floor applies to whatever survived the reservation, not only to what the ranking
@@ -315,7 +377,9 @@ Allocation allocate(const HardwareProfile & hw,
         }
 
         if (priced > 0) {
-            sized = std::min(priced, sized);
+            // What the ranking priced was priced under the caller's ceiling; where the ceiling was
+            // raised for a locked cache, the cache is what the difference is for.
+            sized = std::min(priced + (holdable_cap - in.budget_bytes), sized);
         } else if (sized > 0) {
             a.notes.push_back("the expert cache was sized from what remains after the dense policy (" + mibs(sized) +
                               ") rather than from what a hit is worth: this machine's read rate was not measured, "
@@ -323,6 +387,7 @@ Allocation allocate(const HardwareProfile & hw,
                               "the answer that was chosen.");
         }
         a.cache_bytes = sized;
+        a.cache_locked_bytes = cache_protected ? sized : 0;
         GroupPlacement & p = a.at(WeightGroup::Experts);
         // The ranking may already have written a size that the reservation or the floor then took
         // away. Leaving it there makes the plan contradict itself - a placement claiming to hold
@@ -441,6 +506,22 @@ Allocation allocate(const HardwareProfile & hw,
             a.notes.push_back(dev.name + " advertises host pointers and did not honour them when handed one: no "
                                          "streamed group could ever be rebound there, whatever its speed");
     }
+
+    // ── the ledger, as it was charged ────────────────────────────────────────────────────────
+    if (a.ledger.holdable_cap == 0) a.ledger.holdable_cap = in.budget_bytes;
+    // The two stores are one figure where they are one pool and two where they are not; the
+    // ceiling a reader checks `locked` against is whichever the locked rows were charged to.
+    a.ledger.lockable_cap = std::max(in.lockable_bytes, in.lock_in_place_bytes);
+    auto row = [&](const char * name, uint64_t bytes, bool is_locked) {
+        if (bytes == 0) return;
+        a.ledger.rows.push_back({name, bytes, is_locked});
+        a.ledger.held += bytes;
+        if (is_locked) a.ledger.locked += bytes;
+    };
+    row("context and compute", in.fixed_bytes, false);
+    row("device", in.device_bytes, in.device_locked);
+    row("dense", in.reserved_bytes, a.dense_pinned);
+    row("expert cache", a.cache_bytes, a.cache_locked_bytes > 0);
 
     // ── totals ───────────────────────────────────────────────────────────────────────────────
     for (int i = 0; i < (int) WeightGroup::count; ++i) {

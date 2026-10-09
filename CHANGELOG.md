@@ -7,6 +7,23 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **The planner keeps one memory ledger, with two ceilings.** Everything a run holds - context
+  and compute buffers, a device armed for prefill, the dense set, the expert cache - is a row
+  charged against what the process may hold and, separately, against what it may hold
+  reclaim-exempt, net of what is already locked. The dense set is pinned whole or not at all, and
+  the cache is sized to what can be locked where it can be locked at all. Before this a plan
+  could ask for more locked memory than the machine grants; `--plan` prints the ledger row by
+  row. Context and compute buffers are now charged on machines whose devices share the host's
+  memory, where they were charged nowhere. See `docs/hardware-planning.md`.
+- **`--dense-weights ahwb` on macOS**, as wired memory. The planner chooses it when the dense set
+  fits the lockable total.
+- **`--cache-pin-fit`: a lock refused part way can shrink the cache instead of ending pinning.**
+  The budget steps down to what the platform grants and stays locked. `--auto` sets it when it
+  sized the cache to the lockable total; by hand it is off, so a budget set by hand is never
+  shrunk unasked. On a 16 GB Apple-silicon laptop, DeepSeek V4 Flash at UD-IQ2_M with a pinned
+  dense set and a 4.1 GB cache asked for: 0.27 tok/s without it, 2.48 with it; `--auto` on the
+  same model 2.48, with no refusal. Separately, a pinned dense store that runs out during load
+  falls back to ordinary buffers for the remaining tensors and the run continues.
 - **macOS builds carry Metal, and the prefill device runs on it.** `--prefill-device MTL0` sends
   wide prefill graphs to the GPU through the same two-layer arena the NPU uses, with no change to
   that path. On a 16 GB Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M streamed, a 1473-token

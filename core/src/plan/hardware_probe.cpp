@@ -200,6 +200,16 @@ void probe_devices(HardwareProfile & h) {
             // mapping-serialisation probe, and for the same reason.
             d.host_ptr_buffers = props.caps.buffer_from_host_ptr ? Tri::Yes : Tri::Unknown;
             d.async_copies = props.caps.async ? Tri::Yes : Tri::No;
+            // Whether this device's buffers come out of the total the process locks against. The
+            // CPU's are ordinary host memory and do not. For the rest it is a property of how the
+            // platform backs a device allocation, known where it was observed - a device prefill
+            // here took the system's wired count to 14.4 GB of 16 - and Unknown everywhere else,
+            // which the ledger charges like a yes.
+            if (d.is_cpu) d.buffers_locked = Tri::No;
+#if defined(__APPLE__)
+            else
+                d.buffers_locked = Tri::Yes;
+#endif
             h.devices.push_back(std::move(d));
         }
     }
@@ -246,6 +256,11 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.memory_total = pio::mem_total_bytes();
     h.anon_overflow = probe_anon_overflow();
     h.reclaim_exempt_max = pio::pinned_max_bytes();
+    // Recorded as the platform states them. A store that publishes no total answers "unbounded",
+    // and the ledger bounds that by what the process may hold - a figure this function does not
+    // have yet, since the headroom is measured after it.
+    h.lockable_bytes = pio::lockable_bytes();
+    h.lock_in_place_bytes = pio::lock_in_place_bytes();
     h.file_pages_counted = probe_file_pages_counted();
     h.n_cores = std::thread::hardware_concurrency();
     probe_core_classes(h);

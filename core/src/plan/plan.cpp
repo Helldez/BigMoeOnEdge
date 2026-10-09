@@ -126,6 +126,8 @@ std::string Plan::to_flags() const {
     add("--moe-stream");
     if (config.moe.cache_mb != def.moe.cache_mb) add("--cache-mb " + std::to_string(config.moe.cache_mb));
     if (config.moe.force_cache) add("--force-cache");
+    if (!config.moe.cache_pin) add("--no-cache-pin");
+    if (config.moe.cache_pin_fit) add("--cache-pin-fit");
     if (config.moe.io_threads != def.moe.io_threads) add("--io-threads " + std::to_string(config.moe.io_threads));
     if (!config.moe.o_direct) add("--no-odirect");
     if (config.moe.release_mmap) add("--release-mmap");
@@ -179,6 +181,24 @@ std::string Plan::explain() const {
             out += line;
             out += g.reason;
             out += "\n";
+        }
+    }
+
+    // The ledger, a row at a time: what the run holds for its whole length against the two
+    // ceilings it was sized under. It is what a reader compares with the machine's own counters
+    // after the run, which is why it is printed as charged rather than summarised.
+    if (!allocation.ledger.rows.empty()) {
+        const Ledger & l = allocation.ledger;
+        char line[200];
+        std::snprintf(line, sizeof(line),
+                      "plan:   memory held %llu of %llu MiB holdable, locked %llu of %llu MiB lockable\n",
+                      (unsigned long long) (l.held >> 20), (unsigned long long) (l.holdable_cap >> 20),
+                      (unsigned long long) (l.locked >> 20), (unsigned long long) (l.lockable_cap >> 20));
+        out += line;
+        for (const LedgerRow & r : l.rows) {
+            std::snprintf(line, sizeof(line), "plan:     %-20s %6llu MiB  %s\n", r.name.c_str(),
+                          (unsigned long long) (r.bytes >> 20), r.locked ? "locked" : "ordinary");
+            out += line;
         }
     }
 

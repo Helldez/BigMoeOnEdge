@@ -552,10 +552,31 @@ bool direct_needs_alignment() {
 }
 
 // ── Reclaim-exempt allocation ────────────────────────────────────────────────────────────
-// Shared across platforms because only Android has one: everywhere else this reports "unsupported"
-// and callers fall back to an ordinary allocation. Declared in the header with the measured
+// One section for every platform: Android and Darwin have such a store, everywhere else this
+// reports "unsupported" and callers fall back to an ordinary allocation. Declared in the header with the measured
 // properties and the reason the ceiling is a lock boundary rather than an allocation one.
+#if !defined(_WIN32)
+namespace {
+// What this process may lock in place, as the kernel's own per-process limit states it.
+uint64_t memlock_limit() {
+    struct rlimit r {};
+    if (getrlimit(RLIMIT_MEMLOCK, &r) != 0) return 0;
+    return r.rlim_cur == RLIM_INFINITY ? lock_unbounded : (uint64_t) r.rlim_cur;
+}
+} // namespace
+#endif
+
 #if defined(__ANDROID__)
+
+// A dma-buf is charged to no limit this process can read: gralloc publishes no total, so the
+// answer is "unbounded here" and the caller bounds it by what the process may hold. Locking in
+// place is a different store with a different answer - the vendor caps it at a few pages.
+uint64_t lockable_bytes() {
+    return lock_unbounded;
+}
+uint64_t lock_in_place_bytes() {
+    return memlock_limit();
+}
 
 size_t pinned_max_bytes() {
     // The lock path uses a signed 32-bit type: AHardwareBuffer_lock returns EINVAL at exactly 2^31
@@ -600,10 +621,74 @@ void pinned_free(PinnedAlloc * a) {
     a->size = 0;
 }
 
+#elif defined(__APPLE__)
+
+// Darwin's reclaim-exempt store is wired memory: an anonymous mapping the process has locked, which
+// the kernel neither swaps nor compresses. Any process may ask, up to a system-wide limit that is
+// most of RAM, so the limit is read rather than assumed.
+size_t pinned_max_bytes() {
+    uint64_t limit = 0;
+    size_t len = sizeof(limit);
+    if (sysctlbyname("vm.user_wire_limit", &limit, &len, nullptr, 0) != 0) return 0;
+    return (size_t) limit;
+}
+// What is left of that limit, and the limit is GLOBAL: it bounds the wired memory of the whole
+// system, the kernel's own included, not this process's share of it. Measured by locking anonymous
+// memory in 32 MiB steps until the kernel refused: 10336 MiB granted where the limit less the
+// system's wired count stood at 10368, on a machine whose limit is 12451. So a device that wires
+// its buffers, or any other process that locks memory, shrinks this without this process having
+// allocated anything - which is why it is read each time rather than derived from the limit.
+uint64_t lockable_bytes() {
+    uint64_t global = 0;
+    size_t len = sizeof(global);
+    if (sysctlbyname("vm.global_user_wire_limit", &global, &len, nullptr, 0) != 0) return 0;
+    vm_statistics64_data_t vm;
+    if (!host_vm(&vm)) return 0;
+    const uint64_t wired = (uint64_t) vm.wire_count * (uint64_t) vm_page();
+    const uint64_t left = global > wired ? global - wired : 0;
+    return std::min({left, (uint64_t) pinned_max_bytes(), memlock_limit()});
+}
+// One store: a wired anonymous mapping is the same thing whether it was locked when it was
+// allocated or afterwards.
+uint64_t lock_in_place_bytes() {
+    return lockable_bytes();
+}
+bool pinned_alloc(size_t sz, PinnedAlloc * out) {
+    if (!sz || !out) return false;
+    void * p = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return false;
+    if (mlock(p, sz) != 0) { // over the limit: say so by failing, as a full device would
+        munmap(p, sz);
+        return false;
+    }
+    out->base = p;
+    out->handle = nullptr;
+    out->size = sz;
+    return true;
+}
+void pinned_free(PinnedAlloc * a) {
+    if (!a || !a->base) return;
+    munmap(a->base, a->size);
+    *a = PinnedAlloc{};
+}
+
 #else
 
 size_t pinned_max_bytes() {
     return 0;
+}
+// No reclaim-exempt allocation here, so nothing to total. Locking in place is whatever the
+// process limit says, and on Windows nothing: VirtualLock is bounded by a working-set quota that
+// is not ours to raise, which is why vm_pin declines there.
+uint64_t lockable_bytes() {
+    return 0;
+}
+uint64_t lock_in_place_bytes() {
+#if defined(_WIN32)
+    return 0;
+#else
+    return memlock_limit();
+#endif
 }
 bool pinned_alloc(size_t, PinnedAlloc *) {
     return false;
