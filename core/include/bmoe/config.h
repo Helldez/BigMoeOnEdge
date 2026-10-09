@@ -387,6 +387,13 @@ struct PrefillDeviceConfig {
     // its own must ask for - a speed-up the planner chose is never a reason for a model not to load.
     bool best_effort = false;
 
+    // How many layers of streamed experts the device holds at once (with moe.enabled). Two reads a
+    // layer while the one before it computes; one reads each layer at its own routing node, with
+    // the device waiting, and costs a layer less of memory. Same result either way.
+    int slots = 2;
+    static constexpr int slots_min = 1;
+    static constexpr int slots_max = 2;
+
     // Narrowest prefill graph sent to the device. A prompt is fed in ubatch-wide pieces; pieces at
     // least this wide run on the device and a shorter tail runs on the CPU. It must exceed every
     // graph width the CPU path uses, which is one token for plain decode — speculation's wider

@@ -7,6 +7,12 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **`--prefill-slots 1|2`: a prefill device can hold one layer of experts instead of two.** One
+  slot reads each layer at its own routing node with the device waiting, and costs a layer less
+  of memory; the result is the same, and the gates score both bit for bit. `--auto` uses two
+  where they fit the ledger and one where only one does. On a 16 GB Apple-silicon laptop,
+  Qwen3.6-35B-A3B Q4_K_M, a 1461-token prompt: 3.43 s with two slots, 3.94 and 4.19 s with one,
+  498 MiB less held.
 - **`--auto` chooses the prefill device.** The planner measures this model's matmul 128 tokens
   wide on the host and on every device - the shape of a prefill, which ranks devices in the
   opposite order to the one-token decode - and arms the fastest device that gave the host's

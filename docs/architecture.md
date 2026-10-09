@@ -36,8 +36,8 @@ core/
                 expert_stream_source (one reader per shard), router_hook
                 dense_weights — non-expert weight policy + the residency sensor
                 row_stream - row-gathered tables served from flash (see row-gathered-tables.md)
-                device_arena - two layer slots on a prefill device, filled from flash, whole layers
-                  or only the routed experts (npu-prefill.md)
+                device_arena - one or two layer slots on a prefill device, filled from flash, whole
+                  layers or only the routed experts (npu-prefill.md)
                 decide_probe - experimental per-decision expert usage and layer-exit answers (decide.md)
     engine/     session — composition + the generation loop (open/generate/close)
                 prefill_device - moves layer weights and model state onto a device per graph

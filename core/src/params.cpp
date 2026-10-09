@@ -524,6 +524,15 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("prefill-slots", "Prefill expert slots", G::Streaming, L::Experimental,
+                          "Layers of streamed experts the prefill device holds at once. 2 reads a layer while the "
+                          "previous one computes; 1 waits for each layer and needs a layer less of memory.");
+        d.value_hint = "N";
+        bounds(d, PrefillDeviceConfig::slots_min, PrefillDeviceConfig::slots_max);
+        bind_int(d, [](RunConfig & c) -> int & { return c.prefill.slots; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("prefill-loaders", "Prefill loaders", G::Streaming, L::Experimental,
                           "Threads that fill the prefill device's layer slots from flash, with streaming. "
                           "Decode read lanes stay on the read-lane setting.");
