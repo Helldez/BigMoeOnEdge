@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "about": "Models offered as a one-click download. These are the models the engine is measured on, not a catalog of everything that loads: any MoE gguf still works. Sizes are exact bytes from the repositories.",
+  "models": [
+    {
+      "id": "qwen3-30b-a3b-q4_k_m",
+      "title": "Qwen3-30B-A3B",
+      "quant": "Q4_K_M",
+      "blurb": "3B active of 30B. The published numbers use this one.",
+      "files": [
+        {"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
+         "url": "https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf?download=true"}
+      ]
+    },
+    {
+      "id": "qwen3.6-35b-a3b-q4_k_m",
+      "title": "Qwen3.6-35B-A3B",
+      "quant": "Q4_K_M",
+      "blurb": "3B active of 35B. Hybrid attention/SSM, comfortably past RAM.",
+      "files": [
+        {"name": "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf", "bytes": 22285080192,
+         "url": "https://huggingface.co/bartowski/Qwen_Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf?download=true"}
+      ]
+    },
+    {
+      "id": "gemma-4-26b-a4b-it-q4_k_m",
+      "title": "Gemma-4-26B-A4B-it",
+      "quant": "Q4_K_M",
+      "blurb": "4B active of 26B. Smaller experts, the gentlest start.",
+      "files": [
+        {"name": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf", "bytes": 17035038112,
+         "url": "https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF/resolve/main/google_gemma-4-26B-A4B-it-Q4_K_M.gguf?download=true"}
+      ]
+    },
+    {
+      "id": "gpt-oss-120b-q4_k_m",
+      "title": "gpt-oss-120b",
+      "quant": "Q4_K_M",
+      "blurb": "5B active of 117B. The larger-than-RAM case: two shards, downloaded as-is.",
+      "files": [
+        {"name": "gpt-oss-120b-Q4_K_M-00001-of-00002.gguf", "bytes": 49630904192,
+         "url": "https://huggingface.co/unsloth/gpt-oss-120b-GGUF/resolve/main/Q4_K_M/gpt-oss-120b-Q4_K_M-00001-of-00002.gguf?download=true"},
+        {"name": "gpt-oss-120b-Q4_K_M-00002-of-00002.gguf", "bytes": 13137819360,
+         "url": "https://huggingface.co/unsloth/gpt-oss-120b-GGUF/resolve/main/Q4_K_M/gpt-oss-120b-Q4_K_M-00002-of-00002.gguf?download=true"}
+      ]
+    },
+    {
+      "id": "deepseek-v4-flash-ud-iq2_m",
+      "title": "DeepSeek V4 Flash",
+      "quant": "UD-IQ2_M",
+      "blurb": "13B active of 284B. The biggest model offered: needs about 95 GB free.",
+      "files": [
+        {"name": "DeepSeek-V4-Flash-0731-UD-IQ2_M-00001-of-00003.gguf", "bytes": 5257664,
+         "url": "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_M/DeepSeek-V4-Flash-0731-UD-IQ2_M-00001-of-00003.gguf?download=true"},
+        {"name": "DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf", "bytes": 49956780160,
+         "url": "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_M/DeepSeek-V4-Flash-0731-UD-IQ2_M-00002-of-00003.gguf?download=true"},
+        {"name": "DeepSeek-V4-Flash-0731-UD-IQ2_M-00003-of-00003.gguf", "bytes": 40964890464,
+         "url": "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-IQ2_M/DeepSeek-V4-Flash-0731-UD-IQ2_M-00003-of-00003.gguf?download=true"}
+      ]
+    },
+    {
+      "id": "qwen3.8-flash-next-ud-iq3_xxs",
+      "title": "Qwen3.8-Flash-Next",
+      "quant": "UD-IQ3_XXS",
+      "blurb": "6B active of 125B, the Qwen4 preview. About 82 GB on disk.",
+      "files": [
+        {"name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf", "bytes": 10946624,
+         "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf?download=true"},
+        {"name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf", "bytes": 49567921344,
+         "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00002-of-00003.gguf?download=true"},
+        {"name": "Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf", "bytes": 32382955968,
+         "url": "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00003-of-00003.gguf?download=true"}
+      ]
+    },
+    {
+      "id": "qwen3.8-flash-next-q2_k",
+      "title": "Qwen3.8-Flash-Next",
+      "quant": "Q2_K",
+      "blurb": "Same model, dense side at 2-4 bit: 2.4 GB resident instead of 4.3. About 80 GB on disk.",
+      "files": [
+        {"name": "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00001-of-00006.gguf", "bytes": 535376896,
+         "url": "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00001-of-00006.gguf?download=true"},
+        {"name": "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00002-of-00006.gguf", "bytes": 28800138432,
+         "url": "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00002-of-00006.gguf?download=true"},
+        {"name": "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00003-of-00006.gguf", "bytes": 13998686336,
+         "url": "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00003-of-00006.gguf?download=true"},
+        {"name": "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00004-of-00006.gguf", "bytes": 13809369312,
+         "url": "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00004-of-00006.gguf?download=true"},
+        {"name": "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00005-of-00006.gguf", "bytes": 13782644992,
+         "url": "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00005-of-00006.gguf?download=true"},
+        {"name": "Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00006-of-00006.gguf", "bytes": 9521233888,
+         "url": "https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF/resolve/main/Q2_K/Qwen.Qwen3.8-Flash-Next.f16.gguf.Q2_K.gguf-00006-of-00006.gguf?download=true"}
+      ]
+    }
+  ]
+}
