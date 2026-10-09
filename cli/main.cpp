@@ -892,6 +892,16 @@ int main(int argc, char ** argv) {
 
         if (plan_explain) {
             std::fprintf(stderr, "plan: machine %s\n", hw.label.c_str());
+            // Every device with what it measured, so a decision about one can be checked against
+            // the figures it was made from. 0 is "not measured", never "slow".
+            for (const ComputeDevice & d : hw.devices) {
+                const auto verdict = [](Tri t) {
+                    return t == Tri::Yes ? "same result" : t == Tri::No ? "WRONG result" : "unverified";
+                };
+                std::fprintf(stderr, "plan: device %s%s: one token %.0f GiB/s (%s), %u tokens wide %.0f GiB/s (%s)\n",
+                             d.name.c_str(), d.is_cpu ? " (host)" : "", d.memory_bandwidth_gibs, verdict(d.identity_ok),
+                             hw.wide_batch, d.wide_matmul_gibs, verdict(d.wide_identity_ok));
+            }
             if (mp.ok) {
                 std::fprintf(stderr, "plan: model %s, %u experts top-%u over %u of %u blocks\n", mp.arch.c_str(),
                              mp.n_expert, mp.n_expert_used, mp.n_moe_layer, mp.n_layer);

@@ -134,6 +134,8 @@ std::string Plan::to_flags() const {
     if (config.moe.row_stream) add("--row-stream");
     if (config.moe.dense_weights != def.moe.dense_weights)
         add("--dense-weights " + std::string(dense_mode_flag(config.moe.dense_weights)));
+    if (config.prefill.enabled()) add("--prefill-device " + config.prefill.device);
+    if (config.prefill.best_effort) add("--prefill-best-effort");
     if (config.n_threads != def.n_threads) add("--threads " + std::to_string(config.n_threads));
     if (config.n_ctx != def.n_ctx) add("--ctx-size " + std::to_string(config.n_ctx));
     if (config.n_ubatch != def.n_ubatch) add("--ubatch " + std::to_string(config.n_ubatch));

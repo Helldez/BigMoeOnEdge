@@ -625,22 +625,145 @@ Plan plan_run(const RunConfig & base,
     ai.lockable_bytes = lock_cap(hw.lockable_bytes);
     ai.lock_in_place_bytes = lock_cap(hw.lock_in_place_bytes);
 
-    // A device the caller armed for prefill. Its cost is the model's own arithmetic - room for the
-    // layer being computed and the one being loaded behind it - plus the compute buffer the fitter
-    // projects for it, and it is charged here only where the device's memory is this pool. The
-    // name is the caller's, matched to find that device's facts and for nothing else; a device the
-    // profile does not know is charged as if it shared the pool, which is the safe reading.
+    // ── the prefill plan: a separate placement, decided on its own axis ─────────────
+    // Prefill and decode want opposite hardware, so this is not the device question above asked
+    // again. A decode graph is one token wide and bound by reading weights; a prefill graph is
+    // hundreds wide and bound by computing on them, and the same device can lose one and win the
+    // other several times over. What decides it is therefore the WIDE measurement, never the
+    // one-token bandwidth - and three more things, each a fact rather than a name: the device
+    // reproduced the host's answer at that width, the run's other settings can coexist with it,
+    // and what it costs in memory still leaves the ledger closed.
+    //
+    // What a device costs is the model's own arithmetic: under streaming it carries a layer's
+    // experts and a layer's other weights through two slots each - the layer being computed and
+    // the one being loaded behind it - plus the compute buffer llama.cpp projects for it. It is
+    // charged to this pool only where the device's memory IS this pool.
+    auto prefill_cost = [&](const ComputeDevice * dev, AllocationInputs & in) {
+        if (dev && dev->has_own_memory()) return;
+        in.device_bytes =
+            2 * (model.largest_expert_layer_bytes + model.largest_layer_dense_bytes) + placement.device_compute_bytes;
+        in.device_locked = !dev || dev->charges_lockable();
+    };
+
+    Allocation alloc;
     if (p.config.prefill.enabled()) {
+        // Armed by the caller: charged as asked, and reported. The name is the caller's, matched
+        // to find that device's facts and for nothing else; one the profile does not know is
+        // charged as if it shared the pool, which is the safe reading.
         const ComputeDevice * dev = nullptr;
         for (const ComputeDevice & d : hw.devices)
             if (!d.is_cpu && d.name == p.config.prefill.device) dev = &d;
-        if (!dev || dev->reads_host_memory()) {
-            ai.device_bytes = 2 * model.largest_expert_layer_bytes + placement.device_compute_bytes;
-            ai.device_locked = !dev || dev->charges_lockable();
+        prefill_cost(dev, ai);
+        alloc = allocate(hw, host_model, ai, pol);
+        note("prefill-device", p.config.prefill.device, Source::Operator,
+             "set by the caller; the planner leaves it alone and charges it " + u64s(mib(ai.device_bytes)) +
+                 " MiB in the ledger");
+    } else if (req.is_pinned("prefill-device")) {
+        alloc = allocate(hw, host_model, ai, pol);
+        note("prefill-device", "off", Source::Operator, "set by the caller; the planner leaves it alone");
+    } else {
+        alloc = allocate(hw, host_model, ai, pol);
+
+        // The fastest device that is both measured and verified at prefill width.
+        const ComputeDevice * best = nullptr;
+        const ComputeDevice * wrong = nullptr;
+        uint32_t n_accel = 0, n_measured = 0;
+        for (const ComputeDevice & d : hw.devices) {
+            if (d.is_cpu || d.is_host_helper) continue;
+            ++n_accel;
+            if (d.wide_matmul_gibs <= 0.0) continue;
+            ++n_measured;
+            if (d.wide_identity_ok != Tri::Yes) {
+                wrong = &d;
+                continue;
+            }
+            if (!best || d.wide_matmul_gibs > best->wide_matmul_gibs) best = &d;
+        }
+        const double host_wide = hw.host_wide_matmul_gibs;
+        auto ratio = [&](const ComputeDevice & d) {
+            char b[32];
+            std::snprintf(b, sizeof(b), "%.1fx", d.wide_matmul_gibs / host_wide);
+            return std::string(b);
+        };
+        const std::string width = u64s(hw.wide_batch) + " tokens wide";
+
+        // What else in this run a device prefill cannot share a session with. The same conditions
+        // validate() refuses, read here so the plan declines them with a reason instead of
+        // producing a config that does not start.
+        std::string conflict;
+        if (p.config.moe.row_stream)
+            conflict = "row-streamed tables are gathered on the host, inside a graph that would run on the device";
+        else if (p.config.spec.enabled())
+            conflict = "speculative decoding widens host graphs past the width that keeps the two placements apart";
+        else if (p.config.decide.enabled && p.config.decide.prefix_cache == PrefixCacheMode::On)
+            conflict = "a kept prefix state would be saved from where the model state was before it moved";
+        else if (p.config.n_ubatch > 0 && p.config.n_ubatch < p.config.prefill.min_tokens)
+            conflict = "the ubatch is narrower than the narrowest graph a device is handed";
+        else if (p.config.prefill.min_tokens > p.config.n_ctx)
+            conflict = "the context is shorter than the narrowest graph a device is handed";
+
+        if (n_accel == 0) {
+            note("prefill-device", "off", hw.backends_looked ? Source::Measured : Source::Unprobed,
+                 "no compute device beyond the host CPU was enumerated, so the prefill runs where the decode does");
+        } else if (host_wide <= 0.0 || n_measured == 0) {
+            note("prefill-device", "off", Source::Unprobed,
+                 "a prefill is many tokens wide and bound by compute, not by the bandwidth a one-token graph "
+                 "measures, and no device here was measured at that width: an unmeasured device is not armed");
+        } else if (!best) {
+            note("prefill-device", "off", Source::Measured,
+                 wrong->name + " ran this model's matmul " + width +
+                     " and did not reproduce the host's result: refused on correctness, whatever its speed");
+        } else if (best->wide_matmul_gibs <= host_wide * (1.0 + (double) pol.min_backend_win)) {
+            note("prefill-device", "off", Source::Measured,
+                 best->name + " computes this model's matmul " + width + " at " + ratio(*best) +
+                     " the host's rate, which is not a win worth a second placement");
+        } else if (!conflict.empty()) {
+            note("prefill-device", "off", Source::Derived,
+                 best->name + " computes a wide prefill at " + ratio(*best) +
+                     " the host's rate and is not armed, because " + conflict);
+        } else {
+            // It pays. Whether it FITS is the ledger's to say, with the device as a row: the run
+            // must still stream - a cache of at least one token cycle - and the dense set must not
+            // lose a protection it had, since both of those are paid on every decoded token and a
+            // prefill is paid once.
+            AllocationInputs with = ai;
+            prefill_cost(best, with);
+            const uint64_t own_need = 2 * (model.largest_expert_layer_bytes + model.largest_layer_dense_bytes);
+            const bool own_short = best->has_own_memory() && best->memory_free > 0 && best->memory_free < own_need;
+            const Allocation armed = allocate(hw, host_model, with, pol);
+            const bool streams = armed.cache_bytes >= host_model.token_cycle_bytes && armed.cache_bytes > 0;
+            const bool keeps_dense = armed.dense_pinned == alloc.dense_pinned;
+            if (own_short) {
+                note("prefill-device", "off", Source::Measured,
+                     best->name + " computes a wide prefill at " + ratio(*best) + " the host's rate and has " +
+                         u64s(mib(best->memory_free)) + " MiB free of the " + u64s(mib(own_need)) +
+                         " MiB two layers of this model take: refused on memory");
+            } else if (!streams || !keeps_dense) {
+                note("prefill-device", "off", Source::Derived,
+                     best->name + " computes a wide prefill at " + ratio(*best) +
+                         " the host's rate and is refused on memory: it would hold " + u64s(mib(with.device_bytes)) +
+                         " MiB of this pool (two layers of this model and its compute buffer), which leaves " +
+                         (streams ? "the dense set without the protection it has"
+                                  : "the expert cache " + u64s(mib(armed.cache_bytes)) +
+                                        " MiB against a token cycle of " + u64s(mib(host_model.token_cycle_bytes))) +
+                         ". That is paid on every decoded token, and a prefill is paid once");
+            } else {
+                ai = with;
+                p.config.prefill.device = best->name;
+                p.config.prefill.best_effort = true;
+                note("prefill-device", best->name, Source::Measured,
+                     "computes this model's matmul " + width + " at " + ratio(*best) +
+                         " the host's rate with the same result, and its " + u64s(mib(with.device_bytes)) +
+                         " MiB fit the ledger: the expert cache gives up " +
+                         u64s(mib(alloc.cache_bytes > armed.cache_bytes ? alloc.cache_bytes - armed.cache_bytes : 0)) +
+                         " MiB for it. Decode stays on the host. If the device cannot be set up at load the "
+                         "prefill runs on the host instead. A device's arithmetic is not the host's to the "
+                         "last bit, so the text that follows can differ from a host prefill's: pass an empty "
+                         "--prefill-device to keep the prefill on the host");
+                alloc = armed;
+            }
         }
     }
-
-    const Allocation alloc = allocate(hw, host_model, ai, pol);
     p.allocation = alloc;
 
     // The dense candidate, settled by the ledger.

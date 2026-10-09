@@ -38,6 +38,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <vector>
 
 namespace bmoe {
@@ -65,6 +66,20 @@ constexpr int64_t k_cols = 4096;
 constexpr double k_sample_seconds = 0.15;
 constexpr int k_reps_max = 512;
 
+// The second instrument: the same matmul, many tokens wide. A one-token graph is bound by how fast
+// weights can be READ, which is why the figure above is a bandwidth; a wide one multiplies every
+// weight by a whole batch, so it is bound by how fast the engine can COMPUTE, and the two rank
+// devices in opposite orders - measured on one unified-memory machine, the cores read 109 GiB/s
+// against the accelerator's 64 and then lose a wide prefill to it seven times over. A prefill
+// decision read off the one-token figure would be made on the wrong axis.
+//
+// The width is several times the narrowest graph a prefill device is ever handed, so the sample
+// sits inside the regime it speaks for. The weight is smaller than the bandwidth probe's on
+// purpose: nothing here depends on outrunning a cache, and at the full size a slow machine would
+// spend seconds on a probe.
+constexpr int64_t k_wide_batch = 128;
+constexpr int64_t k_wide_rows = 4096;
+
 // The weight type to measure with. The model's own where it has one; falling back to F32 makes the
 // figure a raw bandwidth number rather than a number about this workload, and the plan says so.
 ggml_type weight_type(const ModelProfile & model) {
@@ -91,15 +106,17 @@ struct Probe {
     ggml_type type = GGML_TYPE_F32;
     int64_t cols = 0;
     int64_t rows = 0;
+    int64_t batch = 1; // tokens the input is wide: 1 is the decode's shape, more is a prefill's
     std::vector<uint8_t> weight;
     std::vector<float> x;
 };
 
-bool build_probe(Probe & p, ggml_type wtype) {
+bool build_probe(Probe & p, ggml_type wtype, int64_t rows = k_rows, int64_t batch = 1) {
     const int64_t blk = ggml_blck_size(wtype);
     p.type = wtype;
     p.cols = blk > 0 ? (k_cols / blk) * blk : k_cols;
-    p.rows = k_rows;
+    p.rows = rows;
+    p.batch = batch;
     if (p.cols <= 0) return false;
 
     const size_t row_bytes = ggml_row_size(wtype, p.cols);
@@ -116,9 +133,11 @@ bool build_probe(Probe & p, ggml_type wtype) {
         return false;
     }
 
-    p.x.resize((size_t) p.cols);
+    // Every column differs from its neighbours, so a kernel that computed one token and repeated
+    // it across the batch cannot agree with the reference.
+    p.x.resize((size_t) (p.cols * p.batch));
     for (size_t i = 0; i < p.x.size(); ++i)
-        p.x[i] = std::cos((float) (i % 512) * 0.011f);
+        p.x[i] = std::cos((float) (i % 512) * 0.011f + (float) (i / (size_t) p.cols) * 0.37f);
     return true;
 }
 
@@ -134,7 +153,16 @@ struct RunResult {
 RunResult run_gemv(ggml_backend_dev_t dev, const Probe & p, int n_threads, bool host_ptr_buffer) {
     RunResult r;
     if (!dev) return r;
-    ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
+    // A registered device can still refuse to open, and some say so by throwing: an accelerator
+    // registers on any machine that has its driver and only opening a session finds hardware its
+    // kernels were not built for. That is "unmeasured" like any other failure here, and a probe
+    // must not be the thing that ends a plan.
+    ggml_backend_t backend = nullptr;
+    try {
+        backend = ggml_backend_dev_init(dev, nullptr);
+    } catch (const std::exception &) {
+        backend = nullptr;
+    }
     if (!backend) return r;
 
     // Ask the backend for its own thread setter rather than calling a CPU-specific function: it is
@@ -163,7 +191,7 @@ RunResult run_gemv(ggml_backend_dev_t dev, const Probe & p, int n_threads, bool 
     std::vector<uint8_t> host_copy;
 
     ggml_tensor * w = ggml_new_tensor_2d(ctx, p.type, p.cols, p.rows);
-    ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, p.cols, 1);
+    ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, p.cols, p.batch);
     ggml_tensor * y = (w && x) ? ggml_mul_mat(ctx, w, x) : nullptr;
 
     // Ask before allocating: a backend without a kernel for this shape would otherwise be charged
@@ -213,8 +241,11 @@ RunResult run_gemv(ggml_backend_dev_t dev, const Probe & p, int n_threads, bool 
                 const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
                 if (all_ok && secs > 0.0 && reps > 0) {
-                    r.gibs = (double) ggml_nbytes(w) * reps / secs / (1024.0 * 1024.0 * 1024.0);
-                    r.out.resize((size_t) p.rows);
+                    // Weight bytes APPLIED per second: every weight is used once per token of the
+                    // batch, so at width 1 this is the bandwidth figure and at any other width the
+                    // two sides of a ratio are still the same quantity.
+                    r.gibs = (double) ggml_nbytes(w) * (double) p.batch * reps / secs / (1024.0 * 1024.0 * 1024.0);
+                    r.out.resize((size_t) (p.rows * p.batch));
                     ggml_backend_tensor_get(y, r.out.data(), 0, r.out.size() * sizeof(float));
                     r.ok = true;
                 }
@@ -230,6 +261,15 @@ RunResult run_gemv(ggml_backend_dev_t dev, const Probe & p, int n_threads, bool 
 }
 
 // Agreement, not bit-equality. See the file header.
+//
+// The bound sits between two populations that are far apart, and it used to sit inside the first.
+// Correct kernels disagree with the host by what their arithmetic differs in - the host multiplies
+// a quantized weight by an activation it has itself quantized, a device typically by the float -
+// and that is measured at 4e-5 on one 4-bit type, 1.9e-4 on a 2-bit one and 3e-4 to 4e-4 at prefill
+// width. A wrong kernel is off by the size of the answer. At 1e-4 the 2-bit type and every wide
+// result were being reported as wrong, which is a tolerance describing one quantization rather
+// than a device. A hundredth is still two orders below "wrong".
+constexpr double k_agreement = 1e-2;
 bool agrees(const std::vector<float> & a, const std::vector<float> & b) {
     if (a.size() != b.size() || a.empty()) return false;
     double num = 0, den = 0;
@@ -239,7 +279,7 @@ bool agrees(const std::vector<float> & a, const std::vector<float> & b) {
         den += (double) a[i] * (double) a[i];
     }
     if (den <= 0) return false;
-    return std::sqrt(num / den) < 1e-4;
+    return std::sqrt(num / den) < k_agreement;
 }
 
 } // namespace
@@ -311,6 +351,40 @@ void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model) {
         if (is_yes(d.host_ptr_buffers) && !reference.empty()) {
             const RunResult hp = run_gemv(dev, probe, 0, true);
             d.host_ptr_verified = (hp.ok && agrees(hp.out, reference)) ? Tri::Yes : Tri::No;
+        }
+    }
+
+    // ── the wide instrument: who computes a prefill faster, and correctly ─────────────────────
+    // Same shape of experiment as above - the host first, as the reference and the figure to beat,
+    // then every device against it on the same bytes - with nothing carried over from the
+    // one-token result: a device that lost there is measured here all the same, because losing
+    // there says nothing about here. A device that will not run the wide graph keeps its
+    // unmeasured 0 and its Unknown, and no rule arms it.
+    Probe wide;
+    if (build_probe(wide, probe.type, k_wide_rows, k_wide_batch)) {
+        std::vector<float> wide_ref;
+        for (ComputeDevice & d : hw.devices) {
+            if (!d.is_cpu) continue;
+            ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
+            if (!dev) continue;
+            const RunResult r = run_gemv(dev, wide, (int) hw.best_threads, false);
+            if (!r.ok) break;
+            wide_ref = r.out;
+            d.wide_matmul_gibs = r.gibs;
+            d.wide_identity_ok = Tri::Yes; // the reference
+            hw.host_wide_matmul_gibs = r.gibs;
+            hw.wide_batch = (uint32_t) k_wide_batch;
+            break;
+        }
+        for (ComputeDevice & d : hw.devices) {
+            if (d.is_cpu || d.is_host_helper || wide_ref.empty()) continue;
+            ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
+            if (!dev) continue;
+            if (d.has_own_memory() && d.memory_free && d.memory_free < (uint64_t) wide.weight.size() * 4) continue;
+            const RunResult r = run_gemv(dev, wide, 0, false);
+            if (!r.ok) continue;
+            d.wide_matmul_gibs = r.gibs;
+            d.wide_identity_ok = agrees(r.out, wide_ref) ? Tri::Yes : Tri::No;
         }
     }
 

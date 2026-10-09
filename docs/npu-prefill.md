@@ -34,6 +34,18 @@ prompt, a 2048-token context:
 | CPU | 16.2 s (14.7 tok/s) | 3.60 tok/s (8192-token context) |
 | NPU | 5.85 s (40.7 tok/s) | 3.30 tok/s |
 
+### Chosen by the plan
+
+`--auto` decides the prefill device on its own: it measures this model's matmul 128 tokens wide on
+the host and on every device, and arms the fastest one that gave the host's answer and whose two
+layer slots still fit the memory ledger. A device it armed is optional - if it cannot be set up the
+prefill runs on the host - while one named with `--prefill-device` still fails the load when it
+cannot be used. See "The prefill plan" in [hardware-planning.md](hardware-planning.md).
+
+The text that follows a device prefill is not guaranteed to be the text that follows a host one:
+the arithmetic differs in the last bits and greedy decoding can turn that into a different word at
+a near tie. An empty `--prefill-device` keeps `--auto` from arming one.
+
 ### On a GPU (Metal)
 
 Nothing in the path is specific to an NPU: the device is a ggml device name, and on macOS that is

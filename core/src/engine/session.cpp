@@ -1167,7 +1167,18 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
     if (im.prefill) {
         std::string perr;
-        if (!im.prefill->open(ctx, im.vocab, *im.hook, cfg.prefill, cfg.moe, n_layer_streamed, perr)) return fail(perr);
+        if (!im.prefill->open(ctx, im.vocab, *im.hook, cfg.prefill, cfg.moe, n_layer_streamed, perr)) {
+            if (!cfg.prefill.best_effort) return fail(perr);
+            // Asked for as a speed-up, not as a condition: undo it and run on the CPU. Destroying
+            // the path hands every weight and the model state back to where the load put them, so
+            // what is left is the session a run without the flag would have had.
+            std::fprintf(stderr, "bmoe: %s; prefill stays on the CPU\n", perr.c_str());
+            im.hook->set_device_arena(nullptr);
+            im.hook->count_device_nodes(false);
+            im.prefill.reset();
+            im.cfg.prefill.device.clear();
+            im.clear_memory(ctx);
+        }
     }
 
     // Decode traces. Outside the streaming block on purpose: the compute trace measures the graph,

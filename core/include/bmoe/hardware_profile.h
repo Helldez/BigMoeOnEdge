@@ -65,6 +65,12 @@ struct ComputeDevice {
     // gets silently excluded from a question that was only ever meant to exclude the CPU.
     bool is_cpu = false;
 
+    // True for a device that is not somewhere work can be PLACED: a library the host's own graphs
+    // call into for some operations, registered as a device because that is how a backend is made
+    // known. It computes on the host's memory with the host's cores and holds no weights of its
+    // own, so "put the prefill on it" is not a sentence that means anything.
+    bool is_host_helper = false;
+
     // Whether this device's memory IS the host's — one physical pool, so moving a tensor onto it
     // frees nothing and the capacity tier is inert, leaving only bandwidth to win.
     //
@@ -143,6 +149,15 @@ struct ComputeDevice {
     // on one buffer sees none of the costs below. Measured 20 GiB/s against the host's 12 on a
     // phone whose engine then ran the offload at 0.53x.
     double memory_bandwidth_gibs = 0.0;
+
+    // The same matmul many tokens wide, as weight bytes applied per second; 0 when unmeasured. It
+    // is the figure a PREFILL placement turns on and it is not derivable from the one above: a
+    // one-token graph is bound by reading weights and a wide one by computing on them, and a
+    // device can lose the first and win the second several times over. `wide_identity_ok` is
+    // whether it also reproduced the CPU's result at that width - asked separately, because a
+    // backend's batched kernel is not the kernel its one-token path runs.
+    double wide_matmul_gibs = 0.0;
+    Tri wide_identity_ok = Tri::Unknown;
 
     // Whether this device reproduced the CPU's result on the probe graph. A device that computes
     // something else is excluded on CORRECTNESS, before speed is considered at all — and the
@@ -310,6 +325,11 @@ struct HardwareProfile {
     // same graph, it answers the only question that decides an offload - who consumes this model's
     // weights faster - which is what batch-1 decode is, every weight read once and multiplied once.
     double host_bandwidth_gibs = 0.0;
+
+    // The host on the wide matmul (see ComputeDevice::wide_matmul_gibs), and the width it was
+    // measured at, for the rationale. 0 when unmeasured, and then no prefill device is armed.
+    double host_wide_matmul_gibs = 0.0;
+    uint32_t wide_batch = 0;
 
     std::vector<ComputeDevice> devices;
 
