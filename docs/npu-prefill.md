@@ -46,6 +46,11 @@ cannot be used. See "The prefill plan" in [hardware-planning.md](hardware-planni
 each layer's read instead of having it read behind the previous layer's compute; the plan falls
 back to it on its own when two slots do not fit.
 
+`--prefill-slots-on-demand` holds the expert slots only while a prefill runs on the device and
+gives their memory to the expert cache the rest of the time: the two are never busy at once. The
+plan arms a device this way. Each prefill then evicts what the slots need from the cache and
+builds them, which costs a few tenths of a second and the re-read of what was evicted.
+
 The text that follows a device prefill is not guaranteed to be the text that follows a host one:
 the arithmetic differs in the last bits and greedy decoding can turn that into a different word at
 a near tie. An empty `--prefill-device` keeps `--auto` from arming one.

@@ -67,7 +67,12 @@ public:
               std::string & err);
 
     // Placement of the NEXT graph: the layer weights, the streamed experts and the hook move together.
-    void place(bool on_device);
+    // Returns where it actually went: with slots on demand a device that has no room right now
+    // leaves the graph on the host.
+    bool place(bool on_device);
+    // The expert cache the slots take turns with (PrefillDeviceConfig::slots_on_demand). Call before
+    // open(); null leaves the cache alone.
+    void share_memory_with(ExpertStreamSource * cache) { cache_ = cache; }
     // One llama_decode, on whichever side place() last chose. On the device the arena is started
     // before and drained after, and a failed expert read fails the decode: the graph would have
     // computed on a slot that never filled.
@@ -90,6 +95,10 @@ private:
 
     ggml_backend_dev_t devs_[2];
     RouterHook * hook_ = nullptr;
+    llama_context * ctx_ = nullptr;
+    ExpertStreamSource * cache_ = nullptr;
+    size_t yielded_budget_ = 0; // the cache budget to give back when the slots are released; 0 = nothing yielded
+    bool said_no_room_ = false;
     std::vector<LayerExperts> arena_layers_;
     std::vector<std::string> arena_shards_;
     // Declared before the arena so it is destroyed after it: the arena hands the experts back to the

@@ -533,6 +533,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("prefill-slots-on-demand", "Prefill slots share the cache", G::Streaming, L::Experimental,
+                          "Hold the prefill device's expert slots only during a prefill and give their memory to "
+                          "the expert cache the rest of the time. The cache keeps its full budget for decode; "
+                          "each prefill evicts what the slots need and sets them up again.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--prefill-slots-on-demand", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.prefill.slots_on_demand; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("prefill-loaders", "Prefill loaders", G::Streaming, L::Experimental,
                           "Threads that fill the prefill device's layer slots from flash, with streaming. "
                           "Decode read lanes stay on the read-lane setting.");

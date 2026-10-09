@@ -1007,18 +1007,40 @@ int main() {
 
         const Plan on = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, PlanRequest{});
         const LedgerRow * row = ledger_row(on, "device");
+        const LedgerRow * turn = ledger_row(on, "device slots");
+        const uint64_t stays = 2 * 64 * MiB;    // the layer's other weights, held for the session
+        const uint64_t in_turn = 2 * 384 * MiB; // the expert slots, held only during a prefill
         check(on.config.prefill.device == "accel",
               "prefill: a device that wins wide and agrees is armed by its own name");
         check(on.config.prefill.best_effort, "prefill: a device the plan armed is never a condition for the load");
-        check(row && row->locked && row->bytes == two_layers, "prefill: it is charged two layers, experts and the rest",
+        // The expert slots take turns with the cache: it is idle exactly when they are busy, so
+        // they are not charged to decode. What the cache gives up is only what stays.
+        check(on.config.prefill.slots_on_demand, "prefill: a plan arms slots that take turns with the cache");
+        check(row && row->locked && row->bytes == stays && !row->in_turn,
+              "prefill: what stays for the session is a row",
               row ? std::to_string((unsigned long long) (row->bytes >> 20)) + " MiB" : "no row");
-        check(off.cache_budget_bytes - on.cache_budget_bytes == two_layers,
-              "prefill: and the cache gives up exactly that");
+        check(turn && turn->in_turn && turn->bytes == in_turn,
+              "prefill: the expert slots are a row in turn with the cache",
+              turn ? std::to_string((unsigned long long) (turn->bytes >> 20)) + " MiB" : "no row");
+        check(off.cache_budget_bytes - on.cache_budget_bytes == stays,
+              "prefill: and the cache gives up only what stays");
+        uint64_t counted = 0;
+        for (const LedgerRow & r : on.allocation.ledger.rows)
+            if (!r.in_turn) counted += r.bytes;
+        check(counted == on.allocation.ledger.held, "prefill: a row in turn is not in what is held while decoding");
+        // A caller who wants them held for the session gets the old account: the cache makes room for all of it.
+        PlanRequest held_req;
+        held_req.pinned = {"prefill-slots-on-demand"};
+        const Plan held = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, held_req);
+        check(!held.config.prefill.slots_on_demand && ledger_row(held, "device slots") == nullptr &&
+                  off.cache_budget_bytes - held.cache_budget_bytes == two_layers,
+              "prefill: slots held for the session are charged whole, beside the cache");
         check(on.allocation.ledger.locked <= on.allocation.ledger.lockable_cap, "prefill: the ledger still closes");
         check(on.config.device_use != DeviceUse::CpuOnly, "prefill: an armed device is not taken out of the run");
         check(validate(on.config).ok, "prefill: the armed plan is a valid config", validate(on.config).error);
         check(on.to_flags().find("--prefill-device accel") != std::string::npos &&
-                  on.to_flags().find("--prefill-best-effort") != std::string::npos,
+                  on.to_flags().find("--prefill-best-effort") != std::string::npos &&
+                  on.to_flags().find("--prefill-slots-on-demand") != std::string::npos,
               "prefill: the reproduce line carries it");
 
         const Plan wrong = plan_run(base_cfg(), machine(1500.0, Tri::No), mm, PlanRequest{});
@@ -1032,19 +1054,18 @@ int main() {
         // Two slots do not fit and one does: the device is armed with one, and the plan says so.
         // The layer is sized so that the difference between the two is exactly what decides it.
         ModelProfile mid = mm;
-        mid.largest_expert_layer_bytes = 3 * GiB;
+        mid.largest_expert_layer_bytes = 4 * GiB; // the cache can yield one of these and not two
         const Plan one = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mid, PlanRequest{});
-        const LedgerRow * one_row = ledger_row(one, "device");
+        const LedgerRow * one_row = ledger_row(one, "device slots");
         check(one.config.prefill.device == "accel" && one.config.prefill.slots == 1,
               "prefill: where two expert slots do not fit and one does, one is used",
               std::to_string(one.config.prefill.slots) + " slot(s)");
-        check(one_row && one_row->bytes == 3 * GiB + 2 * 64 * MiB,
-              "prefill: and one layer of experts is what is charged");
+        check(one_row && one_row->bytes == 4 * GiB, "prefill: and one layer of experts is what takes its turn");
         check(reason(one).find("one expert slot") != std::string::npos,
               "prefill: the plan says it chose the narrower scheme");
         check(one.to_flags().find("--prefill-slots 1") != std::string::npos,
               "prefill: the reproduce line carries the slot count");
-        check(on.config.prefill.slots == 2 && on.to_flags().find("--prefill-slots") == std::string::npos,
+        check(on.config.prefill.slots == 2 && on.to_flags().find("--prefill-slots 1") == std::string::npos,
               "prefill: two slots stay the default where they fit");
         check(validate(one.config).ok, "prefill: the one-slot plan is a valid config", validate(one.config).error);
 
@@ -1106,7 +1127,7 @@ int main() {
         sizeless.devices[1].shares_host_memory = Tri::No;
         const Plan sz = plan_run(base_cfg(), sizeless, mm, PlanRequest{});
         const LedgerRow * szr = ledger_row(sz, "device");
-        check(sz.config.prefill.device == "accel" && szr && szr->bytes == two_layers,
+        check(sz.config.prefill.device == "accel" && szr && szr->bytes == stays && ledger_row(sz, "device slots"),
               "prefill: a device that claims its own memory and states no size is charged to the host");
 
         disc.devices[1].memory_free = 256 * MiB;

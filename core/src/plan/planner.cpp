@@ -652,9 +652,14 @@ Plan plan_run(const RunConfig & base,
     // and a pool with no stated size cannot be budgeted against. It is charged here, which is the
     // reading that cannot overcommit: seen on a phone whose NPU was armed at a cost of 0 MiB.
     auto own_pool = [](const ComputeDevice * dev) { return dev && dev->has_own_memory() && dev->memory_total > 0; };
-    auto prefill_cost = [&](const ComputeDevice * dev, AllocationInputs & in, int slots) {
+    // Slots held only during a prefill take turns with the cache instead of standing beside it:
+    // they are charged as such, and what stays for the session is the rest.
+    auto prefill_cost = [&](const ComputeDevice * dev, AllocationInputs & in, int slots, bool on_demand) {
         if (own_pool(dev)) return;
-        in.device_bytes = prefill_need(slots) + placement.device_compute_bytes;
+        const uint64_t experts = (uint64_t) slots * model.largest_expert_layer_bytes;
+        const uint64_t rest = 2 * model.largest_layer_dense_bytes + placement.device_compute_bytes;
+        in.device_bytes = on_demand ? rest : rest + experts;
+        in.device_turn_bytes = on_demand ? experts : 0;
         in.device_locked = !dev || dev->charges_lockable();
     };
 
@@ -666,11 +671,11 @@ Plan plan_run(const RunConfig & base,
         const ComputeDevice * dev = nullptr;
         for (const ComputeDevice & d : hw.devices)
             if (!d.is_cpu && d.name == p.config.prefill.device) dev = &d;
-        prefill_cost(dev, ai, p.config.prefill.slots);
+        prefill_cost(dev, ai, p.config.prefill.slots, p.config.prefill.slots_on_demand);
         alloc = allocate(hw, host_model, ai, pol);
         note("prefill-device", p.config.prefill.device, Source::Operator,
-             "set by the caller; the planner leaves it alone and charges it " + u64s(mib(ai.device_bytes)) +
-                 " MiB in the ledger");
+             "set by the caller; the planner leaves it alone and charges it " +
+                 u64s(mib(ai.device_bytes + ai.device_turn_bytes)) + " MiB in the ledger");
     } else if (req.is_pinned("prefill-device")) {
         alloc = allocate(hw, host_model, ai, pol);
         note("prefill-device", "off", Source::Operator, "set by the caller; the planner leaves it alone");
@@ -742,6 +747,10 @@ Plan plan_run(const RunConfig & base,
             // Two slots first, then one: the wider scheme where it fits, the narrower where only it
             // does. A caller who set the count has chosen, and only that count is tried.
             const bool slots_by_caller = req.is_pinned("prefill-slots");
+            // Slots that take turns with the cache are the scheme a plan arms: the cache is idle
+            // exactly when they are busy, so standing them beside it charges decode, on every
+            // token, for memory only a prefill uses. A caller who set it either way has chosen.
+            const bool turns = req.is_pinned("prefill-slots-on-demand") ? p.config.prefill.slots_on_demand : true;
             AllocationInputs with = ai;
             Allocation armed;
             int slots = 0;
@@ -749,7 +758,7 @@ Plan plan_run(const RunConfig & base,
             for (int n = slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_max;
                  n >= PrefillDeviceConfig::slots_min; --n) {
                 with = ai;
-                prefill_cost(best, with, n);
+                prefill_cost(best, with, n, turns);
                 own_short = own_pool(best) && best->memory_free > 0 && best->memory_free < prefill_need(n);
                 armed = allocate(hw, host_model, with, pol);
                 streams = armed.cache_bytes >= host_model.token_cycle_bytes && armed.cache_bytes > 0;
@@ -758,7 +767,7 @@ Plan plan_run(const RunConfig & base,
                 // very thing the ledger exists to keep.
                 keeps_dense = armed.dense_pinned == alloc.dense_pinned &&
                               (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0);
-                if (!own_short && streams && keeps_dense) {
+                if (!own_short && streams && keeps_dense && armed.turn_fits) {
                     slots = n;
                     break;
                 }
@@ -776,7 +785,7 @@ Plan plan_run(const RunConfig & base,
                      best->name + " computes a wide prefill at " + ratio(*best) +
                          " the host's rate and is refused on memory: with a single expert slot it would still "
                          "hold " +
-                         u64s(mib(with.device_bytes)) +
+                         u64s(mib(with.device_bytes + with.device_turn_bytes)) +
                          " MiB of this pool (a layer of this model and its compute buffer), which leaves " +
                          (streams ? "the dense set or the cache without the protection it has"
                                   : "the expert cache " + u64s(mib(armed.cache_bytes)) +
@@ -787,10 +796,14 @@ Plan plan_run(const RunConfig & base,
                 p.config.prefill.device = best->name;
                 p.config.prefill.best_effort = true;
                 p.config.prefill.slots = slots;
+                p.config.prefill.slots_on_demand = turns;
                 note("prefill-device", best->name, Source::Measured,
                      "computes this model's matmul " + width + " at " + ratio(*best) +
-                         " the host's rate with the same result, and its " + u64s(mib(with.device_bytes)) +
-                         " MiB fit the ledger with " +
+                         " the host's rate with the same result, and its " + u64s(mib(with.device_bytes)) + " MiB" +
+                         (with.device_turn_bytes ? ", plus " + u64s(mib(with.device_turn_bytes)) +
+                                                       " MiB of expert slots that take turns with the cache,"
+                                                 : "") +
+                         " fit the ledger with " +
                          (slots == PrefillDeviceConfig::slots_max
                               ? "two expert slots, so a layer is read while the one before it computes"
                               : "one expert slot - two did not fit - so the device waits for each layer's read") +

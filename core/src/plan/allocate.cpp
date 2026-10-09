@@ -522,6 +522,19 @@ Allocation allocate(const HardwareProfile & hw,
     row("device", in.device_bytes, in.device_locked);
     row("dense", in.reserved_bytes, a.dense_pinned);
     row("expert cache", a.cache_bytes, a.cache_locked_bytes > 0);
+    if (in.device_turn_bytes > 0) {
+        // The prefill-time account: the cache yields up to all of itself, and the slots take their
+        // turn. Where the cache is at least as large as they are - and locked like them, or neither
+        // is - nothing more is held than while decoding. Otherwise what the slots need beyond what
+        // the cache gives back has to fit the ceilings on its own.
+        const uint64_t turn = in.device_turn_bytes;
+        const uint64_t yields = std::min(a.cache_bytes, turn);
+        const uint64_t held_then = a.ledger.held - yields + turn;
+        const uint64_t lock_yields = in.device_locked ? std::min(a.cache_locked_bytes, turn) : 0;
+        const uint64_t locked_then = a.ledger.locked - lock_yields + (in.device_locked ? turn : 0);
+        a.turn_fits = held_then <= a.ledger.holdable_cap && (!in.device_locked || locked_then <= a.ledger.lockable_cap);
+        a.ledger.rows.push_back({"device slots", turn, in.device_locked, true});
+    }
 
     // ── totals ───────────────────────────────────────────────────────────────────────────────
     for (int i = 0; i < (int) WeightGroup::count; ++i) {

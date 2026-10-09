@@ -137,6 +137,7 @@ std::string Plan::to_flags() const {
     if (config.prefill.enabled()) add("--prefill-device " + config.prefill.device);
     if (config.prefill.enabled() && config.prefill.slots != def.prefill.slots)
         add("--prefill-slots " + std::to_string(config.prefill.slots));
+    if (config.prefill.enabled() && config.prefill.slots_on_demand) add("--prefill-slots-on-demand");
     if (config.prefill.best_effort) add("--prefill-best-effort");
     if (config.n_threads != def.n_threads) add("--threads " + std::to_string(config.n_threads));
     if (config.n_ctx != def.n_ctx) add("--ctx-size " + std::to_string(config.n_ctx));
@@ -200,8 +201,9 @@ std::string Plan::explain() const {
                       (unsigned long long) (l.locked >> 20), (unsigned long long) (l.lockable_cap >> 20));
         out += line;
         for (const LedgerRow & r : l.rows) {
-            std::snprintf(line, sizeof(line), "plan:     %-20s %6llu MiB  %s\n", r.name.c_str(),
-                          (unsigned long long) (r.bytes >> 20), r.locked ? "locked" : "ordinary");
+            std::snprintf(line, sizeof(line), "plan:     %-20s %6llu MiB  %s%s\n", r.name.c_str(),
+                          (unsigned long long) (r.bytes >> 20), r.locked ? "locked" : "ordinary",
+                          r.in_turn ? ", in turn with the cache (not in the total)" : "");
             out += line;
         }
     }

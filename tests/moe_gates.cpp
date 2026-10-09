@@ -967,9 +967,10 @@ int main(int argc, char ** argv) {
                 int cache_mb;
                 int loaders; // the arena's loader threads (--prefill-loaders), not the decode lanes
                 int delay_us;
-                bool routed = false;   // read only routed experts (PrefillDeviceConfig::routed)
-                bool sabotage = false; // routed, with the routing-node reads skipped: must be caught
-                int slots = 2;         // expert slots on the device (PrefillDeviceConfig::slots)
+                bool routed = false;    // read only routed experts (PrefillDeviceConfig::routed)
+                bool sabotage = false;  // routed, with the routing-node reads skipped: must be caught
+                int slots = 2;          // expert slots on the device (PrefillDeviceConfig::slots)
+                bool on_demand = false; // slots built per prefill, their memory the cache's otherwise
             };
             const Variant variants[] = {
                 {"G17a arena, cache off, 4 loaders", 0, 4, 0},
@@ -987,6 +988,12 @@ int main(int argc, char ** argv) {
                 {"G17h arena, one slot, 1 slowed loader", 0, 1, 20000, false, false, 1},
                 {"G17h arena routed, one slot, 4 loaders", 0, 4, 0, true, false, 1},
                 {"G17h arena routed, one slot, sabotaged", 0, 4, 0, true, true, 1},
+                // Slots on demand: built before each prefill and given back after it, with the cache
+                // yielding to them. Every graph of the generate and of the perplexity pass rebuilds them.
+                {"G17i arena, slots on demand, cache off", 0, 4, 0, false, false, 2, true},
+                {"G17i arena, slots on demand, small forced cache", 2, 4, 0, false, false, 2, true},
+                {"G17i arena routed, one slot on demand, small forced cache", 2, 4, 0, true, false, 1, true},
+                {"G17i arena routed, slots on demand, sabotaged", 0, 4, 0, true, true, 2, true},
             };
             // Greedy text alone is a weak witness here: on the tiny model a slot holding the wrong
             // layer's experts can still produce the same few tokens (measured, with the barrier
@@ -1005,6 +1012,7 @@ int main(int argc, char ** argv) {
                 c.prefill.routed_full_frac = 1.0f;
                 c.prefill.test_routed_skip_demand = v.sabotage;
                 c.prefill.slots = v.slots;
+                c.prefill.slots_on_demand = v.on_demand;
                 std::unique_ptr<Session> vs = Session::open(session_config_from(c), open_err);
                 if (!vs) {
                     std::fprintf(stderr, "%s open failed: %s\n", v.name, open_err.c_str());
