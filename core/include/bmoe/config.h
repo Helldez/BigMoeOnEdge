@@ -394,6 +394,14 @@ struct PrefillDeviceConfig {
     static constexpr int slots_min = 1;
     static constexpr int slots_max = 2;
 
+    // Hold the expert slots only while a prefill runs on the device, and give their memory to the
+    // expert cache the rest of the time (with moe.enabled). The two are never busy at once: a
+    // device prefill reads through the slots and not the cache, a decode through the cache and not
+    // the slots. Off, the slots are held for the session and the cache is sized around them. On,
+    // the cache keeps its full budget for decode; each prefill evicts as much of it as the slots
+    // take and builds them, which is paid in re-reads and in a setup per prompt.
+    bool slots_on_demand = false;
+
     // Narrowest prefill graph sent to the device. A prompt is fed in ubatch-wide pieces; pieces at
     // least this wide run on the device and a shorter tail runs on the CPU. It must exceed every
     // graph width the CPU path uses, which is one token for plain decode — speculation's wider

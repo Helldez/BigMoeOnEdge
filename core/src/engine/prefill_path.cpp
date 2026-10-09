@@ -87,6 +87,7 @@ bool PrefillPath::open(llama_context * ctx,
                        int n_layer_streamed,
                        std::string & err) {
     hook_ = &hook;
+    ctx_ = ctx;
     auto fail = [&](const std::string & what) {
         err = "prefill device " + cfg.device + what;
         return false;
@@ -151,7 +152,8 @@ bool PrefillPath::open_arena(const PrefillDeviceConfig & cfg,
                              std::string & err) {
     arena_ = std::make_unique<DeviceExpertArena>();
     std::string perr;
-    if (!arena_->init(devs_[0], arena_shards_, arena_layers_, cfg.load_threads, moe.o_direct, cfg.slots, perr)) {
+    if (!arena_->init(devs_[0], arena_shards_, arena_layers_, cfg.load_threads, moe.o_direct, cfg.slots,
+                      cfg.slots_on_demand, perr)) {
         err = "prefill device " + cfg.device + " expert arena: " + perr;
         return false;
     }
@@ -169,9 +171,10 @@ bool PrefillPath::open_arena(const PrefillDeviceConfig & cfg,
                      "to a type the device takes (%.1f MiB)\n",
                      (double) arena_->dense_slot_bytes() / (1024.0 * 1024.0), arena_->dense_converted(),
                      (double) arena_->dense_converted_bytes() / (1024.0 * 1024.0));
-    std::fprintf(stderr, "bmoe: prefill-device expert arena: %d layers through %d slot%s of %.1f MiB, %d loaders\n",
+    std::fprintf(stderr, "bmoe: prefill-device expert arena: %d layers through %d slot%s of %.1f MiB, %d loaders%s\n",
                  arena_->n_layers(), arena_->n_slots(), arena_->n_slots() == 1 ? "" : "s",
-                 (double) arena_->slot_bytes() / (double) arena_->n_slots() / (1024.0 * 1024.0), cfg.load_threads);
+                 (double) arena_->slot_bytes() / (double) arena_->n_slots() / (1024.0 * 1024.0), cfg.load_threads,
+                 arena_->on_demand() ? ", held only during a prefill" : "");
     return true;
 }
 
@@ -194,13 +197,49 @@ bool PrefillPath::reserve_on_device(llama_context * ctx, const llama_vocab * voc
     return rc == 0;
 }
 
-void PrefillPath::place(bool on_device) {
-    if (!dev_) return;
+// Memory in turns. A device prefill does not go through the expert cache - the arena reads from
+// flash into its own slots - and a decode does not touch the slots, so the two are never busy at
+// once. With slots on demand they are not both HELD at once either: before the first device graph
+// of a prompt the cache gives up as much as the slots take (its coldest entries), the slots are
+// built, and after the last device graph they are given back and the cache has its budget again.
+// What it costs is re-reading what was evicted, and building the slots once per prompt.
+//
+// The device can be out of room at that moment. Then the graph runs on the host, and the context is
+// made to schedule it afresh: a host graph of the same width as the device graph before it would
+// otherwise be reused as it was placed.
+bool PrefillPath::place(bool on_device) {
+    if (!dev_) return false;
+    const bool turns = arena_ && arena_->on_demand();
+    if (on_device && turns && !arena_->slots_held()) {
+        const size_t budget = cache_ ? cache_->cache_budget() : 0;
+        const size_t need = arena_->slot_bytes();
+        if (budget > 0) cache_->set_cache_budget(budget > need ? budget - need : 1);
+        std::string err;
+        if (!arena_->acquire(err)) {
+            if (budget > 0) cache_->set_cache_budget(budget);
+            if (!said_no_room_)
+                std::fprintf(stderr, "bmoe: prefill-device: %s; this prefill runs on the host\n", err.c_str());
+            said_no_room_ = true;
+            if (ctx_) {
+                llama_set_causal_attn(ctx_, false);
+                llama_set_causal_attn(ctx_, true);
+            }
+            on_device = false;
+        } else {
+            yielded_budget_ = budget;
+        }
+    }
     dev_->place(on_device);
     if (arena_) {
         arena_->place(on_device);
         hook_->set_device_arena(on_device ? arena_.get() : nullptr);
     }
+    if (!on_device && turns && arena_->slots_held()) {
+        arena_->release();
+        if (cache_ && yielded_budget_ > 0) cache_->set_cache_budget(yielded_budget_);
+        yielded_budget_ = 0;
+    }
+    return on_device;
 }
 
 int PrefillPath::decode(llama_context * ctx, const llama_batch & b) {

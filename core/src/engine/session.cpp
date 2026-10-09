@@ -242,9 +242,8 @@ struct Session::Impl {
     // load, whose device list it holds, and opened after it.
     std::unique_ptr<detail::PrefillPath> prefill;
 
-    void place_prefill(bool on_device) {
-        if (prefill) prefill->place(on_device);
-    }
+    // Where the next graph actually goes: a device with no room right now leaves it on the host.
+    bool place_prefill(bool on_device) { return prefill ? prefill->place(on_device) : false; }
     int decode_placed(llama_context * c, const llama_batch & b) {
         return prefill ? prefill->decode(c, b) : llama_decode(c, b);
     }
@@ -1074,6 +1073,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         }
 
         if (im.prefill) im.prefill->keep_stream_layout(layers, offs.shard_paths);
+        if (im.prefill && cfg.prefill.slots_on_demand) im.prefill->share_memory_with(&im.source);
         if (!im.source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
@@ -1564,8 +1564,7 @@ RunResult Session::generate(const GenerateRequest & req,
     for (int i = (int) n_common; i < n_prompt; i += pf_step) {
         const int chunk = std::min(pf_step, n_prompt - i);
         if (im.prefill) {
-            const bool on_dev = chunk >= im.cfg.prefill.min_tokens;
-            im.place_prefill(on_dev);
+            const bool on_dev = im.place_prefill(chunk >= im.cfg.prefill.min_tokens);
             if (on_dev) prefill_device_tokens += chunk;
         }
         llama_batch pf;

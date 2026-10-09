@@ -69,7 +69,19 @@ public:
               int threads,
               bool direct,
               int n_slots,
+              bool on_demand,
               std::string & err);
+
+    // `on_demand` (init): the expert slots are not held for the session. acquire() builds them
+    // before a device graph and release() gives them back after the last one, so between prefills
+    // their memory is whoever else's - which on this engine is the expert cache's, the one thing
+    // that is idle while a device prefill runs and busy when it does not. Without `on_demand` the
+    // slots are built in init and both calls do nothing. acquire() can fail (the device has no room
+    // right now), and the caller then runs that graph on the host.
+    bool acquire(std::string & err);
+    void release();
+    bool slots_held() const { return ctx_ != nullptr; }
+    bool on_demand() const { return on_demand_; }
 
     // Also carry each layer's non-expert weights through two slots. `per_layer[il]` lists layer il's
     // weights (host resident, contiguous); layers may differ in what they hold. Call after init.
@@ -188,10 +200,22 @@ private:
     int n_slots_ = max_slots;
     ggml_backend_buffer_t slot_buf_[max_slots] = {};
     // twins_[s][p][variant]: every variant of projection p in slot s sits at the same address. Built
-    // once, views included; a repacking backend keeps per-tensor state for each, so recreating them
-    // per fill would grow without bound.
+    // with the slots, views included, and never per fill: a repacking backend keeps per-tensor state
+    // for each, so recreating them per fill would grow without bound. On demand they are rebuilt
+    // per prefill together with the buffer that state belongs to.
     std::vector<Twin> twins_[max_slots][MoeRecipe::max_exps];
     size_t slot_bytes_ = 0;
+    // The slots' layout, kept so they can be built again (build_slots): what init worked out once.
+    bool on_demand_ = false;
+    ggml_backend_dev_t dev_ = nullptr;
+    ggml_backend_buffer_type_t buft_ = nullptr;
+    size_t align_ = 0;
+    size_t slot_size_ = 0;
+    size_t n_slot_tensors_ = 0;
+    size_t region_off_[MoeRecipe::max_exps] = {};
+    std::vector<const ggml_tensor *> variants_[MoeRecipe::max_exps];
+    bool build_slots(std::string & err);
+    void free_slots();
 
     std::vector<std::unique_ptr<FileReader>> readers_;
     std::vector<void *> staging_; // one per lane

@@ -393,6 +393,26 @@ tenth of the decode rate on any prompt long enough to reach it, and says how to 
 the 91 GB model the same rule refuses in under four seconds: two layers and the compute buffer
 are 6.1 GB there, and the cache would fall under one token cycle.
 
+**Memory in turns.** The expert slots and the expert cache are never busy at once. A device
+prefill reads from flash into the slots and does not go through the cache; a decode goes through
+the cache and does not touch the slots. Held side by side for the whole session, the slots charge
+decode, on every token, for memory only a prefill uses - which is what the 20.9 against 23.3 tok/s
+above is - and they raise how much a machine must have free before the device can be armed at all.
+
+So the slots a plan arms are held only while a prefill runs (`--prefill-slots-on-demand`). Before
+the first device graph of a prompt the cache gives up as much as the slots take, its coldest
+entries first, and the slots are built; after the last one they are given back and the cache has
+its budget again. In the ledger they are a row *in turn with the cache*, not in the total: they
+fit if the cache can yield that much, or if what is left over still fits both ceilings. What stays
+for the session is the rest of the device's row, the layer's other weights and the compute buffer.
+
+It costs the re-read of what was evicted and one setup of the slots per prompt. Same laptop, same
+model, `--auto` alone: the 1461-token prefill takes 3.52 and 3.64 s against 3.43 with the slots
+held, the generated text is the same, and decode on the short prompt is back to 21.9 tok/s with a
+7.6 GB cache where holding the slots left it 6.4 GB and 20.9. What it still gives up against no
+device at all is the part that stays, 556 MiB there. If the device has no room when its turn comes,
+that prefill runs on the host and the next one tries again.
+
 The same rule on a phone, with nothing written for it: a 12 GB phone with a Hexagon v81 NPU, the
 same model at Q4_0 and at Q4_K_M. The NPU is found, measured 128 tokens wide at 40x the cores (1480
 to 1520 GiB/s against 27 to 38) with the same result, and reads no faster than they do one token
@@ -403,6 +423,12 @@ hold, the cache needs its token cycle, and one expert slot with the compute buff
 1.0. That is the reported figure being a floor on a machine that compresses (see the headroom
 probe): the same phone runs that prefill when asked by hand, 1461 tokens in 10.2 s, because the
 system makes the room. The plan does not count on room it has not measured.
+
+With the slots in turn the same phone, awake and reporting 4.6 GB available, armed the NPU from
+`--auto` alone: two expert slots in turn with a 1.8 GB cache, the 1461-token prompt prefilled in
+10.9 s (134 tok/s) on the NPU and decoded at 3.13 tok/s on the cores, one run. Slots built per
+prefill were also checked there by hand against slots held for the session: the same generated
+text, 10.6 s against 10.2.
 
 A device can also be wrong about whose memory it uses, and the ledger does not take its word. The
 NPU measures as not drawing on the host when it allocates, and reports no memory of its own: its

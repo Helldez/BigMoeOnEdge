@@ -7,6 +7,15 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **`--prefill-slots-on-demand`: the prefill device's expert slots take turns with the expert
+  cache.** The two are never busy at once, so the slots are held only while a prefill runs on
+  the device: the cache yields what they need, they are built, and after the prefill the cache
+  has its budget back. `--auto` arms a device this way, which gives decode most of its cache
+  back and lowers how much memory must be free before a device can be used. On a 16 GB
+  Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M with `--auto`: prefill of 1461 tokens 3.52 and
+  3.64 s (3.43 with the slots held), decode on a short prompt 21.9 tok/s (20.9 with the slots
+  held), same text. On a 12 GB phone with an NPU, the model at Q4_0, `--auto` alone armed the
+  NPU: 1461 tokens in 10.9 s, decode 3.13 tok/s. Gates G17i score it bit for bit.
 - **`--prefill-slots 1|2`: a prefill device can hold one layer of experts instead of two.** One
   slot reads each layer at its own routing node with the device waiting, and costs a layer less
   of memory; the result is the same, and the gates score both bit for bit. `--auto` uses two
