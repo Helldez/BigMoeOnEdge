@@ -56,11 +56,19 @@ public:
     // and get no slot. Layers may differ in an expert tensor's type (quantisers keep some ffn_down in
     // more bits): each projection gets a region of the slot sized for its largest variant, and one
     // slot tensor per variant at that address. `threads` loader threads, each with its own lane.
+    //
+    // `n_slots` is how many layers of experts the device holds at once. Two is the scheme above: a
+    // layer is read while the one before it computes. One halves that memory and gives up the
+    // overlap - each layer is read at its own routing node, with the device waiting - which is what
+    // lets a model whose layer is large, or a machine with little to spare, use the device at all.
+    // The result is the same either way; only when the reads happen differs.
+    static constexpr int max_slots = 2;
     bool init(ggml_backend_dev_t dev,
               const std::vector<std::string> & shard_paths,
               const std::vector<LayerExperts> & layers,
               int threads,
               bool direct,
+              int n_slots,
               std::string & err);
 
     // Also carry each layer's non-expert weights through two slots. `per_layer[il]` lists layer il's
@@ -118,6 +126,7 @@ public:
     uint64_t read_bytes() const { return read_bytes_.load(); }
     double stall_seconds() const { return stall_ns_.load() * 1e-9; }
     size_t slot_bytes() const { return slot_bytes_; }
+    int n_slots() const { return n_slots_; }
     size_t dense_slot_bytes() const { return dense_slot_bytes_; }
     int dense_converted() const { return dense_converted_; }
     size_t dense_converted_bytes() const { return dense_converted_bytes_; }
@@ -152,7 +161,7 @@ private:
     };
     struct DenseLayer {
         std::vector<ggml_tensor *> t;    // the model's tensors
-        std::vector<ggml_tensor *> twin; // their places in slot il % 2
+        std::vector<ggml_tensor *> twin; // their places in dense slot il % 2
         std::vector<const void *> src;   // host bytes, taken at init: t is rebound while filling
         std::vector<ggml_backend_buffer_t> host_buffer;
         std::vector<void *> host_data, host_extra;
@@ -175,11 +184,13 @@ private:
     int n_proj_ = 0;
 
     ggml_context * ctx_ = nullptr;
-    ggml_backend_buffer_t slot_buf_[2] = {};
+    // One or two expert slots (init's n_slots). Layer k lives in slot k % n_slots_.
+    int n_slots_ = max_slots;
+    ggml_backend_buffer_t slot_buf_[max_slots] = {};
     // twins_[s][p][variant]: every variant of projection p in slot s sits at the same address. Built
     // once, views included; a repacking backend keeps per-tensor state for each, so recreating them
     // per fill would grow without bound.
-    std::vector<Twin> twins_[2][MoeRecipe::max_exps];
+    std::vector<Twin> twins_[max_slots][MoeRecipe::max_exps];
     size_t slot_bytes_ = 0;
 
     std::vector<std::unique_ptr<FileReader>> readers_;

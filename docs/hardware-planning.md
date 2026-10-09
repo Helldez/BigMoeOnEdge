@@ -355,11 +355,21 @@ A device is armed when four things hold, each a fact and none a name:
    a backend's batched kernel is not the kernel its one-token path runs.
 3. **It wins by the margin** every other device decision uses (`min_backend_win`).
 4. **It fits the ledger.** Under streaming a prefill device carries a layer's experts and a layer's
-   other weights through two slots each - the layer being computed and the one being loaded behind
-   it - plus its compute buffer. That is charged as a row; the run must still stream, with a cache
-   of at least one token cycle, and the dense set must keep the protection it had. Both of those
+   other weights through slots - the layer being computed and the one being loaded behind it -
+   plus its compute buffer. That is charged as a row; the run must still stream, with a cache of at
+   least one token cycle, and the dense set and the cache must keep the protection they had. Those
    are paid on every decoded token, and a prefill is paid once. A device with memory of its own
    costs this pool nothing and is checked against its own free memory instead.
+
+**One expert slot or two.** The experts are the large part of that row and the part with a choice
+in it. Two slots read a layer while the one before it computes; one slot reads each layer at its
+own routing node, with the device waiting, and holds a layer less. The result is the same - the
+gates score both bit for bit - so it is a trade of prefill time for memory, and the ledger makes
+it: two where they fit, one where only one does, and the plan says which (`--prefill-slots`, which
+a caller can also fix). Measured on the laptop above, the same 1461-token prompt: 3.43 s with two
+slots, 3.94 and 4.19 s with one, the same generated text, and 498 MiB less held on a model whose
+layer of experts is that size. One slot also reads less in routed mode, since every read is made
+with the routing already known and none from a prediction.
 
 Anything else in the run that cannot share a session with a device prefill - row streaming,
 speculative decoding, a kept prefix state - declines it with the reason, instead of producing a

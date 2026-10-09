@@ -42,6 +42,10 @@ layer slots still fit the memory ledger. A device it armed is optional - if it c
 prefill runs on the host - while one named with `--prefill-device` still fails the load when it
 cannot be used. See "The prefill plan" in [hardware-planning.md](hardware-planning.md).
 
+`--prefill-slots 1` halves the experts the device holds, at the price of the device waiting for
+each layer's read instead of having it read behind the previous layer's compute; the plan falls
+back to it on its own when two slots do not fit.
+
 The text that follows a device prefill is not guaranteed to be the text that follows a host one:
 the arithmetic differs in the last bits and greedy decoding can turn that into a different word at
 a near tie. An empty `--prefill-device` keeps `--auto` from arming one.

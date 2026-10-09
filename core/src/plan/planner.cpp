@@ -638,10 +638,16 @@ Plan plan_run(const RunConfig & base,
     // experts and a layer's other weights through two slots each - the layer being computed and
     // the one being loaded behind it - plus the compute buffer llama.cpp projects for it. It is
     // charged to this pool only where the device's memory IS this pool.
-    auto prefill_cost = [&](const ComputeDevice * dev, AllocationInputs & in) {
+    //
+    // The expert slots are the part with a choice in it: two read a layer while the one before it
+    // computes, one waits for each layer and costs a layer less. Same result, so it is a trade of
+    // prefill time for memory and the ledger decides it - two where they fit, one where only one does.
+    auto prefill_need = [&](int slots) {
+        return (uint64_t) slots * model.largest_expert_layer_bytes + 2 * model.largest_layer_dense_bytes;
+    };
+    auto prefill_cost = [&](const ComputeDevice * dev, AllocationInputs & in, int slots) {
         if (dev && dev->has_own_memory()) return;
-        in.device_bytes =
-            2 * (model.largest_expert_layer_bytes + model.largest_layer_dense_bytes) + placement.device_compute_bytes;
+        in.device_bytes = prefill_need(slots) + placement.device_compute_bytes;
         in.device_locked = !dev || dev->charges_lockable();
     };
 
@@ -653,7 +659,7 @@ Plan plan_run(const RunConfig & base,
         const ComputeDevice * dev = nullptr;
         for (const ComputeDevice & d : hw.devices)
             if (!d.is_cpu && d.name == p.config.prefill.device) dev = &d;
-        prefill_cost(dev, ai);
+        prefill_cost(dev, ai, p.config.prefill.slots);
         alloc = allocate(hw, host_model, ai, pol);
         note("prefill-device", p.config.prefill.device, Source::Operator,
              "set by the caller; the planner leaves it alone and charges it " + u64s(mib(ai.device_bytes)) +
@@ -726,24 +732,46 @@ Plan plan_run(const RunConfig & base,
             // must still stream - a cache of at least one token cycle - and the dense set must not
             // lose a protection it had, since both of those are paid on every decoded token and a
             // prefill is paid once.
+            // Two slots first, then one: the wider scheme where it fits, the narrower where only it
+            // does. A caller who set the count has chosen, and only that count is tried.
+            const bool slots_by_caller = req.is_pinned("prefill-slots");
             AllocationInputs with = ai;
-            prefill_cost(best, with);
-            const uint64_t own_need = 2 * (model.largest_expert_layer_bytes + model.largest_layer_dense_bytes);
-            const bool own_short = best->has_own_memory() && best->memory_free > 0 && best->memory_free < own_need;
-            const Allocation armed = allocate(hw, host_model, with, pol);
-            const bool streams = armed.cache_bytes >= host_model.token_cycle_bytes && armed.cache_bytes > 0;
-            const bool keeps_dense = armed.dense_pinned == alloc.dense_pinned;
-            if (own_short) {
+            Allocation armed;
+            int slots = 0;
+            bool streams = false, keeps_dense = false, own_short = false;
+            for (int n = slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_max;
+                 n >= PrefillDeviceConfig::slots_min; --n) {
+                with = ai;
+                prefill_cost(best, with, n);
+                own_short = best->has_own_memory() && best->memory_free > 0 && best->memory_free < prefill_need(n);
+                armed = allocate(hw, host_model, with, pol);
+                streams = armed.cache_bytes >= host_model.token_cycle_bytes && armed.cache_bytes > 0;
+                // "Protection" is the dense set's pin and the cache's lock alike: a device that
+                // leaves the cache as ordinary memory where it was locked has taken from decode the
+                // very thing the ledger exists to keep.
+                keeps_dense = armed.dense_pinned == alloc.dense_pinned &&
+                              (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0);
+                if (!own_short && streams && keeps_dense) {
+                    slots = n;
+                    break;
+                }
+                if (slots_by_caller) break;
+            }
+            const uint64_t least =
+                prefill_need(slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_min);
+            if (slots == 0 && own_short) {
                 note("prefill-device", "off", Source::Measured,
                      best->name + " computes a wide prefill at " + ratio(*best) + " the host's rate and has " +
-                         u64s(mib(best->memory_free)) + " MiB free of the " + u64s(mib(own_need)) +
-                         " MiB two layers of this model take: refused on memory");
-            } else if (!streams || !keeps_dense) {
+                         u64s(mib(best->memory_free)) + " MiB free of the " + u64s(mib(least)) +
+                         " MiB even one layer of this model takes there: refused on memory");
+            } else if (slots == 0) {
                 note("prefill-device", "off", Source::Derived,
                      best->name + " computes a wide prefill at " + ratio(*best) +
-                         " the host's rate and is refused on memory: it would hold " + u64s(mib(with.device_bytes)) +
-                         " MiB of this pool (two layers of this model and its compute buffer), which leaves " +
-                         (streams ? "the dense set without the protection it has"
+                         " the host's rate and is refused on memory: with a single expert slot it would still "
+                         "hold " +
+                         u64s(mib(with.device_bytes)) +
+                         " MiB of this pool (a layer of this model and its compute buffer), which leaves " +
+                         (streams ? "the dense set or the cache without the protection it has"
                                   : "the expert cache " + u64s(mib(armed.cache_bytes)) +
                                         " MiB against a token cycle of " + u64s(mib(host_model.token_cycle_bytes))) +
                          ". That is paid on every decoded token, and a prefill is paid once");
@@ -751,10 +779,15 @@ Plan plan_run(const RunConfig & base,
                 ai = with;
                 p.config.prefill.device = best->name;
                 p.config.prefill.best_effort = true;
+                p.config.prefill.slots = slots;
                 note("prefill-device", best->name, Source::Measured,
                      "computes this model's matmul " + width + " at " + ratio(*best) +
                          " the host's rate with the same result, and its " + u64s(mib(with.device_bytes)) +
-                         " MiB fit the ledger: the expert cache gives up " +
+                         " MiB fit the ledger with " +
+                         (slots == PrefillDeviceConfig::slots_max
+                              ? "two expert slots, so a layer is read while the one before it computes"
+                              : "one expert slot - two did not fit - so the device waits for each layer's read") +
+                         ": the expert cache gives up " +
                          u64s(mib(alloc.cache_bytes > armed.cache_bytes ? alloc.cache_bytes - armed.cache_bytes : 0)) +
                          " MiB for it. Decode stays on the host. If the device cannot be set up at load the "
                          "prefill runs on the host instead. A device's arithmetic is not the host's to the "

@@ -1029,9 +1029,36 @@ int main() {
         check(!slow.config.prefill.enabled() && reason(slow).find("not a win") != std::string::npos,
               "prefill: a device inside the margin is not a second placement");
 
+        // Two slots do not fit and one does: the device is armed with one, and the plan says so.
+        // The layer is sized so that the difference between the two is exactly what decides it.
+        ModelProfile mid = mm;
+        mid.largest_expert_layer_bytes = 3 * GiB;
+        const Plan one = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mid, PlanRequest{});
+        const LedgerRow * one_row = ledger_row(one, "device");
+        check(one.config.prefill.device == "accel" && one.config.prefill.slots == 1,
+              "prefill: where two expert slots do not fit and one does, one is used",
+              std::to_string(one.config.prefill.slots) + " slot(s)");
+        check(one_row && one_row->bytes == 3 * GiB + 2 * 64 * MiB,
+              "prefill: and one layer of experts is what is charged");
+        check(reason(one).find("one expert slot") != std::string::npos,
+              "prefill: the plan says it chose the narrower scheme");
+        check(one.to_flags().find("--prefill-slots 1") != std::string::npos,
+              "prefill: the reproduce line carries the slot count");
+        check(on.config.prefill.slots == 2 && on.to_flags().find("--prefill-slots") == std::string::npos,
+              "prefill: two slots stay the default where they fit");
+        check(validate(one.config).ok, "prefill: the one-slot plan is a valid config", validate(one.config).error);
+
+        // A caller who fixed the count is not given the other one.
+        RunConfig two = base_cfg();
+        two.prefill.slots = 2;
+        PlanRequest tr;
+        tr.pinned = {"prefill-slots"};
+        check(!plan_run(two, machine(1500.0, Tri::Yes), mid, tr).config.prefill.enabled(),
+              "prefill: a caller's slot count is not traded down");
+
         // Too large for what is left: refused, with the figures, and the plan is the one without it.
         ModelProfile big = mm;
-        big.largest_expert_layer_bytes = 5 * GiB;
+        big.largest_expert_layer_bytes = 7 * GiB;
         const Plan nofit = plan_run(base_cfg(), machine(1500.0, Tri::Yes), big, PlanRequest{});
         const Plan nodev = plan_run(base_cfg(), unified(), big, PlanRequest{});
         check(!nofit.config.prefill.enabled() && reason(nofit).find("refused on memory") != std::string::npos,
@@ -1073,9 +1100,9 @@ int main() {
         check(own.config.prefill.device == "accel" && ledger_row(own, "device") == nullptr &&
                   own.cache_budget_bytes == off.cache_budget_bytes,
               "prefill: a device with its own memory is armed and charged nothing here");
-        disc.devices[1].memory_free = 512 * MiB;
+        disc.devices[1].memory_free = 256 * MiB;
         check(!plan_run(base_cfg(), disc, mm, PlanRequest{}).config.prefill.enabled(),
-              "prefill: and refused when its own memory cannot take two layers");
+              "prefill: and refused when its own memory cannot take even one layer");
     }
 
     // Informational: the rationale as a user would read it. Printed rather than asserted, because
