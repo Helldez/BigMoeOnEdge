@@ -7,6 +7,7 @@
 // this file and the planner keeps working with `fitted = false` — declining the device axis rather
 // than failing to build.
 
+#include "bmoe/config.h"
 #include "bmoe/probe.h"
 
 #include "fit.h"
@@ -14,14 +15,24 @@
 #include "llama.h"
 
 #include <cstring>
+#include <algorithm>
 #include <regex>
 #include <string>
 #include <vector>
 
 namespace bmoe {
 
-Placement
-probe_placement(const char * model_path, const ModelProfile & model, const HardwareProfile & hw, uint32_t n_ctx) {
+namespace {
+// Below this a graph is not a prefill graph any more, and halving it measures the constant part of
+// the buffer rather than the slope.
+constexpr uint32_t min_projection_width = 64;
+} // namespace
+
+Placement probe_placement(const char * model_path,
+                          const ModelProfile & model,
+                          const HardwareProfile & hw,
+                          uint32_t n_ctx,
+                          uint32_t n_ubatch) {
     Placement pl;
     if (!model_path || !*model_path || !model.ok) return pl;
 
@@ -43,6 +54,18 @@ probe_placement(const char * model_path, const ModelProfile & model, const Hardw
     // training context, because it assumes system memory is unlimited - and with no device to fit
     // into, the KV and compute for that context land on the host, the one place that is not.
     cparams.n_ctx = n_ctx ? n_ctx : llama_context_default_params().n_ctx;
+    // The widths the session opens with (session_config_from, Session::open): one batch per
+    // context, computed in graphs `n_ubatch` wide, or one graph when that is 0. Left at the fitter's
+    // defaults, the compute buffers it projects are those of a 512-wide graph whatever the run is
+    // about to reserve.
+    cparams.n_batch = cparams.n_ctx;
+    cparams.n_ubatch = n_ubatch > 0 && n_ubatch < cparams.n_ctx ? n_ubatch : cparams.n_ctx;
+    // And the logit rows of a prompt, not of a scoring pass. A context reserves a vocabulary-wide
+    // row for every position it may be asked to score, which on a wide graph is most of the
+    // reservation (16 GB at 16384 tokens on a 150k vocabulary) and is memory a prompt never touches:
+    // it reads one row. What is held is what is touched, so the projection is made with the row cap
+    // the session itself sets when a device computes its prefill.
+    cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
 
     std::vector<float> tensor_split(llama_max_devices(), 0.0f);
     std::vector<llama_model_tensor_buft_override> overrides(llama_max_tensor_buft_overrides());
@@ -165,6 +188,30 @@ probe_placement(const char * model_path, const ModelProfile & model, const Hardw
             pl.device_bytes += (uint64_t) dm[i].model + (uint64_t) dm[i].context + (uint64_t) dm[i].compute;
             pl.device_compute_bytes += (uint64_t) dm[i].compute;
             pl.device_context_bytes += (uint64_t) dm[i].context;
+        }
+        pl.compute_width = cparams.n_ubatch;
+
+        // The same placement, half as wide: two points of a line. A compute buffer is activations,
+        // a row per token, so the difference between the two is what a token of width costs here -
+        // on this model, this context and these backends, with nothing assumed about any of them.
+        if (cparams.n_ubatch >= 2 * min_projection_width) {
+            llama_context_params half = cparams;
+            half.n_ubatch = cparams.n_ubatch / 2;
+            std::vector<ggml_backend_dev_t> devs_half;
+            uint32_t a = 0, b = 0, c = 0;
+            const common_device_memory_data_vec hm =
+                common_get_device_memory_data(model_path, &mparams, &half, devs_half, a, b, c, GGML_LOG_LEVEL_WARN);
+            if (hm.size() == dm.size()) {
+                const uint64_t span = cparams.n_ubatch - half.n_ubatch;
+                uint64_t dev_half = 0;
+                for (size_t i = 0; i + 1 < hm.size(); ++i)
+                    dev_half += (uint64_t) hm[i].compute;
+                const uint64_t host_half = (uint64_t) hm.back().compute;
+                if (pl.raw_host_compute_bytes > host_half)
+                    pl.host_compute_per_token = (pl.raw_host_compute_bytes - host_half) / span;
+                if (pl.device_compute_bytes > dev_half)
+                    pl.device_compute_per_token = (pl.device_compute_bytes - dev_half) / span;
+            }
         }
     }
 

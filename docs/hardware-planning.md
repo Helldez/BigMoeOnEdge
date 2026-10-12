@@ -206,6 +206,7 @@ and `BMOE_*` env overrides both count as the caller speaking.
 | whether a device's buffers are held reclaim-exempt | whether arming it is charged to that total too |
 | the same matmul many tokens wide, on the host and on every device, with the result compared | `--prefill-device`: which device, if any, runs the prefill |
 | model: the largest layer's experts, and its other weights | what a prefill device costs in memory |
+| compute buffers at the widest graph, and what a token of width adds | `--ubatch`: how wide a prompt is computed |
 | whether mapped file pages count against the fatal limit | whether leaving the dense set mapped is free |
 | whether uncached reads work on this path | `--no-odirect` |
 | whether a live mapping serialises concurrent reads | `--release-mmap` |
@@ -451,6 +452,60 @@ device typically by the float - measured at 4e-5 on a 4-bit type, 1.9e-4 on a 2-
 which reported the 2-bit type and every wide result as wrong; it is a hundredth now, still two
 orders below "wrong".
 
+## The widest graph
+
+A prompt is computed in graphs `--ubatch` tokens wide, and llama.cpp reserves its compute buffers
+for the widest of them. Left alone the width follows the context: one graph per context, which is
+the fastest prefill there is. The buffers grow with it, a row of activations per token, and they are
+memory the expert cache does not get - for a pass that happens once per prompt, against a cache
+that is read on every token.
+
+Two things were wrong at once. The ledger read the buffers from the capacity fitter, which projects
+them at llama.cpp's own default of 512 tokens whatever the session is about to open with; and the
+fitter projects a vocabulary-wide logit row for every position, where a prompt reads one. So at a
+2048 context the two errors roughly cancelled, and at a 16384 context the ledger charged 1.2 GB for
+buffers that were 8 GB: on a 16 GB laptop the cache lock was refused part way, the cache settled at
+half its budget, and decode ran at 14.6 and 16.7 tok/s where the same model does 23.
+
+The projection is now made at the width the session opens with, with the row cap the session sets
+when a device computes its prefill (what is held is what is touched, and a prompt touches one row),
+and at half that width as well. The two points give what a token of width costs on this model,
+context and set of backends, so any narrower graph can be priced without asking again
+(`Placement::at_width`). Checked against what a session then reserved, same laptop, 16384 context:
+486 MiB projected on the GPU for a 2048-wide graph against 474 reserved, 972 against 980 at 4096,
+3888 against 3920 at 16384. The host's share is projected high, by up to a factor of two, which is
+the side that cannot overcommit.
+
+The rule is the widest graph whose buffers stay inside a share of what the process may hold
+(`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
+`ubatch_min`. Inside the share nothing changes and the knob keeps its default. A device's buffers
+count where they come out of this pool and not where the device has memory of its own. A width set
+by hand is left alone and charged in full; a slope that was not measured decides nothing.
+
+The share is policy, and the plan prints it as such. What is measured is the trade it stands in
+for, on that laptop at a 16384 context, a 10850-token prompt and then a short one:
+
+| width | buffers reserved | prefill | decode |
+|---|---|---|---|
+| 512 | 0.4 GB | 61.7 s | 22.5 and 23.4 tok/s |
+| 1024 (what the rule picks) | 0.6 GB | 31.8 s | 22.4 and 22.3 tok/s |
+| 2048 | 1.0 GB | 19.8 s | 23.2 and 22.6 tok/s |
+| 4096 | 2.0 GB | 17.3 s | 23.4 and 23.5 tok/s |
+| 16384 (the context) | 8.0 GB | 20.4 s | 14.6 and 16.7 tok/s |
+
+Narrower is not free here the way it is for an engine whose weights are resident: every piece of
+a prompt routes its experts again and reads from flash the ones the piece before did not leave in
+the slots, so a prefill is a pass over the experts per piece. That is why the fixed 512 other
+engines use costs three times the prefill on this one, and why the width is a decision rather
+than a constant. The rule lands one step narrower than the table's best row, 1024 rather than
+2048, because the host's projection is high; that costs twelve seconds of prefill on that prompt
+and is the price of a figure that cannot overcommit.
+
+What it does not do: the capacity fitter still places weights on a device with memory of its own at
+the full width, so on such a machine a narrower graph leaves device memory the fitter thought was
+spoken for. And a session without a prefill device still reserves the logit rows the projection
+leaves out - untouched, so not held, but committed on a system that counts reservations.
+
 ## A device is probed in a process of its own
 
 Every probe that touches a device does so by using it, and a device is only as sound as its
@@ -602,15 +657,15 @@ on a compressing machine, which is why the two were one piece of work rather tha
   accelerator: this machine registers only the CPU, so the probe measures the host's figure, the
   rule finds nothing to compare it against, and the plan says so. The mechanism is complete and
   unverified, which is a different thing from missing, and the plan distinguishes them.
-- **`--ubatch`, and this one has been tried.** The compute-buffer reservation trades against the
-  expert cache: a narrower ubatch reserves less and leaves more cache, at the cost of chunking
-  prefill. Six interleaved decode runs on the desktop, 512 / 256 / 128, gave 4.016 and 4.893 tok/s
-  at 512, 4.907 and 3.370 at 256, 4.638 and 3.604 at 128. **The spread within one setting is larger
-  than the difference between settings** — 256 alone ranges from 3.37 to 4.91 — so the first
-  repetition and the second disagree about the winner. Short runs that each reload the model leave
-  the page cache in a different state every time, and 48 tokens is not long enough to average that
-  out. The knob keeps its default and prints `[unprobed]`, now because the measurement was made and
-  did not resolve, which is a different thing from never having looked.
+- **The width rule on any machine but one.** The widest graph is now chosen (see "The widest
+  graph" above), and every figure behind the rule comes from one 16 GB laptop with a GPU that shares
+  its memory. Owed, each on its own hardware: a phone with an NPU, where each prefill piece re-reads
+  its experts through a slower store and the holdable figure is a quarter of the laptop's, so the
+  rule will choose a narrower graph than the one a prefill was measured at there; a machine with no
+  accelerator at all, where the prefill is the cores' and its cost per piece is not the device's; a
+  discrete GPU, whose buffers are not this pool's and are left out of the share; and a system where
+  reserved memory is committed whether or not it is touched, where the logit rows this projection
+  leaves out are charged all the same.
 
 The residency budget is `MemAvailable` on every platform that reports it, and on a machine whose
 reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set

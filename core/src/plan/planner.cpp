@@ -161,6 +161,26 @@ const char * regime_name(Regime r) {
     return "?";
 }
 
+Placement Placement::at_width(uint32_t width) const {
+    Placement q = *this;
+    if (compute_width == 0 || width == 0 || width == compute_width) return q;
+    // Both directions, clamped at zero: a slope is a measurement, and a narrower graph cannot be
+    // credited with more than the buffer it is taken from.
+    auto move = [&](uint64_t bytes, uint64_t per_token) {
+        if (width > compute_width) return bytes + (uint64_t) (width - compute_width) * per_token;
+        const uint64_t less = (uint64_t) (compute_width - width) * per_token;
+        return bytes > less ? bytes - less : 0;
+    };
+    const uint64_t host = move(raw_host_compute_bytes, host_compute_per_token);
+    const uint64_t dev = move(device_compute_bytes, device_compute_per_token);
+    q.host_resident_bytes = host_resident_bytes - std::min(host_resident_bytes, raw_host_compute_bytes) + host;
+    q.device_bytes = device_bytes - std::min(device_bytes, device_compute_bytes) + dev;
+    q.raw_host_compute_bytes = host;
+    q.device_compute_bytes = dev;
+    q.compute_width = width;
+    return q;
+}
+
 bool PlanRequest::is_pinned(const char * knob) const {
     for (const std::string & p : pinned)
         if (p == knob) return true;
@@ -182,11 +202,14 @@ Plan plan_run(const RunConfig & base,
 Plan plan_run(const RunConfig & base,
               const HardwareProfile & hw,
               const ModelProfile & model,
-              const Placement & placement,
+              const Placement & projected,
               const PlanRequest & req,
               const PlannerPolicy & pol) {
     Plan p;
     p.config = base;
+    // The first stage's answer at the graph width it was projected at. The width is this stage's to
+    // choose (see "the widest graph" below), and the compute figures move with it.
+    Placement placement = projected;
     p.placement = placement;
 
     // What the first stage left for the second. Without a placement every layer's experts are on
@@ -247,6 +270,61 @@ Plan plan_run(const RunConfig & base,
     const uint64_t margin = margin_bytes(hw, pol);
     const uint64_t holdable = budget_bytes(hw);
     const uint64_t usable = holdable > margin ? holdable - margin : 0;
+
+    // ── the widest graph ────────────────────────────────────────────────────────────
+    // A prompt is computed in graphs `n_ubatch` tokens wide, and the compute buffers are reserved
+    // for the widest of them. Left to follow the context that is one graph per context, which is
+    // the fastest prefill there is and costs nothing at a small context; at a large one it is
+    // several GiB taken from the cache for a pass that happens once per prompt. So the width is
+    // the widest whose buffers stay inside their share of what the process may hold, found by
+    // halving from the context. A width the caller set is the caller's; a slope that was not
+    // measured decides nothing, and the knob keeps its default.
+    //
+    // A device's buffers are counted only where they come out of this pool. A device with memory
+    // of its own pays for its width there, which is the first stage's arithmetic and not this one.
+    {
+        bool device_in_pool = !hw.devices.empty();
+        for (const ComputeDevice & d : hw.devices)
+            if (d.has_own_memory()) device_in_pool = false;
+        auto buffers = [&](uint32_t w) {
+            const Placement q = placement.at_width(w);
+            return q.raw_host_compute_bytes + (device_in_pool ? q.device_compute_bytes : 0);
+        };
+        const uint32_t full = placement.compute_width;
+        if (req.is_pinned("ubatch")) {
+            note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Operator,
+                 "set by the caller; the planner leaves it alone" +
+                     (full ? ", and the compute buffers are counted at that width: " + u64s(mib(buffers(full))) + " MiB"
+                           : std::string()));
+        } else if (full == 0 || placement.host_compute_per_token == 0) {
+            note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
+                 "what a token of graph width costs in compute buffers was not measured here, so the "
+                 "width is not this plan's to choose; keeping the default");
+        } else {
+            const uint64_t cap = (uint64_t) ((double) holdable * pol.compute_share_max);
+            uint32_t w = full;
+            while (w / 2 >= pol.ubatch_min && buffers(w) > cap)
+                w /= 2;
+            const std::string share = u64s((uint64_t) (pol.compute_share_max * 100.0f + 0.5f)) + "% of the " +
+                                      u64s(mib(holdable)) + " MiB this process may hold";
+            if (w == full) {
+                note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
+                     "a graph as wide as the context reserves " + u64s(mib(buffers(full))) +
+                         " MiB of compute buffers, inside " + share + ": a prompt is computed in one pass");
+            } else {
+                const uint64_t before = buffers(full);
+                placement = placement.at_width(w);
+                p.placement = placement;
+                p.config.n_ubatch = (int) w;
+                note("ubatch", u64s(w), Source::Policy,
+                     "a graph as wide as the context would reserve " + u64s(mib(before)) +
+                         " MiB of compute buffers, more than " + share + "; at " + u64s(w) + " tokens it is " +
+                         u64s(mib(buffers(w))) +
+                         " MiB. A prompt is computed in more passes and the expert cache keeps the rest, "
+                         "because a prompt is paid once and a token every time. --ubatch sets it by hand");
+            }
+        }
+    }
 
     // The bytes that would have to be resident on the host if nothing were streamed: with a
     // placement, what the fitter left here; without one, the whole file.
@@ -1241,11 +1319,6 @@ Plan plan_run(const RunConfig & base,
                  "this machine does not report per-core maximum frequencies, so its core classes are unknown");
         }
     }
-
-    if (!req.is_pinned("ubatch"))
-        note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
-             "the compute-buffer reservation trades against the cache, but the crossover is unmeasured on "
-             "this machine; keeping the default");
 
     return p;
 }

@@ -628,6 +628,103 @@ int main() {
         }
     }
 
+    // ── the widest graph: its compute buffers are a row, and the width is chosen against it ──
+    {
+        // An unfitted placement, as on a machine with no device: the context and compute buffers
+        // the first stage projected for a graph as wide as the context, and what a token of width
+        // costs. Nothing here names a machine; the rule reads the buffers and the holdable figure.
+        auto wide = [&](uint32_t ctx, uint64_t per_token) {
+            Placement pl;
+            pl.n_ctx = ctx;
+            pl.raw_host_context_bytes = 256 * MiB;
+            pl.raw_host_compute_bytes = (uint64_t) ctx * per_token;
+            pl.compute_width = ctx;
+            pl.host_compute_per_token = per_token;
+            return pl;
+        };
+        const uint64_t per_token = 256 * KiB; // 16384 tokens wide is 4 GiB of buffers
+        const HardwareProfile hw = desktop();
+        const PlannerPolicy pol = PlannerPolicy::defaults();
+        const uint64_t cap =
+            (uint64_t) ((double) (hw.holdable_bytes ? hw.holdable_bytes : hw.residency_budget) * pol.compute_share_max);
+
+        // A small context fits its share whole: nothing changes and the knob keeps its default.
+        const uint32_t narrow_ctx = 1024;
+        const Plan fits = plan_run(base_cfg(), hw, model, wide(narrow_ctx, per_token), PlanRequest{});
+        const Decision * df = find(fits, "ubatch");
+        check((uint64_t) narrow_ctx * per_token <= cap, "width: the small context of this test is inside the share");
+        check(fits.config.n_ubatch == 0 && df && df->source == Source::Derived,
+              "width: buffers inside their share leave the graph as wide as the context");
+
+        // A large one does not: the width is halved until its buffers fit, and no further.
+        RunConfig big_ctx = base_cfg();
+        big_ctx.n_ctx = 16384;
+        const Plan cut = plan_run(big_ctx, hw, model, wide(16384, per_token), PlanRequest{});
+        const Decision * dc = find(cut, "ubatch");
+        const uint64_t w = (uint64_t) cut.config.n_ubatch;
+        check(w > 0 && w < 16384 && dc && dc->source == Source::Policy, "width: a large context is computed in pieces",
+              std::to_string(w));
+        check(w * per_token <= cap && (w * 2 * per_token > cap || w * 2 > 16384),
+              "width: the widest whose buffers fit, not a narrower one", std::to_string(w));
+        check(cut.placement.raw_host_compute_bytes == w * per_token && cut.placement.compute_width == w,
+              "width: the ledger is charged the buffers of the width chosen",
+              std::to_string(cut.placement.raw_host_compute_bytes / MiB));
+        // The same run with the graph held at full width by the caller: the buffers are charged in
+        // full, and the cache is what pays for them.
+        PlanRequest full_pin;
+        full_pin.pinned = {"ubatch"};
+        const Plan uncut = plan_run(big_ctx, hw, model, wide(16384, per_token), full_pin);
+        check(cut.cache_budget_bytes > uncut.cache_budget_bytes || !uncut.config.moe.enabled,
+              "width: what the buffers give back goes to the cache",
+              std::to_string(cut.cache_budget_bytes / MiB) + " vs " + std::to_string(uncut.cache_budget_bytes / MiB));
+        check(validate(cut.config).ok, "width: the plan is a valid config", validate(cut.config).error);
+
+        // The floor holds even when the buffers still do not fit there.
+        const Plan floor = plan_run(big_ctx, hw, model, wide(16384, 64 * MiB), PlanRequest{});
+        check((uint32_t) floor.config.n_ubatch == pol.ubatch_min, "width: never narrower than the floor",
+              std::to_string(floor.config.n_ubatch));
+
+        // A slope nobody measured decides nothing.
+        const Plan blind = plan_run(big_ctx, hw, model, wide(16384, 0), PlanRequest{});
+        const Decision * du = find(blind, "ubatch");
+        check(blind.config.n_ubatch == 0 && du && du->source == Source::Unprobed,
+              "width: an unmeasured slope leaves the knob at its default and says so");
+
+        // A width the caller set is the caller's, whatever it costs.
+        RunConfig by_hand = big_ctx;
+        by_hand.n_ubatch = 8192;
+        PlanRequest pr;
+        pr.pinned = {"ubatch"};
+        Placement at_hand = wide(16384, per_token).at_width(8192);
+        const Plan kept = plan_run(by_hand, hw, model, at_hand, pr);
+        const Decision * dk = find(kept, "ubatch");
+        check(kept.config.n_ubatch == 8192 && dk && dk->source == Source::Operator, "width: a pinned width is kept");
+
+        // A device's buffers count where they come out of this pool, and not where it has its own.
+        Placement with_dev = wide(4096, per_token / 2);
+        with_dev.device_compute_bytes = 4096ull * per_token;
+        with_dev.device_compute_per_token = per_token;
+        const Plan shared = plan_run(base_cfg(), unified(), model, with_dev, PlanRequest{});
+        HardwareProfile own = unified();
+        for (ComputeDevice & d : own.devices) {
+            d.memory_total = 24 * GiB;
+            d.memory_free = 24 * GiB;
+            d.shares_host_memory = Tri::No;
+        }
+        const Plan apart = plan_run(base_cfg(), own, model, with_dev, PlanRequest{});
+        const uint32_t ws = shared.config.n_ubatch ? (uint32_t) shared.config.n_ubatch : 4096;
+        const uint32_t wa = apart.config.n_ubatch ? (uint32_t) apart.config.n_ubatch : 4096;
+        check(ws <= wa, "width: a device that shares this pool narrows the graph at least as much as one that does not",
+              std::to_string(ws) + " vs " + std::to_string(wa));
+
+        // at_width is a line through the projected point, clamped at zero.
+        const Placement base_pl = wide(4096, per_token);
+        check(base_pl.at_width(2048).raw_host_compute_bytes == 2048ull * per_token &&
+                  base_pl.at_width(8192).raw_host_compute_bytes == 8192ull * per_token &&
+                  base_pl.at_width(4096).raw_host_compute_bytes == base_pl.raw_host_compute_bytes,
+              "width: buffers move along the measured slope, both ways");
+    }
+
     // ── composed over a first stage: the fitter placed half the layers' experts on a device ─
     {
         Placement pl;
