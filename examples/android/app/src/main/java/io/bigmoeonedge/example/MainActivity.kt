@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
@@ -176,6 +177,10 @@ private fun Root() {
             },
             onOpenSettings = { showSettings = true },
             onOpenMetrics = { showMetrics = true },
+            onSettingsChange = { updated ->
+                settings = updated
+                updated.save(context)
+            },
         )
     }
 }
@@ -189,6 +194,7 @@ private fun MainScreen(
     onModelImported: (File) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenMetrics: () -> Unit,
+    onSettingsChange: (AppSettings) -> Unit,
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -409,8 +415,9 @@ private fun MainScreen(
             // Only this conversation list is vertically scrollable.
             LazyColumn(
                 state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp),
-                contentPadding = PaddingValues(vertical = 4.dp),
+                modifier = Modifier.weight(1f, fill = true).fillMaxWidth().padding(horizontal = 8.dp),
+                // Leave room for the floating Thinking chip over the composer edge.
+                contentPadding = PaddingValues(top = 4.dp, bottom = 40.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (hasWelcome) {
@@ -442,8 +449,10 @@ private fun MainScreen(
                 }
             }
 
-            // Compact fixed composer: the message history gets the remaining screen space.
-            Surface(Modifier.fillMaxWidth(), tonalElevation = 2.dp) {
+            // Compact fixed composer. The Thinking toggle floats just above its top edge,
+            // without taking away another row of chat height.
+            Box(Modifier.fillMaxWidth()) {
+                Surface(Modifier.fillMaxWidth(), tonalElevation = 2.dp) {
                 Column(
                     Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                     verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -512,6 +521,41 @@ private fun MainScreen(
                                 contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp),
                             ) { Text("傳送", fontSize = 12.sp) }
                         }
+                    }
+                }
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(y = (-30).dp)
+                        .padding(end = 14.dp)
+                        .clickable(enabled = !ui.busy) {
+                            onSettingsChange(settings.copy(thinking = !settings.thinking))
+                        },
+                    shape = RoundedCornerShape(50),
+                    color = if (settings.thinking)
+                        MaterialTheme.colorScheme.primaryContainer
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = if (settings.thinking)
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                    shadowElevation = 6.dp,
+                    tonalElevation = 3.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Text("✦", fontSize = 13.sp)
+                        Text(
+                            if (settings.thinking) "Thinking 開" else "Thinking 關",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
                     }
                 }
             }
