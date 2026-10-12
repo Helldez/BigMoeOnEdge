@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
@@ -202,8 +201,6 @@ private fun MainScreen(
     val scope = rememberCoroutineScope()
 
     var prompt by rememberSaveable { mutableStateOf("") }
-    var choose by rememberSaveable { mutableStateOf(false) }
-    var optionsText by rememberSaveable { mutableStateOf("") }
     var showTelemetry by rememberSaveable { mutableStateOf(false) }
     var showConfig by rememberSaveable { mutableStateOf(false) }
     var importing by rememberSaveable { mutableStateOf(false) }
@@ -416,8 +413,7 @@ private fun MainScreen(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f, fill = true).fillMaxWidth().padding(horizontal = 8.dp),
-                // Leave room for the floating Thinking chip over the composer edge.
-                contentPadding = PaddingValues(top = 4.dp, bottom = 40.dp),
+                contentPadding = PaddingValues(top = 4.dp, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (hasWelcome) {
@@ -449,34 +445,33 @@ private fun MainScreen(
                 }
             }
 
-            // Compact fixed composer. The Thinking toggle floats just above its top edge,
-            // without taking away another row of chat height.
+            // Compact fixed composer. Thinking sits in the old Options-button position.
             Box(Modifier.fillMaxWidth()) {
                 Surface(Modifier.fillMaxWidth(), tonalElevation = 2.dp) {
                 Column(
                     Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                     verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    if (choose) {
-                        OutlinedTextField(
-                            value = optionsText,
-                            onValueChange = { optionsText = it },
-                            label = { Text("候選答案，每行一個") },
-                            modifier = Modifier.fillMaxWidth(),
-                            minLines = 2,
-                            maxLines = 3,
-                            enabled = !ui.busy,
-                        )
-                    }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         FilterChip(
-                            selected = choose,
-                            onClick = { choose = !choose },
+                            selected = settings.thinking,
+                            onClick = {
+                                if (!ui.busy) {
+                                    onSettingsChange(settings.copy(thinking = !settings.thinking))
+                                }
+                            },
                             enabled = !ui.busy,
-                            label = { Text("選項", fontSize = 11.sp) },
+                            leadingIcon = { Text("✦", fontSize = 11.sp) },
+                            label = {
+                                Text(
+                                    if (settings.thinking) "Thinking 開" else "Thinking 關",
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                )
+                            },
                         )
                         OutlinedTextField(
                             value = prompt,
@@ -501,10 +496,7 @@ private fun MainScreen(
                             Button(
                                 onClick = {
                                     focusManager.clearFocus()
-                                    val options = if (choose) Choice.parseOptions(optionsText) else null
-                                    if (options != null && options.size < 2) {
-                                        RunBus.update { it.copy(error = "請至少輸入兩個選項，每行一個。") }
-                                    } else if (models.isNotEmpty()) {
+                                    if (models.isNotEmpty()) {
                                         launchPrompt(
                                             context,
                                             models[modelIdx.coerceIn(0, models.lastIndex)],
@@ -512,7 +504,6 @@ private fun MainScreen(
                                             settings,
                                             ui.sessionSig,
                                             clearKv = ui.transcript.isEmpty() || ui.transcript.last().role == "choice",
-                                            options = options,
                                         )
                                         prompt = ""
                                     }
@@ -524,40 +515,6 @@ private fun MainScreen(
                     }
                 }
                 }
-
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(y = (-30).dp)
-                        .padding(end = 14.dp)
-                        .clickable(enabled = !ui.busy) {
-                            onSettingsChange(settings.copy(thinking = !settings.thinking))
-                        },
-                    shape = RoundedCornerShape(50),
-                    color = if (settings.thinking)
-                        MaterialTheme.colorScheme.primaryContainer
-                    else
-                        MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (settings.thinking)
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    else
-                        MaterialTheme.colorScheme.onSurfaceVariant,
-                    shadowElevation = 6.dp,
-                    tonalElevation = 3.dp,
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Text("✦", fontSize = 13.sp)
-                        Text(
-                            if (settings.thinking) "Thinking 開" else "Thinking 關",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
             }
         }
 
@@ -565,7 +522,7 @@ private fun MainScreen(
             val jumpScope = rememberCoroutineScope()
             FilledTonalButton(
                 onClick = { jumpScope.launch { listState.animateScrollToItem(total - 1, Int.MAX_VALUE) } },
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 106.dp),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 72.dp),
             ) { Text("回到最新訊息") }
         }
     }
