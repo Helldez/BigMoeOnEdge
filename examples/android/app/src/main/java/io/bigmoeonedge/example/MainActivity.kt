@@ -131,8 +131,7 @@ private fun Root() {
     }
 
     // Model-scan state lives here, above the settings/main switch, so opening Settings and
-    // coming back does NOT dispose it and trigger a fresh scan. The scan runs once (and again
-    // only when refreshKey changes: an explicit Refresh, or after a download/import completes).
+    // coming back does NOT dispose it and trigger a fresh scan. The scan runs once and after import.
     var models by remember { mutableStateOf<List<File>>(emptyList()) }
     var scanning by remember { mutableStateOf(true) }
     var refreshKey by remember { mutableStateOf(0) }
@@ -171,7 +170,6 @@ private fun Root() {
             models = models,
             scanning = scanning,
             modelIdx = modelIdx.coerceIn(0, maxOf(0, models.size - 1)),
-            onSelectModel = { modelIdx = it },
             onModelImported = { file ->
                 importedModelPath = file.absolutePath
                 refreshKey++
@@ -188,7 +186,6 @@ private fun MainScreen(
     models: List<File>,
     scanning: Boolean,
     modelIdx: Int,
-    onSelectModel: (Int) -> Unit,
     onModelImported: (File) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenMetrics: () -> Unit,
@@ -233,7 +230,7 @@ private fun MainScreen(
                     onSuccess = { file ->
                         importing = false
                         importProgress = -1f
-                        importMessage = "匯入完成：${file.name}。若清單未出現，可能不是受支援的 MoE 模型。"
+                        importMessage = null
                         onModelImported(file)
                     },
                     onFailure = { error ->
@@ -279,20 +276,37 @@ private fun MainScreen(
 
     Box(Modifier.fillMaxSize().imePadding()) {
         Column(Modifier.fillMaxSize()) {
-            // Fixed top bar.
+            // One compact toolbar combines the active model name and all main actions.
+            // This removes an entire vertical row so the conversation occupies ~80% of the screen.
+            val activeModelName = models.firstOrNull {
+                settings.sessionSignature(it.absolutePath) == ui.sessionSig
+            }?.name ?: models.getOrNull(modelIdx)?.name
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 0.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(0.dp),
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("BigMoe", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                    Text(
-                        "本地 AI · 離線推理",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text(
+                    when {
+                        importing -> "匯入中…"
+                        scanning -> "掃描模型…"
+                        activeModelName != null -> activeModelName
+                        else -> "尚未載入模型"
+                    },
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (importMessage?.startsWith("匯入失敗") == true)
+                        MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(
+                    onClick = { modelPicker.launch(arrayOf("*/*")) },
+                    enabled = !importing && !ui.busy,
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                ) { Text(if (importing) "匯入" else "載入", fontSize = 11.sp) }
                 TextButton(
                     onClick = {
                         if (!ui.busy) {
@@ -303,146 +317,67 @@ private fun MainScreen(
                         }
                     },
                     enabled = ui.transcript.isNotEmpty() && !ui.busy,
-                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 4.dp),
-                ) { Text("新對話") }
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                ) { Text("新對話", fontSize = 11.sp) }
                 TextButton(
                     onClick = onOpenMetrics,
-                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 4.dp),
-                ) { Text("性能") }
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                ) { Text("性能", fontSize = 11.sp) }
                 TextButton(
                     onClick = onOpenSettings,
-                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 4.dp),
-                ) { Text("設定") }
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                ) { Text("設定", fontSize = 11.sp) }
+            }
+            // Progress/error appears only while needed; successful imports leave no banner.
+            if (importing) {
+                LinearProgressIndicator(
+                    progress = { importProgress.coerceAtLeast(0f) },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                )
+            } else if (importMessage?.startsWith("匯入失敗") == true) {
+                Text(
+                    importMessage.orEmpty(),
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 14.dp),
+                )
             }
 
-            // Model panel: local file selection only. No catalog or URL-download list.
-            ElevatedCard(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp)) {
-                Column(
-                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("模型", fontWeight = FontWeight.SemiBold)
-                            Text(
-                                when {
-                                    scanning -> "正在掃描模型…"
-                                    models.isEmpty() -> "尚未載入模型"
-                                    else -> models.getOrNull(modelIdx)?.name ?: "選擇模型"
-                                },
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                        Button(
-                            onClick = { modelPicker.launch(arrayOf("*/*")) },
-                            enabled = !importing && !ui.busy,
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                        ) {
-                            Text(if (importing) "匯入中…" else "選擇本機模型")
-                        }
-                    }
-
-                    when {
-                        scanning -> LinearProgressIndicator(Modifier.fillMaxWidth())
-                        models.isNotEmpty() -> LabeledDropdown(
-                            label = "目前模型",
-                            options = models.map { it.name },
-                            selected = modelIdx.coerceIn(0, models.lastIndex),
-                            onSelect = onSelectModel,
-                        )
-                        else -> Text(
-                            "先下載 .gguf 模型，再點「選擇本機模型」。",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    if (importing) {
-                        Text(importMessage ?: "正在匯入…", fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (importProgress >= 0f) {
-                            LinearProgressIndicator(
-                                progress = { importProgress },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        } else {
-                            LinearProgressIndicator(Modifier.fillMaxWidth())
-                        }
-                    } else if (importMessage != null) {
-                        Text(
-                            importMessage.orEmpty(),
-                            fontSize = 11.sp,
-                            color = if (importMessage!!.startsWith("匯入失敗"))
-                                MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-
-                    // SAF import copies the picked model into app storage, so reserve equivalent free space.
-                    Text(
-                        "本機匯入會複製檔案，請預留與模型大小相同的可用空間。",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-
-                    if (ui.ready || ui.loading) {
-                        TextButton(
-                            onClick = {
-                                context.startService(
-                                    Intent(context, RunService::class.java)
-                                        .setAction(RunService.ACTION_SHUTDOWN)
-                                )
-                            },
-                            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
-                        ) { Text("卸載模型並釋放記憶體") }
-                    }
-                }
-            }
-
-            // Compact, always-visible live performance strip.
-            ElevatedCard(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp)) {
+            // Single compact performance line. Detailed metrics remain in the separate dialog.
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 1.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surface,
+            ) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 7.dp, vertical = 0.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    val telemetry = ui.telemetry
+                    val rate = if (telemetry.avgTokensPerSecond > 0.0 && !ui.streaming)
+                        telemetry.avgTokensPerSecond else telemetry.tokensPerSecond
                     Column(Modifier.weight(1f)) {
-                        Text("生成速度", fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        val telemetry = ui.telemetry
-                        val rate = if (telemetry.avgTokensPerSecond > 0.0 && !ui.streaming)
-                            telemetry.avgTokensPerSecond else telemetry.tokensPerSecond
+                        Text("速度", fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                         Text(
                             if (rate > 0.0) String.format(Locale.US, "%.2f tok/s", rate) else "— tok/s",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
+                            fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
                         )
                     }
-                    Column(Modifier.weight(0.8f)) {
-                        Text("CPU 溫度", fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(Modifier.weight(0.75f)) {
+                        Text("CPU", fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                         Text(
                             ui.cpuTempC?.let { String.format(Locale.US, "%.1f°C", it) } ?: "—",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
+                            fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
                         )
                     }
-                    Column(Modifier.weight(0.7f)) {
-                        Text("狀態", fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(Modifier.weight(0.75f)) {
+                        Text("狀態", fontSize = 9.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                         Text(
                             when {
                                 ui.loading -> "載入中"
@@ -450,15 +385,13 @@ private fun MainScreen(
                                 ui.ready -> "已就緒"
                                 else -> "待機"
                             },
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
+                            fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
                         )
                     }
                     TextButton(
                         onClick = { showTelemetry = true },
-                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
-                    ) { Text("詳情") }
+                        contentPadding = PaddingValues(horizontal = 3.dp, vertical = 0.dp),
+                    ) { Text("詳情", fontSize = 11.sp) }
                 }
             }
 
@@ -476,8 +409,8 @@ private fun MainScreen(
             // Only this conversation list is vertically scrollable.
             LazyColumn(
                 state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
-                contentPadding = PaddingValues(vertical = 8.dp),
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp),
+                contentPadding = PaddingValues(vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (hasWelcome) {
@@ -509,25 +442,12 @@ private fun MainScreen(
                 }
             }
 
-            // Fixed message composer at the bottom.
+            // Compact fixed composer: the message history gets the remaining screen space.
             Surface(Modifier.fillMaxWidth(), tonalElevation = 2.dp) {
                 Column(
-                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        FilterChip(
-                            selected = choose,
-                            onClick = { choose = !choose },
-                            enabled = !ui.busy,
-                            label = { Text("選項模式") },
-                        )
-                        Spacer(Modifier.weight(1f))
-                        if (ui.generating) {
-                            Text("正在生成…", fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
                     if (choose) {
                         OutlinedTextField(
                             value = optionsText,
@@ -540,19 +460,35 @@ private fun MainScreen(
                         )
                     }
                     Row(
-                        verticalAlignment = Alignment.Bottom,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
+                        FilterChip(
+                            selected = choose,
+                            onClick = { choose = !choose },
+                            enabled = !ui.busy,
+                            label = { Text("選項", fontSize = 11.sp) },
+                        )
                         OutlinedTextField(
                             value = prompt,
                             onValueChange = { prompt = it },
-                            placeholder = { Text("傳送訊息給本地模型…") },
+                            placeholder = { Text("輸入訊息…", maxLines = 1) },
                             modifier = Modifier.weight(1f),
                             minLines = 1,
-                            maxLines = 4,
+                            maxLines = 3,
                             enabled = !ui.busy,
                         )
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (ui.generating) {
+                            Button(
+                                onClick = {
+                                    context.startService(
+                                        Intent(context, RunService::class.java)
+                                            .setAction(RunService.ACTION_CANCEL)
+                                    )
+                                },
+                                contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp),
+                            ) { Text("停止", fontSize = 12.sp) }
+                        } else {
                             Button(
                                 onClick = {
                                     focusManager.clearFocus()
@@ -573,17 +509,8 @@ private fun MainScreen(
                                     }
                                 },
                                 enabled = !ui.busy && models.isNotEmpty(),
-                            ) { Text("傳送") }
-                            if (ui.generating) {
-                                OutlinedButton(
-                                    onClick = {
-                                        context.startService(
-                                            Intent(context, RunService::class.java)
-                                                .setAction(RunService.ACTION_CANCEL)
-                                        )
-                                    },
-                                ) { Text("停止") }
-                            }
+                                contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp),
+                            ) { Text("傳送", fontSize = 12.sp) }
                         }
                     }
                 }
@@ -638,6 +565,19 @@ private fun MainScreen(
                             }
                         }
                     }
+                }
+            },
+            dismissButton = {
+                if (ui.ready || ui.loading) {
+                    TextButton(
+                        onClick = {
+                            context.startService(
+                                Intent(context, RunService::class.java)
+                                    .setAction(RunService.ACTION_SHUTDOWN)
+                            )
+                            showTelemetry = false
+                        }
+                    ) { Text("卸載模型") }
                 }
             },
             confirmButton = {
