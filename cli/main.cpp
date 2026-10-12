@@ -929,7 +929,8 @@ int main(int argc, char ** argv) {
         probe_device_costs(hw, mp);
         if (probe_io) probe_storage(hw, cfg.model_path.c_str(), mp.expert_slice_bytes);
         probe_headroom(hw, probe_mem, mp.dense_bytes + cache_floor);
-        const Placement placement = probe_placement(cfg.model_path.c_str(), mp, hw, (uint32_t) cfg.n_ctx);
+        const Placement placement =
+            probe_placement(cfg.model_path.c_str(), mp, hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch);
         const Plan plan = plan_run(cfg, hw, mp, placement, req);
         cfg = plan.config;
         predicted_s_per_token = plan.allocation.seconds_per_token;

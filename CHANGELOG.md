@@ -7,6 +7,17 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **`--auto` chooses how wide a prompt is computed (`--ubatch`), and counts its buffers at that
+  width.** The compute buffers are reserved for the widest graph, which followed the context, while
+  the ledger read them at llama.cpp's default of 512 tokens with a logit row per position: about
+  right at a 2048 context, and 1.2 GB charged for 8 GB reserved at 16384. The projection is now taken
+  at the session's own width and at half of it, so a narrower graph can be priced, and the width is
+  the widest whose buffers stay inside a tenth of what the process may hold
+  (`PlannerPolicy::compute_share_max`), never below 512. On a 16 GB Apple-silicon laptop,
+  Qwen3.6-35B-A3B Q4_K_M at a 16384 context with `--auto` alone: decode 22.4 and 22.3 tok/s (14.6
+  and 16.7 before), the cache locked at its full 7.7 GB (it settled at 3.5), and a 10850-token
+  prompt in 31.8 s (20.4 before, at a width that cost the decode a third). A 2048 context plans as
+  it did. Measured on that one machine; `docs/hardware-planning.md` lists the others it is owed on.
 - **An iOS harness (`examples/ios`, `scripts/build-ios.sh`).** `bmoe-cli` compiled into an app,
   since an app there may not start a process: one field for the command line, the CLI's own output,
   and a `--bmoe` marker to script a run from the machine the device is attached to. On iOS the

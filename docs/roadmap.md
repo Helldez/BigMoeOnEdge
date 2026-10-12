@@ -212,8 +212,11 @@ What is still owed is measurement rather than design, and every knob the plan ca
   bandwidth probe times a one-token GEMV, which is the decode shape and says nothing about a graph
   a thousand tokens wide; the rule needs that second measurement, and the memory the device's two
   slots and compute buffers take from the expert cache as a budget line.
-- **`--ubatch`** has no rule because it has no measurement: the compute-buffer reservation's
-  crossover against the cache is unmeasured on every machine here.
+- **The graph width, anywhere but where it was measured.** `--auto` now chooses `--ubatch` from
+  the compute buffers a width reserves, projected at the width the session opens with. The rule and
+  its one policy figure were sized on a single laptop; a phone with an NPU, a machine with no
+  accelerator, a discrete GPU and a system that commits what it reserves each owe a run before the
+  rule is believed there ([hardware-planning.md](hardware-planning.md#the-widest-graph)).
 
 ## Not on this list
 

@@ -156,7 +156,14 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
 // model takes. `n_ctx` 0 lets the fitter choose (it shrinks context before moving weights); a set
 // value is a pin. Returns fitted=false where the fitter could not run, and the planner then plans
 // as if there were no devices at all.
-Placement
-probe_placement(const char * model_path, const ModelProfile & model, const HardwareProfile & hw, uint32_t n_ctx);
+//
+// `n_ubatch` is RunConfig::n_ubatch, the widest graph the run computes at once (0 = as wide as the
+// context). Compute buffers are reserved for that width, so a projection made at any other is the
+// projection of a different run: read at llama.cpp's own default of 512 while the session opened
+// one graph per context, the ledger charged 1.2 GB for what then reserved 8 GB at a 16384 context. The
+// projection is taken at that width and at half of it, which gives the slope a narrower graph is
+// priced with (Placement::at_width).
+Placement probe_placement(
+    const char * model_path, const ModelProfile & model, const HardwareProfile & hw, uint32_t n_ctx, uint32_t n_ubatch);
 
 } // namespace bmoe
