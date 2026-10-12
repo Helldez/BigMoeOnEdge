@@ -62,7 +62,30 @@ class MainActivity : ComponentActivity() {
         // live in the app-specific dir and need no permission. The dev flavor asks for it only
         // when the user explicitly rescans device storage (Refresh) for adb-pushed models.
         setContent {
-            MaterialTheme(colorScheme = if (isSystemDark()) darkColorScheme() else lightColorScheme()) {
+            val appColors = if (isSystemDark()) {
+                darkColorScheme(
+                    primary = androidx.compose.ui.graphics.Color(0xFFA6D9C2),
+                    onPrimary = androidx.compose.ui.graphics.Color(0xFF003827),
+                    secondary = androidx.compose.ui.graphics.Color(0xFFB6C9FF),
+                    background = androidx.compose.ui.graphics.Color(0xFF101412),
+                    surface = androidx.compose.ui.graphics.Color(0xFF191D1A),
+                    surfaceVariant = androidx.compose.ui.graphics.Color(0xFF29302B),
+                    onSurface = androidx.compose.ui.graphics.Color(0xFFE1E7E1),
+                    onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFFC0C9C0),
+                )
+            } else {
+                lightColorScheme(
+                    primary = androidx.compose.ui.graphics.Color(0xFF176B4D),
+                    onPrimary = androidx.compose.ui.graphics.Color.White,
+                    secondary = androidx.compose.ui.graphics.Color(0xFF355E91),
+                    background = androidx.compose.ui.graphics.Color(0xFFF5F7F4),
+                    surface = androidx.compose.ui.graphics.Color.White,
+                    surfaceVariant = androidx.compose.ui.graphics.Color(0xFFE8EFE9),
+                    onSurface = androidx.compose.ui.graphics.Color(0xFF171D19),
+                    onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF424A43),
+                )
+            }
+            MaterialTheme(colorScheme = appColors) {
                 Surface(color = MaterialTheme.colorScheme.background) { Root() }
             }
         }
@@ -160,267 +183,272 @@ private fun MainScreen(
     val focusManager = LocalFocusManager.current
     val ui by RunBus.state.collectAsStateWithLifecycle()
 
-    var prompt by rememberSaveable { mutableStateOf("Explain what a mixture-of-experts model is, in two sentences.") }
-    // Choose mode: the model picks one of these options (one per line) instead of writing an answer.
+    var prompt by rememberSaveable { mutableStateOf("") }
     var choose by rememberSaveable { mutableStateOf(false) }
     var optionsText by rememberSaveable { mutableStateOf("") }
+    var showModelPanel by rememberSaveable { mutableStateOf(false) }
+    var showTelemetry by rememberSaveable { mutableStateOf(false) }
+    var showConfig by rememberSaveable { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
-    // Item 0 is the controls block; the transcript and the in-flight answer follow it. The live
-    // turn also shows while only reasoning has streamed (the thinking phase, before any answer),
-    // so a Thinking-on run does not sit on a blank screen while the model reasons.
     val liveShown = ui.answer.isNotEmpty() || ui.reasoning.isNotEmpty()
-    val total = 1 + ui.transcript.size + (if (liveShown) 1 else 0)
+    val hasWelcome = ui.transcript.isEmpty() && !liveShown
+    val total = ui.transcript.size + (if (liveShown) 1 else 0) + (if (hasWelcome) 1 else 0)
 
-    // Follow the tail only while the user is parked at the bottom. A long answer streams for a
-    // long time, and scrolling back to re-read it must not fight a per-token scroll command:
-    // dragging the list detaches the follow, coming back to the bottom re-arms it.
     var followTail by remember { mutableStateOf(true) }
     val atBottom by remember {
         derivedStateOf {
             val info = listState.layoutInfo
             val last = info.visibleItemsInfo.lastOrNull()
-            last == null ||
-                (last.index == info.totalItemsCount - 1 && last.offset + last.size <= info.viewportEndOffset)
+            last == null || (last.index == info.totalItemsCount - 1 &&
+                last.offset + last.size <= info.viewportEndOffset)
         }
     }
     LaunchedEffect(listState) {
-        listState.interactionSource.interactions.collect { if (it is DragInteraction.Start) followTail = false }
+        listState.interactionSource.interactions.collect {
+            if (it is DragInteraction.Start) followTail = false
+        }
     }
-    // Re-arm on settle, not the moment the bottom is touched: while an answer streams the bottom
-    // keeps moving away, so only where a scroll actually comes to rest says what the user wants.
     LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) followTail = atBottom }
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling) followTail = atBottom
+        }
     }
     LaunchedEffect(total, ui.answer.length, ui.reasoning.length, followTail) {
-        // A long answer is taller than the viewport, so aligning the item's top would park the view
-        // on its beginning; the large offset pins the list to the newest text instead.
-        if (followTail && total > 1) runCatching { listState.scrollToItem(total - 1, Int.MAX_VALUE) }
+        if (followTail && total > 0) {
+            runCatching { listState.scrollToItem(total - 1, Int.MAX_VALUE) }
+        }
     }
 
-    // adjustResize handles the legacy path; imePadding covers edge-to-edge (Android 15+), where the
-    // window no longer shrinks for the keyboard. Without it the streaming answer draws behind the IME.
     Box(Modifier.fillMaxSize().imePadding()) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize().padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item(key = "controls") {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("BigMoeOnEdge", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                        TextButton(onClick = onOpenMetrics) { Text("Metrics") }
-                        TextButton(onClick = onOpenSettings) { Text("Settings") }
+        Column(Modifier.fillMaxSize()) {
+            // Header
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("BigMoe", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text("本地 AI · 離線推理", fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TextButton(onClick = {
+                    if (!ui.busy) {
+                        RunBus.update { it.copy(transcript = emptyList(), answer = "", reasoning = "", summary = "", error = null) }
+                        prompt = ""
                     }
+                }, enabled = ui.transcript.isNotEmpty() && !ui.busy) { Text("新對話") }
+                TextButton(onClick = onOpenMetrics) { Text("性能") }
+                TextButton(onClick = onOpenSettings) { Text("設定") }
+            }
 
+            // Compact model picker; importing/downloading stays available in the expandable panel.
+            ElevatedCard(Modifier.fillMaxWidth().padding(horizontal = 10.dp)) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("模型", fontWeight = FontWeight.SemiBold)
+                            Text(when {
+                                scanning -> "正在掃描模型…"
+                                models.isEmpty() -> "尚未載入模型"
+                                else -> models.getOrNull(modelIdx)?.name ?: "選擇模型"
+                            }, fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        TextButton(onClick = { showModelPanel = !showModelPanel }) {
+                            Text(if (showModelPanel) "收起模型管理" else "模型管理 / 匯入")
+                        }
+                        TextButton(onClick = {
+                            requestSharedStorageAccess(context)
+                            onRefresh()
+                        }) { Text("掃描") }
+                    }
                     when {
-                        scanning -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            Text("Scanning for MoE models…", fontSize = 14.sp)
+                        scanning -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                        models.isNotEmpty() -> LabeledDropdown(
+                            label = "目前模型", options = models.map { it.name },
+                            selected = modelIdx, onSelect = onSelectModel,
+                        )
+                        else -> Text(ModelManager.pushHint(), fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace)
+                    }
+                    if (showModelPanel || (models.isEmpty() && !scanning)) {
+                        AddModelSection(
+                            models = models, scanning = scanning,
+                            loadedSig = ui.sessionSig,
+                            onModelReady = { onRefresh(); showModelPanel = false },
+                        )
+                    }
+                    if (ui.ready || ui.loading) {
+                        TextButton(onClick = {
+                            context.startService(Intent(context, RunService::class.java)
+                                .setAction(RunService.ACTION_SHUTDOWN))
+                        }) { Text("卸載模型並釋放記憶體") }
+                    }
+                }
+            }
+
+            // Always-visible performance summary, with the existing detailed telemetry one tap away.
+            ElevatedCard(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(Modifier.weight(1f)) {
+                            Text("生成速度", fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            val t = ui.telemetry
+                            val rate = if (t.avgTokensPerSecond > 0.0 && !ui.streaming)
+                                t.avgTokensPerSecond else t.tokensPerSecond
+                            Text(if (rate > 0.0) String.format(Locale.US, "%.2f tok/s", rate)
+                                else "等待生成", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                         }
-                        models.isEmpty() -> {
-                            ElevatedCard {
-                                Text(
-                                    ModelManager.pushHint(),
-                                    Modifier.padding(12.dp),
-                                    fontSize = 13.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                )
+                        Column(Modifier.weight(1f)) {
+                            Text("CPU 溫度", fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(ui.cpuTempC?.let { String.format(Locale.US, "%.1f°C", it) } ?: "—",
+                                fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        }
+                        Column(Modifier.weight(0.8f)) {
+                            Text("狀態", fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(when {
+                                ui.loading -> "載入中"
+                                ui.generating -> "生成中"
+                                ui.ready -> "已就緒"
+                                else -> "待機"
+                            }, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        }
+                    }
+                    TextButton(onClick = { showTelemetry = !showTelemetry },
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) {
+                        Text(if (showTelemetry) "收起詳細性能" else "展開性能詳情：Compute / Flash I/O / Cache")
+                    }
+                    if (showTelemetry) {
+                        TelemetryCard(ui, settings.threads, settings.overlap, settings.ioThreads)
+                        val flags = remember(settings, models, modelIdx) {
+                            models.getOrNull(modelIdx.coerceIn(0, (models.size - 1).coerceAtLeast(0)))
+                                ?.let { configFlags(settings, it.absolutePath, settings.metricsCsv) }
+                                .orEmpty()
+                        }
+                        if (flags.isNotEmpty()) {
+                            TextButton(onClick = { showConfig = !showConfig }) {
+                                Text(if (showConfig) "收起完整設定" else "查看完整推理設定 (${flags.size})")
                             }
-                            TextButton(onClick = { requestSharedStorageAccess(context); onRefresh() }) { Text("Refresh") }
-                        }
-                        else -> LabeledDropdown(
-                            label = "Model",
-                            options = models.map { it.name },
-                            selected = modelIdx,
-                            onSelect = onSelectModel,
-                        )
-                    }
-
-                    // Bring a model onto the device without adb: the built-in catalog, an arbitrary
-                    // URL, or a local file. All land in the app models dir; on completion we
-                    // re-scan so the model appears above.
-                    AddModelSection(
-                        models = models,
-                        scanning = scanning,
-                        loadedSig = ui.sessionSig,
-                        onModelReady = onRefresh,
-                    )
-
-                    SwitchRow(
-                        label = "Choose from options",
-                        description = "The model picks one of your options instead of writing an answer",
-                        checked = choose,
-                        enabled = !ui.busy,
-                        onChange = { choose = it },
-                    )
-
-                    OutlinedTextField(
-                        value = prompt,
-                        onValueChange = { prompt = it },
-                        label = { Text(if (choose) "Question" else "Prompt") },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 2,
-                    )
-                    if (choose) {
-                        OutlinedTextField(
-                            value = optionsText,
-                            onValueChange = { optionsText = it },
-                            label = { Text("Options, one per line") },
-                            modifier = Modifier.fillMaxWidth(),
-                            minLines = 3,
-                        )
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Button(
-                            onClick = {
-                                // Drop focus so the soft keyboard retracts: the answer streams into the
-                                // space it was covering, and there is otherwise no in-app way to dismiss it.
-                                focusManager.clearFocus()
-                                val options = if (choose) Choice.parseOptions(optionsText) else null
-                                if (options != null && options.size < 2) {
-                                    RunBus.update { it.copy(error = "Give at least two options, one per line.") }
-                                } else if (models.isNotEmpty()) {
-                                    // First message of a conversation clears the KV; a follow-up continues it.
-                                    // A Choose turn ends the conversation, so the next chat message starts one.
-                                    launchPrompt(context, models[modelIdx.coerceIn(0, models.size - 1)],
-                                        prompt.ifBlank { "The capital of Japan is" }, settings, ui.sessionSig,
-                                        clearKv = ui.transcript.isEmpty() || ui.transcript.last().role == "choice",
-                                        options = options)
-                                }
-                            },
-                            enabled = !ui.busy && models.isNotEmpty(),
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text(
-                                when {
-                                    choose -> "Choose"
-                                    ui.transcript.isNotEmpty() || ui.ready -> "Send"
-                                    else -> "Run"
-                                }
-                            )
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                context.startService(
-                                    Intent(context, RunService::class.java).setAction(RunService.ACTION_CANCEL)
-                                )
-                            },
-                            enabled = ui.generating,
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Stop") }
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        // Start a new conversation: the next Send clears the KV. Keeps the model loaded.
-                        TextButton(
-                            onClick = { RunBus.update { it.copy(transcript = emptyList(), answer = "", summary = "", error = null) } },
-                            enabled = ui.transcript.isNotEmpty() && !ui.busy,
-                        ) { Text("New chat") }
-
-                        // The session keeps the model resident (and the cache warm) between prompts. Free it
-                        // explicitly, or let the service auto-unload after an idle timeout.
-                        if (ui.ready || ui.loading) {
-                            TextButton(onClick = {
-                                context.startService(
-                                    Intent(context, RunService::class.java).setAction(RunService.ACTION_SHUTDOWN)
-                                )
-                            }) { Text("Unload model") }
-                        }
-                    }
-
-                    // A quick reminder of the active config (full controls in Settings), with the
-                    // rest of it one tap away: the line above names the levers that change the kind
-                    // of run, but "what exactly was this answer produced under" is a question the
-                    // main screen has to be able to answer too, not only a saved CSV (#136).
-                    // Remembered, not recomputed: this item redraws on every streamed token (it holds
-                    // the telemetry card), and the configuration it describes changes only when the
-                    // user changes a setting.
-                    val summary = remember(settings) { configSummary(settings) }
-                    Text(summary, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    var showConfig by rememberSaveable { mutableStateOf(false) }
-                    val flags = remember(settings, models, modelIdx) {
-                        models.getOrNull(modelIdx.coerceIn(0, (models.size - 1).coerceAtLeast(0)))
-                            ?.let { configFlags(settings, it.absolutePath, settings.metricsCsv) }
-                            .orEmpty()
-                    }
-                    if (flags.isNotEmpty()) {
-                        TextButton(
-                            onClick = { showConfig = !showConfig },
-                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
-                        ) {
-                            Text(
-                                if (showConfig) "Hide full configuration"
-                                else "Full configuration (${flags.size} flags)",
-                                fontSize = 12.sp,
-                            )
-                        }
-                        if (showConfig) {
-                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                // The engine's own flag names rather than prose labels: this is the
-                                // command line the session runs on, and a name that matches the CLI
-                                // is what makes a screenshot of it reproducible off-device.
-                                flags.forEach { (flag, value) ->
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text(
-                                            flag, fontSize = 11.sp, fontFamily = FontFamily.Monospace,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.weight(1f),
-                                        )
-                                        Text(value, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            if (showConfig) {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    flags.forEach { (flag, value) ->
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text(flag, fontSize = 11.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.weight(1f))
+                                            Text(value, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-
-                    if (ui.loading) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            Text("Loading model…", fontSize = 14.sp)
-                        }
-                    }
-                    // After the model is loaded, the prompt is prefilled before the first token streams
-                    // (no BMOE_PROGRESS yet). Signal that phase so a slow prefill does not look stuck.
-                    if (ui.generating && ui.telemetry.step == 0) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                            Text("Prefilling prompt…", fontSize = 14.sp)
-                        }
-                    }
-
-                    TelemetryCard(ui, settings.threads, settings.overlap, settings.ioThreads)
                 }
             }
 
-            // Committed turns.
-            items(ui.transcript.size) { i -> TurnView(ui.transcript[i]) }
+            ui.error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp))
+            }
 
-            // The in-flight assistant answer as it streams (its user turn is already in the transcript).
-            // While generating, keep the thinking block open so the reasoning is visible as it arrives.
-            if (liveShown) {
-                item(key = "live") {
-                    TurnView(ChatTurn("assistant", ui.answer, reasoning = ui.reasoning), reasoningExpanded = true)
+            // Conversation area
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
+                contentPadding = PaddingValues(vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (hasWelcome) {
+                    item(key = "welcome") {
+                        Column(Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("開始一段本機對話", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                            Text("選擇或匯入模型後，直接輸入問題。推理在你的裝置上執行。",
+                                fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { prompt = "請用繁體中文介紹你能做什麼。" }) { Text("介紹模型") }
+                                OutlinedButton(onClick = { prompt = "請解釋 MoE 模型的運作方式。" }) { Text("解釋 MoE") }
+                                OutlinedButton(onClick = { prompt = "請幫我整理重點並列出步驟。" }) { Text("整理重點") }
+                            }
+                        }
+                    }
+                }
+                items(ui.transcript.size) { i -> TurnView(ui.transcript[i]) }
+                if (liveShown) {
+                    item(key = "live") {
+                        TurnView(ChatTurn("assistant", ui.answer, reasoning = ui.reasoning), reasoningExpanded = true)
+                    }
+                }
+            }
+
+            // Fixed composer at the bottom
+            Surface(Modifier.fillMaxWidth(), tonalElevation = 2.dp) {
+                Column(Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FilterChip(selected = choose, onClick = { choose = !choose },
+                            enabled = !ui.busy, label = { Text("選項模式") })
+                        Spacer(Modifier.weight(1f))
+                        if (ui.generating) Text("正在生成…", fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary)
+                    }
+                    if (choose) {
+                        OutlinedTextField(value = optionsText, onValueChange = { optionsText = it },
+                            label = { Text("候選答案，每行一個") }, modifier = Modifier.fillMaxWidth(),
+                            minLines = 2, maxLines = 3, enabled = !ui.busy)
+                    }
+                    Row(verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(value = prompt, onValueChange = { prompt = it },
+                            placeholder = { Text("傳送訊息給本地模型…") },
+                            modifier = Modifier.weight(1f), minLines = 1, maxLines = 5,
+                            enabled = !ui.busy)
+                        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Button(onClick = {
+                                focusManager.clearFocus()
+                                val options = if (choose) Choice.parseOptions(optionsText) else null
+                                if (options != null && options.size < 2) {
+                                    RunBus.update { it.copy(error = "請至少輸入兩個選項，每行一個。") }
+                                } else if (models.isNotEmpty()) {
+                                    launchPrompt(
+                                        context, models[modelIdx.coerceIn(0, models.size - 1)],
+                                        prompt.ifBlank { "請用繁體中文回答。" }, settings, ui.sessionSig,
+                                        clearKv = ui.transcript.isEmpty() || ui.transcript.last().role == "choice",
+                                        options = options,
+                                    )
+                                    prompt = ""
+                                }
+                            }, enabled = !ui.busy && models.isNotEmpty()) {
+                                Text(if (ui.generating) "傳送" else "傳送")
+                            }
+                            if (ui.generating) {
+                                OutlinedButton(onClick = {
+                                    context.startService(Intent(context, RunService::class.java)
+                                        .setAction(RunService.ACTION_CANCEL))
+                                }) { Text("停止") }
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // Once the follow is detached, the way back to a still-growing answer is a long drag.
-        if (!followTail && !atBottom) {
+        if (!followTail && !atBottom && total > 0) {
             val scope = rememberCoroutineScope()
             FilledTonalButton(
                 onClick = { scope.launch { listState.animateScrollToItem(total - 1, Int.MAX_VALUE) } },
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
-            ) { Text("Jump to latest") }
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 112.dp),
+            ) { Text("回到最新訊息") }
         }
     }
 }
@@ -435,20 +463,34 @@ private fun MainScreen(
 private fun TurnView(turn: ChatTurn, reasoningExpanded: Boolean = false) {
     turn.choices?.let { ChoiceView(it, turn.best, turn.metrics); return }
     val isUser = turn.role == "user"
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-            if (isUser) "You" else "Assistant",
-            fontSize = 12.sp, fontWeight = FontWeight.Bold,
-            color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
-        )
-        if (turn.reasoning.isNotEmpty()) ReasoningBlock(turn.reasoning, reasoningExpanded)
-        // The user's own prompt is echoed verbatim; only the model's answer is read as Markdown.
-        SelectionContainer {
-            if (isUser) Text(turn.text, fontSize = 15.sp) else MarkdownText(turn.text)
-        }
-        if (turn.metrics.isNotEmpty()) {
-            Text(turn.metrics, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(if (isUser) 0.88f else 1f),
+            shape = MaterialTheme.shapes.large,
+            color = if (isUser) MaterialTheme.colorScheme.secondaryContainer
+                else MaterialTheme.colorScheme.surface,
+            tonalElevation = if (isUser) 0.dp else 1.dp,
+        ) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    if (isUser) "你" else "BigMoe",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isUser) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (turn.reasoning.isNotEmpty()) ReasoningBlock(turn.reasoning, reasoningExpanded)
+                SelectionContainer {
+                    if (isUser) Text(turn.text, fontSize = 15.sp) else MarkdownText(turn.text)
+                }
+                if (turn.metrics.isNotEmpty()) {
+                    Text(turn.metrics, fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
 }
