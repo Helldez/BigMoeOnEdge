@@ -39,10 +39,15 @@
 #include <android/hardware_buffer.h> // reclaim-exempt allocation; see pinned_alloc
 #endif
 #if defined(__APPLE__)
-#include <libproc.h>     // this process's own regions; see file_mapped_regions
+#include <TargetConditionals.h>
 #include <mach-o/dyld.h> // this executable's own path; see run_self
 #include <mach/mach.h>
 #include <sys/sysctl.h>
+#if TARGET_OS_IPHONE
+#include <os/proc.h> // this process's own share of memory; see mem_available_bytes
+#else
+#include <libproc.h> // this process's own regions; see file_mapped_regions
+#endif
 #endif
 #endif
 
@@ -366,6 +371,13 @@ uint64_t mem_total_bytes() {
 
 uint64_t mem_available_bytes() {
 #if defined(__APPLE__)
+#if TARGET_OS_IPHONE
+    // A process here has a share of its own and is ended for exceeding it, so what the system has
+    // free says nothing about what this process may still take: the kernel publishes the share's
+    // remainder instead. 0 is "not published" (the simulator runs on the host's kernel and has no
+    // share), and the host's own figure below is then the one that applies.
+    if (const size_t left = os_proc_available_memory()) return (uint64_t) left;
+#endif
     vm_statistics64_data_t vm;
     if (host_vm(&vm)) return host_available_pages(vm) * (uint64_t) vm_page();
 #endif
@@ -490,7 +502,13 @@ bool device_memory(DeviceMemory * out) {
 }
 #endif
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+// The address-space walk below is not offered to an app here, so the question goes unanswered and
+// the caller reports the mapping's residency as unmeasured.
+bool file_mapped_regions(const char *, std::vector<MappedRegion> &) {
+    return false;
+}
+#elif defined(__APPLE__)
 // Darwin has no /proc. The same question — which of this process's regions map this file, and from
 // which file offset — is answered by walking its own address space: PROC_PIDREGIONPATHINFO returns
 // the region containing or following an address together with the vnode path behind it, and asking
@@ -584,7 +602,13 @@ std::string self_path() {
 } // namespace
 
 bool can_run_self() {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // An app may not start a process, its own executable included: the spawn is refused, and a
+    // refusal would read as a device whose probe could not be run. Say so before anyone asks.
+    return false;
+#else
     return !self_path().empty();
+#endif
 }
 
 ChildResult run_self(const std::vector<std::string> & args, double timeout_seconds, std::string * out) {

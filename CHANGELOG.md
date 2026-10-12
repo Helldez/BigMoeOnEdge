@@ -7,6 +7,12 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **An iOS harness (`examples/ios`, `scripts/build-ios.sh`).** `bmoe-cli` compiled into an app,
+  since an app there may not start a process: one field for the command line, the CLI's own output,
+  and a `--bmoe` marker to script a run from the machine the device is attached to. On iOS the
+  planner now reads the process's own memory share instead of the system's free memory, and probes
+  devices in-process. CI compiles it for the simulator. Not run on a device: nothing the planner
+  measures there has been seen.
 - **`--auto` probes each compute device in a process of its own.** A device is only as sound as
   its driver, and a backend that calls a function the driver lacks ends the process with no error
   to catch. Each device beyond the host is now asked by a child process first; one whose probe

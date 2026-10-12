@@ -130,6 +130,18 @@ jobs:
       - name: Smoke
         run: build/bin/bmoe-cli --version
 
+  ios-harness:
+    # Compile-check the iOS paths: the engine and bmoe-cli inside the harness app, for the
+    # simulator, unsigned. Nothing is run; the simulator's kernel and memory are the runner's.
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Configure & build (examples/ios, simulator)
+        run: scripts/build-ios.sh sim
+
   # Cross-compiles the arm64 engine (the native compile gate) and packages the example
   # APK around it, uploading the APK as an artifact — and attaching it to the release on a
   # tag push. Debug-signed: for on-device validation, not Play distribution.
