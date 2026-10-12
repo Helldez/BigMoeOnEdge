@@ -63,6 +63,7 @@ third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates
 examples/android an APK that drives bmoe-cli via ProcessBuilder
+examples/ios    a harness app with bmoe-cli compiled in (an app there may not start a process)
 ```
 
 Dependencies point inward: adapters depend on the port headers, the CLI composes them.

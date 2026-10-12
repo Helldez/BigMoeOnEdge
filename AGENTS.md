@@ -28,7 +28,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   their settings from its JSON (`bmoe-cli --describe-params`).
 - `cli/main.cpp`: `bmoe-cli`; the ONLY place engine environment overrides are read.
 - `third_party/llama.cpp` — stock upstream submodule.
-- `tests/` — byte-identity gates. `examples/android/` — the demo APK.
+- `tests/` — byte-identity gates. `examples/android/` — the demo APK. `examples/ios/` — the iOS
+  harness: `cli/main.cpp` compiled into an app, since an app there may not start a process.
 
 ## Build and test
 
