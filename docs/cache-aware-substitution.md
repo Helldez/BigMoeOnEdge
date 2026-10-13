@@ -8,7 +8,7 @@ already in RAM. The same number of experts runs; fewer of them cost a flash read
 and **experimental**: everything below was measured on one model on the desktop, and the
 thermally matched on-device A/B is still owed before it earns a default.
 
-It is the third lossy knob in the engine, after [turbo top-k](../README.md#speed-and-quality) and
+It is the third lossy knob in the engine, after [turbo top-k](settings.md#speed-and-quality) and
 [cache-aware dropping](expert-dropping.md), and it sits one step upstream of the second: dropping
 decides whether to **pay** for a missing expert, substitution decides whether to **need** one.
 

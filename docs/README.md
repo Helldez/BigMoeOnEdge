@@ -23,6 +23,7 @@ for the idea the project is built on.
 | [server-api.md](server-api.md) | The desktop server's HTTP API: settings from the parameter table, OpenAI-compatible chat, live events, models and the plan. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
 | [decide.md](decide.md) | `--decide`: picking one of a list of choices from a single prefill, with no decode, and keeping the state after a shared prefix between calls. |
+| [settings.md](settings.md) | Every streaming setting: the flag, its values and what it does. |
 | [hardware-planning.md](hardware-planning.md) | `--auto`: how the engine sizes a run to this machine and this model, the fact behind each choice, and what is still unmeasured. |
 | [cache-sizing.md](cache-sizing.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
 | [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output (with the lossy knobs off). |

@@ -170,12 +170,15 @@ Semantic Versioning.
   Hexagon, Metal); the rest are listed as unknown, with what each use of a device asks of a backend.
 
 ### Changed
-- **The README says what `--auto` is and how it decides.** A paragraph in Features, a quickstart
-  line, and two schemas under "How it works": what happens on each token, and how a plan is
-  derived from the model and the machine. The roadmap no longer lists the choice of the prefill
-  device as owed, `docs/hardware-planning.md` no longer says no rule reads the compute devices,
-  and `AGENTS.md` describes the llama.cpp submodule as what it is: upstream plus the one-commit
-  hook `--overlap` needs.
+- **A shorter README, for what the project is now.** It introduced a way to run a model past RAM
+  on a phone, CPU only. It now leads with the three things the engine is: MoE streaming on
+  llama.cpp's public API, self-configuring (`--auto`) to the model and the machine, and available
+  as an Android app, a desktop app and an OpenAI-compatible server. A third of its former length:
+  one summary table each for settings and benchmarks, with the full tables moved, not dropped, to
+  the new `docs/settings.md`, to `docs/benchmarks.md` and to `docs/benchmark-method.md`. The roadmap
+  no longer lists the choice of the prefill device as owed, `docs/hardware-planning.md` no longer
+  says no rule reads the compute devices, and `AGENTS.md` describes the llama.cpp submodule as what
+  it is: upstream plus the one-commit hook `--overlap` needs.
 - **`--auto` estimates what can be held, not only what is reported free, on every machine that
   publishes the two facts.** The free headroom estimate (the compressor's own ratio applied to idle
   anonymous memory) was read on Linux and Android alone, so a macOS plan was sized from the reported
