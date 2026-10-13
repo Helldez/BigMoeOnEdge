@@ -117,6 +117,15 @@ Semantic Versioning.
   Hexagon, Metal); the rest are listed as unknown, with what each use of a device asks of a backend.
 
 ### Changed
+- **`--auto` estimates what can be held, not only what is reported free, on every machine that
+  publishes the two facts.** The free headroom estimate (the compressor's own ratio applied to idle
+  anonymous memory) was read on Linux and Android alone, so a macOS plan was sized from the reported
+  figure, which is a floor wherever a reclaim compresses. The same rule now reads the host's page
+  accounting there, and applies only where a reclaim compresses. On a 16 GB Apple-silicon laptop,
+  Qwen3.6-35B-A3B Q4_K_M at a 16384 context with 9.5 GB of idle memory held by another process:
+  2.7 GB reported, 4.8 GB estimated, and 12.0 tok/s with a 2 GB cache where the reported figure
+  left none (8.1 tok/s). With nothing else running the plan and the speed are unchanged. Measured
+  with a synthetic neighbour on that one machine.
 - Malformed numeric flag values are rejected (`--threads 4x` used to run with 4 threads,
   `--threads abc` with 0). Exit code 2, as for other invalid values.
 - `--cache-mb` given twice takes the last value instead of failing validation when one was `auto`,

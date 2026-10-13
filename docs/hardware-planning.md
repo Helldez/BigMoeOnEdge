@@ -280,6 +280,21 @@ first of it back. It is the real answer and it is intrusive by nature, so it nev
 grows in steps and stops at the first sign of loss, so it usually never reaches its ceiling, and it
 releases everything on every path out.
 
+The estimate is one rule over two facts, and each adapter that can read them supplies them: the
+compressor's ratio, and the anonymous memory nobody has touched lately. One machine publishes them
+as a compressed block device's statistics and an inactive-anonymous line; another as its host page
+accounting, which does not split the inactive list by what backs it, so the idle anonymous share is
+taken from below - the inactive pages left over if every file-backed page were among them - and is
+zero while the file cache is larger than the inactive list. It applies only where a reclaim
+compresses: where pressure ends the process, what its neighbours could be squeezed down to is not
+room it may take. Measured on a 16 GB Apple-silicon laptop with Qwen3.6-35B-A3B Q4_K_M at a 16384
+context, while another process held 9.5 GB of idle anonymous memory: 2.7 GB reported available and
+4.8 GB estimated holdable, which is the difference between no cache and a 2 GB one - 8.1 tok/s
+streamed uncached, 12.0 tok/s at 68% hits with the plan sized from the estimate. The idle process
+paid for it: swap in use went from 1.2 to 2.8 GB across the runs. On the same machine with nothing
+else running the two plans are the same within noise (19.3 and 19.5 tok/s over 300 tokens, twice
+each). A synthetic neighbour on one machine; real applications are owed.
+
 ## The memory ledger
 
 Everything the run holds for its whole length is a row in one account, and the account has two
@@ -698,8 +713,10 @@ The residency budget is `MemAvailable` on every platform that reports it, and on
 reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set
 plus cache with 3.6 GB "available", because the kernel compressed other processes' idle memory to
 make room, and reported 5.6 GB available afterwards. The honest budget there is the compressible
-headroom, which is a measurement this planner does not yet take; until it does, an unpinned plan
-on a phone under pressure streams with the cache off and says why, and a pinned `--cache-mb` wins
+headroom, which is estimated where the machine publishes the two facts behind it (see
+[The headroom probe](#the-headroom-probe)). Where it does not - the compressor's statistics are
+not readable to an unprivileged process on some phones - the reported figure stands: an unpinned
+plan under pressure there streams with the cache off and says why, and a pinned `--cache-mb` wins
 over the floor.
 
 One caveat on the budget itself: it is a one-shot reading of a quantity that moves. The same
