@@ -21,6 +21,15 @@ target_compile_definitions(bmoe_chat_parse_test PRIVATE
     BMOE_QWEN3_TEMPLATE_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/templates/Qwen3.5-4B.jinja")
 add_test(NAME chat_parse COMMAND bmoe_chat_parse_test)
 
+# Tool calls through the engine's chat types (bmoe/chat.h): tools into a real vendored template, a
+# call parsed back out, and the next prompt extending the previous one. Needs no model.
+add_executable(bmoe_chat_messages_test chat_messages_test.cpp)
+target_link_libraries(bmoe_chat_messages_test PRIVATE bmoe_core)
+target_include_directories(bmoe_chat_messages_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
+target_compile_definitions(bmoe_chat_messages_test PRIVATE
+    BMOE_QWEN3_TEMPLATE_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/templates/Qwen3.5-4B.jinja")
+add_test(NAME chat_messages COMMAND bmoe_chat_messages_test)
+
 # Thinking-control tests (issue #82). Drives bmoe::detail::probe_think_control and the prefill
 # against real vendored templates, so it needs no model and runs unconditionally.
 add_executable(bmoe_think_control_test think_control_test.cpp)
@@ -47,6 +56,14 @@ add_test(NAME config_validate COMMAND bmoe_config_test)
 add_executable(bmoe_params_test params_test.cpp)
 target_link_libraries(bmoe_params_test PRIVATE bmoe_core)
 add_test(NAME params_table COMMAND bmoe_params_test)
+
+# bmoe-server's policy: the chat protocol, the turn queue, the settings layers and the JSON edges.
+# No HTTP, no session, no model.
+if(TARGET bmoe_server_core)
+    add_executable(bmoe_server_test server_test.cpp)
+    target_link_libraries(bmoe_server_test PRIVATE bmoe_server_core)
+    add_test(NAME server_logic COMMAND bmoe_server_test)
+endif()
 
 # release_file_mappings: on Windows it must find and drop this process's own view + section of a
 # file and leave the placeholders in place; on POSIX it must report unsupported and touch nothing.

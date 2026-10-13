@@ -61,6 +61,7 @@ Invoke-Native "cmake configure" {
         -DANDROID_PLATFORM="android-$ApiLevel" `
         -DCMAKE_BUILD_TYPE="$BuildType" `
         -DBMOE_BUILD_TESTS=OFF `
+        -DBMOE_BUILD_SERVER=OFF `
         -DGGML_NATIVE=OFF `
         -DGGML_OPENCL=OFF `
         -DGGML_OPENMP=OFF `

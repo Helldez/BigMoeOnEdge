@@ -54,6 +54,7 @@ if(BMOE_HAVE_LLAMA)
         src/engine/prefill_path.cpp
         src/engine/decide/llama_backend.cpp
         src/engine/chat_parse.cpp
+        src/engine/chat_messages.cpp
         src/engine/thinking_control.cpp
         src/engine/runtime.cpp
         src/metrics/csv_metrics_sink.cpp

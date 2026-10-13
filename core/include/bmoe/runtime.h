@@ -9,11 +9,13 @@
 // decides from live cache state and so is reproducible only within a single run.
 #pragma once
 
+#include "bmoe/chat.h"
 #include "bmoe/config.h"
 #include "bmoe/metrics.h"
 
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace bmoe {
 
@@ -30,6 +32,9 @@ struct RunResult {
     // Empty otherwise (chat off, non-reasoning model, harmony no-think). Display-only; the answer
     // in generated_text already has it stripped. See TokenMetrics::reasoning.
     std::string reasoning_text;
+    // The tool calls the turn made, parsed out of the generation by the model's own chat format.
+    // Empty unless the request described tools. A turn that calls usually has no answer text.
+    std::vector<ChatToolCall> tool_calls;
     RunSummary summary;
     explicit operator bool() const { return ok; }
 };

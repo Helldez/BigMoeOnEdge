@@ -14,6 +14,7 @@
 // so the CLI and tests link it without pulling in the backend headers.
 #pragma once
 
+#include "bmoe/chat.h"
 #include "bmoe/config.h"
 #include "bmoe/decide.h"
 #include "bmoe/metrics.h"
@@ -105,6 +106,19 @@ struct GenerateRequest {
     // default output, and every benchmark run) does not, and should turn it off. Default on so an
     // embedder that does not know about this flag keeps the old behaviour.
     bool render_text = true;
+
+    // The whole conversation, for a front-end that keeps its own record of it (a chat protocol
+    // whose client resends the history on every request, an edited or regenerated turn). When
+    // non-empty it REPLACES the engine-held conversation and `prompt` is not read: the last message
+    // is the one being answered. The KV is not dropped for it - with clear_kv=false the tokens
+    // still matching what the context holds are kept and only the rest is prefilled, so resending
+    // the conversation the session already has costs the new turn alone, and a different one
+    // prefills from its first differing token. Chat mode only.
+    std::vector<ChatMessage> messages;
+    // Functions the model may call this turn, described to it by its own chat template; the calls
+    // come back in RunResult::tool_calls. Read only with `messages`: a tool's answer is a message.
+    std::vector<ChatTool> tools;
+    ToolChoice tool_choice = ToolChoice::Auto;
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token
