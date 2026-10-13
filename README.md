@@ -29,8 +29,8 @@ byte-identical to running it fully resident.
   a submodule bump.
 - **It configures itself.** `--auto` measures the machine (memory, storage, cores, accelerators),
   reads the model's shape and derives the streaming settings, with the fact behind each one. The
-  goal is the best streaming for any MoE model on any hardware; measured so far on a phone with an
-  NPU and an Apple-silicon laptop.
+  goal is the best streaming for any MoE model on any hardware: a phone with an NPU and an
+  Apple-silicon laptop, for example, each get a different plan from the same rules.
 - **Three front-ends, one engine:** an Android app, a desktop app with a local web UI, and an
   OpenAI-compatible server.
 
@@ -85,8 +85,9 @@ and pick one from the catalog, or paste any direct gguf URL. Models split into s
 load as they are, with no merge step.
 
 **Desktop.** Download the `bmoe-desktop` archive from the same release and start `bmoe-server`. The
-UI opens at `http://127.0.0.1:8765/`: pick a model, let the planner configure it, chat. Any OpenAI
-client can use the same address ([docs/server-api.md](docs/server-api.md)).
+UI opens at `http://127.0.0.1:8765/` (this machine only; `--port` changes it): pick a model, let
+the planner configure it, chat. Any OpenAI client can use the same address
+([docs/server-api.md](docs/server-api.md)).
 
 **Command line.** See [Build from source](#build-from-source).
 
@@ -189,7 +190,7 @@ Off by default; the NPU computes in fp16, so its output is not identical to the 
 cold experts dropped. Apple-silicon laptop, 16 GB, same model with `--auto` alone: 22.4 tok/s, and
 a 10850-token prompt prefilled in 31.8 s. One machine each.
 
-Every row comes from one phone and two laptops. To add your machine, one command runs the fixed
+The rows above come from one phone and two laptops. To add your machine, one command runs the fixed
 protocol and prints a table to paste into a
 [benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml):
 
@@ -226,13 +227,13 @@ Android: `scripts/build-android.ps1`, then the APK in [`examples/android`](examp
 model must sit on a real filesystem (`/data/local/tmp/...`, not `/sdcard`).
 Tests: `cd build && ctest --output-on-failure` (needs `python3` with the `gguf` package).
 
-| Platform | In CI | Measured on a real machine |
+| Platform | In CI | Published measurements |
 |---|---|---|
-| Android | APK build, app tests | yes, a 12 GB phone |
-| Linux | build and byte-identity gates | by contributors only |
-| macOS | build and smoke | yes, a 16 GB Apple-silicon laptop |
-| Windows | compile only (build with CMake; the script is bash) | yes, a 16 GB x86 laptop |
-| iOS | simulator compile ([`examples/ios`](examples/ios)) | no |
+| Android | APK build, app tests | a 12 GB phone |
+| Linux | build and byte-identity gates | community reports |
+| macOS | build and smoke | a 16 GB Apple-silicon laptop |
+| Windows | compile only (build with CMake; the script is bash) | a 16 GB x86 laptop |
+| iOS | simulator compile ([`examples/ios`](examples/ios)) | none yet |
 
 ## How it works
 
