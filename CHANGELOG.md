@@ -7,6 +7,19 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **An iOS harness (`examples/ios`, `scripts/build-ios.sh`).** `bmoe-cli` compiled into an app,
+  since an app there may not start a process: one field for the command line, the CLI's own output,
+  and a `--bmoe` marker to script a run from the machine the device is attached to. On iOS the
+  planner now reads the process's own memory share instead of the system's free memory, and probes
+  devices in-process. CI compiles it for the simulator. Not run on a device: nothing the planner
+  measures there has been seen.
+- **`--auto` probes each compute device in a process of its own.** A device is only as sound as
+  its driver, and a backend that calls a function the driver lacks ends the process with no error
+  to catch. Each device beyond the host is now asked by a child process first; one whose probe
+  dies or does not answer in time is marked unusable, shown as such in the plan, and kept out of
+  the run. On a 2020 phone a build carrying the Vulkan backend used to die while planning; it now
+  plans in 23 s, reports the GPU unusable, and runs on the cores. `--no-isolated-probes` turns it
+  off. Not yet on Windows or in the desktop server, where the probes run in-process as before.
 - **`--prefill-slots-on-demand`: the prefill device's expert slots take turns with the expert
   cache.** The two are never busy at once, so the slots are held only while a prefill runs on
   the device: the cache yields what they need, they are built, and after the prefill the cache

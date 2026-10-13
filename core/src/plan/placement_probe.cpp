@@ -25,6 +25,15 @@ probe_placement(const char * model_path, const ModelProfile & model, const Hardw
     Placement pl;
     if (!model_path || !*model_path || !model.ok) return pl;
 
+    // The fitter works by asking every device, and a device that did not survive its own probe is
+    // not one to ask again from this process: what ended the probe would end the plan. Nothing is
+    // placed, which is also the answer the run needs - that device is being kept out of it.
+    for (const ComputeDevice & d : hw.devices)
+        if (!d.is_cpu && d.usable == Tri::No) {
+            pl.outcome = "the capacity fitter was not run: " + d.name + " failed its probe";
+            return pl;
+        }
+
     // The fitter only touches parameters still at their default, and it refuses to run at all if
     // tensor_buft_overrides is already set — so the experts-on-host pin is not something we pass
     // IN; it is what we read OUT of the overrides it writes, and what the session enforces after.

@@ -16,9 +16,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <chrono>
 #include <ctime>
 #ifndef O_DIRECT
 #define O_DIRECT 0
@@ -33,9 +39,15 @@
 #include <android/hardware_buffer.h> // reclaim-exempt allocation; see pinned_alloc
 #endif
 #if defined(__APPLE__)
-#include <libproc.h> // this process's own regions; see file_mapped_regions
+#include <TargetConditionals.h>
+#include <mach-o/dyld.h> // this executable's own path; see run_self
 #include <mach/mach.h>
 #include <sys/sysctl.h>
+#if TARGET_OS_IPHONE
+#include <os/proc.h> // this process's own share of memory; see mem_available_bytes
+#else
+#include <libproc.h> // this process's own regions; see file_mapped_regions
+#endif
 #endif
 #endif
 
@@ -359,6 +371,13 @@ uint64_t mem_total_bytes() {
 
 uint64_t mem_available_bytes() {
 #if defined(__APPLE__)
+#if TARGET_OS_IPHONE
+    // A process here has a share of its own and is ended for exceeding it, so what the system has
+    // free says nothing about what this process may still take: the kernel publishes the share's
+    // remainder instead. 0 is "not published" (the simulator runs on the host's kernel and has no
+    // share), and the host's own figure below is then the one that applies.
+    if (const size_t left = os_proc_available_memory()) return (uint64_t) left;
+#endif
     vm_statistics64_data_t vm;
     if (host_vm(&vm)) return host_available_pages(vm) * (uint64_t) vm_page();
 #endif
@@ -483,7 +502,13 @@ bool device_memory(DeviceMemory * out) {
 }
 #endif
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+// The address-space walk below is not offered to an app here, so the question goes unanswered and
+// the caller reports the mapping's residency as unmeasured.
+bool file_mapped_regions(const char *, std::vector<MappedRegion> &) {
+    return false;
+}
+#elif defined(__APPLE__)
 // Darwin has no /proc. The same question — which of this process's regions map this file, and from
 // which file offset — is answered by walking its own address space: PROC_PIDREGIONPATHINFO returns
 // the region containing or following an address together with the vnode path behind it, and asking
@@ -539,6 +564,121 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
     return any;
 }
 #endif
+
+#endif
+
+// ── A second process, for work that can end one ─────────────────────────────────────────
+#if defined(_WIN32)
+
+bool can_run_self() {
+    return false; // not implemented here: a caller does the work in its own process
+}
+ChildResult run_self(const std::vector<std::string> &, double, std::string *) {
+    return ChildResult{};
+}
+
+#else
+
+} // namespace bmoe::pio
+extern char ** environ;
+namespace bmoe::pio {
+
+namespace {
+// The path the kernel started this process from. Not argv[0], which is whatever the caller typed.
+std::string self_path() {
+#if defined(__APPLE__)
+    char buf[4096];
+    uint32_t n = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &n) != 0) return "";
+    return buf;
+#else
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return "";
+    buf[n] = 0;
+    return buf;
+#endif
+}
+} // namespace
+
+bool can_run_self() {
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // An app may not start a process, its own executable included: the spawn is refused, and a
+    // refusal would read as a device whose probe could not be run. Say so before anyone asks.
+    return false;
+#else
+    return !self_path().empty();
+#endif
+}
+
+ChildResult run_self(const std::vector<std::string> & args, double timeout_seconds, std::string * out) {
+    ChildResult r;
+    const std::string path = self_path();
+    int fds[2];
+    if (path.empty() || pipe(fds) != 0) return r;
+
+    std::vector<char *> argv;
+    argv.push_back(const_cast<char *>(path.c_str()));
+    for (const std::string & a : args)
+        argv.push_back(const_cast<char *>(a.c_str()));
+    argv.push_back(nullptr);
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, fds[1], 1);
+    posix_spawn_file_actions_adddup2(&fa, fds[1], 2);
+    posix_spawn_file_actions_addclose(&fa, fds[0]);
+    posix_spawn_file_actions_addclose(&fa, fds[1]);
+    pid_t pid = 0;
+    const int rc = posix_spawn(&pid, path.c_str(), &fa, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    close(fds[1]);
+    if (rc != 0) {
+        close(fds[0]);
+        return r;
+    }
+
+    // Read until the child closes its end or its time is up. Only the tail is kept: the line a
+    // caller wants is the last thing a well-behaved child prints, and a backend can be chatty.
+    const size_t keep = 1u << 20;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_seconds);
+    bool timed_out = false;
+    for (;;) {
+        const double left = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
+        if (left <= 0.0) {
+            timed_out = true;
+            break;
+        }
+        struct pollfd pf {
+            fds[0], POLLIN, 0
+        };
+        const int pr = poll(&pf, 1, (int) std::min(left * 1000.0, 1000.0));
+        if (pr < 0) break;
+        if (pr == 0) continue;
+        char buf[8192];
+        const ssize_t n = read(fds[0], buf, sizeof(buf));
+        if (n <= 0) break; // the child closed its end
+        if (out) {
+            out->append(buf, (size_t) n);
+            if (out->size() > 2 * keep) out->erase(0, out->size() - keep);
+        }
+    }
+    close(fds[0]);
+    if (timed_out) kill(pid, SIGKILL);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    if (timed_out) {
+        r.outcome = ChildOutcome::TimedOut;
+    } else if (WIFSIGNALED(status)) {
+        r.outcome = ChildOutcome::Signalled;
+        r.code = WTERMSIG(status);
+    } else {
+        r.outcome = ChildOutcome::Exited;
+        r.code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    }
+    return r;
+}
 
 #endif
 

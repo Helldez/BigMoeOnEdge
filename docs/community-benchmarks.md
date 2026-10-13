@@ -51,7 +51,7 @@ empty unless you run the storage probe yourself.
 | | Status |
 |---|---|
 | **Mac**, Apple silicon or Intel | Works. A direct request is served with `F_NOCACHE` (Apple's uncached-descriptor mode — a caching hint, not Linux `O_DIRECT`: no alignment, no DMA promise), and `o_direct` reports what the open actually achieved. Uncached reads can sit below the buffered rate on the same drive, so a Mac row's flash column may read slower than the storage probe suggests; that is the honest number, not a malfunction. Say "macOS" in your report. A 64 or 128 GB Mac is still a row we want. |
-| **iPhone, iPad** | Not supported. No iOS target here, and iOS does not run command-line binaries, so reproducing the protocol means building an app around the engine and sideloading it. The core is portable C++ with no Android dependency in the streaming path, so a port is plausible, it just does not exist. |
+| **iPhone, iPad** | Unvalidated. iOS does not run command-line binaries, so [`examples/ios`](../examples/ios) builds `bmoe-cli` into a harness app you sign and sideload yourself. It has not been run on a device here: a row from one is welcome, with the plan (`--auto --plan`) it printed. |
 
 ### What happens to your row
 
