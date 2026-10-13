@@ -189,7 +189,10 @@ and `BMOE_*` env overrides both count as the caller speaking.
    own size and floored at the model's token cycle. See [The memory ledger](#the-memory-ledger).
 6. **I/O policy** from the storage facts.
 7. **Emit the plan with its rationale.** A decline is a plan too: the config it carries still runs.
-   A plan that declines for want of room streams nothing and holds nothing, so its cost is restated
+   A budget under the token cycle is not one of them: it turns the cache off and the experts
+   stream uncached (see [The token cycle](#the-token-cycle)), unless the drive's read rate was never
+   measured and the stream has no price. A plan that does decline for want of room streams nothing
+   and holds nothing, so its cost is restated
    as the file left mapped with nothing resident - the bound, which is then the prediction - and
    its ledger keeps only the context and compute buffers. Before, it printed the cost of the
    allocation it had just refused: 0.23 s/token predicted where the run took 1.46 and the bound
@@ -217,7 +220,7 @@ and `BMOE_*` env overrides both count as the caller speaking.
 | whether a live mapping serialises concurrent reads | `--release-mmap` |
 | read rate by request size and lane count | `--io-threads` |
 | model: expert slice size | which point of that rate curve applies |
-| model: token cycle | the cache floor, below which streaming is declined |
+| model: token cycle | the cache floor, below which the cache is off and the experts stream uncached |
 
 There are no platform names in the rules — Windows, Android, iOS, CUDA and Metal appear only in
 `core/src/plan/hardware_probe.cpp`, the adapter that fills the profile. That is what lets the rules
@@ -243,6 +246,19 @@ independent check that the metadata-only path sees the same model.
 Because the floor is per-model, it also overrides the generic `cache_min_mb` guard: a budget above
 this model's cycle is not pathological however small it looks, and the plan says so when it forces
 past it.
+
+The floor takes the cache away, not the stream. A budget under the cycle used to decline streaming
+altogether and leave the file mapped, which is the machine where a mapped file is at its worst: the
+memory a cache lacks is the memory the page cache lacks too. The plan now sets `--cache-mb 0` and
+keeps `--moe-stream`, on the ledger's own price for the uncached stream against the mapping; where
+the drive's read rate was never measured there is no such price, and it declines as before.
+Measured on a 16 GB Apple-silicon laptop with Qwen3.6-35B-A3B Q4_K_M at a 16384 context and about
+3 GB reported available, which leaves the cache under its 581 MiB cycle: declined and mapped, 0.26
+tok/s over 182 tokens; streamed with no cache, 7.4 tok/s on the same request, and 7.3 tok/s over 160
+tokens from `--auto` alone (95 ms/token predicted, 138 measured). The floor itself holds: with more
+memory free, the same model with a 536 MiB cache forced on returned 0.0% hits at 6.3 tok/s against
+8.6 with none. What it costs to be under the floor is the cache: 17.8 tok/s at 81% hits with the
+5.9 GB cache the plan takes when 8.9 GB is reported available. One machine, one model.
 
 ## The headroom probe
 
@@ -683,7 +699,8 @@ reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of
 plus cache with 3.6 GB "available", because the kernel compressed other processes' idle memory to
 make room, and reported 5.6 GB available afterwards. The honest budget there is the compressible
 headroom, which is a measurement this planner does not yet take; until it does, an unpinned plan
-on a phone under pressure declines and says why, and a pinned `--cache-mb` wins over the floor.
+on a phone under pressure streams with the cache off and says why, and a pinned `--cache-mb` wins
+over the floor.
 
 One caveat on the budget itself: it is a one-shot reading of a quantity that moves. The same
 machine and model planned twice minutes apart produced 4.3 GB and 8.2 GB of available memory, and
@@ -767,7 +784,8 @@ are designed and not yet active.
  |                                                                |
  |  CACHE budget = usable - host dense - fitter reservations      |
  |      cap: only the expert share left on the host               |
- |      <> >= token cycle?  no -> DECLINE and say why             |
+ |      <> >= token cycle?  no -> cache OFF, stream uncached      |
+ |                            (no read rate measured -> DECLINE)   |
  |                            (caller pin -> proceed + warning)    |
  |                                                                |
  |  I/O   <-- curve: smallest lane count within 5% of peak        |
@@ -802,8 +820,8 @@ Three things to read off it. One knowledge boundary: above the probes there is n
 below them, public API plus `common/fit.h` in one file. Two stages in sequence, not merged: the
 fitter answers *how much fits where* (exact, computed), the planner answers *how to read what does
 not fit* (measured, or declared unknown). Four early exits, and every one of them is a plan: a
-dense model, everything on devices, a host residual that fits, a budget under the token cycle.
-None is an error; each says why.
+dense model, everything on devices, a host residual that fits, a budget under the token cycle on
+a drive whose read rate was never measured. None is an error; each says why.
 
 ## Levers llama.cpp already has that this planner does not use yet
 

@@ -127,6 +127,14 @@ Semantic Versioning.
   branch was never built until it was retargeted.
 
 ### Fixed
+- **`--auto` gave up streaming whenever the expert cache could not be afforded.** A budget under
+  the model's token cycle declined the stream and left the file mapped, on the machine where a
+  mapped file is slowest. The floor now turns off the cache alone: the plan keeps `--moe-stream`
+  with `--cache-mb 0` when the ledger prices the uncached stream under the mapping, and still
+  declines where the drive's read rate was never measured. On a 16 GB Apple-silicon laptop,
+  Qwen3.6-35B-A3B Q4_K_M at a 16384 context with about 3 GB reported available: 0.26 tok/s declined
+  and mapped, 7.3 tok/s from `--auto` now. With 8.9 GB reported available the plan is unchanged
+  (a 5.9 GB cache, 17.8 tok/s). Measured on that one machine.
 - **`--auto` on a model split into shards measured the wrong file, and a declined plan quoted the
   cost of the plan it refused.** The storage probe read the path the caller names, which on a split
   model is the first shard and can be metadata alone: on a three-file, 85 GB DeepSeek V4 Flash it

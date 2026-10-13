@@ -8,6 +8,7 @@
 #include "bmoe/planner.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace bmoe {
@@ -989,13 +990,30 @@ Plan plan_run(const RunConfig & base,
         note("moe-stream", "off", Source::Unprobed, "expert slice size unknown");
         return p;
     }
+    // A budget under the floor takes the CACHE away, not the stream. The two were one decision
+    // here, and the plan fell back to the mapped file whenever the cache could not be afforded -
+    // which is the machine where the mapped file is at its worst, since the memory a cache lacks is
+    // the memory the page cache lacks too. Measured on a 16 GB machine with a 22 GB model whose
+    // cycle is 581 MiB and 536 MiB left for it: declined and mapped, 0.26 tok/s; streamed with no
+    // cache, 7.4 tok/s. The same model with that 536 MiB cache forced on returned 0.0% hits at 6.3
+    // tok/s against 8.6 with none, so the floor stands and it is the cache alone that it turns off.
+    // Whether the uncached stream is worth running is the ledger's own price for it against the
+    // mapping, not a rule of this file: where the read rate was never measured there is no such
+    // price, and the plan declines as before.
+    const GroupPlacement & experts = alloc.at(WeightGroup::Experts);
+    const bool stream_priced = experts.lane == Lane::ExpertStream && experts.seconds_per_token > 0.0 &&
+                               experts.seconds_per_token < experts.seconds_worst_case;
+    bool cache_off = false;
+    std::string cache_off_why;
+
     if (budget < cycle && req.is_pinned("cache-mb")) {
         note("cache-floor", u64s(mib(cycle)) + " MiB", Source::Derived,
              "the derived budget (" + u64s(mib(budget)) +
                  " MiB) is under this model's token cycle, but the caller "
                  "pinned cache-mb and a pin is the caller's authority: proceeding with the pinned value");
     } else if (budget < cycle) {
-        std::string why = "a cache of " + u64s(mib(budget)) + " MiB is below this model's worst-case token cycle of " +
+        std::string why = "the " + u64s(mib(alloc.cache_available_bytes)) +
+                          " MiB left for the expert cache is below this model's worst-case token cycle of " +
                           u64s(mib(cycle)) +
                           " MiB: under that floor the cache evicts what the same token still needs, "
                           "so it costs its memory and returns no hits at all";
@@ -1023,23 +1041,48 @@ Plan plan_run(const RunConfig & base,
             if (pow2 >= 512 && pow2 < (uint64_t) placement.n_ctx)
                 why += ". The context reserves " + u64s(mib(kv)) + " MiB here and the cache is " +
                        u64s(mib(shortfall)) + " MiB short, so --ctx-size " + u64s(pow2) +
-                       " would clear the floor and stream: the first stage shrinks the context only until the "
+                       " would clear the floor and keep a cache: the first stage shrinks the context only until the "
                        "model fits, which is not the same as until it runs well";
         }
-        decline(why);
-        price_unstreamed(p.allocation);
-        note("moe-stream", "off", Source::Derived, "budget below the derived cache floor");
-        return p;
+        if (!stream_priced) {
+            decline(why + ". This storage's read rate was not measured, so a stream with no cache has no price "
+                          "to set against the mapping and is not chosen on faith");
+            price_unstreamed(p.allocation);
+            note("moe-stream", "off", Source::Derived,
+                 "budget below the derived cache floor, and no price to stream by");
+            return p;
+        }
+        cache_off = true;
+        cache_off_why = std::move(why);
     }
 
     p.config.moe.enabled = true;
-    note("moe-stream", "on", Source::Derived,
-         p.regime == Regime::ExpertsStream
-             ? "the experts do not fit but the dense set does"
-             : "neither set fits, so the experts stream and the dense policy degrades with them "
-               "(a tensor larger than this budget is left mapped rather than made resident)");
+    if (cache_off) {
+        char b[160];
+        std::snprintf(b, sizeof(b), "%.0f ms/token read as slices against %.0f ms/token left mapped",
+                      1e3 * experts.seconds_per_token, 1e3 * experts.seconds_worst_case);
+        note("moe-stream", "on", Source::Derived,
+             "the experts do not fit and no cache clears the floor, so every routed slice is read on every token: " +
+                 std::string(std::isfinite(experts.seconds_worst_case)
+                                 ? b
+                                 : "priced from this storage's measured rate, where the mapping's refault was not "
+                                   "measured at all") +
+                 ". The cache is what is given up, not the stream");
+    } else {
+        note("moe-stream", "on", Source::Derived,
+             p.regime == Regime::ExpertsStream
+                 ? "the experts do not fit but the dense set does"
+                 : "neither set fits, so the experts stream and the dense policy degrades with them "
+                   "(a tensor larger than this budget is left mapped rather than made resident)");
+    }
 
-    if (!pinned("cache-mb", u64s((uint64_t) std::max(0, p.config.moe.cache_mb)))) {
+    if (cache_off) {
+        // Off outright, never left to size itself at load: an automatic budget would land in the
+        // band the floor has just refused.
+        p.config.moe.cache_auto = false;
+        p.config.moe.cache_mb = 0;
+        note("cache-mb", "0", Source::Derived, cache_off_why);
+    } else if (!pinned("cache-mb", u64s((uint64_t) std::max(0, p.config.moe.cache_mb)))) {
         p.config.moe.cache_auto = false;
         p.config.moe.cache_mb = (int) mib(budget);
         note("cache-mb", u64s(mib(budget)), Source::Derived,

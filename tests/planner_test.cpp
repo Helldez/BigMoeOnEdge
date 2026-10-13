@@ -336,30 +336,59 @@ int main() {
     }
 
     // ── too little room for one token's worth of experts ───────────────────────────
+    // The floor turns the CACHE off. The stream stays, because the memory a cache lacks is the
+    // memory the page cache lacks too: the mapped file is at its worst exactly here.
     {
         HardwareProfile tight = phone();
         tight.residency_budget = 3 * GiB + 400 * MiB; // dense fits, what is left is under the cycle
-        tight.storage.refault_mibs = 24.0;            // measured, so the decline has a cost to state
+        tight.storage.refault_mibs = 24.0;            // measured, so the mapping has a cost to beat
         const Plan p = plan_run(base_cfg(), tight, model, PlanRequest{});
-        check(!p.config.moe.enabled, "tight machine: streaming declined rather than thrashing");
-        check(p.decline_reason.find("token cycle") != std::string::npos,
-              "tight machine: the reason names the derived floor", p.decline_reason);
+        check(p.config.moe.enabled && !p.streaming_declined,
+              "tight machine: the experts stream with no cache rather than being left to refault", p.decline_reason);
+        check(p.config.moe.cache_mb == 0 && !p.config.moe.cache_auto && !p.config.moe.force_cache,
+              "tight machine: the cache is off outright, not left to size itself under the floor",
+              std::to_string(p.config.moe.cache_mb) + " MiB");
+        const Decision * c = find(p, "cache-mb");
+        check(c && c->reason.find("token cycle") != std::string::npos,
+              "tight machine: the reason names the derived floor", c ? c->reason : "no cache-mb decision");
+        check(validate(p.config).ok, "tight machine: the plan is a valid config", validate(p.config).error);
+
+        const Allocation & a = p.allocation;
+        const GroupPlacement & e = a.at(WeightGroup::Experts);
+        check(e.lane == Lane::ExpertStream && e.resident_bytes == 0 && a.cache_bytes == 0,
+              "tight machine: the expert lane is the stream, holding nothing");
+        check(e.seconds_per_token > 0.0 && e.seconds_per_token < e.seconds_worst_case,
+              "tight machine: the stream is chosen on its price against the mapping",
+              std::to_string(e.seconds_per_token) + " vs " + std::to_string(e.seconds_worst_case));
+        check(ledger_row(p, "dense") && !ledger_row(p, "expert cache"),
+              "tight machine: the ledger keeps the dense set and carries no cache");
+
+        // The same machine with a drive nobody measured. There is no price for the stream, so it is
+        // not chosen on faith: the plan declines, and is priced as the mapping it leaves.
+        HardwareProfile blind = tight;
+        blind.storage.rate_curve.clear();
+        const Plan q = plan_run(base_cfg(), blind, model, PlanRequest{});
+        check(!q.config.moe.enabled && q.streaming_declined,
+              "tight machine, unmeasured drive: streaming declined rather than guessed");
+        check(q.decline_reason.find("token cycle") != std::string::npos,
+              "tight machine, unmeasured drive: the reason names the derived floor", q.decline_reason);
 
         // A declined run streams nothing and holds nothing: the file stays mapped, so the plan is
         // priced as that rather than as the allocation it has just refused.
-        const Allocation & a = p.allocation;
-        check(a.seconds_worst_case > 0.0 && a.seconds_per_token == a.seconds_worst_case,
-              "tight machine: a declined plan predicts the cost of the mapping it leaves",
-              std::to_string(a.seconds_per_token) + " vs " + std::to_string(a.seconds_worst_case));
-        bool any_held = a.resident_bytes != 0 || a.cache_bytes != 0;
+        const Allocation & d = q.allocation;
+        check(d.seconds_worst_case > 0.0 && d.seconds_per_token == d.seconds_worst_case,
+              "tight machine, unmeasured drive: a declined plan predicts the cost of the mapping it leaves",
+              std::to_string(d.seconds_per_token) + " vs " + std::to_string(d.seconds_worst_case));
+        bool any_held = d.resident_bytes != 0 || d.cache_bytes != 0;
         bool all_mapped = true;
-        for (const GroupPlacement & g : a.groups) {
+        for (const GroupPlacement & g : d.groups) {
             any_held = any_held || g.resident_bytes != 0;
             all_mapped = all_mapped && g.lane == Lane::Mmap;
         }
-        check(!any_held && all_mapped, "tight machine: a declined plan holds no weights and streams none");
-        check(!ledger_row(p, "dense") && !ledger_row(p, "expert cache"),
-              "tight machine: the ledger of a declined plan carries no weights");
+        check(!any_held && all_mapped,
+              "tight machine, unmeasured drive: a declined plan holds no weights and streams none");
+        check(!ledger_row(q, "dense") && !ledger_row(q, "expert cache"),
+              "tight machine, unmeasured drive: the ledger of a declined plan carries no weights");
     }
 
     // ── threads: the classes decide, not the count ─────────────────────────────────
