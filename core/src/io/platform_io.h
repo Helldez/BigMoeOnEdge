@@ -228,6 +228,19 @@ struct DeviceMemory {
     uint64_t available_bytes = 0; // MemAvailable
     uint64_t free_bytes = 0;      // MemFree
     uint64_t swap_free_bytes = 0; // SwapFree
+
+    // What a reclaim could still free by compressing, as two facts. Each is 0 where the machine
+    // does not publish it or the process may not read it, which is "will not say", not "none".
+    //
+    // The anonymous memory nobody has touched lately - the set compressed first. Where the
+    // accounting does not split the inactive list by what backs it, this is that list less every
+    // file-backed page: an under-count on purpose, since the available figure above already holds
+    // the file-backed ones and a page counted in both would be promised twice.
+    uint64_t idle_anon_bytes = 0;
+    // What the in-RAM compressor holds, before and after: their ratio is this machine's own
+    // measurement on its own data, not a figure for a compression algorithm in general.
+    uint64_t compressed_stored_bytes = 0;
+    uint64_t compressed_held_bytes = 0;
 };
 bool device_memory(DeviceMemory * out);
 

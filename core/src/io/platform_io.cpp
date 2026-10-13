@@ -477,6 +477,10 @@ bool device_memory(DeviceMemory * out) {
     struct xsw_usage sw;
     size_t len = sizeof(sw);
     out->swap_free_bytes = sysctlbyname("vm.swapusage", &sw, &len, nullptr, 0) == 0 ? sw.xsu_avail : 0;
+    const uint64_t inactive = vm.inactive_count, file_backed = vm.external_page_count;
+    out->idle_anon_bytes = (inactive > file_backed ? inactive - file_backed : 0) * (uint64_t) vm_page();
+    out->compressed_stored_bytes = vm.total_uncompressed_pages_in_compressor * (uint64_t) vm_page();
+    out->compressed_held_bytes = (uint64_t) vm.compressor_page_count * (uint64_t) vm_page();
     return true;
 }
 #else
@@ -492,12 +496,23 @@ bool process_memory(ProcessMemory * out) {
 }
 
 bool device_memory(DeviceMemory * out) {
-    static const char * const keys[] = {"MemAvailable", "MemFree", "SwapFree"};
-    uint64_t v[3] = {0, 0, 0};
-    if (!scan_kb_file("/proc/meminfo", keys, v, 3)) return false;
+    static const char * const keys[] = {"MemAvailable", "MemFree", "SwapFree", "Inactive(anon)"};
+    uint64_t v[4] = {0, 0, 0, 0};
+    if (!scan_kb_file("/proc/meminfo", keys, v, 4)) return false;
     out->available_bytes = v[0];
     out->free_bytes = v[1];
     out->swap_free_bytes = v[2];
+    out->idle_anon_bytes = v[3];
+    // The compressed block device's own counters: bytes stored, then bytes they occupy. Unreadable
+    // to an unprivileged process on some systems, which leaves both at 0.
+    if (FILE * f = std::fopen("/sys/block/zram0/mm_stat", "re")) {
+        unsigned long long stored = 0, held = 0;
+        if (std::fscanf(f, "%llu %llu", &stored, &held) == 2) {
+            out->compressed_stored_bytes = stored;
+            out->compressed_held_bytes = held;
+        }
+        std::fclose(f);
+    }
     return true;
 }
 #endif
