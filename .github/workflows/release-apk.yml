@@ -44,6 +44,15 @@ jobs:
             echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # Before anything is built or signed: an APK whose engine reports another release's number
+      # is not the one this tag names.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+      - name: Version matches the tag
+        run: bash scripts/check-version.sh "${{ steps.tag.outputs.tag }}"
+
   # The engine with the Hexagon NPU backend, built by scripts/build-hexagon-android.sh inside
   # upstream's Snapdragon toolchain image (the Hexagon SDK is not otherwise installable on a runner).
   # A third-party image, so it gets its own job: read-only token, no credentials left in the

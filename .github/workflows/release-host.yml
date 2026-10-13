@@ -68,6 +68,10 @@ jobs:
           ref: ${{ steps.tag.outputs.ref }}
           submodules: recursive
 
+      - name: Version matches the tag
+        shell: bash
+        run: bash scripts/check-version.sh "${{ steps.tag.outputs.tag }}"
+
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build

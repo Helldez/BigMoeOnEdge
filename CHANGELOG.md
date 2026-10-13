@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **The engine reported 0.27.0 in the 0.28.0 release.** The version in `CMakeLists.txt`, which
+  `bmoe-cli --version` and the preamble of every metrics CSV print, was not moved with the app's
+  and the changelog's; the same had happened at 0.26.0. It is 0.28.0 now, and
+  `scripts/check-version.sh` compares the three: CI runs it on every pull request, and both release
+  workflows run it against the tag before anything is built. Binaries built from the `v0.28.0` tag
+  still print 0.27.0.
+
+### Changed
+- **CI runs on every pull request, not only on those based on `main`.** A PR stacked on another
+  branch was never built until it was retargeted.
+
 ## [0.28.0] - 2026-09-29
 
 ### Changed
