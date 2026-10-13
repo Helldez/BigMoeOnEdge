@@ -102,8 +102,9 @@ ModelProfile probe_model(const char * model_path) {
     std::map<int, uint64_t> per_layer_one_expert;
     std::map<int, uint64_t> per_layer_expert_bytes;
     std::map<int, uint32_t> projections_per_layer;
-    std::set<int> blocks;     // every block index the file carries, MTP excluded
-    std::set<int> mtp_layers; // blocks that carry a multi-token-prediction head
+    std::map<int, uint64_t> per_layer_dense_bytes; // a block's non-expert tensors
+    std::set<int> blocks;                          // every block index the file carries, MTP excluded
+    std::set<int> mtp_layers;                      // blocks that carry a multi-token-prediction head
 
     bool saw_output_weight = false;
     bool saw_token_embd = false;
@@ -173,6 +174,7 @@ ModelProfile probe_model(const char * model_path) {
             }
         } else {
             m.largest_dense_tensor = std::max(m.largest_dense_tensor, size);
+            if (in_block) per_layer_dense_bytes[layer] += size;
         }
     }
 
@@ -180,6 +182,8 @@ ModelProfile probe_model(const char * model_path) {
         m.expert_bytes += kv.second;
         m.largest_expert_layer_bytes = std::max(m.largest_expert_layer_bytes, kv.second);
     }
+    for (const auto & kv : per_layer_dense_bytes)
+        m.largest_layer_dense_bytes = std::max(m.largest_layer_dense_bytes, kv.second);
     for (const auto & kv : per_layer_one_expert) {
         // The granule the streamer issues as a read is one expert of one projection; the LARGEST
         // of them is what should be looked up on the storage rate curve, because that is the

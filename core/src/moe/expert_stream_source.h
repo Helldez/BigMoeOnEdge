@@ -117,6 +117,7 @@ public:
     // load_layer/generate. Intended for an app's memory-pressure callback (Android onTrimMemory)
     // and exercised by the shrink gate. This is the only thing that moves the budget after init.
     void set_cache_budget(size_t bytes);
+    size_t cache_budget() const { return cache_max_; }
 
     // The cliff from cache-sizing.md, computed at init from model shape alone: the bytes one
     // token's pass over the layer stack demands in the worst case, i.e. every bound layer's top_k

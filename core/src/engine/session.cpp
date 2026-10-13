@@ -242,9 +242,8 @@ struct Session::Impl {
     // load, whose device list it holds, and opened after it.
     std::unique_ptr<detail::PrefillPath> prefill;
 
-    void place_prefill(bool on_device) {
-        if (prefill) prefill->place(on_device);
-    }
+    // Where the next graph actually goes: a device with no room right now leaves it on the host.
+    bool place_prefill(bool on_device) { return prefill ? prefill->place(on_device) : false; }
     int decode_placed(llama_context * c, const llama_batch & b) {
         return prefill ? prefill->decode(c, b) : llama_decode(c, b);
     }
@@ -1074,6 +1073,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         }
 
         if (im.prefill) im.prefill->keep_stream_layout(layers, offs.shard_paths);
+        if (im.prefill && cfg.prefill.slots_on_demand) im.prefill->share_memory_with(&im.source);
         if (!im.source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
@@ -1167,7 +1167,18 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
     if (im.prefill) {
         std::string perr;
-        if (!im.prefill->open(ctx, im.vocab, *im.hook, cfg.prefill, cfg.moe, n_layer_streamed, perr)) return fail(perr);
+        if (!im.prefill->open(ctx, im.vocab, *im.hook, cfg.prefill, cfg.moe, n_layer_streamed, perr)) {
+            if (!cfg.prefill.best_effort) return fail(perr);
+            // Asked for as a speed-up, not as a condition: undo it and run on the CPU. Destroying
+            // the path hands every weight and the model state back to where the load put them, so
+            // what is left is the session a run without the flag would have had.
+            std::fprintf(stderr, "bmoe: %s; prefill stays on the CPU\n", perr.c_str());
+            im.hook->set_device_arena(nullptr);
+            im.hook->count_device_nodes(false);
+            im.prefill.reset();
+            im.cfg.prefill.device.clear();
+            im.clear_memory(ctx);
+        }
     }
 
     // Decode traces. Outside the streaming block on purpose: the compute trace measures the graph,
@@ -1553,8 +1564,7 @@ RunResult Session::generate(const GenerateRequest & req,
     for (int i = (int) n_common; i < n_prompt; i += pf_step) {
         const int chunk = std::min(pf_step, n_prompt - i);
         if (im.prefill) {
-            const bool on_dev = chunk >= im.cfg.prefill.min_tokens;
-            im.place_prefill(on_dev);
+            const bool on_dev = im.place_prefill(chunk >= im.cfg.prefill.min_tokens);
             if (on_dev) prefill_device_tokens += chunk;
         }
         llama_batch pf;

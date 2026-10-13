@@ -506,11 +506,41 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("prefill-best-effort", "Prefill device is optional", G::Streaming, L::Experimental,
+                          "If the prefill device cannot be set up, run the prefill on the CPU instead of failing "
+                          "the load. --auto sets it when it chose the device itself.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--prefill-best-effort", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.prefill.best_effort; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("prefill-min-tokens", "Prefill device width", G::Streaming, L::Experimental,
                           "Narrowest prefill piece sent to the prefill device; a shorter tail runs on the CPU.");
         d.value_hint = "N";
         bounds(d, PrefillDeviceConfig::min_tokens_floor, std::numeric_limits<int>::max(), "tokens");
         bind_int(d, [](RunConfig & c) -> int & { return c.prefill.min_tokens; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("prefill-slots", "Prefill expert slots", G::Streaming, L::Experimental,
+                          "Layers of streamed experts the prefill device holds at once. 2 reads a layer while the "
+                          "previous one computes; 1 waits for each layer and needs a layer less of memory.");
+        d.value_hint = "N";
+        bounds(d, PrefillDeviceConfig::slots_min, PrefillDeviceConfig::slots_max);
+        bind_int(d, [](RunConfig & c) -> int & { return c.prefill.slots; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("prefill-slots-on-demand", "Prefill slots share the cache", G::Streaming, L::Experimental,
+                          "Hold the prefill device's expert slots only during a prefill and give their memory to "
+                          "the expert cache the rest of the time. The cache keeps its full budget for decode; "
+                          "each prefill evicts what the slots need and sets them up again.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--prefill-slots-on-demand", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.prefill.slots_on_demand; });
         t.push_back(d);
     }
     {

@@ -86,9 +86,7 @@ DeviceExpertArena::~DeviceExpertArena() {
         if (t.joinable()) t.join();
     for (void * s : staging_)
         if (s) pio::aligned_free(s);
-    for (ggml_backend_buffer_t b : slot_buf_)
-        if (b) ggml_backend_buffer_free(b);
-    if (ctx_) ggml_free(ctx_);
+    free_slots();
     for (ggml_backend_buffer_t b : dense_buf_)
         if (b) ggml_backend_buffer_free(b);
     for (ggml_backend_buffer_t b : dense_data_buf_)
@@ -101,11 +99,18 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
                              const std::vector<LayerExperts> & layers,
                              int threads,
                              bool direct,
+                             int n_slots,
+                             bool on_demand,
                              std::string & err) {
     if (!dev || threads < 1) {
         err = "no device or no loader thread";
         return false;
     }
+    if (n_slots < 1 || n_slots > max_slots) {
+        err = "the arena has one or two expert slots";
+        return false;
+    }
+    n_slots_ = n_slots;
 
     // The bound layers, in graph order, and the distinct (type, shape) variants of each projection.
     std::vector<const ggml_tensor *> variants[MoeRecipe::max_exps];
@@ -180,64 +185,20 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
         region_off[p] = slot_size;
         slot_size += GGML_PAD(biggest, align);
     }
-    slot_bytes_ = 2 * slot_size;
+    slot_bytes_ = (size_t) n_slots_ * slot_size;
 
-    ggml_init_params ip{};
-    ip.mem_size = ggml_tensor_overhead() * (2 * n_tensors + 8);
-    ip.no_alloc = true;
-    ctx_ = ggml_init(ip);
-    if (!ctx_) {
-        err = "ggml_init failed";
-        return false;
+    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        variants_[p] = variants[p];
+        region_off_[p] = region_off[p];
     }
-    size_t zmax = 0;
-    for (int s = 0; s < 2; ++s) {
-        slot_buf_[s] = ggml_backend_buft_alloc_buffer(buft, slot_size + align);
-        if (!slot_buf_[s]) {
-            err = std::string("cannot allocate two expert slots on ") + ggml_backend_dev_name(dev);
-            return false;
-        }
-        ggml_backend_buffer_set_usage(slot_buf_[s], GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-        char * base = (char *) ggml_backend_buffer_get_base(slot_buf_[s]);
-        base += (align - ((uintptr_t) base % align)) % align;
-        for (int p = 0; p < n_proj_; ++p) {
-            for (size_t v = 0; v < variants[p].size(); ++v) {
-                Twin w;
-                w.t = ggml_dup_tensor(ctx_, variants[p][v]);
-                ggml_format_name(w.t, "arena.s%d.p%d.v%d", s, p, (int) v);
-                if (ggml_backend_tensor_alloc(slot_buf_[s], w.t, base + region_off[p]) != GGML_STATUS_SUCCESS) {
-                    err = std::string("cannot place an expert slot tensor for ") + variants[p][v]->name;
-                    return false;
-                }
-                // One single-expert tensor per expert, placed where the device keeps that expert. Not
-                // views: a view may not reach past the file-sized extent of its source, and on a
-                // backend whose per-expert stride is wider than the file's the last experts would.
-                const size_t stride = ggml_backend_buft_get_alloc_size(buft, w.t) / (size_t) n_expert_;
-                for (int e = 0; e < n_expert_; ++e) {
-                    ggml_tensor * x = ggml_new_tensor_3d(ctx_, w.t->type, w.t->ne[0], w.t->ne[1], 1);
-                    if (ggml_backend_tensor_alloc(slot_buf_[s], x, base + region_off[p] + (size_t) e * stride) !=
-                        GGML_STATUS_SUCCESS) {
-                        err = "cannot place an expert inside its slot";
-                        return false;
-                    }
-                    w.views.push_back(x);
-                }
-                zmax = std::max(zmax, ggml_nbytes(w.t));
-                twins_[s][p].push_back(std::move(w));
-            }
-        }
-    }
-
-    // One whole-tensor write per slot tensor, before any view write. A backend records how a tensor
-    // is laid out when it is written (Hexagon flags it repacked), and the op reads the slot tensor,
-    // not the views the loaders write through — so each slot tensor must have been written once.
-    {
-        std::vector<uint8_t> zeros(zmax, 0);
-        for (int s = 0; s < 2; ++s)
-            for (int p = 0; p < n_proj_; ++p)
-                for (Twin & w : twins_[s][p])
-                    ggml_backend_tensor_set(w.t, zeros.data(), 0, ggml_nbytes(w.t));
-    }
+    slot_size_ = slot_size;
+    n_slot_tensors_ = n_tensors;
+    buft_ = buft;
+    align_ = align;
+    dev_ = dev;
+    on_demand_ = on_demand;
+    // Held for the session, or built for each prefill and given back after it (see acquire()).
+    if (!on_demand_ && !build_slots(err)) return false;
 
     for (const std::string & sp : shard_paths) {
         readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
@@ -375,8 +336,103 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
     return true;
 }
 
+// The slots themselves: device buffers, a tensor per (slot, projection, variant) and one per expert
+// inside it. Everything here is rebuilt from scratch each time, the tensors included: a backend
+// that lays weights out its own way keeps state per tensor, and fresh tensors in a fresh buffer are
+// exactly what init gave it.
+bool DeviceExpertArena::build_slots(std::string & err) {
+    auto fail_slots = [&] {
+        free_slots();
+        return false;
+    };
+    ggml_init_params ip{};
+    ip.mem_size = ggml_tensor_overhead() * (2 * n_slot_tensors_ + 8);
+    ip.no_alloc = true;
+    ctx_ = ggml_init(ip);
+    if (!ctx_) {
+        err = "ggml_init failed";
+        return fail_slots();
+    }
+    size_t zmax = 0;
+    for (int s = 0; s < n_slots_; ++s) {
+        slot_buf_[s] = ggml_backend_buft_alloc_buffer(buft_, slot_size_ + align_);
+        if (!slot_buf_[s]) {
+            err = std::string("cannot allocate ") + (n_slots_ == 1 ? "an expert slot" : "two expert slots") + " on " +
+                  ggml_backend_dev_name(dev_);
+            return fail_slots();
+        }
+        ggml_backend_buffer_set_usage(slot_buf_[s], GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        char * base = (char *) ggml_backend_buffer_get_base(slot_buf_[s]);
+        base += (align_ - ((uintptr_t) base % align_)) % align_;
+        for (int p = 0; p < n_proj_; ++p) {
+            for (size_t v = 0; v < variants_[p].size(); ++v) {
+                Twin w;
+                w.t = ggml_dup_tensor(ctx_, variants_[p][v]);
+                ggml_format_name(w.t, "arena.s%d.p%d.v%d", s, p, (int) v);
+                if (ggml_backend_tensor_alloc(slot_buf_[s], w.t, base + region_off_[p]) != GGML_STATUS_SUCCESS) {
+                    err = std::string("cannot place an expert slot tensor for ") + variants_[p][v]->name;
+                    return fail_slots();
+                }
+                // One single-expert tensor per expert, placed where the device keeps that expert. Not
+                // views: a view may not reach past the file-sized extent of its source, and on a
+                // backend whose per-expert stride is wider than the file's the last experts would.
+                const size_t stride = ggml_backend_buft_get_alloc_size(buft_, w.t) / (size_t) n_expert_;
+                for (int e = 0; e < n_expert_; ++e) {
+                    ggml_tensor * x = ggml_new_tensor_3d(ctx_, w.t->type, w.t->ne[0], w.t->ne[1], 1);
+                    if (ggml_backend_tensor_alloc(slot_buf_[s], x, base + region_off_[p] + (size_t) e * stride) !=
+                        GGML_STATUS_SUCCESS) {
+                        err = "cannot place an expert inside its slot";
+                        return fail_slots();
+                    }
+                    w.views.push_back(x);
+                }
+                zmax = std::max(zmax, ggml_nbytes(w.t));
+                twins_[s][p].push_back(std::move(w));
+            }
+        }
+    }
+
+    // One whole-tensor write per slot tensor, before any view write. A backend records how a tensor
+    // is laid out when it is written (Hexagon flags it repacked), and the op reads the slot tensor,
+    // not the views the loaders write through — so each slot tensor must have been written once.
+    {
+        std::vector<uint8_t> zeros(zmax, 0);
+        for (int s = 0; s < n_slots_; ++s)
+            for (int p = 0; p < n_proj_; ++p)
+                for (Twin & w : twins_[s][p])
+                    ggml_backend_tensor_set(w.t, zeros.data(), 0, ggml_nbytes(w.t));
+    }
+
+    return true;
+}
+
+void DeviceExpertArena::free_slots() {
+    for (int s = 0; s < max_slots; ++s) {
+        if (slot_buf_[s]) ggml_backend_buffer_free(slot_buf_[s]);
+        slot_buf_[s] = nullptr;
+        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            twins_[s][p].clear();
+    }
+    if (ctx_) ggml_free(ctx_);
+    ctx_ = nullptr;
+}
+
+bool DeviceExpertArena::acquire(std::string & err) {
+    if (slots_held()) return true;
+    return build_slots(err);
+}
+
+void DeviceExpertArena::release() {
+    if (!on_demand_ || on_device_ || !slots_held()) return;
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_done_.wait(lk, [&] { return in_flight_ == 0; }); // no loader may still be writing into a slot
+    lk.unlock();
+    free_slots();
+}
+
 void DeviceExpertArena::place(bool on_device) {
     if (on_device == on_device_) return;
+    if (on_device && !slots_held()) return; // nothing to bind to: the caller did not acquire()
     for (size_t k = 0; k < order_.size(); ++k) {
         Layer & L = order_[k];
         for (int p = 0; p < n_proj_; ++p) {
@@ -385,7 +441,7 @@ void DeviceExpertArena::place(bool on_device) {
                 L.host_buffer[p] = t->buffer;
                 L.host_data[p] = t->data;
                 L.host_extra[p] = t->extra;
-                const ggml_tensor * s = twins_[k % 2][p][(size_t) L.variant[p]].t;
+                const ggml_tensor * s = twins_[k % (size_t) n_slots_][p][(size_t) L.variant[p]].t;
                 t->buffer = s->buffer;
                 t->data = s->data;
                 t->extra = s->extra;
@@ -480,7 +536,8 @@ void DeviceExpertArena::begin_graph() {
     // at, so this waits for them here.
     schedule_dense(0);
     schedule_dense(1);
-    for (int k = 0; k < 2 && k < (int) order_.size(); ++k)
+    // As many layers ahead as there are slots to put them in.
+    for (int k = 0; k < n_slots_ && k < (int) order_.size(); ++k)
         schedule(k, routed_ && have_prev_[(size_t) k] ? &prev_[(size_t) k] : nullptr);
     if (!dense_.empty()) {
         cv_done_.wait(lk, [&] { return dense_remaining_[0] == 0; });
@@ -535,7 +592,11 @@ void DeviceExpertArena::barrier(int il, const ggml_tensor * topk) {
     }
     std::unique_lock<std::mutex> lk(mu_);
     // The graph has finished everything before this layer's routing, so layer k-1 is done with the
-    // slot k+1 shares with it.
+    // slot k+1 shares with it. With ONE slot that is the slot this layer itself goes into: nothing can
+    // be loaded ahead, because the only place to put it is still being computed on, so layer k is read
+    // here - with its routing already known - and the device waits for it. What that gives up is the
+    // overlap of a layer's read with the previous layer's compute; what it buys is a layer of memory.
+    const bool ahead = n_slots_ > 1;
     if (!used.empty()) {
         int missed = 0;
         for (int e = 0; e < n_expert_; ++e)
@@ -548,10 +609,11 @@ void DeviceExpertArena::barrier(int il, const ggml_tensor * topk) {
         have_prev_[(size_t) k] = true;
         const bool whole = (float) n_used > routed_full_frac_ * (float) n_expert_;
         const int k1 = k + 1;
-        if (k1 < (int) order_.size()) schedule(k1, !whole && have_prev_[(size_t) k1] ? &prev_[(size_t) k1] : nullptr);
+        if (ahead && k1 < (int) order_.size())
+            schedule(k1, !whole && have_prev_[(size_t) k1] ? &prev_[(size_t) k1] : nullptr);
     } else {
         schedule(k);
-        schedule(k + 1);
+        if (ahead) schedule(k + 1);
     }
     cv_done_.wait(lk, [&] { return remaining_[(size_t) k] == 0; });
     lk.unlock();
@@ -611,7 +673,7 @@ void DeviceExpertArena::worker(int lane) {
         if (got < 0) {
             failed_ = true;
         } else {
-            const Twin & w = twins_[task.k % 2][task.p][(size_t) L.variant[task.p]];
+            const Twin & w = twins_[task.k % n_slots_][task.p][(size_t) L.variant[task.p]];
             ggml_backend_tensor_set(w.views[(size_t) task.e], stage, 0, (size_t) pr.nb2);
             read_bytes_ += pr.nb2;
         }

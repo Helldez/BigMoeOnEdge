@@ -204,6 +204,8 @@ and `BMOE_*` env overrides both count as the caller speaking.
 | how much may be held reclaim-exempt in total, net of what already is | whether the dense set fits there whole, and what is left for the cache |
 | how much may be locked where it already sits | whether the cache is sized to what can be locked or to what can be held |
 | whether a device's buffers are held reclaim-exempt | whether arming it is charged to that total too |
+| the same matmul many tokens wide, on the host and on every device, with the result compared | `--prefill-device`: which device, if any, runs the prefill |
+| model: the largest layer's experts, and its other weights | what a prefill device costs in memory |
 | whether mapped file pages count against the fatal limit | whether leaving the dense set mapped is free |
 | whether uncached reads work on this path | `--no-odirect` |
 | whether a live mapping serialises concurrent reads | `--release-mmap` |
@@ -322,11 +324,139 @@ taken from everything that is not, this process's own context and compute buffer
 laptop, a 35B model at Q4_K_M, same cache hit rate: 23.1, 23.2 and 23.5 tok/s asking for 95% of the
 total, 7.4 and 14.6 asking for 98%.
 
-What the ledger does not do yet: it charges a device only when the caller armed it
-(`--prefill-device`); choosing the device, and deriving its cost from a measurement rather than
-from the fitter's projection, is the prefill plan. And where not even one token cycle of cache can
-be locked after the dense set, it does not ask whether un-pinning the dense set to protect the
-cache would have been the better trade — it reports the cache as ordinary memory and stops there.
+What the ledger does not do yet: where not even one token cycle of cache can be locked after the
+dense set, it does not ask whether un-pinning the dense set to protect the cache would have been
+the better trade — it reports the cache as ordinary memory and stops there. And a device's cost is
+the model's arithmetic plus llama.cpp's projection of its compute buffer, not a measurement of
+what the device held.
+
+## The prefill plan
+
+Prefill and decode want opposite hardware, so they are two placements and the plan decides them
+separately. A decode graph is one token wide: every weight is read once and multiplied once, and
+what bounds it is how fast weights can be *read*. A prefill graph is hundreds of tokens wide: every
+weight is multiplied by a whole batch, and what bounds it is how fast the engine can *compute*. The
+two rank devices in opposite orders, and a decision about one read off the other's figure is made
+on the wrong axis.
+
+So the bandwidth probe runs its matmul twice, in this model's own quantized type: one token wide,
+which is the figure everything about decode reads, and 128 wide, which nothing but this rule
+reads. On the laptop this was measured on the cores read 109 GiB/s on the first against the GPU's
+64 to 71, and compute 198 on the second against the GPU's 1512 to 1558: a device that loses the
+decode by a third wins the prefill 7.6 times over. That ratio is the one a real prefill had already
+shown on the same machine and model - a 1473-token prompt in 3.4 s against 25.4 on the cores
+(`docs/npu-prefill.md`) - which is what entitles a 9 MB probe to speak for it.
+
+A device is armed when four things hold, each a fact and none a name:
+
+1. **It was measured at prefill width.** An unmeasured device is not armed; a device that will not
+   run the wide graph keeps its zero, and zero is "unmeasured", never "slow".
+2. **It gave the host's answer at that width.** Asked separately from the one-token check, because
+   a backend's batched kernel is not the kernel its one-token path runs.
+3. **It wins by the margin** every other device decision uses (`min_backend_win`).
+4. **It fits the ledger.** Under streaming a prefill device carries a layer's experts and a layer's
+   other weights through slots - the layer being computed and the one being loaded behind it -
+   plus its compute buffer. That is charged as a row; the run must still stream, with a cache of at
+   least one token cycle, and the dense set and the cache must keep the protection they had. Those
+   are paid on every decoded token, and a prefill is paid once. A device with memory of its own
+   costs this pool nothing and is checked against its own free memory instead.
+
+**One expert slot or two.** The experts are the large part of that row and the part with a choice
+in it. Two slots read a layer while the one before it computes; one slot reads each layer at its
+own routing node, with the device waiting, and holds a layer less. The result is the same - the
+gates score both bit for bit - so it is a trade of prefill time for memory, and the ledger makes
+it: two where they fit, one where only one does, and the plan says which (`--prefill-slots`, which
+a caller can also fix). Measured on the laptop above, the same 1461-token prompt: 3.43 s with two
+slots, 3.94 and 4.19 s with one, the same generated text, and 498 MiB less held on a model whose
+layer of experts is that size. On the phone's NPU, the same prompt and the model at Q4_0: 10.2 s
+with two slots, 11.7 s with one, the same generated text, 448 MiB less. One slot also reads less in routed mode, since every read is made
+with the routing already known and none from a prediction.
+
+Anything else in the run that cannot share a session with a device prefill - row streaming,
+speculative decoding, a kept prefix state - declines it with the reason, instead of producing a
+configuration that does not start. A device the caller named, or turned off, is left alone.
+
+Every refusal says which of these it was and quotes the figures, and `--plan` prints one line per
+device with both measurements so the decision can be checked against them. A device the plan armed
+is also marked optional (`--prefill-best-effort`): if it cannot be set up at load, the prefill
+runs on the host and the model loads. A device the caller named keeps the old behaviour and fails
+the load, because someone who asked for a device wants to know it is not being used.
+
+Measured end to end on that laptop, Qwen3.6-35B-A3B Q4_K_M, `--auto` and no other flag: the plan
+arms the GPU, a 1461-token prompt prefills in 3.37 and 3.48 s (433 and 420 tok/s), and the same
+configuration with the prefill left on the cores takes 21.2 s, so time to first token goes from
+28.8 s to 13.4. It is not free. The device's row took 1.55 GB from the expert cache, and decode
+on a short prompt - 26 tokens, under the narrowest graph a device is handed, so the device did
+nothing for it - ran at 20.9 tok/s against 23.1 to 23.5 without the device. The plan cannot know
+how long the prompts will be; it arms the device because a prefill gain of that size outweighs a
+tenth of the decode rate on any prompt long enough to reach it, and says how to turn it off. On
+the 91 GB model the same rule refuses in under four seconds: two layers and the compute buffer
+are 6.1 GB there, and the cache would fall under one token cycle.
+
+**Memory in turns.** The expert slots and the expert cache are never busy at once. A device
+prefill reads from flash into the slots and does not go through the cache; a decode goes through
+the cache and does not touch the slots. Held side by side for the whole session, the slots charge
+decode, on every token, for memory only a prefill uses - which is what the 20.9 against 23.3 tok/s
+above is - and they raise how much a machine must have free before the device can be armed at all.
+
+So the slots a plan arms are held only while a prefill runs (`--prefill-slots-on-demand`). Before
+the first device graph of a prompt the cache gives up as much as the slots take, its coldest
+entries first, and the slots are built; after the last one they are given back and the cache has
+its budget again. In the ledger they are a row *in turn with the cache*, not in the total: they
+fit if the cache can yield that much, or if what is left over still fits both ceilings. What stays
+for the session is the rest of the device's row, the layer's other weights and the compute buffer.
+
+It costs the re-read of what was evicted and one setup of the slots per prompt. Same laptop, same
+model, `--auto` alone: the 1461-token prefill takes 3.52 and 3.64 s against 3.43 with the slots
+held, the generated text is the same, and decode on the short prompt is back to 21.9 tok/s with a
+7.6 GB cache where holding the slots left it 6.4 GB and 20.9. What it still gives up against no
+device at all is the part that stays, 556 MiB there. If the device has no room when its turn comes,
+that prefill runs on the host and the next one tries again.
+
+The same rule on a phone, with nothing written for it: a 12 GB phone with a Hexagon v81 NPU, the
+same model at Q4_0 and at Q4_K_M. The NPU is found, measured 128 tokens wide at 40x the cores (1480
+to 1520 GiB/s against 27 to 38) with the same result, and reads no faster than they do one token
+wide (28 against 26 to 33) - the two axes again, further apart than on the laptop. Whether it is
+then armed is the ledger's answer and depends on the day. With the phone in ordinary use, 2.9 GB
+reported available, it is refused: the dense set takes 1.6 to 1.8 GB of the 2.6 the plan may
+hold, the cache needs its token cycle, and one expert slot with the compute buffer is another
+1.0. That is the reported figure being a floor on a machine that compresses (see the headroom
+probe): the same phone runs that prefill when asked by hand, 1461 tokens in 10.2 s, because the
+system makes the room. The plan does not count on room it has not measured.
+
+With the slots in turn the same phone, awake and reporting 4.6 GB available, armed the NPU from
+`--auto` alone: two expert slots in turn with a 1.8 GB cache, the 1461-token prompt prefilled in
+10.9 s (134 tok/s) on the NPU and decoded at 3.13 tok/s on the cores, one run. Slots built per
+prefill were also checked there by hand against slots held for the session: the same generated
+text, 10.6 s against 10.2.
+
+A device can also be wrong about whose memory it uses, and the ledger does not take its word. The
+NPU measures as not drawing on the host when it allocates, and reports no memory of its own: its
+buffers come from a kernel allocator this process cannot see being charged. Read as "its own
+memory", that armed it at a cost of 0 MiB. A pool with no stated size cannot be budgeted against,
+so a device that claims one and gives no size is charged to the host.
+
+**The output is not the host's to the last bit.** No weight is dropped or approximated - this is
+not one of the lossy levers, which never arm themselves - but a device's arithmetic is its own, and
+greedy decoding amplifies a difference at a near tie. In the run above the text after the device
+prefill matched the text after the host prefill for the first 369 of 541 generated characters and
+then chose a different word; two device runs matched each other exactly. A caller who needs the
+host's answer byte for byte passes an empty `--prefill-device`, which the plan leaves alone.
+
+On agreement. The check is a relative tolerance, not bit equality, and the bound sits between two
+populations that are far apart. Correct kernels disagree with the host by what their arithmetic
+differs in - the host multiplies a quantized weight by an activation it has itself quantized, a
+device typically by the float - measured at 4e-5 on a 4-bit type, 1.9e-4 on a 2-bit one and
+3e-4 to 4e-4 at prefill width. A wrong kernel is off by the size of the answer. The bound was 1e-4,
+which reported the 2-bit type and every wide result as wrong; it is a hundredth now, still two
+orders below "wrong".
+
+What this does not do: it measures a matmul, not a prefill. The loaders that fill the device's
+slots from flash, and the storage under them, are not in the probe, so on a machine whose storage
+is the bottleneck the real gain is smaller than the ratio. It does not isolate the probe either: a
+device that hangs on the wide graph hangs the plan. And it does not arm a device where the whole
+model fits and nothing streams, because there the device would need a resident copy of every
+layer, which is the capacity fitter's question and not this one.
 
 ## The storage probe
 

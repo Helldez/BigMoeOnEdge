@@ -381,6 +381,27 @@ struct PrefillDeviceConfig {
     // Empty = off. A local device only: no front-end registers a remote (RPC) one.
     std::string device;
 
+    // What a device that was found but fails to OPEN its prefill path does to the load. Off, the
+    // load fails and says why: a caller who named a device wants to know it is not being used. On,
+    // the session falls back to the CPU and runs, which is what a plan that armed the device on
+    // its own must ask for - a speed-up the planner chose is never a reason for a model not to load.
+    bool best_effort = false;
+
+    // How many layers of streamed experts the device holds at once (with moe.enabled). Two reads a
+    // layer while the one before it computes; one reads each layer at its own routing node, with
+    // the device waiting, and costs a layer less of memory. Same result either way.
+    int slots = 2;
+    static constexpr int slots_min = 1;
+    static constexpr int slots_max = 2;
+
+    // Hold the expert slots only while a prefill runs on the device, and give their memory to the
+    // expert cache the rest of the time (with moe.enabled). The two are never busy at once: a
+    // device prefill reads through the slots and not the cache, a decode through the cache and not
+    // the slots. Off, the slots are held for the session and the cache is sized around them. On,
+    // the cache keeps its full budget for decode; each prefill evicts as much of it as the slots
+    // take and builds them, which is paid in re-reads and in a setup per prompt.
+    bool slots_on_demand = false;
+
     // Narrowest prefill graph sent to the device. A prompt is fed in ubatch-wide pieces; pieces at
     // least this wide run on the device and a shorter tail runs on the CPU. It must exceed every
     // graph width the CPU path uses, which is one token for plain decode — speculation's wider

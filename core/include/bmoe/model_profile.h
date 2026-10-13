@@ -100,6 +100,9 @@ struct ModelProfile {
     // device prefill reserves in: the layer being computed and the one being loaded behind it each
     // need room for a whole layer's experts, so two of these is what arming one costs.
     uint64_t largest_expert_layer_bytes = 0;
+    // The same for a block's NON-expert tensors (attention, norms, shared experts): under
+    // streaming a prefill device carries those through two slots of their own.
+    uint64_t largest_layer_dense_bytes = 0;
 
     // The same bytes again, decomposed by access shape. `groups[...].bytes` sums to `file_bytes`,
     // and Experts::bytes equals `expert_bytes`; both spellings are kept because a capacity check

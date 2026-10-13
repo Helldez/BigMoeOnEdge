@@ -7,6 +7,35 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **`--prefill-slots-on-demand`: the prefill device's expert slots take turns with the expert
+  cache.** The two are never busy at once, so the slots are held only while a prefill runs on
+  the device: the cache yields what they need, they are built, and after the prefill the cache
+  has its budget back. `--auto` arms a device this way, which gives decode most of its cache
+  back and lowers how much memory must be free before a device can be used. On a 16 GB
+  Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M with `--auto`: prefill of 1461 tokens 3.52 and
+  3.64 s (3.43 with the slots held), decode on a short prompt 21.9 tok/s (20.9 with the slots
+  held), same text. On a 12 GB phone with an NPU, the model at Q4_0, `--auto` alone armed the
+  NPU: 1461 tokens in 10.9 s, decode 3.13 tok/s. Gates G17i score it bit for bit.
+- **`--prefill-slots 1|2`: a prefill device can hold one layer of experts instead of two.** One
+  slot reads each layer at its own routing node with the device waiting, and costs a layer less
+  of memory; the result is the same, and the gates score both bit for bit. `--auto` uses two
+  where they fit the ledger and one where only one does. On a 16 GB Apple-silicon laptop,
+  Qwen3.6-35B-A3B Q4_K_M, a 1461-token prompt: 3.43 s with two slots, 3.94 and 4.19 s with one,
+  498 MiB less held. On a 12 GB phone's NPU, the model at Q4_0: 10.2 s with two, 11.7 s with one.
+- **`--auto` chooses the prefill device.** The planner measures this model's matmul 128 tokens
+  wide on the host and on every device - the shape of a prefill, which ranks devices in the
+  opposite order to the one-token decode - and arms the fastest device that gave the host's
+  result, wins by a margin, and whose two layer slots still fit the memory ledger. Every refusal
+  names its reason and its figures, and `--plan` prints one line per device with both
+  measurements. On a 16 GB Apple-silicon laptop the GPU measures 7.6x the cores on the wide
+  matmul and 0.6x on the one-token one; Qwen3.6-35B-A3B Q4_K_M with `--auto` alone prefills a
+  1461-token prompt in 3.4 s against 21.2 s on the cores, and gives up 1.55 GB of expert cache
+  for it (decode on a short prompt 20.9 tok/s against 23.3). The text after a device prefill can
+  differ from the text after a host one at a near tie; an empty `--prefill-device` keeps the
+  prefill on the host. See `docs/hardware-planning.md`.
+- **`--prefill-best-effort`**: a prefill device that cannot be set up leaves the prefill on the
+  host instead of failing the load. Set by `--auto` when it chose the device; a device named by
+  hand still fails loudly.
 - **The planner keeps one memory ledger, with two ceilings.** Everything a run holds - context
   and compute buffers, a device armed for prefill, the dense set, the expert cache - is a row
   charged against what the process may hold and, separately, against what it may hold
@@ -74,6 +103,15 @@ Semantic Versioning.
   branch was never built until it was retargeted.
 
 ### Fixed
+- **A prefill device could be armed at a cost of 0 MiB.** A device that measures as not drawing
+  on the host and reports no memory of its own - an NPU fed through a kernel allocator answers so -
+  was read as having its own pool and charged nothing. It is charged to the host now. Found on a
+  phone, where the plan otherwise recognises the NPU on its own (40x the cores on the wide
+  matmul, same result) and arms or refuses it on what the ledger has room for.
+- **A device was reported as computing a wrong result when it was right.** The agreement check
+  between a device and the host used a relative tolerance of 1e-4, inside the range by which two
+  correct kernels differ on a 2-bit quantization (1.9e-4) and on any wide matmul (3e-4 to 4e-4).
+  It is 1e-2 now; a wrong kernel is off by the size of the answer.
 - **macOS: the planner, `--release-mmap` and the memory telemetry work.** Everything the engine
   asked of `/proc` and `/sys` returned nothing on Darwin, so `--auto` saw a machine with 0 MiB
   available and declined to stream, `--release-mmap` failed with "cannot read /proc/self/maps",
