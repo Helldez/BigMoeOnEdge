@@ -122,10 +122,19 @@ The ones that matter most when setting things by hand:
 | Overlap | `--overlap` | Issues the next reads while the current layer computes. Byte-identical. |
 | Prefill device | `--prefill-device D` | Runs wide prompt graphs on an NPU or GPU; decode stays on the CPU. |
 
-Those change how weights are fetched, never the result. A second group trades quality for fewer
-reads (`--n-expert-used`, `--drop-cold-experts`, `--expert-substitute`, `--route-ahead`), and
-`--decide` answers a multiple-choice prompt from one prefill with no decode
-([docs/decide.md](docs/decide.md)). Every setting: [docs/settings.md](docs/settings.md).
+Those change how weights are fetched, never the result. These trade quality for fewer reads, for a
+model so far past memory that the alternative is no answer:
+
+| Setting | Flag | What it gives up |
+|---|---|---|
+| Active experts | `--n-expert-used N` | Consults fewer experts per token than the model asks for. Same prompt, same answer. |
+| Drop cold experts | `--drop-cold-experts F` | Skips an expert only when it is a cache miss and the router barely wanted it. The answer depends on what the cache held. App default 75%. |
+| Prefer cached experts | `--expert-substitute F` | Nudges the routing toward experts already in RAM. Cache-dependent. Experimental. |
+| Route-ahead | `--route-ahead N` | Commits a layer's routing early so its reads start early. Experimental. |
+
+`--mtp` and `--ngram` draft several tokens and verify them in one decode, with no loss. `--decide`
+answers a multiple-choice prompt from one prefill, with no decode ([docs/decide.md](docs/decide.md)).
+Every setting, with its values and measurements: [docs/settings.md](docs/settings.md).
 
 ## Supported models
 
