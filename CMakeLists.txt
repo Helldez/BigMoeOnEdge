@@ -18,8 +18,9 @@ cmake_minimum_required(VERSION 3.21)
 
 # The version is declared here and nowhere else in the build: the engine reports it (bmoe-cli
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
-# says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName.
-project(bigmoeonedge VERSION 0.27.0 LANGUAGES CXX)
+# says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName:
+# scripts/check-version.sh compares the three, in CI and against the tag before a release builds.
+project(bigmoeonedge VERSION 0.28.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -92,6 +92,9 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
   key from repository secrets, assets attached to the release. Do not hand-upload an APK.
 - **Every released feature bumps the app version**: `versionCode` + `versionName` in the
   Android app's Gradle config, in the same PR as the change being released, matching the tag.
+  The engine's own version (`project(... VERSION ...)` in the top-level `CMakeLists.txt`) moves
+  with it. `scripts/check-version.sh` compares the three with the changelog; CI runs it on every
+  PR and both release workflows run it against the tag before building.
 - **Release title is the bare version** — `vX.Y.Z`, no description after it.
 - **Validate on device before releasing.** The host gates prove correctness, not speed or
   app behaviour; a release that changes the engine or the app gets a run on a real phone

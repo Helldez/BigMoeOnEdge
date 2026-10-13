@@ -4,8 +4,9 @@ on:
   push:
     branches: [ main ]
     tags: [ 'v*' ]
+  # Every pull request, whatever its base: a PR stacked on another branch is merged one day too,
+  # and filtered to `main` it reached that day with no build behind it.
   pull_request:
-    branches: [ main ]
     paths-ignore: [ '**/*.md', 'docs/**', 'LICENSE', '.gitignore' ]
   workflow_dispatch: {}
 
@@ -59,6 +60,14 @@ jobs:
           else
             say false
           fi
+
+  # The engine, the app and the changelog state one version between them.
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Versions agree (and match the tag, on a tag build)
+        run: bash scripts/check-version.sh "${{ github.ref_type == 'tag' && github.ref_name || '' }}"
 
   format:
     needs: changes
