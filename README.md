@@ -9,7 +9,7 @@
   <a href="https://trendshift.io/repositories/85652?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85652" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85652/daily?language=C%2B%2B" alt="Helldez%2FBigMoeOnEdge | Trendshift" width="250" height="55"/></a>
 </p>
 
-<p align="center"><b>Run Mixture-of-Experts models bigger than your device's RAM. On a phone, on a PC, CPU only.</b></p>
+<p align="center"><b>Run Mixture-of-Experts models bigger than your RAM, with the streaming tuned to your model and your hardware.</b></p>
 
 <p align="center">
   <a href="https://github.com/Helldez/BigMoeOnEdge/releases/latest"><img src="https://img.shields.io/github/v/release/Helldez/BigMoeOnEdge" alt="Latest release"></a>
@@ -30,6 +30,15 @@ It is built **on top of llama.cpp's public API**. Every quantization format,
 tokenizer and chat template llama.cpp supports works out of the box, because llama.cpp itself is
 doing that part: MXFP4 and Q4_K_M stream through the same code. Supporting a new MoE architecture
 is one row in a registry, and following a new llama.cpp release is a routine submodule bump.
+
+**It configures itself.** How fast a streamed model runs depends on the machine as much as on the
+model: how much memory can be kept, how fast the storage reads, which cores and accelerators are
+there. `--auto` measures those, reads the model's shape, and derives the settings, with the fact
+behind each one. The goal is the best streaming for any MoE model on any hardware. Measured so far:
+a phone with an NPU and an Apple-silicon laptop ([what is still owed](docs/hardware-planning.md)).
+
+**Three ways to use it:** an Android app, a desktop app with a local web UI, and an
+OpenAI-compatible server other tools can point at. All three are the same engine.
 
 **DeepSeek V4 Flash 0731** is the largest model run this way so far. It generates on a phone with
 12 GB of RAM, streamed from flash as the three shard files Hugging Face ships, with no merge step
@@ -62,7 +71,9 @@ recorded in the demo app on a 12 GB phone, real time, not sped up.</em></p>
 ## Table of contents
 
 - [Why this exists](#why-this-exists)
-- [Try it on your phone](#try-it-on-your-phone)
+- [Try it](#try-it)
+  - [On a phone](#on-a-phone)
+  - [On a desktop](#on-a-desktop)
 - [Features](#features)
 - [Supported models](#supported-models)
 - [Benchmarks](#benchmarks)
@@ -104,10 +115,13 @@ the phone's flash storage. Prefill can optionally run on a Snapdragon's Hexagon 
 layers at a time, which is several times faster on long prompts
 ([docs/npu-prefill.md](docs/npu-prefill.md)).
 
-The same engine builds unmodified on desktop, where a model past RAM streams from the SSD out of
-the box. Phones stay the focus, because that is where memory is tightest.
+The same engine runs on desktop, where a model past RAM streams from the SSD. Phones came first
+because memory is tightest there; `--auto` is what carries the same streaming to other machines
+without tuning each one by hand.
 
-## Try it on your phone
+## Try it
+
+### On a phone
 
 No build needed. Install the APK from the
 [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest), open the **Get a
@@ -124,6 +138,13 @@ Qwen3.8-Flash-Next) ship as multi-shard ggufs, and all three are in the catalog:
 the shards one after another, resumable, under a single progress bar. The engine reads a split set
 natively, so there is no merge step anywhere. Outside the catalog the rule is the same: put the shards in one directory and point
 at the first (`-00001-of-...`).
+
+### On a desktop
+
+Download the `bmoe-desktop` archive for your platform from the
+[latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest) and start `bmoe-server`:
+the UI opens at `http://127.0.0.1:8765/`, where you pick a model, let the planner configure it and
+chat. Any OpenAI client can use the same address ([docs/server-api.md](docs/server-api.md)).
 
 ## Features
 
@@ -390,10 +411,8 @@ default (`--prefill-device HTP0`, or the NPU switch in the app); see
 
 ### Desktop
 
-**Not the primary target, for now.** The engine builds and runs unmodified on desktop and a model
-past RAM streams from the SSD out of the box, but the tuning, the defaults and the measurement
-protocol are all aimed at phones, because that is where memory is tightest and where the problem
-this engine exists for actually bites. What follows is a snapshot, not a tuned configuration.
+Measured on fewer machines than the phone. The Windows table below is a configuration set by hand
+and predates `--auto`; the Apple-silicon figures after it are what `--auto` chose by itself.
 
 Measured on a Windows x86 laptop (8 cores, 16 GB RAM, dual-channel DDR4, NVMe SSD) with
 Qwen3.6-35B-A3B at ~1.5× RAM, 256-token generations:
