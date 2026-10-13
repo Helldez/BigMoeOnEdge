@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.29.0] - 2026-10-13
 
 ### Added
 - **`--auto` chooses how wide a prompt is computed (`--ubatch`), and counts its buffers at that
