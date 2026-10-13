@@ -66,8 +66,14 @@ recorded in the demo app on a 12 GB phone, real time, not sped up.</em></p>
 - [Features](#features)
 - [Supported models](#supported-models)
 - [Benchmarks](#benchmarks)
+  - [Desktop](#desktop)
+  - [Measure it on your hardware](#measure-it-on-your-hardware)
 - [Quickstart](#quickstart)
+  - [Host (Linux, macOS, Windows)](#host-linux-macos-windows)
+  - [Android](#android)
 - [How it works](#how-it-works)
+  - [Automatic configuration (`--auto`)](#automatic-configuration---auto)
+  - [Telemetry](#telemetry)
 - [Documentation](#documentation)
 - [Prior art](#prior-art)
 - [License](#license)
@@ -128,12 +134,8 @@ group; here they are marked.
 Streaming itself is the engine (`--moe-stream`): only the experts a token routes to are read, from
 flash, at the moment they are needed. Everything below tunes that.
 
-**Or let the engine choose: `--auto`.** It reads the model's shape from the gguf, measures this
-machine (memory, storage, cores, every compute device) and derives the settings below instead of
-asking for them, printing the fact behind each choice. A setting you also pass by hand is left
-alone. `--plan` prints the plan and exits without loading the model. How it decides is in
-[How it works](#how---auto-plans-a-run); the rules, and the machines each was measured on, are in
-[docs/hardware-planning.md](docs/hardware-planning.md). It is opt-in: without it nothing changes.
+`--auto` sets all of them from the machine and the model: see
+[Automatic configuration](#automatic-configuration---auto).
 
 ### Streaming
 
@@ -409,11 +411,8 @@ neutral; the levers that pay are the cache budget, cache-aware dropping and `--o
 campaign, including the cache-auto confound that round 1 had to unwind:
 [docs/bench-data/2026-07-24-desktop-qwen36](docs/bench-data/2026-07-24-desktop-qwen36/findings.md).
 
-On a 16 GB Apple-silicon laptop the same model at a 16384 context, with `--auto` alone and nothing
-set by hand: 22.4 and 22.3 tok/s decode with the expert cache locked at 7.7 GB, and a 10850-token
-prompt prefilled in 31.8 s. One machine, and a figure that moves with the memory it reports free
-at load: the plan prints the number it sized from
-([docs/hardware-planning.md](docs/hardware-planning.md)).
+On a 16 GB Apple-silicon laptop, the same model at a 16384 context with `--auto` and nothing else:
+22.4 tok/s, and a 10850-token prompt prefilled in 31.8 s. One machine.
 
 If the model fits in RAM, just run it resident.
 
@@ -481,7 +480,7 @@ build/bin/bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf --moe-stream \
   --chatml -p "Explain MoE routing."
 ```
 
-Or let the engine size everything to this machine and this model, and say why:
+Or let the engine choose the settings and print why:
 
 ```bash
 build/bin/bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf --auto --plan-explain \
@@ -510,9 +509,8 @@ open actually achieved. A macOS build carries Metal by default: decode stays on
 the CPU, and `--prefill-device MTL0` runs wide prefill graphs on the GPU
 ([npu-prefill.md](docs/npu-prefill.md)). The gates pass on an Apple-silicon Mac, with and without Metal, but CI only
 compiles that path, so a regression there is caught by a local run and not by a pull request.
-There is an iOS harness in [`examples/ios`](examples/ios) (`scripts/build-ios.sh`): the CLI compiled
-into an app, since an app there may not start a process. CI compiles it for the simulator; it has
-not run on a device.
+An iOS harness ([`examples/ios`](examples/ios)) compiles for the simulator in CI and has not run on
+a device.
 
 ### Desktop app
 
@@ -551,64 +549,29 @@ dropped the moment upstream ships an equivalent. Design and the exact API contra
 [docs/architecture.md](docs/architecture.md), [docs/seam.md](docs/seam.md).
 
 ```
- llama.cpp evaluates layer L of the current token
-        |
-        v   public evaluation callback
- the layer's router has picked its top-k experts
-        |
-        v
- for each picked expert:  in the expert cache? -- yes --> use it
-        |                                         no
-        |                                         v
-        |                 read that expert's slices from flash (parallel lanes, uncached reads)
-        |                                         |
-        v                                         v
- rebind the layer's expert tensors onto those bytes, in the gguf's own layout
-        |
-        v
- llama.cpp runs the matmul as if the weights had been resident  -->  layer L+1
+ layer L picks its top-k experts            (llama.cpp, public callback)
+   -> in the cache: use it  |  not in the cache: read its slices from flash
+   -> point the layer's expert tensors at those bytes
+   -> llama.cpp runs the matmul as if they had been resident
 ```
 
-The dense weights (attention, norms, embeddings) are read on every token, so the dense-weights
-policy keeps them in RAM; only the experts, most of the file, are streamed. Output is
-byte-identical to the resident run, which is what the gates check.
+The dense weights are read on every token and stay in RAM; only the experts, most of the file, are
+streamed. Output is byte-identical to the resident run.
 
-### How `--auto` plans a run
+### Automatic configuration (`--auto`)
 
 ```
- model.gguf (metadata only, nothing loaded)        this machine (measured, not looked up)
-        |                                                  |
-        v                                                  v
- MODEL PROFILE                                     HARDWARE PROFILE
-   dense set, expert set                             memory: what can be held, what can be locked,
-   token cycle: bytes one token's                            and what a reclaim does to the rest
-     routing reads                                   storage: read rate by request size and lanes
-   expert slice size                                 compute: thread sweep; each device's matmul
-        |                                                     against the host's, same result or out
-        +-------------------------+------------------------+
-                                  v
- REGIME, a ratio of the two profiles
-   fits ................ no streaming: resident weights need no reads
-   experts-stream ...... dense set resident, experts streamed
-   dense-oversized ..... experts streamed, the dense policy degrades with them
-                                  |
-                                  v
- MEMORY LEDGER, one account against two ceilings (holdable, lockable)
-   context and compute buffers -> prefill device -> dense set -> expert cache
-   cache below one token cycle?  the cache is off and the experts still stream
-                                  |
-                                  v
- I/O AND COMPUTE: read lanes, uncached reads, threads, graph width, prefill device
-                                  |
-                                  v
- PLAN = the settings + the fact behind each one + the flags that reproduce it
-   a setting passed by hand is never overruled; a fact the machine would not give
-   is stated as unknown rather than guessed
+ model.gguf metadata --+
+                       +--> regime: fits | experts-stream | dense-oversized
+ machine, measured ----+
+   -> memory ledger: buffers, prefill device, dense set, expert cache
+   -> I/O and compute: read lanes, threads, graph width, prefill device
+   -> plan: each setting, the fact behind it, the flags that reproduce it
 ```
 
-No rule names a platform, a vendor or a device: each machine answers the same questions through
-its own probes, and a machine that cannot answer one gets the conservative reading. The rules and
-what each was measured on: [docs/hardware-planning.md](docs/hardware-planning.md).
+A setting passed by hand is never overruled, and `--plan` prints the plan without loading the
+model. The rules name no platform or device. Details and what each rule was measured on:
+[docs/hardware-planning.md](docs/hardware-planning.md).
 
 ### Telemetry
 
