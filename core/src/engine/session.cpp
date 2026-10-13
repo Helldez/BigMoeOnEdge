@@ -4,6 +4,7 @@
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
 #include "bmoe/ngram_draft.h"
+#include "chat_messages.h"
 #include "chat_parse.h"
 #include "decide/decider.h"
 #include "decide/llama_backend.h"
@@ -1372,32 +1373,54 @@ RunResult Session::generate(const GenerateRequest & req,
     // reasoning is stripped from the shown answer. req.think drives enable_thinking, per prompt.
     std::string prompt = req.prompt;
     bool chat_on = im.chat_on;
-    bool history_pushed = false;   // did we append this turn's user message to chat_history?
+    // A message list replaces the engine-held conversation instead of adding one user turn to it.
+    const bool replace = !req.messages.empty();
+    if (replace && !chat_on) return fail("a message list needs chat mode: open the session with the chat template on");
+    bool history_pushed = false;                 // did we append this turn's user message to chat_history?
+    bool history_replaced = false;               // did we swap chat_history for the request's messages?
+    std::vector<common_chat_msg> history_before; // what a replaced conversation goes back to
+    // Put the conversation back as it was before this turn touched it. Every way out that is not a
+    // finished turn goes through here, or the next turn renders a history this one never answered.
+    auto undo_history = [&]() {
+        if (history_replaced) im.chat_history = std::move(history_before);
+        if (history_pushed) im.chat_history.pop_back();
+        history_replaced = history_pushed = false;
+    };
     bool prefilled_answer = false; // closed the reasoning span in the prompt, so skip reasoning parse
     common_chat_parser_params parse_params;
     if (chat_on) {
         try {
-            common_chat_msg user_msg;
-            user_msg.role = "user";
-            user_msg.content = req.prompt;
-            im.chat_history.push_back(user_msg);
-            history_pushed = true;
+            if (replace) {
+                history_before = std::move(im.chat_history);
+                im.chat_history = detail::to_common_messages(req.messages);
+                history_replaced = true;
+            } else {
+                common_chat_msg user_msg;
+                user_msg.role = "user";
+                user_msg.content = req.prompt;
+                im.chat_history.push_back(user_msg);
+                history_pushed = true;
+            }
 
             // The full conversation, not just this turn. The reasoning span and the turn header a
             // prefilled turn resumes after are rendered by llama.cpp's own handler for this
             // template, so no marker for any family is spelled out here. See thinking_control.h.
             common_chat_templates_inputs inputs;
             prefilled_answer = detail::build_turn_inputs(inputs, im.chat_history, req.think, im.think_ctl);
+            // The tools go to the template, which writes them in the syntax this model was trained
+            // on, and the parser built from the same call reads the model's calls back out.
+            if (replace) detail::add_tools(inputs, req.tools, req.tool_choice);
 
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt;
             parse_params = detail::build_parse_params(cp);
         } catch (const std::exception & e) {
+            // A lone prompt can still be fed raw. A message list cannot: there is no single string
+            // to fall back to, and a conversation the template refuses is the caller's to fix.
+            const bool was_replace = history_replaced;
+            undo_history();
+            if (was_replace) return fail(std::string("the chat template rejected the conversation: ") + e.what());
             std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
-            if (history_pushed) {
-                im.chat_history.pop_back();
-                history_pushed = false;
-            }
             chat_on = false;
         }
     }
@@ -1410,11 +1433,16 @@ RunResult Session::generate(const GenerateRequest & req,
         n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
                                   true, true);
     }
-    if (n_prompt < 1) return fail("empty prompt after tokenization");
+    if (n_prompt < 1) {
+        undo_history();
+        return fail("empty prompt after tokenization");
+    }
     tokens.resize(n_prompt);
-    if (n_prompt + req.n_predict + 8 > im.cfg.n_ctx)
+    if (n_prompt + req.n_predict + 8 > im.cfg.n_ctx) {
+        undo_history();
         return fail("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
                     "); open the session with a larger n_ctx");
+    }
 
     // The text to surface: with chat on, parse the raw output so a reasoning model's internal
     // thinking is separated from the answer. The answer is shown inline; the reasoning is handed to
@@ -1475,10 +1503,7 @@ RunResult Session::generate(const GenerateRequest & req,
         if (chat_on) {
             if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) im.clear_memory(ctx);
             im.kv_tokens.resize(n_common);
-            if (history_pushed) {
-                im.chat_history.pop_back();
-                history_pushed = false;
-            }
+            undo_history();
         } else {
             im.clear_memory(ctx);
         }
@@ -2035,6 +2060,7 @@ RunResult Session::generate(const GenerateRequest & req,
     if (final_parsed) {
         res.generated_text = final_msg.content;
         res.reasoning_text = final_msg.reasoning_content;
+        res.tool_calls = detail::from_common_tool_calls(final_msg.tool_calls);
     } else {
         // Not chat, a prefilled turn (the stream IS the answer), or a parse that threw: the raw
         // generation stands on its own, exactly as shown_view would have reported it.

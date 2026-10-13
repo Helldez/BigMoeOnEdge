@@ -20,6 +20,7 @@ for the idea the project is built on.
 |---|---|
 | [adding-a-model.md](adding-a-model.md) | How to support a new MoE architecture (a recipe row plus a gate). |
 | [telemetry.md](telemetry.md) | The `BMOE_*` line protocol and CSV schema — the integration contract. |
+| [server-api.md](server-api.md) | The desktop server's HTTP API: settings from the parameter table, OpenAI-compatible chat, live events, models and the plan. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
 | [decide.md](decide.md) | `--decide`: picking one of a list of choices from a single prefill, with no decode, and keeping the state after a shared prefix between calls. |
 | [hardware-planning.md](hardware-planning.md) | `--auto`: how the engine sizes a run to this machine and this model, the fact behind each choice, and what is still unmeasured. |

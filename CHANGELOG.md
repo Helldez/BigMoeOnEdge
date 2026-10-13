@@ -77,6 +77,22 @@ Semantic Versioning.
   dense set and a 4.1 GB cache asked for: 0.27 tok/s without it, 2.48 with it; `--auto` on the
   same model 2.48, with no refusal. Separately, a pinned dense store that runs out during load
   falls back to ordinary buffers for the remaining tensors and the run continues.
+- **The desktop server refuses cross-site requests on every method, and says what it does not
+  protect.** A request to `/api/*` or `/v1/*` from another site is refused whether it carries a
+  foreign `Origin` or is marked `Sec-Fetch-Site: cross-site`, so a web page can no longer make the
+  server measure the machine or hold its workers with an image tag. Loads, unloads and plan
+  measurements are serialised (two racing requests could end the process), request bodies are
+  capped at 8 MiB, parameters that make the engine write a file are refused over the API, and an
+  IPv6 loopback host name is accepted. `docs/server-api.md` gains a security model section.
+- **The desktop server takes writes only as JSON, and an answer in the UI cannot carry a form.**
+  Every `POST`, `PUT` and `DELETE` to `/api/*` or `/v1/*` must declare `Content-Type:
+  application/json`, body or no body, or it is refused with `415` ahead of routing; the UI's
+  chat view drops form controls and styles from model output. Together they close one path: text
+  that talks the model into writing a form gave a same-origin request, one click away, whose
+  `text/plain` body parsed as JSON and could start a download or a load. `max_tokens` is clamped
+  to the `n-predict` bound and refused with `400` when negative or not an integer. The UI's
+  `dompurify` and two build-time packages move past published advisories, and CI runs the UI's
+  unit tests.
 - **macOS builds carry Metal, and the prefill device runs on it.** `--prefill-device MTL0` sends
   wide prefill graphs to the GPU through the same two-layer arena the NPU uses, with no change to
   that path. On a 16 GB Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M streamed, a 1473-token
@@ -95,13 +111,50 @@ Semantic Versioning.
   plan like a build without it: no nodes drifting to an idle device, and the gates pass to the bit
   with Metal compiled in. `all` and `cpu` still force either. Before this a Metal build with
   nothing placed ran slower than a CPU build and failed gate G18c.
-- **The prefill-device and decide flags are parameter-table rows**, so `--describe-params` lists
-  them like every other setting.
-- **Hardware planner: `--auto`, `--plan` and `--probe`.** The engine
+- **The prefill-device and decide flags are parameter-table rows**, so `--describe-params` and the
+  desktop UI list them like every other setting.
+- **Hardware planner: `--auto`, `--plan`, `--probe`, and `/api/plan` in the desktop UI.** The engine
   measures the machine and reads the model, then resolves the streaming knobs with the fact behind
   each one; a knob set by hand is never touched and nothing lossy arms itself. The planner's
   placement knobs join the parameter table (`--gpu-layers`, `--threads-batch`, `--devices`,
   `--dense-on-device`). See `docs/hardware-planning.md`.
+- **`Session` takes a conversation whole, with tools.** `GenerateRequest::messages` replaces the
+  engine-held conversation (the KV is kept and reused by prefix), `tools` / `tool_choice` describe
+  functions the model may call, and `RunResult::tool_calls` returns the calls. The types are in
+  `bmoe/chat.h`, with no llama.cpp or JSON type in them. A turn that fails before it decodes (an
+  overflowing or empty prompt) no longer leaves its user message in the conversation.
+- **A desktop app: `bmoe-server` and a local web UI.** A second front-end next to `bmoe-cli` that
+  keeps one model loaded and serves a browser UI on `127.0.0.1:8765`: chat with the reasoning
+  channel, live engine metrics per token (decode rate, flash read rate, stall share, cache hit,
+  memory), model management and every engine setting. The settings form is rendered from the
+  parameter table alone, so a knob added to the engine appears in the UI with no UI change. The
+  same server speaks an OpenAI-compatible `/v1/chat/completions` (streaming, with reasoning and
+  metrics as extensions), so any OpenAI client can drive the engine; the API is in
+  `docs/server-api.md`. It binds to loopback only and refuses a foreign `Host` or `Origin`.
+  - Settings live in layers (server defaults, plan, launch flags, user); only the user's are
+    saved, so an improved default still reaches someone who never touched that knob.
+  - Tool calling (`tools`, `tool_choice`, `tool` messages, `tool_calls` in the answer, streamed or
+    not), so a coding agent can drive the engine: opencode fixes a file through it in four steps.
+    The server knows no tool syntax: the model's own chat template writes the tools and llama.cpp's
+    chat layer parses the calls back out. Calls are not grammar-constrained.
+  - The conversation is the client's: every request carries the whole history and the engine
+    reuses the leading tokens its KV cache already holds, so resending a conversation with one more
+    message prefills that message alone (11 000 tokens held, 22 to 167 prefilled per agent step),
+    and an edited one prefills from its first differing token. `usage` reports the reused part as
+    `cached_tokens`.
+  - Requests wait their turn instead of being refused: a second request while one runs used to
+    get `409`, which an agent that asks for a session title beside its first turn retried until
+    it gave up. `429` only with 16 already waiting.
+  - `stream_options.include_usage`, and `reasoning_effort: "none"` as a way to turn thinking off.
+  - Models: the ggufs in the models folder (a split set listed once), a curated catalog kept as
+    data in `catalog/models.json`, and resumable downloads through the system `curl`.
+  - `/api/plan` offers the hardware planner's plan, with the fact behind each decision, when the
+    engine carries the planner; values set by hand are never overridden. With the planner built
+    in, every load plans first by default (auto mode), with the previous model unloaded so the
+    probes measure the machine rather than the model already in it; a plan measured with a model
+    loaded says so.
+  - Release builds attach a `bmoe-desktop-<tag>-<target>` archive: the server with the UI and the
+    catalog beside it. On Windows a double click starts it and opens the browser.
 - **One parameter table for every engine tunable** (`bmoe/params.h`). Each `RunConfig` knob is one
   row: key, type, group, level, scope, bounds written with the same constants `validate()` checks,
   help text, and its reader and writer. Keys are the long flag without dashes, the name a planner
@@ -138,6 +191,9 @@ Semantic Versioning.
   and `BMOE_CACHE_MB=auto` now means auto-sizing (it used to parse as 0, cache off).
 - The per-flag usage text is the table's help, shorter than the hand-written one; the measured
   detail stays in the docs each flag points to.
+- The Android builds (`scripts/build-android.ps1`, `scripts/build-hexagon-android.sh`, CI)
+  configure with `-DBMOE_BUILD_SERVER=OFF`; CI formats `server/` too and compile-checks
+  `bmoe-server` on macOS.
 - **CI runs on every pull request, not only on those based on `main`.** A PR stacked on another
   branch was never built until it was retargeted.
 

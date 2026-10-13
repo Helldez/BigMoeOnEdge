@@ -225,6 +225,14 @@ stopped after each layer. See [docs/decide.md](docs/decide.md).
 live telemetry panel, and every knob above in Settings with a one-line note on what it does.
 Defaults are the measured winning recipe for a model near RAM.
 
+### Desktop app
+
+`bmoe-server` keeps a model loaded and serves a web UI on your machine only: chat with live engine
+metrics per token, model downloads, and every engine setting, rendered from the engine's own
+parameter table. It also speaks an OpenAI-compatible chat API, so other clients can use the engine
+([server-api.md](docs/server-api.md)). With the hardware planner built in, it proposes a
+configuration for your model on your machine and shows the fact behind each choice.
+
 ## Supported models
 
 | Architecture | Reference models | Notes |
@@ -506,6 +514,21 @@ There is an iOS harness in [`examples/ios`](examples/ios) (`scripts/build-ios.sh
 into an app, since an app there may not start a process. CI compiles it for the simulator; it has
 not run on a device.
 
+### Desktop app
+
+Each release attaches a `bmoe-desktop` archive per platform: start `bmoe-server` (on Windows, a
+double click) and the UI opens at `http://127.0.0.1:8765/`. From source, build the UI first so the
+CMake build can place it beside the server:
+
+```bash
+cd ui && npm ci && npm run build && cd ..
+scripts/build-host.sh
+build/bin/bmoe-server --open
+```
+
+Settings and downloaded models live in your user data folder; `bmoe-server --help` lists the
+options, and any `bmoe-cli` engine flag given at start holds for that run.
+
 ### Android
 
 The demo app is in [`examples/android`](examples/android): build the CLI for arm64 with
@@ -622,6 +645,8 @@ or reproduce the measurements. Most-wanted entry points:
 - [docs/architecture.md](docs/architecture.md): the layer map and the llama.cpp relationship.
 - [docs/hardware-planning.md](docs/hardware-planning.md): `--auto`, the rules behind each choice
   and the machines they were measured on.
+- [docs/server-api.md](docs/server-api.md): the desktop server's HTTP API, OpenAI-compatible chat
+  included.
 - [docs/adding-a-model.md](docs/adding-a-model.md): supporting a new MoE architecture.
 - [docs/benchmarks.md](docs/benchmarks.md): measured results and
   [how they were produced](docs/benchmark-method.md).
