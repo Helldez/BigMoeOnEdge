@@ -927,7 +927,9 @@ int main(int argc, char ** argv) {
         llama_backend_init();
         probe_bandwidth(hw, mp);
         probe_device_costs(hw, mp);
-        if (probe_io) probe_storage(hw, cfg.model_path.c_str(), mp.expert_slice_bytes);
+        // Where the expert reads land, which on a split model is not the file the caller named.
+        const std::string & storage_path = mp.expert_file.empty() ? cfg.model_path : mp.expert_file;
+        if (probe_io) probe_storage(hw, storage_path.c_str(), mp.expert_slice_bytes);
         probe_headroom(hw, probe_mem, mp.dense_bytes + cache_floor);
         const Placement placement =
             probe_placement(cfg.model_path.c_str(), mp, hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch);

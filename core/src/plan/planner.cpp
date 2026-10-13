@@ -985,6 +985,7 @@ Plan plan_run(const RunConfig & base,
 
     if (cycle == 0) {
         decline("the model's expert shapes could not be read, so the cache floor could not be derived");
+        price_unstreamed(p.allocation);
         note("moe-stream", "off", Source::Unprobed, "expert slice size unknown");
         return p;
     }
@@ -1026,6 +1027,7 @@ Plan plan_run(const RunConfig & base,
                        "model fits, which is not the same as until it runs well";
         }
         decline(why);
+        price_unstreamed(p.allocation);
         note("moe-stream", "off", Source::Derived, "budget below the derived cache floor");
         return p;
     }

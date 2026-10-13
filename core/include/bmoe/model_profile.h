@@ -96,6 +96,12 @@ struct ModelProfile {
     uint64_t dense_bytes = 0;          // everything else: embeddings, attention, norms, head
     uint64_t largest_dense_tensor = 0; // the one a residency policy may not be able to hold
 
+    // The file that holds the most routed-expert bytes: where the streamer's reads land, so where a
+    // storage probe has to read. A model in one file names that file. A split one does not name
+    // its first shard, which can be metadata alone - a few MiB that the drive answers from its
+    // own cache at a rate no read of the weights will see.
+    std::string expert_file;
+
     // Every expert tensor of the MoE layer that has the most of them, in bytes. It is the unit a
     // device prefill reserves in: the layer being computed and the one being loaded behind it each
     // need room for a whole layer's experts, so two of these is what arming one costs.

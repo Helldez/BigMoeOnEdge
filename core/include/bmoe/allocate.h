@@ -211,6 +211,15 @@ struct Allocation {
 
 struct PlannerPolicy; // bmoe/planner.h
 
+// Re-price an allocation for a run that will not stream. The engine's residency policies and its
+// expert lane exist only under streaming: declined, the whole file is left mapped and the kernel
+// decides what stays. So nothing is held on the model's behalf and every group costs what it costs
+// refaulted - the bound, which is then the prediction, because it is the only figure this can state
+// about a mapping it does not manage. Without this a declined plan printed the cost of the plan it
+// had just refused: measured on a model five times the machine's memory, 0.23 s/token predicted
+// against 1.46 run, where the bound said 1.69.
+void price_unstreamed(Allocation & a);
+
 // Price every legal lane for every group, rank the candidates by seconds saved per byte of RAM, and
 // spend the budget down that list. Never fails: a machine with no measurements yields an allocation
 // that leaves everything mapped and says, per group, which measurement it was owed.

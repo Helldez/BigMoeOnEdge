@@ -50,6 +50,36 @@ double finite_or_zero(double v) {
 
 } // namespace
 
+void price_unstreamed(Allocation & a) {
+    a.seconds_per_token = 0.0;
+    a.resident_bytes = 0;
+    for (GroupPlacement & g : a.groups) {
+        if (!(g.seconds_worst_case > 0.0) && g.resident_bytes == 0 && !(g.seconds_per_token > 0.0)) continue;
+        g.lane = Lane::Mmap;
+        g.device = -1;
+        g.resident_bytes = 0;
+        g.seconds_per_token = g.seconds_worst_case;
+        g.reason = "left mapped: streaming was declined, so the kernel decides what stays and this is the cost "
+                   "with nothing resident";
+        a.seconds_per_token += finite_or_zero(g.seconds_per_token);
+    }
+    a.dense_pinned = false;
+    a.cache_bytes = 0;
+    a.cache_locked_bytes = 0;
+
+    // The ledger keeps what the run holds whatever it does with the weights, and drops the rest.
+    Ledger & l = a.ledger;
+    l.rows.erase(
+        std::remove_if(l.rows.begin(), l.rows.end(),
+                       [](const LedgerRow & r) { return r.name == "dense" || r.name == "expert cache" || r.in_turn; }),
+        l.rows.end());
+    l.held = l.locked = 0;
+    for (const LedgerRow & r : l.rows) {
+        l.held += r.bytes;
+        if (r.locked) l.locked += r.bytes;
+    }
+}
+
 const char * lane_name(Lane l) {
     switch (l) {
     case Lane::Mmap:

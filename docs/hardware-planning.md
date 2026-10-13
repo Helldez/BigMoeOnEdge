@@ -189,6 +189,11 @@ and `BMOE_*` env overrides both count as the caller speaking.
    own size and floored at the model's token cycle. See [The memory ledger](#the-memory-ledger).
 6. **I/O policy** from the storage facts.
 7. **Emit the plan with its rationale.** A decline is a plan too: the config it carries still runs.
+   A plan that declines for want of room streams nothing and holds nothing, so its cost is restated
+   as the file left mapped with nothing resident - the bound, which is then the prediction - and
+   its ledger keeps only the context and compute buffers. Before, it printed the cost of the
+   allocation it had just refused: 0.23 s/token predicted where the run took 1.46 and the bound
+   said 1.69.
 
 ## The facts, and which knob each one decides
 
@@ -550,6 +555,12 @@ layer, which is the capacity fitter's question and not this one.
 asks the caller nothing. It costs about a second of a load already measured in seconds - 6.3 to 6.9
 on the desktop it was validated on - against a lane count worth 12% of every token afterwards.
 `--no-probe-io` opts out for a caller that must not touch the drive at all.
+
+It reads the file the experts are in (`ModelProfile::expert_file`), which on a model split into
+shards is not the file the caller names: the first shard can be metadata alone. Read there, an 85
+GB model in three files answered 101906 MiB/s from a 5 MB file the drive had in its own cache, and
+the plan priced a token of expert reads at 38 ms. Read where the weights are, the same drive
+answers 6843 MiB/s.
 
 It measures the rate curve around the model's own expert slice, at one, two and four lanes, taking
 the median of three samples at the size that decides anything, and picks the **largest** lane count

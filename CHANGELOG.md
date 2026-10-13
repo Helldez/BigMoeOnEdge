@@ -127,6 +127,18 @@ Semantic Versioning.
   branch was never built until it was retargeted.
 
 ### Fixed
+- **`--auto` on a model split into shards measured the wrong file, and a declined plan quoted the
+  cost of the plan it refused.** The storage probe read the path the caller names, which on a split
+  model is the first shard and can be metadata alone: on a three-file, 85 GB DeepSeek V4 Flash it
+  timed a 5 MB file and reported 101906 MiB/s. It now reads the file that holds the most expert
+  bytes (`ModelProfile::expert_file`) and reports 6843 MiB/s on the same drive. And a plan that
+  declines streaming for want of room is now priced as what it runs - the file left mapped, nothing
+  held - instead of as the streamed allocation: that plan predicted 0.23 s/token against 1.46
+  measured. Measured on a 16 GB Apple-silicon laptop, 48 tokens at a 2048 context: declined and
+  mapped, 0.69 tok/s; planned with the probe corrected and 12.2 GB reported available, 2.37 tok/s
+  (0.35 s/token predicted, 0.42 measured). The first run had 6.9 GB reported available and would
+  still decline at that figure, so the two runs differ by the memory the machine reported as well
+  as by the fix.
 - **A prefill device could be armed at a cost of 0 MiB.** A device that measures as not drawing
   on the host and reports no memory of its own - an NPU fed through a kernel allocator answers so -
   was read as having its own pool and charged nothing. It is charged to the host now. Found on a
