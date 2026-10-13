@@ -213,6 +213,11 @@ Plan plan_run(const RunConfig & base,
     Placement placement = projected;
     p.placement = placement;
 
+    // The rate a device has to beat before it is said to read this model's weights faster than the
+    // host: the policy's margin over the host's own figure, computed once so the lines quoting it
+    // cannot drift apart.
+    const double host_bandwidth_win = hw.host_bandwidth_gibs * (1.0 + (double) pol.min_backend_win);
+
     // What the first stage left for the second. Without a placement every layer's experts are on
     // the host and nothing of the model sits on a device; with one, only the host share of the
     // experts is the streamer's to serve, and the dense set the fitter kept on the host is what it
@@ -522,11 +527,9 @@ Plan plan_run(const RunConfig & base,
             }
             const std::string capacity = "every device here reads the host's own memory, so moving a weight onto "
                                          "one frees nothing: the capacity tier is inert. ";
-            // A tenth, not a hair: the two figures come from the same probe on the same machine, and
-            // claiming "more" for a difference inside its own repeatability is how a rationale starts
-            // being read as noise. Measured 19 against 19 on a phone, which is not a finding.
-            if (fastest && hw.host_bandwidth_gibs > 0.0 &&
-                fastest->memory_bandwidth_gibs > hw.host_bandwidth_gibs * 1.10)
+            // "More" only past the policy's margin: see PlannerPolicy::min_backend_win for why a
+            // difference inside the probe's own repeatability is not reported as a win.
+            if (fastest && hw.host_bandwidth_gibs > 0.0 && fastest->memory_bandwidth_gibs > host_bandwidth_win)
                 note("extra-offload", "none", Source::Measured,
                      capacity + "What is left is bandwidth, and here the device has more of it (" +
                          u64s((uint64_t) fastest->memory_bandwidth_gibs) + " against " +
@@ -1285,7 +1288,7 @@ Plan plan_run(const RunConfig & base,
         const ComputeDevice * fast = nullptr;
         for (const ComputeDevice & d : hw.devices) {
             if (d.is_cpu || d.runs_expert_op != Tri::Yes || d.needs_repack == Tri::Yes) continue;
-            if (hw.host_bandwidth_gibs <= 0.0 || d.memory_bandwidth_gibs <= hw.host_bandwidth_gibs * 1.10) continue;
+            if (hw.host_bandwidth_gibs <= 0.0 || d.memory_bandwidth_gibs <= host_bandwidth_win) continue;
             fast = &d;
             break;
         }

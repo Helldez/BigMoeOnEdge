@@ -184,7 +184,7 @@ std::vector<ParamDesc> build() {
         d.short_flag = "-n";
         d.value_hint = "N";
         d.scope = ParamScope::Request;
-        bounds(d, 1, 1 << 20, "tokens");
+        bounds(d, 1, RunConfig::tokens_max, "tokens");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_predict; });
         t.push_back(d);
     }
@@ -205,7 +205,7 @@ std::vector<ParamDesc> build() {
                           "so a larger context takes RAM from the expert cache.");
         d.short_flag = "-c";
         d.value_hint = "N";
-        bounds(d, 1, 1 << 20, "tokens");
+        bounds(d, 1, RunConfig::tokens_max, "tokens");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ctx; });
         t.push_back(d);
     }
@@ -213,7 +213,7 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("threads", "Compute threads", G::Generation, L::Basic, "Compute threads.");
         d.short_flag = "-t";
         d.value_hint = "N";
-        bounds(d, 1, 256);
+        bounds(d, 1, RunConfig::threads_max);
         bind_int(d, [](RunConfig & c) -> int & { return c.n_threads; });
         t.push_back(d);
     }
@@ -222,7 +222,7 @@ std::vector<ParamDesc> build() {
                           "Threads for prefill, which is compute-bound and scales with cores, while a streamed "
                           "decode mostly waits on flash. 0 = the same as the compute threads.");
         d.value_hint = "N";
-        bounds(d, 0, 256);
+        bounds(d, 0, RunConfig::threads_max);
         bind_int(d, [](RunConfig & c) -> int & { return c.n_threads_batch; });
         t.push_back(d);
     }
@@ -252,7 +252,7 @@ std::vector<ParamDesc> build() {
         ParamDesc d =
             row("top-k", "Top-k", G::Sampling, L::Advanced, "Top-k cutoff when sampling (0 disables the stage).");
         d.value_hint = "N";
-        bounds(d, 0, 1000);
+        bounds(d, 0, SamplingConfig::top_k_max);
         bind_int(d, [](RunConfig & c) -> int & { return c.sampling.top_k; });
         t.push_back(d);
     }
@@ -411,7 +411,7 @@ std::vector<ParamDesc> build() {
                           "reserved for it, so a smaller value hands RAM back to the expert cache at the cost "
                           "of prefill speed; decode is unaffected.");
         d.value_hint = "N";
-        bounds(d, 0, 1 << 20, "tokens");
+        bounds(d, 0, RunConfig::tokens_max, "tokens");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ubatch; });
         t.push_back(d);
     }
@@ -439,7 +439,7 @@ std::vector<ParamDesc> build() {
                           "their experts are resident there, not streamed. 0 keeps everything on the host. The "
                           "hardware planner sets it from llama.cpp's own capacity fitter.");
         d.value_hint = "N";
-        bounds(d, 0, 1024, "layers");
+        bounds(d, 0, RunConfig::n_gpu_layers_max, "layers");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_gpu_layers; });
         t.push_back(d);
     }
@@ -694,7 +694,7 @@ std::vector<ParamDesc> build() {
                           "output. 0 = the model's own value.");
         d.value_hint = "N";
         d.lossy = true;
-        bounds(d, 0, 256);
+        bounds(d, 0, RunConfig::n_expert_used_max);
         bind_int(d, [](RunConfig & c) -> int & { return c.n_expert_used; });
         t.push_back(d);
     }

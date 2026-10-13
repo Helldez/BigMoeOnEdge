@@ -136,6 +136,14 @@ Semantic Versioning.
   branch was never built until it was retargeted.
 
 ### Fixed
+- **The plan's "reproduce with" line left out choices the plan had made.** It was a list of flags
+  written by hand beside the parameter table, and it had no entry for the devices the plan
+  restricted the run to, for the tensor placements the capacity fitter chose, or for a cache the
+  plan turned off - which the CLI then sized by itself, so the line reproduced a different run. It
+  is rendered from the table now: every setting that differs from the default, in the table's
+  order, quoted for a POSIX shell where a value needs it. Internally, the thresholds the rules
+  compared against as bare numbers have names, parameter bounds come from named constants, and
+  four functions nothing called are gone; `--describe-params` and `--help` are byte-identical.
 - **`--auto` gave up streaming whenever the expert cache could not be afforded.** A budget under
   the model's token cycle declined the stream and left the file mapped, on the machine where a
   mapped file is slowest. The floor now turns off the cache alone: the plan keeps `--moe-stream`

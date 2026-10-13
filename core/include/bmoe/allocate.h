@@ -42,7 +42,6 @@ namespace bmoe {
 // the engine cannot execute.
 enum class Lane {
     Mmap,         // left mapped; the kernel serves it and may drop it, refaulting a page at a time
-    MmapWarm,     // left mapped, but paged in once at load so decode never faults it
     Resident,     // copied into our own anonymous buffers; a reclaim costs whatever a reclaim costs here
     Pinned,       // as Resident, in a store the kernel may not take back (platform-gated)
     RowStream,    // address space only; the rows the graph gathers are pulled from flash

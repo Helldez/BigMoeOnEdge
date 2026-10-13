@@ -12,7 +12,11 @@
 //     path's throughput. Measured by doing exactly that: read with a mapping alive, drop the
 //     mapping, reopen the lanes, read again.
 //
-// The whole probe is bounded in time and reads a few tens of MiB. It runs only when asked.
+// The probe is bounded in bytes, not in time, and it is not small. The decisive point - the model's
+// own slice - moves 512 MiB per sample, three repeats at each of three lane counts: 4.5 GiB. The
+// rest is counted in requests: the curve's two neighbouring sizes and both arms of the mapping
+// question come to about 2150 slices' worth, and the refault price to 2 MiB. At a 512 KiB slice
+// that is roughly 5.5 GiB read from the file in all. It runs only when asked.
 
 #include "bmoe/probe.h"
 

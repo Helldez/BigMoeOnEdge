@@ -158,10 +158,6 @@ struct ModelProfile {
     const GroupDemand & group(WeightGroup g) const { return groups[(int) g]; }
     GroupDemand & group(WeightGroup g) { return groups[(int) g]; }
 
-    // Bytes one token's routing reads when nothing is cached: the MECHANICAL floor of the expert
-    // cache. The same quantity as `token_cycle_bytes`, named for the question it answers.
-    uint64_t expert_working_set_bytes() const { return token_cycle_bytes; }
-
     // Bytes a token must obtain if NOTHING is resident: the ceiling the plan works down from.
     uint64_t bytes_per_token() const;
 };

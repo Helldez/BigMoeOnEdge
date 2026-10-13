@@ -362,6 +362,9 @@ int main() {
               std::to_string(e.seconds_per_token) + " vs " + std::to_string(e.seconds_worst_case));
         check(ledger_row(p, "dense") && !ledger_row(p, "expert cache"),
               "tight machine: the ledger keeps the dense set and carries no cache");
+        check(p.to_flags().find("--cache-mb 0") != std::string::npos,
+              "tight machine: the reproduce line states the cache is off, which a front-end would otherwise size",
+              p.to_flags());
 
         // The same machine with a drive nobody measured. There is no price for the stream, so it is
         // not chosen on faith: the plan declines, and is priced as the mapping it leaves.
@@ -794,6 +797,17 @@ int main() {
         const Decision * d = find(p, "placement");
         check(d && d->source == Source::Measured, "placed: the placement is recorded as measured");
         check(validate(p.config).ok, "placed: the plan is a valid config", validate(p.config).error);
+
+        // What the fitter wrote is part of the plan, so it is part of the line that reproduces it.
+        // The patterns are regexes joined by ';': quoted, or a shell would end the command there.
+        Placement pinned_pl = pl;
+        pinned_pl.override_patterns = {"blk\\.(0|1)\\.ffn_.*_exps", "blk\\.2\\..*"};
+        const std::string placed_flags = plan_run(base_cfg(), desktop(), model, pinned_pl, PlanRequest{}).to_flags();
+        check(placed_flags.find("--gpu-layers 24") != std::string::npos &&
+                  placed_flags.find("--tensor-overrides 'blk\\.(0|1)\\.ffn_.*_exps;blk\\.2\\..*'") != std::string::npos,
+              "placed: the reproduce line carries the fitter's tensor overrides, quoted", placed_flags);
+        check(placed_flags.find("model.gguf") == std::string::npos,
+              "placed: the reproduce line leaves the model to the caller", placed_flags);
 
         // When the fitter's host residual FITS in RAM, the right answer is the classic offload -
         // experts resident on the host, no streaming - and the plan must say so rather than stream.
@@ -1367,6 +1381,8 @@ int main() {
               "isolated: with nothing else to use the run is the host's, and it still streams");
         check(validate(cpu_only.config).ok, "isolated: and that plan is a valid config",
               validate(cpu_only.config).error);
+        check(cpu_only.to_flags().find("--devices cpu") != std::string::npos,
+              "isolated: the reproduce line carries the device choice", cpu_only.to_flags());
         // No runner: nothing is marked, and the probes here do the asking as they always did.
         HardwareProfile plain = unified();
         probe_devices_isolated(plain, nullptr);

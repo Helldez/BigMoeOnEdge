@@ -28,6 +28,14 @@ namespace {
 constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kMiB = 1024.0 * 1024.0;
 
+// Fastest-to-slowest ratio across the storage probe's repeats above which a quoted rate is flagged
+// as unrepeatable: under a quarter the predicted totals still mean what they say.
+constexpr double kRateSpreadWarn = 1.25;
+
+// Relative difference under which two densities are the same density. Wide enough to cover the
+// few ulp that computing an equal ratio two ways leaves behind, far below any real difference.
+constexpr double kDensityTieTolerance = 1e-9;
+
 std::string mibs(uint64_t bytes) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%llu MiB", (unsigned long long) (bytes >> 20));
@@ -84,8 +92,6 @@ const char * lane_name(Lane l) {
     switch (l) {
     case Lane::Mmap:
         return "mmap";
-    case Lane::MmapWarm:
-        return "mmap-warm";
     case Lane::Resident:
         return "resident";
     case Lane::Pinned:
@@ -146,7 +152,7 @@ Allocation allocate(const HardwareProfile & hw,
         a.notes.push_back(b);
         // A rate that is not repeatable makes every number downstream of it unrepeatable too, and a
         // reader comparing two runs deserves to know that before concluding anything from them.
-        if (hw.storage.rate_spread > 1.25) {
+        if (hw.storage.rate_spread > kRateSpreadWarn) {
             std::snprintf(b, sizeof(b),
                           "that rate varied by %.1fx across the probe's own repeats, so every predicted cost below "
                           "carries at least that much uncertainty: treat the ranking as firmer than the totals",
@@ -298,7 +304,7 @@ Allocation allocate(const HardwareProfile & hw,
         // total saving is proportional to the bytes packed, so packing the big one first is never
         // worse and packing it last can strand it.
         const double scale = x.density > y.density ? x.density : y.density;
-        const bool tied = scale > 0.0 && std::fabs(x.density - y.density) <= scale * 1e-9;
+        const bool tied = scale > 0.0 && std::fabs(x.density - y.density) <= scale * kDensityTieTolerance;
         if (!tied) return x.density > y.density;
         return x.bytes > y.bytes;
     });
@@ -461,7 +467,7 @@ Allocation allocate(const HardwareProfile & hw,
         GroupPlacement & p = a.groups[i];
         const GroupDemand & d = model.group((WeightGroup) i);
         if (d.bytes == 0 || host_gibs <= 0.0) continue;
-        const bool resident = p.lane == Lane::Resident || p.lane == Lane::Pinned || p.lane == Lane::MmapWarm;
+        const bool resident = p.lane == Lane::Resident || p.lane == Lane::Pinned;
         if (!resident) continue;
 
         const double t_host = seconds_at_gibs(d.bytes_per_token, host_gibs);

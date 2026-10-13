@@ -1,11 +1,12 @@
 // The first stage, as an adapter: ask llama.cpp's own capacity fitter what it would do with this
 // model on this machine, and read off what the second stage needs from the answer.
 //
-// This is the one place the engine touches `common/` (llama.cpp's helper library, which upstream
-// does not treat as stable API). It is kept behind a single function returning a pure-policy
-// struct so that, when the fitter's signature moves under a submodule bump, the blast radius is
-// this file and the planner keeps working with `fitted = false` — declining the device axis rather
-// than failing to build.
+// This is the one place the planner touches `common/` (llama.cpp's helper library, which upstream
+// does not treat as stable API); the engine's chat code under `core/src/engine` uses its chat
+// templates, and that is the only other use. The fitter is kept behind a single function returning
+// a pure-policy struct so that, when its signature moves under a submodule bump, the blast radius
+// is this file and the planner keeps working with `fitted = false` — declining the device axis
+// rather than failing to build.
 
 #include "bmoe/config.h"
 #include "bmoe/probe.h"
