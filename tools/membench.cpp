@@ -324,7 +324,7 @@ void usage(const char * a0) {
                  "  --mib       buffer size, default 512 (must exceed the last-level cache, or the\n"
                  "              read loop measures cache instead of DRAM)\n"
                  "  --modes     comma list of anon,ahwb, run IN THE ORDER GIVEN (default both;\n"
-                 "              ahwb is Android-only)\n"
+                 "              ahwb needs a platform with a reclaim-exempt store)\n"
                  "  --repeat    N interleaved rounds of the mode list, default 1. Use it: core\n"
                  "              placement moves this number more than the allocator does, so a\n"
                  "              single round can rank two placements and call it a result.\n"

@@ -1,0 +1,676 @@
+# Hardware planning (`--auto`)
+
+The engine exposes a lot of knobs, and almost every one of them has a right answer that depends on
+the machine rather than on taste. `--auto` derives them instead of asking, and prints the fact
+behind each choice so a run can still be explained afterwards.
+
+```
+bmoe-cli -m model.gguf --auto                   # measures, plans, runs. Nothing else to do
+bmoe-cli -m model.gguf --auto --plan-explain    # ...and print why it chose what it chose
+bmoe-cli -m model.gguf --plan-only              # print the plan and exit, without loading the model
+bmoe-cli -m model.gguf --auto --no-probe-io     # plan from free facts only, touching no storage
+bmoe-cli -m model.gguf --auto --probe-mem      # ...and measure what this machine will let us KEEP
+```
+
+It is opt-in. Without it nothing changes.
+
+## What runs where, so the rest of this document is not misread
+
+A machine with an accelerator uses it. The first stage is llama.cpp's own capacity fitter, and
+whatever it places on a device is placed, computed there, and none of the rules below touch it: the
+plan carries its `n_gpu_layers` and its override patterns straight into the load. On a box with
+24 GB of VRAM and a 150 GB model, the attention, the dense set and the experts of every layer that
+fits are on the GPU.
+
+What this planner owns is the residue - the expert tensors the fitter left on the host because
+there was no room - and those are the ones it streams from flash. **Those** cannot be computed on a
+discrete GPU, and the `extra-offload` line in every plan is about them and only them, never about
+the fitter's placement. The reason is in "Why the obvious route is closed" below, and it is not a
+choice: a streamed expert exists by having its `data` pointer rebound onto memory this engine
+reserved, and a discrete device cannot read that memory through anything the public API offers
+today. Upstream is stuck on the same step - its own expert-streaming PR has been open since July,
+and the neighbouring issue says the fix needs a change inside `ggml_backend_sched_compute_splits`,
+which is a fork.
+
+## Two stages, one composer
+
+Placing tensors across compute devices is a capacity problem, exactly solvable from tensor sizes,
+and llama.cpp already solves it: `common_fit_params` loads the model with `no_alloc`, measures the
+projected memory per device, and if it does not fit first shrinks the context, then moves weights
+from device memory into system memory — per class inside each layer, attention first and the
+sparse expert tensors last. It sees every backend through ggml. The comment above it reads
+*"assumes system memory is unlimited"*, and that line is where this planner begins.
+
+So `--auto` runs in two stages. The **first** is the fitter, called behind one adapter
+(`core/src/plan/placement_probe.cpp`, the only file that touches llama.cpp's `common/`), which
+answers: which layers keep their experts on the host, and what the placed model reserves there for
+context and compute. The **second** is this planner, sizing the flash tier on what is left. The
+session then loads with the fitter's `n_gpu_layers` and override patterns rather than a hard-coded
+zero.
+
+Three of the fitter's answers are read rather than trusted. Left at 0 it picks the model's full
+training context, so our context is always the pin. On a machine with no GPU it leaves
+`n_gpu_layers` at its default, which means "all", so devices are counted instead. And its host
+`model` term is neither the file nor the dense set, so dense bytes come from the gguf profile and
+only the context and compute reservations come from the fitter — the one thing it knows that the
+profile does not, and 605 MiB the earlier budget had overcommitted on the desktop.
+
+Two outcomes of the first stage end the plan early, and both are stated: if the host residual
+fits in RAM the experts stay resident and nothing streams (the classic `-ot exps=CPU` offload);
+if every layer's experts land on a device, nothing is left for the streamer.
+
+## The unit everything is priced in
+
+Most knobs in a plan are decided by **one fact**: the lane count by the storage curve, `o-direct` by
+whether uncached reads return correct bytes, the thread count by a sweep. For those, a rule that
+reads the fact is the right shape and nothing below applies.
+
+Four decisions are not like that, because they are **trades**. RAM given to the dense set is RAM
+taken from the expert cache. A group moved to a device frees host memory and adds graph crossings. A
+narrower prefill hands its reservation to the weights. These compete, so they have to be priced
+against each other in one unit, and that unit is **seconds per byte of weights**.
+
+It is available because batch-1 decode is bandwidth-bound: every weight is read once and multiplied
+once, so a GEMV's cost tracks the bytes it sweeps exactly as a read's does. Flash, RAM and device
+memory become directly comparable — which is what lets the flash tier enter the objective function
+at all, and is the one thing no other placement solver does. `--fit` upstream does static memory
+accounting and disables itself under `-ot`; ATSInfer solves the same knapsack with a 15k-line fork,
+CUDA only, RAM↔VRAM only.
+
+`core/src/plan/allocate.cpp` prices every legal lane for every group, ranks the candidates by
+**seconds saved per byte of RAM**, and spends the budget down that list. The expert cache is one
+more candidate on the same list — a fractional one, above its own model-derived floor — rather than
+a special case that receives whatever is left over. That matters in two directions: the old residual
+handed the cache more than a hit was worth on a machine with room, and handed the dense set memory
+that would have bought more hits on a pressured one.
+
+The model is decomposed by **access shape**, not by role, because that is what decides residency:
+a 30B MoE reads every byte of its attention weights per token and one row of its embedding table,
+and pricing both as "dense weights" prices things three orders of magnitude apart identically.
+
+Three rules keep the cost model from becoming an oracle, and they are load-bearing:
+
+1. **An unmeasured number may never justify a move.** A missing fact makes a candidate ineligible,
+   never cheap. Every decline names the measurement it was owed.
+2. **A device must win by a margin, not merely win.** Half the plausible levers this engine has
+   tried lost on measurement; a planner built to believe its own model would rediscover every one of
+   them with confidence.
+3. **The plan that streams nothing stays reachable**, because residency beats streaming whenever
+   residency is available.
+
+### The term a bandwidth ratio cannot see
+
+The device decision is where a cost model earns its keep or discredits itself. Bandwidth alone would
+have recommended an offload **measured at 0.53x**: the probe read that device at 20 GiB/s against the
+host's 12. What it could not see is the graph crossings. Dense and expert halves alternate per layer,
+so a split placement crosses the host/device boundary twice per layer; the contiguous-block shape
+that should have put the boundary in one place was swept 0/2/4/8 and went **2.398 to 0.587 tok/s**,
+with N=4 and N=8 faulting — while the I/O half of the trade did exactly what this cost model predicts
+(cache hits 48% → 73%, re-reads 84.5 → 5.2 per token). Merely *registering* a device cost 61
+crossings per token with nothing placed on it.
+
+So crossings are a priced term (`PlannerPolicy::device_split_seconds`), and **while their price is
+unmeasured no group is placed on a device** and the plan says which measurement it was owed. Two
+further costs a single-GEMV probe structurally cannot see were also paid on that machine: the offload
+disabled Flash Attention, and quantized kernel quality is not uniform — the fast path was name-gated
+on the expert tensors, so dense weights at 2–4 bit fell to generic kernels while the CPU had
+hand-written dotprod.
+
+Correctness gates speed: a device that does not reproduce the CPU's answer on the probe graph is
+excluded before its rate is looked at, and a device that advertises host pointers must honour one
+when handed it.
+
+### The plan is a value
+
+`--probe` measures, `--plan` says what it would do and exits, `--plan-run` does it (`--auto` is an
+alias). `--plan` prints the exact `bmoe-cli` line that reproduces the plan, because a plan that can
+only be executed is an oracle and an oracle cannot be falsified — everything this repository knows
+about performance was learned by A/B-ing one lever at a time. Any flag typed by hand is a pin the
+planner may not touch.
+
+At the end of a run the plan's prediction is compared against what happened, with the credited cache
+hit rate beside the measured one. That comparison is what makes the coefficients correctable rather
+than believed: hits are credited **linearly** in the fraction of the expert set held, while routing
+has strong temporal locality — one measurement on record is a cache holding 13% of the set serving
+61.9% of the reads — so the prediction is pessimistic by roughly that factor. Fitting a curve to a
+single point would be inventing the shape, so the shape stays linear and the coefficient is what the
+loop corrects.
+
+## Backends this build can even see
+
+The planner enumerates what ggml registers. A backend the build did not compile in, and did not find
+beside the executable, is a device no rule can consider — so the plan reports "no accelerator" on any
+hardware, forever, and that is a property of the build printed as a property of the room.
+
+`register_backends()` calls `ggml_backend_load_all()` before enumeration, which finds backends
+shipped as separate shared libraries. Those are looked for **next to the executable**, which is why
+`CMAKE_RUNTIME_OUTPUT_DIRECTORY` is set at the root — a lone binary copied without its libraries
+silently reports a machine with no accelerator. `scripts/build-portable.sh` builds them that way
+(`GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS`) and enables the backends whose toolchain is present;
+it costs `--overlap`, whose expert-ready hook symbol lives in the CPU backend and cannot be linked
+against when that backend is loaded at runtime.
+
+The profile records how many backends came linked, how many were loaded at run time, and whether
+anyone looked at all, so the plan keeps three answers apart: *this machine has no accelerator*,
+*this build carries none*, and *nobody went to look*.
+
+None of this writes a backend or forks one. Every backend comes from ggml; the planner asks devices
+about **properties** — `host_memory`, `host_buffer`, `host_ptr_buffers`, `needs_repack`,
+`runs_expert_op`, `identity_ok` — and never matches a name. That is how an NPU with two native quant
+formats excludes itself without a line written for it.
+
+## The two invariants
+
+**Decline instead of guessing.** Every probed fact is a tri-state, and `Unknown` is an input rather
+than a defect: a knob whose deciding fact is missing keeps its default and is reported as
+`[unprobed]`. A plan full of `unprobed` lines is a list of the measurements the project still owes
+itself, which is worth more than a plan that invented values for them.
+
+**Nothing lossy arms itself.** Expert dropping, substitution and route-ahead change the output and
+make a run irreproducible. They are never turned on by a plan, at any quality budget, on any
+machine. A caller that arms one keeps it, attributed to `[operator]`.
+
+A third rule falls out of the first two: **a knob you passed by hand is never overwritten.** Flags
+and `BMOE_*` env overrides both count as the caller speaking.
+
+## The flow
+
+1. **Probe** the model from its gguf metadata (nothing loaded, no tensor data read) and the machine
+   from what it reports for free.
+2. **Classify the regime** — a ratio of the two, never a property of either. The whole model inside
+   the residency budget is `fits`; only the dense set is `experts-stream`; not even that is
+   `dense-oversized`.
+3. `fits` **declines streaming and says so**: on that machine reading experts from flash only adds
+   reads that resident weights do not need.
+4. **Dense policy**, from what a reclaim costs here.
+5. **The memory ledger**: one account for everything the run holds — context and compute buffers,
+   an armed device, the dense set, the expert cache — against two ceilings, what can be held and
+   what can be held reclaim-exempt. The cache is what is left under both, capped at the experts'
+   own size and floored at the model's token cycle. See [The memory ledger](#the-memory-ledger).
+6. **I/O policy** from the storage facts.
+7. **Emit the plan with its rationale.** A decline is a plan too: the config it carries still runs.
+
+## The facts, and which knob each one decides
+
+| fact | decides |
+|---|---|
+| residency budget: how much this process may hold | the regime, and the cache budget |
+| headroom: how much of it can be KEPT | the same two, when it has been measured rather than reported |
+| core classes, fastest first | `--threads`: a barrier waits for its slowest participant |
+| whether a device executes over a host buffer | whether streamed experts could be computed on it |
+| host memory bandwidth, and a device's | whether moving that compute is worth anything |
+| what happens to anonymous memory under pressure | the dense policy, and the margin |
+| whether a reclaim-exempt allocation exists | whether the dense set can be pinned |
+| how much may be held reclaim-exempt in total, net of what already is | whether the dense set fits there whole, and what is left for the cache |
+| how much may be locked where it already sits | whether the cache is sized to what can be locked or to what can be held |
+| whether a device's buffers are held reclaim-exempt | whether arming it is charged to that total too |
+| whether mapped file pages count against the fatal limit | whether leaving the dense set mapped is free |
+| whether uncached reads work on this path | `--no-odirect` |
+| whether a live mapping serialises concurrent reads | `--release-mmap` |
+| read rate by request size and lane count | `--io-threads` |
+| model: expert slice size | which point of that rate curve applies |
+| model: token cycle | the cache floor, below which streaming is declined |
+
+There are no platform names in the rules — Windows, Android, iOS, CUDA and Metal appear only in
+`core/src/plan/hardware_probe.cpp`, the adapter that fills the profile. That is what lets the rules
+be unit-tested against machines nobody here owns (`tests/planner_test.cpp`), and it is why the same
+rule that picks anonymous buffers on a desktop picks a pinned allocation on a phone and leaves the
+weights mapped on a platform that kills a process for holding too much: one rule, three facts,
+three answers, no branch.
+
+## The token cycle
+
+The cache floor is the model's own arithmetic: for every MoE layer, one expert's bytes across that
+layer's expert tensors, times the routing width. Under it the cache evicts what the same token
+still needs, so it costs its memory and returns no hits at all — the cliff `docs/cache-sizing.md`
+documents.
+
+It is summed over the tensors the file carries rather than multiplied out, because the factors are
+not uniform: a fused `gate_up` projection is twice the stride of a split one, an architecture with
+leading dense blocks has layers that demand nothing, and a trailing multi-token-prediction block
+names expert tensors that llama.cpp never loads. On Qwen3.6-35B-A3B-Q4_K_M this derivation returns
+581 MiB against the 582 MiB the engine computes at load from the tensors it actually bound — an
+independent check that the metadata-only path sees the same model.
+
+Because the floor is per-model, it also overrides the generic `cache_min_mb` guard: a budget above
+this model's cycle is not pathological however small it looks, and the plan says so when it forces
+past it.
+
+## The headroom probe
+
+`MemAvailable` and its equivalents answer "how much could be allocated right now". Every sizing
+rule here is asking something else: how much can be held and *kept*. On a machine whose reclaim
+compresses, the two differ in both directions at once. The reported figure is a floor, because the
+kernel will compress other processes' idle pages to make room — the test phone held 3.8 GB of
+pinned dense set plus cache while reporting 3.6 GB available, and reported 5.6 GB afterwards. And
+it is an over-promise, because that same cheap reclaim takes our pages back just as readily, which
+is why a model that merely fits is not a model that survives.
+
+Two answers, and the caller chooses what to spend. The **estimate** is free: what the machine's own
+compressor is currently achieving, applied to the set the kernel would compress first. Both numbers
+are read from this machine's accounting; neither is a constant, and where the accounting is not
+readable — an unprivileged process may not read the compressor's statistics on some systems — the
+fact stays unknown and every rule falls back to the reported budget and says which one it used. The
+**measurement** is `--probe-mem`: hold memory in steps and watch for the moment the kernel takes the
+first of it back. It is the real answer and it is intrusive by nature, so it never runs unasked; it
+grows in steps and stops at the first sign of loss, so it usually never reaches its ceiling, and it
+releases everything on every path out.
+
+## The memory ledger
+
+Everything the run holds for its whole length is a row in one account, and the account has two
+ceilings. The first is what the process may **hold**: the headroom above, less the margin. The
+second is what it may hold **reclaim-exempt** — memory the kernel may neither swap nor compress —
+and it is the smaller wherever it exists. They are different totals, and sizing against the first
+alone is how a plan comes to ask for locks the machine stops granting part way.
+
+| row | from | charged to |
+|---|---|---|
+| context and compute buffers | llama.cpp's own projection for this model and context | holdable |
+| a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for it | holdable; lockable too where its buffers are |
+| dense set | the gguf | holdable; lockable if it is pinned |
+| expert cache | what is left | holdable; lockable for the part that can be locked in place |
+
+The order is the order of what a byte is worth. The fixed rows come off the top because nothing
+chooses them. The dense set is next because it is read whole on every token, and it is pinned
+**whole or not at all**: a set pinned part way is reclaimed from the part that was refused, on
+every token. Where it does not fit the lockable total it is held as ordinary memory and the plan
+says how far short it fell. The cache takes the rest, and where it can be locked in place it is
+sized to what can be locked rather than to what can be held — a byte past that is one the machine
+is free to take back.
+
+The lockable total is two facts, not one, because the two mechanisms are not the same store
+everywhere. One machine offers a reclaim-exempt allocation with no published total and will lock
+almost nothing in place: its dense set can be protected and its cache cannot, so the cache there is
+ordinary memory bounded by what can be held, exactly as before. Another grants any process a lock
+up to a system-wide total, the same store either way. No rule names either machine; each adapter
+answers the two questions, and a machine that grants no lock answers zero to both.
+
+That total is **net of what is already locked, by anyone it counts**. On the laptop this was
+measured on it is system-wide and counts the kernel's own wired memory: locking in 32 MiB steps
+until the kernel refused granted 10336 MiB where the limit less the system's wired count stood at
+10368, against a limit of 12451. So it is read when the plan is made rather than derived from the
+limit, and it carries a margin of its own (`lock_margin`), because another process — or a device
+that wires its buffers — can take from it between the plan and the load.
+
+A plan can still be overtaken, so **a refusal is data, not an error**. If the platform stops
+locking the cache part way, the cache budget steps down to what is granted and the pinning goes
+on, never under one token cycle. That is `--cache-pin-fit`, which the plan arms exactly when it
+sized the cache to the lock and which is off otherwise: the engine cannot tell what a reclaim costs,
+so a budget set by hand is never shrunk unasked, and without the flag a part-way refusal ends
+pinning and leaves the budget alone. Likewise if the pinned store runs out during load, the remaining dense
+tensors are ordinary buffers and the run continues. Both are recorded in the streamer's statistics
+(`cache_pin_refused_bytes`, `dense_pin_refused_bytes`), which nothing reads yet: they are the
+signal the next plan is to be corrected from. A platform that refuses the very first
+lock is not in this case, and neither is one whose total is smaller than a token cycle - a
+per-process limit of a few MiB grants the first slices and then nothing: both grant no lock worth
+having, and the cache there is ordinary memory at its full budget.
+
+Giving up at the first part-way refusal is what the ledger was written to stop, and the mechanism
+is worth stating because it is not the obvious one. The refused slices are a small part of the
+cache; what does the damage is that every slice committed *afterwards* is ordinary memory too, so
+a cache that turns over replaces its locked slices with unlocked ones until none are left. On a
+16 GB laptop, a 91 GB model at 2 bits per weight with its 6.7 GB dense set pinned and a 4.1 GB
+cache asked for: 0.27 tok/s. The same request with the budget stepping down instead settled at
+3.2 GB and ran at 2.48, which is also what `--auto` now reaches by asking for 3.2 GB in the first
+place. A model whose cache barely turns over - 92% hits - took the same refusal without loss,
+which is how this stayed hidden.
+
+The margin on the lockable total is not there to absorb a misreading, since a refusal is
+survivable. It is there because the platform's limit is not a place to run: what is locked is
+taken from everything that is not, this process's own context and compute buffers included. Same
+laptop, a 35B model at Q4_K_M, same cache hit rate: 23.1, 23.2 and 23.5 tok/s asking for 95% of the
+total, 7.4 and 14.6 asking for 98%.
+
+What the ledger does not do yet: it charges a device only when the caller armed it
+(`--prefill-device`); choosing the device, and deriving its cost from a measurement rather than
+from the fitter's projection, is the prefill plan. And where not even one token cycle of cache can
+be locked after the dense set, it does not ask whether un-pinning the dense set to protect the
+cache would have been the better trade — it reports the cache as ordinary memory and stops there.
+
+## The storage probe
+
+**Nothing to run beforehand.** The probe is part of `--auto`, happens once inside the load, and
+asks the caller nothing. It costs about a second of a load already measured in seconds - 6.3 to 6.9
+on the desktop it was validated on - against a lane count worth 12% of every token afterwards.
+`--no-probe-io` opts out for a caller that must not touch the drive at all.
+
+It measures the rate curve around the model's own expert slice, at one, two and four lanes, taking
+the median of three samples at the size that decides anything, and picks the **largest** lane count
+that reaches within 5% of the best rate. It also measures the price of a **refault** — page-sized
+scattered reads, one lane — because that is what a group left mapped costs once pressure has dropped
+its pages, and it is not a fraction of the sequential rate but a different order of magnitude: 24
+MiB/s against 2800 on this desktop, **116x**. Without that term, leaving a group mapped looks nearly
+free and the plan under-spends on residency by two orders of magnitude.
+
+### The decisive sample is sized in bytes, not in requests
+
+The sample at the point that decides something used to be a fixed **request count**, which makes its
+duration shrink as the storage gets faster: 160 requests of 664 KiB is 106 MiB, about 40 ms on this
+NVMe, and a 40 ms measurement on a general-purpose OS reports scheduling noise. Three consecutive
+runs on the same machine answered **1116, 1526 and 2583 MiB/s**, and the plan's predicted ms/token
+moved with them by more than 2x — which would have poisoned the prediction-versus-measurement loop
+before it could correct anything.
+
+Sized by bytes instead (512 MiB per sample), the same three runs read **2832, 2845 and 2861 MiB/s**
+and predicted 202, 206 and 197 ms/token. The probe now also records its own spread across repeats,
+and the plan quotes it when it is wide: a rate that is not repeatable makes every number downstream
+of it unrepeatable too, and a reader comparing two runs deserves to know that before concluding
+anything from them.
+
+Largest, not smallest, and that is a correction the machine forced. The rule used to take the
+cheapest count inside the tolerance, on the reasoning that where two lane counts deliver the same
+throughput the cheaper one is strictly better: fewer threads, less queueing, less contention with
+the compute the reads are meant to overlap. Sound, and wrong. On the desktop SSD here the probe
+cannot separate two lanes from four - repeated runs pick either, medians and all - while the engine
+is not ambiguous at all: three interleaved 64-token runs give **4.648 tok/s at two lanes against
+5.261 at four**, +13%, with no overlap between the groups.
+
+So a lane buys something this probe does not measure. What it reads is aggregate throughput; what a
+streamed decode also spends is **latency**, waiting for the slice the next expert needs, and a queue
+that drains sooner ends the stall sooner even when the bytes per second come out the same. Until
+that is measured directly, the tie-break follows the evidence rather than the principle: inside the
+probe's own resolution, more lanes. With that, the pick is stable across runs.
+
+### What it will not tell you
+
+The same probe tries to answer whether a live mapping of the model serialises concurrent uncached
+reads, by reading with a mapping alive and again after releasing it. **It reports `Yes` or nothing,
+never `No`**, and that is a deliberate limitation rather than an oversight.
+
+On the desktop where the engine gains 24% of decode from `--release-mmap` — its own read rate goes
+from 871 to 1680 MiB/s — this probe sees the two arms within 2% of each other. Whatever it is
+failing to reproduce (most likely the access pattern: it reads uniformly at random where the engine
+walks expert slices layer by layer against a warm cache), its fidelity is established in the
+positive direction only. A negative from an instrument that missed a known positive is not evidence
+of absence, and printing one as `measured` would be exactly the confident wrong answer this design
+exists to avoid. So the plan prints the two rates, says the probe saw nothing, and tells you to
+measure `--release-mmap` yourself.
+
+## A rule that a machine took back
+
+**Threads from core classes: proposed, shipped, refuted, withdrawn — in a day.** The rule set the
+count to the fast class, because every thread meets the same barrier and one on a slower core sets
+the pace rather than adding to it. The first heterogeneous machine it met disagreed: a phone
+reporting two prime cores and six others got two threads instead of four, decode compute went
+0.127 → 0.195 s/token and throughput 4.24 → 2.68 tok/s. Half the threads cost more than the
+imbalance saved, and nothing in this planner knows where that trade turns over.
+
+What survives is the fact. The classes are measured, they are printed, and the knob keeps its
+default — because a count derived from them would need a thread sweep on the machine itself, which
+is a probe this does not have. The same reasoning retired the prefill count at the same time: it is
+*plausibly* helped by every core there is, and plausibly is precisely what does not ship here.
+
+It is worth writing down that this is the second principle in two days to be overturned by a
+measurement rather than by an argument — the lane tie-break was the first. Both were sound. Neither
+was true.
+
+## Where a rule is still cruder than the fact it stands in for
+
+**The "fits" exit asks for air, and the ratio is still policy.** The case is the phone, and it is
+the common one rather than the exotic one: an 8B-class MoE that fits in 12 GB *just barely*. It
+fits on paper. In practice the system, the app and the kernel's own page cache sit on top of it,
+and what the last few hundred MiB go to is decided by whoever touched memory last — so a resident
+model is reclaimed from underneath every few tokens and refaults its dense set from flash a page at
+a time. Streamed, the same model holds a pinned dense set and a cache that *chooses* what to keep,
+and decodes faster than the "fully resident" version that keeps losing itself. The measured case is
+stark: the 35B fully resident through mmap decoded at 0.1 tok/s where streaming it decoded at 5.0.
+Fitting is not the same as being left alone.
+
+So the exit now asks a second question. Where a reclaim is **cheap for the kernel** — it compresses
+the page, or drops a clean one — residency must leave room beyond the model itself, `fits_air_ratio`
+of what it would hold, or the experts stream and the plan says why. Where a reclaim has to write to
+a disk the kernel is far more reluctant and the classic host offload stands; where the allocation is
+exempt nothing can take it; where the limit is a hard per-process cap nothing is taken at all, and
+the margin for that case is already the largest of the three. An unprofiled machine keeps the old
+behaviour, like every other missing fact: the evidence is specific to cheap reclaim and does not
+entitle a rule to generalise past it.
+
+That ratio is policy, not measurement, and it is deliberately crude because the error it guards is
+asymmetric by two orders of magnitude — streaming a model that would have fitted costs some reads,
+residency on one that does not costs fifty times the throughput. What narrows it is the headroom
+probe above, which the air test already reads through the budget: where the headroom is measured,
+the air being counted is real spare capacity rather than an accounting figure, and only the
+multiplier is still policy. The same measurement is what stops the budget being read as a floor
+on a compressing machine, which is why the two were one piece of work rather than two.
+
+## What is not probed yet
+
+- **A machine with a device to try it on.** The bandwidth probe runs on every backend that
+  registers, and the routing that acts on its answer is in the session. Neither has met an
+  accelerator: this machine registers only the CPU, so the probe measures the host's figure, the
+  rule finds nothing to compare it against, and the plan says so. The mechanism is complete and
+  unverified, which is a different thing from missing, and the plan distinguishes them.
+- **`--ubatch`, and this one has been tried.** The compute-buffer reservation trades against the
+  expert cache: a narrower ubatch reserves less and leaves more cache, at the cost of chunking
+  prefill. Six interleaved decode runs on the desktop, 512 / 256 / 128, gave 4.016 and 4.893 tok/s
+  at 512, 4.907 and 3.370 at 256, 4.638 and 3.604 at 128. **The spread within one setting is larger
+  than the difference between settings** — 256 alone ranges from 3.37 to 4.91 — so the first
+  repetition and the second disagree about the winner. Short runs that each reload the model leave
+  the page cache in a different state every time, and 48 tokens is not long enough to average that
+  out. The knob keeps its default and prints `[unprobed]`, now because the measurement was made and
+  did not resolve, which is a different thing from never having looked.
+
+The residency budget is `MemAvailable` on every platform that reports it, and on a machine whose
+reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set
+plus cache with 3.6 GB "available", because the kernel compressed other processes' idle memory to
+make room, and reported 5.6 GB available afterwards. The honest budget there is the compressible
+headroom, which is a measurement this planner does not yet take; until it does, an unpinned plan
+on a phone under pressure declines and says why, and a pinned `--cache-mb` wins over the floor.
+
+One caveat on the budget itself: it is a one-shot reading of a quantity that moves. The same
+machine and model planned twice minutes apart produced 4.3 GB and 8.2 GB of available memory, and
+therefore two different cache budgets. The plan quotes the number it used, which is what makes the
+difference visible rather than mysterious.
+
+Compute devices are enumerated through `ggml_backend_dev_*` and recorded, but no rule reads them
+yet; a device whose memory is host memory frees nothing when a tensor moves off it, which is why
+the capacity tier is nearly inert on an integrated GPU and only the bandwidth tier is left.
+
+## Architecture
+
+The logical flow, as implemented. Diamonds are decisions; the two bracketed boxes in the session
+are designed and not yet active.
+
+```
+ INPUT
+   model.gguf              machine                  caller
+   (never loaded)          (as it is right now)     (flags typed by hand = PINS)
+        |                      |                         |
+        v                      v                         |
+ +--------------+   +--------------------+               |
+ | MODEL PROBE  |   | MACHINE PROBE      |               |
+ | experts/layer|   | available memory   |               |
+ | slice, token |   | overflow: compress |               |
+ | cycle, dense,|   |  / swap / kill     |               |
+ | MTP, tied    |   | reclaim-exempt     |               |
+ | head         |   | core classes       |               |
+ |              |   | host bandwidth     |               |
+ |              |   | devices: host buf? |               |
+ |              |   |  runs our layout?  |               |
+ +------+-------+   +---------+----------+               |
+        |                     |                          |
+        |           +---------v----------+               |
+        |           | HEADROOM PROBE     |               |
+        |           | free: compressor   |               |
+        |           |  ratio x reclaimable                |
+        |           | --probe-mem: hold  |               |
+        |           |  until pages go    |               |
+        |           +---------+----------+               |
+        |                     |                          |
+        |           +---------v----------+               |
+        |           | BANDWIDTH PROBE    |               |
+        |           | one GEMV, every     |               |
+        |           |  backend: host vs   |               |
+        |           |  device, same units |               |
+        |           +---------+----------+               |
+        |                     |                          |
+        |           +---------v----------+               |
+        |           | STORAGE PROBE ~0.6s|               |
+        |           | rate(size, lanes)  |               |
+        |           | O_DIRECT ok?       |               |
+        |           | mapping serialises?|  <- Yes or Unknown, never No
+        |           +---------+----------+               |
+        v                     v                          v
+ ==================================================================
+ | STAGE 1 . llama.cpp CAPACITY FITTER        (VRAM -> RAM)       |
+ | per layer: attention -> up -> gate -> sparse experts last      |
+ | on every backend ggml sees                                     |
+ | in:  context pinned by us (never 0 -> "model max")             |
+ | out: n_gpu_layers . split . overrides . KV+compute reservation |
+ ================================+=================================
+                                | Placement:
+                                |  which layers keep experts on the HOST
+                                |  what stays resident on the host
+                                v
+        <> everything on devices?  -- yes --> done: nothing to stream
+        | no
+        v
+        <> host residual FITS in RAM? -- yes --> experts resident,
+        | no                                      no streaming
+        v                                         (= -ot exps=CPU)
+ ==================================================================
+ | STAGE 2 . PURE PLANNER                     (RAM -> flash)      |
+ | 0 llama.cpp symbols . 0 platform names                         |
+ |                                                                |
+ |  DENSE policy  <-- overflow + reclaim-exempt store + who bills |
+ |      compress & dma-buf         -> pinned (ahwb)               |
+ |      kill & file pages uncounted -> mmap                       |
+ |      otherwise                  -> anon                        |
+ |                                                                |
+ |  CACHE budget = usable - host dense - fitter reservations      |
+ |      cap: only the expert share left on the host               |
+ |      <> >= token cycle?  no -> DECLINE and say why             |
+ |                            (caller pin -> proceed + warning)    |
+ |                                                                |
+ |  I/O   <-- curve: smallest lane count within 5% of peak        |
+ |        <-- O_DIRECT verified on the path                       |
+ |        <-- mapping release: only if measured Yes AND the shape |
+ |            is safe (head not tied, MTP not in use)             |
+ |                                                                |
+ |  LOSSY = off. Always. Unless the caller armed it.              |
+ ================================+=================================
+                                | Plan = RunConfig + rationale
+                                | every line: [measured|derived|policy|operator|unprobed]
+                                v
+ +----------------------------------------------------------------+
+ | SESSION                                                        |
+ | loads with the fitter's n_gpu_layers + overrides               |
+ | dense -> anon | dma-buf | mmap                                 |
+ | host experts -> streamer: LRU cache, lanes, mul_mat_id overlap |
+ | experts -> planned device's HOST buffer type at LOAD          |
+ | (but the streamer then rebinds onto its own reservation)      |
+ | [NOT ACTIVE] prefill on the device over streamed experts       |
+ +--------------------------------+-------------------------------+
+                                  v
+ +----------------------------------------------------------------+
+ | llama.cpp + ggml (stock submodule)                             |
+ | CPU . CUDA . Metal . Vulkan . ROCm . SYCL . OpenCL             |
+ +----------------------------------------------------------------+
+
+ OUTPUT: tok/s + the printed plan (--plan-explain) + the plan in the CSV header
+```
+
+Three things to read off it. One knowledge boundary: above the probes there is no platform name;
+below them, public API plus `common/fit.h` in one file. Two stages in sequence, not merged: the
+fitter answers *how much fits where* (exact, computed), the planner answers *how to read what does
+not fit* (measured, or declared unknown). Four early exits, and every one of them is a plan: a
+dense model, everything on devices, a host residual that fits, a budget under the token cycle.
+None is an error; each says why.
+
+## Levers llama.cpp already has that this planner does not use yet
+
+Each row is a gap here paired with the public facility that closes it. None needs a fork.
+
+| gap | facility | what it would allow |
+|---|---|---|
+| streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Who implements it is **not** what `caps.buffer_from_host_ptr` says — see "A capability that lies by omission" below |
+| prefill on the device over streamed experts (built as `--prefill-device`, see [npu-prefill.md](npu-prefill.md); the planner does not arm it yet) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
+| ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
+| KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
+| device selection | `mparams.devices[]`, `split_mode`, `main_gpu` | tell the fitter which devices to use, e.g. exclude one that demands a repack |
+| ~~a unified-memory device looks discrete~~ — **no longer decides anything** | the bandwidth probe, not the `integrated` flag | what the flag would have told us cheaply is now measured directly, and measured beats reported: the rule compares the device's figure to the host's on the same graph |
+| ~~the budget under a compressing reclaim~~ — **in** (`--probe-mem`, and a free estimate always) | nothing in llama.cpp: a kernel fact | the headroom probe stays ours, and is the one measurement no other engine takes |
+
+### DGX Spark, as a worked case
+
+128 GB of unified LPDDR5x at roughly 273 GB/s, twenty ARM cores, a Blackwell GPU, models
+streamed from NVMe: exactly the `experts-stream` regime, and the machine upstream's own expert
+streaming PR benchmarked on. This planner used to misread it twice over: ggml reports the GB10 as a GPU
+with memory of its own, because the CUDA backend's `integrated` flag is disabled, and the profile
+called a weight rebindable only where the memory was the host's — so every expert matmul went to the
+ARM cores with the GPU idle. The reading is fixed: rebindability is asked of the device, and the
+`integrated` flag is not needed for anything any more, because what it would have hinted at is now
+measured directly — the same GEMV on every backend, and the rule compares the rates.
+
+**But the route everyone reaches for first is closed, and the evidence is in the pinned submodule
+rather than inferred.** Binding the expert overrides to a device's *host buffer type*:
+
+- `src/llama-model-loader.cpp` carries the comment *"avoid using a host buffer when using mmap"* and
+  substitutes the CPU's buffer type for any device host buffer whenever the model is mapped. This
+  engine always maps it — load-bearing, not a setting — so such an override is undone at load and
+  nothing downstream ever sees it.
+- `ggml/src/ggml-cuda/ggml-cuda.cu`'s `supports_buft` accepts the CUDA host buffer **only on an
+  `integrated` device**. On a discrete one no device claims the buffer and the op lands on the CPU.
+  With `integrated` disabled upstream, a unified-memory GB10 answers as discrete: the machine where
+  this would pay is the machine that refuses it.
+
+And a third reason that is ours alone: the streamer rebinds `data` onto memory it reserved itself,
+so the bytes a device would read were never allocated by it or registered with it.
+
+**The route that is actually open** is `ggml_backend_dev_buffer_from_host_ptr`, which wraps memory
+the caller already owns in a buffer of the device's own; CPU, BLAS and **Metal** advertise it, and
+llama.cpp uses it itself to hand Metal the mapped model region. Who else implements it is a longer
+story — see the next section. For us it would mean the streamer's per-layer
+reservations being wrapped that way, which trades against the lazy commit they exist for: a
+wrapped or page-locked range needs its pages present, and a full-size reservation with pages
+committed on a miss and released on eviction is exactly what lets a 150 GB model have valid
+addresses everywhere while holding two. CUDA's nearest equivalent, `cudaHostRegister` via
+`ggml_backend_cuda_register_host_buffer`, is behind an environment variable upstream and accelerates
+transfers rather than moving where an op runs.
+
+So the axis, stated honestly: **on Apple-style unified memory a path exists and is unbuilt; on
+discrete CUDA there is no path through today's public API; on a unified CUDA device the path exists
+in principle and upstream reports the device in a way that refuses it.** The planner says as much,
+names the device that would qualify, and arms nothing.
+
+## A capability that lies by omission
+
+`caps.buffer_from_host_ptr` is the field this planner used to read as the answer to "can this device
+wrap memory we own". It is not that answer, and reading it as one produced a wrong fact about the
+backends that matter most here.
+
+In the pinned submodule, **Vulkan, OpenCL and SYCL each report the capability `false` while wiring a
+complete implementation into their device interface.** Vulkan's is not a stub: it imports host memory
+through `VK_EXT_external_memory_host`, refusing only when the extension is absent or when the pointer
+and size are not multiples of the device's `minImportedHostPointerAlignment`. That is precisely why
+the capability is false — it is a blanket promise, and a backend whose support is conditional per
+device and per call has nothing blanket to promise, so it promises nothing. CUDA, by contrast, leaves
+the interface pointer `NULL`: there the false is a genuine absence.
+
+Two consequences, and the second is why this is not simply fixed.
+
+**A false is not evidence of absence**, so the probe no longer records one. `true` maps to `Yes` and
+everything else to `Unknown`, which is the same asymmetry the mapping-serialisation probe already
+carries and for the same reason: an instrument that returns a negative on a case known to be positive
+has fidelity in one direction only. The plan prints the unknown and says the advertisement decided
+nothing.
+
+**And it cannot be settled by trying.** `ggml_backend_dev_buffer_from_host_ptr` calls straight
+through to the interface pointer, unlike its neighbour `ggml_backend_dev_host_buffer_type`, which
+null-checks and returns nothing. So an attempt on a device that truly lacks it dereferences null
+rather than declining, and there is no way from outside to tell the two cases apart first. The
+instrument that would close this is a three-line null guard upstream, matching the function directly
+above it — a contribution, not a fork, and the one thing that would turn this `Unknown` into a
+measurement.
+
+This matters beyond tidiness: Vulkan and OpenCL are the GPU APIs on the phones this project targets.
+The route we described as open only on Apple may be open on an Adreno or a Mali too, and the old
+reading of this field would have reported it closed without ever asking.
+
+The measurement to beat is public: on the same GB10, llama.cpp's own expert-streaming PR reports
+0.87 tok/s of decode with the experts on the CPU against 2.20 with them on the GPU, and 1.06
+against 5.69 in prefill. The counter-argument — that shared memory means both are bound by the same
+DRAM, so the move buys nothing — has no measurement behind it anywhere, and the Apple evidence runs
+the other way: token generation there peaks at about six CPU threads and gets slower with more,
+which is what saturating below the fabric's limit looks like.

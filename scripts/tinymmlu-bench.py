@@ -11,7 +11,7 @@ The absolute score is below the model's published one (quantized, zero-shot, no 
 this measures is the DIFFERENCE between cells, on the same 100 questions, deterministically.
 
 Usage:
-    python scripts/tinymmlu-bench.py --parquet test.parquet --cli build/cli/Release/bmoe-cli.exe \
+    python scripts/tinymmlu-bench.py --parquet test.parquet --cli build/bin/Release/bmoe-cli.exe \
         --model M.gguf --out results/ --lambda 0 --lambda 0.15 [--limit N]
 
 The parquet is data/test-00000-of-00001.parquet from huggingface.co/datasets/tinyBenchmarks/tinyMMLU.
@@ -87,7 +87,7 @@ def run_cell(cli, model, list_path, lam, log_path, threads, cache_mb, ctx):
     ]
     if lam > 0:
         cmd += ["--expert-substitute", str(lam)]
-    # On Windows the CLI's DLLs live in build/bin/<config> next to build/cli/<config>; put that
+    # On Windows the CLI's DLLs live in build/bin/<config>, beside the CLI or one level across; put that
     # directory on PATH so the runner does not depend on the caller's shell.
     env = dict(os.environ)
     cli_dir = os.path.dirname(os.path.abspath(cli))

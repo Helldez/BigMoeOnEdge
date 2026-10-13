@@ -81,7 +81,7 @@ $jni = Join-Path $root "examples\android\app\src\main\jniLibs\$Abi"
 New-Item -ItemType Directory -Force -Path $jni | Out-Null
 Get-ChildItem $jni -Filter "*.so" | Remove-Item -Force
 
-$cli = Join-Path $buildPath "cli\bmoe-cli"
+$cli = Join-Path $buildPath "bin\bmoe-cli"
 Copy-Item $cli (Join-Path $jni "libbmoe-cli.so") -Force
 foreach ($name in $libs) {
     $src = Get-ChildItem -Path $buildPath -Recurse -Filter $name | Select-Object -First 1

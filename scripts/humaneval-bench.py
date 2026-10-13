@@ -11,7 +11,7 @@ The subset is the first N problems of the dataset, declared as such; N is a time
 statistical design, and the number to read is the difference between cells on the same problems.
 
 Usage:
-    python scripts/humaneval-bench.py --data HumanEval.jsonl.gz --cli build/cli/Release/bmoe-cli.exe \
+    python scripts/humaneval-bench.py --data HumanEval.jsonl.gz --cli build/bin/Release/bmoe-cli.exe \
         --model M.gguf --out results/ --lambda 0 --lambda 0.15 [--limit 50]
 
 HumanEval.jsonl.gz is data/HumanEval.jsonl.gz from github.com/openai/human-eval (MIT).

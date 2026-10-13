@@ -1,5 +1,7 @@
 #include "platform_io.h"
 
+#include <atomic>
+
 // System headers MUST be included at global scope, never inside the namespace below:
 // <cstdlib> etc. do `using ::abs;` and would otherwise be pulled into bmoe::pio, where
 // ::abs is not visible (GCC hard-errors; MSVC happened to tolerate it).
@@ -29,6 +31,11 @@
 #endif
 #if defined(__ANDROID__)
 #include <android/hardware_buffer.h> // reclaim-exempt allocation; see pinned_alloc
+#endif
+#if defined(__APPLE__)
+#include <libproc.h> // this process's own regions; see file_mapped_regions
+#include <mach/mach.h>
+#include <sys/sysctl.h>
 #endif
 #endif
 
@@ -100,6 +107,9 @@ void * vm_reserve(size_t sz) {
 bool vm_commit(void * p, size_t sz) {
     return VirtualAlloc(p, sz, MEM_COMMIT, PAGE_READWRITE) != nullptr;
 }
+bool vm_pin(void * /*p*/, size_t /*sz*/) {
+    return false; // VirtualLock is bounded by the working-set quota, which is not ours to raise
+}
 void vm_evict(void * p, size_t sz) {
     if (sz) VirtualFree(p, sz, MEM_DECOMMIT);
 }
@@ -135,6 +145,12 @@ uint64_t mem_available_bytes() {
     MEMORYSTATUSEX ms;
     ms.dwLength = sizeof(ms);
     return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullAvailPhys : 0;
+}
+
+uint64_t mem_total_bytes() {
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullTotalPhys : 0;
 }
 
 // The host build exists for the byte-identity gates, not perf measurement, so these stay
@@ -228,8 +244,34 @@ void * vm_reserve(size_t sz) {
 bool vm_commit(void * /*p*/, size_t /*sz*/) {
     return true; // POSIX commits on first touch
 }
+namespace {
+std::atomic<bool> g_pinned_any{false};
+}
+bool vm_pin(void * p, size_t sz) {
+    if (!sz) return true;
+    if (mlock(p, sz) != 0) return false;
+    g_pinned_any.store(true, std::memory_order_relaxed);
+    return true;
+}
 void vm_evict(void * p, size_t sz) {
-    if (sz) madvise(p, sz, MADV_DONTNEED);
+    if (!sz) return;
+#if defined(__APPLE__)
+    // Darwin's MADV_DONTNEED is advice and frees nothing: the pages of an evicted expert stay
+    // dirty and anonymous, so the process grows towards the whole expert set whatever the cache
+    // budget says, and the kernel answers by compressing it - the live cache included. Every hit
+    // then pays a decompression that no fault counter shows. Measured on a 16 GB machine with a
+    // 9 GB budget: 8.4 GB of this process in the compressor and decode at a third of its rate.
+    // Mapping fresh zero-fill pages over the span is the release that cannot be declined; the
+    // address stays valid, which is the contract.
+    if (mmap(p, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0) !=
+        MAP_FAILED)
+        return;
+    madvise(p, sz, MADV_FREE); // lazily, if the remap was refused
+#else
+    // A locked range refuses MADV_DONTNEED, so a pinned slice is unlocked before it is dropped.
+    if (g_pinned_any.load(std::memory_order_relaxed)) munlock(p, sz);
+    madvise(p, sz, MADV_DONTNEED);
+#endif
 }
 void vm_release(void * p, size_t sz) {
     if (p) munmap(p, sz);
@@ -272,7 +314,54 @@ bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * re
     return true;
 }
 
+#if defined(__APPLE__)
+namespace {
+// Darwin's counterpart of /proc/meminfo is the host's own page accounting.
+bool host_vm(vm_statistics64_data_t * vm) {
+    static const mach_port_t host = mach_host_self(); // a send right; taken once, not per call
+    mach_msg_type_number_t n = HOST_VM_INFO64_COUNT;
+    return host_statistics64(host, HOST_VM_INFO64, (host_info64_t) vm, &n) == KERN_SUCCESS;
+}
+// Pages nobody is using, as the kernel counts them: free_count includes the speculative read-ahead
+// pages, which are file-backed and counted again under external.
+uint64_t host_free_pages(const vm_statistics64_data_t & vm) {
+    return vm.free_count > vm.speculative_count ? vm.free_count - vm.speculative_count : 0;
+}
+// The same definition as MemAvailable, built from the parts Darwin publishes: what can be handed
+// out without compressing anything — free pages, file-backed pages (dropped, not compressed) and
+// purgeable ones. It inherits MemAvailable's blind spot on purpose, so the two stay comparable: a
+// mapped model's resident pages are file-backed and count as available here too.
+uint64_t host_available_pages(const vm_statistics64_data_t & vm) {
+    return host_free_pages(vm) + vm.external_page_count + vm.purgeable_count;
+}
+} // namespace
+#endif
+
+uint64_t mem_total_bytes() {
+    if (FILE * f = std::fopen("/proc/meminfo", "re")) {
+        char line[256];
+        while (std::fgets(line, sizeof(line), f)) {
+            unsigned long long kb = 0;
+            if (std::sscanf(line, "MemTotal: %llu kB", &kb) == 1) {
+                std::fclose(f);
+                return (uint64_t) kb * 1024ull;
+            }
+        }
+        std::fclose(f);
+    }
+#if defined(_SC_PHYS_PAGES)
+    const long total = sysconf(_SC_PHYS_PAGES);
+    const long psz = sysconf(_SC_PAGESIZE);
+    if (total > 0 && psz > 0) return (uint64_t) total * (uint64_t) psz;
+#endif
+    return 0;
+}
+
 uint64_t mem_available_bytes() {
+#if defined(__APPLE__)
+    vm_statistics64_data_t vm;
+    if (host_vm(&vm)) return host_available_pages(vm) * (uint64_t) vm_page();
+#endif
     // Linux/Android: MemAvailable is the kernel's own estimate of what can be allocated without
     // swapping (it accounts for reclaimable page cache), which is exactly the sizing signal we want.
     if (FILE * f = std::fopen("/proc/meminfo", "re")) {
@@ -286,7 +375,7 @@ uint64_t mem_available_bytes() {
         }
         std::fclose(f);
     }
-    // Fallback where /proc is absent (e.g. macOS): free physical pages. An underestimate — it omits
+    // Fallback where /proc is absent (the BSDs): free physical pages. An underestimate — it omits
     // reclaimable cache — but non-zero and safe to size a cache against.
 #if defined(_SC_AVPHYS_PAGES)
     const long pages = sysconf(_SC_AVPHYS_PAGES);
@@ -345,6 +434,33 @@ bool scan_kb_file(const char * path, const char * const * keys, uint64_t * out, 
 }
 } // namespace
 
+#if defined(__APPLE__)
+// The task's own ledger carries the same split /proc/self/status does: internal pages are the
+// anonymous ones, external the file-backed ones, and what the compressor holds is the anonymous
+// memory already taken back — the role zram plays in VmSwap.
+bool process_memory(ProcessMemory * out) {
+    task_vm_info_data_t ti;
+    mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &ti, &n) != KERN_SUCCESS) return false;
+    out->rss_bytes = ti.resident_size;
+    out->rss_anon_bytes = ti.internal;
+    out->rss_file_bytes = ti.external;
+    out->swap_bytes = ti.compressed;
+    return true;
+}
+
+bool device_memory(DeviceMemory * out) {
+    vm_statistics64_data_t vm;
+    if (!host_vm(&vm)) return false;
+    out->available_bytes = host_available_pages(vm) * (uint64_t) vm_page();
+    out->free_bytes = host_free_pages(vm) * (uint64_t) vm_page();
+    // Swap files are created on demand, so "free" is what is left of the ones that exist now.
+    struct xsw_usage sw;
+    size_t len = sizeof(sw);
+    out->swap_free_bytes = sysctlbyname("vm.swapusage", &sw, &len, nullptr, 0) == 0 ? sw.xsu_avail : 0;
+    return true;
+}
+#else
 bool process_memory(ProcessMemory * out) {
     static const char * const keys[] = {"VmRSS", "RssAnon", "RssFile", "VmSwap"};
     uint64_t v[4] = {0, 0, 0, 0};
@@ -365,7 +481,34 @@ bool device_memory(DeviceMemory * out) {
     out->swap_free_bytes = v[2];
     return true;
 }
+#endif
 
+#if defined(__APPLE__)
+// Darwin has no /proc. The same question — which of this process's regions map this file, and from
+// which file offset — is answered by walking its own address space: PROC_PIDREGIONPATHINFO returns
+// the region containing or following an address together with the vnode path behind it, and asking
+// about oneself needs no entitlement.
+bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out) {
+    const size_t blen = std::strlen(basename);
+    const pid_t pid = getpid();
+    bool any = false;
+    uint64_t addr = 0;
+    for (;;) {
+        struct proc_regionwithpathinfo info;
+        if (proc_pidinfo(pid, PROC_PIDREGIONPATHINFO, addr, &info, sizeof(info)) != (int) sizeof(info)) break;
+        const uint64_t start = info.prp_prinfo.pri_address;
+        const uint64_t size = info.prp_prinfo.pri_size;
+        if (size == 0 || start + size <= addr) break; // no forward progress: the walk is over
+        addr = start + size;
+        const char * path = info.prp_vip.vip_path;
+        const size_t plen = strnlen(path, sizeof(info.prp_vip.vip_path));
+        if (plen < blen || std::strncmp(path + plen - blen, basename, blen) != 0) continue;
+        out.push_back({(uintptr_t) start, (uintptr_t) (start + size), info.prp_prinfo.pri_offset});
+        any = true;
+    }
+    return any;
+}
+#else
 bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out) {
     FILE * f = std::fopen("/proc/self/maps", "re");
     if (!f) return false;
@@ -395,6 +538,7 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
     std::fclose(f);
     return any;
 }
+#endif
 
 #endif
 
@@ -408,10 +552,31 @@ bool direct_needs_alignment() {
 }
 
 // ── Reclaim-exempt allocation ────────────────────────────────────────────────────────────
-// Shared across platforms because only Android has one: everywhere else this reports "unsupported"
-// and callers fall back to an ordinary allocation. Declared in the header with the measured
+// One section for every platform: Android and Darwin have such a store, everywhere else this
+// reports "unsupported" and callers fall back to an ordinary allocation. Declared in the header with the measured
 // properties and the reason the ceiling is a lock boundary rather than an allocation one.
+#if !defined(_WIN32)
+namespace {
+// What this process may lock in place, as the kernel's own per-process limit states it.
+uint64_t memlock_limit() {
+    struct rlimit r {};
+    if (getrlimit(RLIMIT_MEMLOCK, &r) != 0) return 0;
+    return r.rlim_cur == RLIM_INFINITY ? lock_unbounded : (uint64_t) r.rlim_cur;
+}
+} // namespace
+#endif
+
 #if defined(__ANDROID__)
+
+// A dma-buf is charged to no limit this process can read: gralloc publishes no total, so the
+// answer is "unbounded here" and the caller bounds it by what the process may hold. Locking in
+// place is a different store with a different answer - the vendor caps it at a few pages.
+uint64_t lockable_bytes() {
+    return lock_unbounded;
+}
+uint64_t lock_in_place_bytes() {
+    return memlock_limit();
+}
 
 size_t pinned_max_bytes() {
     // The lock path uses a signed 32-bit type: AHardwareBuffer_lock returns EINVAL at exactly 2^31
@@ -456,10 +621,74 @@ void pinned_free(PinnedAlloc * a) {
     a->size = 0;
 }
 
+#elif defined(__APPLE__)
+
+// Darwin's reclaim-exempt store is wired memory: an anonymous mapping the process has locked, which
+// the kernel neither swaps nor compresses. Any process may ask, up to a system-wide limit that is
+// most of RAM, so the limit is read rather than assumed.
+size_t pinned_max_bytes() {
+    uint64_t limit = 0;
+    size_t len = sizeof(limit);
+    if (sysctlbyname("vm.user_wire_limit", &limit, &len, nullptr, 0) != 0) return 0;
+    return (size_t) limit;
+}
+// What is left of that limit, and the limit is GLOBAL: it bounds the wired memory of the whole
+// system, the kernel's own included, not this process's share of it. Measured by locking anonymous
+// memory in 32 MiB steps until the kernel refused: 10336 MiB granted where the limit less the
+// system's wired count stood at 10368, on a machine whose limit is 12451. So a device that wires
+// its buffers, or any other process that locks memory, shrinks this without this process having
+// allocated anything - which is why it is read each time rather than derived from the limit.
+uint64_t lockable_bytes() {
+    uint64_t global = 0;
+    size_t len = sizeof(global);
+    if (sysctlbyname("vm.global_user_wire_limit", &global, &len, nullptr, 0) != 0) return 0;
+    vm_statistics64_data_t vm;
+    if (!host_vm(&vm)) return 0;
+    const uint64_t wired = (uint64_t) vm.wire_count * (uint64_t) vm_page();
+    const uint64_t left = global > wired ? global - wired : 0;
+    return std::min({left, (uint64_t) pinned_max_bytes(), memlock_limit()});
+}
+// One store: a wired anonymous mapping is the same thing whether it was locked when it was
+// allocated or afterwards.
+uint64_t lock_in_place_bytes() {
+    return lockable_bytes();
+}
+bool pinned_alloc(size_t sz, PinnedAlloc * out) {
+    if (!sz || !out) return false;
+    void * p = mmap(nullptr, sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return false;
+    if (mlock(p, sz) != 0) { // over the limit: say so by failing, as a full device would
+        munmap(p, sz);
+        return false;
+    }
+    out->base = p;
+    out->handle = nullptr;
+    out->size = sz;
+    return true;
+}
+void pinned_free(PinnedAlloc * a) {
+    if (!a || !a->base) return;
+    munmap(a->base, a->size);
+    *a = PinnedAlloc{};
+}
+
 #else
 
 size_t pinned_max_bytes() {
     return 0;
+}
+// No reclaim-exempt allocation here, so nothing to total. Locking in place is whatever the
+// process limit says, and on Windows nothing: VirtualLock is bounded by a working-set quota that
+// is not ours to raise, which is why vm_pin declines there.
+uint64_t lockable_bytes() {
+    return 0;
+}
+uint64_t lock_in_place_bytes() {
+#if defined(_WIN32)
+    return 0;
+#else
+    return memlock_limit();
+#endif
 }
 bool pinned_alloc(size_t, PinnedAlloc *) {
     return false;

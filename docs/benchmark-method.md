@@ -102,7 +102,7 @@ each layer's tail gets longer. Start at `min(8, cores)`; on big.LITTLE try the b
 | `mmap` | leaves them in the page cache; the kernel reclaims mid-decode and the refault is billed to **compute**, so a fault-bound run looks compute-bound | diagnosis only |
 | `anon` | `O_DIRECT` into our own buffers, so a reclaim goes to zram, not flash | default, and the answer past RAM |
 | `warm` | page-cached at load | the model fits in RAM |
-| `ahwb` | dma-buf the kernel may not reclaim at all | Android, models where even zram hurts |
+| `ahwb` | memory the kernel may not reclaim at all (a dma-buf on Android, wired memory on macOS) | models where even compressed reclaim hurts |
 
 `majflt/tok` on the `compute:` line says which regime you are in: hundreds means the dense set is
 thrashing, single digits means it is not.
