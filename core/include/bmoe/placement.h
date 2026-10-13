@@ -57,6 +57,20 @@ struct Placement {
     uint64_t device_compute_bytes = 0;
     uint64_t device_context_bytes = 0; // the context the fitter put on the devices, summed
 
+    // The compute buffers above are those of one graph width - the widest graph the run computes at
+    // once (RunConfig::n_ubatch) - and they grow with it: an activation is a row per token. The
+    // width they were projected at, and what each further token of width costs, so the second stage
+    // can price a narrower graph without asking again. A zero means "not measured" and the width is
+    // then not the planner's to choose.
+    uint32_t compute_width = 0;
+    uint64_t host_compute_per_token = 0;
+    uint64_t device_compute_per_token = 0;
+
+    // This placement as it would be with the widest graph `width` tokens wide: the same placement,
+    // with the compute buffers and every sum that contains them moved along the measured slope.
+    // Unchanged when the slope is not known or `width` is the width it was projected at.
+    Placement at_width(uint32_t width) const;
+
     // The override patterns the fitter wrote, kept verbatim so the session can reapply them at load
     // (they are what routes the placed experts to a device buffer type).
     std::vector<std::string> override_patterns;

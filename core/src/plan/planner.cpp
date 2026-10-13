@@ -8,6 +8,7 @@
 #include "bmoe/planner.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace bmoe {
@@ -161,6 +162,26 @@ const char * regime_name(Regime r) {
     return "?";
 }
 
+Placement Placement::at_width(uint32_t width) const {
+    Placement q = *this;
+    if (compute_width == 0 || width == 0 || width == compute_width) return q;
+    // Both directions, clamped at zero: a slope is a measurement, and a narrower graph cannot be
+    // credited with more than the buffer it is taken from.
+    auto move = [&](uint64_t bytes, uint64_t per_token) {
+        if (width > compute_width) return bytes + (uint64_t) (width - compute_width) * per_token;
+        const uint64_t less = (uint64_t) (compute_width - width) * per_token;
+        return bytes > less ? bytes - less : 0;
+    };
+    const uint64_t host = move(raw_host_compute_bytes, host_compute_per_token);
+    const uint64_t dev = move(device_compute_bytes, device_compute_per_token);
+    q.host_resident_bytes = host_resident_bytes - std::min(host_resident_bytes, raw_host_compute_bytes) + host;
+    q.device_bytes = device_bytes - std::min(device_bytes, device_compute_bytes) + dev;
+    q.raw_host_compute_bytes = host;
+    q.device_compute_bytes = dev;
+    q.compute_width = width;
+    return q;
+}
+
 bool PlanRequest::is_pinned(const char * knob) const {
     for (const std::string & p : pinned)
         if (p == knob) return true;
@@ -182,11 +203,14 @@ Plan plan_run(const RunConfig & base,
 Plan plan_run(const RunConfig & base,
               const HardwareProfile & hw,
               const ModelProfile & model,
-              const Placement & placement,
+              const Placement & projected,
               const PlanRequest & req,
               const PlannerPolicy & pol) {
     Plan p;
     p.config = base;
+    // The first stage's answer at the graph width it was projected at. The width is this stage's to
+    // choose (see "the widest graph" below), and the compute figures move with it.
+    Placement placement = projected;
     p.placement = placement;
 
     // What the first stage left for the second. Without a placement every layer's experts are on
@@ -247,6 +271,61 @@ Plan plan_run(const RunConfig & base,
     const uint64_t margin = margin_bytes(hw, pol);
     const uint64_t holdable = budget_bytes(hw);
     const uint64_t usable = holdable > margin ? holdable - margin : 0;
+
+    // ── the widest graph ────────────────────────────────────────────────────────────
+    // A prompt is computed in graphs `n_ubatch` tokens wide, and the compute buffers are reserved
+    // for the widest of them. Left to follow the context that is one graph per context, which is
+    // the fastest prefill there is and costs nothing at a small context; at a large one it is
+    // several GiB taken from the cache for a pass that happens once per prompt. So the width is
+    // the widest whose buffers stay inside their share of what the process may hold, found by
+    // halving from the context. A width the caller set is the caller's; a slope that was not
+    // measured decides nothing, and the knob keeps its default.
+    //
+    // A device's buffers are counted only where they come out of this pool. A device with memory
+    // of its own pays for its width there, which is the first stage's arithmetic and not this one.
+    {
+        bool device_in_pool = !hw.devices.empty();
+        for (const ComputeDevice & d : hw.devices)
+            if (d.has_own_memory()) device_in_pool = false;
+        auto buffers = [&](uint32_t w) {
+            const Placement q = placement.at_width(w);
+            return q.raw_host_compute_bytes + (device_in_pool ? q.device_compute_bytes : 0);
+        };
+        const uint32_t full = placement.compute_width;
+        if (req.is_pinned("ubatch")) {
+            note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Operator,
+                 "set by the caller; the planner leaves it alone" +
+                     (full ? ", and the compute buffers are counted at that width: " + u64s(mib(buffers(full))) + " MiB"
+                           : std::string()));
+        } else if (full == 0 || placement.host_compute_per_token == 0) {
+            note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
+                 "what a token of graph width costs in compute buffers was not measured here, so the "
+                 "width is not this plan's to choose; keeping the default");
+        } else {
+            const uint64_t cap = (uint64_t) ((double) holdable * pol.compute_share_max);
+            uint32_t w = full;
+            while (w / 2 >= pol.ubatch_min && buffers(w) > cap)
+                w /= 2;
+            const std::string share = u64s((uint64_t) (pol.compute_share_max * 100.0f + 0.5f)) + "% of the " +
+                                      u64s(mib(holdable)) + " MiB this process may hold";
+            if (w == full) {
+                note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
+                     "a graph as wide as the context reserves " + u64s(mib(buffers(full))) +
+                         " MiB of compute buffers, inside " + share + ": a prompt is computed in one pass");
+            } else {
+                const uint64_t before = buffers(full);
+                placement = placement.at_width(w);
+                p.placement = placement;
+                p.config.n_ubatch = (int) w;
+                note("ubatch", u64s(w), Source::Policy,
+                     "a graph as wide as the context would reserve " + u64s(mib(before)) +
+                         " MiB of compute buffers, more than " + share + "; at " + u64s(w) + " tokens it is " +
+                         u64s(mib(buffers(w))) +
+                         " MiB. A prompt is computed in more passes and the expert cache keeps the rest, "
+                         "because a prompt is paid once and a token every time. --ubatch sets it by hand");
+            }
+        }
+    }
 
     // The bytes that would have to be resident on the host if nothing were streamed: with a
     // placement, what the fitter left here; without one, the whole file.
@@ -907,16 +986,34 @@ Plan plan_run(const RunConfig & base,
 
     if (cycle == 0) {
         decline("the model's expert shapes could not be read, so the cache floor could not be derived");
+        price_unstreamed(p.allocation);
         note("moe-stream", "off", Source::Unprobed, "expert slice size unknown");
         return p;
     }
+    // A budget under the floor takes the CACHE away, not the stream. The two were one decision
+    // here, and the plan fell back to the mapped file whenever the cache could not be afforded -
+    // which is the machine where the mapped file is at its worst, since the memory a cache lacks is
+    // the memory the page cache lacks too. Measured on a 16 GB machine with a 22 GB model whose
+    // cycle is 581 MiB and 536 MiB left for it: declined and mapped, 0.26 tok/s; streamed with no
+    // cache, 7.4 tok/s. The same model with that 536 MiB cache forced on returned 0.0% hits at 6.3
+    // tok/s against 8.6 with none, so the floor stands and it is the cache alone that it turns off.
+    // Whether the uncached stream is worth running is the ledger's own price for it against the
+    // mapping, not a rule of this file: where the read rate was never measured there is no such
+    // price, and the plan declines as before.
+    const GroupPlacement & experts = alloc.at(WeightGroup::Experts);
+    const bool stream_priced = experts.lane == Lane::ExpertStream && experts.seconds_per_token > 0.0 &&
+                               experts.seconds_per_token < experts.seconds_worst_case;
+    bool cache_off = false;
+    std::string cache_off_why;
+
     if (budget < cycle && req.is_pinned("cache-mb")) {
         note("cache-floor", u64s(mib(cycle)) + " MiB", Source::Derived,
              "the derived budget (" + u64s(mib(budget)) +
                  " MiB) is under this model's token cycle, but the caller "
                  "pinned cache-mb and a pin is the caller's authority: proceeding with the pinned value");
     } else if (budget < cycle) {
-        std::string why = "a cache of " + u64s(mib(budget)) + " MiB is below this model's worst-case token cycle of " +
+        std::string why = "the " + u64s(mib(alloc.cache_available_bytes)) +
+                          " MiB left for the expert cache is below this model's worst-case token cycle of " +
                           u64s(mib(cycle)) +
                           " MiB: under that floor the cache evicts what the same token still needs, "
                           "so it costs its memory and returns no hits at all";
@@ -944,22 +1041,48 @@ Plan plan_run(const RunConfig & base,
             if (pow2 >= 512 && pow2 < (uint64_t) placement.n_ctx)
                 why += ". The context reserves " + u64s(mib(kv)) + " MiB here and the cache is " +
                        u64s(mib(shortfall)) + " MiB short, so --ctx-size " + u64s(pow2) +
-                       " would clear the floor and stream: the first stage shrinks the context only until the "
+                       " would clear the floor and keep a cache: the first stage shrinks the context only until the "
                        "model fits, which is not the same as until it runs well";
         }
-        decline(why);
-        note("moe-stream", "off", Source::Derived, "budget below the derived cache floor");
-        return p;
+        if (!stream_priced) {
+            decline(why + ". This storage's read rate was not measured, so a stream with no cache has no price "
+                          "to set against the mapping and is not chosen on faith");
+            price_unstreamed(p.allocation);
+            note("moe-stream", "off", Source::Derived,
+                 "budget below the derived cache floor, and no price to stream by");
+            return p;
+        }
+        cache_off = true;
+        cache_off_why = std::move(why);
     }
 
     p.config.moe.enabled = true;
-    note("moe-stream", "on", Source::Derived,
-         p.regime == Regime::ExpertsStream
-             ? "the experts do not fit but the dense set does"
-             : "neither set fits, so the experts stream and the dense policy degrades with them "
-               "(a tensor larger than this budget is left mapped rather than made resident)");
+    if (cache_off) {
+        char b[160];
+        std::snprintf(b, sizeof(b), "%.0f ms/token read as slices against %.0f ms/token left mapped",
+                      1e3 * experts.seconds_per_token, 1e3 * experts.seconds_worst_case);
+        note("moe-stream", "on", Source::Derived,
+             "the experts do not fit and no cache clears the floor, so every routed slice is read on every token: " +
+                 std::string(std::isfinite(experts.seconds_worst_case)
+                                 ? b
+                                 : "priced from this storage's measured rate, where the mapping's refault was not "
+                                   "measured at all") +
+                 ". The cache is what is given up, not the stream");
+    } else {
+        note("moe-stream", "on", Source::Derived,
+             p.regime == Regime::ExpertsStream
+                 ? "the experts do not fit but the dense set does"
+                 : "neither set fits, so the experts stream and the dense policy degrades with them "
+                   "(a tensor larger than this budget is left mapped rather than made resident)");
+    }
 
-    if (!pinned("cache-mb", u64s((uint64_t) std::max(0, p.config.moe.cache_mb)))) {
+    if (cache_off) {
+        // Off outright, never left to size itself at load: an automatic budget would land in the
+        // band the floor has just refused.
+        p.config.moe.cache_auto = false;
+        p.config.moe.cache_mb = 0;
+        note("cache-mb", "0", Source::Derived, cache_off_why);
+    } else if (!pinned("cache-mb", u64s((uint64_t) std::max(0, p.config.moe.cache_mb)))) {
         p.config.moe.cache_auto = false;
         p.config.moe.cache_mb = (int) mib(budget);
         note("cache-mb", u64s(mib(budget)), Source::Derived,
@@ -1241,11 +1364,6 @@ Plan plan_run(const RunConfig & base,
                  "this machine does not report per-core maximum frequencies, so its core classes are unknown");
         }
     }
-
-    if (!req.is_pinned("ubatch"))
-        note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
-             "the compute-buffer reservation trades against the cache, but the crossover is unmeasured on "
-             "this machine; keeping the default");
 
     return p;
 }

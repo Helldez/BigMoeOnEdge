@@ -7,6 +7,17 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **`--auto` chooses how wide a prompt is computed (`--ubatch`), and counts its buffers at that
+  width.** The compute buffers are reserved for the widest graph, which followed the context, while
+  the ledger read them at llama.cpp's default of 512 tokens with a logit row per position: about
+  right at a 2048 context, and 1.2 GB charged for 8 GB reserved at 16384. The projection is now taken
+  at the session's own width and at half of it, so a narrower graph can be priced, and the width is
+  the widest whose buffers stay inside a tenth of what the process may hold
+  (`PlannerPolicy::compute_share_max`), never below 512. On a 16 GB Apple-silicon laptop,
+  Qwen3.6-35B-A3B Q4_K_M at a 16384 context with `--auto` alone: decode 22.4 and 22.3 tok/s (14.6
+  and 16.7 before), the cache locked at its full 7.7 GB (it settled at 3.5), and a 10850-token
+  prompt in 31.8 s (20.4 before, at a width that cost the decode a third). A 2048 context plans as
+  it did. Measured on that one machine; `docs/hardware-planning.md` lists the others it is owed on.
 - **An iOS harness (`examples/ios`, `scripts/build-ios.sh`).** `bmoe-cli` compiled into an app,
   since an app there may not start a process: one field for the command line, the CLI's own output,
   and a `--bmoe` marker to script a run from the machine the device is attached to. On iOS the
@@ -116,6 +127,26 @@ Semantic Versioning.
   branch was never built until it was retargeted.
 
 ### Fixed
+- **`--auto` gave up streaming whenever the expert cache could not be afforded.** A budget under
+  the model's token cycle declined the stream and left the file mapped, on the machine where a
+  mapped file is slowest. The floor now turns off the cache alone: the plan keeps `--moe-stream`
+  with `--cache-mb 0` when the ledger prices the uncached stream under the mapping, and still
+  declines where the drive's read rate was never measured. On a 16 GB Apple-silicon laptop,
+  Qwen3.6-35B-A3B Q4_K_M at a 16384 context with about 3 GB reported available: 0.26 tok/s declined
+  and mapped, 7.3 tok/s from `--auto` now. With 8.9 GB reported available the plan is unchanged
+  (a 5.9 GB cache, 17.8 tok/s). Measured on that one machine.
+- **`--auto` on a model split into shards measured the wrong file, and a declined plan quoted the
+  cost of the plan it refused.** The storage probe read the path the caller names, which on a split
+  model is the first shard and can be metadata alone: on a three-file, 85 GB DeepSeek V4 Flash it
+  timed a 5 MB file and reported 101906 MiB/s. It now reads the file that holds the most expert
+  bytes (`ModelProfile::expert_file`) and reports 6843 MiB/s on the same drive. And a plan that
+  declines streaming for want of room is now priced as what it runs - the file left mapped, nothing
+  held - instead of as the streamed allocation: that plan predicted 0.23 s/token against 1.46
+  measured. Measured on a 16 GB Apple-silicon laptop, 48 tokens at a 2048 context: declined and
+  mapped, 0.69 tok/s; planned with the probe corrected and 12.2 GB reported available, 2.37 tok/s
+  (0.35 s/token predicted, 0.42 measured). The first run had 6.9 GB reported available and would
+  still decline at that figure, so the two runs differ by the memory the machine reported as well
+  as by the fix.
 - **A prefill device could be armed at a cost of 0 MiB.** A device that measures as not drawing
   on the host and reports no memory of its own - an NPU fed through a kernel allocator answers so -
   was read as having its own pool and charged nothing. It is charged to the host now. Found on a

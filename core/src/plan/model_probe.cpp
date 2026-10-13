@@ -101,6 +101,7 @@ ModelProfile probe_model(const char * model_path) {
     // leading dense blocks has layers that contribute nothing.
     std::map<int, uint64_t> per_layer_one_expert;
     std::map<int, uint64_t> per_layer_expert_bytes;
+    std::map<int, uint64_t> per_file_expert_bytes; // by index into the file's shard list
     std::map<int, uint32_t> projections_per_layer;
     std::map<int, uint64_t> per_layer_dense_bytes; // a block's non-expert tensors
     std::set<int> blocks;                          // every block index the file carries, MTP excluded
@@ -164,6 +165,8 @@ ModelProfile probe_model(const char * model_path) {
         m.group(g).bytes += size;
 
         if (is_expert) {
+            const auto f = meta.offsets.file_by_name.find(name);
+            if (f != meta.offsets.file_by_name.end()) per_file_expert_bytes[f->second] += size;
             const uint64_t one = size / m.n_expert;
             per_layer_expert_bytes[elayer] += size;
             per_layer_one_expert[elayer] += one;
@@ -176,6 +179,14 @@ ModelProfile probe_model(const char * model_path) {
             m.largest_dense_tensor = std::max(m.largest_dense_tensor, size);
             if (in_block) per_layer_dense_bytes[layer] += size;
         }
+    }
+
+    uint64_t most_expert_bytes = 0;
+    for (const auto & kv : per_file_expert_bytes) {
+        if (kv.second <= most_expert_bytes || kv.first < 0) continue;
+        if ((size_t) kv.first >= meta.offsets.shard_paths.size()) continue;
+        most_expert_bytes = kv.second;
+        m.expert_file = meta.offsets.shard_paths[(size_t) kv.first];
     }
 
     for (const auto & kv : per_layer_expert_bytes) {

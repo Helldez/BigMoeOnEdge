@@ -336,13 +336,59 @@ int main() {
     }
 
     // ── too little room for one token's worth of experts ───────────────────────────
+    // The floor turns the CACHE off. The stream stays, because the memory a cache lacks is the
+    // memory the page cache lacks too: the mapped file is at its worst exactly here.
     {
         HardwareProfile tight = phone();
         tight.residency_budget = 3 * GiB + 400 * MiB; // dense fits, what is left is under the cycle
+        tight.storage.refault_mibs = 24.0;            // measured, so the mapping has a cost to beat
         const Plan p = plan_run(base_cfg(), tight, model, PlanRequest{});
-        check(!p.config.moe.enabled, "tight machine: streaming declined rather than thrashing");
-        check(p.decline_reason.find("token cycle") != std::string::npos,
-              "tight machine: the reason names the derived floor", p.decline_reason);
+        check(p.config.moe.enabled && !p.streaming_declined,
+              "tight machine: the experts stream with no cache rather than being left to refault", p.decline_reason);
+        check(p.config.moe.cache_mb == 0 && !p.config.moe.cache_auto && !p.config.moe.force_cache,
+              "tight machine: the cache is off outright, not left to size itself under the floor",
+              std::to_string(p.config.moe.cache_mb) + " MiB");
+        const Decision * c = find(p, "cache-mb");
+        check(c && c->reason.find("token cycle") != std::string::npos,
+              "tight machine: the reason names the derived floor", c ? c->reason : "no cache-mb decision");
+        check(validate(p.config).ok, "tight machine: the plan is a valid config", validate(p.config).error);
+
+        const Allocation & a = p.allocation;
+        const GroupPlacement & e = a.at(WeightGroup::Experts);
+        check(e.lane == Lane::ExpertStream && e.resident_bytes == 0 && a.cache_bytes == 0,
+              "tight machine: the expert lane is the stream, holding nothing");
+        check(e.seconds_per_token > 0.0 && e.seconds_per_token < e.seconds_worst_case,
+              "tight machine: the stream is chosen on its price against the mapping",
+              std::to_string(e.seconds_per_token) + " vs " + std::to_string(e.seconds_worst_case));
+        check(ledger_row(p, "dense") && !ledger_row(p, "expert cache"),
+              "tight machine: the ledger keeps the dense set and carries no cache");
+
+        // The same machine with a drive nobody measured. There is no price for the stream, so it is
+        // not chosen on faith: the plan declines, and is priced as the mapping it leaves.
+        HardwareProfile blind = tight;
+        blind.storage.rate_curve.clear();
+        const Plan q = plan_run(base_cfg(), blind, model, PlanRequest{});
+        check(!q.config.moe.enabled && q.streaming_declined,
+              "tight machine, unmeasured drive: streaming declined rather than guessed");
+        check(q.decline_reason.find("token cycle") != std::string::npos,
+              "tight machine, unmeasured drive: the reason names the derived floor", q.decline_reason);
+
+        // A declined run streams nothing and holds nothing: the file stays mapped, so the plan is
+        // priced as that rather than as the allocation it has just refused.
+        const Allocation & d = q.allocation;
+        check(d.seconds_worst_case > 0.0 && d.seconds_per_token == d.seconds_worst_case,
+              "tight machine, unmeasured drive: a declined plan predicts the cost of the mapping it leaves",
+              std::to_string(d.seconds_per_token) + " vs " + std::to_string(d.seconds_worst_case));
+        bool any_held = d.resident_bytes != 0 || d.cache_bytes != 0;
+        bool all_mapped = true;
+        for (const GroupPlacement & g : d.groups) {
+            any_held = any_held || g.resident_bytes != 0;
+            all_mapped = all_mapped && g.lane == Lane::Mmap;
+        }
+        check(!any_held && all_mapped,
+              "tight machine, unmeasured drive: a declined plan holds no weights and streams none");
+        check(!ledger_row(q, "dense") && !ledger_row(q, "expert cache"),
+              "tight machine, unmeasured drive: the ledger of a declined plan carries no weights");
     }
 
     // ── threads: the classes decide, not the count ─────────────────────────────────
@@ -626,6 +672,103 @@ int main() {
             const Decision * d = find(p, k);
             check(d && d->source == Source::Operator, std::string("pinned knob attributed to the operator: ") + k);
         }
+    }
+
+    // ── the widest graph: its compute buffers are a row, and the width is chosen against it ──
+    {
+        // An unfitted placement, as on a machine with no device: the context and compute buffers
+        // the first stage projected for a graph as wide as the context, and what a token of width
+        // costs. Nothing here names a machine; the rule reads the buffers and the holdable figure.
+        auto wide = [&](uint32_t ctx, uint64_t per_token) {
+            Placement pl;
+            pl.n_ctx = ctx;
+            pl.raw_host_context_bytes = 256 * MiB;
+            pl.raw_host_compute_bytes = (uint64_t) ctx * per_token;
+            pl.compute_width = ctx;
+            pl.host_compute_per_token = per_token;
+            return pl;
+        };
+        const uint64_t per_token = 256 * KiB; // 16384 tokens wide is 4 GiB of buffers
+        const HardwareProfile hw = desktop();
+        const PlannerPolicy pol = PlannerPolicy::defaults();
+        const uint64_t cap =
+            (uint64_t) ((double) (hw.holdable_bytes ? hw.holdable_bytes : hw.residency_budget) * pol.compute_share_max);
+
+        // A small context fits its share whole: nothing changes and the knob keeps its default.
+        const uint32_t narrow_ctx = 1024;
+        const Plan fits = plan_run(base_cfg(), hw, model, wide(narrow_ctx, per_token), PlanRequest{});
+        const Decision * df = find(fits, "ubatch");
+        check((uint64_t) narrow_ctx * per_token <= cap, "width: the small context of this test is inside the share");
+        check(fits.config.n_ubatch == 0 && df && df->source == Source::Derived,
+              "width: buffers inside their share leave the graph as wide as the context");
+
+        // A large one does not: the width is halved until its buffers fit, and no further.
+        RunConfig big_ctx = base_cfg();
+        big_ctx.n_ctx = 16384;
+        const Plan cut = plan_run(big_ctx, hw, model, wide(16384, per_token), PlanRequest{});
+        const Decision * dc = find(cut, "ubatch");
+        const uint64_t w = (uint64_t) cut.config.n_ubatch;
+        check(w > 0 && w < 16384 && dc && dc->source == Source::Policy, "width: a large context is computed in pieces",
+              std::to_string(w));
+        check(w * per_token <= cap && (w * 2 * per_token > cap || w * 2 > 16384),
+              "width: the widest whose buffers fit, not a narrower one", std::to_string(w));
+        check(cut.placement.raw_host_compute_bytes == w * per_token && cut.placement.compute_width == w,
+              "width: the ledger is charged the buffers of the width chosen",
+              std::to_string(cut.placement.raw_host_compute_bytes / MiB));
+        // The same run with the graph held at full width by the caller: the buffers are charged in
+        // full, and the cache is what pays for them.
+        PlanRequest full_pin;
+        full_pin.pinned = {"ubatch"};
+        const Plan uncut = plan_run(big_ctx, hw, model, wide(16384, per_token), full_pin);
+        check(cut.cache_budget_bytes > uncut.cache_budget_bytes || !uncut.config.moe.enabled,
+              "width: what the buffers give back goes to the cache",
+              std::to_string(cut.cache_budget_bytes / MiB) + " vs " + std::to_string(uncut.cache_budget_bytes / MiB));
+        check(validate(cut.config).ok, "width: the plan is a valid config", validate(cut.config).error);
+
+        // The floor holds even when the buffers still do not fit there.
+        const Plan floor = plan_run(big_ctx, hw, model, wide(16384, 64 * MiB), PlanRequest{});
+        check((uint32_t) floor.config.n_ubatch == pol.ubatch_min, "width: never narrower than the floor",
+              std::to_string(floor.config.n_ubatch));
+
+        // A slope nobody measured decides nothing.
+        const Plan blind = plan_run(big_ctx, hw, model, wide(16384, 0), PlanRequest{});
+        const Decision * du = find(blind, "ubatch");
+        check(blind.config.n_ubatch == 0 && du && du->source == Source::Unprobed,
+              "width: an unmeasured slope leaves the knob at its default and says so");
+
+        // A width the caller set is the caller's, whatever it costs.
+        RunConfig by_hand = big_ctx;
+        by_hand.n_ubatch = 8192;
+        PlanRequest pr;
+        pr.pinned = {"ubatch"};
+        Placement at_hand = wide(16384, per_token).at_width(8192);
+        const Plan kept = plan_run(by_hand, hw, model, at_hand, pr);
+        const Decision * dk = find(kept, "ubatch");
+        check(kept.config.n_ubatch == 8192 && dk && dk->source == Source::Operator, "width: a pinned width is kept");
+
+        // A device's buffers count where they come out of this pool, and not where it has its own.
+        Placement with_dev = wide(4096, per_token / 2);
+        with_dev.device_compute_bytes = 4096ull * per_token;
+        with_dev.device_compute_per_token = per_token;
+        const Plan shared = plan_run(base_cfg(), unified(), model, with_dev, PlanRequest{});
+        HardwareProfile own = unified();
+        for (ComputeDevice & d : own.devices) {
+            d.memory_total = 24 * GiB;
+            d.memory_free = 24 * GiB;
+            d.shares_host_memory = Tri::No;
+        }
+        const Plan apart = plan_run(base_cfg(), own, model, with_dev, PlanRequest{});
+        const uint32_t ws = shared.config.n_ubatch ? (uint32_t) shared.config.n_ubatch : 4096;
+        const uint32_t wa = apart.config.n_ubatch ? (uint32_t) apart.config.n_ubatch : 4096;
+        check(ws <= wa, "width: a device that shares this pool narrows the graph at least as much as one that does not",
+              std::to_string(ws) + " vs " + std::to_string(wa));
+
+        // at_width is a line through the projected point, clamped at zero.
+        const Placement base_pl = wide(4096, per_token);
+        check(base_pl.at_width(2048).raw_host_compute_bytes == 2048ull * per_token &&
+                  base_pl.at_width(8192).raw_host_compute_bytes == 8192ull * per_token &&
+                  base_pl.at_width(4096).raw_host_compute_bytes == base_pl.raw_host_compute_bytes,
+              "width: buffers move along the measured slope, both ways");
     }
 
     // ── composed over a first stage: the fitter placed half the layers' experts on a device ─

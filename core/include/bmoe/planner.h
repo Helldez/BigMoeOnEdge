@@ -77,6 +77,18 @@ struct PlannerPolicy {
     // nothing can take the memory back, nor where the limit is a hard cap the margin already sizes.
     float fits_air_ratio = 1.0f;
 
+    // How much of what the process may hold the compute buffers may take, as a fraction. They are
+    // reserved for the widest graph a prompt is computed in, and a prompt is computed once where a
+    // token is decoded every time: memory given to the first is taken from the expert cache, which
+    // the second reads. Below this share the graph stays as wide as the context; above it the
+    // width is halved until it fits. Policy, not measurement, and deliberately on decode's side:
+    // on one 16 GB machine a 16384 context cost 5 GB of buffers at full width and the decode a
+    // third of its rate, while a quarter of the width kept the rate and nine tenths of the prefill.
+    float compute_share_max = 0.10f;
+    // The narrowest graph the width is brought down to. llama.cpp's own physical batch: nothing
+    // here has been measured below it, and under it a prefill is mostly passes over the experts.
+    uint32_t ubatch_min = 512;
+
     // Whether THIS ENGINE can hand a device the memory a streamed expert is made of. It is a fact
     // about our own streamer rather than about any machine, which is why it lives here and not in
     // the hardware profile - and it is false, because the streamer reserves address space and

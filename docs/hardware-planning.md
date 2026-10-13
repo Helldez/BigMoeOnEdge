@@ -189,6 +189,14 @@ and `BMOE_*` env overrides both count as the caller speaking.
    own size and floored at the model's token cycle. See [The memory ledger](#the-memory-ledger).
 6. **I/O policy** from the storage facts.
 7. **Emit the plan with its rationale.** A decline is a plan too: the config it carries still runs.
+   A budget under the token cycle is not one of them: it turns the cache off and the experts
+   stream uncached (see [The token cycle](#the-token-cycle)), unless the drive's read rate was never
+   measured and the stream has no price. A plan that does decline for want of room streams nothing
+   and holds nothing, so its cost is restated
+   as the file left mapped with nothing resident - the bound, which is then the prediction - and
+   its ledger keeps only the context and compute buffers. Before, it printed the cost of the
+   allocation it had just refused: 0.23 s/token predicted where the run took 1.46 and the bound
+   said 1.69.
 
 ## The facts, and which knob each one decides
 
@@ -206,12 +214,13 @@ and `BMOE_*` env overrides both count as the caller speaking.
 | whether a device's buffers are held reclaim-exempt | whether arming it is charged to that total too |
 | the same matmul many tokens wide, on the host and on every device, with the result compared | `--prefill-device`: which device, if any, runs the prefill |
 | model: the largest layer's experts, and its other weights | what a prefill device costs in memory |
+| compute buffers at the widest graph, and what a token of width adds | `--ubatch`: how wide a prompt is computed |
 | whether mapped file pages count against the fatal limit | whether leaving the dense set mapped is free |
 | whether uncached reads work on this path | `--no-odirect` |
 | whether a live mapping serialises concurrent reads | `--release-mmap` |
 | read rate by request size and lane count | `--io-threads` |
 | model: expert slice size | which point of that rate curve applies |
-| model: token cycle | the cache floor, below which streaming is declined |
+| model: token cycle | the cache floor, below which the cache is off and the experts stream uncached |
 
 There are no platform names in the rules — Windows, Android, iOS, CUDA and Metal appear only in
 `core/src/plan/hardware_probe.cpp`, the adapter that fills the profile. That is what lets the rules
@@ -237,6 +246,19 @@ independent check that the metadata-only path sees the same model.
 Because the floor is per-model, it also overrides the generic `cache_min_mb` guard: a budget above
 this model's cycle is not pathological however small it looks, and the plan says so when it forces
 past it.
+
+The floor takes the cache away, not the stream. A budget under the cycle used to decline streaming
+altogether and leave the file mapped, which is the machine where a mapped file is at its worst: the
+memory a cache lacks is the memory the page cache lacks too. The plan now sets `--cache-mb 0` and
+keeps `--moe-stream`, on the ledger's own price for the uncached stream against the mapping; where
+the drive's read rate was never measured there is no such price, and it declines as before.
+Measured on a 16 GB Apple-silicon laptop with Qwen3.6-35B-A3B Q4_K_M at a 16384 context and about
+3 GB reported available, which leaves the cache under its 581 MiB cycle: declined and mapped, 0.26
+tok/s over 182 tokens; streamed with no cache, 7.4 tok/s on the same request, and 7.3 tok/s over 160
+tokens from `--auto` alone (95 ms/token predicted, 138 measured). The floor itself holds: with more
+memory free, the same model with a 536 MiB cache forced on returned 0.0% hits at 6.3 tok/s against
+8.6 with none. What it costs to be under the floor is the cache: 17.8 tok/s at 81% hits with the
+5.9 GB cache the plan takes when 8.9 GB is reported available. One machine, one model.
 
 ## The headroom probe
 
@@ -451,6 +473,60 @@ device typically by the float - measured at 4e-5 on a 4-bit type, 1.9e-4 on a 2-
 which reported the 2-bit type and every wide result as wrong; it is a hundredth now, still two
 orders below "wrong".
 
+## The widest graph
+
+A prompt is computed in graphs `--ubatch` tokens wide, and llama.cpp reserves its compute buffers
+for the widest of them. Left alone the width follows the context: one graph per context, which is
+the fastest prefill there is. The buffers grow with it, a row of activations per token, and they are
+memory the expert cache does not get - for a pass that happens once per prompt, against a cache
+that is read on every token.
+
+Two things were wrong at once. The ledger read the buffers from the capacity fitter, which projects
+them at llama.cpp's own default of 512 tokens whatever the session is about to open with; and the
+fitter projects a vocabulary-wide logit row for every position, where a prompt reads one. So at a
+2048 context the two errors roughly cancelled, and at a 16384 context the ledger charged 1.2 GB for
+buffers that were 8 GB: on a 16 GB laptop the cache lock was refused part way, the cache settled at
+half its budget, and decode ran at 14.6 and 16.7 tok/s where the same model does 23.
+
+The projection is now made at the width the session opens with, with the row cap the session sets
+when a device computes its prefill (what is held is what is touched, and a prompt touches one row),
+and at half that width as well. The two points give what a token of width costs on this model,
+context and set of backends, so any narrower graph can be priced without asking again
+(`Placement::at_width`). Checked against what a session then reserved, same laptop, 16384 context:
+486 MiB projected on the GPU for a 2048-wide graph against 474 reserved, 972 against 980 at 4096,
+3888 against 3920 at 16384. The host's share is projected high, by up to a factor of two, which is
+the side that cannot overcommit.
+
+The rule is the widest graph whose buffers stay inside a share of what the process may hold
+(`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
+`ubatch_min`. Inside the share nothing changes and the knob keeps its default. A device's buffers
+count where they come out of this pool and not where the device has memory of its own. A width set
+by hand is left alone and charged in full; a slope that was not measured decides nothing.
+
+The share is policy, and the plan prints it as such. What is measured is the trade it stands in
+for, on that laptop at a 16384 context, a 10850-token prompt and then a short one:
+
+| width | buffers reserved | prefill | decode |
+|---|---|---|---|
+| 512 | 0.4 GB | 61.7 s | 22.5 and 23.4 tok/s |
+| 1024 (what the rule picks) | 0.6 GB | 31.8 s | 22.4 and 22.3 tok/s |
+| 2048 | 1.0 GB | 19.8 s | 23.2 and 22.6 tok/s |
+| 4096 | 2.0 GB | 17.3 s | 23.4 and 23.5 tok/s |
+| 16384 (the context) | 8.0 GB | 20.4 s | 14.6 and 16.7 tok/s |
+
+Narrower is not free here the way it is for an engine whose weights are resident: every piece of
+a prompt routes its experts again and reads from flash the ones the piece before did not leave in
+the slots, so a prefill is a pass over the experts per piece. That is why the fixed 512 other
+engines use costs three times the prefill on this one, and why the width is a decision rather
+than a constant. The rule lands one step narrower than the table's best row, 1024 rather than
+2048, because the host's projection is high; that costs twelve seconds of prefill on that prompt
+and is the price of a figure that cannot overcommit.
+
+What it does not do: the capacity fitter still places weights on a device with memory of its own at
+the full width, so on such a machine a narrower graph leaves device memory the fitter thought was
+spoken for. And a session without a prefill device still reserves the logit rows the projection
+leaves out - untouched, so not held, but committed on a system that counts reservations.
+
 ## A device is probed in a process of its own
 
 Every probe that touches a device does so by using it, and a device is only as sound as its
@@ -495,6 +571,12 @@ layer, which is the capacity fitter's question and not this one.
 asks the caller nothing. It costs about a second of a load already measured in seconds - 6.3 to 6.9
 on the desktop it was validated on - against a lane count worth 12% of every token afterwards.
 `--no-probe-io` opts out for a caller that must not touch the drive at all.
+
+It reads the file the experts are in (`ModelProfile::expert_file`), which on a model split into
+shards is not the file the caller names: the first shard can be metadata alone. Read there, an 85
+GB model in three files answered 101906 MiB/s from a 5 MB file the drive had in its own cache, and
+the plan priced a token of expert reads at 38 ms. Read where the weights are, the same drive
+answers 6843 MiB/s.
 
 It measures the rate curve around the model's own expert slice, at one, two and four lanes, taking
 the median of three samples at the size that decides anything, and picks the **largest** lane count
@@ -602,22 +684,23 @@ on a compressing machine, which is why the two were one piece of work rather tha
   accelerator: this machine registers only the CPU, so the probe measures the host's figure, the
   rule finds nothing to compare it against, and the plan says so. The mechanism is complete and
   unverified, which is a different thing from missing, and the plan distinguishes them.
-- **`--ubatch`, and this one has been tried.** The compute-buffer reservation trades against the
-  expert cache: a narrower ubatch reserves less and leaves more cache, at the cost of chunking
-  prefill. Six interleaved decode runs on the desktop, 512 / 256 / 128, gave 4.016 and 4.893 tok/s
-  at 512, 4.907 and 3.370 at 256, 4.638 and 3.604 at 128. **The spread within one setting is larger
-  than the difference between settings** — 256 alone ranges from 3.37 to 4.91 — so the first
-  repetition and the second disagree about the winner. Short runs that each reload the model leave
-  the page cache in a different state every time, and 48 tokens is not long enough to average that
-  out. The knob keeps its default and prints `[unprobed]`, now because the measurement was made and
-  did not resolve, which is a different thing from never having looked.
+- **The width rule on any machine but one.** The widest graph is now chosen (see "The widest
+  graph" above), and every figure behind the rule comes from one 16 GB laptop with a GPU that shares
+  its memory. Owed, each on its own hardware: a phone with an NPU, where each prefill piece re-reads
+  its experts through a slower store and the holdable figure is a quarter of the laptop's, so the
+  rule will choose a narrower graph than the one a prefill was measured at there; a machine with no
+  accelerator at all, where the prefill is the cores' and its cost per piece is not the device's; a
+  discrete GPU, whose buffers are not this pool's and are left out of the share; and a system where
+  reserved memory is committed whether or not it is touched, where the logit rows this projection
+  leaves out are charged all the same.
 
 The residency budget is `MemAvailable` on every platform that reports it, and on a machine whose
 reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set
 plus cache with 3.6 GB "available", because the kernel compressed other processes' idle memory to
 make room, and reported 5.6 GB available afterwards. The honest budget there is the compressible
 headroom, which is a measurement this planner does not yet take; until it does, an unpinned plan
-on a phone under pressure declines and says why, and a pinned `--cache-mb` wins over the floor.
+on a phone under pressure streams with the cache off and says why, and a pinned `--cache-mb` wins
+over the floor.
 
 One caveat on the budget itself: it is a one-shot reading of a quantity that moves. The same
 machine and model planned twice minutes apart produced 4.3 GB and 8.2 GB of available memory, and
@@ -701,7 +784,8 @@ are designed and not yet active.
  |                                                                |
  |  CACHE budget = usable - host dense - fitter reservations      |
  |      cap: only the expert share left on the host               |
- |      <> >= token cycle?  no -> DECLINE and say why             |
+ |      <> >= token cycle?  no -> cache OFF, stream uncached      |
+ |                            (no read rate measured -> DECLINE)   |
  |                            (caller pin -> proceed + warning)    |
  |                                                                |
  |  I/O   <-- curve: smallest lane count within 5% of peak        |
@@ -736,8 +820,8 @@ Three things to read off it. One knowledge boundary: above the probes there is n
 below them, public API plus `common/fit.h` in one file. Two stages in sequence, not merged: the
 fitter answers *how much fits where* (exact, computed), the planner answers *how to read what does
 not fit* (measured, or declared unknown). Four early exits, and every one of them is a plan: a
-dense model, everything on devices, a host residual that fits, a budget under the token cycle.
-None is an error; each says why.
+dense model, everything on devices, a host residual that fits, a budget under the token cycle on
+a drive whose read rate was never measured. None is an error; each says why.
 
 ## Levers llama.cpp already has that this planner does not use yet
 
