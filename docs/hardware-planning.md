@@ -724,9 +724,10 @@ machine and model planned twice minutes apart produced 4.3 GB and 8.2 GB of avai
 therefore two different cache budgets. The plan quotes the number it used, which is what makes the
 difference visible rather than mysterious.
 
-Compute devices are enumerated through `ggml_backend_dev_*` and recorded, but no rule reads them
-yet; a device whose memory is host memory frees nothing when a tensor moves off it, which is why
-the capacity tier is nearly inert on an integrated GPU and only the bandwidth tier is left.
+Compute devices are enumerated through `ggml_backend_dev_*` and measured, and one rule reads them:
+the choice of the prefill device. No rule moves decode onto one. A device whose memory is host
+memory frees nothing when a tensor moves off it, which is why the capacity tier is nearly inert on
+an integrated GPU and only the bandwidth tier is left.
 
 ## Architecture
 

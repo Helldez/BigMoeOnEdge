@@ -22,6 +22,7 @@ for the idea the project is built on.
 | [telemetry.md](telemetry.md) | The `BMOE_*` line protocol and CSV schema — the integration contract. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
 | [decide.md](decide.md) | `--decide`: picking one of a list of choices from a single prefill, with no decode, and keeping the state after a shared prefix between calls. |
+| [hardware-planning.md](hardware-planning.md) | `--auto`: how the engine sizes a run to this machine and this model, the fact behind each choice, and what is still unmeasured. |
 | [cache-sizing.md](cache-sizing.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
 | [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output (with the lossy knobs off). |
 | [expert-dropping.md](expert-dropping.md) | `--drop-cold-experts F`: spending quality only where it buys a flash read, and why a cache-dependent setting's output is not reproducible. |

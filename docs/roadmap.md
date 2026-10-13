@@ -207,11 +207,12 @@ What is still owed is measurement rather than design, and every knob the plan ca
   is not missing. What is missing is a guarantee that the cache can hold one layer's ubatch working
   set: the derived floor is the *decode* token cycle, and a wide prefill batch touches many more
   experts per layer than a token does.
-- **Choosing the prefill device.** `--prefill-device` exists and is measured on an NPU and on a
-  Metal GPU ([npu-prefill.md](npu-prefill.md)), but a caller has to name the device. The planner's
-  bandwidth probe times a one-token GEMV, which is the decode shape and says nothing about a graph
-  a thousand tokens wide; the rule needs that second measurement, and the memory the device's two
-  slots and compute buffers take from the expert cache as a budget line.
+- **The prefill device, anywhere but where it was chosen.** `--auto` now picks it: it measures the
+  model's matmul at prefill width on the host and on every device, and arms the fastest one that
+  reproduces the host's result, wins by a margin and whose slots fit the memory ledger
+  ([hardware-planning.md](hardware-planning.md)). That choice has been made on one laptop with a
+  GPU that shares the host's memory. A phone's NPU, which a caller still names by hand in the
+  measurements here ([npu-prefill.md](npu-prefill.md)), and a discrete GPU each owe a run.
 - **The graph width, anywhere but where it was measured.** `--auto` now chooses `--ubatch` from
   the compute buffers a width reserves, projected at the width the session opens with. The rule and
   its one policy figure were sized on a single laptop; a phone with an NPU, a machine with no

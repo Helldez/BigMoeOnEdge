@@ -90,8 +90,8 @@ already public in llama.cpp:
 3. **The file layout.** `gguf_get_tensor_offset` (public) gives each tensor's byte offset
    so we can `pread` individual expert slices.
 
-Loading with `use_mmap=true, use_extra_bufts=false` keeps the weights in their native
-gguf layout (a repacked buffer would break the rebind). That is a public model
+Loading memory-mapped (`load_mode = LLAMA_LOAD_MODE_MMAP`) with `use_extra_bufts=false` keeps the
+weights in their native gguf layout (a repacked buffer would break the rebind). That is a public model
 parameter.
 
 Because none of this touches llama.cpp internals, the serial streaming path runs against
