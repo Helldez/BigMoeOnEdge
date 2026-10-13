@@ -27,9 +27,6 @@ enum class Tri { Unknown, No, Yes };
 inline bool is_yes(Tri t) {
     return t == Tri::Yes;
 }
-inline bool is_known(Tri t) {
-    return t != Tri::Unknown;
-}
 
 // What happens to bytes we are holding when the machine wants the memory back. This is the single
 // fact behind the dense-residency policy, and it is the axis on which platforms genuinely differ:
@@ -56,7 +53,10 @@ enum class Headroom {
 // A compute device the graph could run on, as ggml reports it. Kept deliberately thin: the planner
 // only ever asks "how much memory does it have of its own, and can we address it from the host".
 struct ComputeDevice {
-    std::string name;        // backend-reported name, for the rationale only; never matched against
+    // Backend-reported name. No rule reads meaning into it; it is compared only with the device a
+    // caller named themselves (`prefill.device`), to find that device's facts, and it is the name a
+    // plan arms a device by.
+    std::string name;
     std::string description; //
     uint64_t memory_free = 0;
     uint64_t memory_total = 0;
@@ -253,20 +253,19 @@ struct StorageFacts {
     // rationale say so instead of printing three digits it cannot stand behind.
     double rate_spread = 0.0;
 
-    // How much a live mapping costs concurrent uncached reads, as a ratio, 1.0 when not measured.
-    // Derived from the two points above so a rule reads one number, not two.
-    double mapping_penalty() const {
-        return (rate_mapped_mibs > 0.0 && rate_unmapped_mibs > 0.0) ? rate_unmapped_mibs / rate_mapped_mibs : 1.0;
-    }
-
     // Best measured rate at or near `request_bytes` for `lanes`, or 0 when the curve says nothing
     // about that point. Nearest-sample lookup on purpose: interpolating a curve whose whole shape
     // is a latency floor would invent throughput between the samples.
     double rate_at(uint32_t request_bytes, uint32_t lanes) const;
 
-    // The lane count with the highest measured rate at `request_bytes`, or 0 when unprobed. This is
-    // the only source of a lane number that is not a constant carried over from one device.
+    // The largest lane count whose measured rate at `request_bytes` is within `lane_tie_fraction`
+    // of the best one, or 0 when unprobed. This is the only source of a lane number that is not a
+    // constant carried over from one device.
     uint32_t best_lanes(uint32_t request_bytes) const;
+
+    // The share of the best rate a lane count must reach to count as tied with it. 5% is the
+    // probe's own resolution: lane counts closer than that swap places between repeated runs.
+    static constexpr double lane_tie_fraction = 0.95;
 };
 
 struct HardwareProfile {

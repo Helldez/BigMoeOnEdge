@@ -102,9 +102,15 @@ struct Plan {
     // you cannot argue with, and arguing with it one lever at a time is how everything this
     // repository knows about performance was learned.
     //
-    // Only knobs the plan actually chose appear; a knob left at its default is left out rather than
-    // spelled with its default value, so the line reads as the decisions and not as a dump.
+    // Every parameter of the resolved config that is not at its default, spelled by the parameter
+    // table (`to_args`) and quoted for a shell; the model path is left to the caller. A knob left
+    // at its default is left out rather than spelled with its default value, so the line reads as
+    // the decisions and not as a dump. A plan that declined streaming renders as a comment.
     std::string to_flags() const;
+
+    // The same arguments one per element and unquoted, for a caller that passes them on rather
+    // than printing them. Empty for a plan that declined streaming.
+    std::vector<std::string> reproduce_args() const;
 };
 
 } // namespace bmoe

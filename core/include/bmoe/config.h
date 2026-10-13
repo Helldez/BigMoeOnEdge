@@ -24,6 +24,8 @@ struct SamplingConfig {
     int top_k = 40;              // 0 disables the top-k stage (llama.cpp convention)
     float top_p = 0.95f;         // nucleus cutoff, in (0, 1]
     uint32_t seed = 0xFFFFFFFFu; // == LLAMA_DEFAULT_SEED (random per run); static_assert'd in session.cpp
+
+    static constexpr int top_k_max = 1000; // the widest cutoff a form offers; validate() does not enforce it
 };
 
 // How the dense (non-expert) model weights are kept resident. See MoeStreamConfig::dense_weights and
@@ -573,6 +575,13 @@ struct RunConfig {
     SpecConfig spec;             // self-speculative decoding (MTP head or n-gram lookup); off by default
     PrefillDeviceConfig prefill; // prefill graphs on an accelerator; off by default
     DecideConfig decide;         // decide()'s prefix-state policy; off by default
+
+    // The upper ends of the ranges a settings form offers. They keep a slider finite and a typo
+    // out; validate() does not enforce them, and none is a property of any model or machine.
+    static constexpr int tokens_max = 1 << 20; // n_predict, n_ctx and n_ubatch alike
+    static constexpr int threads_max = 256;    // n_threads and n_threads_batch
+    static constexpr int n_expert_used_max = 256;
+    static constexpr int n_gpu_layers_max = 1024;
 };
 
 // Validation result: ok plus a human-readable reason when not.

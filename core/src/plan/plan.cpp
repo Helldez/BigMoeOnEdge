@@ -3,12 +3,34 @@
 
 #include "bmoe/hardware_profile.h"
 #include "bmoe/model_profile.h"
+#include "bmoe/params.h"
 #include "bmoe/plan.h"
 
 #include <algorithm>
 #include <cstdio>
 
 namespace bmoe {
+
+namespace {
+
+// One argument as a POSIX shell would need it typed. Most are plain words and stay as they are; a
+// tensor pattern is a regex and a list of them is joined with ';', which a shell would otherwise
+// read as the end of the command.
+std::string shell_word(const std::string & arg) {
+    const char * plain = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-+=:,./@%";
+    if (!arg.empty() && arg.find_first_not_of(plain) == std::string::npos) return arg;
+    std::string quoted = "'";
+    for (char c : arg) {
+        if (c == '\'')
+            quoted += "'\\''";
+        else
+            quoted += c;
+    }
+    quoted += '\'';
+    return quoted;
+}
+
+} // namespace
 
 double StorageFacts::rate_at(uint32_t request_bytes, uint32_t lanes) const {
     // Nearest sample rather than an interpolation. The curve's shape is dominated by a per-request
@@ -49,30 +71,13 @@ uint32_t StorageFacts::best_lanes(uint32_t request_bytes) const {
     // needs, and a queue that empties sooner ends the stall sooner even when the bytes per second
     // come out the same. Until that is measured directly, the tie-break follows the evidence rather
     // than the principle: inside the probe's own resolution, more lanes.
-    const double good_enough = best_rate * 0.95;
+    const double good_enough = best_rate * lane_tie_fraction;
     uint32_t pick = 0;
     for (const RateSample & s : rate_curve) {
         if (rate_at(request_bytes, s.lanes) < good_enough) continue;
         if (s.lanes > pick) pick = s.lanes;
     }
     return pick;
-}
-
-// The spelling `--dense-weights` accepts, which is not the spelling the rationale prints: one is a
-// flag value the CLI parses, the other is a word for a reader. Keeping them apart is what stops a
-// reproduction line from being subtly untypeable.
-const char * dense_mode_flag(DenseWeightsMode m) {
-    switch (m) {
-    case DenseWeightsMode::Mmap:
-        return "mmap";
-    case DenseWeightsMode::Warmed:
-        return "warm";
-    case DenseWeightsMode::Anonymous:
-        return "anon";
-    case DenseWeightsMode::Pinned:
-        return "ahwb";
-    }
-    return "anon";
 }
 
 const char * group_name(WeightGroup g) {
@@ -108,41 +113,40 @@ uint64_t HardwareProfile::device_local_memory() const {
     return total;
 }
 
-std::string Plan::to_flags() const {
-    const RunConfig def; // the defaults a flag would be redundant against
-    std::string f;
-    auto add = [&f](const std::string & s) {
-        if (!f.empty()) f += ' ';
-        f += s;
-    };
+std::vector<std::string> Plan::reproduce_args() const {
+    if (!config.moe.enabled) return {};
 
+    // Rendered from the parameter table rather than from a list kept here: a knob the planner
+    // learns to set is then on this line the day it has a row, where a hand-written list left out
+    // the ones added after it. The model is the caller's to name, so it is not repeated.
+    RunConfig chosen = config;
+    chosen.model_path = RunConfig().model_path;
+    std::vector<std::string> args = to_args(chosen);
+
+    // A cache the plan turned off is the config's default and so has no argument above - but a
+    // front-end is free to read "streaming, and no budget given" as "size it for me", and the CLI
+    // does. Without the explicit zero the line would reproduce a different run than this plan.
+    if (!config.moe.cache_auto && config.moe.cache_mb == 0) {
+        const ParamDesc * cache = find_param("cache-mb");
+        if (cache && !cache->flag.empty()) {
+            args.push_back(cache->flag);
+            args.push_back("0");
+        }
+    }
+    return args;
+}
+
+std::string Plan::to_flags() const {
     if (!config.moe.enabled) {
         // A plan that streams nothing is a real plan and has to be reproducible too: the flags that
         // matter are the ones it did NOT set, so say so rather than printing an empty line.
-        add("# streaming declined; run without --moe-stream");
-        return f;
+        return "# streaming declined; run without --moe-stream";
     }
-
-    add("--moe-stream");
-    if (config.moe.cache_mb != def.moe.cache_mb) add("--cache-mb " + std::to_string(config.moe.cache_mb));
-    if (config.moe.force_cache) add("--force-cache");
-    if (!config.moe.cache_pin) add("--no-cache-pin");
-    if (config.moe.cache_pin_fit) add("--cache-pin-fit");
-    if (config.moe.io_threads != def.moe.io_threads) add("--io-threads " + std::to_string(config.moe.io_threads));
-    if (!config.moe.o_direct) add("--no-odirect");
-    if (config.moe.release_mmap) add("--release-mmap");
-    if (config.moe.row_stream) add("--row-stream");
-    if (config.moe.dense_weights != def.moe.dense_weights)
-        add("--dense-weights " + std::string(dense_mode_flag(config.moe.dense_weights)));
-    if (config.prefill.enabled()) add("--prefill-device " + config.prefill.device);
-    if (config.prefill.enabled() && config.prefill.slots != def.prefill.slots)
-        add("--prefill-slots " + std::to_string(config.prefill.slots));
-    if (config.prefill.enabled() && config.prefill.slots_on_demand) add("--prefill-slots-on-demand");
-    if (config.prefill.best_effort) add("--prefill-best-effort");
-    if (config.n_threads != def.n_threads) add("--threads " + std::to_string(config.n_threads));
-    if (config.n_ctx != def.n_ctx) add("--ctx-size " + std::to_string(config.n_ctx));
-    if (config.n_ubatch != def.n_ubatch) add("--ubatch " + std::to_string(config.n_ubatch));
-    if (config.n_gpu_layers != def.n_gpu_layers) add("--gpu-layers " + std::to_string(config.n_gpu_layers));
+    std::string f;
+    for (const std::string & arg : reproduce_args()) {
+        if (!f.empty()) f += ' ';
+        f += shell_word(arg);
+    }
     return f;
 }
 
