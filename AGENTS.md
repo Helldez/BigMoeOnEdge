@@ -27,7 +27,9 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   `RunConfig`, described once. The CLI parses and documents its flags from it; front-ends render
   their settings from its JSON (`bmoe-cli --describe-params`).
 - `cli/main.cpp`: `bmoe-cli`; the ONLY place engine environment overrides are read.
-- `third_party/llama.cpp` — stock upstream submodule.
+- `third_party/llama.cpp` — the pinned submodule: upstream plus one commit, the expert-ready hook
+  `--overlap` needs (the fork branch hard rule 1 describes; `docs/seam.md`). Everything else builds
+  against stock upstream.
 - `tests/` — byte-identity gates. `examples/android/` — the demo APK. `examples/ios/` — the iOS
   harness: `cli/main.cpp` compiled into an app, since an app there may not start a process.
 
@@ -48,9 +50,9 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
    public gguf/model APIs. If a change seems to need a llama.cpp edit, stop and discuss —
    the fallback is a *separate* 1-commit fork branch on `Helldez/llama.cpp`, never an
    in-tree diff, and only after agreement. Upgrading llama.cpp must stay a submodule bump.
-2. **Repack stays off.** The engine loads with `use_mmap=true, use_extra_bufts=false`.
-   The streamer rebinds `tensor->data` to the native gguf layout; repacking breaks it.
-   This is load-bearing, not a tunable.
+2. **Repack stays off.** The engine loads memory-mapped (`load_mode = LLAMA_LOAD_MODE_MMAP`) with
+   `use_extra_bufts=false`. The streamer rebinds `tensor->data` to the native gguf layout;
+   repacking breaks it. This is load-bearing, not a tunable.
 3. **No env vars in the library.** `core/` never calls `getenv`. Config flows through
    `RunConfig`; the CLI resolves any env overrides before building it.
 4. **No hardcoding.** A new tunable is a `RunConfig` field plus one row in `params.cpp` (its flag,

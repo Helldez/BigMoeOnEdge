@@ -81,7 +81,7 @@ Semantic Versioning.
   wide prefill graphs to the GPU through the same two-layer arena the NPU uses, with no change to
   that path. On a 16 GB Apple-silicon laptop, Qwen3.6-35B-A3B Q4_K_M streamed, a 1473-token
   prompt prefills in 3.4 s against 25 s on the CPU, with the same generated text; see
-  `docs/npu-prefill.md`. The planner does not choose it yet.
+  `docs/npu-prefill.md`. `--auto` chooses it (see the prefill-device entry above).
 - **The expert cache is pinned in RAM where the platform allows it (`--no-cache-pin` turns it
   off).** macOS answers memory pressure by compressing anonymous memory, quantized weights barely
   compress, and so the compressor ended up holding 8 GB of RAM to store the cache badly while
@@ -117,6 +117,12 @@ Semantic Versioning.
   Hexagon, Metal); the rest are listed as unknown, with what each use of a device asks of a backend.
 
 ### Changed
+- **The README says what `--auto` is and how it decides.** A paragraph in Features, a quickstart
+  line, and two schemas under "How it works": what happens on each token, and how a plan is
+  derived from the model and the machine. The roadmap no longer lists the choice of the prefill
+  device as owed, `docs/hardware-planning.md` no longer says no rule reads the compute devices,
+  and `AGENTS.md` describes the llama.cpp submodule as what it is: upstream plus the one-commit
+  hook `--overlap` needs.
 - **`--auto` estimates what can be held, not only what is reported free, on every machine that
   publishes the two facts.** The free headroom estimate (the compressor's own ratio applied to idle
   anonymous memory) was read on Linux and Android alone, so a macOS plan was sized from the reported
