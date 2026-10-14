@@ -215,7 +215,7 @@ private fun MainScreen(
     ) { uri ->
         if (uri != null) {
             importing = true
-            importMessage = "正在匯入本機模型…"
+            importMessage = "Importing local model…"
             importProgress = -1f
             scope.launch {
                 var lastBucket = -1L
@@ -225,7 +225,7 @@ private fun MainScreen(
                         if (bucket != lastBucket || copied == total) {
                             lastBucket = bucket
                             importProgress = (copied.toFloat() / total.toFloat()).coerceIn(0f, 1f)
-                            importMessage = "匯入中：${copied / (1024L * 1024L)} / ${total / (1024L * 1024L)} MiB"
+                            importMessage = "Importing: ${copied / (1024L * 1024L)} / ${total / (1024L * 1024L)} MiB"
                         }
                     }
                 }
@@ -239,7 +239,7 @@ private fun MainScreen(
                     onFailure = { error ->
                         importing = false
                         importProgress = -1f
-                        importMessage = "匯入失敗：${error.message ?: "請確認檔案是有效的 .gguf"}"
+                        importMessage = "Import failed: ${error.message ?: "Please check that this is a valid .gguf file"}"
                     },
                 )
             }
@@ -291,14 +291,14 @@ private fun MainScreen(
             ) {
                 Text(
                     when {
-                        importing -> "匯入中…"
-                        scanning -> "掃描模型…"
+                        importing -> "Importing…"
+                        scanning -> "Scanning models…"
                         activeModelName != null -> activeModelName
-                        else -> "尚未載入模型"
+                        else -> "No model loaded"
                     },
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Medium,
-                    color = if (importMessage?.startsWith("匯入失敗") == true)
+                    color = if (importMessage?.startsWith("Import failed") == true)
                         MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -309,7 +309,7 @@ private fun MainScreen(
                     onClick = { modelPicker.launch(arrayOf("*/*")) },
                     enabled = !importing && !ui.busy,
                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
-                ) { Text(if (importing) "匯入" else "載入", fontSize = 11.sp) }
+                ) { Text(if (importing) "Import" else "Load", fontSize = 11.sp) }
                 TextButton(
                     onClick = {
                         if (!ui.busy) {
@@ -321,15 +321,15 @@ private fun MainScreen(
                     },
                     enabled = ui.transcript.isNotEmpty() && !ui.busy,
                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
-                ) { Text("新對話", fontSize = 11.sp) }
+                ) { Text("New chat", fontSize = 11.sp) }
                 TextButton(
                     onClick = onOpenMetrics,
                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
-                ) { Text("性能", fontSize = 11.sp) }
+                ) { Text("Metrics", fontSize = 11.sp) }
                 TextButton(
                     onClick = onOpenSettings,
                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
-                ) { Text("設定", fontSize = 11.sp) }
+                ) { Text("Settings", fontSize = 11.sp) }
             }
             // Progress/error appears only while needed; successful imports leave no banner.
             if (importing) {
@@ -337,7 +337,7 @@ private fun MainScreen(
                     progress = { importProgress.coerceAtLeast(0f) },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                 )
-            } else if (importMessage?.startsWith("匯入失敗") == true) {
+            } else if (importMessage?.startsWith("Import failed") == true) {
                 Text(
                     importMessage.orEmpty(),
                     fontSize = 10.sp,
@@ -363,7 +363,7 @@ private fun MainScreen(
                     val rate = if (telemetry.avgTokensPerSecond > 0.0 && !ui.streaming)
                         telemetry.avgTokensPerSecond else telemetry.tokensPerSecond
                     Column(Modifier.weight(1f)) {
-                        Text("速度", fontSize = 9.sp,
+                        Text("Speed", fontSize = 9.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                         Text(
                             if (rate > 0.0) String.format(Locale.US, "%.2f tok/s", rate) else "— tok/s",
@@ -379,14 +379,14 @@ private fun MainScreen(
                         )
                     }
                     Column(Modifier.weight(0.75f)) {
-                        Text("狀態", fontSize = 9.sp,
+                        Text("Status", fontSize = 9.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                         Text(
                             when {
-                                ui.loading -> "載入中"
-                                ui.generating -> "生成中"
-                                ui.ready -> "已就緒"
-                                else -> "待機"
+                                ui.loading -> "Loading"
+                                ui.generating -> "Generating"
+                                ui.ready -> "Ready"
+                                else -> "Idle"
                             },
                             fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
                         )
@@ -394,7 +394,7 @@ private fun MainScreen(
                     TextButton(
                         onClick = { showTelemetry = true },
                         contentPadding = PaddingValues(horizontal = 3.dp, vertical = 0.dp),
-                    ) { Text("詳情", fontSize = 11.sp) }
+                    ) { Text("Details", fontSize = 11.sp) }
                 }
             }
 
@@ -422,12 +422,12 @@ private fun MainScreen(
                             Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text("開始一段本機對話", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                            Text("Start a local chat", fontSize = 24.sp, fontWeight = FontWeight.Bold)
                             Text(
                                 if (models.isEmpty())
-                                    "先選擇本機 .gguf 模型，再在下方輸入問題。"
+                                    "Load a local .gguf model, then type your prompt below."
                                 else
-                                    "模型已就緒。輸入問題，回答會顯示在這裡。",
+                                    "Your model is ready. Ask a question to start chatting.",
                                 fontSize = 14.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -467,7 +467,7 @@ private fun MainScreen(
                             leadingIcon = { Text("✦", fontSize = 11.sp) },
                             label = {
                                 Text(
-                                    if (settings.thinking) "Thinking 開" else "Thinking 關",
+                                    if (settings.thinking) "Thinking: On" else "Thinking: Off",
                                     fontSize = 11.sp,
                                     maxLines = 1,
                                 )
@@ -476,7 +476,7 @@ private fun MainScreen(
                         OutlinedTextField(
                             value = prompt,
                             onValueChange = { prompt = it },
-                            placeholder = { Text("輸入訊息…", maxLines = 1) },
+                            placeholder = { Text("Type a message…", maxLines = 1) },
                             modifier = Modifier.weight(1f),
                             minLines = 1,
                             maxLines = 3,
@@ -491,7 +491,7 @@ private fun MainScreen(
                                     )
                                 },
                                 contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp),
-                            ) { Text("停止", fontSize = 12.sp) }
+                            ) { Text("Stop", fontSize = 12.sp) }
                         } else {
                             Button(
                                 onClick = {
@@ -500,7 +500,7 @@ private fun MainScreen(
                                         launchPrompt(
                                             context,
                                             models[modelIdx.coerceIn(0, models.lastIndex)],
-                                            prompt.ifBlank { "請用繁體中文回答。" },
+                                            prompt.ifBlank { "Please answer in English." },
                                             settings,
                                             ui.sessionSig,
                                             clearKv = ui.transcript.isEmpty() || ui.transcript.last().role == "choice",
@@ -510,7 +510,7 @@ private fun MainScreen(
                                 },
                                 enabled = !ui.busy && models.isNotEmpty(),
                                 contentPadding = PaddingValues(horizontal = 9.dp, vertical = 8.dp),
-                            ) { Text("傳送", fontSize = 12.sp) }
+                            ) { Text("Send", fontSize = 12.sp) }
                         }
                     }
                 }
@@ -523,7 +523,7 @@ private fun MainScreen(
             FilledTonalButton(
                 onClick = { jumpScope.launch { listState.animateScrollToItem(total - 1, Int.MAX_VALUE) } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 72.dp),
-            ) { Text("回到最新訊息") }
+            ) { Text("Jump to latest") }
         }
     }
 
@@ -536,7 +536,7 @@ private fun MainScreen(
         }
         AlertDialog(
             onDismissRequest = { showTelemetry = false },
-            title = { Text("即時性能詳情") },
+            title = { Text("Live performance details") },
             text = {
                 Column(
                     Modifier.fillMaxWidth().heightIn(max = 440.dp)
@@ -549,7 +549,7 @@ private fun MainScreen(
                             onClick = { showConfig = !showConfig },
                             contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
                         ) {
-                            Text(if (showConfig) "收起完整推理設定" else "查看完整推理設定 (${flags.size})")
+                            Text(if (showConfig) "Hide full inference configuration" else "View full inference configuration (${flags.size})")
                         }
                         if (showConfig) {
                             flags.forEach { (flag, value) ->
@@ -578,11 +578,11 @@ private fun MainScreen(
                             )
                             showTelemetry = false
                         }
-                    ) { Text("卸載模型") }
+                    ) { Text("Unload model") }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showTelemetry = false }) { Text("完成") }
+                TextButton(onClick = { showTelemetry = false }) { Text("Done") }
             },
         )
     }
@@ -605,7 +605,7 @@ private fun TurnView(turn: ChatTurn, reasoningExpanded: Boolean = false) {
         ) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    if (isUser) "你" else "BigMoe",
+                    if (isUser) "You" else "BigMoe",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     color = if (isUser) MaterialTheme.colorScheme.primary
