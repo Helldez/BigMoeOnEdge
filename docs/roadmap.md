@@ -213,6 +213,17 @@ What is still owed is measurement rather than design, and every knob the plan ca
   ([hardware-planning.md](hardware-planning.md)). That choice has been made on one laptop with a
   GPU that shares the host's memory. A phone's NPU, which a caller still names by hand in the
   measurements here ([npu-prefill.md](npu-prefill.md)), and a discrete GPU each owe a run.
+- **The budget, from what other processes hold idle.** The reported available figure is a
+  one-shot reading of a quantity that moves - 3.0 to 12.4 GB within an hour on one laptop - and
+  wherever the kernel reclaims other processes' idle memory to make room it is a floor. The
+  estimate that corrects it is one formula over three facts, the idle set times what a byte
+  shrinks to when taken, capped by the swap left free
+  ([hardware-planning.md](hardware-planning.md#the-headroom-probe)); measured on a Windows laptop,
+  a phone and a Mac, it is right where bytes go out whole and declines where they are compressed
+  at a ratio the machine will not state, which is the phone. What the phone showed is the limit of
+  any static reading: a compressing reclaim takes the coldest pages of whoever has them, and a
+  large expert cache always has a cold tail, so how much of it stays is a property of the run.
+  Owed: a Linux box with zram and one with disk swap, each against `--probe-mem`.
 - **The graph width, anywhere but where it was measured.** `--auto` now chooses `--ubatch` from
   the compute buffers a width reserves, projected at the width the session opens with. The rule and
   its one policy figure were sized on a single laptop; a phone with an NPU, a machine with no

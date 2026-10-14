@@ -244,4 +244,12 @@ struct DeviceMemory {
 };
 bool device_memory(DeviceMemory * out);
 
+// The same idle-anonymous figure, OBSERVED where the kernel publishes none: the private memory of
+// every other process that used no CPU across `window_ms`, on the reading that a process that ran
+// nothing touched nothing. Deduced per process rather than read per page, so it is coarser than
+// the published figure - a busy process with a cold heap counts zero, a process this one may not
+// open counts zero - and every miss is an under-count. Costs the window in wall clock. Returns
+// false where the figure is published instead (device_memory carries it) or cannot be observed.
+bool observe_idle_anon(uint32_t window_ms, uint64_t * out);
+
 } // namespace bmoe::pio

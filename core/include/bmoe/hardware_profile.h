@@ -47,6 +47,7 @@ enum class Overflow {
 enum class Headroom {
     Unknown,      // not probed: rules fall back to the reported residency budget
     Compressible, // derived from the machine's own compression ratio and its reclaimable set
+    Idle,         // plus what other processes hold idle, whole: a reclaim here moves bytes out unshrunk
     Measured,     // held until the kernel took pages back, and the boundary observed
 };
 
@@ -288,6 +289,12 @@ struct HardwareProfile {
     // would read it then falls back to the reported budget and says which one it used.
     uint64_t holdable_bytes = 0;
     Headroom holdable_from = Headroom::Unknown;
+
+    // Anonymous memory nobody has touched lately, as the kernel accounts it: other processes'
+    // idle pages, which it reclaims first when this one asks for room. A fact, recorded wherever
+    // the machine publishes it and whether or not an estimate was built from it, so a plan can
+    // print what the idle estimate would have added. 0 where it is not published.
+    uint64_t idle_anon_bytes = 0;
 
     // Largest single reclaim-exempt allocation available, 0 where the platform has none. A store
     // the kernel may not take back is the only way to keep the dense set out of a compressed swap.

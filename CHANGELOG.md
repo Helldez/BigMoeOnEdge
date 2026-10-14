@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The headroom estimate is one formula, and it now reaches machines whose reclaim moves bytes
+  out whole.** What a reclaim of other processes' idle memory frees is the idle set times what a
+  byte shrinks to when it is taken: whole where it goes out to a device, and no more than the swap
+  left free; by the compressor's ratio where it is compressed in RAM; nothing where that ratio is
+  not readable or where pressure kills. The idle set is the same question on every machine,
+  published by the kernel where it is and observed where it is not (the private memory of every
+  process that used no CPU across a one-second window, an under-count by construction). Measured
+  on a 15 GB Windows laptop with Qwen3.6-35B-A3B Q4_K_M: `--auto` sized a 1.5 GB cache from the
+  reported figure and lost to plain mmap (3.22 against 4.37 tok/s); counting the idle set, which
+  goes out whole there, 6.1 GB and 4.92. On a 12 GB phone in ordinary use, where the reclaim
+  compresses and its ratio is not readable, counting it whole promised twice what was freed and
+  cost 15 s of stalls in 64 tokens, so `auto` promises nothing there and the plan still quotes
+  the figure. `--headroom reported|auto|idle` chooses the arm: `auto` is the formula, `reported`
+  the control, `idle` the whole-set experiment, never chosen by a plan. See
+  `docs/hardware-planning.md`.
+
 ## [0.29.0] - 2026-10-13
 
 ### Added

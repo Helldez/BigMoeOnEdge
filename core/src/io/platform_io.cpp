@@ -7,8 +7,10 @@
 // ::abs is not visible (GCC hard-errors; MSVC happened to tolerate it).
 #if defined(_WIN32)
 #include <windows.h>
+#include <psapi.h>
 #include <malloc.h>
 #include <cstring>
+#include <vector>
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -190,6 +192,79 @@ bool device_memory(DeviceMemory * out) {
     out->available_bytes = (uint64_t) ms.ullAvailPhys;
     out->free_bytes = (uint64_t) ms.ullAvailPhys; // no separate "free vs reclaimable" here
     out->swap_free_bytes = (uint64_t) ms.ullAvailPageFile;
+    // No idle-anonymous counter here: other processes' memory stays in their working sets until
+    // pressure trims it, and what has already been trimmed (the standby list) is inside
+    // ullAvailPhys. The figure is observed instead, by observe_idle_anon.
+    return true;
+}
+
+namespace {
+// One process as seen across the window: how much CPU it has used in all, and an upper bound on
+// the private memory it holds resident. The memory counters here are commit (PrivateUsage, which
+// counts pages already out on the pagefile) and the working set (which counts shared pages), and
+// the private resident set is under both, so the smaller is the bound that is never an
+// over-count.
+struct ProcessSample {
+    DWORD pid = 0;
+    uint64_t cpu_100ns = 0;
+    uint64_t private_resident = 0;
+};
+
+std::vector<ProcessSample> sample_processes() {
+    std::vector<ProcessSample> out;
+    std::vector<DWORD> pids(1024);
+    DWORD got = 0;
+    for (;;) {
+        const DWORD cap = (DWORD) (pids.size() * sizeof(DWORD));
+        if (!EnumProcesses(pids.data(), cap, &got)) return out;
+        if (got < cap) break;
+        pids.resize(pids.size() * 2);
+    }
+    const DWORD self = GetCurrentProcessId();
+    for (size_t i = 0; i < got / sizeof(DWORD); ++i) {
+        const DWORD pid = pids[i];
+        if (pid == self || pid == 0) continue;
+        // The least right that answers both questions. A process this one may not open - the
+        // system's own, another user's - is left out, which under-counts and is the safe side.
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!h) continue;
+        FILETIME c, e, k, u;
+        PROCESS_MEMORY_COUNTERS_EX pm;
+        pm.cb = sizeof(pm);
+        if (GetProcessTimes(h, &c, &e, &k, &u) &&
+            GetProcessMemoryInfo(h, (PROCESS_MEMORY_COUNTERS *) &pm, sizeof(pm))) {
+            ProcessSample s;
+            s.pid = pid;
+            const uint64_t kt = ((uint64_t) k.dwHighDateTime << 32) | k.dwLowDateTime;
+            const uint64_t ut = ((uint64_t) u.dwHighDateTime << 32) | u.dwLowDateTime;
+            s.cpu_100ns = kt + ut;
+            const uint64_t priv = (uint64_t) pm.PrivateUsage, ws = (uint64_t) pm.WorkingSetSize;
+            s.private_resident = priv < ws ? priv : ws;
+            out.push_back(s);
+        }
+        CloseHandle(h);
+    }
+    return out;
+}
+} // namespace
+
+bool observe_idle_anon(uint32_t window_ms, uint64_t * out) {
+    // Two samples across the window. A process that consumed no CPU between them ran nothing, so
+    // it touched none of its memory, and what it holds resident is what the kernel will trim
+    // first when this process asks for room. A process that appears in only one sample is a
+    // process that started or ended inside the window, and is left out.
+    const std::vector<ProcessSample> a = sample_processes();
+    if (a.empty()) return false;
+    Sleep(window_ms);
+    const std::vector<ProcessSample> b = sample_processes();
+    uint64_t idle = 0;
+    for (const ProcessSample & sb : b)
+        for (const ProcessSample & sa : a)
+            if (sa.pid == sb.pid) {
+                if (sb.cpu_100ns == sa.cpu_100ns) idle += sb.private_resident;
+                break;
+            }
+    *out = idle;
     return true;
 }
 
@@ -516,6 +591,11 @@ bool device_memory(DeviceMemory * out) {
     return true;
 }
 #endif
+
+// The kernel publishes the idle set here (device_memory reads it), so there is nothing to observe.
+bool observe_idle_anon(uint32_t, uint64_t *) {
+    return false;
+}
 
 #if defined(__APPLE__) && TARGET_OS_IPHONE
 // The address-space walk below is not offered to an app here, so the question goes unanswered and

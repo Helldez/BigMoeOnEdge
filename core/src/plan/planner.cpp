@@ -102,6 +102,9 @@ const char * headroom_name(Headroom h) {
     switch (h) {
     case Headroom::Compressible:
         return "estimated from what this machine's compressor is achieving";
+    case Headroom::Idle:
+        return "estimated as the reported figure plus what other processes hold idle, which a reclaim here "
+               "moves out whole";
     case Headroom::Measured:
         return "measured by holding memory until the machine took some back";
     case Headroom::Unknown:
@@ -437,11 +440,16 @@ Plan plan_run(const RunConfig & base,
                    "the host");
     }
 
+    // The idle figure is quoted whenever the machine published it, whichever estimate was built:
+    // a plan sized from the reported figure then says what counting the idle set would have added,
+    // and one sized from it says what it counted.
+    const std::string idle_note =
+        hw.idle_anon_bytes ? "; other processes hold " + u64s(mib(hw.idle_anon_bytes)) + " MiB idle" : "";
     note("regime", regime_name(p.regime), Source::Derived,
          "on the host " + u64s(mib(host_all)) + " MiB (dense " + u64s(mib(host_dense)) + ") against " +
              u64s(mib(usable)) + " MiB usable, which is the " + u64s(mib(holdable)) + " MiB this process may hold (" +
              headroom_name(hw.holdable_from) + ") less a " + u64s(mib(margin)) + " MiB margin (" +
-             overflow_name(hw.anon_overflow) + ")");
+             overflow_name(hw.anon_overflow) + idle_note + ")");
 
     if (air_short)
         note("residency", "not verified", Source::Derived,

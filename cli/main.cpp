@@ -579,6 +579,11 @@ static void print_usage(const char * argv0) {
                 "      --probe-mem         measure how much memory this machine will let us KEEP, by holding\n"
                 "                          it until the kernel takes some back. The one probe that puts a live\n"
                 "                          machine under real pressure, so it is off unless asked\n"
+                "      --headroom MODE     which free estimate of that headroom the plan is sized from:\n"
+                "                          auto (what a reclaim of other processes' idle memory would free,\n"
+                "                          priced by what a byte shrinks to here), reported (the available\n"
+                "                          figure alone), idle (the idle set counted whole whatever the\n"
+                "                          reclaim does: the experiment's arm). An A/B switch\n"
                 "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
                 "      --csv PATH          also write per-token metrics as CSV\n"
                 "      --route-trace PATH  diagnostics: write the per-step per-layer MoE routing trace\n"
@@ -704,6 +709,7 @@ int main(int argc, char ** argv) {
     bool plan_only = false;
     bool probe_io = true;
     bool probe_mem = false; // off by default: it is the one probe that puts the machine under real pressure
+    HeadroomEstimate headroom = HeadroomEstimate::Auto;
     // Devices are probed in a child process each, so a driver that ends the process ends the child.
     // `probe_device` is that child's mode: probe the one device named, print its facts, exit.
     bool isolated_probes = true;
@@ -760,6 +766,18 @@ int main(int argc, char ** argv) {
         else if (a == "--probe-mem") {
             auto_plan = true;
             probe_mem = true;
+        } else if (a == "--headroom") {
+            const std::string mode = next("--headroom");
+            if (mode == "auto")
+                headroom = HeadroomEstimate::Auto;
+            else if (mode == "reported")
+                headroom = HeadroomEstimate::Reported;
+            else if (mode == "idle")
+                headroom = HeadroomEstimate::Idle;
+            else {
+                std::fprintf(stderr, "--headroom: expected auto, reported or idle, got '%s'\n", mode.c_str());
+                return 2;
+            }
         } else if (a == "--session")
             session_mode = true;
         else if (a == "--csv")
@@ -930,7 +948,7 @@ int main(int argc, char ** argv) {
         // Where the expert reads land, which on a split model is not the file the caller named.
         const std::string & storage_path = mp.expert_file.empty() ? cfg.model_path : mp.expert_file;
         if (probe_io) probe_storage(hw, storage_path.c_str(), mp.expert_slice_bytes);
-        probe_headroom(hw, probe_mem, mp.dense_bytes + cache_floor);
+        probe_headroom(hw, headroom, probe_mem, mp.dense_bytes + cache_floor);
         const Placement placement =
             probe_placement(cfg.model_path.c_str(), mp, hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch);
         const Plan plan = plan_run(cfg, hw, mp, placement, req);

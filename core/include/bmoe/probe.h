@@ -129,21 +129,48 @@ extern const char * const device_facts_marker;
 DeviceProbeRunner self_process_runner(std::function<std::vector<std::string>(const std::string & device)> argv_for,
                                       double timeout_seconds);
 
+// Which free estimate of the headroom to build before any measurement. The figures are facts the
+// machine publishes; what differs is how far each one is believed.
+enum class HeadroomEstimate {
+    Auto,     // the formula below, over the facts this machine gives; reported where one is missing
+    Reported, // the reported budget alone: the control arm of an A/B
+    Idle,     // the idle set counted whole whatever the reclaim does to it: the arm that measured
+              // as promising twice what a compressing reclaim frees. Kept as the labelled
+              // experiment it is, never chosen by a plan
+};
+
+// What a reclaim of other processes' idle memory would free for this one. One formula, three facts,
+// no platform in it:
+//
+//     recoverable = idle × (1 − 1/ratio), and no more than the swap left free where it goes out
+//
+// `ratio` is what a byte shrinks to when the kernel takes it back. Where the reclaim moves bytes out
+// to a device they do not shrink and the factor is 1; where it compresses them in RAM the factor is
+// the ratio the compressor is achieving right now (`compressed_stored / compressed_held`), and
+// where that ratio is not readable the fact is missing and the answer is 0: a rule that cannot
+// price a byte promises none. Where pressure ends the process, or what it does was never probed,
+// nothing is recoverable. `whole` is the experiment's arm: the factor forced to 1 everywhere.
+uint64_t idle_recoverable_bytes(uint64_t idle_bytes,
+                                Overflow overflow,
+                                uint64_t compressed_stored_bytes,
+                                uint64_t compressed_held_bytes,
+                                uint64_t swap_free_bytes,
+                                bool whole);
+
 // How much memory this process can hold and expect to keep, which is not what the machine reports
 // as available: where a reclaim compresses, that figure is a floor for what could be taken and an
 // over-promise for what could be kept. Fills hw.holdable_bytes, or leaves it 0 where this machine
 // will not say - every rule then falls back to the reported budget and states which one it used.
 //
-// `allow_active` opts into the measurement rather than the estimate: holding memory in steps until
-// the kernel takes some back. It is intrusive by nature - seconds of wall clock and real pressure
-// on the machine - so it is off unless a caller asks for it, while the estimate costs nothing.
-// `target_bytes` is what the caller actually wants to hold - on this engine, the dense set plus one
-// token's worth of experts, the smallest configuration worth running. The active probe stops as soon
-// as it has held that much, and never probes far past it. That bound is not politeness: a probe that
-// climbs towards the machine's total size PROVOKES the reclaim it is trying to observe, and then
-// reports the pressure it caused. Measured on a phone that comfortably holds 4.4 GB in practice, the
-// unbounded version answered 924 MiB.
-void probe_headroom(HardwareProfile & hw, bool allow_active, uint64_t target_bytes);
+// `estimate` chooses the free estimate; `allow_active` opts into the measurement on top of it:
+// holding memory in steps until the kernel takes some back. It is intrusive by nature - seconds of wall clock and real
+// pressure on the machine - so it is off unless a caller asks for it, while the estimate costs nothing. `target_bytes`
+// is what the caller actually wants to hold - on this engine, the dense set plus one token's worth of experts, the
+// smallest configuration worth running. The active probe stops as soon as it has held that much, and never probes far
+// past it. That bound is not politeness: a probe that climbs towards the machine's total size PROVOKES the reclaim it
+// is trying to observe, and then reports the pressure it caused. Measured on a phone that comfortably holds 4.4 GB in
+// practice, the unbounded version answered 924 MiB.
+void probe_headroom(HardwareProfile & hw, HeadroomEstimate estimate, bool allow_active, uint64_t target_bytes);
 
 // Measure this storage with the reads this engine issues: the rate curve around `slice_bytes` for
 // one, two and four lanes, and whether a live mapping of the model serialises those reads. Costs

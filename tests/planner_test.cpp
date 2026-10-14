@@ -287,6 +287,48 @@ int main() {
               "estimated headroom: the rationale says the budget was estimated", d ? d->reason : "no decision");
     }
 
+    // One formula prices what a reclaim of other processes' idle memory frees, from what a byte
+    // shrinks to when it is taken: whole where it goes out to a device, and no more than the device
+    // has room for; by the compressor's ratio where it is compressed in RAM; nothing where that
+    // ratio is not readable, where pressure kills, or where nothing was probed. The experiment's
+    // arm forces the factor to 1 everywhere, which is the reading that measured wrong on a phone.
+    {
+        const uint64_t idle = 4 * GiB;
+        check(idle_recoverable_bytes(idle, Overflow::Swap, 0, 0, 10 * GiB, false) == idle,
+              "recoverable: moved out whole where the reclaim swaps");
+        check(idle_recoverable_bytes(idle, Overflow::Swap, 0, 0, 1 * GiB, false) == 1 * GiB,
+              "recoverable: no more than the swap left free");
+        check(idle_recoverable_bytes(idle, Overflow::Compress, 4 * GiB, 2 * GiB, 0, false) == 2 * GiB,
+              "recoverable: half, where the compressor achieves 2:1");
+        check(idle_recoverable_bytes(idle, Overflow::Compress, 0, 0, 0, false) == 0,
+              "recoverable: nothing where the compressor's ratio is not readable");
+        check(idle_recoverable_bytes(idle, Overflow::Compress, 0, 0, 0, true) == idle,
+              "recoverable: the experiment's arm counts the idle set whole regardless");
+        check(idle_recoverable_bytes(idle, Overflow::Kill, 4 * GiB, 2 * GiB, 10 * GiB, true) == 0,
+              "recoverable: nothing where pressure kills, even on the experiment's arm");
+        check(idle_recoverable_bytes(idle, Overflow::Unknown, 4 * GiB, 2 * GiB, 10 * GiB, false) == 0,
+              "recoverable: nothing where the reclaim was never probed");
+    }
+
+    // A plan sized from the idle set says so in its rationale and quotes the figure, so a run sized
+    // from it can be told apart from one sized from the compressor's ratio.
+    {
+        HardwareProfile idle = phone();
+        idle.idle_anon_bytes = 2 * GiB;
+        idle.holdable_bytes = idle.residency_budget + idle.idle_anon_bytes;
+        idle.holdable_from = Headroom::Idle;
+        const Plan reported = plan_run(base_cfg(), phone(), model, PlanRequest{});
+        const Plan p = plan_run(base_cfg(), idle, model, PlanRequest{});
+        check(p.config.moe.cache_mb > reported.config.moe.cache_mb,
+              "idle headroom: the cache grows by what other processes hold idle",
+              std::to_string(reported.config.moe.cache_mb) + " -> " + std::to_string(p.config.moe.cache_mb));
+        const Decision * d = find(p, "regime");
+        check(d && d->reason.find("other processes hold idle") != std::string::npos &&
+                  d->reason.find("2048 MiB idle") != std::string::npos,
+              "idle headroom: the rationale names the source and quotes the idle figure",
+              d ? d->reason : "no decision");
+    }
+
     // An unmeasured machine falls back to the reported figure and says which one it used, rather
     // than pretending the question was answered.
     {

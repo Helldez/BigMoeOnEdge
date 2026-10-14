@@ -50,7 +50,7 @@ PlanOutcome make_plan(const RunConfig & cfg, const std::vector<std::string> & pi
     probe_storage(hw, mp.expert_file.empty() ? path : mp.expert_file.c_str(), mp.expert_slice_bytes);
     const uint64_t guard = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
     const uint64_t cache_floor = mp.token_cycle_bytes > guard ? mp.token_cycle_bytes : guard;
-    probe_headroom(hw, false, mp.dense_bytes + cache_floor);
+    probe_headroom(hw, HeadroomEstimate::Auto, false, mp.dense_bytes + cache_floor);
     const Placement placement = probe_placement(path, mp, hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch);
     const Plan plan = plan_run(cfg, hw, mp, placement, req);
 

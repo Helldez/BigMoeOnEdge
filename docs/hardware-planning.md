@@ -295,6 +295,61 @@ paid for it: swap in use went from 1.2 to 2.8 GB across the runs. On the same ma
 else running the two plans are the same within noise (19.3 and 19.5 tok/s over 300 tokens, twice
 each). A synthetic neighbour on one machine; real applications are owed.
 
+The estimate is one formula, and it is worth writing out because the machines it was measured on
+disagreed about it:
+
+```
+recoverable = idle × (1 − 1/ratio), and no more than the swap left free where bytes go out
+holdable    = reported + recoverable
+```
+
+`idle` is the anonymous memory nobody has touched lately, the same question on every machine and
+answered by whatever each one offers. One kernel publishes it as a line of its memory accounting;
+another publishes an inactive list that is not split by what backs it, so it is taken from below;
+a third publishes nothing of the kind, because other processes' memory stays in their working sets
+until pressure trims it, so it is observed instead: the private memory of every process that used
+no CPU across a one-second window, on the reading that a process that ran nothing touched nothing.
+The observed figure is coarser, and every way it is wrong is an under-count: a busy process with a
+cold heap counts zero, and so does one this process may not open.
+
+`ratio` is what a byte shrinks to when the kernel takes it back, and it is where the machines
+differ. Where the reclaim moves bytes out to a device they do not shrink: the factor is 1, and no
+more can go than the device has room for. Where it compresses them in RAM the factor is the ratio
+the compressor is achieving right now, read from the machine. Where that ratio is not readable
+the fact is missing and the estimate is not built: a rule that cannot price a byte promises none.
+Where pressure ends the process, nothing is recoverable. No rule names a platform; the fact that
+decides is where reclaimed memory goes, which the dense policy already reads.
+
+Three arms of one A/B: `--headroom auto` is the formula, `reported` the available figure alone,
+and `idle` the idle set counted whole whatever the reclaim does to it, the experiment's arm, never
+chosen by a plan. Every plan quotes the idle figure whichever arm it used, so a run sized without
+it still says what it would have added. Measured, Qwen3.6-35B-A3B, 64 tokens, the same prompt and
+text in every cell:
+
+| machine | reclaim | arm | cache | decode | tokens over 1 s |
+|---|---|---|---:|---:|---:|
+| 15 GB Windows laptop, Q4_K_M | to a pagefile | reported (what `auto` read before this) | 1557 MiB | 3.22 tok/s | 0 |
+| | | plain mmap | | 4.37 | |
+| | | 5000 MiB by hand | 5000 MiB | 5.43 | 0 |
+| | | idle set whole | 6107 MiB | 4.92 | 0 |
+| 12 GB phone in ordinary use, Q4_0, two runs | compressed, ratio not readable | reported (= `auto`) | 828 / 1417 MiB | 2.89 / 2.83 | 0 / 0 |
+| | | idle set whole | 2728 / 3547 MiB | 1.99 / 2.26 | 5 / 9, 15 s lost |
+| 16 GB Apple-silicon laptop, Q4_K_M, 2.2 GB reported | compressed, ratio readable | reported | off | 7.27 | 0 |
+| | | `auto` | 612 MiB | 7.52 | 0 |
+| | | idle set whole | 658 MiB | 7.67 | 0 |
+
+Where bytes go out whole, counting the idle set whole was right: the laptop's plan went from
+losing to plain mmap to beating it, and `auto` now reads it that way there. Where they are
+compressed and the ratio is not readable, counting them whole promised twice what the reclaim
+freed: the phone's larger cache was faster at steady state (244 against 353 ms a token) and then
+the system compressed 2 GB of the engine's own memory and a handful of tokens took seconds each,
+which is why `auto` promises nothing there. Where the ratio is readable the two arms were within
+noise, because the laptop's idle share is taken from below and was small that day; the same
+machine with a 9.5 GB idle neighbour is the 8.1 against 12.0 tok/s above. One cell per
+configuration, and the laptop's 6.1 GB arm running slower than 5 GB by hand is a cell to repeat
+with more tokens before it is read. Owed: a Linux box with zram and one with disk swap, each
+against `--probe-mem`.
+
 ## The memory ledger
 
 Everything the run holds for its whole length is a row in one account, and the account has two

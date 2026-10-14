@@ -69,6 +69,12 @@ if(BMOE_HAVE_LLAMA)
     find_package(Threads REQUIRED)
     target_link_libraries(bmoe_core PUBLIC Threads::Threads)
 
+    if(WIN32)
+        # EnumProcesses and GetProcessMemoryInfo, behind the observed idle-memory figure
+        # (pio::observe_idle_anon). Named explicitly so the link does not depend on PSAPI_VERSION.
+        target_link_libraries(bmoe_core PUBLIC psapi)
+    endif()
+
     if(ANDROID)
         # libandroid carries AHardwareBuffer_*, the reclaim-exempt allocation behind
         # `--dense-weights ahwb` (pio::pinned_alloc). No other platform has an equivalent.
