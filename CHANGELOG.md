@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- `docs/roadmap.md` opens with the product plan, in the order the work has to happen: one engine,
+  one application framework, native UIs per OS, the OpenAI-compatible endpoint everywhere. The
+  research themes are its second half.
+
 ## [0.29.0] - 2026-10-13
 
 ### Added
