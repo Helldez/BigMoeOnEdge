@@ -21,6 +21,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -131,7 +133,8 @@ private fun Root() {
     }
 
     // Model-scan state lives here, above the settings/main switch, so opening Settings and
-    // coming back does NOT dispose it and trigger a fresh scan. The scan runs once and after import.
+    // coming back does NOT dispose it and trigger a fresh scan. The scan runs on startup and after
+    // a local import or a model-catalog download.
     var models by remember { mutableStateOf<List<File>>(emptyList()) }
     var scanning by remember { mutableStateOf(true) }
     var refreshKey by remember { mutableStateOf(0) }
@@ -170,10 +173,12 @@ private fun Root() {
             models = models,
             scanning = scanning,
             modelIdx = modelIdx.coerceIn(0, maxOf(0, models.size - 1)),
+            onSelectModel = { modelIdx = it },
             onModelImported = { file ->
                 importedModelPath = file.absolutePath
                 refreshKey++
             },
+            onRefreshModels = { refreshKey++ },
             onOpenSettings = { showSettings = true },
             onOpenMetrics = { showMetrics = true },
             onSettingsChange = { updated ->
@@ -190,7 +195,9 @@ private fun MainScreen(
     models: List<File>,
     scanning: Boolean,
     modelIdx: Int,
+    onSelectModel: (Int) -> Unit,
     onModelImported: (File) -> Unit,
+    onRefreshModels: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenMetrics: () -> Unit,
     onSettingsChange: (AppSettings) -> Unit,
@@ -202,6 +209,7 @@ private fun MainScreen(
 
     var prompt by rememberSaveable { mutableStateOf("") }
     var showTelemetry by rememberSaveable { mutableStateOf(false) }
+    var showModelCatalog by rememberSaveable { mutableStateOf(false) }
     var showConfig by rememberSaveable { mutableStateOf(false) }
     var importing by rememberSaveable { mutableStateOf(false) }
     var importMessage by rememberSaveable { mutableStateOf<String?>(null) }
@@ -309,7 +317,11 @@ private fun MainScreen(
                     onClick = { modelPicker.launch(arrayOf("*/*")) },
                     enabled = !importing && !ui.busy,
                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
-                ) { Text(if (importing) "Import" else "Load", fontSize = 11.sp) }
+                ) { Text(if (importing) "Importing" else "Import", fontSize = 11.sp) }
+                TextButton(
+                    onClick = { showModelCatalog = true },
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                ) { Text("Model catalog", fontSize = 11.sp, maxLines = 1) }
                 TextButton(
                     onClick = {
                         if (!ui.busy) {
@@ -524,6 +536,62 @@ private fun MainScreen(
                 onClick = { jumpScope.launch { listState.animateScrollToItem(total - 1, Int.MAX_VALUE) } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 72.dp),
             ) { Text("Jump to latest") }
+        }
+    }
+
+    // The official model-download/import catalog is kept available without taking space from
+    // the compact chat screen. AddModelSection is the same component used by the upstream UI.
+    if (showModelCatalog) {
+        Dialog(
+            onDismissRequest = { showModelCatalog = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.92f)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.surface,
+            ) {
+                Column(Modifier.fillMaxSize().padding(16.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Official model catalog",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { showModelCatalog = false }) {
+                            Text("Close")
+                        }
+                    }
+                    Column(
+                        Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        if (models.isNotEmpty()) {
+                            LabeledDropdown(
+                                label = "Installed model",
+                                options = models.map { it.name },
+                                selected = modelIdx.coerceIn(0, models.lastIndex),
+                                onSelect = onSelectModel,
+                            )
+                        }
+                        AddModelSection(
+                            models = models,
+                            scanning = scanning,
+                            loadedSig = ui.sessionSig,
+                            onModelReady = {
+                                onRefreshModels()
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 
