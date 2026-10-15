@@ -251,7 +251,7 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 |---|---|
 | `state` | the `GET /api/info` object, on every state change |
 | `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch` |
-| `done` | per generation: `cancelled`, `tokens`, `tok_s`, `prefill_s`, `prefill_tps`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `mgmt_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `ttft_s` |
+| `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` |
 | `config` | the `GET /api/config` object, after any change |
 
@@ -265,14 +265,17 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
   "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "bytes": 18556686912,
              "shards": 1, "arch": "qwen3moe", "streamable": true, "complete": true}],
   "catalog": [{"id": "qwen3-30b-a3b-q4_k_m", "title": "Qwen3-30B-A3B", "quant": "Q4_K_M",
-               "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "blurb": "...",
-               "status": "available", "note": ""}]
+               "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
+               "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://..."}],
+               "blurb": "...", "status": "available", "note": ""}]
 }
 ```
 
 `local` lists every gguf in the models directory (a split set once, by its first shard, with
 `complete: false` while shards are missing). `streamable` is whether this build streams the
-architecture. Catalog `status`: `on_disk`, `downloading`, `available`.
+architecture. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
+entry with its URL, in order, for a client that downloads for itself (a phone, where the server
+has no `curl`); `file` and `bytes` are the first file's name and the whole entry's size.
 
 ### `POST /api/models/download`
 
@@ -292,6 +295,9 @@ Cancels a running download. The partial file is kept so a later download resumes
 Otherwise the planner's proposal for the configured model on this machine. It runs the planner's
 probes (a second or two of storage reads and a bandwidth run, never the intrusive memory probe)
 without loading the model; `409` while a generation runs, since that would skew the measurement.
+Each compute device beyond the host is first asked in a process of its own (the server started
+again with `--probe-device`), so a driver that ends the process it is used from marks the device
+unusable instead of ending the server; `--no-isolated-probes` runs them in-process.
 
 ```json
 {"available": true, "model": "C:/models/Qwen3.6-35B-A3B-Q4_K_M.gguf",

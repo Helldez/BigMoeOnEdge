@@ -7,6 +7,14 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **What a client on a phone needs from the server.** `GET /api/models` lists every file of a
+  catalog entry with its URL (`files`), so a host with no `curl` downloads for itself from the one
+  catalog; the `done` event carries the CLI's whole `BMOE_DONE` summary (load time, faults and CPU
+  per token, the loop overhead, the speculation counters, cache churn), so a metrics view reads the
+  two front-ends alike; and the planner's device probes run in a process of their own in the server
+  too, as `bmoe-cli --auto` runs them (`--probe-device` is the child's mode, `--no-isolated-probes`
+  turns it off), so a driver that ends the process it is used from marks the device unusable
+  instead of ending the server an app is running behind.
 - **`--api-key`: the server can be reached from the network, with a key.** With `--api-key KEY`
   every request to `/api/*` or `/v1/*` must carry `Authorization: Bearer KEY` or is refused with
   `401`; the UI's own files are served without it, and the UI asks for the key on a `401`, keeps it

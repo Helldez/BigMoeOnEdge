@@ -97,12 +97,17 @@ json token_json(const TokenMetrics & m) {
                 {"mtp_batch", m.mtp_batch}};
 }
 
+// The keys are the CLI's BMOE_DONE keys (docs/telemetry.md), so a metrics view reads the two
+// front-ends alike.
 json summary_json(const RunSummary & s, bool cancelled) {
     return json{{"cancelled", cancelled},
                 {"tokens", s.n_generated},
                 {"tok_s", s.tokens_per_second},
+                {"load_s", s.load_seconds},
                 {"prefill_s", s.prefill_seconds},
                 {"prefill_tps", s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0},
+                {"prefill_read_mib", s.prefill_read_mib},
+                {"prefill_dev_tokens", s.prefill_device_tokens},
                 {"n_prompt", s.n_prompt},
                 {"n_past", s.n_past},
                 {"cache_hit_pct", s.cache_hit_pct},
@@ -111,8 +116,19 @@ json summary_json(const RunSummary & s, bool cancelled) {
                 {"compute_s_tok", s.moe_compute_s_per_token},
                 {"stall_s_tok", s.moe_stall_s_per_token},
                 {"mgmt_s_tok", s.moe_mgmt_s_per_token},
+                {"majflt_tok", s.majflt_per_token},
+                {"cpu_s_tok", s.cpu_s_per_token},
+                {"loop_overhead_s_tok", s.loop_overhead_s_per_token},
                 {"cache_resident_mib", s.cache_resident_mib},
                 {"cache_budget_mib", s.cache_budget_mib},
+                {"cache_evictions", s.cache_evictions},
+                {"cache_rereads", s.cache_rereads},
+                {"token_demand_mib", s.token_demand_mib},
+                {"mtp_drafted", s.mtp_drafted},
+                {"mtp_accepted", s.mtp_accepted},
+                {"mtp_decodes", s.mtp_decodes},
+                {"drafted_steps", s.drafted_steps},
+                {"mtp_draft_s_tok", s.mtp_draft_s_per_token},
                 {"ttft_s", s.prefill_seconds}};
 }
 
