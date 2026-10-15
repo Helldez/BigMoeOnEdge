@@ -258,7 +258,7 @@ struct App {
         if (auto_plan()) {
             host.unload();
             std::unique_lock<std::mutex> measuring(measure_m);
-            PlanOutcome p = make_plan(store.config(), store.operator_keys(), opt.isolated_probes);
+            PlanOutcome p = make_plan(store.planning_config(), store.operator_keys(), opt.isolated_probes);
             measuring.unlock();
             if (p.ok) {
                 store.apply_plan(p.values, p.decisions);
@@ -544,7 +544,7 @@ void register_routes(httplib::Server & svr, App & app) {
             return send_error(res, 409, "busy: a plan measures the machine, and a running generation would skew it");
         std::unique_lock<std::mutex> measuring(app.measure_m, std::try_to_lock);
         if (!measuring) return send_error(res, 409, "busy: a plan is already being measured");
-        PlanOutcome p = make_plan(app.store.config(), app.store.operator_keys(), app.opt.isolated_probes);
+        PlanOutcome p = make_plan(app.store.planning_config(), app.store.operator_keys(), app.opt.isolated_probes);
         measuring.unlock();
         if (!p.ok) return send_json(res, json{{"available", true}, {"error", p.error}});
         json body = p.body;

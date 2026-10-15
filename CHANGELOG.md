@@ -86,6 +86,14 @@ Semantic Versioning.
   research themes are its second half.
 
 ### Fixed
+- **A second plan could leave the configuration invalid and refuse every load.** A plan's values
+  were what differed from the current configuration, which already held the previous plan; a
+  choice the new plan repeated (`force-cache` on, for a cache the model's token cycle allows
+  under the generic floor) was therefore not a value, and applying the plan, which replaces the
+  layer whole, dropped it: `cache-mb` below 1500 with no `force-cache`, `valid: false`, and
+  `POST /api/session/load` answered with the validation error. Seen on a phone loading a small
+  model after a larger one. A plan is now made from, and measured against, the configuration
+  without the plan layer (`SettingsStore::planning_config`), so it is complete on its own; tested.
 - **The Windows desktop archive did not start on a machine without OpenSSL.** `bmoe-server.exe`
   imported `libssl-3-x64.dll` and `libcrypto-3-x64.dll`, which the archive does not ship: llama.cpp's
   `LLAMA_OPENSSL` option defaults to on, and the `cpp-httplib` the server builds from its vendor tree

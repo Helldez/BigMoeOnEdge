@@ -358,4 +358,6 @@ loaded.
 ### `POST /api/plan/apply`
 
 Applies the current plan's `values` to the config without adding them to `user_keys`, and records
-the decisions so `GET /api/config` returns them under `plan`. Returns the config object.
+the decisions so `GET /api/config` returns them under `plan`. Returns the config object. A plan is
+made from the configuration without the plan layer (defaults, launch flags, the person's values),
+so its `values` are complete on their own and replace the previous plan whole.
