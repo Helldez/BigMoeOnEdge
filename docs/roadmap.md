@@ -219,6 +219,41 @@ What is still owed is measurement rather than design, and every knob the plan ca
   accelerator, a discrete GPU and a system that commits what it reserves each owe a run before the
   rule is believed there ([hardware-planning.md](hardware-planning.md#the-widest-graph)).
 
+## Conversation reuse on hybrid models (the server, tool calls)
+
+`bmoe-server` keeps no conversation: every request carries the whole history, the engine tokenizes
+it and keeps the leading tokens that already match its KV cache, so a turn costs only its new
+message. That rests on dropping the divergent tail with `llama_memory_seq_rm`, and a hybrid model
+cannot do that: on Qwen3.8-Flash-Next (36 gated-delta layers, 12 attention) the recurrent state
+exists only at its last position, llama.cpp refuses any partial removal, and the engine falls back
+to clearing the cache and recomputing the conversation from its first token. A tool loop triggers
+it every time, because the client sends the assistant's call back in structured form and the chat
+template renders it differently from the tokens the model generated. On a 125B model with the
+history in the tens of thousands of tokens that is a turn of minutes, or a failed one (issue #240).
+
+Every server that runs hybrid models has met this, and the answers are all a form of the same
+thing: a snapshot of the recurrent state to fall back on. llama-server keeps up to 32 per slot in
+host RAM (fp32, 60 to 215 MiB each) and restores the last one before the divergence; vLLM
+snapshots only at block boundaries, so short prompts never hit; SGLang keeps one per node of its
+radix tree. None of them can avoid the divergence, because they serve conversations they did not
+produce. This engine can, and that order is the plan:
+
+1. **Replay the assistant's own tokens.** Keep the raw tokens generated for each assistant turn.
+   When the client sends that turn back and it parses to the same content and tool calls, match it
+   against those tokens instead of the template's rendering. The prefix then stays exact through a
+   tool loop at no memory cost, on every architecture, and the recurrent state is never asked to
+   roll back.
+2. **A recurrent checkpoint at each turn boundary**, through the public state API
+   (`llama_state_seq_get_data_ext` with the recurrent-only flag; no fork), the last two or three
+   kept, stored in half precision. This covers the histories a client does rewrite (compaction,
+   superseded tool results) by restarting from the previous turn instead of from zero. Its cost is
+   RAM a phone does not have to spare, so it ships as a toggle behind a device measurement, like
+   every other lever on this page.
+
+Not planned: approximate state reconstruction in the style of LinearKV (arXiv:2608.11231), where
+one cached state initialises every linear layer at 0.46x the time to first token. It is the
+interesting lever for long prompts, and it gives up the byte identity the gates guarantee.
+
 ## Not on this list
 
 Routing prediction and speculative expert gating were built and **removed**: the recall/latency
