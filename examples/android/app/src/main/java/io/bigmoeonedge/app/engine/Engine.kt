@@ -295,8 +295,11 @@ object Engine {
                     },
                     keepGoing = { true },
                 )
-            } catch (_: Throwable) {
-                // not up yet, or gone: say so and try again
+            } catch (t: Throwable) {
+                // Not up yet, or gone: say why in the status line, and try again. A refusal that
+                // is not a closed port (a key, a policy) is exactly what a person needs to read.
+                val why = t.message?.takeIf { it.isNotBlank() && !it.contains("ECONNREFUSED") && !it.contains("Connection refused") }
+                if (why != null) _state.update { it.copy(serverError = "Engine not reachable: $why") }
             }
             if (_state.value.serverUp) _state.update { it.copy(serverUp = false) }
             delay(backoffMs)
