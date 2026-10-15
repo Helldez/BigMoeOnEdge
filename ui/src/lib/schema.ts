@@ -2,7 +2,9 @@
 // of it is derived from the `GET /api/params` rows. No parameter is named in this module.
 import type { ParamLevel, ParamSpec, ParamValue } from './types';
 
-/** Optional levels in display order; `basic` is always shown. */
+/** Every level, in order of how much a person needs to know before touching a row. */
+export const ALL_LEVELS: readonly ParamLevel[] = ['basic', 'advanced', 'experimental', 'debug'];
+/** The levels beyond basic, in display order. */
 export const OPTIONAL_LEVELS: readonly ParamLevel[] = ['advanced', 'experimental', 'debug'];
 
 export interface ParamGroup {
@@ -33,13 +35,6 @@ export function groupParams(params: readonly ParamSpec[], enabled: ReadonlySet<s
     g.params.push(p);
   }
   return [...groups.values()];
-}
-
-/** Counts parameters per level, so the filter can say how many each level would add. */
-export function countByLevel(params: readonly ParamSpec[]): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const p of params) out[p.level] = (out[p.level] ?? 0) + 1;
-  return out;
 }
 
 /** Value equality across the JSON types a parameter can take ("auto" vs 4096, 8 vs "8"). */

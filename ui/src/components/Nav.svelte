@@ -2,11 +2,13 @@
   import { href, type Route } from '../lib/route';
   import { router } from '../stores/router.svelte';
 
+  // The five screens, in the order every UI of this project shows them (docs/screens.md).
   const items: { route: Route; label: string }[] = [
     { route: 'chat', label: 'Chat' },
     { route: 'models', label: 'Models' },
-    { route: 'settings', label: 'Settings' },
     { route: 'plan', label: 'Plan' },
+    { route: 'settings', label: 'Settings' },
+    { route: 'metrics', label: 'Metrics' },
   ];
 </script>
 

@@ -60,6 +60,14 @@ Semantic Versioning.
   app does not start yet. `docs/application-framework.md` says why: the server is the application
   framework, one API behind every UI, in process or in a child process as the platform allows.
 
+- **The web UI shows the five screens the phone shows, the same way.** Chat, Models, Plan,
+  Settings and Metrics in that order, Metrics a page of its own with the live card. Chat keeps
+  conversations in the browser (a list to switch, open and delete; a reload finds them), writes
+  the same one-line figure under every answer the phone writes (rate, tokens, prefill, context,
+  cache), offers Copy and Regenerate, and shows the live rate line above the prompt; how many
+  tokens to generate and whether to think are Settings rows, not composer controls. Settings shows
+  each group's basic rows and one folded Advanced section with the rest, grouped and marked, in
+  place of the level filter.
 - **Choose from options, in the web UI and in the Android app.** A switch under the prompt turns
   it into a question with a field for options, one per line; the model picks one without writing
   an answer (one prefill, no decode, `POST /api/decide`), and every option comes back with the

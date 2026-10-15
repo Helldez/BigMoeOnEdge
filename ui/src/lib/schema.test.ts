@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { countByLevel, groupParams, isDefault, isLevelVisible, sameValue } from './schema';
+import { groupParams, isDefault, isLevelVisible, sameValue } from './schema';
 import type { ParamSpec } from './types';
 
 // Synthetic rows: the tests must not depend on the engine's real parameter table.
@@ -60,10 +60,6 @@ describe('levels', () => {
     expect(isLevelVisible('basic', new Set())).toBe(true);
     expect(isLevelVisible('advanced', new Set())).toBe(false);
     expect(isLevelVisible('advanced', new Set(['advanced']))).toBe(true);
-  });
-
-  it('counts per level', () => {
-    expect(countByLevel(rows)).toEqual({ basic: 2, advanced: 1, debug: 1, experimental: 1 });
   });
 });
 

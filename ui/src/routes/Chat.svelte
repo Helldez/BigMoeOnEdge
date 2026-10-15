@@ -1,11 +1,10 @@
 <script lang="ts">
   import Composer from '../components/chat/Composer.svelte';
+  import LiveLine from '../components/chat/LiveLine.svelte';
   import MessageView from '../components/chat/MessageView.svelte';
-  import MetricsPanel from '../components/MetricsPanel.svelte';
   import { chat } from '../stores/chat.svelte';
 
   let log: HTMLElement | undefined = $state();
-  let showMetrics = $state(true);
 
   // Keep the newest text in view while streaming, unless the user scrolled up to read.
   $effect.pre(() => {
@@ -17,48 +16,125 @@
     const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
     if (nearBottom) queueMicrotask(() => log && (log.scrollTop = log.scrollHeight));
   });
+
+  const stamp = (ms: number) =>
+    new Date(ms).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 </script>
 
-<div class="chat" class:no-metrics={!showMetrics}>
+<div class="chat">
+  <aside class="conversations card" aria-label="Conversations">
+    <div class="side-head">
+      <h2>Conversations</h2>
+      <button type="button" onclick={() => chat.newChat()} disabled={chat.busy}>New</button>
+    </div>
+    {#if chat.conversations.length === 0}
+      <p class="muted small">Nothing saved yet. Conversations are kept in this browser.</p>
+    {/if}
+    <ul>
+      {#each chat.conversations as c (c.id)}
+        <li class:open={c.id === chat.current.id}>
+          <button type="button" class="pick" onclick={() => chat.open(c.id)} disabled={chat.busy}>
+            <span class="title">{c.title}</span>
+            <span class="meta muted">{stamp(c.updatedAt)} · {c.turnCount} messages{c.model ? ` · ${c.model}` : ''}</span>
+          </button>
+          <button type="button" class="link del" onclick={() => chat.delete(c.id)} disabled={chat.busy && c.id === chat.current.id} aria-label="Delete {c.title}">Delete</button>
+        </li>
+      {/each}
+    </ul>
+  </aside>
   <section class="conversation" aria-label="Conversation">
     <div class="toolbar">
-      <h1>Chat</h1>
+      <h1>{chat.current.title || 'New chat'}</h1>
       <span class="spacer"></span>
-      <button type="button" onclick={() => (showMetrics = !showMetrics)} aria-expanded={showMetrics}>
-        {showMetrics ? 'Hide metrics' : 'Show metrics'}
-      </button>
-      <button type="button" onclick={() => chat.newChat()}>New chat</button>
+      {#if chat.turns.length > 0}
+        <button type="button" onclick={() => chat.newChat()} disabled={chat.busy}>New chat</button>
+      {/if}
     </div>
     <div class="log" bind:this={log} aria-live="polite">
       {#if chat.turns.length === 0}
-        <p class="muted empty">Start a conversation. The whole history is sent with every message; the server continues its cache when it can.</p>
+        <p class="muted empty">Ask anything. The model runs on this machine; load one from Models if none is loaded, then type below.</p>
       {/if}
       {#each chat.turns as turn, i (turn.id)}
-        <MessageView {turn} streaming={chat.busy && i === chat.turns.length - 1} />
+        <MessageView {turn} streaming={chat.busy && i === chat.turns.length - 1} last={i === chat.turns.length - 1} />
       {/each}
     </div>
     {#if chat.error}
       <p class="banner error" role="alert">{chat.error}</p>
     {/if}
+    <LiveLine />
     <Composer />
   </section>
-  {#if showMetrics}
-    <aside class="metrics">
-      <MetricsPanel />
-    </aside>
-  {/if}
 </div>
 
 <style>
   .chat {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-columns: 260px minmax(0, 1fr);
     gap: 1rem;
     height: calc(100vh - 8rem);
     min-height: 26rem;
   }
-  .chat.no-metrics {
-    grid-template-columns: minmax(0, 1fr);
+  .conversations {
+    overflow-y: auto;
+    min-height: 0;
+    padding: 0.6rem 0.6rem;
+  }
+  .side-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
+  }
+  .side-head h2 {
+    margin: 0;
+    font-size: 0.95rem;
+    flex: 1;
+  }
+  .conversations ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .conversations li {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    border-radius: var(--radius);
+    padding: 0.2rem 0.3rem;
+  }
+  .conversations li.open {
+    background: var(--surface-2);
+  }
+  .pick {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    border: none;
+    background: none;
+    padding: 0.2rem 0.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .pick .title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pick .meta {
+    font-size: 0.75rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .del {
+    font-size: 0.8rem;
+  }
+  .small {
+    font-size: 0.85rem;
   }
   .conversation {
     display: flex;
@@ -75,6 +151,10 @@
   }
   .toolbar h1 {
     margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 70%;
   }
   .spacer {
     flex: 1;
@@ -93,14 +173,13 @@
     text-align: center;
     max-width: 30rem;
   }
-  .metrics {
-    overflow-y: auto;
-    min-height: 0;
-  }
   @media (max-width: 900px) {
     .chat {
       grid-template-columns: minmax(0, 1fr);
       height: auto;
+    }
+    .conversations {
+      max-height: 12rem;
     }
     .log {
       max-height: 60vh;

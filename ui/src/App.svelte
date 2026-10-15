@@ -3,9 +3,11 @@
   import Nav from './components/Nav.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import Chat from './routes/Chat.svelte';
+  import Metrics from './routes/Metrics.svelte';
   import Models from './routes/Models.svelte';
   import Settings from './routes/Settings.svelte';
   import Plan from './routes/Plan.svelte';
+  import { chat } from './stores/chat.svelte';
   import { router } from './stores/router.svelte';
   import { server } from './stores/server.svelte';
 
@@ -14,6 +16,7 @@
   onMount(() => {
     router.start();
     server.start();
+    chat.start();
   });
 
   function submitKey(e: SubmitEvent) {
@@ -47,6 +50,8 @@
       <Models />
     {:else if router.route === 'settings'}
       <Settings />
+    {:else if router.route === 'metrics'}
+      <Metrics />
     {:else}
       <Plan />
     {/if}
