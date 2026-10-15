@@ -76,6 +76,8 @@
     {/if}
     <span class="badges">
       {#if spec.lossy}<span class="badge warn" title="This setting changes what the model outputs">changes output</span>{/if}
+      {#if spec.level === 'basic'}<span class="badge ok">basic</span>{/if}
+      {#if spec.level === 'advanced'}<span class="badge">advanced</span>{/if}
       {#if spec.level === 'experimental'}<span class="badge warn">experimental</span>{/if}
       {#if spec.level === 'debug'}<span class="badge">debug</span>{/if}
       {#if spec.scope === 'request'}

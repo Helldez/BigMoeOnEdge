@@ -205,7 +205,7 @@ data class EngineUi(
 ) {
     val ready get() = serverUp && info?.ready == true
     val generating get() = info?.generating == true
-    val loading get() = info?.state == "loading"
+    val loading get() = info?.state == "loading" || info?.state == "planning"
 }
 
 /**

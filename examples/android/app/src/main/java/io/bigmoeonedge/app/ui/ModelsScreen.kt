@@ -106,6 +106,16 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
             if (!engine.serverUp) {
                 Text("The engine is not running.", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             }
+            if (engine.loading) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text(
+                        if (engine.info?.state == "planning") "Measuring the phone (storage, memory, each compute device), then loading…"
+                        else "Loading the model…",
+                        fontSize = 13.sp,
+                    )
+                }
+            }
 
             // ── on the phone ──
             Text("On this phone", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
@@ -127,7 +137,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                         if (m.complete && !m.streamable) "not a MoE this build streams" else null,
                     ).joinToString(" · "),
                     loaded = m.path == loadedPath,
-                    loadable = m.complete && engine.serverUp && engine.info?.state != "loading",
+                    loadable = m.complete && engine.serverUp && !engine.loading,
                     onLoad = { scope.launch { Engine.load(m.path).onFailure { say(it.message ?: "load failed") } } },
                     onUnload = { scope.launch { Engine.unload() } },
                     onDelete = {
@@ -141,7 +151,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                     name = f.name,
                     detail = "${gbLabel(f.length())} · ${f.parentFile?.absolutePath}",
                     loaded = f.absolutePath == loadedPath,
-                    loadable = engine.serverUp && engine.info?.state != "loading",
+                    loadable = engine.serverUp && !engine.loading,
                     onLoad = { scope.launch { Engine.load(f.absolutePath).onFailure { say(it.message ?: "load failed") } } },
                     onUnload = { scope.launch { Engine.unload() } },
                     onDelete = if (ModelManager.isAppDeletable(f)) ({ deleteTarget = listOf(f) }) else null,

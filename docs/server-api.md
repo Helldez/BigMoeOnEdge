@@ -105,8 +105,9 @@ other software, or other people, on that machine or on a network it was told to 
 }
 ```
 
-`state` is one of `empty` (no model), `loading`, `ready`, `error` (the last load failed; `error`
-says why). `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
+`state` is one of `empty` (no model), `planning` (a load in auto mode is measuring the machine
+before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
+(the last load failed; `error` says why). `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
 on for the loaded session: with it off the engine is plain llama.cpp on mmap, and the UI must say so.
 
 ### `POST /api/session/load`

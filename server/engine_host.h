@@ -51,6 +51,12 @@ public:
     void set_host_info(std::function<json()> provider);
     void set_planner_available(bool available) { planner_available_ = available; }
 
+    // A load in auto mode measures the machine before it loads, for tens of seconds on a phone,
+    // with nothing loaded meanwhile: `state` reads "planning" between these two calls, so a UI can
+    // say what is happening the moment a person asks for a load.
+    void begin_planning();
+    void end_planning();
+
     // Open a session with `effective` in the background. `requested` is the config the user asked
     // for, which can differ (a dense model loads with streaming off); it is what reload_required()
     // compares against. Returns an error for a config that cannot start, "" once the load is under
@@ -88,6 +94,7 @@ private:
     EventBus & bus_;
     std::function<json()> host_info_;
     std::atomic<bool> planner_available_{false};
+    std::atomic<bool> planning_{false};
 
     // Held across load() and unload(), so the loader thread is joined and replaced by one caller
     // at a time. Without it two unloads join the same thread, and a load racing an unload assigns

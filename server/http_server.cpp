@@ -257,6 +257,7 @@ struct App {
         std::lock_guard<std::mutex> load(load_m);
         if (auto_plan()) {
             host.unload();
+            host.begin_planning();
             std::unique_lock<std::mutex> measuring(measure_m);
             PlanOutcome p = make_plan(store.planning_config(), store.operator_keys(), opt.isolated_probes);
             measuring.unlock();
@@ -268,6 +269,12 @@ struct App {
             }
             publish_config();
         }
+        // The planning flag is cleared after the load has been asked for, so the state goes from
+        // planning straight to loading (or to the error) with no empty in between.
+        struct EndPlanning {
+            EngineHost & h;
+            ~EndPlanning() { h.end_planning(); }
+        } end_planning{host};
         const RunConfig requested = store.config();
         RunConfig effective = requested;
         const std::vector<std::string> ops = store.operator_keys();

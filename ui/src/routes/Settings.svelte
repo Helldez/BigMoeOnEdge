@@ -13,8 +13,9 @@
   // Advanced section, folded, grouped the same way (docs/screens.md).
   let groups = $derived(groupParams(params, new Set(ALL_LEVELS)));
   let basicGroups = $derived(groups.map((g) => ({ ...g, params: g.params.filter((p) => p.level === 'basic') })).filter((g) => g.params.length > 0));
-  let advancedGroups = $derived(groups.map((g) => ({ ...g, params: g.params.filter((p) => p.level !== 'basic') })).filter((g) => g.params.length > 0));
-  let advancedCount = $derived(advancedGroups.reduce((n, g) => n + g.params.length, 0));
+  // The Advanced section holds every row, the basic ones included: the whole engine in one place.
+  let advancedGroups = $derived(groups);
+  let advancedCount = $derived(groups.reduce((n, g) => n + g.params.length, 0));
   let advancedOpen = $state(false);
   let userKeys = $derived(new Set(config?.user_keys ?? []));
   let decisions = $derived(decisionsByKnob(planDecisions(config?.plan)));
@@ -98,7 +99,7 @@
   <details class="advanced card" bind:open={advancedOpen}>
     <summary>
       <span class="adv-title">Advanced</span>
-      <span class="muted">{advancedCount} settings · measured once or on one device; they can slow a run down or change the reply. The settings above are the recommended configuration; the planner sets what it can measure.</span>
+      <span class="muted">every setting, {advancedCount} of them, grouped and marked with its level. The groups above are the recommended configuration; the planner sets what it can measure, and the levels beyond basic were measured once or on one device and can slow a run down or change the reply.</span>
     </summary>
     {#each advancedGroups as g (g.group)}
       <section class="group" aria-labelledby="adv-{g.group}">

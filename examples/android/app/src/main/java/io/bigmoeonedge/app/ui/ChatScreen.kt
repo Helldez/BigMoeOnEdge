@@ -128,6 +128,7 @@ private fun EngineStatusLine(onOpenModels: () -> Unit) {
     val (text, action) = when {
         !engine.serverUp -> (engine.serverError?.lineSequence()?.firstOrNull()?.take(120) ?: "Engine not running") to null
         info == null -> "Connecting…" to null
+        info.state == "planning" -> "Measuring the phone, then loading…" to null
         info.state == "loading" -> "Loading model…" to null
         info.state == "error" -> "Engine error: ${info.error.take(120)}" to null
         info.model == null -> "No model loaded" to "Choose one"

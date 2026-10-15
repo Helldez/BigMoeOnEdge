@@ -85,6 +85,16 @@ Semantic Versioning.
   one application framework, native UIs per OS, the OpenAI-compatible endpoint everywhere. The
   research themes are its second half.
 
+### Changed
+- **A load says it is planning.** `state` reads `planning` from the moment a load in auto mode
+  starts measuring the machine until it starts loading, and both UIs show it ("Measuring, then
+  loading…") and keep the Load buttons quiet meanwhile: on a phone the probes take tens of seconds,
+  during which a tap on Load looked like nothing.
+- **Settings: the Advanced section holds every knob.** The groups above it stay the recommended
+  configuration (the basic rows); the folded section at the end now lists every row of the table,
+  grouped and marked with its level, so an expert sees the whole engine in one place. Web and
+  Android alike.
+
 ### Fixed
 - **A second plan could leave the configuration invalid and refuse every load.** A plan's values
   were what differed from the current configuration, which already held the previous plan; a

@@ -198,6 +198,7 @@ class EngineService : Service() {
                 val text = when {
                     !up -> "Engine not running"
                     generating -> "Generating…"
+                    state == "planning" -> "Measuring the phone…"
                     state == "loading" -> "Loading model…"
                     state == "ready" -> "Model ready"
                     state == "error" -> "Engine error"

@@ -12,7 +12,8 @@
   let pending = $state<Record<string, boolean>>({});
 
   let loadedPath = $derived(server.info?.model?.path ?? null);
-  let loading = $derived(server.info?.state === 'loading');
+  let planning = $derived(server.info?.state === 'planning');
+  let loading = $derived(server.info?.state === 'loading' || planning);
 
   async function refresh() {
     try {
@@ -79,7 +80,7 @@
     <button type="button" onclick={() => act('unload', api.unload)} disabled={pending.unload}>Unload</button>
   </div>
 {:else if loading}
-  <p class="banner warn">Loading a model...</p>
+  <p class="banner warn">{planning ? 'Measuring the machine (storage, memory, each compute device), then loading...' : 'Loading a model...'}</p>
 {/if}
 
 {#if data}

@@ -47,6 +47,16 @@ void EngineHost::set_host_info(std::function<json()> provider) {
     host_info_ = std::move(provider);
 }
 
+void EngineHost::begin_planning() {
+    planning_ = true;
+    publish_state();
+}
+
+void EngineHost::end_planning() {
+    planning_ = false;
+    publish_state();
+}
+
 std::string EngineHost::load(const RunConfig & effective, const RunConfig & requested) {
     const ValidationResult v = validate(effective);
     if (!v) return v.error;
@@ -154,7 +164,7 @@ json EngineHost::info() const {
                 {"overlap_available", overlap},
                 {"planner_available", planner_available_.load()},
                 {"host", host_info_ ? host_info_() : json::object()},
-                {"state", state_name((int) state_)},
+                {"state", planning_.load() && state_ == State::Empty ? "planning" : state_name((int) state_)},
                 {"error", error_},
                 {"model", model_},
                 {"generating", generating_.load()}};
