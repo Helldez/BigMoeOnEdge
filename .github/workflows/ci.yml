@@ -201,7 +201,7 @@ jobs:
           cmake -S . -B build-android -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
-            -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_SERVER=OFF \
+            -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_SERVER=ON \
             -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_OPENCL=OFF \
             -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" \
             -DLLAMA_CURL=OFF
@@ -213,6 +213,7 @@ jobs:
           jni=examples/android/app/src/main/jniLibs/arm64-v8a
           mkdir -p "$jni"
           cp build-android/bin/bmoe-cli "$jni/libbmoe-cli.so"
+          cp build-android/bin/bmoe-server "$jni/libbmoe-server.so"
           find build-android \( -name 'libggml*.so' -o -name 'libllama*.so' \) -exec cp {} "$jni/" \;
           # bmoe-cli links the c++_shared STL; ship its runtime from the NDK sysroot.
           cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$jni/"

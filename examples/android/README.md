@@ -16,8 +16,9 @@ research harness and keeps the app a thin driver over the CLI.
    pwsh ../../scripts/build-android.ps1
    ```
 
-   This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-cli.so` and the
-   `libllama`/`libggml` shared libraries.
+   This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-cli.so`, `libbmoe-server.so` (the
+   application framework the app is moving onto, see `docs/application-framework.md`; this app does
+   not start it yet) and the `libllama`/`libggml` shared libraries.
 
    For **Prefill on the NPU** the engine needs the Hexagon backend, which builds inside upstream's
    Snapdragon toolchain container instead (it carries the Hexagon SDK), then stages the same way:

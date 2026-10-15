@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, streamChat } from './api';
+import { api, openEvents, streamChat } from './api';
+import { auth } from './auth';
+import type { SseEvent } from './sse';
 
 // The server refuses a write that does not declare JSON, so the client must on every one.
 describe('api', () => {
@@ -46,5 +48,50 @@ describe('api', () => {
     await api.info();
     expect(calls[0].init.method).toBe('GET');
     expect(contentType(calls[0].init)).toBeNull();
+  });
+  it('sends the key as a bearer token on every request once one is set, and not before', async () => {
+    stub();
+    auth.set('');
+    await api.info();
+    expect(new Headers(calls[0].init.headers).get('Authorization')).toBeNull();
+    calls.length = 0;
+    auth.set('  s3cret ');
+    try {
+      await api.info();
+      await api.cancel();
+      await streamChat({ messages: [{ role: 'user', content: 'hi' }] }, () => {});
+      const ac = new AbortController();
+      await openEvents(() => {}, () => {}, ac.signal);
+      expect(calls).toHaveLength(4);
+      for (const c of calls) expect(new Headers(c.init.headers).get('Authorization'), c.path).toBe('Bearer s3cret');
+      expect(contentType(calls[1].init)).toBe('application/json');
+    } finally {
+      auth.set('');
+    }
+  });
+
+  it('reports a 401 to whoever asked to hear of one, and still rejects the call', async () => {
+    vi.stubGlobal('fetch', async () => new Response('{"error":"an API key is required"}', { status: 401 }));
+    let told = 0;
+    const off = auth.onUnauthorized(() => told++);
+    try {
+      await expect(api.info()).rejects.toMatchObject({ status: 401, message: 'an API key is required' });
+      const ac = new AbortController();
+      await expect(openEvents(() => {}, () => {}, ac.signal)).rejects.toMatchObject({ status: 401 });
+      expect(told).toBe(2);
+    } finally {
+      off();
+    }
+  });
+
+  it('delivers the events of the stream by name until it ends', async () => {
+    const body = 'event: state\ndata: {"state":"empty"}\n\nevent: token\ndata: {"wall_ms":3}\n\n';
+    vi.stubGlobal('fetch', async () => new Response(body, { status: 200 }));
+    const seen: SseEvent[] = [];
+    let opened = 0;
+    const ac = new AbortController();
+    await openEvents(() => opened++, (ev) => seen.push(ev), ac.signal);
+    expect(opened).toBe(1);
+    expect(seen.map((e) => `${e.event} ${e.data}`)).toEqual(['state {"state":"empty"}', 'token {"wall_ms":3}']);
   });
 });

@@ -9,10 +9,19 @@
   import { router } from './stores/router.svelte';
   import { server } from './stores/server.svelte';
 
+  let apiKey = $state('');
+
   onMount(() => {
     router.start();
     server.start();
   });
+
+  function submitKey(e: SubmitEvent) {
+    e.preventDefault();
+    if (!apiKey.trim()) return;
+    server.submitKey(apiKey);
+    apiKey = '';
+  }
 </script>
 
 <div class="shell">
@@ -21,6 +30,16 @@
     <Nav />
   </header>
   <StatusBar />
+  {#if server.authRequired}
+    <div class="veil" role="dialog" aria-modal="true" aria-labelledby="key-title">
+      <form class="key" onsubmit={submitKey}>
+        <h2 id="key-title">API key</h2>
+        <p>This server was started with <code>--api-key</code>. Enter the key to use it from here.</p>
+        <input type="password" bind:value={apiKey} placeholder="key" autocomplete="off" />
+        <button type="submit" disabled={!apiKey.trim()}>Connect</button>
+      </form>
+    </div>
+  {/if}
   <main class="page">
     {#if router.route === 'chat'}
       <Chat />
@@ -52,6 +71,31 @@
   .brand {
     font-weight: 700;
     letter-spacing: 0.01em;
+  }
+  .veil {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: rgb(0 0 0 / 0.45);
+    z-index: 10;
+  }
+  .key {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    width: min(24rem, calc(100vw - 2rem));
+    padding: 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    background: var(--surface);
+  }
+  .key h2 {
+    margin: 0;
+    font-size: 1.1rem;
+  }
+  .key p {
+    margin: 0;
   }
   .page {
     flex: 1;

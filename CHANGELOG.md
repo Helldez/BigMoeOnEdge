@@ -6,6 +6,23 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **`--api-key`: the server can be reached from the network, with a key.** With `--api-key KEY`
+  every request to `/api/*` or `/v1/*` must carry `Authorization: Bearer KEY` or is refused with
+  `401`; the UI's own files are served without it, and the UI asks for the key on a `401`, keeps it
+  in the browser and sends it on every request, the event stream included (which now goes through
+  `fetch`, since `EventSource` cannot carry a header). A `--host` beyond loopback without a key is
+  refused at start, unless `--no-api-key` says the open server is meant. Who may reach the API
+  (host name, origin, key, content type) is one pure policy, `server/access.h`, with its own tests;
+  the HTTP layer only reads the request into it. `docs/server-api.md` states the result.
+- **The server is a library, and the Android builds carry it.** `bmoe_server` holds the engine
+  host, the model library, the planner adapter, the platform and the HTTP API behind one
+  `bmoe::server::run(argc, argv)`; `bmoe-server` is `main()` over it, and an app that may not start
+  a process (iOS) can call it on a thread. Every Android build (CI, the release workflow, the two
+  build scripts) now compiles the server and stages it in the APK as `libbmoe-server.so`, which the
+  app does not start yet. `docs/application-framework.md` says why: the server is the application
+  framework, one API behind every UI, in process or in a child process as the platform allows.
+
 ### Changed
 - `docs/roadmap.md` opens with the product plan, in the order the work has to happen: one engine,
   one application framework, native UIs per OS, the OpenAI-compatible endpoint everywhere. The

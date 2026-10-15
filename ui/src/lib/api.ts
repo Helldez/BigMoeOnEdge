@@ -1,5 +1,7 @@
 // Typed client for the bmoe-server HTTP API. Paths are relative so the UI works from any mount.
 import { SseParser, isDoneSentinel } from './sse';
+import type { SseEvent } from './sse';
+import { auth } from './auth';
 import { parseChunk } from './chatStream';
 import type {
   ChatChunk,
@@ -44,14 +46,22 @@ async function errorFrom(res: Response): Promise<ApiError> {
   return new ApiError(res.status, message, body);
 }
 
+// A 401 means the server wants a key this page has not got (or has got wrong): the app asks for
+// one. Every call reports it the same way, so no caller has to.
+async function failed(res: Response): Promise<ApiError> {
+  if (res.status === 401) auth.unauthorized();
+  return errorFrom(res);
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const init: RequestInit = { method, headers: {} };
+  const headers: Record<string, string> = auth.headers();
   // Every write says it is JSON, with or without a body: the server refuses one that does not,
   // which is what keeps an HTML form (it cannot send this type) from calling the API.
-  if (method !== 'GET') init.headers = { 'Content-Type': 'application/json' };
+  if (method !== 'GET') headers['Content-Type'] = 'application/json';
+  const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = JSON.stringify(body);
   const res = await fetch(path, init);
-  if (!res.ok) throw await errorFrom(res);
+  if (!res.ok) throw await failed(res);
   const text = await res.text();
   return (text ? JSON.parse(text) : null) as T;
 }
@@ -96,11 +106,11 @@ export async function streamChat(
 
   const res = await fetch('v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    headers: { ...auth.headers(), 'Content-Type': 'application/json', Accept: 'text/event-stream' },
     body: JSON.stringify(body),
     signal,
   });
-  if (!res.ok) throw await errorFrom(res);
+  if (!res.ok) throw await failed(res);
   if (!res.body) throw new ApiError(res.status, 'empty response body', null);
 
   const reader = res.body.getReader();
@@ -124,6 +134,42 @@ export async function streamChat(
         return;
       }
       if (deliver(parser.push(decoder.decode(value, { stream: true })))) return;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+}
+
+/**
+ * Holds `GET /api/events` open and delivers each event until the server closes the stream or
+ * `signal` fires. `onOpen` runs once the server has answered. Rejects with ApiError on a non-2xx
+ * status (401 when a key is wanted) and with the fetch error when the connection fails. Done with
+ * fetch rather than EventSource, which cannot send the key.
+ */
+export async function openEvents(
+  onOpen: () => void,
+  onEvent: (ev: SseEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const res = await fetch(EVENTS_URL, {
+    headers: { ...auth.headers(), Accept: 'text/event-stream' },
+    signal,
+  });
+  if (!res.ok) throw await failed(res);
+  if (!res.body) throw new ApiError(res.status, 'empty response body', null);
+  onOpen();
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = new SseParser();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) {
+        for (const ev of parser.push(decoder.decode())) onEvent(ev);
+        for (const ev of parser.end()) onEvent(ev);
+        return;
+      }
+      for (const ev of parser.push(decoder.decode(value, { stream: true }))) onEvent(ev);
     }
   } finally {
     reader.cancel().catch(() => {});

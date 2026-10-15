@@ -11,12 +11,15 @@ a single ~25-line hook on a fork branch with an explicit sunset (see below and
 
 ```
 cli/            bmoe-cli — parses flags, the only place env vars are read
-server/         bmoe-server: the engine behind the desktop web UI (docs/server-api.md)
+server/         bmoe-server: the application framework every UI speaks to (docs/application-framework.md),
+                and the engine behind the desktop web UI (docs/server-api.md)
                 openai_chat (the chat protocol), turn_queue, settings_store, event_bus, json_util:
                 pure policy (bmoe_server_core)
                 engine_host: the one Session, loads, the turn line; model_library: files, catalog,
                 downloads; planner_adapter: /api/plan when the planner is built in;
-                platform: the only file with platform #ifs; main: HTTP routes and guards
+                access: who may reach the API (host, origin, key, content type), pure and tested;
+                platform: the only file with platform #ifs; http_server: the HTTP routes and
+                run(); the whole is the bmoe_server library, main.cpp the process around it
 ui/             the web UI (Svelte + TypeScript); settings rendered from the parameter table
 catalog/        models.json: the curated model catalog, as data
 core/
@@ -70,7 +73,7 @@ core/
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates
-examples/android an APK that drives bmoe-cli via ProcessBuilder
+examples/android an APK that drives bmoe-cli via ProcessBuilder; it carries bmoe-server too
 examples/ios    a harness app with bmoe-cli compiled in (an app there may not start a process)
 ```
 

@@ -4,8 +4,12 @@
 serves the UI's static files, and exposes a small JSON API plus an OpenAI-compatible chat
 endpoint, so any OpenAI client can use it too.
 
-It binds to `127.0.0.1` by default and has no authentication: it is a local program, like the
-CLI. See [Security model](#security-model) for exactly what that does and does not protect.
+It binds to `127.0.0.1` by default and, unless started with `--api-key`, has no authentication:
+it is a local program, like the CLI. See [Security model](#security-model) for exactly what that
+does and does not protect.
+
+It is also the application framework of this project: the same server, reached the same way,
+stands behind every UI, on the desktop and on a phone ([application-framework.md](application-framework.md)).
 
 All request and response bodies are JSON (UTF-8). Errors are `{"error": "<message>"}` with a 4xx
 or 5xx status. Every `POST`, `PUT` and `DELETE` must carry `Content-Type: application/json`, body
@@ -21,7 +25,13 @@ other software, or other people, on that machine or on a network it was told to 
 **What is enforced**
 
 - It binds to `127.0.0.1` unless `--host` says otherwise. There is no environment variable that
-  widens it, and the server prints a warning at start when the address is not loopback.
+  widens it. A `--host` beyond loopback is refused at start unless a key is set (`--api-key`) or
+  `--no-api-key` says the open server is meant, and the server prints a warning in that case.
+- With `--api-key KEY`, every request to `/api/*` or `/v1/*` must carry `Authorization: Bearer
+  KEY`, whatever its origin, or is refused with `401` and a `WWW-Authenticate: Bearer` header. The
+  key is compared in constant time. The UI's own files are served without it: the UI asks for the
+  key when it gets a `401`, keeps it in the browser, and sends it on every request, the event
+  stream included.
 - On loopback it answers only to loopback host names, so a DNS-rebinding page cannot reach it
   through a name of its own.
 - A browser request to `/api/*` or `/v1/*` from another site is refused with `403`, whatever the
@@ -46,14 +56,15 @@ other software, or other people, on that machine or on a network it was told to 
 
 **What is not**
 
-- **Any local process, and any local user, can drive it.** A request without an `Origin` is a
-  local program and is accepted; loopback is not per-user. On a shared machine another account can
-  chat, read `/api/config` (which contains paths), and have the server open any file its user can
-  read as a model.
-- **`--host` with a non-loopback address removes the host-name check and adds nothing in its
-  place.** No authentication, no TLS: prompts and answers cross the network in clear, and anyone
-  who can reach the port has everything in the previous point. Use it on a network you trust, or
-  put a reverse proxy that authenticates in front.
+- **Without a key, any local process, and any local user, can drive it.** A request without an
+  `Origin` is a local program and is accepted; loopback is not per-user. On a shared machine another
+  account can chat, read `/api/config` (which contains paths), and have the server open any file its
+  user can read as a model. With a key, a local program needs the key too, and whoever can read
+  where a client keeps it (the browser's storage, a shell history) has it.
+- **`--host` with a non-loopback address removes the host-name check; the key is what stands in
+  its place.** No TLS: prompts, answers and the key cross the network in clear, and anyone who can
+  reach the port and has the key has everything in the previous point. Use it on a network you
+  trust, or put a reverse proxy that terminates TLS in front.
 - **Model output can still make the browser fetch something or offer a link.** The sanitiser
   stops scripts, form controls and styles, but an image is fetched when the answer is shown and a
   link goes where it says: text that talks the model into emitting either can leak what the URL

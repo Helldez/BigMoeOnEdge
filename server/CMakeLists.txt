@@ -14,6 +14,7 @@ endif()
 # the chat protocol, the line turns wait in, the layered settings, the event fan-out and the JSON
 # edges.
 add_library(bmoe_server_core STATIC
+    access.cpp
     openai_chat.cpp
     turn_queue.cpp
     event_bus.cpp
@@ -25,25 +26,32 @@ target_include_directories(bmoe_server_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/vendor)
 
-add_executable(bmoe-server
-    main.cpp
+# The whole server as a library (server.h): the engine host, the model library, the planner
+# adapter, the platform and the HTTP API. The executable is main() over it; an app that may not
+# start a process links it instead and calls run() on a thread.
+add_library(bmoe_server STATIC
+    http_server.cpp
     engine_host.cpp
     model_library.cpp
     planner_adapter.cpp
     platform.cpp
 )
-target_link_libraries(bmoe-server PRIVATE bmoe_server_core cpp-httplib)
+target_link_libraries(bmoe_server PUBLIC bmoe_server_core PRIVATE cpp-httplib)
+target_include_directories(bmoe_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if(WIN32)
-    target_link_libraries(bmoe-server PRIVATE ws2_32 shell32 ole32)
+    target_link_libraries(bmoe_server PUBLIC ws2_32 shell32 ole32)
 endif()
 
 # The hardware planner is a library the engine may or may not carry. Detected by its header, the
 # same way the overlap hook is detected by its own: the server offers /api/plan when it is there
 # and says it is not otherwise, with nothing to configure.
 if(EXISTS "${CMAKE_SOURCE_DIR}/core/include/bmoe/planner.h")
-    target_compile_definitions(bmoe-server PRIVATE BMOE_HAVE_PLANNER=1)
+    target_compile_definitions(bmoe_server PRIVATE BMOE_HAVE_PLANNER=1)
     message(STATUS "bmoe-server: hardware planner present (/api/plan enabled)")
 endif()
+
+add_executable(bmoe-server main.cpp)
+target_link_libraries(bmoe-server PRIVATE bmoe_server)
 
 # Beside the libraries, so the build tree runs without touching PATH.
 set_target_properties(bmoe-server PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

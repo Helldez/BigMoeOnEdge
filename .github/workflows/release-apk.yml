@@ -75,12 +75,13 @@ jobs:
             bash /workspace/scripts/build-hexagon-android.sh
 
       # An explicit list, mirroring scripts/stage-hexagon-jnilibs.ps1: nothing else the build tree
-      # holds can ride into the APK. The CLI ships as libbmoe-cli.so because Android only extracts
-      # lib*.so from an APK.
+      # holds can ride into the APK. The CLI and the server ship as libbmoe-cli.so and
+      # libbmoe-server.so because Android only extracts lib*.so from an APK.
       - name: Collect libraries
         run: |
           mkdir -p jni
           cp build-android/bin/bmoe-cli jni/libbmoe-cli.so
+          cp build-android/bin/bmoe-server jni/libbmoe-server.so
           for f in libggml.so libggml-base.so libggml-cpu.so libllama.so libllama-common.so libggml-hexagon.so \
                    libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
             src=$(find build-android -name "$f" | head -1)
