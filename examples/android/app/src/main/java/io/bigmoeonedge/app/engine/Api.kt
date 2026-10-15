@@ -39,6 +39,9 @@ class Api(private val baseUrl: String, private val apiKey: String? = null) {
     fun unload(): JSONObject = send("POST", "/api/session/unload", null)
     fun cancel(): JSONObject = send("POST", "/api/cancel", null)
 
+    /** A decision (docs/decide.md): the model picks one of the choices from a single prefill. */
+    fun decide(body: JSONObject): JSONObject = send("POST", "/api/decide", body)
+
     // ── models and the plan ──
 
     fun models(): JSONObject = getJson("/api/models")

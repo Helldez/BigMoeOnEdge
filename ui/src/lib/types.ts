@@ -203,6 +203,25 @@ export interface ChatMessage {
   content: string;
 }
 
+/** `POST /api/decide`: which of the choices the model would answer next, from one prefill. */
+export interface DecideResult {
+  cancelled: boolean;
+  best: number;
+  choice_logp: (number | null)[];
+  n_tokens: number;
+  n_reused: number;
+  n_prefilled: number;
+  prefill_s: number;
+  prefix_state_mib: number;
+}
+
+/** One option of a decision, with the probability the model put on it. */
+export interface ChoiceScore {
+  label: string;
+  text: string;
+  prob: number;
+}
+
 /** One `chat.completion.chunk` with the `bmoe` extension. */
 export interface ChatChunk {
   choices?: {

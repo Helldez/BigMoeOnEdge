@@ -52,9 +52,13 @@ Semantic Versioning.
   app does not start yet. `docs/application-framework.md` says why: the server is the application
   framework, one API behind every UI, in process or in a child process as the platform allows.
 
-### Removed
-- **Choose from options** in the Android app: the engine's decide request has no endpoint in the
-  server yet, and a feature exists for every UI or for none. It returns through #245.
+- **Choose from options, in the web UI and in the Android app.** A switch under the prompt turns
+  it into a question with a field for options, one per line; the model picks one without writing
+  an answer (one prefill, no decode, `POST /api/decide`), and every option comes back with the
+  probability the model put on it, the picked one marked. The two UIs build the same request and
+  read the answer the same way, from one pure module each, with tests; a decision is not a
+  conversation turn and stays out of the history the model is sent. The Android app had this over
+  the CLI's line protocol and lost it on its move to the server; now both have it from one endpoint.
 
 ### Changed
 - **`docs/screens.md`: the five screens, specified once.** What chat, models, plan, settings and

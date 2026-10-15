@@ -152,7 +152,11 @@ cache at 4000 MiB, 4 I/O lanes and 4 compute threads, decode settles around **0.
 (~1.8 tok/s)**, a model ~1.7× the device RAM, lossless. See `../../docs/benchmark-method.md` for
 the procedure and the cache/thread sweep; `../../README.md` has the table across models.
 
-## Not here yet
+## Choose from options
 
-**Choose from options** (the engine's decide request, one prefill and no decode) left with the
-move onto the server, which has no endpoint for it; it returns to every UI through #245.
+The switch above the prompt turns it into a question and adds a field for options, one per line.
+The model picks one without writing an answer: the options are lettered, the whole request is one
+prefill with no decode (`POST /api/decide`), and each option comes back with the probability the
+model put on it (they need not add up to 100%; the rest is the model being unsure). A decision is
+kept in the conversation but never sent back to the model as history. The engine side is
+[docs/decide.md](../../docs/decide.md).

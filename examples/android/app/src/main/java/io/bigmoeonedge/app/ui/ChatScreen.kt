@@ -30,6 +30,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.bigmoeonedge.app.data.breakdown
 import io.bigmoeonedge.app.engine.Chat
 import io.bigmoeonedge.app.engine.ChatMessage
+import io.bigmoeonedge.app.engine.Decide
 import io.bigmoeonedge.app.engine.Engine
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -256,6 +257,10 @@ private fun MessageView(m: ChatMessage, isLast: Boolean, streaming: Boolean, rea
             fontSize = 12.sp, fontWeight = FontWeight.Bold,
             color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
         )
+        m.choices?.let { choices ->
+            ChoiceView(choices, m.best, m.metrics)
+            return@Column
+        }
         if (m.reasoning.isNotEmpty()) ReasoningBlock(m.reasoning, reasoningOpen)
         SelectionContainer {
             if (isUser) Text(m.content, fontSize = 15.sp) else MarkdownText(m.content)
@@ -276,6 +281,32 @@ private fun MessageView(m: ChatMessage, isLast: Boolean, streaming: Boolean, rea
                     ) { Text("Regenerate", fontSize = 12.sp) }
                 }
             }
+        }
+    }
+}
+
+/**
+ * The model's side of a decision: every option with the probability the model put on it, the
+ * picked one in bold. The bars need not add up to 100%: the rest is what the model would have said
+ * instead of any option, and a large rest is the model saying it is unsure.
+ */
+@Composable
+private fun ChoiceView(choices: List<io.bigmoeonedge.app.engine.ChoiceScore>, best: Int, metrics: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        choices.forEachIndexed { i, c ->
+            val picked = i == best
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "${c.label}) ${c.text}", fontSize = 14.sp,
+                    fontWeight = if (picked) FontWeight.Bold else FontWeight.Normal,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                )
+                LinearProgressIndicator(progress = { c.prob.toFloat().coerceIn(0f, 1f) }, modifier = Modifier.width(72.dp).height(6.dp))
+                Text(String.format(Locale.US, "%.0f%%", 100.0 * c.prob), fontSize = 12.sp, modifier = Modifier.width(40.dp))
+            }
+        }
+        if (metrics.isNotEmpty()) {
+            Text(metrics, fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -310,10 +341,23 @@ private fun PromptBar() {
     val engine by Engine.state.collectAsStateWithLifecycle()
     val focus = LocalFocusManager.current
     var prompt by rememberSaveable { mutableStateOf("") }
+    var choose by rememberSaveable { mutableStateOf(false) }
+    var optionsText by rememberSaveable { mutableStateOf("") }
 
     Column(Modifier.fillMaxWidth().imePadding()) {
         LiveLine()
         HorizontalDivider()
+        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Choose from options", fontSize = 12.sp, modifier = Modifier.weight(1f))
+            Switch(checked = choose, onCheckedChange = { choose = it }, enabled = !chat.streaming)
+        }
+        if (choose) {
+            OutlinedTextField(
+                value = optionsText, onValueChange = { optionsText = it },
+                placeholder = { Text("Options, one per line") },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp), minLines = 2, maxLines = 6,
+            )
+        }
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.Bottom,
@@ -322,7 +366,7 @@ private fun PromptBar() {
             OutlinedTextField(
                 value = prompt,
                 onValueChange = { prompt = it },
-                placeholder = { Text("Message") },
+                placeholder = { Text(if (choose) "Question" else "Message") },
                 modifier = Modifier.weight(1f),
                 maxLines = 6,
                 trailingIcon = if (prompt.isNotEmpty()) ({
@@ -332,15 +376,16 @@ private fun PromptBar() {
             if (chat.streaming) {
                 FilledTonalButton(onClick = { Chat.stop() }, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Stop") }
             } else {
+                val options = if (choose) Decide.parseOptions(optionsText) else emptyList()
                 FilledIconButton(
                     onClick = {
                         // Drop focus so the keyboard retracts: the answer streams into the space it covered.
                         focus.clearFocus()
-                        Chat.send(prompt)
+                        if (choose) Chat.choose(prompt, options) else Chat.send(prompt)
                         prompt = ""
                     },
-                    enabled = prompt.isNotBlank() && engine.serverUp,
-                ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send") }
+                    enabled = prompt.isNotBlank() && engine.serverUp && (!choose || options.size >= 2),
+                ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = if (choose) "Choose" else "Send") }
             }
         }
     }
