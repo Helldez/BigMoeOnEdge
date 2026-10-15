@@ -1,5 +1,72 @@
 # Roadmap
 
+Two parts. The first is where the project is going as a product, in the order the work has to
+happen. The second is the research themes the engine still owes, with what was measured and what
+was refuted; it is the older half of this page and it stays, because a measured negative is worth
+more than an unmeasured idea.
+
+## From an engine with demos to a product
+
+What exists is one engine and three front-ends, each with an application layer of its own. The
+desktop server holds a session, a model library with its catalog and downloads, settings in layers
+rendered from the parameter table, conversations, telemetry and the planner, and serves a web UI
+and an OpenAI-compatible endpoint over them. The Android app rebuilds most of that in Kotlin over
+the CLI as a child process, with a settings screen and a catalog of its own, and has no planner.
+The iOS harness is the CLI compiled into an app, a measuring instrument and not a chat app. The
+planner reaches the CLI and the desktop; the phone, where the project started, has not got it.
+
+The goal is one engine, one application framework, and a native UI per operating system that
+looks the same and does the same everywhere: a person loads a model larger than the device's
+memory, chats and works with it, or hands the device's hardware to any OpenAI-compatible client.
+A phone serving a laptop's coding agent is the same product as a laptop serving its own.
+
+The order is the order of dependence, and each step ships on its own.
+
+**Release what is on `main`.** The planner, the parameter table, the macOS port, the desktop
+server and the iOS harness are merged and unreleased. A release gets a run on a real device first,
+a dry run of the APK workflow since the binaries moved, and the desktop archive tried once on
+Windows, where CI compiles the server and nothing has run it. Nothing else lands before the tag.
+
+**One application framework.** The server's policy - the engine host with its one session and its
+turn line, the model library, the settings layers, conversations with their KV continuation, the
+event bus, the planner adapter, the chat protocol - becomes a library with a C interface, and
+`bmoe-server` becomes HTTP over it. Every UI then speaks one local API, the one `docs/server-api.md`
+already describes: through a socket where the OS lets the engine run in a process of its own, which
+is what keeps a driver crash from taking the app with it, and in-process where it does not. The
+engine host is a port with those two adapters. What falls out of it: the OpenAI-compatible endpoint
+exists on every platform at no extra cost, a knob added to the engine appears in every UI with no
+UI change, and the model catalog is one data file instead of a JSON here and a Kotlin table there.
+
+**The Android app, complete, on that framework.** The planner in the load path with its plan shown
+and its reasons readable; settings rendered from the parameter table; the shared catalog; chat
+history that survives a restart; sampling controls; a copyable answer; the prompt where a thumb
+reaches it; and the local server, with a switch to listen on the network and the same security
+statement the desktop one carries. The open issues are nearly all on this list.
+
+**Desktop and Windows at parity.** An installer per OS, signed, that updates itself, in place of an
+archive. In the engine, what Windows lacks: the device probes in a process of their own, the cache
+lock, the byte-identity gates in its CI job, and one documented planner run.
+
+**iOS, with the community.** The harness proves the engine builds and runs there; the app on the
+framework needs a device, an Apple team and the memory entitlements, none of which this project
+has. An issue states what exists, what is needed and what a contributor needs to bring.
+
+**One experience, three native UIs.** One written specification for the five screens - chat,
+models, plan, settings, metrics - that each UI follows in its own toolkit. Alike in what they show
+and in what a setting means, native in how they feel.
+
+**The planner on hardware it has not seen.** Every rule carries the machine it was measured on, and
+the list of machines it is owed on is in [hardware-planning.md](hardware-planning.md): the idle
+headroom arms on every kind of machine, a discrete GPU, a thread sweep so the withdrawn thread rule
+can return with a measurement behind it, a Windows run. The plan already prints its prediction next
+to what happened; collecting that pair from every run and from the community benchmarks is how the
+coefficients get corrected on machines nobody here owns.
+
+Not now: a cache that resizes itself at run time. It is the agnostic answer to the available-memory
+problem and it stays behind the static readings until those have been measured.
+
+## Research themes
+
 Themes, not deadlines. Ordered roughly by expected impact.
 
 The starting point has moved: with a well-sized expert cache and `--overlap`, decode on the
@@ -213,6 +280,22 @@ What is still owed is measurement rather than design, and every knob the plan ca
   ([hardware-planning.md](hardware-planning.md)). That choice has been made on one laptop with a
   GPU that shares the host's memory. A phone's NPU, which a caller still names by hand in the
   measurements here ([npu-prefill.md](npu-prefill.md)), and a discrete GPU each owe a run.
+- **The budget, from what other processes hold idle: measured on three machines, and parked.**
+  The reported available figure moves (3.0 to 12.4 GB within an hour on one laptop) and is a
+  floor wherever the kernel reclaims other processes' idle memory to make room. Counting that idle
+  memory into the budget was tried as one formula over measured facts (the idle set times what a
+  byte shrinks to when taken, capped by the swap left free) and measured on a Windows laptop whose
+  reclaim goes to a pagefile, a phone and a Mac whose reclaim compresses. It was right where bytes
+  go out whole (the laptop: 3.22 tok/s from the reported figure, 4.37 plain mmap, 4.92 from the
+  idle set) and wrong wherever they are compressed: on the phone a cache sized that way cost 15 s
+  of stalls in 64 tokens, and on the Mac with a 7.8 GB neighbour every cache size lost to no cache
+  at all, the reported reading included (7.28 tok/s with the cache off, 5.47 at 1.5 GB, 3.06 at
+  2.5 GB), because the compressor takes the cache's cold pages and each hit then pays a
+  decompression. `--auto` keeps today's reading, which was the best of the three everywhere; the
+  code and the full tables are reachable from the closed PR #230. What the measurements say is
+  that on a machine whose reclaim compresses, no static reading survives pressure: the size at
+  which the system starts taking the cache back is a property of the run, which is what
+  [cache-stall-sizing.md](cache-stall-sizing.md) proposes to read at run time.
 - **The graph width, anywhere but where it was measured.** `--auto` now chooses `--ubatch` from
   the compute buffers a width reserves, projected at the width the session opens with. The rule and
   its one policy figure were sized on a single laptop; a phone with an NPU, a machine with no
