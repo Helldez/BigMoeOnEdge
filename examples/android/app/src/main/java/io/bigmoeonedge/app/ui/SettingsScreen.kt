@@ -9,6 +9,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -53,7 +54,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
 
     Scaffold(
         modifier = modifier,
-        topBar = { TopAppBar(title = { Text("Settings") }) },
+        topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) } }) },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         val params = engine.params
@@ -66,7 +67,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("A setting changed that is fixed while a model is loaded. Reload to apply it.", fontSize = 13.sp, modifier = Modifier.weight(1f))
-                        TextButton(onClick = { scope.launch { Engine.load(null).onFailure { snackbar.showSnackbar(it.message ?: "reload failed") } } }) { Text("Reload") }
+                        TextButton(shape = RectangleShape, onClick = { scope.launch { Engine.load(null).onFailure { snackbar.showSnackbar(it.message ?: "reload failed") } } }) { Text("Reload") }
                     }
                 }
             }
@@ -125,8 +126,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 Text("Address: http://<this phone's IP>:8765/v1 · key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(key, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
-                    TextButton(onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
+                    TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
+                    TextButton(shape = RectangleShape, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
                 }
             }
             var csv by remember { mutableStateOf(AppPrefs.metricsCsv(context)) }
@@ -137,8 +138,8 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 csv,
             ) { on -> csv = on; AppPrefs.setMetricsCsv(context, on) }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { Engine.stop(context) }, enabled = engine.serverUp, modifier = Modifier.weight(1f)) { Text("Stop engine") }
-                OutlinedButton(onClick = { Engine.start(context) }, enabled = !engine.serverUp, modifier = Modifier.weight(1f)) { Text("Start engine") }
+                OutlinedButton(shape = RectangleShape, onClick = { Engine.stop(context) }, enabled = engine.serverUp, modifier = Modifier.weight(1f)) { Text("Stop engine") }
+                OutlinedButton(shape = RectangleShape, onClick = { Engine.start(context) }, enabled = !engine.serverUp, modifier = Modifier.weight(1f)) { Text("Start engine") }
             }
             engine.info?.let { Text("Engine ${it.version}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Spacer(Modifier.height(24.dp))
@@ -176,7 +177,7 @@ private fun ParamRow(spec: ParamSpec, cfg: ConfigState, modelName: String?, onSe
                 )
                 if (tags.isNotEmpty()) Text(tags.joinToString(" · "), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
             }
-            if (mine) TextButton(onClick = onReset, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Reset", fontSize = 12.sp) }
+            if (mine) TextButton(shape = RectangleShape, onClick = onReset, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Reset", fontSize = 12.sp) }
         }
     }
 }

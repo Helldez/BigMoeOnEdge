@@ -18,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
@@ -57,8 +58,8 @@ fun ChatScreen(modifier: Modifier = Modifier, onOpenModels: () -> Unit) {
                     Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 16.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Conversations", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    TextButton(
+                    Box(Modifier.weight(1f)) { BrandMark() }
+                    TextButton(shape = RectangleShape, 
                         onClick = { Chat.newConversation(); scope.launch { drawer.close() } },
                         enabled = !chat.streaming,
                     ) {
@@ -109,7 +110,7 @@ fun ChatScreen(modifier: Modifier = Modifier, onOpenModels: () -> Unit) {
                 },
                 actions = {
                     if (chat.current.messages.isNotEmpty()) {
-                        TextButton(onClick = { Chat.newConversation() }, enabled = !chat.streaming) { Text("New chat") }
+                        TextButton(shape = RectangleShape, onClick = { Chat.newConversation() }, enabled = !chat.streaming) { Text("New chat") }
                     }
                 },
             )
@@ -138,7 +139,7 @@ private fun EngineStatusLine(onOpenModels: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(text, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            if (action != null) TextButton(onClick = onOpenModels, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(action, fontSize = 12.sp) }
+            if (action != null) TextButton(shape = RectangleShape, onClick = onOpenModels, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(action, fontSize = 12.sp) }
         }
     }
 }
@@ -215,13 +216,13 @@ private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit) {
                                         fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.weight(1f),
                                     )
-                                    TextButton(onClick = { Chat.newConversation() }) { Text("New chat") }
+                                    TextButton(shape = RectangleShape, onClick = { Chat.newConversation() }) { Text("New chat") }
                                 } else if (err.contains("Load a model")) {
                                     Spacer(Modifier.weight(1f))
-                                    TextButton(onClick = onOpenModels) { Text("Models") }
+                                    TextButton(shape = RectangleShape, onClick = onOpenModels) { Text("Models") }
                                 } else {
                                     Spacer(Modifier.weight(1f))
-                                    TextButton(onClick = { Chat.clearError() }) { Text("Dismiss") }
+                                    TextButton(shape = RectangleShape, onClick = { Chat.clearError() }) { Text("Dismiss") }
                                 }
                             }
                         }
@@ -231,7 +232,7 @@ private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit) {
         }
         if (!followTail && !atBottom && total > 0) {
             val scope = rememberCoroutineScope()
-            FilledTonalButton(
+            FilledTonalButton(shape = RectangleShape, 
                 onClick = { scope.launch { listState.animateScrollToItem(total - 1, Int.MAX_VALUE) } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
             ) { Text("Jump to latest") }
@@ -267,16 +268,16 @@ private fun MessageView(m: ChatMessage, isLast: Boolean, streaming: Boolean, rea
             if (isUser) Text(m.content, fontSize = 15.sp) else MarkdownText(m.content)
         }
         if (m.metrics.isNotEmpty()) {
-            Text(m.metrics, fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(m.metrics, style = FigureStyle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (!isUser && !streaming) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(
+                TextButton(shape = RectangleShape, 
                     onClick = { clipboard.setText(AnnotatedString(m.content)) },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 ) { Text("Copy", fontSize = 12.sp) }
                 if (isLast) {
-                    TextButton(
+                    TextButton(shape = RectangleShape, 
                         onClick = { Chat.regenerate() },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                     ) { Text("Regenerate", fontSize = 12.sp) }
@@ -375,10 +376,10 @@ private fun PromptBar() {
                 }) else null,
             )
             if (chat.streaming) {
-                FilledTonalButton(onClick = { Chat.stop() }, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Stop") }
+                FilledTonalButton(shape = RectangleShape, onClick = { Chat.stop() }, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Stop") }
             } else {
                 val options = if (choose) Decide.parseOptions(optionsText) else emptyList()
-                FilledIconButton(
+                FilledIconButton(shape = RectangleShape, 
                     onClick = {
                         // Drop focus so the keyboard retracts: the answer streams into the space it covered.
                         focus.clearFocus()
@@ -417,7 +418,7 @@ private fun LiveLine() {
     if (chat.streaming && t.steps > 0) parts += "${t.step}/${t.steps}"
     Text(
         parts.joinToString(" · "),
-        fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+        style = FigureStyle, fontSize = 12.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
         maxLines = 1, overflow = TextOverflow.Ellipsis,

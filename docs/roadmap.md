@@ -57,9 +57,9 @@ has. An issue states what exists, what is needed and what a contributor needs to
 
 **One experience, three native UIs.** One written specification for the five screens - chat,
 models, plan, settings, metrics - that each UI follows in its own toolkit: [screens.md](screens.md).
-Alike in what they show and in what a setting means, native in how they feel. Owed against it:
-the per-value provenance (what a plan set, what differs from the default) on the phone, and one
-visual language for both, with the logo.
+Alike in what they show and in what a setting means, native in how they feel, and one visual
+language for both, from the logo ([design.md](design.md)). Owed against it: the per-value
+provenance (what a plan set, what differs from the default) on the phone.
 
 **The planner on hardware it has not seen.** Every rule carries the machine it was measured on, and
 the list of machines it is owed on is in [hardware-planning.md](hardware-planning.md): the idle

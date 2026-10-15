@@ -7,6 +7,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -51,7 +52,7 @@ fun PlanScreen(modifier: Modifier = Modifier) {
 
     Scaffold(
         modifier = modifier,
-        topBar = { TopAppBar(title = { Text("Plan") }) },
+        topBar = { TopAppBar(title = { Text("Plan") }, navigationIcon = { Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) } }) },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(
@@ -79,10 +80,10 @@ fun PlanScreen(modifier: Modifier = Modifier) {
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = { fetch(measure = true) }, enabled = planner && model.isNotEmpty() && !busy && engine.serverUp, modifier = Modifier.weight(1f)) {
+                Button(shape = RectangleShape, onClick = { fetch(measure = true) }, enabled = planner && model.isNotEmpty() && !busy && engine.serverUp, modifier = Modifier.weight(1f)) {
                     Text(if (busy) "Measuring…" else "Measure")
                 }
-                OutlinedButton(
+                OutlinedButton(shape = RectangleShape, 
                     onClick = {
                         scope.launch {
                             Engine.applyPlan().onSuccess { snackbar.showSnackbar("Plan applied to the settings") }
@@ -135,7 +136,7 @@ fun PlanScreen(modifier: Modifier = Modifier) {
                         }
                     }
                     if (p.explain.isNotEmpty()) {
-                        TextButton(onClick = { showExplain = !showExplain }) { Text(if (showExplain) "Hide the planner's own account" else "The planner's own account") }
+                        TextButton(shape = RectangleShape, onClick = { showExplain = !showExplain }) { Text(if (showExplain) "Hide the planner's own account" else "The planner's own account") }
                         if (showExplain) {
                             androidx.compose.foundation.text.selection.SelectionContainer {
                                 Text(p.explain, fontFamily = FontFamily.Monospace, fontSize = 10.sp)

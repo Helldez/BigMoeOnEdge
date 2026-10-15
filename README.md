@@ -275,6 +275,7 @@ management and compute, and `--csv` adds the memory picture. The apps show the s
 - [application-framework.md](docs/application-framework.md) and
   [server-api.md](docs/server-api.md): the server every UI talks to, and its HTTP API.
 - [screens.md](docs/screens.md): the five screens every UI shows, specified once.
+- [design.md](docs/design.md): the visual language, pixel, from the logo: palette, type, geometry.
 - [adding-a-model.md](docs/adding-a-model.md): supporting a new MoE architecture.
 - [benchmarks.md](docs/benchmarks.md) and [benchmark-method.md](docs/benchmark-method.md):
   results and how they were produced.

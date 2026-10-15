@@ -11,6 +11,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,7 +95,8 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
         topBar = {
             TopAppBar(
                 title = { Text("Models") },
-                actions = { TextButton(onClick = { requestSharedStorageAccess(context); refreshKey++ }) { Text("Refresh") } },
+                navigationIcon = { Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) } },
+                actions = { TextButton(shape = RectangleShape, onClick = { requestSharedStorageAccess(context); refreshKey++ }) { Text("Refresh") } },
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -185,7 +187,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
             HorizontalDivider()
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Other model", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
-                TextButton(onClick = { otherOpen = !otherOpen }) { Text(if (otherOpen) "Hide" else "Show") }
+                TextButton(shape = RectangleShape, onClick = { otherOpen = !otherOpen }) { Text(if (otherOpen) "Hide" else "Show") }
             }
             if (otherOpen) {
                 Text("Paste a direct link to a gguf, or pick a file already on the phone.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -195,11 +197,11 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                     singleLine = true, modifier = Modifier.fillMaxWidth(),
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(
+                    Button(shape = RectangleShape, 
                         onClick = { ModelDownloader.enqueue(context, url).onFailure { say(it.message ?: "invalid URL") } },
                         enabled = url.isNotBlank(), modifier = Modifier.weight(1f),
                     ) { Text("Download") }
-                    OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.weight(1f)) { Text("Pick file") }
+                    OutlinedButton(shape = RectangleShape, onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.weight(1f)) { Text("Pick file") }
                 }
                 val catalogNames = models?.catalog.orEmpty().flatMap { it.fileNames() }.toSet()
                 progress.filterKeys { it !in catalogNames }.forEach { (name, p) ->
@@ -228,7 +230,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                 }
             },
             confirmButton = {
-                TextButton(
+                TextButton(shape = RectangleShape, 
                     onClick = {
                         scope.launch {
                             withContext(Dispatchers.IO) { files.forEach { runCatching { it.delete() } } }
@@ -239,7 +241,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                     enabled = !isLoaded && files.isNotEmpty(),
                 ) { Text("Delete") }
             },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(shape = RectangleShape, onClick = { deleteTarget = null }) { Text("Cancel") } },
         )
     }
 }
@@ -270,11 +272,11 @@ private fun LocalModelRow(
             Spacer(Modifier.width(8.dp))
             if (loaded) {
                 Text("Loaded", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
-                TextButton(onClick = onUnload, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Unload") }
+                TextButton(shape = RectangleShape, onClick = onUnload, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Unload") }
             } else {
-                Button(onClick = onLoad, enabled = loadable, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Load") }
+                Button(shape = RectangleShape, onClick = onLoad, enabled = loadable, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Load") }
                 if (onDelete != null) {
-                    TextButton(onClick = onDelete, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Delete") }
+                    TextButton(shape = RectangleShape, onClick = onDelete, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Delete") }
                 }
             }
         }
@@ -296,11 +298,11 @@ private fun CatalogRow(
             Text(entry.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(8.dp))
             when (status) {
-                CatalogStatus.AVAILABLE -> Button(onClick = onDownload, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Download", maxLines = 1, softWrap = false) }
-                CatalogStatus.DOWNLOADING -> TextButton(onClick = onCancel) { Text("Cancel", maxLines = 1, softWrap = false) }
+                CatalogStatus.AVAILABLE -> Button(shape = RectangleShape, onClick = onDownload, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Download", maxLines = 1, softWrap = false) }
+                CatalogStatus.DOWNLOADING -> TextButton(shape = RectangleShape, onClick = onCancel) { Text("Cancel", maxLines = 1, softWrap = false) }
                 CatalogStatus.ON_DEVICE -> {
                     Text("On device", fontSize = 13.sp, maxLines = 1, softWrap = false, color = MaterialTheme.colorScheme.primary)
-                    TextButton(onClick = onDelete, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Delete", maxLines = 1, softWrap = false) }
+                    TextButton(shape = RectangleShape, onClick = onDelete, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("Delete", maxLines = 1, softWrap = false) }
                 }
             }
         }
@@ -324,7 +326,7 @@ private fun DownloadProgress(p: ModelDownloader.Progress, onCancel: (() -> Unit)
     )
     if (pct != null) LinearProgressIndicator(progress = { pct }, modifier = Modifier.fillMaxWidth())
     else LinearProgressIndicator(Modifier.fillMaxWidth())
-    onCancel?.let { TextButton(onClick = it) { Text("Cancel") } }
+    onCancel?.let { TextButton(shape = RectangleShape, onClick = it) { Text("Cancel") } }
 }
 
 /**

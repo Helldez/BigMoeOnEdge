@@ -64,6 +64,12 @@ Semantic Versioning.
   app does not start yet. `docs/application-framework.md` says why: the server is the application
   framework, one API behind every UI, in process or in a child process as the platform allows.
 
+- **One visual language for every UI: pixel, from the logo** (`docs/design.md`). The chip's own
+  palette as the tokens (dark by default, light when asked), Pixelify Sans (OFL, bundled) for the
+  product's own voice (titles, the screen names, badges, every figure the engine reports), the
+  system face for prose, square boxes with 2 px edges and a hard shadow, the mark beside the
+  wordmark in every bar. The web UI carries it in its stylesheet, the Android app as a Material 3
+  colour scheme, typography and shapes; the launcher icon is the chip.
 - **The web UI shows the five screens the phone shows, the same way.** Chat, Models, Plan,
   Settings and Metrics in that order, Metrics a page of its own with the live card. Chat keeps
   conversations in the browser (a list to switch, open and delete; a reload finds them), writes

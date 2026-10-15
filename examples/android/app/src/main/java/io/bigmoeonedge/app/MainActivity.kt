@@ -21,8 +21,6 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +31,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.core.content.ContextCompat
 import io.bigmoeonedge.app.engine.Chat
 import io.bigmoeonedge.app.engine.Engine
+import io.bigmoeonedge.app.ui.BmoeTheme
 import io.bigmoeonedge.app.ui.ChatScreen
 import io.bigmoeonedge.app.ui.MetricsScreen
 import io.bigmoeonedge.app.ui.ModelsScreen
@@ -58,15 +57,10 @@ class MainActivity : ComponentActivity() {
         Chat.init(this)
         Engine.start(this)
         setContent {
-            MaterialTheme(colorScheme = if (isSystemDark()) darkColorScheme() else lightColorScheme()) {
+            BmoeTheme {
                 Surface(color = MaterialTheme.colorScheme.background) { Root() }
             }
         }
-    }
-
-    private fun isSystemDark(): Boolean {
-        val flag = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
-        return flag == android.content.res.Configuration.UI_MODE_NIGHT_YES
     }
 }
 

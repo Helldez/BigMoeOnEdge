@@ -78,19 +78,21 @@
   }
   .user {
     align-self: flex-end;
-    background: var(--info-bg);
+    background: var(--surface-2);
+    border: var(--edge) solid var(--border);
     max-width: 85%;
   }
   .assistant {
     background: var(--surface);
-    border: 1px solid var(--border);
+    border: var(--edge) solid var(--border);
+    box-shadow: 4px 4px 0 var(--shadow);
   }
   .user-text {
     white-space: pre-wrap;
   }
   .thinking {
     margin-bottom: 0.5rem;
-    border-left: 3px solid var(--border);
+    border-left: 4px solid var(--accent-2);
     padding-left: 0.6rem;
     color: var(--muted);
   }
@@ -120,9 +122,9 @@
     color: var(--err);
   }
   .meta {
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     margin: 0.4rem 0 0;
-    font-family: var(--mono);
+    font-family: var(--pixel);
   }
   .actions {
     margin: 0.3rem 0 0;
