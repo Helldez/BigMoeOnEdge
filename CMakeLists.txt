@@ -60,6 +60,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     set(LLAMA_BUILD_SERVER  OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_COMMON  ON  CACHE BOOL "" FORCE)
     set(LLAMA_CURL          OFF CACHE BOOL "" FORCE)  # common's model-download path unused
+    # cpp-httplib links whatever OpenSSL the build machine has when this is on, and the release
+    # archives ship no libssl: bmoe-server speaks plain HTTP on loopback, downloads go through
+    # the system curl, so the binary must not depend on a TLS stack (#242).
+    set(LLAMA_OPENSSL       OFF CACHE BOOL "" FORCE)
     # The prefill-device gate (G16) needs a second device to move weights onto, and the one every
     # host has is a loopback rpc-server fronting the CPU. A test fixture, not a feature: host test
     # builds only (releases build without tests), no front-end accepts an RPC endpoint, and it is
