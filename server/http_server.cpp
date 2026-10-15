@@ -50,6 +50,8 @@ struct Options {
     std::string api_key;
     bool no_api_key = false; // listen beyond loopback with no key, on purpose
     bool open_browser = false;
+    bool isolated_probes = true;               // the planner asks each device in a child process first
+    std::string probe_device;                  // internal: this process IS such a child; probe this device and exit
     std::map<std::string, std::string> launch; // engine parameters given on the command line
 };
 
@@ -83,6 +85,7 @@ void print_usage(const char * argv0) {
                 "  --api-key KEY        require this key on the API (Authorization: Bearer KEY); needed\n"
                 "                       with a --host beyond loopback\n"
                 "  --no-api-key         listen beyond loopback with no key, on a network you trust\n"
+                "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
                 "  -h, --help           this text\n"
                 "      --version        print the engine version\n"
                 "\n"
@@ -123,6 +126,10 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.api_key = next();
         else if (a == "--no-api-key")
             o.no_api_key = true;
+        else if (a == "--no-isolated-probes")
+            o.isolated_probes = false;
+        else if (a == "--probe-device")
+            o.probe_device = next();
         else if (a == "-h" || a == "--help") {
             print_usage(argv[0]);
             return 0;
@@ -249,7 +256,7 @@ struct App {
         if (auto_plan()) {
             host.unload();
             std::unique_lock<std::mutex> measuring(measure_m);
-            PlanOutcome p = make_plan(store.config(), store.operator_keys());
+            PlanOutcome p = make_plan(store.config(), store.operator_keys(), opt.isolated_probes);
             measuring.unlock();
             if (p.ok) {
                 store.apply_plan(p.values, p.decisions);
@@ -521,7 +528,7 @@ void register_routes(httplib::Server & svr, App & app) {
             return send_error(res, 409, "busy: a plan measures the machine, and a running generation would skew it");
         std::unique_lock<std::mutex> measuring(app.measure_m, std::try_to_lock);
         if (!measuring) return send_error(res, 409, "busy: a plan is already being measured");
-        PlanOutcome p = make_plan(app.store.config(), app.store.operator_keys());
+        PlanOutcome p = make_plan(app.store.config(), app.store.operator_keys(), app.opt.isolated_probes);
         measuring.unlock();
         if (!p.ok) return send_json(res, json{{"available", true}, {"error", p.error}});
         json body = p.body;
@@ -586,6 +593,16 @@ int run(int argc, char ** argv) {
     Options o;
     const int rc = parse_args(argc, argv, o);
     if (rc >= 0) return rc;
+    // The child of an isolated device probe: one device, its facts on one line, nothing else. If
+    // the driver ends this process, or it never returns, that is the parent's answer about the device.
+    if (!o.probe_device.empty()) {
+        const auto model = o.launch.find("model");
+        if (model == o.launch.end() || model->second.empty()) {
+            std::fprintf(stderr, "bmoe-server: --probe-device needs -m MODEL\n");
+            return 2;
+        }
+        return run_device_probe_child(model->second, o.probe_device);
+    }
     const std::string refusal = launch_refusal(o.host, o.api_key, o.no_api_key);
     if (!refusal.empty()) {
         std::fprintf(stderr, "bmoe-server: %s\n", refusal.c_str());

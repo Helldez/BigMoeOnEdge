@@ -568,11 +568,11 @@ the run decodes at 1.87 and 2.02 tok/s on the cores with the backend's library s
 executable. On the laptop, where the device works, the plan is the same as before and the second
 process costs about 3.5 s, most of it the child measuring the host again as its own reference.
 
-Starting a second process is the front-end's business, so the probe takes a runner; `bmoe-cli`
-gives it one (`--probe-device` is the child's mode, `--no-isolated-probes` turns it off). Where a
-platform has no way to start one the runner is empty and the probes run here, as they always did:
-that is the case on Windows today, and in the desktop server, which plans through its own adapter.
-The time limit is two minutes, and it has not been seen to fire.
+Starting a second process is the front-end's business, so the probe takes a runner; `bmoe-cli` and
+`bmoe-server` each give it one (`--probe-device` is the child's mode in both, `--no-isolated-probes`
+turns it off). Where a platform has no way to start one the runner is empty and the probes run
+here, as they always did: that is the case on Windows today. The time limit is two minutes, and it
+has not been seen to fire.
 
 What this does not do: it measures a matmul, not a prefill. The loaders that fill the device's
 slots from flash, and the storage under them, are not in the probe, so on a machine whose storage

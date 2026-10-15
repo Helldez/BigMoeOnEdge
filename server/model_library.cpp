@@ -176,11 +176,17 @@ json ModelLibrary::list() {
         auto job = jobs_.find(e.id);
         const bool running = job != jobs_.end() && !job->second->finished;
         const char * status = running ? "downloading" : entry_on_disk(e) ? "on_disk" : "available";
+        // Every file with its URL: a host that has no curl (a phone) downloads for itself, and the
+        // catalog is still the one place the URLs are written.
+        json files = json::array();
+        for (const CatalogFile & f : e.files)
+            files.push_back({{"name", f.name}, {"bytes", f.bytes}, {"url", f.url}});
         catalog.push_back({{"id", e.id},
                            {"title", e.title},
                            {"quant", e.quant},
                            {"file", e.files.front().name},
                            {"bytes", bytes},
+                           {"files", files},
                            {"blurb", e.blurb},
                            {"status", status},
                            {"note", e.files.size() > 1 ? std::to_string(e.files.size()) + " shards" : ""}});
