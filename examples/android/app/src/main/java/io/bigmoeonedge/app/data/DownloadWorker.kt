@@ -1,4 +1,4 @@
-package io.bigmoeonedge.example
+package io.bigmoeonedge.app.data
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -46,7 +46,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         // usableSpace already accounts for the bytes on disk in .part, so check the remainder.
         if (expected > 0 && expected - part.length() > dir.usableSpace) {
             part.delete()
-            return@withContext fail("needs ${ModelCatalog.gbLabel(expected)}, only ${ModelCatalog.gbLabel(dir.usableSpace)} free")
+            return@withContext fail("needs ${gbLabel(expected)}, only ${gbLabel(dir.usableSpace)} free")
         }
 
         setForeground(foregroundInfo(name, 0f))

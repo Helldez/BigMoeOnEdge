@@ -39,11 +39,13 @@ what the UIs owe is the move onto it. What falls out: the OpenAI-compatible endp
 every platform at no extra cost, a knob added to the engine appears in every UI with no UI change,
 and the model catalog is one data file instead of a JSON here and a Kotlin table there.
 
-**The Android app, complete, on that framework.** The planner in the load path with its plan shown
-and its reasons readable; settings rendered from the parameter table; the shared catalog; chat
-history that survives a restart; sampling controls; a copyable answer; the prompt where a thumb
-reaches it; and the local server, with a switch to listen on the network and the same security
-statement the desktop one carries. The open issues are nearly all on this list.
+**The Android app, complete, on that framework.** In code: the app runs `bmoe-server` from the APK
+as a child process and is a client of its API, with the planner in the load path and its reasons
+readable, settings rendered from the parameter table (sampling included), the shared catalog, chat
+history that survives a restart, a copyable answer, the prompt where a thumb reaches it, and the
+switch to serve the network with a key under the same security statement the desktop carries.
+Owed: a run on a phone before it is released, and the decide endpoint (#245) that brings Choose
+from options back to every UI.
 
 **Desktop and Windows at parity.** An installer per OS, signed, that updates itself, in place of an
 archive. In the engine, what Windows lacks: the device probes in a process of their own, the cache

@@ -33,7 +33,9 @@ def keystoreProps = new Properties()
 if (keystorePropsFile.exists()) keystoreProps.load(new FileInputStream(keystorePropsFile))
 
 android {
-    namespace 'io.bigmoeonedge.example'
+    // The code's package. The applicationId below stays what it was, so an update installs over
+    // the previous build instead of beside it.
+    namespace 'io.bigmoeonedge.app'
     compileSdk 34
 
     signingConfigs {
@@ -84,11 +86,19 @@ android {
         }
     }
 
-    // The CLI is a real executable shipped as lib*.so; it must reach the device
-    // uncompressed and extracted into nativeLibraryDir so it can be exec'd.
+    // The server (and the CLI) are real executables shipped as lib*.so; they must reach the device
+    // uncompressed and extracted into nativeLibraryDir so they can be exec'd.
     packagingOptions {
         jniLibs {
             useLegacyPackaging true
+        }
+    }
+
+    // The model catalog is the project's one data file (catalog/models.json), shipped as an asset
+    // and handed to the server at start: there is no second list in Kotlin.
+    sourceSets {
+        main {
+            assets.srcDirs += ["$rootDir/../../catalog"]
         }
     }
 
@@ -128,8 +138,11 @@ dependencies {
     // resumes multi-GB transfers (see DownloadWorker). Brings kotlinx-coroutines-android too.
     implementation 'androidx.work:work-runtime-ktx:2.9.1'
 
-    // Pure-Kotlin rules (catalog status, ...) get JVM unit tests: ./gradlew testDevDebugUnitTest
+    // Pure-Kotlin rules (the SSE parser, the chat protocol, the parameter table, the catalog
+    // status, the conversation files) get JVM unit tests: ./gradlew testDevDebugUnitTest. The
+    // Android org.json is a stub on the JVM, so the tests use the real one.
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
 
     def composeBom = platform('androidx.compose:compose-bom:2024.09.02')
     implementation composeBom

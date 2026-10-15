@@ -1,4 +1,4 @@
-package io.bigmoeonedge.example
+package io.bigmoeonedge.app.data
 
 import android.content.Context
 import android.content.Intent

@@ -1,12 +1,15 @@
-package io.bigmoeonedge.example
+package io.bigmoeonedge.app.data
 
 import android.content.Context
 import android.os.Environment
+import io.bigmoeonedge.app.BuildConfig
 import java.io.File
 
 /**
- * Finds MoE gguf models on device. Models are read in place by the bmoe-cli subprocess (a gguf
- * can be tens of GB), so every source is a real filesystem directory the subprocess can open.
+ * Finds MoE gguf models on device. Models are read in place by the bmoe-server process (a gguf
+ * can be tens of GB), so every source is a real filesystem directory that process can open. The
+ * server lists its own models directory itself; this scan is for the other places a model can
+ * sit, which the server loads by path when asked.
  *
  * Which directories are scanned depends on the distribution flavor (BuildConfig.SHARED_STORAGE):
  *
@@ -79,6 +82,15 @@ object ModelManager {
         allGguf(ctx).filter { !isNonFirstShard(it.name) && GgufHeader.isMoe(it) }
 
     /**
+     * MoE models outside the server's own directory (adb-pushed on the dev flavor, or left by an
+     * older build in the external files dir): the server does not list them, but loads them by path.
+     */
+    fun listModelsElsewhere(ctx: Context): List<File> {
+        val own = internalModelsDir(ctx).absolutePath
+        return listMoeModels(ctx).filter { it.parentFile?.absolutePath != own }
+    }
+
+    /**
      * Names of every gguf on the device, non-first shards included. The catalog's presence check
      * needs this raw view: a sharded entry is ON_DEVICE only when every shard is, and shards 2..N
      * are exactly what [listMoeModels] hides.
@@ -101,9 +113,13 @@ object ModelManager {
      */
     fun isAppDeletable(f: File): Boolean = !f.absolutePath.startsWith(TMP_MODEL_DIR.absolutePath)
 
-    /** Absolute path of libbmoe-cli.so inside the app's nativeLibraryDir. */
-    fun cliPath(ctx: Context): String =
-        File(ctx.applicationInfo.nativeLibraryDir, "libbmoe-cli.so").absolutePath
+    /** Absolute path of libbmoe-server.so inside the app's nativeLibraryDir: the engine, as a process. */
+    fun serverPath(ctx: Context): String =
+        File(ctx.applicationInfo.nativeLibraryDir, "libbmoe-server.so").absolutePath
+
+    /** Whether this APK carries the Hexagon backend (release builds do; a plain local build does not). */
+    fun hasHexagonBackend(ctx: Context): Boolean =
+        File(ctx.applicationInfo.nativeLibraryDir, "libggml-hexagon.so").exists()
 
     /**
      * Why the NPU prefill cannot run here, or null when it can be offered: the APK carries the

@@ -35,7 +35,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `third_party/llama.cpp` — the pinned submodule: upstream plus one commit, the expert-ready hook
   `--overlap` needs (the fork branch hard rule 1 describes; `docs/seam.md`). Everything else builds
   against stock upstream.
-- `tests/` — byte-identity gates. `examples/android/` — the demo APK. `examples/ios/` — the iOS
+- `tests/` — byte-identity gates. `examples/android/` — the Android app, a client of `bmoe-server`
+  (shipped in the APK, run as a child process; no engine logic in Kotlin). `examples/ios/` — the iOS
   harness: `cli/main.cpp` compiled into an app, since an app there may not start a process.
 
 ## Build and test

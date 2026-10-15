@@ -1,4 +1,4 @@
-package io.bigmoeonedge.example
+package io.bigmoeonedge.app.data
 
 import java.io.BufferedInputStream
 import java.io.EOFException
