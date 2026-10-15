@@ -28,6 +28,15 @@ Semantic Versioning.
   one application framework, native UIs per OS, the OpenAI-compatible endpoint everywhere. The
   research themes are its second half.
 
+### Fixed
+- **The Windows desktop archive did not start on a machine without OpenSSL.** `bmoe-server.exe`
+  imported `libssl-3-x64.dll` and `libcrypto-3-x64.dll`, which the archive does not ship: llama.cpp's
+  `LLAMA_OPENSSL` option defaults to on, and the `cpp-httplib` the server builds from its vendor tree
+  links the OpenSSL the build runner happens to have. Double-clicking the exe hung on the "DLL was
+  not found" dialog; it worked from Git Bash only because Git for Windows carries those DLLs on its
+  `PATH`. The server speaks plain HTTP on loopback and downloads go through the system curl, so the
+  option is now off and the binary links no TLS stack. The CLI archive was never affected (#242).
+
 ## [0.29.0] - 2026-10-13
 
 ### Added
