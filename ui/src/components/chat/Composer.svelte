@@ -2,28 +2,10 @@
   import { chat } from '../../stores/chat.svelte';
   import { server } from '../../stores/server.svelte';
 
-  // The only parameters the composer names: they are sent per request as max_tokens and think.
-  const N_PREDICT = 'n-predict';
-  const THINK = 'think';
-
+  // The composer names no parameter: how many tokens to generate and whether to think are
+  // request-scoped rows in Settings, and the server applies them to every message.
   let text = $state('');
   let options = $state('');
-  let maxTokens = $state<number | null>(null);
-  let think = $state(false);
-  let seeded = false;
-
-  let nPredictSpec = $derived(server.params?.find((p) => p.key === N_PREDICT));
-  let hasThink = $derived(server.config ? THINK in server.config.values : false);
-
-  // Initial values come from the config, once; later config changes do not overwrite edits.
-  $effect(() => {
-    const values = server.config?.values;
-    if (seeded || !values) return;
-    seeded = true;
-    const n = values[N_PREDICT];
-    if (typeof n === 'number') maxTokens = n;
-    think = values[THINK] === true;
-  });
 
   // A message the server refused goes back into the box.
   $effect(() => {
@@ -43,8 +25,7 @@
       chat.decide(msg, options);
       return;
     }
-    const n = maxTokens !== null && Number.isFinite(maxTokens) ? maxTokens : undefined;
-    chat.send(msg, n, hasThink ? think : undefined);
+    chat.send(msg);
   }
 
   function onKey(e: KeyboardEvent) {
@@ -83,22 +64,6 @@
       <input type="checkbox" bind:checked={chat.choose} disabled={chat.busy} />
       Choose from options
     </label>
-    <label class="inline">
-      Max tokens
-      <input
-        type="number"
-        min={nPredictSpec?.min}
-        max={nPredictSpec?.max}
-        step="1"
-        bind:value={maxTokens}
-      />
-    </label>
-    {#if hasThink}
-      <label class="inline">
-        <input type="checkbox" bind:checked={think} />
-        Thinking
-      </label>
-    {/if}
     <span class="spacer"></span>
     {#if chat.busy}
       <button type="button" class="danger" onclick={() => chat.stop()}>Stop</button>
@@ -133,9 +98,6 @@
     align-items: center;
     gap: 0.4rem;
     font-size: 0.9rem;
-  }
-  .inline input[type='number'] {
-    width: 6.5rem;
   }
   .spacer {
     flex: 1;

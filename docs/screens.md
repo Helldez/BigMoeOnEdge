@@ -130,8 +130,9 @@ What it is: what the engine measured about its own work, live and recorded.
   after the run, the prefill rate, time to first token, the bytes streamed and the cache's
   resident size against its budget; under speculation, what the guesses bought. The figures come
   from the `token` and `done` events and nowhere else.
-- **Records.** The desktop server writes its own per-token CSV when launched with one; the phone
-  writes one per loaded model from the same events, in the same shape. The screen lists them,
+- **Records.** The desktop server writes its own per-token CSV when launched with one, which the
+  web UI does not read yet; the phone writes one per loaded model from the same events, in the
+  same shape. The phone's screen lists them,
   shows one with its configuration preamble and per-turn summaries, correlates columns of one
   file, compares one column of two files on one axis, and shares a file. A glossary names every
   column and every configuration key.
