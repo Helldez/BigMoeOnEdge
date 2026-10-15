@@ -32,6 +32,10 @@ Semantic Versioning.
   framework, one API behind every UI, in process or in a child process as the platform allows.
 
 ### Changed
+- **`docs/screens.md`: the five screens, specified once.** What chat, models, plan, settings and
+  metrics show, what a person can do on each, what every state means, and the rule behind them (a
+  UI knows no engine parameter by name), so the web UI, the Android app and an iOS app render the
+  same thing their own way (#236).
 - `docs/roadmap.md` opens with the product plan, in the order the work has to happen: one engine,
   one application framework, native UIs per OS, the OpenAI-compatible endpoint everywhere. The
   research themes are its second half.
