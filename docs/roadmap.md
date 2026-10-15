@@ -54,8 +54,10 @@ framework needs a device, an Apple team and the memory entitlements, none of whi
 has. An issue states what exists, what is needed and what a contributor needs to bring.
 
 **One experience, three native UIs.** One written specification for the five screens - chat,
-models, plan, settings, metrics - that each UI follows in its own toolkit. Alike in what they show
-and in what a setting means, native in how they feel.
+models, plan, settings, metrics - that each UI follows in its own toolkit: [screens.md](screens.md).
+Alike in what they show and in what a setting means, native in how they feel. Owed against it:
+the Choose mode in the web UI and the phone once the decide endpoint lands, conversations and the
+per-value provenance in the web UI.
 
 **The planner on hardware it has not seen.** Every rule carries the machine it was measured on, and
 the list of machines it is owed on is in [hardware-planning.md](hardware-planning.md): the idle

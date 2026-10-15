@@ -59,7 +59,7 @@ host app supplies or the server does without:
 
 Three native UIs, one experience: the five screens (chat, models, plan, settings, metrics) are
 specified once, in what they show and what a setting means, and each toolkit renders them its own
-way. The specification is issue #236; the web UI is the first implementation of it.
+way: [screens.md](screens.md). The web UI and the Android app are its first two implementations.
 
 ## The order of the work
 

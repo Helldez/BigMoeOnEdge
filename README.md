@@ -656,6 +656,7 @@ or reproduce the measurements. Most-wanted entry points:
 - [docs/community-benchmarks.md](docs/community-benchmarks.md): results on hardware we do not own,
   and how to add yours.
 - [docs/telemetry.md](docs/telemetry.md): the per-token line protocol, the CSV schema and the traces.
+- [docs/screens.md](docs/screens.md): the five screens every UI shows, specified once.
 - [docs/android-memory.md](docs/android-memory.md): what reclaims the engine's memory on a phone.
 
 ## Prior art
