@@ -1,6 +1,7 @@
 package io.bigmoeonedge.app.data
 
 import io.bigmoeonedge.app.engine.ChatMessage
+import io.bigmoeonedge.app.engine.ChoiceScore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -18,10 +19,14 @@ data class Conversation(
     fun toJson(): JSONObject {
         val arr = JSONArray()
         for (m in messages) {
-            arr.put(
-                JSONObject().put("role", m.role).put("content", m.content)
-                    .put("reasoning", m.reasoning).put("metrics", m.metrics)
-            )
+            val o = JSONObject().put("role", m.role).put("content", m.content)
+                .put("reasoning", m.reasoning).put("metrics", m.metrics)
+            m.choices?.let { cs ->
+                val arr2 = JSONArray()
+                for (c in cs) arr2.put(JSONObject().put("label", c.label).put("text", c.text).put("prob", c.prob))
+                o.put("choices", arr2).put("best", m.best)
+            }
+            arr.put(o)
         }
         return JSONObject().put("id", id).put("title", title).put("created_at", createdAt)
             .put("updated_at", updatedAt).put("model", model).put("messages", arr)
@@ -32,7 +37,16 @@ data class Conversation(
             val arr = o.optJSONArray("messages") ?: JSONArray()
             val messages = (0 until arr.length()).map { i ->
                 val m = arr.getJSONObject(i)
-                ChatMessage(m.optString("role", "user"), m.optString("content"), m.optString("reasoning"), m.optString("metrics"))
+                val choices = m.optJSONArray("choices")?.let { cs ->
+                    (0 until cs.length()).map { j ->
+                        val c = cs.getJSONObject(j)
+                        ChoiceScore(c.optString("label"), c.optString("text"), c.optDouble("prob", 0.0))
+                    }
+                }
+                ChatMessage(
+                    m.optString("role", "user"), m.optString("content"), m.optString("reasoning"), m.optString("metrics"),
+                    choices, m.optInt("best", -1),
+                )
             }
             return Conversation(
                 id = o.getString("id"),

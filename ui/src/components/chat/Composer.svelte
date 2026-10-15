@@ -7,6 +7,7 @@
   const THINK = 'think';
 
   let text = $state('');
+  let options = $state('');
   let maxTokens = $state<number | null>(null);
   let think = $state(false);
   let seeded = false;
@@ -32,12 +33,16 @@
     }
   });
 
-  let canSend = $derived(server.ready && !chat.busy && text.trim() !== '');
+  let canSend = $derived(server.ready && !chat.busy && text.trim() !== '' && (!chat.choose || options.trim() !== ''));
 
   function send() {
     if (!canSend) return;
     const msg = text;
     text = '';
+    if (chat.choose) {
+      chat.decide(msg, options);
+      return;
+    }
     const n = maxTokens !== null && Number.isFinite(maxTokens) ? maxTokens : undefined;
     chat.send(msg, n, hasThink ? think : undefined);
   }
@@ -57,15 +62,27 @@
     send();
   }}
 >
-  <label class="visually-hidden" for="composer-text">Message</label>
+  <label class="visually-hidden" for="composer-text">{chat.choose ? 'Question' : 'Message'}</label>
   <textarea
     id="composer-text"
     rows="3"
-    placeholder={server.ready ? 'Message (Enter to send, Shift+Enter for a new line)' : 'Load a model to start chatting'}
+    placeholder={!server.ready
+      ? 'Load a model to start chatting'
+      : chat.choose
+        ? 'Question (the model picks one of the options below)'
+        : 'Message (Enter to send, Shift+Enter for a new line)'}
     bind:value={text}
     onkeydown={onKey}
   ></textarea>
+  {#if chat.choose}
+    <label class="visually-hidden" for="composer-options">Options, one per line</label>
+    <textarea id="composer-options" rows="3" placeholder="Options, one per line" bind:value={options}></textarea>
+  {/if}
   <div class="row">
+    <label class="inline" title="The model picks one of your options from a single prefill, with no decode: each option comes back with the probability the model put on it.">
+      <input type="checkbox" bind:checked={chat.choose} disabled={chat.busy} />
+      Choose from options
+    </label>
     <label class="inline">
       Max tokens
       <input
@@ -86,7 +103,7 @@
     {#if chat.busy}
       <button type="button" class="danger" onclick={() => chat.stop()}>Stop</button>
     {:else}
-      <button type="submit" class="primary" disabled={!canSend}>Send</button>
+      <button type="submit" class="primary" disabled={!canSend}>{chat.choose ? 'Choose' : 'Send'}</button>
     {/if}
   </div>
   {#if !server.ready}

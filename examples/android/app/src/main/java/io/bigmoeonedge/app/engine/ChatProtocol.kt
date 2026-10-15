@@ -14,7 +14,13 @@ data class ChatMessage(
     val content: String,
     val reasoning: String = "",
     val metrics: String = "",
+    /** A decision's answer: every option with its probability, [best] the one the model picked. */
+    val choices: List<ChoiceScore>? = null,
+    val best: Int = -1,
 )
+
+/** One option of a decision and the probability the model put on it. */
+data class ChoiceScore(val label: String, val text: String, val prob: Double)
 
 /**
  * One streamed chunk of `POST /v1/chat/completions`, reduced to what the UI applies. [content] and
@@ -39,10 +45,21 @@ data class ChatChunk(
 object ChatProtocol {
     const val DONE = "[DONE]"
 
-    /** The whole conversation, every time: the server reuses what its KV cache already holds. */
+    /**
+     * The whole conversation, every time: the server reuses what its KV cache already holds. A
+     * decision is not a conversation turn, so a question with a chosen answer stays out.
+     */
     fun requestBody(messages: List<ChatMessage>, maxTokens: Int? = null, think: Boolean? = null): JSONObject {
         val arr = JSONArray()
+        val sent = mutableListOf<ChatMessage>()
         for (m in messages) {
+            if (m.choices != null) {
+                if (sent.lastOrNull()?.role == "user") sent.removeAt(sent.lastIndex)
+                continue
+            }
+            sent += m
+        }
+        for (m in sent) {
             val o = JSONObject().put("role", m.role).put("content", m.content)
             if (m.role == "assistant" && m.reasoning.isNotEmpty()) o.put("reasoning_content", m.reasoning)
             arr.put(o)

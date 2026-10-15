@@ -8,6 +8,7 @@ import type {
   ChatMessage,
   Config,
   ConfigUpdate,
+  DecideResult,
   Info,
   ModelsResponse,
   ParamSpec,
@@ -80,6 +81,9 @@ export const api = {
   /** The plan in force; `measure` runs the planner's probes again instead. */
   plan: (measure = false) => request<Plan>('GET', measure ? 'api/plan?measure=1' : 'api/plan'),
   applyPlan: () => request<Config>('POST', 'api/plan/apply'),
+  /** A decision: the model picks one of `choices` from a single prefill (docs/decide.md). */
+  decide: (body: { prefix: string; suffix: string; choices: string[]; reuse_prefix?: boolean }) =>
+    request<DecideResult>('POST', 'api/decide', body),
 };
 
 export const EVENTS_URL = 'api/events';

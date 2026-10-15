@@ -21,10 +21,22 @@
         <div class="md">{@html reasoningHtml}</div>
       </details>
     {/if}
-    {#if turn.content}
+    {#if turn.choices}
+      <ul class="choices" aria-label="The model's choice">
+        {#each turn.choices as c, i (c.label)}
+          <li class:picked={i === turn.best}>
+            <span class="label">{c.label})</span>
+            <span class="text">{c.text}</span>
+            <meter min="0" max="1" value={c.prob}></meter>
+            <span class="prob">{Math.round(100 * c.prob)}%</span>
+          </li>
+        {/each}
+      </ul>
+      {#if turn.metrics}<p class="meta muted">{turn.metrics}</p>{/if}
+    {:else if turn.content}
       <div class="md">{@html html}</div>
     {:else if streaming && !turn.reasoning}
-      <p class="muted">Waiting for the first token...</p>
+      <p class="muted">{turn.choices === undefined && !turn.content ? 'Waiting for the first token...' : ''}</p>
     {/if}
     {#if turn.error}
       <p class="notice error">{turn.error}</p>
@@ -95,5 +107,34 @@
   .meta {
     font-size: 0.8rem;
     margin: 0.4rem 0 0;
+  }
+  .choices {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .choices li {
+    display: grid;
+    grid-template-columns: 2rem minmax(0, 1fr) 6rem 3rem;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .choices li.picked {
+    font-weight: 600;
+  }
+  .choices .text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .choices meter {
+    width: 100%;
+  }
+  .choices .prob {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 </style>

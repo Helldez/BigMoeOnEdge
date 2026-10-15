@@ -90,10 +90,51 @@ object Chat {
         run(withUser)
     }
 
+    /**
+     * A decision: the model picks one of [options] for [question] from one prefill and no decode.
+     * Shown in the conversation as the question with its lettered options, then the options with
+     * the probability the model put on each; never sent back to the model as history.
+     */
+    fun choose(question: String, options: List<String>) {
+        val q = question.trim()
+        if (q.isEmpty() || options.size < 2 || _state.value.streaming) return
+        val engine = Engine.current
+        if (!engine.ready) {
+            _state.update { it.copy(error = if (engine.serverUp) "Load a model first, from Models." else "The engine is not running.") }
+            return
+        }
+        val before = _state.value.current
+        val withUser = before.copy(
+            title = before.title.ifEmpty { Conversation.titleFor(q) },
+            messages = before.messages + ChatMessage("user", Decide.userText(q, options)),
+            updatedAt = System.currentTimeMillis(),
+            model = engine.info?.model?.name ?: before.model,
+        )
+        persist(withUser)
+        _state.update { it.copy(current = withUser, answer = "", reasoning = "", streaming = true, error = null, contextFull = false) }
+        stopRequested = false
+        Engine.resetLive()
+        scope.launch {
+            var error: String? = null
+            var answer: ChatMessage? = null
+            try {
+                val r = Decide.parse(Engine.api().decide(Decide.requestBody(q, options)), options)
+                if (!r.cancelled) answer = ChatMessage("assistant", "", "", r.metrics, r.scores, r.best)
+            } catch (e: ApiException) {
+                error = e.message
+            } catch (t: Throwable) {
+                error = t.message ?: "the connection to the engine was lost"
+            }
+            val committed = answer?.let { withUser.copy(messages = withUser.messages + it, updatedAt = System.currentTimeMillis()) } ?: withUser
+            if (committed !== withUser) persist(committed)
+            _state.update { it.copy(current = committed, streaming = false, error = error, contextFull = error?.contains("n_ctx") == true) }
+        }
+    }
+
     /** Drop the last answer and ask again: the KV holds the prompt, so only the answer is paid. */
     fun regenerate() {
         val cur = _state.value.current
-        if (_state.value.streaming || cur.messages.lastOrNull()?.role != "assistant") return
+        if (_state.value.streaming || cur.messages.lastOrNull()?.role != "assistant" || cur.messages.last().choices != null) return
         if (!Engine.current.ready) {
             _state.update { it.copy(error = "Load a model first, from Models.") }
             return
