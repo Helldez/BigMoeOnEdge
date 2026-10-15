@@ -7,11 +7,13 @@
 //   * the settings layers: defaults < plan < launch < user, what a reset removes, what persists;
 //   * the JSON edges: form values to parameter strings and back;
 //   * access: which host names, origins, keys and content types reach the API, and when the server
-//     may not start at all.
+//     may not start at all;
+//   * decide: the request fields a decision is read from, and its answer on the wire.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "access.h"
+#include "decide_protocol.h"
 #include "json_util.h"
 #include "openai_chat.h"
 #include "settings_store.h"
@@ -19,6 +21,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
@@ -392,12 +395,50 @@ static void access_tests() {
           "a key, or --no-api-key, lets it");
 }
 
+static void decide_tests() {
+    DecideRequest r;
+    std::string err;
+    check(parse_decide_request(json::parse(R"({"prefix":"p","suffix":"s","choices":["A","B"]})"), r, err) &&
+              r.prefix == "p" && r.suffix == "s" && r.choices.size() == 2 && r.choices[1] == "B" && r.reuse_prefix,
+          "a decide body is read whole, reuse_prefix defaulting to true");
+    check(parse_decide_request(json::parse(R"({"choices":["A"],"reuse_prefix":false})"), r, err) && r.prefix.empty() &&
+              !r.reuse_prefix,
+          "prefix and suffix may be left out; reuse_prefix may be turned off");
+    check(!parse_decide_request(json::parse(R"({"prefix":"p"})"), r, err) && err.find("choices") != std::string::npos,
+          "no choices is refused");
+    check(!parse_decide_request(json::parse(R"({"choices":["A",1]})"), r, err),
+          "a choice that is not a string is refused");
+    check(!parse_decide_request(json::parse(R"({"choices":["A"],"prefix":3})"), r, err),
+          "a prefix that is not a string is refused");
+    check(!parse_decide_request(json::parse(R"({"choices":["A"],"reuse_prefix":"yes"})"), r, err),
+          "reuse_prefix must be a boolean");
+    check(!parse_decide_request(json::parse(R"([1])"), r, err), "a body that is not an object is refused");
+
+    DecideResult d;
+    d.ok = true;
+    d.best = 1;
+    d.choice_logp = {-3.25, -0.5, -std::numeric_limits<double>::infinity()};
+    d.n_tokens = 10;
+    d.n_reused = 4;
+    d.n_prefilled = 6;
+    d.prefill.seconds = 0.5;
+    d.prefix_state_bytes = 2 * 1024 * 1024;
+    const json j = decide_json(d);
+    check(j["best"] == 1 && j["choice_logp"].size() == 3 && j["choice_logp"][0] == -3.25 &&
+              j["choice_logp"][2].is_null(),
+          "the answer carries best and the log-probabilities, null for a choice with no mass");
+    check(j["n_tokens"] == 10 && j["n_reused"] == 4 && j["n_prefilled"] == 6 && j["prefill_s"] == 0.5 &&
+              j["prefix_state_mib"] == 2.0 && j["cancelled"] == false,
+          "the counts, the prefill figures and the kept state travel with it");
+}
+
 int main() {
     protocol_tests();
     queue_tests();
     settings_tests();
     json_tests();
     access_tests();
+    decide_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

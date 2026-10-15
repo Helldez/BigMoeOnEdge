@@ -240,6 +240,40 @@ Not implemented: `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `response
 `{"object": "list", "data": [{"id": "<model file name>", "object": "model", "owned_by": "local"}]}`
 with the loaded model, or an empty list.
 
+## Decide
+
+### `POST /api/decide`
+
+A decision: which of a list of choices the model would answer next, read from one prefill with no
+decode ([decide.md](decide.md)). On a model streamed from flash that is the difference between
+seconds and minutes. Body:
+
+```json
+{"prefix": "You are choosing the next action.\nTask: ...", "suffix": "\nScreen: ...\nAnswer with the letter.",
+ "choices": ["A", "B", "C"], "reuse_prefix": true}
+```
+
+`prefix` + `suffix` is rendered as one user message through the model's own chat template, with
+reasoning off; the split only says which part is worth keeping (`reuse_prefix`, default `true`:
+the state after the prefix is kept and restored when the next prefix extends it). `choices` are
+scored by their first token, so two sharing one are refused with `400`, as is an empty list or a
+prompt past the context; `503` with no model loaded. The request waits its turn like a chat turn.
+
+```json
+{"cancelled": false, "best": 1, "choice_logp": [-3.2, -0.1, null], "n_tokens": 212, "n_reused": 180,
+ "n_prefilled": 32, "restore_s": 0.02, "store_s": 0.01, "prefill_s": 0.9, "prefill_cpu_s": 3.1,
+ "prefill_read_mib": 410.0, "prefill_io_s": 0.3, "prefill_stall_s": 0.1, "prefill_mgmt_s": 0.0,
+ "prefill_dev_tokens": 0, "prefill_dev_read_mib": 0.0, "prefill_dev_stall_s": 0.0,
+ "prefill_dev_routed": 0, "prefill_dev_demand": 0, "prefix_state_mib": 48.0}
+```
+
+`choice_logp[i]` is the log-probability of the first token of `choices[i]` over the whole
+vocabulary, in request order (`null` where it is minus infinity), not renormalised over the
+choices: the mass outside them says how unsure the model is. `best` is the index of the highest.
+The keys are the CLI's `BMOE_DECIDE` keys; `POST /api/cancel` stops a decision between prefill
+chunks, and the answer then carries `cancelled: true`. The `decide` parameter (on by default in
+the server) is what lets a session accept these; off, every decision is refused.
+
 ## Live events
 
 ### `GET /api/events`
@@ -252,6 +286,7 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 | `state` | the `GET /api/info` object, on every state change |
 | `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch` |
 | `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
+| `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` |
 | `config` | the `GET /api/config` object, after any change |
 

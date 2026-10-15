@@ -21,6 +21,13 @@ Semantic Versioning.
   catalog, the line protocol and the telemetry parser is deleted, not ported: no engine logic in
   the app (`docs/application-framework.md`). The code's package is `io.bigmoeonedge.app`; the
   application id stays, so the update installs over the previous build. Not yet run on a device.
+- **`POST /api/decide`: a decision over the API.** The CLI's decide request (which of a list of
+  choices the model would answer next, from one prefill and no decode, `docs/decide.md`) is offered
+  by the server with the same fields and the same answer keys as `BMOE_DECIDE`, waits its turn like
+  a chat turn, and is published as a `decide` event. The `decide` parameter is on by default in the
+  server, which costs nothing until a decision is asked for. The request and answer are one pure
+  protocol file (`server/decide_protocol.h`) with tests. With it, Choose from options can return to
+  every UI from one endpoint (#245).
 - **What a client on a phone needs from the server.** `GET /api/models` lists every file of a
   catalog entry with its URL (`files`), so a host with no `curl` downloads for itself from the one
   catalog; the `done` event carries the CLI's whole `BMOE_DONE` summary (load time, faults and CPU

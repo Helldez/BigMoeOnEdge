@@ -32,6 +32,12 @@ struct ChatOutcome {
     int n_predict = 0; // the budget the turn ran with, for the protocol's stop-or-length answer
 };
 
+struct DecideOutcome {
+    int status = 200; // as ChatOutcome
+    std::string error;
+    DecideResult result;
+};
+
 // How many chat turns may wait behind the running one before the next is turned away. A local
 // server has a handful of clients; a line longer than this is a client retrying, not a workload.
 inline constexpr size_t k_max_waiting_turns = 16;
@@ -68,6 +74,11 @@ public:
     ChatOutcome chat(const ChatRequest & req,
                      const std::function<void(const TokenMetrics &)> & on_token,
                      const std::function<bool()> & still_wanted = nullptr);
+
+    // Read one decision (bmoe/decide.h) on the calling thread, in the same line as the chat turns:
+    // one prefill, no decode. A refused request (no choices, colliding choices, a prompt past
+    // n_ctx) is a 400 and leaves the session usable; a failed prefill closes it, as a failed turn does.
+    DecideOutcome decide(const DecideRequest & req, const std::function<bool()> & still_wanted = nullptr);
 
 private:
     enum class State { Empty, Loading, Ready, Error };
