@@ -1,5 +1,6 @@
 package io.bigmoeonedge.app.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -21,7 +22,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.bigmoeonedge.app.data.AppPrefs
-import io.bigmoeonedge.app.data.ModelManager
 import io.bigmoeonedge.app.engine.ConfigState
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.ParamSpec
@@ -42,7 +42,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
     val engine by Engine.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-    var level by rememberSaveable { mutableStateOf("basic") }
+    var advancedOpen by rememberSaveable { mutableStateOf(false) }
 
     fun set(key: String, value: Any?) = scope.launch {
         Engine.setConfig(mapOf(key to value)).onFailure { snackbar.showSnackbar(it.message ?: "not saved") }
@@ -74,22 +74,35 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 Text("The configuration does not validate: ${cfg.error}", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                ParamSpec.LEVELS.forEach { l ->
-                    FilterChip(selected = level == l, onClick = { level = l }, label = { Text(l.replaceFirstChar { it.uppercase() }, fontSize = 12.sp) })
-                }
-            }
-
             when {
                 !engine.serverUp -> Text("The engine is not running.", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
                 params == null || cfg == null -> Text("Waiting for the engine…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                else -> ParamSpec.grouped(params).forEach { (groupLabel, rows) ->
+                else -> {
                     // A path other than the model is set at launch, not over the API: not a setting here.
-                    val shown = rows.filter { ParamSpec.visible(it.level, level) && (it.type != "path" || it.key == "model") }
-                    if (shown.isEmpty()) return@forEach
-                    Text(groupLabel, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
-                    shown.forEach { spec ->
-                        ParamRow(spec, cfg, modelName = engine.info?.model?.name, onSet = { set(spec.key, it) }, onReset = { reset(spec.key) })
+                    val settable = params.filter { it.type != "path" || it.key == "model" }
+                    val groups = ParamSpec.grouped(settable)
+                    // The recommended configuration first: each group's basic rows, in the table's order.
+                    groups.forEach { (groupLabel, rows) ->
+                        val basic = rows.filter { it.level == "basic" }
+                        if (basic.isEmpty()) return@forEach
+                        Text(groupLabel, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                        basic.forEach { spec ->
+                            ParamRow(spec, cfg, modelName = engine.info?.model?.name, onSet = { set(spec.key, it) }, onReset = { reset(spec.key) })
+                        }
+                    }
+                    // Everything else in one section of its own, folded: the levers measured once or
+                    // on one device, and the diagnostics. They ship on purpose, because measuring them
+                    // on other hardware is part of what this app is for; a lever nobody can reach is a
+                    // lever nobody can refute.
+                    AdvancedSection(advancedOpen, onToggle = { advancedOpen = !advancedOpen }) {
+                        groups.forEach { (groupLabel, rows) ->
+                            val rest = rows.filter { it.level != "basic" }
+                            if (rest.isEmpty()) return@forEach
+                            Text(groupLabel, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary)
+                            rest.forEach { spec ->
+                                ParamRow(spec, cfg, modelName = engine.info?.model?.name, onSet = { set(spec.key, it) }, onReset = { reset(spec.key) })
+                            }
+                        }
                     }
                 }
             }
@@ -125,7 +138,6 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     "Read and shared from Metrics.",
                 csv,
             ) { on -> csv = on; AppPrefs.setMetricsCsv(context, on) }
-            ModelManager.npuUnavailableReason(context)?.let { Hint("NPU prefill: $it") }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = { Engine.stop(context) }, enabled = engine.serverUp, modifier = Modifier.weight(1f)) { Text("Stop engine") }
                 OutlinedButton(onClick = { Engine.start(context) }, enabled = !engine.serverUp, modifier = Modifier.weight(1f)) { Text("Start engine") }
@@ -159,6 +171,7 @@ private fun ParamRow(spec: ParamSpec, cfg: ConfigState, modelName: String?, onSe
                 if (spec.type != "bool") Hint(spec.help)
                 else if (spec.help.isNotEmpty()) Hint(spec.help)
                 val tags = listOfNotNull(
+                    if (spec.level != "basic") spec.level else null,
                     if (mine) "set by you" else null,
                     if (spec.lossy) "changes the reply" else null,
                     if (spec.scope == "session") "applies on reload" else null,
@@ -202,4 +215,37 @@ private fun NumberOrTextField(spec: ParamSpec, value: Any?, onSet: (Any?) -> Uni
         keyboardActions = KeyboardActions(onDone = { commit() }),
         modifier = Modifier.fillMaxWidth().onFocusChanged { if (!it.isFocused) commit() },
     )
+}
+
+/**
+ * The fold the advanced, experimental and debug rows live behind. A tonal bar rather than a plain
+ * row: closed, it is the one thing standing between the recommended configuration and the levers
+ * that can slow a run down or change the reply, so it reads as a boundary and not as a setting.
+ */
+@Composable
+private fun AdvancedSection(open: Boolean, onToggle: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Surface(
+            color = MaterialTheme.colorScheme.tertiaryContainer,
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp).clickable(onClick = onToggle),
+        ) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("ADVANCED", fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                Spacer(Modifier.weight(1f))
+                Text(if (open) "hide" else "show", fontSize = 12.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
+            }
+        }
+        if (open) {
+            Text(
+                "Measured on one device, or not measured yet. These can slow a run down or change the " +
+                    "reply. The settings above are the recommended configuration; the planner sets what " +
+                    "it can measure.",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
+        }
+    }
 }

@@ -20,7 +20,15 @@ Semantic Versioning.
   so any OpenAI-compatible client uses the phone. The Kotlin that reimplemented settings, the
   catalog, the line protocol and the telemetry parser is deleted, not ported: no engine logic in
   the app (`docs/application-framework.md`). The code's package is `io.bigmoeonedge.app`; the
-  application id stays, so the update installs over the previous build. Not yet run on a device.
+  application id stays, so the update installs over the previous build. Run on a 12 GB phone:
+  Gemma 4 26B and Qwen3.6-35B load from the Models screen with the planner's plan, chat with the
+  reasoning block, 3.3 tok/s, every screen live. Two things found there: Android forbids cleartext
+  HTTP even to loopback for an app targeting API 28 or later, so the app's network security
+  configuration permits it for `127.0.0.1` alone and the status line now says why the engine is
+  unreachable instead of "not running"; and the settings page no longer hides rows behind a level
+  filter: each group shows its basic rows and an **Advanced** section at the end, folded, holds the
+  advanced, experimental and debug rows grouped and marked, so no lever is lost. The page names no
+  device: the prefill device is a row like any other and the planner chooses it.
 - **`POST /api/decide`: a decision over the API.** The CLI's decide request (which of a list of
   choices the model would answer next, from one prefill and no decode, `docs/decide.md`) is offered
   by the server with the same fields and the same answer keys as `BMOE_DECIDE`, waits its turn like

@@ -120,11 +120,12 @@ message reloads it.
 
 Every engine tunable comes from the engine's parameter table (`GET /api/params`): the groups, the
 rows, their bounds and help text. The app names none of them, so a knob added to the engine appears
-here with no app change, and the same setting means the same thing on the desktop. The level filter
-(basic, advanced, experimental, debug) folds the levers measured once or on one device out of the
-way; they ship in the release build on purpose, because measuring them on hardware other than the
-one test phone is part of what this app is for. A value you set is marked and can be reset to the
-engine's default; one that is fixed while a model is loaded asks for a reload.
+here with no app change, and the same setting means the same thing on the desktop. Each group shows
+its basic rows, the recommended configuration; everything advanced, experimental or debug sits in
+the **Advanced** section at the end, folded, grouped the same way and marked with its level. They
+ship in the release build on purpose, because measuring them on hardware other than the one test
+phone is part of what this app is for. A value you set is marked and can be reset to the engine's
+default; one that is fixed while a model is loaded asks for a reload.
 
 The app's own settings close the page:
 
@@ -134,8 +135,11 @@ The app's own settings close the page:
   cross the network in clear; use it on a network you trust. Changing it restarts the engine.
 - **Metrics CSV**: one per-token file per loaded model, for the Metrics screen and for sharing.
 
-The NPU prefill (`prefill-device`) is a row like any other; on a phone without the Hexagon NPU, or
-a build without the backend, Settings says why it cannot run. See `../../docs/npu-prefill.md`.
+The prefill device (`prefill-device`) is a row like any other, and the planner chooses it: it
+measures every compute device the build carries (a GPU, a Snapdragon's NPU through the Hexagon
+backend of the release APK) on the prefill's wide matmul and arms the fastest, for the prefill
+only; decode stays on the cores. The Plan screen says which it chose and why. Nothing in the app
+names a device. See `../../docs/npu-prefill.md`.
 
 ## Metrics
 

@@ -104,8 +104,11 @@ the UI's own.
 - **From the table** (`GET /api/params`): the groups in the table's order, each row with its
   label, its help text, its control by type (a switch for `bool`, a menu for `choice`, a field
   with its unit for `int` and `float`, `auto` accepted where the row says so, the model's name for
-  the one `path` a client may set), and the bounds the server validates. A level filter (basic,
-  advanced, experimental, debug) folds the levers measured once or on one device out of the way.
+  the one `path` a client may set), and the bounds the server validates. The basic rows of each
+  group make the recommended configuration; the advanced, experimental and debug rows live in one
+  section of their own, folded by default, grouped the same way and each marked with its level,
+  with the caveat that they were measured once or on one device and can slow a run down or change
+  the reply.
 - **Where a value came from.** A value the person set is marked ("set by you") and can be reset
   to the server's default; a value a plan set is marked as the plan's. A row whose value changes
   the reply is marked as such. A row fixed while a model is loaded says "applies on reload", and a
