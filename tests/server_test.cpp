@@ -5,10 +5,13 @@
 //     (text, tool calls, token counts) looks like on the wire;
 //   * the turn queue: first come first served, a bound, and a caller that gives its place up;
 //   * the settings layers: defaults < plan < launch < user, what a reset removes, what persists;
-//   * the JSON edges: form values to parameter strings and back.
+//   * the JSON edges: form values to parameter strings and back;
+//   * access: which host names, origins, keys and content types reach the API, and when the server
+//     may not start at all.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
+#include "access.h"
 #include "json_util.h"
 #include "openai_chat.h"
 #include "settings_store.h"
@@ -301,11 +304,100 @@ static void json_tests() {
           "a type that only contains the word is not JSON");
 }
 
+static void access_tests() {
+    check(is_api_path("/api/info") && is_api_path("/v1/chat/completions") && !is_api_path("/") &&
+              !is_api_path("/assets/app.js") && !is_api_path("/apix"),
+          "the API is /api/* and /v1/*, nothing else");
+    check(is_loopback_host("127.0.0.1") && is_loopback_host("localhost:8765") && is_loopback_host("[::1]:8765") &&
+              is_loopback_host("::1") && !is_loopback_host("0.0.0.0") && !is_loopback_host("example.com:8765") &&
+              !is_loopback_host("192.168.1.10"),
+          "loopback host names, with or without a port");
+
+    check(bearer_matches("Bearer s3cret", "s3cret") && bearer_matches("bearer s3cret", "s3cret"),
+          "a bearer token matches the key, the scheme in either case");
+    check(!bearer_matches("Bearer s3cre", "s3cret") && !bearer_matches("Bearer s3cret1", "s3cret") &&
+              !bearer_matches("Bearer S3CRET", "s3cret") && !bearer_matches("s3cret", "s3cret") &&
+              !bearer_matches("Basic s3cret", "s3cret") && !bearer_matches("", "s3cret"),
+          "a shorter, longer, differently cased, bare or basic token does not");
+    check(!bearer_matches("Bearer ", "") && !bearer_matches("", ""), "an empty key matches nothing");
+
+    AccessPolicy local;
+    local.loopback = true;
+    local.origins = {"http://127.0.0.1:8765"};
+    auto req = [](const char * method, const char * path) {
+        RequestFacts f;
+        f.method = method;
+        f.path = path;
+        f.host = "127.0.0.1:8765";
+        return f;
+    };
+    check(check_access(local, req("GET", "/api/info")).allowed(), "a local program's GET is answered");
+    {
+        RequestFacts f = req("POST", "/api/cancel");
+        f.content_type = "application/json";
+        check(check_access(local, f).allowed(), "a local program's JSON write is answered");
+        f.content_type = "text/plain";
+        check(check_access(local, f).status == 415, "a write that is not JSON is refused with 415");
+    }
+    {
+        RequestFacts f = req("GET", "/api/info");
+        f.host = "evil.example:8765";
+        check(check_access(local, f).status == 403, "a loopback server refuses a foreign host name");
+        AccessPolicy open = local;
+        open.loopback = false;
+        check(check_access(open, f).allowed(), "a server bound beyond loopback answers to its name");
+    }
+    {
+        RequestFacts f = req("GET", "/api/plan");
+        f.has_origin = true;
+        f.origin = "http://evil.example";
+        check(check_access(local, f).status == 403, "a cross-origin GET to the API is refused");
+        f.origin = "http://127.0.0.1:8765";
+        check(check_access(local, f).allowed(), "the UI's own origin is answered");
+        RequestFacts g = req("GET", "/api/events");
+        g.sec_fetch_site = "cross-site";
+        check(check_access(local, g).status == 403, "a cross-site read with no Origin is refused too");
+        RequestFacts h = req("GET", "/assets/app.js");
+        h.sec_fetch_site = "cross-site";
+        check(check_access(local, h).allowed(), "the UI's files are not the API");
+    }
+    {
+        AccessPolicy keyed = local;
+        keyed.api_key = "s3cret";
+        RequestFacts f = req("GET", "/v1/models");
+        const AccessDecision d = check_access(keyed, f);
+        check(d.status == 401, "with a key set, an API request without it gets 401");
+        f.authorization = "Bearer s3cret";
+        check(check_access(keyed, f).allowed(), "and is answered with it");
+        f.authorization = "Bearer wrong";
+        check(check_access(keyed, f).status == 401, "a wrong key is 401");
+        RequestFacts page = req("GET", "/index.html");
+        check(check_access(keyed, page).allowed(), "the key gates the API, not the UI's files");
+        RequestFacts w = req("PUT", "/api/config");
+        w.authorization = "Bearer s3cret";
+        check(check_access(keyed, w).status == 415, "the key does not excuse a write from naming JSON");
+        RequestFacts x = req("POST", "/v1/chat/completions");
+        x.has_origin = true;
+        x.origin = "http://evil.example";
+        x.authorization = "Bearer s3cret";
+        check(check_access(keyed, x).status == 403, "a foreign origin is refused before the key is looked at");
+    }
+
+    check(launch_refusal("127.0.0.1", "", false).empty() && launch_refusal("localhost", "", false).empty() &&
+              launch_refusal("::1", "", false).empty(),
+          "loopback needs no key");
+    check(!launch_refusal("0.0.0.0", "", false).empty() && !launch_refusal("192.168.1.10", "", false).empty(),
+          "beyond loopback without a key the server does not start");
+    check(launch_refusal("0.0.0.0", "s3cret", false).empty() && launch_refusal("0.0.0.0", "", true).empty(),
+          "a key, or --no-api-key, lets it");
+}
+
 int main() {
     protocol_tests();
     queue_tests();
     settings_tests();
     json_tests();
+    access_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

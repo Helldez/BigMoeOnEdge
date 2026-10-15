@@ -3,6 +3,11 @@
 #include "bmoe/recipe.h"
 
 #include "gguf.h"
+
+// The server never starts a child in a directory of its own, and the header's detection of the
+// chdir file action trusts any libc that is not glibc or Apple's to have it, which bionic does not
+// (its _np spelling arrives with API 34). Off everywhere, so the one header compiles on every libc.
+#define SUBPROCESS_HAVE_CWD 0
 #include "sheredom/subprocess.h"
 
 #include <chrono>

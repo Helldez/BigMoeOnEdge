@@ -227,11 +227,14 @@ Defaults are the measured winning recipe for a model near RAM.
 
 ### Desktop app
 
-`bmoe-server` keeps a model loaded and serves a web UI on your machine only: chat with live engine
+`bmoe-server` keeps a model loaded and serves a web UI on your machine: chat with live engine
 metrics per token, model downloads, and every engine setting, rendered from the engine's own
 parameter table. It also speaks an OpenAI-compatible chat API, so other clients can use the engine
-([server-api.md](docs/server-api.md)). With the hardware planner built in, it proposes a
-configuration for your model on your machine and shows the fact behind each choice.
+([server-api.md](docs/server-api.md)); with `--host` and `--api-key` it serves them from across
+the network, so one machine's hardware can answer another's coding agent. With the hardware
+planner built in, it proposes a configuration for your model on your machine and shows the fact
+behind each choice. The same server is the application layer behind every UI of this project
+([application-framework.md](docs/application-framework.md)).
 
 ## Supported models
 

@@ -27,15 +27,17 @@ server and the iOS harness are merged and unreleased. A release gets a run on a 
 a dry run of the APK workflow since the binaries moved, and the desktop archive tried once on
 Windows, where CI compiles the server and nothing has run it. Nothing else lands before the tag.
 
-**One application framework.** The server's policy - the engine host with its one session and its
-turn line, the model library, the settings layers, conversations with their KV continuation, the
-event bus, the planner adapter, the chat protocol - becomes a library with a C interface, and
-`bmoe-server` becomes HTTP over it. Every UI then speaks one local API, the one `docs/server-api.md`
-already describes: through a socket where the OS lets the engine run in a process of its own, which
-is what keeps a driver crash from taking the app with it, and in-process where it does not. The
-engine host is a port with those two adapters. What falls out of it: the OpenAI-compatible endpoint
-exists on every platform at no extra cost, a knob added to the engine appears in every UI with no
-UI change, and the model catalog is one data file instead of a JSON here and a Kotlin table there.
+**One application framework.** The server is it ([application-framework.md](application-framework.md)).
+Its policy - the engine host with its one session and its turn line, the model library, the
+settings layers, the event bus, the planner adapter, the chat protocol, the access rules - is the
+`bmoe_server` library, with `bmoe-server` the process around it, and every UI speaks the one API
+`docs/server-api.md` describes, over HTTP on loopback: as a child process where the OS lets the
+engine run in a process of its own, which is what keeps a driver crash from taking the app with
+it, and in-process, `run()` on a thread, where it does not. The library, the API key that lets the
+server be reached from the network, and the Android builds that carry the server have shipped;
+what the UIs owe is the move onto it. What falls out: the OpenAI-compatible endpoint exists on
+every platform at no extra cost, a knob added to the engine appears in every UI with no UI change,
+and the model catalog is one data file instead of a JSON here and a Kotlin table there.
 
 **The Android app, complete, on that framework.** The planner in the load path with its plan shown
 and its reasons readable; settings rendered from the parameter table; the shared catalog; chat
