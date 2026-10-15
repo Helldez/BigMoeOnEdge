@@ -1,4 +1,4 @@
-package io.bigmoeonedge.example
+package io.bigmoeonedge.app.data
 
 /**
  * What each metrics-CSV column means, in one place. The engine writes the columns

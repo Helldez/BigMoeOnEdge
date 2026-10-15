@@ -1,4 +1,4 @@
-package io.bigmoeonedge.example
+package io.bigmoeonedge.app.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -24,6 +24,17 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.bigmoeonedge.app.data.Better
+import io.bigmoeonedge.app.data.ConfigFields
+import io.bigmoeonedge.app.data.Csv
+import io.bigmoeonedge.app.data.MetricFields
+import io.bigmoeonedge.app.data.fmt
+import io.bigmoeonedge.app.data.pearson
+import io.bigmoeonedge.app.data.runTitle
+import io.bigmoeonedge.app.data.shareCsv
+import io.bigmoeonedge.app.data.breakdown
+import io.bigmoeonedge.app.engine.Engine
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -31,8 +42,8 @@ import java.util.Locale
 import kotlin.math.abs
 
 /**
- * Reads back the per-token CSVs the engine wrote (`--csv`, see [AppSettings]): view one, share one,
- * or plot one column of two against each other.
+ * Reads back the per-token CSVs this app wrote from the server's token events (one per loaded
+ * session, see MetricsRecorder): view one, share one, or plot one column of two against each other.
  *
  * The compare view is the point. A claim like "this setting cuts the fault storm" is not settled by
  * a number in a summary — it is settled by seeing the same column from a run with the feature off
@@ -47,7 +58,7 @@ private enum class View { LIST, FILE, CORRELATE, COMPARE, GLOSSARY }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MetricsScreen(onBack: () -> Unit) {
+fun MetricsScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var picked by remember { mutableStateOf<File?>(null) }
     var selection by remember { mutableStateOf<List<File>>(emptyList()) }
@@ -60,16 +71,17 @@ fun MetricsScreen(onBack: () -> Unit) {
             ?: emptyList()
     }
 
-    // Back always steps one level toward the list, then out of the screen.
+    // Back steps one level toward the list; the list is the screen's home.
     fun back() {
         when (view) {
             View.CORRELATE -> view = View.FILE
             View.FILE, View.COMPARE, View.GLOSSARY -> view = View.LIST
-            View.LIST -> onBack()
+            View.LIST -> {}
         }
     }
 
     Scaffold(
+        modifier = modifier,
         topBar = {
             TopAppBar(
                 title = {
@@ -85,8 +97,10 @@ fun MetricsScreen(onBack: () -> Unit) {
                     )
                 },
                 navigationIcon = {
-                    IconButton(onClick = { back() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    if (view != View.LIST) {
+                        IconButton(onClick = { back() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
                     }
                 },
                 actions = {
@@ -148,22 +162,24 @@ private fun FileList(
     onToggle: (File) -> Unit,
     onDelete: (File) -> Unit,
 ) {
-    if (files.isEmpty()) {
-        Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("No metrics yet.", fontWeight = FontWeight.Medium)
-            Text(
-                "Turn on Settings → Diagnostics → Metrics CSV, then run a prompt. One file is written " +
-                    "per session, covering every turn in it. Tick two to compare them.",
-                fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        return
-    }
     val stamp = SimpleDateFormat("d MMM HH:mm:ss", Locale.getDefault())
     // A run's identity, not its filename: the model's initial and each turn's tok/s, read from the
     // preamble and summaries. Computed once per file list — the files are small and few.
     val titles = remember(files) { files.associateWith { runTitle(it) } }
     LazyColumn(modifier.fillMaxSize()) {
+        item { LiveCard() }
+        if (files.isEmpty()) {
+            item {
+                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("No metrics files yet.", fontWeight = FontWeight.Medium)
+                    Text(
+                        "Turn on Settings → This app → Metrics CSV, then run a prompt. One file is written " +
+                            "per loaded model, covering every turn in it. Tick two to compare them.",
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
         items(files) { f ->
             val title = titles[f].orEmpty()
             ListItem(
@@ -788,5 +804,93 @@ private fun MultiLineChart(series: List<List<Float?>>, palette: List<Color>, mod
             val (lo, hi) = ranges[si]
             drawSeries(s, n, lo, hi, palette[si % palette.size])
         }
+    }
+}
+
+/**
+ * The live card: the current (or last) generation's rate and where each token's time went, from
+ * the server's token and done events. The same four terms the desktop UI draws: compute, flash
+ * wait, cache management and what nobody claims (off-CPU time: zram, preemption, frequency caps).
+ */
+@Composable
+private fun LiveCard() {
+    val engine by Engine.state.collectAsStateWithLifecycle()
+    val t = engine.live
+    val cfg = engine.config
+    val loc = Locale.US
+    ElevatedCard(Modifier.fillMaxWidth().padding(12.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            val model = engine.info?.model
+            if (model == null) {
+                Text("No model loaded.", fontWeight = FontWeight.Medium)
+                return@Column
+            }
+            if (t.step == 0 && t.avgTokensPerSecond <= 0) {
+                Text("${model.name}: nothing generated yet.", fontWeight = FontWeight.Medium)
+                return@Column
+            }
+            val done = t.avgTokensPerSecond > 0
+            Text(
+                if (done) String.format(loc, "%.2f tok/s   avg (%d tokens)", t.avgTokensPerSecond, t.step)
+                else String.format(loc, "%.2f tok/s   (token %d/%d)", t.tokensPerSecond, t.step, t.steps),
+                fontWeight = FontWeight.Bold, fontSize = 18.sp,
+            )
+            if (!model.streaming) {
+                Text(
+                    "mmap baseline: the model is read through the OS page cache, so per-token flash I/O, the " +
+                        "compute split and cache hits are not observable in this mode.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                return@Column
+            }
+            val threads = cfg?.int("threads", 4) ?: 4
+            val overlap = cfg?.bool("overlap", true) ?: true
+            val ioThreads = cfg?.int("io-threads", 4) ?: 4
+            val b = breakdown(t, overlap, busyThreads = threads + if (overlap) ioThreads else 0, computeThreads = threads)
+            val suffix = if (b.isAverage) " avg" else ""
+            if (b.wallMs > 0.0) {
+                Text(String.format(loc, "%.0f ms/token  →  %.2f tok/s", b.wallMs, 1000.0 / b.wallMs), fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+            }
+            MeterRow("compute$suffix", b.computeMs, b.totalMs, MaterialTheme.colorScheme.primary)
+            MeterRow("flash wait$suffix", b.flashWaitMs, b.totalMs, MaterialTheme.colorScheme.tertiary)
+            MeterRow("cache mgmt$suffix", b.mgmtMs, b.totalMs, MaterialTheme.colorScheme.secondary)
+            MeterRow("unattributed$suffix", b.unattributedMs, b.totalMs, MaterialTheme.colorScheme.outline)
+            val hit = if (t.cacheHitPct >= 0) String.format(loc, "hit %.0f%%", t.cacheHitPct) else "hit —"
+            val diag = buildString {
+                if (b.cpuBusyPct >= 0.0) {
+                    append(String.format(loc, "CPU %.0f%% busy", b.cpuBusyPct))
+                    if (b.faultsPerToken >= 0.0) append(String.format(loc, "  ·  %.0f faults/tok", b.faultsPerToken))
+                    append("  ·  ")
+                }
+                append(hit)
+            }
+            Text(diag, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            engine.cpuTempC?.let { Text(String.format(loc, "CPU %.1f°C", it), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (done) {
+                val prefill = if (t.prefillTps > 0) String.format(loc, "prefill %.1f tok/s", t.prefillTps) else ""
+                val ttft = if (t.ttftS >= 0) String.format(loc, "TTFT %.2fs", t.ttftS) else ""
+                if (prefill.isNotEmpty() || ttft.isNotEmpty()) Text(listOf(prefill, ttft).filter { it.isNotEmpty() }.joinToString("   ·   "), fontSize = 13.sp)
+                val streamed = if (t.readMib >= 0) String.format(loc, "streamed %.0f MB", t.readMib) else ""
+                val cache = if (t.cacheResidentMib >= 0) String.format(loc, "cache %.0f/%.0f MiB", t.cacheResidentMib, t.cacheBudgetMib) else ""
+                if (streamed.isNotEmpty() || cache.isNotEmpty()) Text(listOf(streamed, cache).filter { it.isNotEmpty() }.joinToString("   ·   "), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (t.mtpDecodes > 0 && t.mtpDrafted > 0) {
+                    Text(
+                        String.format(loc, "guessing: %d/%d kept (%.0f%%), %.2f tok per pass, %.2f tok/s real",
+                            t.mtpAccepted, t.mtpDrafted, t.mtpAcceptancePct, t.mtpTokensPerDecode, t.effectiveTokensPerSecond),
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeterRow(label: String, value: Double, total: Double, color: Color) {
+    val frac = if (total > 0) (value / total).toFloat().coerceIn(0f, 1f) else 0f
+    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(label, fontSize = 12.sp, modifier = Modifier.width(96.dp))
+        LinearProgressIndicator(progress = { frac }, color = color, modifier = Modifier.weight(1f).height(8.dp))
+        Text(String.format(Locale.US, "%.0f ms", value), fontSize = 12.sp, modifier = Modifier.width(56.dp))
     }
 }

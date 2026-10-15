@@ -65,10 +65,11 @@ way: [screens.md](screens.md). The web UI and the Android app are its first two 
 
 1. **The server as a library, with a key, built for every platform.** Done: `bmoe_server`,
    `--api-key`, the access policy with its tests, the Android builds carrying `libbmoe-server.so`.
-2. **The Android app on the framework** (issue #233). The run service starts `libbmoe-server.so`
-   instead of the CLI and the app becomes an HTTP client of loopback; the Kotlin reimplementations
-   of settings, catalog and telemetry parsing are deleted, not ported. The planner, the plan
-   screen and the network switch come with it.
+2. **The Android app on the framework** (issue #233). Done in code: the service starts
+   `libbmoe-server.so` instead of the CLI and the app is an HTTP client of loopback; the Kotlin
+   reimplementations of settings, catalog and telemetry parsing are deleted, not ported; the
+   planner, the plan screen and the network switch came with it. What it still owes is a run on a
+   phone, and the decide endpoint (#245) for the one feature the move left behind.
 3. **iOS on the framework** (issue #235): `run()` on a thread, the same client over loopback.
 4. **Desktop and Windows at parity** (issue #234): an installer per OS, the device probes isolated
    in the server, the cache lock and the gates on Windows.

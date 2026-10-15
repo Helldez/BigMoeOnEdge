@@ -7,6 +7,20 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **The Android app is a client of `bmoe-server`, and a complete app.** The APK's `libbmoe-server.so`
+  runs as a child process of a foreground service, on loopback with the app's data beside its
+  files, and the five screens speak its HTTP API as the web UI does: chat with conversations saved
+  on the phone (a drawer to switch, copy, regenerate, stop; a full context says so and offers a new
+  chat), Models (the server's directory, the catalog from the one `catalog/models.json` shipped as
+  an asset, the app's own resumable downloads since a phone has no `curl`, imports, loading by
+  path), Plan (the planner's decisions with their reasons, measure and apply, auto-plan on every
+  load), Settings rendered from the parameter table with a level filter and per-value reset, and
+  Metrics with the live card and the CSV views, now written by the app from the server's token and
+  done events. **Serve on the network** binds the engine to every interface with a generated key,
+  so any OpenAI-compatible client uses the phone. The Kotlin that reimplemented settings, the
+  catalog, the line protocol and the telemetry parser is deleted, not ported: no engine logic in
+  the app (`docs/application-framework.md`). The code's package is `io.bigmoeonedge.app`; the
+  application id stays, so the update installs over the previous build. Not yet run on a device.
 - **What a client on a phone needs from the server.** `GET /api/models` lists every file of a
   catalog entry with its URL (`files`), so a host with no `curl` downloads for itself from the one
   catalog; the `done` event carries the CLI's whole `BMOE_DONE` summary (load time, faults and CPU
@@ -30,6 +44,10 @@ Semantic Versioning.
   build scripts) now compiles the server and stages it in the APK as `libbmoe-server.so`, which the
   app does not start yet. `docs/application-framework.md` says why: the server is the application
   framework, one API behind every UI, in process or in a child process as the platform allows.
+
+### Removed
+- **Choose from options** in the Android app: the engine's decide request has no endpoint in the
+  server yet, and a feature exists for every UI or for none. It returns through #245.
 
 ### Changed
 - **`docs/screens.md`: the five screens, specified once.** What chat, models, plan, settings and

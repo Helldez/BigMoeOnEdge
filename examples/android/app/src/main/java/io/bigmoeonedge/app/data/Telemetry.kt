@@ -1,8 +1,11 @@
-package io.bigmoeonedge.example
+package io.bigmoeonedge.app.data
 
 import org.json.JSONObject
 
-/** Live per-token metrics parsed from bmoe-cli's --progress output. */
+/**
+ * Live per-token metrics, read from the server's `token` and `done` events (the same figures the
+ * CLI's --progress lines carry; docs/telemetry.md names them).
+ */
 data class Telemetry(
     var step: Int = 0,
     var steps: Int = 0,
@@ -20,7 +23,7 @@ data class Telemetry(
     var mgmtMs: Double = 0.0,
     var cacheHitPct: Double = -1.0,
     // Compute-decomposition of the `computeMs` residual (see docs/telemetry.md). Live per-token
-    // values from BMOE_PROGRESS: `majflt` > 0 means a dense weight re-faulted from flash inside the
+    // values from the token event: `majflt` > 0 means a dense weight re-faulted from flash inside the
     // decode; `cpuMs` ÷ (wallMs × threads) is CPU occupancy — near 1 is compute-bound, well below
     // means a throttled/preempted core. 0 when the platform can't measure them.
     var majflt: Double = 0.0,
@@ -39,23 +42,23 @@ data class Telemetry(
     // the unattributed term. -1 until generation finishes.
     var avgComputeMs: Double = -1.0,
     var avgMgmtMs: Double = -1.0,
-    // The measured flash terms of the same run averages, from BMOE_DONE's io_s_tok / stall_s_tok:
+    // The measured flash terms of the same run averages, from the done event's io_s_tok / stall_s_tok:
     // serial reads io, overlap reads stall. The summary used to reconstruct flash wait from the
     // clamped compute residual instead — against the documented contract — which over-attributed
     // to flash exactly when compute_ms had been clamped to 0 (issue #98). -1 until generation
     // finishes or on an engine older than the fields.
     var avgIoMs: Double = -1.0,
     var avgStallMs: Double = -1.0,
-    // End-of-run figures from the final summary (BMOE_DONE); -1 / 0 until generation finishes.
+    // End-of-run figures from the done event; -1 / 0 until generation finishes.
     var prefillTps: Double = -1.0,      // prompt prefill rate (tok/s)
     var ttftS: Double = -1.0,           // time-to-first-token = model load + prompt prefill (s)
     var readMib: Double = -1.0,         // total flash streamed this generation (MiB)
     var cacheResidentMib: Double = -1.0, // expert cache resident size (MiB)
     var cacheBudgetMib: Double = -1.0,  // expert cache budget (MiB); fixed for the run
-    // Run averages of the compute decomposition, from the final summary (BMOE_DONE); -1 until done.
+    // Run averages of the compute decomposition, from the done event; -1 until done.
     var avgMajfltPerTok: Double = -1.0, // major page faults per token over the run
     var avgCpuSPerTok: Double = -1.0,   // CPU-seconds per token (summed across threads) over the run
-    // Self-speculation counters from BMOE_DONE; all 0 when speculation was off. Without these the UI
+    // Self-speculation counters from the done event; all 0 when speculation was off. Without these the UI
     // cannot tell whether it ran at all, let alone whether it earned its keep. They describe the
     // loop, not a source: the n-gram lookup and the MTP head report through the same fields.
     var mtpDrafted: Long = 0,
@@ -177,62 +180,41 @@ fun breakdown(t: Telemetry, overlap: Boolean, busyThreads: Int, computeThreads: 
     )
 }
 
-/**
- * Incrementally parses the CLI's per-token telemetry contract (see docs/telemetry.md):
- *   BMOE_LOAD     {"mb":..,"ms":..}
- *   BMOE_PROGRESS {"step":..,"steps":..,"wall_ms":..,"io_ms":..,"compute_ms":..,
- *                  "cache_hit_pct":..,"delta_text":".."}
- *
- * The answer arrives as a delta: `delta_reasoning`/`delta_text` append to what this generation
- * already received, unless the line carries `"reset":1` — the engine's chat parser retroactively
- * reclassified answer text as reasoning (a closing tag arrived), and the deltas are full
- * snapshots that REPLACE the accumulated state. Sending the cumulative text every token made a
- * generation O(n²) on the wire (engine #119).
- *
- * The session control lines (BMOE_READY/BEGIN/DONE/ERROR) and the one-shot text summary lines
- * are handled by the RunService state machine, not here.
- */
-class TelemetryParser {
-    var current = Telemetry()
-        private set
+/** The live fields of one `token` event, applied to [t] (the text is the chat's, not here). */
+fun Telemetry.applyToken(o: JSONObject): Telemetry = apply {
+    step = o.optInt("step")
+    steps = o.optInt("steps")
+    wallMs = o.optDouble("wall_ms", 0.0)
+    computeMs = o.optDouble("compute_ms", 0.0)
+    ioMs = o.optDouble("io_ms", 0.0)
+    stallMs = o.optDouble("stall_ms", 0.0)
+    mgmtMs = o.optDouble("mgmt_ms", 0.0)
+    cacheHitPct = o.optDouble("cache_hit_pct", -1.0)
+    majflt = o.optDouble("majflt", 0.0)
+    cpuMs = o.optDouble("cpu_ms", 0.0)
+}
 
-    // Accumulated answer/reasoning of the generation in flight. StringBuilder, not the data
-    // class's String fields: appending a token to a String re-copies the whole answer per token,
-    // which is the O(n²) this protocol change removes.
-    private val text = StringBuilder()
-    private val reasoning = StringBuilder()
-
-    /** Clear the per-token state at the start of a new generation. */
-    fun reset() {
-        current = Telemetry()
-        text.setLength(0)
-        reasoning.setLength(0)
-    }
-
-    /** Returns true if [line] updated the token telemetry (UI should refresh). */
-    fun onLine(line: String): Boolean {
-        val t = line.trim()
-        if (!t.startsWith("BMOE_PROGRESS ")) return false
-        return runCatching {
-            val o = JSONObject(t.removePrefix("BMOE_PROGRESS "))
-            current.step = o.optInt("step")
-            current.steps = o.optInt("steps")
-            current.wallMs = o.optDouble("wall_ms")
-            current.computeMs = o.optDouble("compute_ms")
-            current.ioMs = o.optDouble("io_ms", 0.0)
-            current.stallMs = o.optDouble("stall_ms", 0.0)
-            current.mgmtMs = o.optDouble("mgmt_ms", 0.0)
-            current.cacheHitPct = o.optDouble("cache_hit_pct", -1.0)
-            current.majflt = o.optDouble("majflt", 0.0)
-            current.cpuMs = o.optDouble("cpu_ms", 0.0)
-            if (o.optInt("reset") == 1) {
-                reasoning.setLength(0)
-                text.setLength(0)
-            }
-            reasoning.append(o.optString("delta_reasoning"))
-            text.append(o.optString("delta_text"))
-            current.reasoning = reasoning.toString()
-            current.text = text.toString()
-        }.isSuccess
-    }
+/** The run averages of one `done` event, applied to [t]. */
+fun Telemetry.applyDone(o: JSONObject): Telemetry = apply {
+    avgTokensPerSecond = o.optDouble("tok_s", -1.0)
+    avgComputeMs = o.optDouble("compute_s_tok", -0.001) * 1000.0
+    avgMgmtMs = o.optDouble("mgmt_s_tok", -0.001) * 1000.0
+    avgIoMs = o.optDouble("io_s_tok", -0.001) * 1000.0
+    avgStallMs = o.optDouble("stall_s_tok", -0.001) * 1000.0
+    prefillTps = o.optDouble("prefill_tps", -1.0)
+    val loadS = o.optDouble("load_s", -1.0)
+    val prefillS = o.optDouble("prefill_s", -1.0)
+    ttftS = if (loadS >= 0 && prefillS >= 0) loadS + prefillS else -1.0
+    readMib = o.optDouble("read_mib", -1.0)
+    cacheResidentMib = o.optDouble("cache_resident_mib", -1.0)
+    cacheBudgetMib = o.optDouble("cache_budget_mib", -1.0)
+    avgMajfltPerTok = o.optDouble("majflt_tok", -1.0)
+    avgCpuSPerTok = o.optDouble("cpu_s_tok", -1.0)
+    mtpDrafted = o.optLong("mtp_drafted", 0)
+    mtpAccepted = o.optLong("mtp_accepted", 0)
+    mtpDecodes = o.optLong("mtp_decodes", 0)
+    draftedSteps = o.optLong("drafted_steps", 0)
+    mtpDraftSPerTok = o.optDouble("mtp_draft_s_tok", 0.0)
+    loopOverheadSPerTok = o.optDouble("loop_overhead_s_tok", 0.0)
+    if (o.optInt("tokens", 0) > 0) step = o.optInt("tokens")
 }

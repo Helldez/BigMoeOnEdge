@@ -73,7 +73,7 @@ core/
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates
-examples/android an APK that drives bmoe-cli via ProcessBuilder; it carries bmoe-server too
+examples/android the Android app: bmoe-server from the APK as a child process, five screens over its API
 examples/ios    a harness app with bmoe-cli compiled in (an app there may not start a process)
 ```
 

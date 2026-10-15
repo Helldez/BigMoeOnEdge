@@ -1,4 +1,4 @@
-package io.bigmoeonedge.example
+package io.bigmoeonedge.app.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll

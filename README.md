@@ -219,11 +219,12 @@ On a 12 GB phone with the NPU prefill, a Qwen3.6-35B-A3B decision over a compact
 writes, per decision, which experts each layer routed and the answer the model would give if it
 stopped after each layer. See [docs/decide.md](docs/decide.md).
 
-### Android demo app
+### Android app
 
-[`examples/android`](examples/android) is a small chat app over the same engine: model downloader,
-live telemetry panel, and every knob above in Settings with a one-line note on what it does.
-Defaults are the measured winning recipe for a model near RAM.
+[`examples/android`](examples/android) is the phone app, a client of the same `bmoe-server` the
+desktop runs, shipped inside the APK: chat with saved conversations, the catalog, the planner's
+plan with its reasons, every engine setting rendered from the parameter table, live metrics, and a
+switch that serves the phone's engine to the network with a key.
 
 ### Desktop app
 
@@ -534,12 +535,10 @@ options, and any `bmoe-cli` engine flag given at start holds for that run.
 
 ### Android
 
-The demo app is in [`examples/android`](examples/android): build the CLI for arm64 with
-`scripts/build-android.ps1`, build the APK, push a model. Settings expose every streaming knob with
-a one-line note on what it does; defaults are the measured winning recipe for a model near RAM. For
-a model several × RAM, switch the dense-weights policy to `anon` and give the cache a real budget.
-A prebuilt debug APK is attached to each
-[release](https://github.com/Helldez/BigMoeOnEdge/releases).
+The app is in [`examples/android`](examples/android): build the engine for arm64 with
+`scripts/build-android.ps1`, build the APK, get a model from the catalog or push one. It runs
+`bmoe-server` as a process of its own and speaks its API; `--auto` plans every load. A prebuilt APK
+is attached to each [release](https://github.com/Helldez/BigMoeOnEdge/releases).
 
 ## How it works
 
