@@ -280,6 +280,22 @@ What is still owed is measurement rather than design, and every knob the plan ca
   ([hardware-planning.md](hardware-planning.md)). That choice has been made on one laptop with a
   GPU that shares the host's memory. A phone's NPU, which a caller still names by hand in the
   measurements here ([npu-prefill.md](npu-prefill.md)), and a discrete GPU each owe a run.
+- **The budget, from what other processes hold idle: measured on three machines, and parked.**
+  The reported available figure moves (3.0 to 12.4 GB within an hour on one laptop) and is a
+  floor wherever the kernel reclaims other processes' idle memory to make room. Counting that idle
+  memory into the budget was tried as one formula over measured facts (the idle set times what a
+  byte shrinks to when taken, capped by the swap left free) and measured on a Windows laptop whose
+  reclaim goes to a pagefile, a phone and a Mac whose reclaim compresses. It was right where bytes
+  go out whole (the laptop: 3.22 tok/s from the reported figure, 4.37 plain mmap, 4.92 from the
+  idle set) and wrong wherever they are compressed: on the phone a cache sized that way cost 15 s
+  of stalls in 64 tokens, and on the Mac with a 7.8 GB neighbour every cache size lost to no cache
+  at all, the reported reading included (7.28 tok/s with the cache off, 5.47 at 1.5 GB, 3.06 at
+  2.5 GB), because the compressor takes the cache's cold pages and each hit then pays a
+  decompression. `--auto` keeps today's reading, which was the best of the three everywhere; the
+  code and the full tables are reachable from the closed PR #230. What the measurements say is
+  that on a machine whose reclaim compresses, no static reading survives pressure: the size at
+  which the system starts taking the cache back is a property of the run, which is what
+  [cache-stall-sizing.md](cache-stall-sizing.md) proposes to read at run time.
 - **The graph width, anywhere but where it was measured.** `--auto` now chooses `--ubatch` from
   the compute buffers a width reserves, projected at the width the session opens with. The rule and
   its one policy figure were sized on a single laptop; a phone with an NPU, a machine with no
