@@ -2,7 +2,8 @@
   import StreamingBadge from './StreamingBadge.svelte';
   import { server } from '../stores/server.svelte';
 
-  const stateClass: Record<string, string> = { empty: '', loading: 'warn', ready: 'ok', error: 'err' };
+  const stateClass: Record<string, string> = { empty: '', planning: 'warn', loading: 'warn', ready: 'ok', error: 'err' };
+  const stateText: Record<string, string> = { planning: 'Measuring the machine, then loading' };
   let info = $derived(server.info);
 </script>
 
@@ -11,7 +12,7 @@
     <span class="badge err">Server unreachable, reconnecting</span>
   {/if}
   {#if info}
-    <span class="badge {stateClass[info.state] ?? ''}">State: {info.state}</span>
+    <span class="badge {stateClass[info.state] ?? ''}">State: {stateText[info.state] ?? info.state}</span>
     {#if info.state === 'error' && info.error}
       <span class="error-text">{info.error}</span>
     {/if}

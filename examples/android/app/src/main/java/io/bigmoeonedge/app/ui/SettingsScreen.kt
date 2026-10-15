@@ -90,16 +90,14 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                             ParamRow(spec, cfg, modelName = engine.info?.model?.name, onSet = { set(spec.key, it) }, onReset = { reset(spec.key) })
                         }
                     }
-                    // Everything else in one section of its own, folded: the levers measured once or
-                    // on one device, and the diagnostics. They ship on purpose, because measuring them
-                    // on other hardware is part of what this app is for; a lever nobody can reach is a
-                    // lever nobody can refute.
+                    // Every row in one section of its own, folded, the basic ones included: the whole
+                    // engine in one place, each row marked with its level. They ship on purpose, because
+                    // measuring them on other hardware is part of what this app is for; a lever nobody
+                    // can reach is a lever nobody can refute.
                     AdvancedSection(advancedOpen, onToggle = { advancedOpen = !advancedOpen }) {
                         groups.forEach { (groupLabel, rows) ->
-                            val rest = rows.filter { it.level != "basic" }
-                            if (rest.isEmpty()) return@forEach
                             Text(groupLabel, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary)
-                            rest.forEach { spec ->
+                            rows.forEach { spec ->
                                 ParamRow(spec, cfg, modelName = engine.info?.model?.name, onSet = { set(spec.key, it) }, onReset = { reset(spec.key) })
                             }
                         }
@@ -171,7 +169,7 @@ private fun ParamRow(spec: ParamSpec, cfg: ConfigState, modelName: String?, onSe
                 if (spec.type != "bool") Hint(spec.help)
                 else if (spec.help.isNotEmpty()) Hint(spec.help)
                 val tags = listOfNotNull(
-                    if (spec.level != "basic") spec.level else null,
+                    spec.level,
                     if (mine) "set by you" else null,
                     if (spec.lossy) "changes the reply" else null,
                     if (spec.scope == "session") "applies on reload" else null,
@@ -239,9 +237,9 @@ private fun AdvancedSection(open: Boolean, onToggle: () -> Unit, content: @Compo
         }
         if (open) {
             Text(
-                "Measured on one device, or not measured yet. These can slow a run down or change the " +
-                    "reply. The settings above are the recommended configuration; the planner sets what " +
-                    "it can measure.",
+                "Every setting, grouped and marked with its level. The groups above are the recommended " +
+                    "configuration; the planner sets what it can measure, and the levels beyond basic were " +
+                    "measured once or on one device and can slow a run down or change the reply.",
                 fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
             )

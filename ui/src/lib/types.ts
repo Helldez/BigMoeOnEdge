@@ -38,7 +38,7 @@ export interface ParamSpec {
   accepts_auto?: boolean;
 }
 
-export type ServerState = 'empty' | 'loading' | 'ready' | 'error';
+export type ServerState = 'empty' | 'planning' | 'loading' | 'ready' | 'error';
 
 export interface ModelInfo {
   path: string;
