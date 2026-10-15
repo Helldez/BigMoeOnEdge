@@ -8,6 +8,7 @@
 #include "server.h"
 
 #include "access.h"
+#include "decide_protocol.h"
 #include "engine_host.h"
 #include "openai_chat.h"
 #include "event_bus.h"
@@ -65,6 +66,7 @@ RunConfig server_defaults() {
     c.moe.cache_auto = true; // with streaming on, no cache re-reads every expert every token (#186)
     c.n_ctx = 4096;
     c.n_predict = 1024;
+    c.decide.enabled = true; // POST /api/decide; costs nothing until a decision is asked for
 #if defined(BMOE_HAVE_EXPERT_READY_HOOK)
     c.moe.overlap = true; // byte-identical and the measured best on every device; needs the hook
 #endif
@@ -470,6 +472,20 @@ void register_routes(httplib::Server & svr, App & app) {
             sink.done();
             return true;
         });
+    });
+
+    // A decision: which of a list of choices the model would answer next, from one prefill and no
+    // decode (docs/decide.md). Not streamed: there is nothing to stream, and the answer is one object.
+    svr.Post("/api/decide", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        DecideRequest dr;
+        std::string err;
+        if (!parse_decide_request(body, dr, err)) return send_error(res, 400, err);
+        if (!app.host.ready()) return send_error(res, 503, "no model is loaded: load one from the Models page");
+        DecideOutcome out = app.host.decide(dr, [&req] { return !req.is_connection_closed(); });
+        if (out.status != 200) return send_error(res, out.status, out.error);
+        send_json(res, decide_json(out.result));
     });
 
     svr.Get("/api/events", [&](const httplib::Request &, httplib::Response & res) {

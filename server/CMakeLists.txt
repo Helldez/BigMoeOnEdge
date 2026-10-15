@@ -15,6 +15,7 @@ endif()
 # edges.
 add_library(bmoe_server_core STATIC
     access.cpp
+    decide_protocol.cpp
     openai_chat.cpp
     turn_queue.cpp
     event_bus.cpp
