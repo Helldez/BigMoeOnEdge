@@ -41,6 +41,11 @@ public:
     void apply_plan(std::map<std::string, std::string> values, json decisions);
 
     RunConfig config() const;
+    // The configuration with the plan layer left out (defaults < launch < user): what a plan is
+    // made from and measured against. A plan made from the config that holds the previous plan
+    // would see its own earlier choices as already there, leave them out of its values, and
+    // apply_plan would then drop them along with the layer it replaces.
+    RunConfig planning_config() const;
     const RunConfig & defaults() const { return defaults_; }
     std::vector<std::string> operator_keys() const; // launch + user: what a plan must not touch
     json plan_decisions() const;

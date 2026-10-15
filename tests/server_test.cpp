@@ -280,6 +280,36 @@ static void settings_tests() {
     std::filesystem::remove(path, ec);
 }
 
+static void planning_config_tests() {
+    const std::string path = (std::filesystem::temp_directory_path() / "bmoe_server_test_plan.json").string();
+    std::filesystem::remove(path);
+    RunConfig defaults;
+    defaults.moe.enabled = true;
+    SettingsStore store(defaults, path);
+    store.apply(json{{"threads", 6}}, {});
+    store.apply_plan({{"cache-mb", "1333"}, {"force-cache", "true"}}, json::array());
+    check(store.config().moe.cache_mb == 1333 && store.config().moe.force_cache && store.config().n_threads == 6,
+          "the plan layer is in the config");
+    const RunConfig base = store.planning_config();
+    check(base.moe.cache_mb == defaults.moe.cache_mb && !base.moe.force_cache && base.n_threads == 6,
+          "the planning config leaves the plan layer out and keeps the person's values");
+    // What a second plan would do: its values are what differ from the planning config, so a
+    // choice it repeats is still a value, and replacing the layer keeps it.
+    std::map<std::string, std::string> second;
+    RunConfig planned = base;
+    planned.moe.cache_mb = 1233;
+    planned.moe.force_cache = true;
+    for (const ParamDesc & d : params())
+        if (d.get(planned) != d.get(base)) second[d.key] = d.get(planned);
+    check(second.count("force-cache") == 1 && second.count("cache-mb") == 1, "a repeated choice is still a value");
+    store.apply_plan(second, json::array());
+    // (validate() wants a model path too; the cache rule is the one this guards.)
+    check(store.config().moe.cache_mb == 1233 && store.config().moe.force_cache &&
+              validate(store.config()).error.find("pathological") == std::string::npos,
+          "the second plan applies whole, and the cache rule is satisfied");
+    std::filesystem::remove(path);
+}
+
 static void json_tests() {
     std::string s;
     check(value_to_param_string(json(true), s) && s == "true", "bool to parameter string");
@@ -436,6 +466,7 @@ int main() {
     protocol_tests();
     queue_tests();
     settings_tests();
+    planning_config_tests();
     json_tests();
     access_tests();
     decide_tests();

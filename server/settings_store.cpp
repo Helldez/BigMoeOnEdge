@@ -100,6 +100,16 @@ RunConfig SettingsStore::config() const {
     return build_locked();
 }
 
+RunConfig SettingsStore::planning_config() const {
+    std::lock_guard<std::mutex> lk(m_);
+    RunConfig c = defaults_;
+    std::string err;
+    for (const auto * layer : {&launch_, &user_})
+        for (const auto & kv : *layer)
+            if (const ParamDesc * d = find_param(kv.first)) d->set(c, kv.second, err);
+    return c;
+}
+
 std::vector<std::string> SettingsStore::operator_keys() const {
     std::lock_guard<std::mutex> lk(m_);
     std::set<std::string> keys;
