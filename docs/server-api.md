@@ -334,6 +334,7 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 | `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` |
 | `config` | the `GET /api/config` object, after any change |
+| `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
 
 `flash_wait_ms` (per token) and `flash_wait_s_tok` (the run's average) are the flash term that is a
 share of the wall, already chosen for the run's mode: the blocking read (`io_*`) in serial, the stall

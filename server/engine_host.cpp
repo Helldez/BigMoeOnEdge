@@ -2,9 +2,11 @@
 
 #include "decide_protocol.h"
 
+#include "bmoe/log.h"
 #include "bmoe/params.h"
 #include "bmoe/version.h"
 
+#include <cstdio>
 #include <filesystem>
 #include <utility>
 
@@ -23,11 +25,51 @@ struct Admission {
     std::string error;
 };
 
+const char * level_name(LogLevel l) {
+    return l == LogLevel::Error ? "error" : l == LogLevel::Warn ? "warn" : "info";
+}
+
+// A Session, as the host sees it.
+class RealSession final : public HostedSession {
+public:
+    explicit RealSession(std::unique_ptr<Session> s) : s_(std::move(s)) {}
+    RunResult generate(const GenerateRequest & req,
+                       const std::function<void(const TokenMetrics &)> & on_token) override {
+        return s_->generate(req, on_token, nullptr);
+    }
+    DecideResult decide(const DecideRequest & req) override { return s_->decide(req); }
+    void cancel() override { s_->cancel(); }
+    const std::string & arch() const override { return s_->arch(); }
+    int n_ctx() const override { return s_->n_ctx(); }
+    int n_expert_used() const override { return s_->n_expert_used(); }
+    ThinkControl think_control() const override { return s_->think_control(); }
+    double load_seconds() const override { return s_->load_seconds(); }
+
+private:
+    std::unique_ptr<Session> s_;
+};
+
 } // namespace
 
-EngineHost::EngineHost(EventBus & bus) : bus_(bus) {}
+std::unique_ptr<HostedSession> open_real_session(const SessionConfig & cfg, std::string & error) {
+    std::unique_ptr<Session> s = Session::open(cfg, error);
+    if (!s) return nullptr;
+    return std::make_unique<RealSession>(std::move(s));
+}
+
+// The bytes the default sink writes, so the server's stderr reads as it always has, and the same
+// line on the bus for a UI. Runs under the log port's lock, on whichever engine thread logged.
+void EngineHost::log_to_bus(LogLevel level, const char * message, void * self) {
+    std::fprintf(stderr, "bmoe: %s\n", message);
+    static_cast<EngineHost *>(self)->bus_.publish("log", json{{"level", level_name(level)}, {"message", message}});
+}
+
+EngineHost::EngineHost(EventBus & bus, SessionOpener open) : bus_(bus), open_(std::move(open)) {
+    set_log_sink(&EngineHost::log_to_bus, this);
+}
 
 EngineHost::~EngineHost() {
+    set_log_sink(nullptr); // before anything goes: the sink reaches into bus_
     cancel();
     if (loader_.joinable()) loader_.join();
     std::lock_guard<std::mutex> g(gen_m_);
@@ -74,7 +116,7 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
             session_.reset();
         }
         std::string error;
-        std::shared_ptr<Session> s = Session::open(session_config_from(effective), error);
+        std::shared_ptr<HostedSession> s = open_(session_config_from(effective), error);
         {
             std::lock_guard<std::mutex> lk(m_);
             if (!s) {
@@ -121,7 +163,7 @@ void EngineHost::unload() {
 }
 
 void EngineHost::cancel() {
-    std::shared_ptr<Session> s;
+    std::shared_ptr<HostedSession> s;
     {
         std::lock_guard<std::mutex> lk(m_);
         s = session_;
@@ -197,7 +239,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     } leave{turns_};
     std::lock_guard<std::mutex> g(gen_m_);
 
-    std::shared_ptr<Session> s;
+    std::shared_ptr<HostedSession> s;
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == State::Ready) s = session_;
@@ -222,13 +264,10 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
 
     generating_ = true;
     publish_state();
-    RunResult r = s->generate(
-        gr,
-        [&](const TokenMetrics & tm) {
-            bus_.publish("token", token_json(tm));
-            if (on_token) on_token(tm);
-        },
-        nullptr);
+    RunResult r = s->generate(gr, [&](const TokenMetrics & tm) {
+        bus_.publish("token", token_json(tm));
+        if (on_token) on_token(tm);
+    });
     generating_ = false;
 
     if (!r) {
@@ -278,7 +317,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
     } leave{turns_};
     std::lock_guard<std::mutex> g(gen_m_);
 
-    std::shared_ptr<Session> s;
+    std::shared_ptr<HostedSession> s;
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == State::Ready) s = session_;

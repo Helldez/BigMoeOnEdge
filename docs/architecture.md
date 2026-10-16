@@ -15,7 +15,8 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 and the engine behind the desktop web UI (docs/server-api.md)
                 openai_chat (the chat protocol), turn_queue, settings_store, event_bus, json_util,
                 model_files (which gguf names make one model): pure policy (bmoe_server_core)
-                engine_host: the one Session, loads, the turn line; model_library: files, catalog,
+                engine_host: the one Session, loads, the turn line, over the HostedSession seam
+                (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,
                 downloads; planner_adapter: /api/plan when the planner is built in;
                 access: who may reach the API (host, origin, key, content type), pure and tested;
                 platform: the only file with platform #ifs; http_server: the HTTP routes and
@@ -35,8 +36,8 @@ core/
     run_error.h     RunError: why a request failed, as a kind every front-end decides on, and its
                     stable name, the `code` of the CLI protocol and the server API
     log.h           the log port: where the engine's diagnostics go (set_log_sink, a level). The
-                    default sink writes `bmoe: <line>` to stderr as the engine always has. Protocol
-                    lines never pass through it
+                    default sink writes `bmoe: <line>` to stderr as the engine always has; bmoe-server
+                    also publishes each line as a `log` event. Protocol lines never pass through it
     hardware_profile.h, model_profile.h, placement.h
                     the planner's inputs: a machine, a model and llama.cpp's capacity placement as
                     facts, with no platform, vendor or architecture name in them

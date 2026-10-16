@@ -65,6 +65,15 @@ if(TARGET bmoe_server_core)
     add_test(NAME server_logic COMMAND bmoe_server_test)
 endif()
 
+# bmoe-server's engine host: loads, turns, cancel and unload across threads, and which failures
+# close the session, over a scripted session behind the host's seam (server/hosted_session.h).
+# No model.
+if(TARGET bmoe_server)
+    add_executable(bmoe_engine_host_test engine_host_test.cpp)
+    target_link_libraries(bmoe_engine_host_test PRIVATE bmoe_server)
+    add_test(NAME engine_host COMMAND bmoe_engine_host_test)
+endif()
+
 # release_file_mappings: on Windows it must find and drop this process's own view + section of a
 # file and leave the placeholders in place; on POSIX it must report unsupported and touch nothing.
 add_executable(bmoe_mapping_release_test mapping_release_test.cpp)

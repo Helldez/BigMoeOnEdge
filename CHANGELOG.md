@@ -93,7 +93,15 @@ Semantic Versioning.
   from wherever it was; they now go through `bmoe/log.h` (`set_log_sink`, `set_log_level`, three
   levels). The default sink writes the same `bmoe: <line>` to stderr, byte for byte, so nothing that
   reads the CLI's stderr changes; the `BMOE_*` protocol lines and the CSV/trace sinks never pass
-  through it.
+  through it. `bmoe-server` keeps the stderr line and also publishes each one as a `log` event
+  (`level`, `message`) on `GET /api/events`, so a UI can show why a load fell back.
+- **The engine host is tested.** `bmoe-server`'s state machine around the one session (loads in the
+  background, turns in line, cancel and unload mid-turn, which failures close the session) had no
+  test. It now drives the session through a narrow seam (`server/hosted_session.h`, a real `Session`
+  by default), and `tests/engine_host_test.cpp` runs it with a scripted session: a load ending ready
+  or in error, a turn with nothing loaded (503 `no_model`), a turn sent during a load waiting for it,
+  cancel and unload during a turn, a failed decode closing the session (500) and a recoverable kind
+  keeping it (400), the same for decisions, and diagnostics reaching the bus.
 
 ### Changed
 - **A shorter README, for what the project is now.** It introduced a way to run a model past RAM
