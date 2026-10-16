@@ -50,8 +50,10 @@ The reservation mirrors the tensor's own byte layout, so ggml's address arithmet
 cache plays on `mul_mat_id`, at row granularity instead of expert granularity.
 
 - **Slabs, not rows.** A row is ~1 KiB, far below any device's request floor, so the unit fetched
-  is a 16 KiB page-aligned slab: a read that size costs what the floor costs anyway, and adjacent
-  vocabulary rows recur. This is a property of the storage, not of a model.
+  is a page-aligned slab of 16 KiB, or one page where the page is larger: a read that size costs
+  what the floor costs anyway, and adjacent vocabulary rows recur. A slab is committed and evicted
+  as whole pages, so it never shares a page with a neighbour. This is a property of the storage and
+  the machine, not of a model.
 - **A bounded window.** `--row-stream-mb` (default 64) caps what all row-streamed tables hold
   resident together, evicted LRU. In practice a run never approaches it, since the tables above
   hold well under a MiB, but the ceiling is what makes the residency claim a guarantee rather than

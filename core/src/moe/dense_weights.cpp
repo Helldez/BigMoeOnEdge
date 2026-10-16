@@ -32,12 +32,10 @@ DenseWeights::byte_ranges(std::vector<std::pair<uint64_t, uint64_t>> expert_rang
 
 bool DenseWeights::init(DenseWeightsMode mode,
                         const std::vector<std::string> & paths,
-                        size_t align,
                         std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges,
                         std::vector<DenseTensorRef> tensors) {
     mode_ = mode;
     paths_ = paths;
-    align_ = align ? align : 4096;
     ranges_ = std::move(ranges);
     tensors_ = std::move(tensors);
     basenames_.clear();
@@ -65,9 +63,9 @@ bool DenseWeights::init(DenseWeightsMode mode,
         const size_t chunk = 8ull << 20;
         for (const std::string & p : paths_) {
             readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
-            if (!readers_.back()->open(p, 1, /*direct=*/true, align_, chunk + 2 * align_)) return false;
+            if (!readers_.back()->open(p, 1, /*direct=*/true, chunk)) return false;
         }
-        if (!read_anonymous(align_)) return false;
+        if (!read_anonymous()) return false;
         // The tensors are copied and rebound; nothing reads through these again. Their fds and
         // per-lane bounce buffers would otherwise sit allocated for the whole session, next to
         // the expert cache that is counting every MiB.
@@ -198,7 +196,7 @@ void DenseWeights::take_row_gathered() {
     if (take.empty()) return;
 
     rows_.reset(new RowStream());
-    if (!rows_->init(take, paths_, align_, row_budget_) || rows_->empty()) {
+    if (!rows_->init(take, paths_, row_budget_) || rows_->empty()) {
         rows_.reset();
         return; // the tables keep the mode the run asked for
     }
@@ -253,7 +251,7 @@ void DenseWeights::advise_random_mapped() {
 // exceeds it, or that arrives after the store has run out, takes an ordinary buffer - and the run
 // says how many MiB did, on stderr and in pin_refused_bytes(), because a SILENT mix would make an
 // A/B against anon meaningless in exactly the direction that flatters the feature.
-bool DenseWeights::read_anonymous(size_t align) {
+bool DenseWeights::read_anonymous() {
     // Not const: the store can run out part way. A plan sizes the pinned set against a total that
     // is read once and then moves, so a refusal here is something that happens rather than a bug,
     // and a run that stopped loading for it would be worse than one a little slower. From the
@@ -291,7 +289,9 @@ bool DenseWeights::read_anonymous(size_t align) {
             buf = pa.base;
         } else {
             if (mode_ == DenseWeightsMode::Pinned) pin_refused_bytes_ += d.size;
-            buf = pio::alloc_aligned(align, (size_t) d.size);
+            // Aligned for the reader that fills it, and to a page for the sensor and the drop that
+            // later clip this buffer to pages.
+            buf = pio::alloc_aligned(readers_[(size_t) d.file_idx]->buffer_align(), (size_t) d.size);
             if (!buf) {
                 std::fprintf(stderr, "bmoe: dense buffer alloc %llu failed\n", (unsigned long long) d.size);
                 return false;
@@ -369,7 +369,7 @@ void DenseWeights::drop_mmap_copies(size_t page) {
 // ── Warmed: one sequential buffered sweep over the dense ranges to populate the page cache ──
 void DenseWeights::warm() {
     const size_t chunk = 8ull << 20;
-    void * buf = pio::alloc_aligned(align_, chunk);
+    void * buf = pio::alloc_aligned(pio::vm_page(), chunk); // buffered reads: any alignment, a page is plenty
     if (!buf) return;
     const auto t0 = clock_t_::now();
     uint64_t warmed = 0;

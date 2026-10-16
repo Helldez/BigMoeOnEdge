@@ -202,6 +202,21 @@ Semantic Versioning.
   not found" dialog; it worked from Git Bash only because Git for Windows carries those DLLs on its
   `PATH`. The server speaks plain HTTP on loopback and downloads go through the system curl, so the
   option is now off and the binary links no TLS stack. The CLI archive was never affected (#242).
+- **Direct reads are aligned to what the file's filesystem states, not to 4096.** Every reader cut its
+  O_DIRECT windows at 4 KiB, and the storage probe reported that literal as the storage's alignment. A
+  filesystem formatted with 16 KiB blocks rejects a 4 KiB window, and the open-time check then put the
+  run on buffered reads, blaming the storage for returning wrong data. The reader now asks the
+  descriptor it opened (`pio::direct_alignment`: `statx(STATX_DIOALIGN)` on Linux and Android where
+  the kernel and the app sandbox have it, the filesystem's block size otherwise; the volume's sector
+  sizes on Windows; the block size on Apple, where `F_NOCACHE` needs none), keeps 4096 only as the
+  named fallback, and the probe reports `0` (unknown) instead of a value it did not read. Buffers the
+  reads land in are aligned to that granule and never less than a page. Three more facts are no longer
+  assumed: the refault price is read at this machine's page (16 KiB on Apple silicon) rather than at 4
+  KiB; a row-stream slab is a whole number of pages, so on a 64 KiB-page kernel evicting one slab can
+  no longer zero its resident neighbours; and the expert-readiness flags are padded to 128 bytes, the
+  widest cache line of any target, instead of 64. The swap probe finds a zram device under any number
+  rather than only `zram0`, and the spin-wait's pause and the decide probe's 64-bit file reads moved
+  behind `core/src/io/`, so no operating-system branch is left in `core/src/moe/`.
 
 ## [0.29.0] - 2026-10-13
 

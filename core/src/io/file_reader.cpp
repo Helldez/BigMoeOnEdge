@@ -13,14 +13,13 @@ FileReader::~FileReader() {
     close();
 }
 
-bool FileReader::open(const std::string & path, int lanes, bool direct, size_t align, size_t bounce_cap) {
+bool FileReader::open(const std::string & path, int lanes, bool direct, size_t max_read) {
     if (is_open()) return false;
     // Recorded after the guard: a refused call must not overwrite what reopen() replays.
     path_ = path;
     lanes_ = lanes;
     direct_req_ = direct;
-    bounce_cap_ = bounce_cap;
-    align_ = align ? align : 4096;
+    max_read_ = max_read;
     direct_ = direct;
     const int n = lanes < 1 ? 1 : lanes;
 
@@ -34,6 +33,14 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
         return false;
     }
     fsize_ = pio::file_size(primary);
+    // Asked of the descriptor the reads will use, so the granule is the one for the filesystem this
+    // path is actually on. Asked even when the read is buffered: it is also what the storage probe
+    // reports, and the question costs one stat.
+    const size_t stated = pio::direct_alignment(primary);
+    align_reported_ = stated != 0;
+    align_ = align_reported_ ? stated : pio::direct_align_fallback;
+    // A window starts up to one granule before the read and ends up to one granule after it.
+    const size_t bounce_cap = max_read + 2 * align_;
 
     // The read mechanics follow the platform's direct MODE, not the direct FACT: O_DIRECT and
     // FILE_FLAG_NO_BUFFERING reject unaligned windows and need the bounce and the buffered tail fd;
@@ -189,10 +196,14 @@ bool FileReader::reopen() {
     const std::string path = path_;
     const int lanes = lanes_;
     const bool direct = direct_req_;
-    const size_t align = align_;
-    const size_t cap = bounce_cap_;
+    const size_t max_read = max_read_;
     close();
-    return open(path, lanes, direct, align, cap);
+    return open(path, lanes, direct, max_read);
+}
+
+size_t FileReader::buffer_align() const {
+    const size_t page = pio::vm_page();
+    return align_ > page ? align_ : page;
 }
 
 void FileReader::close() {

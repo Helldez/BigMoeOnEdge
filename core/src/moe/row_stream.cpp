@@ -18,22 +18,21 @@ static uint64_t round_up(uint64_t v, uint64_t a) {
 
 bool RowStream::init(std::vector<DenseTensorRef> tensors,
                      const std::vector<std::string> & paths,
-                     size_t align,
                      uint64_t budget_bytes) {
     if (tensors.empty()) return true;
-    align_ = align ? align : 4096;
     page_ = pio::vm_page();
+    slab_ = round_up(slab_min_bytes, page_);
     budget_bytes_ = budget_bytes ? budget_bytes : default_budget_bytes;
     // A budget below one slab would make every gather evict what it just read. Round it up rather
     // than reject the run: the caller asked for "as little as possible", not for a stall.
-    budget_bytes_ = std::max<uint64_t>(budget_bytes_, slab_bytes);
+    budget_bytes_ = std::max<uint64_t>(budget_bytes_, slab_);
 
     // One single-lane reader per shard, sized for a slab window. Independent of both the expert
     // stream's readers and the dense loader's, for the same reason theirs are independent of each
     // other: the O_DIRECT decision belongs to the consumer, not to the file.
     for (const std::string & p : paths) {
         readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
-        if (!readers_.back()->open(p, 1, /*direct=*/true, align_, (size_t) slab_bytes + 2 * align_)) {
+        if (!readers_.back()->open(p, 1, /*direct=*/true, (size_t) slab_)) {
             std::fprintf(stderr, "bmoe: row-stream could not open %s — tables keep the dense policy\n", p.c_str());
             readers_.clear();
             return false;
@@ -61,7 +60,7 @@ bool RowStream::init(std::vector<DenseTensorRef> tensors,
             release();
             return false;
         }
-        t.n_slabs = round_up(d.size, slab_bytes) / slab_bytes;
+        t.n_slabs = round_up(d.size, slab_) / slab_;
         t.resident.assign((size_t) t.n_slabs, 0);
         t.stamp.assign((size_t) t.n_slabs, 0);
         t.spot.assign((size_t) t.n_slabs, lru_.end());
@@ -116,9 +115,9 @@ bool RowStream::fetch_slab(Table & t, uint64_t s) {
         touch(t, s);
         return true;
     }
-    const uint64_t off = s * slab_bytes;
-    const uint64_t len = slab_len(t.ref.size, s, slab_bytes);
-    // Commit whole pages: the slab is a multiple of the page and the reservation is page-aligned,
+    const uint64_t off = s * slab_;
+    const uint64_t len = slab_len(t.ref.size, s, slab_);
+    // Commit whole pages: the slab is a whole number of pages and the reservation is page-aligned,
     // so only the final short slab needs rounding, and it cannot run past the reservation.
     const uint64_t commit = std::min<uint64_t>(round_up(len, page_), t.span - off);
     if (!pio::vm_commit(t.base + off, (size_t) commit)) {
@@ -155,8 +154,8 @@ void RowStream::evict_to_budget(uint64_t headroom) {
             ++it;
             continue;
         }
-        const uint64_t off = s * slab_bytes;
-        const uint64_t len = slab_len(t.ref.size, s, slab_bytes);
+        const uint64_t off = s * slab_;
+        const uint64_t len = slab_len(t.ref.size, s, slab_);
         const uint64_t commit = std::min<uint64_t>(round_up(len, page_), t.span - off);
         pio::vm_evict(t.base + off, (size_t) commit);
         t.resident[(size_t) s] = 0;
@@ -189,12 +188,12 @@ bool RowStream::gather(const ggml_tensor * table, const int32_t * idx, int n) {
         if (r < 0 || (uint64_t) r >= t->n_rows) continue; // the graph defines validity, not us
         const uint64_t a = (uint64_t) r * t->row_bytes;
         const uint64_t b = std::min<uint64_t>(a + t->row_bytes, t->ref.size);
-        for (uint64_t s = a / slab_bytes; s * slab_bytes < b; ++s) {
+        for (uint64_t s = a / slab_; s * slab_ < b; ++s) {
             if (s >= t->n_slabs) break;
             if (t->stamp[(size_t) s] == gen_) continue;
             t->stamp[(size_t) s] = gen_;
             need_.push_back(s);
-            if (!t->resident[(size_t) s]) missing += slab_bytes;
+            if (!t->resident[(size_t) s]) missing += slab_;
         }
     }
     if (need_.empty()) return true;

@@ -14,10 +14,6 @@
 #include <thread>
 #include <utility>
 
-#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
-#include <intrin.h> // _mm_pause for the readiness spin-wait
-#endif
-
 namespace bmoe {
 
 using clock_t_ = std::chrono::steady_clock;
@@ -77,6 +73,20 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     if (max_full_any == 0) {
         std::fprintf(stderr, "bmoe: no MoE layers were bound\n");
         return false;
+    }
+
+    // Read pool: one reader per shard file, each owning a private fd + bounce per lane so concurrent
+    // preads never contend, and the O_DIRECT request + its verify/fallback (per file — a shard set
+    // could in principle straddle storage with different O_DIRECT behaviour). The dense-weights
+    // loader opens its own readers, so its cache-bypass choice is independent of this one. Opened
+    // before any expert buffer is allocated, because the buffers are aligned to what the readers
+    // learn about the files: the coarsest granule over the shards, and never less than a page.
+    const size_t max_slice = max_full_any / (size_t) n_expert_;
+    buf_align_ = page_;
+    for (const std::string & sp : shard_paths) {
+        readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
+        if (!readers_.back()->open(sp, io_threads_, cfg.o_direct, max_slice)) return false;
+        buf_align_ = std::max(buf_align_, readers_.back()->buffer_align());
     }
 
     // Auto budget: size the cache to the device once, now that the full expert-set size is known.
@@ -146,7 +156,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // slices are ever valid. Absent slots (max_full[p] == 0) get no buffer.
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             if (max_full[p] == 0) continue;
-            slot_[p] = pio::alloc_aligned(align_, max_full[p]);
+            slot_[p] = pio::alloc_aligned(buf_align_, max_full[p]);
             if (!slot_[p]) {
                 std::fprintf(stderr, "bmoe: slot alloc %zu failed\n", max_full[p]);
                 return false;
@@ -197,16 +207,6 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         clookups_ = 0;
     }
 
-    // Read pool: one reader per shard file, each owning a private fd + bounce per lane so concurrent
-    // preads never contend, and the O_DIRECT request + its verify/fallback (per file — a shard set
-    // could in principle straddle storage with different O_DIRECT behaviour). The dense-weights
-    // loader opens its own readers, so its cache-bypass choice is independent of this one.
-    const size_t max_slice = max_full_any / (size_t) n_expert_;
-    const size_t bounce_cap = max_slice + 2 * align_;
-    for (const std::string & sp : shard_paths) {
-        readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
-        if (!readers_.back()->open(sp, io_threads_, cfg.o_direct, align_, bounce_cap)) return false;
-    }
     // Each shard resolved direct for itself at open — the platform's answer plus the open-time
     // verify — so the run-level fact is the weakest shard: a mixed run must not be advertised as
     // fully direct, and a metadata-only first shard that never carried an expert read must not
@@ -274,7 +274,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         for (size_t s = 0; s < readers_.size(); ++s)
             ranges[s] = DenseWeights::byte_ranges(std::move(exp[s]), readers_[s]->file_size());
         dense_.set_row_gathered(std::move(row_tensors_), row_budget_);
-        if (!dense_.init(cfg.dense_weights, shard_paths, align_, std::move(ranges), std::move(dense_tensors_))) {
+        if (!dense_.init(cfg.dense_weights, shard_paths, std::move(ranges), std::move(dense_tensors_))) {
             std::fprintf(stderr, "bmoe: dense-weights init failed\n");
             return false;
         }
@@ -1381,22 +1381,6 @@ void ExpertStreamSource::c_expert_ready(const ggml_tensor * src0, int expert, vo
     static_cast<ExpertStreamSource *>(user_data)->on_expert_ready(src0, expert);
 }
 
-// One idle beat of the spin-wait below: keep the core out of the sibling threads' way without
-// entering the scheduler. yield() is a syscall; these are single instructions.
-static inline void cpu_relax() {
-#if defined(__aarch64__)
-    __asm__ __volatile__("isb" ::: "memory");
-#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#if defined(_MSC_VER)
-    _mm_pause();
-#else
-    __builtin_ia32_pause();
-#endif
-#else
-    std::this_thread::yield();
-#endif
-}
-
 // Called from EVERY compute thread, for each routed expert, before it reads that expert's rows.
 // Blocks until the expert's slice for the layer in flight is resident (or the run goes fatal).
 void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
@@ -1434,7 +1418,7 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
             stall_union_.exit();
             return;
         }
-        cpu_relax();
+        pio::cpu_relax(); // a pause instruction, not the scheduler: see the loop's comment
     }
     // Register as a waiter BEFORE the last look at the flag. The publisher sets the flag before it
     // reads this count, and both sides are seq_cst, so one of the two must observe the other: either

@@ -601,6 +601,14 @@ its pages, and it is not a fraction of the sequential rate but a different order
 MiB/s against 2800 on this desktop, **116x**. Without that term, leaving a group mapped looks nearly
 free and the plan under-spends on residency by two orders of magnitude.
 
+Both are read the way the engine reads, at granules the machine states rather than at 4096. The
+reader asks the file it opened for its direct-read alignment (`pio::direct_alignment`: the kernel's
+`statx` answer on Linux and Android where there is one, the filesystem's block size otherwise, the
+volume's sector sizes on Windows) and cuts its windows to that; the probe reports it as
+`storage.align`, or `0` where the platform did not say and the reader fell back to 4096. A refault
+is read one VM page at a time, because that is what the kernel faults in: 16 KiB on Apple silicon,
+4 KiB on most Linux and Android kernels.
+
 ### The decisive sample is sized in bytes, not in requests
 
 The sample at the point that decides something used to be a fixed **request count**, which makes its

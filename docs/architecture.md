@@ -42,7 +42,8 @@ core/
                     reason for each knob; the cost model and the memory ledger; the plan as a value
     probe.h         the adapters' entry points: what fills the two profiles
   src/
-    io/         platform_io — O_DIRECT reads + reserve/commit/evict VM, cross-platform
+    io/         platform_io — O_DIRECT reads and their per-file alignment, reserve/commit/evict VM,
+                  the spin-wait pause: the OS and ISA branches the streaming path needs
                 file_reader — pooled positioned reader, per-consumer O_DIRECT
                 mapping_release - releases the model file's mapping after load (--release-mmap)
     moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), arch_registry,

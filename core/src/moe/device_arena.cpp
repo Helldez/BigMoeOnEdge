@@ -13,8 +13,6 @@
 namespace bmoe {
 
 namespace {
-constexpr size_t kAlign = 4096; // O_DIRECT alignment, as the streamer uses
-
 // Whether the device runs a matmul whose weight is `type`, shaped like `w`, from its own buffer. Asked
 // of the device itself rather than read off a list, so any backend answers for its own kernels. The
 // probe weight is allocated: a backend may remember an unallocated weight (Hexagon notes it for
@@ -200,16 +198,19 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
     // Held for the session, or built for each prefill and given back after it (see acquire()).
     if (!on_demand_ && !build_slots(err)) return false;
 
+    // Staging is filled by every shard's reader, so it is aligned for the coarsest of them.
+    size_t stage_align = pio::vm_page();
     for (const std::string & sp : shard_paths) {
         readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
-        if (!readers_.back()->open(sp, threads, direct, kAlign, (size_t) max_nb2 + 2 * kAlign)) {
+        if (!readers_.back()->open(sp, threads, direct, (size_t) max_nb2)) {
             err = "cannot open " + sp;
             return false;
         }
+        stage_align = std::max(stage_align, readers_.back()->buffer_align());
     }
     staging_.assign((size_t) threads, nullptr);
     for (int i = 0; i < threads; ++i) {
-        staging_[(size_t) i] = pio::alloc_aligned(kAlign, (size_t) max_nb2);
+        staging_[(size_t) i] = pio::alloc_aligned(stage_align, (size_t) max_nb2);
         if (!staging_[(size_t) i]) {
             err = "cannot allocate loader staging";
             return false;

@@ -2,6 +2,8 @@
 
 #include "gguf_offsets.h"
 
+#include "../io/file_reader.h"
+
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "gguf.h"
@@ -11,20 +13,12 @@
 
 namespace bmoe {
 
-static bool seek64(std::FILE * f, uint64_t off) {
-#if defined(_WIN32)
-    return _fseeki64(f, (long long) off, SEEK_SET) == 0;
-#else
-    return fseeko(f, (off_t) off, SEEK_SET) == 0;
-#endif
-}
-
+// A few KiB read once per load or per choice: buffered, one lane, through the engine's own
+// positioned reader, so a 64-bit offset needs no platform branch here.
 static bool read_at(const std::string & path, uint64_t off, void * dst, size_t n) {
-    std::FILE * f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
-    const bool ok = seek64(f, off) && std::fread(dst, 1, n, f) == n;
-    std::fclose(f);
-    return ok;
+    FileReader rd;
+    if (!rd.open(path, 1, /*direct=*/false, n)) return false;
+    return rd.read(0, dst, off, n) == (long long) n;
 }
 
 // "<prefix><il>" with nothing after the digits, or -1.
