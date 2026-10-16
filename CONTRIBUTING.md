@@ -30,6 +30,11 @@ cd build && ctest --output-on-failure
 - A new MoE architecture recipe + its gate (`docs/adding-a-model.md`).
 - Read coalescing / expert-contiguous layout experiments (see `docs/roadmap.md`).
 
+## Reporting problems
+
+Bugs: the [bug report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=bug-report.yml)
+form. Security problems: privately, as [SECURITY.md](SECURITY.md) says, never in a public issue.
+
 ## PRs
 
 Keep them focused. Describe what you measured if the change is performance-related, and on

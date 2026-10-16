@@ -7,6 +7,9 @@ Semantic Versioning.
 ## [0.30.0] - 2026-10-16
 
 ### Added
+- **A security policy and the forms a contributor expects.** `SECURITY.md` says how to report a
+  problem privately and what is in scope; a bug-report issue form and a pull-request checklist
+  (gates, changelog and docs in the same PR, no hand-written tunable) join the benchmark form.
 - **`docs/platforms.md`: what runs where.** One page with a matrix per operating system (engine,
   server, native app, planner, isolated probes, CI, release artifact, the hardware it was run on)
   and per compute backend, each cell linked to the page that backs it, and what each platform
@@ -120,6 +123,10 @@ Semantic Versioning.
   Android alike.
 
 ### Fixed
+- **The docs index the pages they have, and name the test phone as a class.** `docs/README.md`
+  lists the application framework, the five screens and the visual language; the bench-data index
+  lists all eighteen sessions; the agent guide's project map names `session.cpp` as the composition
+  root; and the benchmark pages, bench notes and scripts call the phone "the 12 GB test phone".
 - **A request no longer fails because its answer budget is larger than the room left.** The session
   reserved the whole `n_predict` against the context before generating, so a two-word prompt was
   refused whenever Max tokens was set near or above the context size: the first outside client
@@ -1860,7 +1867,7 @@ to produce a confident wrong number rather than an error.
   change, one registry row. Added to the in-app one-tap download catalog. At ~2× device RAM it needs
   streaming: mmap baseline 0.1 tok/s (fault storm) vs **5.0 tok/s** streamed at the model's own
   width (cache 3000 MiB, byte-identical output), or **5.8 tok/s** with turbo top-k (`k=6`, lossy).
-  Measured on the OnePlus 15R (indicative 96-token run, not yet the full 256-token protocol); see
+  Measured on the 12 GB test phone (indicative 96-token run, not yet the full 256-token protocol); see
   the README benchmarks section.
 
 ## [0.10.0] - 2026-07-19
@@ -2080,7 +2087,7 @@ to produce a confident wrong number rather than an error.
   final channel removes the model's scratch space, so reasoning-dependent answers degrade — a
   latency/throughput mode, not a free win (see the gpt-oss quality note in `docs/benchmarks.md`).
 - **gpt-oss-120b on-device benchmark**: streaming a 58.46 GB MoE (128 experts, top-4) on the 11.3 GB
-  OnePlus 15R — **5.2× device RAM** — at up to 7.7× a plain-mmap load (top-k 2). A top-k × lanes ×
+  test phone — **5.2× device RAM** — at up to 7.7× a plain-mmap load (top-k 2). A top-k × lanes ×
   prefetch sweep plus an mmap baseline, with the k=4-interruption and 24-token-probe caveats and a
   quality note, in `docs/benchmarks.md`; raw data under `docs/bench-data/2026-07-14/`, drivers
   `scripts/gptoss-matrix.sh` and `scripts/gptoss-mmap.sh`.
