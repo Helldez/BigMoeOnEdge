@@ -33,12 +33,21 @@ struct CatalogEntry {
 
 class ModelLibrary {
 public:
-    ModelLibrary(std::string models_dir, std::string catalog_path, EventBus & bus);
+    // `models_dir` is where downloads land. `scan_dirs` are other directories whose models are
+    // listed beside it and loaded in place, never written (a phone's adb-pushed and shared-storage
+    // folders): the host app knows where they are, the server says what they hold.
+    ModelLibrary(std::string models_dir, std::vector<std::string> scan_dirs, std::string catalog_path, EventBus & bus);
     ~ModelLibrary();
 
     // Problems found reading the catalog, for the start-up log. Empty when it loaded cleanly.
     const std::vector<std::string> & warnings() const { return warnings_; }
     const std::string & models_dir() const { return dir_; }
+    // Every folder this library lists models from: the models folder first, then the scan dirs.
+    std::vector<std::string> model_roots() const {
+        std::vector<std::string> r{dir_};
+        r.insert(r.end(), scan_dirs_.begin(), scan_dirs_.end());
+        return r;
+    }
 
     // The /api/models object: local files and the catalog with each entry's status.
     json list();
@@ -68,7 +77,11 @@ private:
     const CatalogEntry * find(const std::string & id) const;
     bool entry_on_disk(const CatalogEntry & e) const;
 
+    // One directory's models as /api/models `local` entries, appended to `out`.
+    void list_dir(const std::string & dir, json & out);
+
     std::string dir_;
+    std::vector<std::string> scan_dirs_;
     EventBus & bus_;
     std::vector<CatalogEntry> catalog_;
     std::vector<std::string> warnings_;

@@ -43,7 +43,9 @@ and one event stream per UI, which is microseconds against the tens of milliseco
 ## What stays platform-specific, and where
 
 The server has one file with platform `#if`s (`server/platform.cpp`): the data directory, the
-executable's own directory, opening a browser. Everything else platform-shaped is an adapter the
+executable's own directory, opening a browser, and what the compute backends are told before they
+load (on Android, the Hexagon backend's polling and host buffer, set only where the environment has
+not set them). Everything else platform-shaped is an adapter the
 host app supplies or the server does without:
 
 - **Downloads.** The desktop server runs the system `curl`. Android has no `curl`, and the system
@@ -52,8 +54,9 @@ host app supplies or the server does without:
   `URLSession`. The catalog is still the server's data file.
 - **Process isolation for the planner's device probes.** Where a process may start another, each
   compute device is asked in a child process first; iOS probes in-process.
-- **Where files live.** The app passes `--data-dir`, `--models-dir` and `--catalog`; the server
-  compiles no path in.
+- **Where files live.** The app passes `--data-dir`, `--models-dir` and `--catalog`, and a
+  `--scan-dir` for each other place a model can sit on that device; the server compiles no path in,
+  and lists what every one of them holds.
 
 ## The UIs
 

@@ -49,6 +49,7 @@ struct Options {
     std::string host = kDefaultHost;
     int port = kDefaultPort;
     std::string ui_dir, models_dir, data_dir, catalog;
+    std::vector<std::string> scan_dirs; // more directories whose models are listed, never written
     std::vector<std::string> allow_origins;
     std::string api_key;
     std::string api_key_file; // --api-key-file: the key, read at start, never on the command line
@@ -84,6 +85,7 @@ void print_usage(const char * argv0) {
                 "  --port N             port (default %d)\n"
                 "  --open               open the UI in the default browser once listening\n"
                 "  --models-dir PATH    where models are listed and downloaded (default: <data dir>/models)\n"
+                "  --scan-dir PATH      also list the models in PATH, loaded in place (repeatable)\n"
                 "  --data-dir PATH      settings and models (default: the per-user application data folder)\n"
                 "  --ui-dir PATH        the built web UI (default: ui/ beside this binary)\n"
                 "  --catalog PATH       the model catalog (default: catalog/models.json beside this binary)\n"
@@ -93,8 +95,8 @@ void print_usage(const char * argv0) {
                 "                       command line: prefer --api-key-file\n"
                 "  --api-key-file PATH  the same, with the key read from PATH (trailing newline ignored)\n"
                 "  --no-api-key         listen beyond loopback with no key, on a network you trust\n"
-                "  --models-only        local clients too may only open models in the models folder\n"
-                "                       (clients on the network always are)\n"
+                "  --models-only        local clients too may only open models from the folders models\n"
+                "                       are listed from (clients on the network always are)\n"
                 "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
                 "  -h, --help           this text\n"
                 "      --version        print the engine version\n"
@@ -130,6 +132,8 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.open_browser = true;
         else if (a == "--models-dir")
             o.models_dir = next();
+        else if (a == "--scan-dir")
+            o.scan_dirs.push_back(next());
         else if (a == "--data-dir")
             o.data_dir = next();
         else if (a == "--ui-dir")
@@ -255,7 +259,7 @@ struct App {
 
     App(Options o, std::string settings_path, std::string models_dir, std::string catalog)
         : opt(std::move(o)), store(server_defaults(), std::move(settings_path)), host(bus),
-          lib(std::move(models_dir), std::move(catalog), bus) {}
+          lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), bus) {}
 
     json config_object(const json * rejected = nullptr) {
         const RunConfig cfg = store.config();
@@ -274,14 +278,15 @@ struct App {
 
     void publish_config() { bus.publish("config", config_object()); }
 
-    // A client on the network names a model in the models folder and nowhere else: it may not have
-    // the server open any file its user can read. A local client is the person at this machine, as
+    // A client on the network names a model in a folder this server lists models from (the models
+    // folder, the --scan-dir ones) and nowhere else: it may not have the server open any file its
+    // user can read. A local client is the person at this machine, as
     // the access rules have it, unless --models-only confines it too.
     bool model_path_for(const httplib::Request & req, const json & v, json & out, std::string & err) const {
         out = v;
         if (!v.is_string() || (!opt.models_only && is_loopback_peer(req.remote_addr))) return true;
         std::string path;
-        if (!confine_model_path(v.get<std::string>(), lib.models_dir(), path, err)) return false;
+        if (!confine_model_path(v.get<std::string>(), lib.model_roots(), path, err)) return false;
         out = path;
         return true;
     }
@@ -432,7 +437,8 @@ void register_routes(httplib::Server & svr, App & app) {
         OpenAiChatRequest cr;
         std::string err;
         if (!parse_chat_request(body, app.store.config(), cr, err)) return send_error(res, 400, err);
-        if (!app.host.ready()) return send_error(res, 503, "no model is loaded: load one from the Models page");
+        if (!app.host.ready())
+            return send_error(res, 503, "no model is loaded: load one from the Models page", error_code::no_model);
 
         ChatResponseMeta meta;
         meta.id = "chatcmpl-" + std::to_string(++app.chat_seq);
@@ -543,7 +549,8 @@ void register_routes(httplib::Server & svr, App & app) {
         DecideRequest dr;
         std::string err;
         if (!parse_decide_request(body, dr, err)) return send_error(res, 400, err);
-        if (!app.host.ready()) return send_error(res, 503, "no model is loaded: load one from the Models page");
+        if (!app.host.ready())
+            return send_error(res, 503, "no model is loaded: load one from the Models page", error_code::no_model);
         DecideOutcome out = app.host.decide(dr, [&req] { return !req.is_connection_closed(); });
         if (out.status != 200) return send_error(res, out.status, out.error, out.code);
         send_json(res, decide_json(out.result));
@@ -687,6 +694,7 @@ void register_guards(httplib::Server & svr, const Options & o) {
 namespace bmoe::server {
 
 int run(int argc, char ** argv) {
+    platform::prepare_compute_backends();
     Options o;
     const int rc = parse_args(argc, argv, o);
     if (rc >= 0) return rc;
@@ -708,7 +716,17 @@ int run(int argc, char ** argv) {
 
     const fs::path exe = fs::u8path(platform::executable_dir());
     const std::string data_dir = o.data_dir.empty() ? platform::default_data_dir() : o.data_dir;
-    const std::string models_dir = o.models_dir.empty() ? (fs::u8path(data_dir) / "models").u8string() : o.models_dir;
+    // Absolute from here on: the library lists models by these paths and the confinement resolves a
+    // relative request against the first, so a relative one typed at launch would count twice.
+    const auto absolute = [](const std::string & p) {
+        std::error_code ec;
+        const fs::path a = fs::absolute(fs::u8path(p), ec);
+        return ec ? p : a.lexically_normal().u8string();
+    };
+    const std::string models_dir =
+        absolute(o.models_dir.empty() ? (fs::u8path(data_dir) / "models").u8string() : o.models_dir);
+    for (std::string & d : o.scan_dirs)
+        d = absolute(d);
     const std::string ui_dir = o.ui_dir.empty()
                                    ? first_existing({exe / "ui" / "index.html"}).empty() ? "" : (exe / "ui").u8string()
                                    : o.ui_dir;

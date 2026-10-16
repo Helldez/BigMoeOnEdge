@@ -116,7 +116,7 @@ bool is_loopback_peer(const std::string & remote_addr) {
 }
 
 bool confine_model_path(const std::string & requested,
-                        const std::string & models_dir,
+                        const std::vector<std::string> & roots,
                         std::string & out,
                         std::string & err) {
     namespace fs = std::filesystem;
@@ -124,24 +124,34 @@ bool confine_model_path(const std::string & requested,
         out.clear();
         return true;
     }
-    std::error_code ec;
-    const fs::path root = fs::weakly_canonical(fs::absolute(fs::u8path(models_dir), ec), ec);
-    if (ec || models_dir.empty()) {
+    std::vector<fs::path> real_roots;
+    for (const std::string & r : roots) {
+        if (r.empty()) continue;
+        std::error_code ec;
+        const fs::path root = fs::weakly_canonical(fs::absolute(fs::u8path(r), ec), ec);
+        if (!ec) real_roots.push_back(root);
+    }
+    if (real_roots.empty() || roots.empty() || roots.front().empty()) {
         err = "there is no models folder to open a model from";
         return false;
     }
     fs::path p = fs::u8path(requested);
-    if (p.is_relative()) p = root / p;
+    if (p.is_relative()) p = real_roots.front() / p;
     // weakly_canonical resolves every link and `..` along the part of the path that exists, so
     // what is compared is where the file really is, not how the request spelled it.
+    std::error_code ec;
     const fs::path real = fs::weakly_canonical(p, ec);
-    const fs::path rel = ec ? fs::path() : real.lexically_relative(root);
-    if (rel.empty() || rel == "." || *rel.begin() == "..") {
-        err = "a model must be a file in the models folder (" + root.u8string() + ")";
-        return false;
+    if (!ec) {
+        for (const fs::path & root : real_roots) {
+            const fs::path rel = real.lexically_relative(root);
+            if (!rel.empty() && rel != "." && *rel.begin() != "..") {
+                out = real.u8string();
+                return true;
+            }
+        }
     }
-    out = real.u8string();
-    return true;
+    err = "a model must be a file in a folder the server lists models from (" + real_roots.front().u8string() + ")";
+    return false;
 }
 
 const std::vector<std::pair<std::string, std::string>> & security_headers() {

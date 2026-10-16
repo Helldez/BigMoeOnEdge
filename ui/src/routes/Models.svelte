@@ -84,7 +84,10 @@
 {/if}
 
 {#if data}
-  <p class="muted">Models directory: <code>{data.models_dir}</code></p>
+  <p class="muted">
+    Models directory: <code>{data.models_dir}</code>
+    {#if data.scan_dirs?.length}· also listed: {#each data.scan_dirs as d, i (d)}{i ? ', ' : ''}<code>{d}</code>{/each}{/if}
+  </p>
 
   <h2>On this machine</h2>
   {#if data.local.length === 0}
@@ -102,6 +105,7 @@
                 {m.name}
                 {#if m.path === loadedPath}<span class="badge ok">loaded</span>{/if}
                 {#if m.shards > 1}<span class="muted"> ({m.shards} shards)</span>{/if}
+                {#if m.dir && m.dir !== data.models_dir}<span class="muted"> in <code>{m.dir}</code></span>{/if}
               </td>
               <td>{formatBytes(m.bytes)}</td>
               <td>{m.arch || '?'}</td>

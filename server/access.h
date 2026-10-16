@@ -68,12 +68,12 @@ bool read_api_key_file(const std::string & path, std::string & key, std::string 
 bool is_loopback_peer(const std::string & remote_addr);
 
 // The model path a client named, as the path the engine will open: canonical, symbolic links and
-// `..` resolved, and inside `models_dir`. A relative path is taken relative to `models_dir`. False,
-// with the reason, for a path that resolves anywhere else, so a client confined to the models
-// folder cannot have the server open another file through `../` or a link. An empty path (no model)
-// is returned as it is.
+// `..` resolved, and inside one of `roots` - the folders whose models the server lists. A relative
+// path is taken relative to the first root, the models folder. False, with the reason, for a path
+// that resolves anywhere else, so a confined client cannot have the server open another file
+// through `../` or a link. An empty path (no model) is returned as it is.
 bool confine_model_path(const std::string & requested,
-                        const std::string & models_dir,
+                        const std::vector<std::string> & roots,
                         std::string & out,
                         std::string & err);
 

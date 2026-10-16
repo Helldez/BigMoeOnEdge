@@ -90,7 +90,14 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
                               {"n_expert_used", s->n_expert_used()},
                               {"think_ctl", think_control_name(s->think_control())},
                               {"load_s", s->load_seconds()},
-                              {"streaming", effective.moe.enabled}};
+                              {"streaming", effective.moe.enabled},
+                              // What a CPU figure is read against: the compute threads, and every
+                              // thread busy in a decode, the read lanes included when they run
+                              // beside compute. A UI reads these instead of the parameters.
+                              {"compute_threads", effective.n_threads},
+                              {"busy_threads",
+                               effective.n_threads +
+                                   (effective.moe.enabled && effective.moe.overlap ? effective.moe.io_threads : 0)}};
             }
         }
         publish_state();

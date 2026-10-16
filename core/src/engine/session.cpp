@@ -172,10 +172,11 @@ struct GenTally {
             // the stall whenever a minority of threads did the waiting, and the difference quietly
             // became "compute".
             m.stall_ms = (st->stall_seconds - prev_stall_s) * 1000.0;
-            m.compute_ms = m.wall_ms - m.stall_ms - m.mgmt_ms;
+            m.flash_wait_ms = m.stall_ms;
         } else {
-            m.compute_ms = m.wall_ms - m.io_ms - m.mgmt_ms;
+            m.flash_wait_ms = m.io_ms;
         }
+        m.compute_ms = m.wall_ms - m.flash_wait_ms - m.mgmt_ms;
         if (m.compute_ms < 0) m.compute_ms = 0;
         m.cache_hit_pct = st->cache_lookups > 0 ? 100.0 * st->cache_hits / st->cache_lookups : -1.0;
         m.drain_ms = (st->drain_wait_seconds - prev_drain_s) * 1000.0;
@@ -2008,8 +2009,8 @@ RunResult Session::generate(const GenerateRequest & req,
         s.moe_io_s_per_token = n_gen ? tally.io_seconds / n_gen : 0.0;
         s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
         s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
-        s.moe_compute_s_per_token =
-            s.s_per_token - (moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token) - s.moe_mgmt_s_per_token;
+        s.moe_flash_wait_s_per_token = moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
+        s.moe_compute_s_per_token = s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token;
         if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
         s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
         s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);

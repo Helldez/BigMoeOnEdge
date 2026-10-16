@@ -180,8 +180,10 @@ Semantic Versioning.
   marks `Sec-Fetch-Site: same-site` (another port on the same host, where a hostile local page is
   served) was answered; only `same-origin` and `none` are now. `--api-key-file PATH` reads the key
   from a file, since a command line is visible to every local user; `--api-key` stays. A client on
-  the network may name a model in the models directory only (canonicalised, `..` and links
-  resolved; `403` `outside_models_dir` otherwise), and `--models-only` confines local clients too.
+  the network may name a model only in a folder the server lists models from, the models directory
+  and each `--scan-dir` (canonicalised, `..` and links resolved; `403` `outside_models_dir`
+  otherwise), and `--models-only` confines local clients too. Both "no model loaded" refusals of
+  the chat and decide routes carry `code: "no_model"`, which the UIs' Models link reads.
   The default host, port, context and answer length are named in `server/server.h`, and the usage
   text is built from them; `--port` is read strictly. `docs/server-api.md` says all of it.
 - **The release workflows no longer splice typed text or a secret into a shell script.** The tag a
@@ -192,6 +194,38 @@ Semantic Versioning.
   unquoted heredoc, where a `$` or a backtick in one is shell syntax; they are environment
   variables written with `printf '%s'`. `ci.yml` declares `permissions: contents: read` for every
   job but the one that attaches the APK, which already asks for its own.
+- **The UIs read facts, not parameters.** The live line and the metrics card took the flash term
+  from `stall` or `io` by reading the `overlap` parameter, and the streaming badge guessed from
+  `moe-stream` what a load would do. The engine now reports the wall-additive flash term already
+  chosen (`TokenMetrics::flash_wait_ms`, `RunSummary::moe_flash_wait_s_per_token`), the server's
+  events carry it as `flash_wait_ms` and `flash_wait_s_tok`, the CLI's `BMOE_DONE` as
+  `flash_wait_s_tok`, and the loaded model in `/api/info` carries the threads a CPU figure is read against (`compute_threads`, `busy_threads`). The web UI
+  names no engine parameter any more; its metrics card shows the flash wait in place of the stall
+  share, which read 0 on every serial run, and the badge appears once a model has loaded, since
+  only the load knows (a dense model, a plan that declines).
+- **`--scan-dir PATH`: the server lists models outside its own directory.** Repeatable; each is
+  only read. `GET /api/models` adds `scan_dirs`, and each local model its `dir` and its `files` (every
+  file present, in shard order), so a client deletes a split set without knowing how shards are
+  named. The phone hands the server its other model folders this way instead of scanning them in
+  Kotlin. Split sets are recognised by a small explicit parser (`server/model_files.h`, tested) in
+  place of a `std::regex`.
+- **The Hexagon backend's environment is the server's to set.** Polling for the DSP and the host
+  buffer type the prefill device moves the KV cache into were set by the Android service before it
+  started the server; they are platform policy, and now live in `server/platform.cpp`, set first
+  thing in `run()` (so a device-probe child inherits them) and only where the environment has not
+  set them already.
+- **The web UI checks what the server answers.** Every read is checked at runtime for the parts of
+  its shape the UI depends on (`ui/src/lib/guards.ts`), and so is every event; an answer that is not
+  the documented shape fails where it is read, with `code: "bad_response"`, instead of as an
+  undefined inside a component. A reconnection now asks for the config again, beside the schema: a
+  change made while the page was cut off arrived as no event.
+
+### Fixed
+- **A failed message stays in the web UI's transcript.** A send refused before anything streamed
+  moved the message back into the composer and out of the conversation, against the screen
+  specification; it now stays, saved, with the error under it, Send again resends it as it is, and
+  a server without a model links to Models (`code: "no_model"`). A failed decision still leaves no
+  question behind, since it is not a conversation turn. Tested against a stubbed server.
 - **A request no longer fails because its answer budget is larger than the room left.** The session
   reserved the whole `n_predict` against the context before generating, so a two-word prompt was
   refused whenever Max tokens was set near or above the context size: the first outside client

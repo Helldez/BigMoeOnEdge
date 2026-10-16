@@ -78,9 +78,10 @@ other software, or other people, on that machine or on a network it was told to 
   removes no model.
 - Over the API a client may name one file, the model, and it is only read. Parameters that make
   the engine write a file are set at launch and are refused over `PUT /api/config`.
-- A client on the network (a connection whose peer address is not loopback) may name a model in
-  the models directory only. The path is made canonical first, with every `..` and symbolic link
-  resolved, a relative one taken inside the models directory, and anything that resolves elsewhere
+- A client on the network (a connection whose peer address is not loopback) may name a model only
+  in a folder the server lists models from: the models directory and each `--scan-dir`. The path is
+  made canonical first, with every `..` and symbolic link resolved, a relative one taken inside the
+  models directory, and anything that resolves elsewhere
   is refused: `403` with `code: "outside_models_dir"` on `POST /api/session/load`, a `rejected`
   entry on `PUT /api/config`. A local client is the person at the machine and may still open a
   model anywhere (the Android app reads models from shared storage), unless `--models-only`
@@ -95,7 +96,7 @@ other software, or other people, on that machine or on a network it was told to 
 - **Without a key, any local process, and any local user, can drive it.** A request without an
   `Origin` is a local program and is accepted; loopback is not per-user. On a shared machine another
   account can chat, read `/api/config` (which contains paths), and have the server open any file its
-  user can read as a model (`--models-only` limits that to the models directory). With a key, a
+  user can read as a model (`--models-only` limits that to the folders models are listed from). With a key, a
   local program needs the key too, and whoever can read where a client keeps it (the browser's
   storage, a shell history, the key file if its permissions allow) has it.
 - **`--host` with a non-loopback address removes the host-name check; the key is what stands in
@@ -136,7 +137,7 @@ other software, or other people, on that machine or on a network it was told to 
   "error": "",
   "model": {"path": "C:/models/Qwen3-30B-A3B-Q4_K_M.gguf", "name": "Qwen3-30B-A3B-Q4_K_M.gguf",
             "arch": "qwen3moe", "n_ctx": 4096, "n_expert_used": 8, "think_ctl": "template",
-            "load_s": 12.4, "streaming": true},
+            "load_s": 12.4, "streaming": true, "compute_threads": 8, "busy_threads": 12},
   "generating": false
 }
 ```
@@ -145,6 +146,11 @@ other software, or other people, on that machine or on a network it was told to 
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
 (the last load failed; `error` says why). `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
 on for the loaded session: with it off the engine is plain llama.cpp on mmap, and the UI must say so.
+Whether a model will stream is only known once it has loaded (a dense model, a plan that declines),
+so a UI says nothing about it before. `compute_threads` and `busy_threads` are what a CPU figure is
+read against: the session's compute threads, and every thread busy in a decode (the compute threads
+plus the read lanes when they run beside compute, under overlap). A UI that divides `cpu_ms` by
+threads reads these, never the parameters.
 
 ### `POST /api/session/load`
 
@@ -321,11 +327,17 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 | event | data |
 |---|---|
 | `state` | the `GET /api/info` object, on every state change |
-| `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch` |
-| `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
+| `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `flash_wait_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch` |
+| `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `flash_wait_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
 | `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` |
 | `config` | the `GET /api/config` object, after any change |
+
+`flash_wait_ms` (per token) and `flash_wait_s_tok` (the run's average) are the flash term that is a
+share of the wall, already chosen for the run's mode: the blocking read (`io_*`) in serial, the stall
+(`stall_*`) under overlap, where `io_*` is summed lane time and can exceed the wall
+([telemetry.md](telemetry.md)). They are the term the engine subtracts for its compute residual, so
+a UI shows "flash" from them without knowing whether the session overlaps.
 
 ## Models
 
@@ -334,8 +346,10 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 ```json
 {
   "models_dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
-  "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "bytes": 18556686912,
-             "shards": 1, "arch": "qwen3moe", "streamable": true, "complete": true}],
+  "scan_dirs": [],
+  "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
+             "bytes": 18556686912, "shards": 1, "files": ["..."], "arch": "qwen3moe", "streamable": true,
+             "complete": true}],
   "catalog": [{"id": "qwen3-30b-a3b-q4_k_m", "title": "Qwen3-30B-A3B", "quant": "Q4_K_M",
                "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
                "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://..."}],
@@ -343,8 +357,14 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 }
 ```
 
-`local` lists every gguf in the models directory (a split set once, by its first shard, with
-`complete: false` while shards are missing). `streamable` is whether this build streams the
+`local` lists every gguf in the models directory, then in each directory given with `--scan-dir
+PATH` (repeatable; `scan_dirs` lists them), in that order: a split set once, by its first shard, with
+`complete: false` while shards are missing. `dir` is the directory a model was found in, and `files`
+every file of it that is present, in shard order, so a client that deletes a model deletes the set
+and never has to know how shards are named. A scan directory is only read: downloads land in the
+models directory, and a model in a scan directory is loaded in place by its `path`. The host app is
+what knows where else models sit (the phone's adb-pushed and shared-storage folders); the server is
+what says what they are. `streamable` is whether this build streams the
 architecture. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
 entry with its URL, in order, for a client that downloads for itself (a phone, where the server
 has no `curl`); `file` and `bytes` are the first file's name and the whole entry's size.

@@ -1,19 +1,14 @@
 <script lang="ts">
-  import { server } from '../stores/server.svelte';
-
-  // `streaming` is the loaded session's truth; without a session, show what the config would do.
-  let { streaming }: { streaming: boolean | null } = $props();
-  let configured = $derived(server.config?.values['moe-stream']);
-  let on = $derived(streaming ?? (typeof configured === 'boolean' ? configured : null));
+  // The loaded session's `streaming`, as the server reports it. Before a load there is nothing to
+  // say: whether a model streams is decided at load (a dense model, a plan that declines).
+  let { streaming }: { streaming: boolean } = $props();
 </script>
 
-{#if on === true}
-  <span class="stream on" title="Experts are streamed from flash by the engine">
-    Streaming ON{streaming === null ? ' (on load)' : ''}
-  </span>
-{:else if on === false}
+{#if streaming}
+  <span class="stream on" title="Experts are streamed from flash by the engine">Streaming ON</span>
+{:else}
   <span class="stream off" title="Plain llama.cpp on mmap, without expert streaming">
-    Streaming OFF (plain mmap baseline){streaming === null ? ', on load' : ''}
+    Streaming OFF (plain mmap baseline)
   </span>
 {/if}
 
