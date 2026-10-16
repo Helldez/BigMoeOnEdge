@@ -1207,7 +1207,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         st.overlap = cfg.moe.enabled && cfg.moe.overlap;
         if (compute_trace) {
             im.compute_trace = compute_trace;
-            im.hook->set_compute_trace(true, cfg.compute_trace_layers);
+            im.hook->set_compute_trace(true, compute_trace->layers_only());
             compute_trace->on_static(st);
         }
         if (im.io_trace) im.io_trace->on_static(st);
@@ -1228,7 +1228,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         ri.n_ctx = cfg.n_ctx;
         ri.n_ubatch = cfg.n_ubatch;
         ri.chatml = cfg.chatml;
-        ri.compute_trace_layers = cfg.compute_trace_layers;
+        ri.compute_trace_layers = compute_trace && compute_trace->layers_only();
         ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";
         ri.spec_draft_max = cfg.spec.enabled() ? cfg.spec.draft_max : 0;
         ri.mtp_p_min = cfg.spec.is_mtp() ? cfg.spec.draft_p_min : 0.0f;

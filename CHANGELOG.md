@@ -121,6 +121,20 @@ Semantic Versioning.
   configuration (the basic rows); the folded section at the end now lists every row of the table,
   grouped and marked with its level, so an expert sees the whole engine in one place. Web and
   Android alike.
+- **`RunConfig` holds tunables only, and the table names every bound.** `--progress` and
+  `--compute-trace-layers` were hand-written flags writing two `RunConfig` fields the parameter
+  table had no row for. Neither is a tunable of a run, so neither is in `RunConfig` any more: the
+  line protocol is the CLI's output mode and reaches the engine as `RunOutputs::render_text`
+  (`run()` now takes the token callback, the sinks and that switch as one `RunOutputs`), and the
+  compute trace's granularity is the trace's own (`IComputeTraceSink::layers_only()`, set by
+  `make_csv_compute_trace_sink(path, layers)`); the CSV preamble's `compute_trace_layers` is now read
+  from the attached trace. `BMOE_PROGRESS` goes through the CLI's one table of environment
+  overrides instead of a line of its own. `--ppl-skip` is read with the table's strict parser, now
+  public as `parse_int_strict`: `4x` is an error, not 4, and `abc` not 0. The table's
+  last literal bounds are named constants that `validate()` checks too (`SamplingConfig::temp_max`,
+  `top_p_max`, `seed_random`, `SpecConfig::draft_p_min_max`,
+  `MoeStreamConfig::drop_cold_frac_max`, `substitute_lambda_max`). The sink factories return
+  `std::unique_ptr`.
 
 ### Fixed
 - **The docs index the pages they have, and name the test phone as a class.** `docs/README.md`

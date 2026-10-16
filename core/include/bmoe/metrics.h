@@ -9,6 +9,7 @@
 #include "bmoe/predict_stats.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -376,6 +377,6 @@ public:
 
 // A sink that appends one CSV row per token to `path` (header written on open).
 // Returns nullptr if the file cannot be opened.
-IMetricsSink * make_csv_metrics_sink(const std::string & path);
+std::unique_ptr<IMetricsSink> make_csv_metrics_sink(const std::string & path);
 
 } // namespace bmoe

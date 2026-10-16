@@ -22,7 +22,7 @@
 // read path. A traced run is NOT a benchmark run: read the proportions, not the absolutes.
 //
 //   Layer granularity — the compute trace can instead isolate only the FIRST node of each layer
-//   (RunConfig::compute_trace_layers). ~n_layer barriers per token instead of ~3000 preserves
+//   (IComputeTraceSink::layers_only()). ~n_layer barriers per token instead of ~3000 preserves
 //   operator coalescing and, crucially, the async expert prefetch: the io lanes keep streaming
 //   across a boundary, so the numbers stay close to an untraced run. Rows carry op "LAYER" and
 //   aggregate everything since the previous boundary: name "blk.<il>" is layer il's segment,
@@ -32,6 +32,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -88,6 +89,11 @@ public:
     virtual ~IComputeTraceSink() = default;
     virtual void on_static(const DecodeTraceStatic &) = 0;
     virtual void on_rows(const ComputeTraceRow * rows, size_t n) = 0;
+    // The granularity the sink wants, read once at open. false: a barrier per graph node, exact
+    // per-op attribution that serializes the graph against the expert stream. true: a barrier per
+    // layer boundary only (see "Layer granularity" above). A property of the trace, not of the run:
+    // an untraced session has no granularity to choose.
+    virtual bool layers_only() const { return false; }
 };
 
 class IIoTraceSink {
@@ -98,8 +104,9 @@ public:
 };
 
 // Sinks writing `path` as long-format CSV: a `#` preamble carrying the static block, then one row
-// per node / per read. Return nullptr if the file cannot be opened.
-IComputeTraceSink * make_csv_compute_trace_sink(const std::string & path);
-IIoTraceSink * make_csv_io_trace_sink(const std::string & path);
+// per node / per read. `layers` picks the compute trace's granularity (layers_only()). Return nullptr
+// if the file cannot be opened.
+std::unique_ptr<IComputeTraceSink> make_csv_compute_trace_sink(const std::string & path, bool layers = false);
+std::unique_ptr<IIoTraceSink> make_csv_io_trace_sink(const std::string & path);
 
 } // namespace bmoe

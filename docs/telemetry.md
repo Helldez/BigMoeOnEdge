@@ -292,6 +292,8 @@ effective top-k after any override. Fields to read carefully:
   number looks against `cache_min_mb`. The engine warns once at load when that is the case. See
   [cache-sizing.md](cache-sizing.md).
 - `predict_log=1`, `prefetch_sync=1` or `compute_trace_layers>0` mean **the run was instrumented**.
+  `compute_trace_layers` is read from the compute trace attached to the session (`1` for
+  `--compute-trace-layers`), so it is `0` on a run with no compute trace at all.
   A probed or traced run is not a benchmark run — see the warning under [Decode
   traces](#decode-traces).
 - `temp>0` means the run was **stochastic**: not comparable token-for-token with a greedy one, and

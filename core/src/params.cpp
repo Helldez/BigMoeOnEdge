@@ -244,7 +244,7 @@ std::vector<ParamDesc> build() {
                           "enables the chain top-k -> top-p -> temperature.");
         d.type = ParamType::Float;
         d.value_hint = "F";
-        bounds(d, 0.0, 2.0);
+        bounds(d, 0.0, SamplingConfig::temp_max);
         bind_float(d, [](RunConfig & c) -> float & { return c.sampling.temp; });
         t.push_back(d);
     }
@@ -260,19 +260,20 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("top-p", "Top-p", G::Sampling, L::Advanced, "Nucleus cutoff in (0, 1] when sampling.");
         d.type = ParamType::Float;
         d.value_hint = "F";
-        bounds(d, 0.0, 1.0);
+        bounds(d, 0.0, SamplingConfig::top_p_max);
         bind_float(d, [](RunConfig & c) -> float & { return c.sampling.top_p; });
         t.push_back(d);
     }
     {
         ParamDesc d = row("seed", "Seed", G::Sampling, L::Advanced,
-                          "RNG seed for sampling. 4294967295 draws a random seed per run.");
+                          "RNG seed for sampling. " + std::to_string(SamplingConfig::seed_random) +
+                              " draws a random seed per run.");
         d.value_hint = "N";
-        bounds(d, 0, 4294967295.0);
+        bounds(d, 0, std::numeric_limits<uint32_t>::max());
         d.get = [](const RunConfig & c) { return std::to_string(c.sampling.seed); };
         d.set = [](RunConfig & c, const std::string & s, std::string & err) {
             long long v = 0;
-            if (!parse_int(s, 0, 0xFFFFFFFFll, v, err)) return false;
+            if (!parse_int(s, 0, std::numeric_limits<uint32_t>::max(), v, err)) return false;
             c.sampling.seed = (uint32_t) v;
             return true;
         };
@@ -666,7 +667,7 @@ std::vector<ParamDesc> build() {
                           "probability (0 = always draft the full width).");
         d.type = ParamType::Float;
         d.value_hint = "F";
-        bounds(d, 0.0, 1.0);
+        bounds(d, 0.0, SpecConfig::draft_p_min_max);
         bind_float(d, [](RunConfig & c) -> float & { return c.spec.draft_p_min; });
         t.push_back(d);
     }
@@ -706,7 +707,7 @@ std::vector<ParamDesc> build() {
         d.type = ParamType::Float;
         d.value_hint = "F";
         d.lossy = true;
-        bounds(d, 0.0, 1.0);
+        bounds(d, 0.0, MoeStreamConfig::drop_cold_frac_max);
         bind_float(d, [](RunConfig & c) -> float & { return c.moe.drop_cold_frac; });
         t.push_back(d);
     }
@@ -736,7 +737,7 @@ std::vector<ParamDesc> build() {
         d.type = ParamType::Float;
         d.value_hint = "L";
         d.lossy = true;
-        bounds(d, 0.0, 1.0);
+        bounds(d, 0.0, MoeStreamConfig::substitute_lambda_max);
         bind_float(d, [](RunConfig & c) -> float & { return c.moe.substitute_lambda; });
         t.push_back(d);
     }
@@ -862,6 +863,18 @@ void json_num(std::string & o, double v) {
 }
 
 } // namespace
+
+bool parse_int_strict(const std::string & s, long long lo, long long hi, long long & out, std::string & err) {
+    long long v = 0;
+    if (!parse_int(s, std::numeric_limits<long long>::min(), std::numeric_limits<long long>::max(), v, err))
+        return false;
+    if (v < lo || v > hi) {
+        err = "expects an integer in [" + std::to_string(lo) + ", " + std::to_string(hi) + "], got " + s;
+        return false;
+    }
+    out = v;
+    return true;
+}
 
 const std::vector<ParamDesc> & params() {
     static const std::vector<ParamDesc> table = build();

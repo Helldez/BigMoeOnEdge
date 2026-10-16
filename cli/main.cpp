@@ -46,11 +46,6 @@
 
 using namespace bmoe;
 
-static int env_int(const char * k, int dflt) {
-    const char * v = std::getenv(k);
-    return (v && *v) ? std::atoi(v) : dflt;
-}
-
 static std::string json_escape(const std::string & s) {
     std::string o;
     o.reserve(s.size() + 8);
@@ -695,8 +690,10 @@ int main(int argc, char ** argv) {
     std::string ppl_list;                 // --ppl-list: one text path per line, scored in one session
     std::vector<std::string> ppl_choices; // --ppl-choices: strings whose first-token log-prob is reported
     std::string compute_trace_path;
+    bool compute_trace_layers = false; // the compute trace's granularity: a property of the sink
     std::string io_trace_path;
     bool session_mode = false;
+    bool progress = false; // the line protocol (docs/telemetry.md) instead of inline text
 
     bool describe_params = false;
     bool show_config = false;
@@ -730,7 +727,7 @@ int main(int argc, char ** argv) {
         if (a == "-p" || a == "--prompt")
             cfg.prompt = next("-p");
         else if (a == "--progress") {
-            cfg.progress = true;
+            progress = true;
             seen.insert("progress");
         } else if (a == "--describe-params")
             describe_params = true;
@@ -771,14 +768,21 @@ int main(int argc, char ** argv) {
             compute_trace_path = next("--compute-trace");
         else if (a == "--compute-trace-layers") {
             compute_trace_path = next("--compute-trace-layers");
-            cfg.compute_trace_layers = true;
+            compute_trace_layers = true;
         } else if (a == "--io-trace")
             io_trace_path = next("--io-trace");
         else if (a == "--ppl")
             ppl_path = next("--ppl");
-        else if (a == "--ppl-skip")
-            ppl_skip = std::atoi(next("--ppl-skip"));
-        else if (a == "--ppl-step")
+        else if (a == "--ppl-skip") {
+            const char * v = next("--ppl-skip");
+            long long n = 0;
+            std::string err;
+            if (!parse_int_strict(v, 0, RunConfig::tokens_max, n, err)) {
+                std::fprintf(stderr, "bmoe: --ppl-skip %s\n", err.c_str());
+                return 2;
+            }
+            ppl_skip = (int) n;
+        } else if (a == "--ppl-step")
             ppl_step = true;
         else if (a == "--ppl-list")
             ppl_list = next("--ppl-list");
@@ -837,12 +841,15 @@ int main(int argc, char ** argv) {
 
     // Env overrides (flag wins: only apply when the parameter was not typed). Asking whether it was
     // typed, not whether its value still equals the default, is what makes an explicit --cache-mb 0
-    // (cache off) or --io-threads 4 stick. An unset or empty variable leaves the field alone.
+    // (cache off) or --io-threads 4 stick. An unset or empty variable leaves the field alone. A
+    // front-end switch (`front_end`) is not a parameter and is set here directly; it is keyed in
+    // `seen` like one, so its flag wins the same way.
     struct EnvOverride {
         const char * var;
         const char * key;
+        bool * front_end = nullptr;
     };
-    static const EnvOverride kEnvOverrides[] = {
+    const EnvOverride kEnvOverrides[] = {
         {"BMOE_CACHE_MB", "cache-mb"},
         {"BMOE_IO_THREADS", "io-threads"},
         {"BMOE_OVERLAP", "overlap"},
@@ -850,17 +857,21 @@ int main(int argc, char ** argv) {
         {"BMOE_N_EXPERT_USED", "n-expert-used"},
         {"BMOE_PREDICT_LOG", "predict-log"},
         {"BMOE_PREDICT_PREFETCH", "predict-prefetch"},
+        {"BMOE_PROGRESS", "progress", &progress},
     };
     for (const EnvOverride & e : kEnvOverrides) {
         const char * v = std::getenv(e.var);
         if (seen.count(e.key) || !v || !*v) continue;
+        if (e.front_end) {
+            *e.front_end = std::atoi(v) != 0; // the reading these switches always had: non-zero is on
+            continue;
+        }
         const ParamDesc * d = find_param(e.key);
         // Booleans keep the reading these variables always had: any non-zero integer is on.
         const std::string val = d->type == ParamType::Bool ? (std::atoi(v) != 0 ? "true" : "false") : v;
         std::string err;
         if (!d->set(cfg, val, err)) std::fprintf(stderr, "warning: ignoring %s: %s\n", e.var, err.c_str());
     }
-    if (!seen.count("progress")) cfg.progress = env_int("BMOE_PROGRESS", 0) != 0;
 
     // A default the CLI resolves rather than the library, so an embedder's explicit 0 keeps meaning
     // "no cache". With streaming on, a budget of 0 re-reads every routed expert from flash every
@@ -1015,7 +1026,7 @@ int main(int argc, char ** argv) {
 
     std::unique_ptr<IMetricsSink> sink;
     if (!csv_path.empty()) {
-        sink.reset(make_csv_metrics_sink(csv_path));
+        sink = make_csv_metrics_sink(csv_path);
         if (!sink) std::fprintf(stderr, "warning: could not open csv %s\n", csv_path.c_str());
     }
 
@@ -1026,7 +1037,7 @@ int main(int argc, char ** argv) {
             // observe, and a header-only trace looks like a model that routed nothing.
             std::fprintf(stderr, "warning: --route-trace needs --moe-stream; no trace will be written\n");
         } else {
-            route_trace.reset(make_csv_route_trace_sink(route_trace_path));
+            route_trace = make_csv_route_trace_sink(route_trace_path);
             if (!route_trace)
                 std::fprintf(stderr, "warning: could not open route trace %s\n", route_trace_path.c_str());
         }
@@ -1036,7 +1047,7 @@ int main(int argc, char ** argv) {
     // needs too — so unlike the other two it carries no --moe-stream requirement.
     std::unique_ptr<IComputeTraceSink> compute_trace;
     if (!compute_trace_path.empty()) {
-        compute_trace.reset(make_csv_compute_trace_sink(compute_trace_path));
+        compute_trace = make_csv_compute_trace_sink(compute_trace_path, compute_trace_layers);
         if (!compute_trace)
             std::fprintf(stderr, "warning: could not open compute trace %s\n", compute_trace_path.c_str());
     }
@@ -1046,7 +1057,7 @@ int main(int argc, char ** argv) {
         if (!cfg.moe.enabled) {
             std::fprintf(stderr, "warning: --io-trace needs --moe-stream; no trace will be written\n");
         } else {
-            io_trace.reset(make_csv_io_trace_sink(io_trace_path));
+            io_trace = make_csv_io_trace_sink(io_trace_path);
             if (!io_trace) std::fprintf(stderr, "warning: could not open io trace %s\n", io_trace_path.c_str());
         }
     }
@@ -1120,14 +1131,15 @@ int main(int argc, char ** argv) {
         return 0;
     }
 
-    if (!cfg.progress) {
+    if (!progress) {
         std::printf("%s", cfg.prompt.c_str());
         std::fflush(stdout);
     }
 
     ProgressDelta pd; // one generation per one-shot run
-    auto on_token = [&](const TokenMetrics & m) {
-        if (cfg.progress) {
+    RunOutputs outs;
+    outs.on_token = [&](const TokenMetrics & m) {
+        if (progress) {
             emit_progress_line(m, pd);
         } else {
             std::fwrite(m.piece.data(), 1, m.piece.size(), stdout);
@@ -1135,14 +1147,20 @@ int main(int argc, char ** argv) {
         }
     };
 
-    RunResult r = run(cfg, on_token, sink.get(), route_trace.get(), compute_trace.get(), io_trace.get());
+    // Only the line protocol reads the per-token answer; the inline path writes `piece` as it goes.
+    outs.render_text = progress;
+    outs.sink = sink.get();
+    outs.route_trace = route_trace.get();
+    outs.compute_trace = compute_trace.get();
+    outs.io_trace = io_trace.get();
+    RunResult r = run(cfg, outs);
     if (!r) {
         std::fprintf(stderr, "\nerror: %s\n", r.error.c_str());
         return 1;
     }
 
     const RunSummary & s = r.summary;
-    if (cfg.progress) {
+    if (progress) {
         std::printf("=== answer ===\n%s\n=== perf ===\n", r.generated_text.c_str());
     } else {
         std::printf("\n\n");
