@@ -1438,11 +1438,19 @@ RunResult Session::generate(const GenerateRequest & req,
         return fail("empty prompt after tokenization");
     }
     tokens.resize(n_prompt);
-    if (n_prompt + req.n_predict + 8 > im.cfg.n_ctx) {
+    // n_predict is a ceiling on the answer, not a reservation: the answer gets what the context has
+    // left after the prompt, and stops there with the budget spent, as a length stop. Only a prompt
+    // that leaves no room at all is refused. Reserving the whole ceiling refused a two-word prompt
+    // whenever the ceiling was set near the context size (#138). The 8 tokens are the margin the
+    // check always kept for the end-of-turn tokens a template appends.
+    const int ctx_room = im.cfg.n_ctx - n_prompt - 8;
+    if (ctx_room < 1) {
         undo_history();
-        return fail("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
-                    "); open the session with a larger n_ctx");
+        return fail("the conversation (" + std::to_string(n_prompt) + " tokens) exceeds the session n_ctx (" +
+                    std::to_string(im.cfg.n_ctx) +
+                    "): start a new conversation, or load the model with a larger context size");
     }
+    const int n_predict = std::min(req.n_predict, ctx_room);
 
     // The text to surface: with chat on, parse the raw output so a reasoning model's internal
     // thinking is separated from the answer. The answer is shown inline; the reasoning is handed to
@@ -1704,7 +1712,7 @@ RunResult Session::generate(const GenerateRequest & req,
     // would have read.
     llama_token tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
 
-    while (n_gen < req.n_predict) {
+    while (n_gen < n_predict) {
         if (llama_vocab_is_eog(im.vocab, tok)) break;
 
         // ── draft ──
@@ -1712,8 +1720,8 @@ RunResult Session::generate(const GenerateRequest & req,
         // draft accepted past n_predict would be verified, charged for, and then discarded. The cap
         // goes in BEFORE drafting, so no source is ever asked for tokens with nowhere to go.
         int n_draft = 0;
-        double draft_s = 0.0;                       // this group's drafting + catch-up (see below)
-        const int room = req.n_predict - n_gen - 1; // tokens still wanted after `tok` itself
+        double draft_s = 0.0;                   // this group's drafting + catch-up (see below)
+        const int room = n_predict - n_gen - 1; // tokens still wanted after `tok` itself
         if (spec_on && room > 0) {
             const auto d0 = clock_t_::now();
             const uint64_t db0 = moe.enabled ? im.source.stats().read_bytes : 0;
@@ -1880,7 +1888,7 @@ RunResult Session::generate(const GenerateRequest & req,
             prev_ra_issue_ns = ri;
             prev_ra_wd_ns = rw;
         }
-        for (size_t e = 0; e < confirmed.size() && n_gen < req.n_predict; ++e) {
+        for (size_t e = 0; e < confirmed.size() && n_gen < n_predict; ++e) {
             const llama_token out = confirmed[e];
             char piece[256];
             int np = llama_token_to_piece(im.vocab, out, piece, sizeof(piece), 0, true);
@@ -1892,7 +1900,7 @@ RunResult Session::generate(const GenerateRequest & req,
 
             TokenMetrics m;
             m.step = n_gen;
-            m.steps = req.n_predict;
+            m.steps = n_predict;
             m.mtp_batch = (int) confirmed.size();
             m.loop_overhead_ms = e == 0 ? overhead * 1000.0 : 0.0;
             // Charged to the group's first row like every other group cost. This is a SLICE of
@@ -1951,6 +1959,7 @@ RunResult Session::generate(const GenerateRequest & req,
     RunSummary & s = res.summary;
     s.arch = im.arch;
     s.n_generated = n_gen;
+    s.n_predict = n_predict;
     s.gen_seconds = gen_seconds;
     s.s_per_token = n_gen ? gen_seconds / n_gen : 0.0;
     s.tokens_per_second = gen_seconds > 0 ? n_gen / gen_seconds : 0.0;

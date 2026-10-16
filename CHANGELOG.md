@@ -120,6 +120,16 @@ Semantic Versioning.
   Android alike.
 
 ### Fixed
+- **A request no longer fails because its answer budget is larger than the room left.** The session
+  reserved the whole `n_predict` against the context before generating, so a two-word prompt was
+  refused whenever Max tokens was set near or above the context size: the first outside client
+  tried on a phone (Open WebUI, which sends no `max_tokens`) got `prompt + n_predict exceeds the
+  session n_ctx` on every message. `n_predict` is now a ceiling: the answer gets what the context
+  has left after the prompt and stops there, which the OpenAI endpoint reports as
+  `finish_reason: "length"`. Only a conversation that fills the context is refused, with a message
+  that says what to do (start a new conversation or load with a larger context size); the CLI,
+  the server and both apps still recognise it and keep the session. A byte-identity gate checks
+  that a budget past the context produces exactly what a budget of the room produces (#138).
 - **The roadmap linked a page that is not on `main`.** It pointed at `docs/cache-stall-sizing.md`,
   which exists only in the draft PR #238; it now points at the PR.
 - **A second plan could leave the configuration invalid and refuse every load.** A plan's values

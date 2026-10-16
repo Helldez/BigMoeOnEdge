@@ -610,7 +610,8 @@ AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not jus
 total flash streamed this generation, and `stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and
 cache-management cost. `text` is the final answer and `reasoning` the final thinking span (empty
 unless the model reasoned), same split as the per-token lines. `BMOE_ERROR` with `fatal:false` is a rejected
-request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
+request (e.g. a conversation that leaves no room in `n_ctx`: `n_predict` is a ceiling, cut to
+the room the prompt leaves, so only a prompt that fills the context is refused) and leaves the session usable;
 `fatal:true` means the process is ending.
 
 ## Decode traces

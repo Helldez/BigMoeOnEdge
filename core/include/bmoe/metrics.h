@@ -105,6 +105,9 @@ struct RunSummary {
     std::string arch;
 
     int n_generated = 0;
+    // The answer's budget this turn: the request's n_predict, or less when the context had less
+    // room left after the prompt. A run that generated this many tokens stopped on its budget.
+    int n_predict = 0;
     double gen_seconds = 0.0;
     double s_per_token = 0.0;
     double tokens_per_second = 0.0;

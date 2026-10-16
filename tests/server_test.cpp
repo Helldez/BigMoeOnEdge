@@ -163,6 +163,11 @@ static void protocol_tests() {
     plain.generated_text = "hi";
     plain.summary.n_generated = 3;
     check(finish_reason(plain, 3) == "length" && finish_reason(plain, 4) == "stop", "stop or length by the budget");
+    plain.summary.n_predict = 3;
+    check(finish_reason(plain, 1000) == "length", "a budget the context cut short is a length stop");
+    plain.summary.n_predict = 8;
+    check(finish_reason(plain, 1000) == "stop", "an answer that ended under the cut budget is a stop");
+    plain.summary.n_predict = 0;
     plain.cancelled = true;
     check(finish_reason(plain, 4) == "cancelled", "a cancelled turn says so");
     check(completion_json(meta, plain, "stop")["choices"][0]["message"]["content"] == "hi" &&
