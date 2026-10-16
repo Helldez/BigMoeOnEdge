@@ -22,10 +22,11 @@ A phone serving a laptop's coding agent is the same product as a laptop serving 
 
 The order is the order of dependence, and each step ships on its own.
 
-**Release what is on `main`.** The planner, the parameter table, the macOS port, the desktop
-server and the iOS harness are merged and unreleased. A release gets a run on a real device first,
-a dry run of the APK workflow since the binaries moved, and the desktop archive tried once on
-Windows, where CI compiles the server and nothing has run it. Nothing else lands before the tag.
+**Release what is on `main`.** Shipped: the planner, the parameter table, the macOS port, the
+desktop server and the iOS harness in 0.29.0; the server as the framework, the Android app on it
+and one visual language in 0.30.0, after a run of the app on a phone and of the desktop server on
+Windows. Owed from that run: the NPU prefill on the release APK, the one build that carries the
+Hexagon backend.
 
 **One application framework.** The server is it ([application-framework.md](application-framework.md)).
 Its policy - the engine host with its one session and its turn line, the model library, the
