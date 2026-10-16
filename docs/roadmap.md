@@ -68,6 +68,31 @@ can return with a measurement behind it, a Windows run. The plan already prints 
 to what happened; collecting that pair from every run and from the community benchmarks is how the
 coefficients get corrected on machines nobody here owns.
 
+**The GPUs most machines have: Vulkan and OpenCL.** Of the eighteen backends the pinned llama.cpp
+carries, three have a measurement behind them here ([backends.md](backends.md)), and the GPU in
+most phones and PCs is reached through neither of the two GPU ones measured (Metal, Hexagon).
+Vulkan reaches any GPU with a driver - discrete and integrated on Windows and Linux, and Android -
+and OpenCL is llama.cpp's Adreno path. Both name the expert op, and both implement wrapping host
+memory without advertising it, which is the capability streamed experts computed on a device would
+need. The work, in order: carry each backend in a build (a desktop archive with Vulkan, an APK
+with OpenCL beside Hexagon), so the planner sees the device with no code here; one measured run of
+the prefill device on each, against the CPU and, on the phone, against the NPU; then the
+`buffer_from_host_ptr` route for the streamed experts where the measurement says the device wins.
+The OpenCL entry in [backends.md](backends.md) carries the one negative so far: the dense set on a
+phone's integrated GPU lost 27%. That measured the dense weights, not the prefill.
+
+**Connect a client from the UI.** Serving a coding agent or a chat client is what the endpoint is
+for, and today it takes launch options and hand-typed values. One Connect view in every UI, fed by
+the server: share on the network with a key, the base URL, model id, context and maximum output a
+client must be told, a preset that sizes the context for an agent, and a filled-in snippet per
+client. Researched and specified in [#257](https://github.com/Helldez/BigMoeOnEdge/issues/257).
+
+**The planner, drawn.** One diagram of the whole solution, as logic rather than code: the facts
+the probes measure, the rules that read them, the ledger that keeps memory honest, and the plan
+that comes out with its reasons, for prefill and decode apart. It goes in
+[hardware-planning.md](hardware-planning.md) and, in a short form, in the README, so a reader
+sees in one picture why the same rules give a different plan on a phone, a laptop and a desktop.
+
 Not now: a cache that resizes itself at run time. It is the agnostic answer to the available-memory
 problem and it stays behind the static readings until those have been measured.
 
