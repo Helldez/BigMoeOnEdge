@@ -6,6 +6,16 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Docs
+- **`docs/cache-stall-sizing.md`: a proposal, on hold, to size the expert cache by the stalls it
+  causes.** The memory figure each platform reports is a different quantity on each, and on two
+  machines it was wrong in opposite directions: a 15 GB laptop where `--auto` sized a 1.5 GB cache
+  and lost to plain mmap (3.22 against 4.37 tok/s, 5.43 with 5 GB by hand), and a 12 GB phone in
+  ordinary use where a cache sized from other processes' idle memory was compressed by the system
+  (2.26 against 2.83 tok/s, about 15 s lost to a few stalled tokens). The design reads one
+  signal on every machine, the engine's own token time confirmed by timing a few cache pages, and
+  states how it differs from the governor retired in `docs/pressure.md`. Nothing is implemented.
+
 ### Added
 - **The Android app is a client of `bmoe-server`, and a complete app.** The APK's `libbmoe-server.so`
   runs as a child process of a foreground service, on loopback with the app's data beside its
