@@ -7,6 +7,10 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **`docs/platforms.md`: what runs where.** One page with a matrix per operating system (engine,
+  server, native app, planner, isolated probes, CI, release artifact, the hardware it was run on)
+  and per compute backend, each cell linked to the page that backs it, and what each platform
+  still owes. Linked from the docs index and from `docs/backends.md`.
 - **The Android app is a client of `bmoe-server`, and a complete app.** The APK's `libbmoe-server.so`
   runs as a child process of a foreground service, on loopback with the app's data beside its
   files, and the five screens speak its HTTP API as the web UI does: chat with conversations saved
@@ -77,6 +81,17 @@ Semantic Versioning.
   the CLI's line protocol and lost it on its move to the server; now both have it from one endpoint.
 
 ### Changed
+- **A shorter README, for what the project is now.** It introduced a way to run a model past RAM
+  on a phone, CPU only. It now leads with what the engine is: MoE streaming on llama.cpp's public
+  API, self-configuring (`--auto`) to the model and the machine, and one application layer,
+  `bmoe-server`, behind the Android app, the desktop web UI and an OpenAI-compatible API that can
+  serve the network with a key. A third of its former length: one summary table each for settings
+  and benchmarks, with the full tables moved, not dropped, to the new `docs/settings.md`, to
+  `docs/benchmarks.md` and to `docs/benchmark-method.md`; the per-platform table moved to
+  `docs/platforms.md`. `docs/settings.md` names each setting as the parameter table does, gives the
+  bounds the code enforces and the server's defaults where they differ from the CLI's, in place of
+  the former app's own steps and defaults, and `docs/cache-aware-substitution.md` no longer
+  describes a settings menu the app no longer has.
 - **`docs/screens.md`: the five screens, specified once.** What chat, models, plan, settings and
   metrics show, what a person can do on each, what every state means, and the rule behind them (a
   UI knows no engine parameter by name), so the web UI, the Android app and an iOS app render the

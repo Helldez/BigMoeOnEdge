@@ -3,7 +3,7 @@
 `--mtp` lets the model draft its own continuation with the multi-token-prediction (MTP) head
 trained into the gguf, then verifies every drafted token in a single wider decode. Off by default.
 
-Unlike [turbo top-k](../README.md#trading-quality-for-speed) and
+Unlike [turbo top-k](settings.md#speed-and-quality) and
 [expert dropping](expert-dropping.md), this one is **not** a quality trade: a draft is accepted only
 when it equals the target model's own argmax at that position, so nothing is approximated and no
 weight is skipped. The quality is the full model's.

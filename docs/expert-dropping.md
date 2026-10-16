@@ -5,7 +5,7 @@ weighted it below `F × (1 / top-k)` — that is, below `F` of the uniform share
 selected experts would get if the router split its mass evenly. Off by default.
 
 It is the second lossy knob in the engine, after
-[turbo top-k](../README.md#trading-quality-for-speed), and it exists because the first one
+[turbo top-k](settings.md#speed-and-quality), and it exists because the first one
 spends quality in a place it does not have to. Its upstream sibling,
 [cache-aware substitution](cache-aware-substitution.md), steers the routing toward resident experts
 before the question of paying for a miss arises; that page also explains why a cache-dependent

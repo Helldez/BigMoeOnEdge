@@ -371,3 +371,128 @@ Model files (both Q4_K_M GGUF, staged on the device at `/sdcard/Download/`):
 
 Sizes are the on-disk GGUF byte counts; both are stock Q4_K_M conversions, unmodified by the
 engine (it loads `use_mmap=true`, rebinds expert tensors to the native gguf layout, no repack).
+
+## Model by model
+
+The tables the README summarises, in full.
+
+All figures are measured, not modelled; all models are Q4_K_M.
+
+> **About the numbers.** Measured on one device (12 GB RAM, 11.3 GB usable, UFS 4.x
+> storage) over `adb shell`, 256-token greedy decode. Each number is the best observed for that
+> configuration, and rows in a table can come from different benchmark sessions. Phone throughput
+> moves a lot with device state (heat, free memory), so the same command can read lower. Full
+> method and distributions: [docs/benchmarks.md](benchmarks.md).
+
+**How to read the tables.** Each row is one configuration of the same model on the same phone.
+*mmap baseline* is the same file loaded the ordinary way (no streaming), which is what the
+streamed rows are compared against. *k* is how many experts each token routes to, i.e.
+`n_expert_used` (set with `--n-expert-used`); each table shows the model's default width and,
+where measured, a reduced *k*, the measured lossy setting. *Flash/token* is data read from storage
+per generated token (lower means the cache is working) and *cache hit* is the share of expert
+reads served from RAM instead of flash. Bold marks the best configuration for that model.
+
+### gpt-oss-120b (Q4_K_M): ~60 GB on a 12 GB phone
+
+| Setup | Active experts | Cache | Lanes | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|
+| mmap baseline | 4 | n/a | n/a | 0.09 | n/a | n/a |
+| streamed | 4 | off | 4 | 0.7 | 1817 MiB | n/a |
+| streamed | 4 | 2000 MiB | 8 | 1.3 | 1292 MiB | 27% |
+| streamed | 2 | off | 4 | 1.8 | 909 MiB | n/a |
+| **streamed** | **2** | **2000 MiB** | **8** | **2.2** | **590 MiB** | **32%** |
+
+All streamed rows use `--overlap --dense-weights anon --no-think`. The setting that unlocked this
+model is `--dense-weights anon`: this far past RAM the phone keeps reclaiming the always-used
+weights mid-generation, and moving them out of the page cache was worth **3.2×** by itself. Note
+that `--no-think` disables the model's reasoning and costs quality at k=4; the full matrix and
+quality notes are in [docs/benchmarks-gpt-oss.md](benchmarks-gpt-oss.md).
+
+### Qwen3.6-35B-A3B (Q4_K_M): 22.3 GB
+
+A hybrid attention/SSM MoE (256 experts, top-8, 41 blocks): most layers are linear attention
+(Gated Delta Net) rather than full attention, and the routed experts stream exactly like a plain
+`qwen3moe`. At ~2× device RAM the mmap baseline collapses into a fault storm; streaming with the
+dense weights kept out of the page cache (`--dense-weights anon`) runs it stably.
+
+| Setup | Active experts | Cache | Lanes | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|
+| mmap baseline | 8 | n/a | n/a | 0.1 unstable | n/a | n/a |
+| streamed | 8 | 2000 MiB | 4 | 4.3 | 206 MiB | 56% |
+| streamed | 8 | 3000 MiB | 4 | 5.0 | 144 MiB | 65% |
+| streamed | 6 | 2000 MiB | 4 | 5.4 | 137 MiB | 60% |
+| **streamed** | **6** | **3000 MiB** | **4** | **5.8** | **91 MiB** | **68%** |
+
+All streamed rows use `--overlap --dense-weights anon`. A larger cache is the main lossless lever
+(cache 3000 is worth +16% over 2000); the k=6 rows are the measured lossy option (turbo top-k, below),
+worth a further ~16% by routing to six experts instead of eight. The lossless best here is cache
+3000 at the model's own width, **5.0 tok/s**, output byte-identical to the resident model.
+
+> Unlike the tables above, these Qwen3.6 figures are a single 96-token run rather than the
+> 256-token best-of protocol: treat them as indicative, and not strictly comparable to the other
+> models until re-measured under the full protocol.
+
+### Qwen3-30B-A3B (Q4_K_M): 18.5 GB
+
+| Setup | Active experts | Cache | Lanes | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|
+| streamed | 8 | off | 4 | 1.7 | 1051 MiB | n/a |
+| mmap baseline | 8 | n/a | n/a | 2.0 unstable | n/a | n/a |
+| streamed | 8 | 2000 MiB | 4 | 2.4 | 480 MiB | 53% |
+| streamed | 8 | 4000 MiB | 4 | 4.0 | 225 MiB | 76% |
+| streamed | 6 | 4000 MiB | 4 | 5.0 | 165 MiB | 77% |
+| **streamed** | **8** | **auto, cap 4000** | **4** | **5.2** | **225 MiB** | **76%** |
+
+Cache size is the dominant lever here, and the auto-sized cache with a ceiling
+([docs/cache-sizing.md](cache-sizing.md)) is the winning recipe. The mmap baseline
+averages ~2 tok/s but swings wildly token to token and evicts other apps. Turbo top-k (k=6) trades
+a little quality for a further +24% over the model's own width.
+
+### Gemma-4-26B-A4B (Q4_K_M): 17.0 GB
+
+| Setup | Active experts | Cache | Lanes | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|
+| mmap baseline | 8 | n/a | n/a | 0.4 | n/a | n/a |
+| streamed | 8 | off | 4 | 1.6 | 904 MiB | n/a |
+| streamed | 8 | 2000 MiB | 4 | 2.2 | 366 MiB | 58% |
+| streamed, overlap | 8 | 2000 MiB | 4 | 2.8 | 365 MiB | 58% |
+| streamed | 8 | 4000 MiB | 4 | 4.1 | 144 MiB | 82% |
+| **streamed** | **6** | **4000 MiB** | **4** | **5.0** | **98 MiB** | **83%** |
+
+Gemma keeps more of itself permanently resident, so the 4000 MiB cache fits only when enough RAM is
+free at launch; cache 2000 + overlap is the dependable everyday setting on this device. Turbo top-k
+(k=6) is the fastest here (+22%) but changes the output.
+
+### What to expect in the app
+
+The tables above are a benchmark protocol over `adb`, not a chat session. The demo app lands close:
+the best gpt-oss config reads **1.9 tok/s** in the app against 2.2 over adb, about 13% below. The
+gap is the protocol (short chat replies never fully warm the cache), not the app. The app's
+telemetry panel reports the same fields as the CLI, so you can see it directly. Analysis:
+[docs/warmup-analysis.md](warmup-analysis.md).
+
+### Desktop
+
+Measured on fewer machines than the phone. The Windows table below is a configuration set by hand
+and predates `--auto`; the Apple-silicon figures after it are what `--auto` chose by itself.
+
+Measured on a Windows x86 laptop (8 cores, 16 GB RAM, dual-channel DDR4, NVMe SSD) with
+Qwen3.6-35B-A3B at ~1.5× RAM, 256-token generations:
+
+| Setup | Active experts | Cache | Lanes | tok/s | Flash/token | Cache hit |
+|---|---:|---:|---:|---:|---:|---:|
+| streamed | 8 | auto | 4 | 4.8 | 74 MiB | 84% |
+| streamed, drop 75% | 8 | auto | 4 | 6.8 | 23 MiB | 92% |
+| **streamed, overlap, drop 75%** | **8** | **auto** | **4** | **7.3** | **24 MiB** | **92%** |
+
+The interesting part is that the bottleneck **flips**: on the phone streamed decode is I/O-bound,
+on this laptop it is DRAM-bandwidth-bound in compute (~0.11 s/token in every cell, so a ~9 tok/s
+ceiling even at zero I/O). More io lanes, more compute threads and the ~3 GB/s NVMe are all
+neutral; the levers that pay are the cache budget, cache-aware dropping and `--overlap`. Full
+campaign, including the cache-auto confound that round 1 had to unwind:
+[docs/bench-data/2026-07-24-desktop-qwen36](bench-data/2026-07-24-desktop-qwen36/findings.md).
+
+On a 16 GB Apple-silicon laptop, the same model at a 16384 context with `--auto` and nothing else:
+22.4 tok/s, and a 10850-token prompt prefilled in 31.8 s. One machine.
+
+If the model fits in RAM, just run it resident.

@@ -8,7 +8,7 @@ already in RAM. The same number of experts runs; fewer of them cost a flash read
 and **experimental**: everything below was measured on one model on the desktop, and the
 thermally matched on-device A/B is still owed before it earns a default.
 
-It is the third lossy knob in the engine, after [turbo top-k](../README.md#speed-and-quality) and
+It is the third lossy knob in the engine, after [turbo top-k](settings.md#speed-and-quality) and
 [cache-aware dropping](expert-dropping.md), and it sits one step upstream of the second: dropping
 decides whether to **pay** for a missing expert, substitution decides whether to **need** one.
 
@@ -172,10 +172,10 @@ NaN included; `bmoe_config_test` pins both.
 The CLI defaults it off and will keep doing so, for the reason every lossy knob does: the
 byte-identity gates need a deterministic default.
 
-The app exposes it under **Speed / quality → Experimental → Prefer cached experts**, as a
-percentage of the score range with rungs 10 / 15 / 20 / 30, default off, disabled with the
-cache off. From 20 % up the screen says in red that the replies will read well while the model
-behind them is worse.
+Every UI shows it as **Expert substitution**, among the experimental rows of the Lossy group,
+rendered from the parameter table: a fraction of the score range from 0 to 1, default off, marked
+as a setting that changes the output. From 0.20 up the replies still read well while the model
+behind them is worse, which is worth knowing before raising it.
 
 Every number above is from a desktop, where flash is a large share of a token. On the phone that
 share is between 15 % and 56 % depending on the model and the budget, so the throughput column will

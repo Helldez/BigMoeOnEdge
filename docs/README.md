@@ -10,6 +10,7 @@ for the idea the project is built on.
 | [architecture.md](architecture.md) | How the layers fit together, and why llama.cpp is not forked. |
 | [moe-streaming.md](moe-streaming.md) | Why streaming experts from flash makes a >RAM model run at all. |
 | [seam.md](seam.md) | The exact contract with llama.cpp's public API, and how to upgrade the submodule. |
+| [platforms.md](platforms.md) | What runs on each operating system and backend, how far each has been taken, and what each still owes. |
 | [backends.md](backends.md) | Every compute backend the pinned llama.cpp carries, which of them this engine has actually run on, and what each use of a device asks of one. |
 | [limitations.md](limitations.md) | What this does not do, what it cannot do, and the prior art it builds on. |
 | [roadmap.md](roadmap.md) | Where the project is going as a product, in order; then the research themes, with what was measured and what was refuted. |
@@ -23,6 +24,7 @@ for the idea the project is built on.
 | [server-api.md](server-api.md) | The desktop server's HTTP API: settings from the parameter table, OpenAI-compatible chat, live events, models and the plan. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
 | [decide.md](decide.md) | `--decide`: picking one of a list of choices from a single prefill, with no decode, and keeping the state after a shared prefix between calls. |
+| [settings.md](settings.md) | Every streaming setting: the flag, its values and what it does. |
 | [hardware-planning.md](hardware-planning.md) | `--auto`: how the engine sizes a run to this machine and this model, the fact behind each choice, and what is still unmeasured. |
 | [cache-sizing.md](cache-sizing.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
 | [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output (with the lossy knobs off). |

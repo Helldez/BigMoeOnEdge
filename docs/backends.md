@@ -5,6 +5,9 @@ registers, reached through the public `ggml_backend_dev_*` registry, so the list
 possible is llama.cpp's and the list of what is known to work is much shorter. This page keeps
 the two apart.
 
+The same facts cut by operating system, next to the rest of what each platform has, are in
+[platforms.md](platforms.md).
+
 ## What the pinned llama.cpp carries
 
 Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`dce969851`). A bump can
