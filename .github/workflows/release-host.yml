@@ -80,7 +80,12 @@ jobs:
       # but a driver on the machine that runs it.
       - name: Install ninja and the Vulkan toolchain (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build glslc libvulkan-dev spirv-headers
+        # gcc-14: the compiler 24.04 ships (13) does not build the newest ARM tier of the CPU
+        # backend; the same workaround llama.cpp's own release uses on this image.
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ninja-build glslc libvulkan-dev spirv-headers gcc-14 g++-14
+          echo "CC=gcc-14" >> "$GITHUB_ENV"
+          echo "CXX=g++-14" >> "$GITHUB_ENV"
       - name: Install the Vulkan SDK (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -123,10 +128,11 @@ jobs:
           libs() { # <dir>: copy every shared library the build put beside the executables
             # -P keeps the soname symlinks as symlinks (libggml.so.0 -> libggml.so.0.x.y): the
             # executables name the versioned ones, and tar carries symlinks as they are.
+            # On macOS the shared libraries are .dylib and the modules .so; both travel.
             if [ "${{ runner.os }}" = "Windows" ]; then cp build/bin/Release/*.dll "$1/";
-            elif [ "${{ runner.os }}" = "macOS" ]; then cp -P build/bin/*.dylib "$1/"; strip -x "$1"/*.dylib || true;
+            elif [ "${{ runner.os }}" = "macOS" ]; then cp -P build/bin/*.dylib build/bin/*.so "$1/"; strip -x "$1"/*.dylib "$1"/*.so || true;
             else cp -P build/bin/*.so* "$1/"; strip "$1"/*.so* || true; fi
-            ls "$1" | grep -q 'ggml-cpu-' || { echo "no CPU backend module in $1"; exit 1; }
+            ls "$1" | grep -q 'ggml-cpu' || { echo "no CPU backend module in $1"; exit 1; }
           }
           NAME="bmoe-cli-$TAG-${{ matrix.target }}"
           mkdir -p "$NAME"
