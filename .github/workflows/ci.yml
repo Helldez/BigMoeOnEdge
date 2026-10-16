@@ -142,6 +142,7 @@ jobs:
       - name: Byte-identity gates, sanitized
         env:
           ASAN_OPTIONS: halt_on_error=1:detect_leaks=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/sanitizers/lsan.supp
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1:suppressions=${{ github.workspace }}/tests/sanitizers/ubsan.supp
         run: cd build-asan && ctest --output-on-failure
 

@@ -36,9 +36,10 @@ cd build-asan && ASAN_OPTIONS=halt_on_error=1 \
   ctest --output-on-failure
 ```
 
-`tests/sanitizers/ubsan.supp` lists only findings inside `third_party/llama.cpp`, which this
-project does not patch; a report in our own code is a bug to fix, never a line to add there.
-Leak checking is Linux-only (macOS's ASan has none).
+`tests/sanitizers/ubsan.supp` and `lsan.supp` list only findings inside `third_party/llama.cpp`,
+which this project does not patch; a report in our own code is a bug to fix, never a line to add
+there. Leak checking is Linux-only (macOS's ASan has none); on Linux add
+`LSAN_OPTIONS=suppressions=$PWD/../tests/sanitizers/lsan.supp`.
 
 The web UI: `cd ui && npm ci && npm test && npm run check && npm run build`.
 
