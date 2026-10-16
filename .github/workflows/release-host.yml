@@ -35,10 +35,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          # 24.04: the first Ubuntu that packages the Vulkan shader compiler the backend builds
+          # with. The archives need its glibc (2.39) or newer; older distributions build from source.
+          - os: ubuntu-24.04
             target: linux-x86_64
             cmake_extra: -DGGML_VULKAN=ON
-          - os: ubuntu-22.04-arm
+          - os: ubuntu-24.04-arm
             target: linux-aarch64
             cmake_extra: -DGGML_VULKAN=ON
           - os: macos-14
@@ -153,7 +155,9 @@ jobs:
           supported MoE architectures. Keep this folder together: the libraries beside the program
           are its compute backends, loaded at start-up. The CPU one comes in several instruction-set
           tiers and the best for this machine is picked; a GPU backend loads only where its driver
-          is installed, and the plan (--auto --plan-explain) says which devices were found.
+          is installed, and the plan (--auto --plan-explain) says which devices were found. The
+          Linux archives need glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40); on an
+          older distribution build from source with scripts/build-host.sh, one command.
 
           Benchmark on this machine, printing the tables for a benchmark-report issue (Linux and
           macOS; on Windows run the protocol command from docs/community-benchmarks.md by hand):

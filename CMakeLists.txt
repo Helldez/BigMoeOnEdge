@@ -80,10 +80,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
         # A module tuned to the build machine would be the one thing in the layout bound to it.
         set(GGML_NATIVE       OFF CACHE BOOL "" FORCE)
         # One CPU library per instruction-set tier, the best one picked at start-up. Not forced:
-        # a target ggml has no tier list for passes OFF and gets the one baseline library.
-        set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "ggml: build all variants of the CPU backend")
+        # a target ggml has no tier list for passes OFF and gets the one baseline library. Apple
+        # silicon is one family and gets that one library: its tiers differ in features the
+        # compilers Apple ships with the CI images refuse to target.
         if(APPLE)
+            set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "ggml: build all variants of the CPU backend")
             set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "ggml: embed the Metal library")
+        else()
+            set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "ggml: build all variants of the CPU backend")
         endif()
         # Everything a release copies sits in one directory, and the executables find the shared
         # libraries beside themselves wherever that directory is copied to.
