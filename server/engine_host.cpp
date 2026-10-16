@@ -1,5 +1,7 @@
 #include "engine_host.h"
 
+#include "decide_protocol.h"
+
 #include "bmoe/params.h"
 #include "bmoe/version.h"
 
@@ -14,6 +16,12 @@ const char * state_name(int s) {
     static const char * names[] = {"empty", "loading", "ready", "error"};
     return names[s];
 }
+
+// Chat turns and decisions wait in the same line and hold the same lock: the context is one.
+struct Admission {
+    int status = 0;
+    std::string error;
+};
 
 // Errors after which the session is still usable (the request was bad, not the context).
 bool recoverable(const std::string & error) {
@@ -37,6 +45,16 @@ EngineHost::~EngineHost() {
 
 void EngineHost::set_host_info(std::function<json()> provider) {
     host_info_ = std::move(provider);
+}
+
+void EngineHost::begin_planning() {
+    planning_ = true;
+    publish_state();
+}
+
+void EngineHost::end_planning() {
+    planning_ = false;
+    publish_state();
 }
 
 std::string EngineHost::load(const RunConfig & effective, const RunConfig & requested) {
@@ -146,7 +164,7 @@ json EngineHost::info() const {
                 {"overlap_available", overlap},
                 {"planner_available", planner_available_.load()},
                 {"host", host_info_ ? host_info_() : json::object()},
-                {"state", state_name((int) state_)},
+                {"state", planning_.load() && state_ == State::Empty ? "planning" : state_name((int) state_)},
                 {"error", error_},
                 {"model", model_},
                 {"generating", generating_.load()}};
@@ -231,6 +249,63 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     out.n_predict = gr.n_predict;
     out.result = std::move(r);
     bus_.publish("done", summary_json(out.result.summary, out.result.cancelled));
+    publish_state();
+    return out;
+}
+
+DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<bool()> & still_wanted) {
+    DecideOutcome out;
+    switch (turns_.enter(still_wanted)) {
+    case TurnQueue::Admit::Granted:
+        break;
+    case TurnQueue::Admit::Full:
+        out.status = 429;
+        out.error = "busy: too many requests are already waiting for the model";
+        return out;
+    case TurnQueue::Admit::Abandoned:
+        out.status = 499;
+        out.error = "the client stopped waiting";
+        return out;
+    }
+    struct Leave {
+        TurnQueue & q;
+        ~Leave() { q.leave(); }
+    } leave{turns_};
+    std::lock_guard<std::mutex> g(gen_m_);
+
+    std::shared_ptr<Session> s;
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        if (state_ == State::Ready) s = session_;
+    }
+    if (!s) {
+        out.status = 503;
+        out.error = "no model is loaded";
+        return out;
+    }
+
+    generating_ = true;
+    publish_state();
+    DecideResult r = s->decide(req);
+    generating_ = false;
+
+    if (!r.ok && !r.cancelled) {
+        out.error = r.error;
+        if (!r.fatal) {
+            out.status = 400;
+        } else {
+            out.status = 500;
+            std::lock_guard<std::mutex> lk(m_);
+            session_.reset();
+            state_ = State::Error;
+            error_ = "the session failed and was closed: " + r.error;
+            model_ = nullptr;
+        }
+        publish_state();
+        return out;
+    }
+    out.result = std::move(r);
+    bus_.publish("decide", decide_json(out.result));
     publish_state();
     return out;
 }

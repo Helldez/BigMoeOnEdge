@@ -6,9 +6,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Fetching a model is the only thing this app does over the network: the in-app download
-         worker needs INTERNET. Inference is entirely on-device — nothing about a prompt or an
-         answer leaves the phone. -->
+    <!-- The app talks to its own engine over loopback and fetches models: both need INTERNET.
+         Inference is entirely on-device; nothing about a prompt or an answer leaves the phone
+         unless "Serve on the network" is turned on, which then binds the engine's API to every
+         interface, with a key. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- No broad storage permission here: models arrive through the in-app URL downloader or
          the system file picker, both writing to the app-internal models dir (filesDir, a real
@@ -30,6 +31,7 @@
         android:extractNativeLibs="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
         android:theme="@style/Theme.BigMoeOnEdge">
 
@@ -49,7 +51,7 @@
         </activity>
 
         <service
-            android:name=".RunService"
+            android:name=".engine.EngineService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
         <!-- WorkManager runs DownloadWorker's foreground transfer through its own

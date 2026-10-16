@@ -32,6 +32,12 @@ struct ChatOutcome {
     int n_predict = 0; // the budget the turn ran with, for the protocol's stop-or-length answer
 };
 
+struct DecideOutcome {
+    int status = 200; // as ChatOutcome
+    std::string error;
+    DecideResult result;
+};
+
 // How many chat turns may wait behind the running one before the next is turned away. A local
 // server has a handful of clients; a line longer than this is a client retrying, not a workload.
 inline constexpr size_t k_max_waiting_turns = 16;
@@ -44,6 +50,12 @@ public:
     // What /api/info adds about the machine; called on every state publish.
     void set_host_info(std::function<json()> provider);
     void set_planner_available(bool available) { planner_available_ = available; }
+
+    // A load in auto mode measures the machine before it loads, for tens of seconds on a phone,
+    // with nothing loaded meanwhile: `state` reads "planning" between these two calls, so a UI can
+    // say what is happening the moment a person asks for a load.
+    void begin_planning();
+    void end_planning();
 
     // Open a session with `effective` in the background. `requested` is the config the user asked
     // for, which can differ (a dense model loads with streaming off); it is what reload_required()
@@ -69,6 +81,11 @@ public:
                      const std::function<void(const TokenMetrics &)> & on_token,
                      const std::function<bool()> & still_wanted = nullptr);
 
+    // Read one decision (bmoe/decide.h) on the calling thread, in the same line as the chat turns:
+    // one prefill, no decode. A refused request (no choices, colliding choices, a prompt past
+    // n_ctx) is a 400 and leaves the session usable; a failed prefill closes it, as a failed turn does.
+    DecideOutcome decide(const DecideRequest & req, const std::function<bool()> & still_wanted = nullptr);
+
 private:
     enum class State { Empty, Loading, Ready, Error };
 
@@ -77,6 +94,7 @@ private:
     EventBus & bus_;
     std::function<json()> host_info_;
     std::atomic<bool> planner_available_{false};
+    std::atomic<bool> planning_{false};
 
     // Held across load() and unload(), so the loader thread is joined and replaced by one caller
     // at a time. Without it two unloads join the same thread, and a load racing an unload assigns

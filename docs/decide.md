@@ -39,6 +39,10 @@ From C++, `Session::decide(const DecideRequest &)` with `SessionConfig::decide.e
 screen: the question is the prefix, the lettered options are the suffix, and each option is shown
 with the probability the model put on it.
 
+`bmoe-server` offers the same request as `POST /api/decide` ([server-api.md](server-api.md#decide)),
+with the same fields and the same answer keys, so a UI or an agent on any platform asks for a
+decision the way the CLI's session does. The `decide` parameter is on by default there.
+
 ## What it returns
 
 - `choice_logp[i]`: log p of the **first token** of `choices[i]`, normalised over the whole

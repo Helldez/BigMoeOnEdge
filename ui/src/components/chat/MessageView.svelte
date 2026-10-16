@@ -1,9 +1,18 @@
 <script lang="ts">
   import { renderMarkdown } from '../../lib/markdown';
-  import { formatNum } from '../../lib/format';
-  import type { Turn } from '../../stores/chat.svelte';
+  import { chat, type Turn } from '../../stores/chat.svelte';
 
-  let { turn, streaming = false }: { turn: Turn; streaming?: boolean } = $props();
+  let { turn, streaming = false, last = false }: { turn: Turn; streaming?: boolean; last?: boolean } = $props();
+  let copied = $state(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(turn.content);
+      copied = true;
+      setTimeout(() => (copied = false), 1500);
+    } catch {
+      copied = false;
+    }
+  }
   let html = $derived(turn.role === 'assistant' ? renderMarkdown(turn.content) : '');
   let reasoningHtml = $derived(turn.reasoning ? renderMarkdown(turn.reasoning) : '');
 </script>
@@ -21,10 +30,22 @@
         <div class="md">{@html reasoningHtml}</div>
       </details>
     {/if}
-    {#if turn.content}
+    {#if turn.choices}
+      <ul class="choices" aria-label="The model's choice">
+        {#each turn.choices as c, i (c.label)}
+          <li class:picked={i === turn.best}>
+            <span class="label">{c.label})</span>
+            <span class="text">{c.text}</span>
+            <meter min="0" max="1" value={c.prob}></meter>
+            <span class="prob">{Math.round(100 * c.prob)}%</span>
+          </li>
+        {/each}
+      </ul>
+      {#if turn.metrics}<p class="meta muted">{turn.metrics}</p>{/if}
+    {:else if turn.content}
       <div class="md">{@html html}</div>
     {:else if streaming && !turn.reasoning}
-      <p class="muted">Waiting for the first token...</p>
+      <p class="muted">{turn.choices === undefined && !turn.content ? 'Waiting for the first token...' : ''}</p>
     {/if}
     {#if turn.error}
       <p class="notice error">{turn.error}</p>
@@ -34,9 +55,15 @@
     {:else if turn.finishReason === 'cancelled'}
       <p class="notice">Stopped.</p>
     {/if}
-    {#if turn.summary}
-      <p class="meta muted">
-        {turn.summary.tokens} tokens, {formatNum(turn.summary.tok_s, 2)} tok/s, TTFT {formatNum(turn.summary.ttft_s, 2)} s
+    {#if turn.metrics && !turn.choices}
+      <p class="meta muted">{turn.metrics}</p>
+    {/if}
+    {#if !streaming && !turn.choices && turn.content}
+      <p class="actions">
+        <button type="button" class="link" onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+        {#if last}
+          <button type="button" class="link" onclick={() => chat.regenerate()} disabled={chat.busy}>Regenerate</button>
+        {/if}
       </p>
     {/if}
   {/if}
@@ -95,5 +122,41 @@
   .meta {
     font-size: 0.8rem;
     margin: 0.4rem 0 0;
+    font-family: var(--mono);
+  }
+  .actions {
+    margin: 0.3rem 0 0;
+    display: flex;
+    gap: 0.9rem;
+    font-size: 0.8rem;
+  }
+  .choices {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .choices li {
+    display: grid;
+    grid-template-columns: 2rem minmax(0, 1fr) 6rem 3rem;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .choices li.picked {
+    font-weight: 600;
+  }
+  .choices .text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .choices meter {
+    width: 100%;
+  }
+  .choices .prob {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 </style>

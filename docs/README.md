@@ -12,7 +12,7 @@ for the idea the project is built on.
 | [seam.md](seam.md) | The exact contract with llama.cpp's public API, and how to upgrade the submodule. |
 | [backends.md](backends.md) | Every compute backend the pinned llama.cpp carries, which of them this engine has actually run on, and what each use of a device asks of one. |
 | [limitations.md](limitations.md) | What this does not do, what it cannot do, and the prior art it builds on. |
-| [roadmap.md](roadmap.md) | Themes worth exploring next. |
+| [roadmap.md](roadmap.md) | Where the project is going as a product, in order; then the research themes, with what was measured and what was refuted. |
 
 ## Using and extending it
 

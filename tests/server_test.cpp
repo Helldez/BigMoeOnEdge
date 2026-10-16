@@ -5,10 +5,15 @@
 //     (text, tool calls, token counts) looks like on the wire;
 //   * the turn queue: first come first served, a bound, and a caller that gives its place up;
 //   * the settings layers: defaults < plan < launch < user, what a reset removes, what persists;
-//   * the JSON edges: form values to parameter strings and back.
+//   * the JSON edges: form values to parameter strings and back;
+//   * access: which host names, origins, keys and content types reach the API, and when the server
+//     may not start at all;
+//   * decide: the request fields a decision is read from, and its answer on the wire.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
+#include "access.h"
+#include "decide_protocol.h"
 #include "json_util.h"
 #include "openai_chat.h"
 #include "settings_store.h"
@@ -16,6 +21,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
@@ -274,6 +280,36 @@ static void settings_tests() {
     std::filesystem::remove(path, ec);
 }
 
+static void planning_config_tests() {
+    const std::string path = (std::filesystem::temp_directory_path() / "bmoe_server_test_plan.json").string();
+    std::filesystem::remove(path);
+    RunConfig defaults;
+    defaults.moe.enabled = true;
+    SettingsStore store(defaults, path);
+    store.apply(json{{"threads", 6}}, {});
+    store.apply_plan({{"cache-mb", "1333"}, {"force-cache", "true"}}, json::array());
+    check(store.config().moe.cache_mb == 1333 && store.config().moe.force_cache && store.config().n_threads == 6,
+          "the plan layer is in the config");
+    const RunConfig base = store.planning_config();
+    check(base.moe.cache_mb == defaults.moe.cache_mb && !base.moe.force_cache && base.n_threads == 6,
+          "the planning config leaves the plan layer out and keeps the person's values");
+    // What a second plan would do: its values are what differ from the planning config, so a
+    // choice it repeats is still a value, and replacing the layer keeps it.
+    std::map<std::string, std::string> second;
+    RunConfig planned = base;
+    planned.moe.cache_mb = 1233;
+    planned.moe.force_cache = true;
+    for (const ParamDesc & d : params())
+        if (d.get(planned) != d.get(base)) second[d.key] = d.get(planned);
+    check(second.count("force-cache") == 1 && second.count("cache-mb") == 1, "a repeated choice is still a value");
+    store.apply_plan(second, json::array());
+    // (validate() wants a model path too; the cache rule is the one this guards.)
+    check(store.config().moe.cache_mb == 1233 && store.config().moe.force_cache &&
+              validate(store.config()).error.find("pathological") == std::string::npos,
+          "the second plan applies whole, and the cache rule is satisfied");
+    std::filesystem::remove(path);
+}
+
 static void json_tests() {
     std::string s;
     check(value_to_param_string(json(true), s) && s == "true", "bool to parameter string");
@@ -301,11 +337,139 @@ static void json_tests() {
           "a type that only contains the word is not JSON");
 }
 
+static void access_tests() {
+    check(is_api_path("/api/info") && is_api_path("/v1/chat/completions") && !is_api_path("/") &&
+              !is_api_path("/assets/app.js") && !is_api_path("/apix"),
+          "the API is /api/* and /v1/*, nothing else");
+    check(is_loopback_host("127.0.0.1") && is_loopback_host("localhost:8765") && is_loopback_host("[::1]:8765") &&
+              is_loopback_host("::1") && !is_loopback_host("0.0.0.0") && !is_loopback_host("example.com:8765") &&
+              !is_loopback_host("192.168.1.10"),
+          "loopback host names, with or without a port");
+
+    check(bearer_matches("Bearer s3cret", "s3cret") && bearer_matches("bearer s3cret", "s3cret"),
+          "a bearer token matches the key, the scheme in either case");
+    check(!bearer_matches("Bearer s3cre", "s3cret") && !bearer_matches("Bearer s3cret1", "s3cret") &&
+              !bearer_matches("Bearer S3CRET", "s3cret") && !bearer_matches("s3cret", "s3cret") &&
+              !bearer_matches("Basic s3cret", "s3cret") && !bearer_matches("", "s3cret"),
+          "a shorter, longer, differently cased, bare or basic token does not");
+    check(!bearer_matches("Bearer ", "") && !bearer_matches("", ""), "an empty key matches nothing");
+
+    AccessPolicy local;
+    local.loopback = true;
+    local.origins = {"http://127.0.0.1:8765"};
+    auto req = [](const char * method, const char * path) {
+        RequestFacts f;
+        f.method = method;
+        f.path = path;
+        f.host = "127.0.0.1:8765";
+        return f;
+    };
+    check(check_access(local, req("GET", "/api/info")).allowed(), "a local program's GET is answered");
+    {
+        RequestFacts f = req("POST", "/api/cancel");
+        f.content_type = "application/json";
+        check(check_access(local, f).allowed(), "a local program's JSON write is answered");
+        f.content_type = "text/plain";
+        check(check_access(local, f).status == 415, "a write that is not JSON is refused with 415");
+    }
+    {
+        RequestFacts f = req("GET", "/api/info");
+        f.host = "evil.example:8765";
+        check(check_access(local, f).status == 403, "a loopback server refuses a foreign host name");
+        AccessPolicy open = local;
+        open.loopback = false;
+        check(check_access(open, f).allowed(), "a server bound beyond loopback answers to its name");
+    }
+    {
+        RequestFacts f = req("GET", "/api/plan");
+        f.has_origin = true;
+        f.origin = "http://evil.example";
+        check(check_access(local, f).status == 403, "a cross-origin GET to the API is refused");
+        f.origin = "http://127.0.0.1:8765";
+        check(check_access(local, f).allowed(), "the UI's own origin is answered");
+        RequestFacts g = req("GET", "/api/events");
+        g.sec_fetch_site = "cross-site";
+        check(check_access(local, g).status == 403, "a cross-site read with no Origin is refused too");
+        RequestFacts h = req("GET", "/assets/app.js");
+        h.sec_fetch_site = "cross-site";
+        check(check_access(local, h).allowed(), "the UI's files are not the API");
+    }
+    {
+        AccessPolicy keyed = local;
+        keyed.api_key = "s3cret";
+        RequestFacts f = req("GET", "/v1/models");
+        const AccessDecision d = check_access(keyed, f);
+        check(d.status == 401, "with a key set, an API request without it gets 401");
+        f.authorization = "Bearer s3cret";
+        check(check_access(keyed, f).allowed(), "and is answered with it");
+        f.authorization = "Bearer wrong";
+        check(check_access(keyed, f).status == 401, "a wrong key is 401");
+        RequestFacts page = req("GET", "/index.html");
+        check(check_access(keyed, page).allowed(), "the key gates the API, not the UI's files");
+        RequestFacts w = req("PUT", "/api/config");
+        w.authorization = "Bearer s3cret";
+        check(check_access(keyed, w).status == 415, "the key does not excuse a write from naming JSON");
+        RequestFacts x = req("POST", "/v1/chat/completions");
+        x.has_origin = true;
+        x.origin = "http://evil.example";
+        x.authorization = "Bearer s3cret";
+        check(check_access(keyed, x).status == 403, "a foreign origin is refused before the key is looked at");
+    }
+
+    check(launch_refusal("127.0.0.1", "", false).empty() && launch_refusal("localhost", "", false).empty() &&
+              launch_refusal("::1", "", false).empty(),
+          "loopback needs no key");
+    check(!launch_refusal("0.0.0.0", "", false).empty() && !launch_refusal("192.168.1.10", "", false).empty(),
+          "beyond loopback without a key the server does not start");
+    check(launch_refusal("0.0.0.0", "s3cret", false).empty() && launch_refusal("0.0.0.0", "", true).empty(),
+          "a key, or --no-api-key, lets it");
+}
+
+static void decide_tests() {
+    DecideRequest r;
+    std::string err;
+    check(parse_decide_request(json::parse(R"({"prefix":"p","suffix":"s","choices":["A","B"]})"), r, err) &&
+              r.prefix == "p" && r.suffix == "s" && r.choices.size() == 2 && r.choices[1] == "B" && r.reuse_prefix,
+          "a decide body is read whole, reuse_prefix defaulting to true");
+    check(parse_decide_request(json::parse(R"({"choices":["A"],"reuse_prefix":false})"), r, err) && r.prefix.empty() &&
+              !r.reuse_prefix,
+          "prefix and suffix may be left out; reuse_prefix may be turned off");
+    check(!parse_decide_request(json::parse(R"({"prefix":"p"})"), r, err) && err.find("choices") != std::string::npos,
+          "no choices is refused");
+    check(!parse_decide_request(json::parse(R"({"choices":["A",1]})"), r, err),
+          "a choice that is not a string is refused");
+    check(!parse_decide_request(json::parse(R"({"choices":["A"],"prefix":3})"), r, err),
+          "a prefix that is not a string is refused");
+    check(!parse_decide_request(json::parse(R"({"choices":["A"],"reuse_prefix":"yes"})"), r, err),
+          "reuse_prefix must be a boolean");
+    check(!parse_decide_request(json::parse(R"([1])"), r, err), "a body that is not an object is refused");
+
+    DecideResult d;
+    d.ok = true;
+    d.best = 1;
+    d.choice_logp = {-3.25, -0.5, -std::numeric_limits<double>::infinity()};
+    d.n_tokens = 10;
+    d.n_reused = 4;
+    d.n_prefilled = 6;
+    d.prefill.seconds = 0.5;
+    d.prefix_state_bytes = 2 * 1024 * 1024;
+    const json j = decide_json(d);
+    check(j["best"] == 1 && j["choice_logp"].size() == 3 && j["choice_logp"][0] == -3.25 &&
+              j["choice_logp"][2].is_null(),
+          "the answer carries best and the log-probabilities, null for a choice with no mass");
+    check(j["n_tokens"] == 10 && j["n_reused"] == 4 && j["n_prefilled"] == 6 && j["prefill_s"] == 0.5 &&
+              j["prefix_state_mib"] == 2.0 && j["cancelled"] == false,
+          "the counts, the prefill figures and the kept state travel with it");
+}
+
 int main() {
     protocol_tests();
     queue_tests();
     settings_tests();
+    planning_config_tests();
     json_tests();
+    access_tests();
+    decide_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

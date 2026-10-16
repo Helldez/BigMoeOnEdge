@@ -1,5 +1,7 @@
-// App-wide server state, fed by one EventSource on `GET /api/events` for the whole app.
-import { api, EVENTS_URL } from '../lib/api';
+// App-wide server state, fed by one `GET /api/events` stream held open for the whole app.
+import { api, openEvents } from '../lib/api';
+import { auth } from '../lib/auth';
+import type { SseEvent } from '../lib/sse';
 import { ema, mibPerSec, pushSample, stallShare, tokPerSec } from '../lib/metrics';
 import type { Config, DoneSummary, DownloadEvent, Info, ParamSpec, TokenEvent } from '../lib/types';
 
@@ -31,15 +33,30 @@ class ServerStore {
   downloads = $state<Record<string, DownloadEvent>>({});
   /** Bumped when a download ends, so the Models page knows to refresh its list. */
   downloadsFinished = $state(0);
+  /** The server wants an API key this page has not got: the app asks for one. */
+  authRequired = $state(false);
 
   ready = $derived(this.info?.state === 'ready' && this.info.model !== null);
 
-  private source: EventSource | null = null;
+  private stream: AbortController | null = null;
   private retryMs = RECONNECT_MIN_MS;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   start(): void {
-    if (this.source) return;
+    if (this.stream) return;
+    auth.onUnauthorized(() => {
+      this.authRequired = true;
+    });
+    this.connect();
+    this.loadParams();
+    api.config().then((c) => (this.config = c), () => {});
+  }
+
+  /** The key the person typed: kept for this browser, and everything is asked again with it. */
+  submitKey(key: string): void {
+    auth.set(key);
+    this.authRequired = false;
+    this.retryMs = RECONNECT_MIN_MS;
     this.connect();
     this.loadParams();
     api.config().then((c) => (this.config = c), () => {});
@@ -64,25 +81,48 @@ class ServerStore {
   }
 
   private connect(): void {
-    const es = new EventSource(EVENTS_URL);
-    this.source = es;
-    es.onopen = () => {
-      this.connected = true;
-      this.retryMs = RECONNECT_MIN_MS;
-    };
-    // The browser retries some failures by itself but gives up on others (readyState CLOSED);
-    // closing and reconnecting with backoff covers both the same way.
-    es.onerror = () => {
-      this.connected = false;
-      es.close();
-      this.source = null;
-      this.scheduleReconnect();
-    };
-    es.addEventListener('state', (e) => this.onJson<Info>(e, (d) => (this.info = d)));
-    es.addEventListener('config', (e) => this.onJson<Config>(e, (d) => (this.config = d)));
-    es.addEventListener('token', (e) => this.onJson<TokenEvent>(e, (d) => this.onToken(d)));
-    es.addEventListener('done', (e) => this.onJson<DoneSummary>(e, (d) => (this.lastDone = d)));
-    es.addEventListener('download', (e) => this.onJson<DownloadEvent>(e, (d) => this.onDownload(d)));
+    if (this.stream) return;
+    const ac = new AbortController();
+    this.stream = ac;
+    openEvents(
+      () => {
+        this.connected = true;
+        this.retryMs = RECONNECT_MIN_MS;
+      },
+      (ev) => this.onEvent(ev),
+      ac.signal,
+    )
+      .catch(() => {
+        // a refused or failed connection: reconnecting below covers it, unless a key is wanted
+      })
+      .finally(() => {
+        if (this.stream !== ac) return; // replaced, or stopped
+        this.stream = null;
+        this.connected = false;
+        if (!this.authRequired) this.scheduleReconnect();
+      });
+  }
+
+  private onEvent(ev: SseEvent): void {
+    switch (ev.event) {
+      case 'state':
+        this.onJson<Info>(ev, (d) => (this.info = d));
+        break;
+      case 'config':
+        this.onJson<Config>(ev, (d) => (this.config = d));
+        break;
+      case 'token':
+        this.onJson<TokenEvent>(ev, (d) => this.onToken(d));
+        break;
+      case 'done':
+        this.onJson<DoneSummary>(ev, (d) => (this.lastDone = d));
+        break;
+      case 'download':
+        this.onJson<DownloadEvent>(ev, (d) => this.onDownload(d));
+        break;
+      default:
+        break; // a ping, or an event this UI does not know
+    }
   }
 
   private scheduleReconnect(): void {
@@ -96,9 +136,9 @@ class ServerStore {
     this.retryMs = Math.min(this.retryMs * 2, RECONNECT_MAX_MS);
   }
 
-  private onJson<T>(e: Event, apply: (data: T) => void): void {
+  private onJson<T>(e: SseEvent, apply: (data: T) => void): void {
     try {
-      apply(JSON.parse((e as MessageEvent<string>).data) as T);
+      apply(JSON.parse(e.data) as T);
     } catch {
       // a malformed event is dropped; the next one carries full state again
     }

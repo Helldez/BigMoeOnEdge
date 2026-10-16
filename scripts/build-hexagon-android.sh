@@ -35,7 +35,7 @@ cmake -S /workspace -B "$OUT" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_FLAGS="-D_GNU_SOURCE" -DCMAKE_CXX_FLAGS="-D_GNU_SOURCE" \
-  -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_SERVER=OFF \
+  -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_SERVER=ON \
   -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_OPENCL=OFF -DGGML_LLAMAFILE=OFF \
   -DGGML_CPU_ARM_ARCH="$CPU_ARCH" \
   -DGGML_HEXAGON=ON \
@@ -45,10 +45,10 @@ cmake -S /workspace -B "$OUT" \
 
 # The DSP skels are ExternalProject targets, and the llama.cpp subdirectory is EXCLUDE_FROM_ALL here,
 # so they are only built when asked for by name.
-targets=(bmoe-cli)
+targets=(bmoe-cli bmoe-server)
 for v in $HTP_ARCHS; do targets+=("htp-$v"); done
 cmake --build "$OUT" --target "${targets[@]}" -j "$(nproc)"
 
 cp -f "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$OUT/"
 echo "built:"
-find "$OUT" -maxdepth 6 \( -name 'bmoe-cli' -o -name 'lib*.so' \) -newer "$OUT/CMakeCache.txt" | sort
+find "$OUT" -maxdepth 6 \( -name 'bmoe-cli' -o -name 'bmoe-server' -o -name 'lib*.so' \) -newer "$OUT/CMakeCache.txt" | sort

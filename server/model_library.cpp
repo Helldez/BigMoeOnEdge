@@ -3,6 +3,11 @@
 #include "bmoe/recipe.h"
 
 #include "gguf.h"
+
+// The server never starts a child in a directory of its own, and the header's detection of the
+// chdir file action trusts any libc that is not glibc or Apple's to have it, which bionic does not
+// (its _np spelling arrives with API 34). Off everywhere, so the one header compiles on every libc.
+#define SUBPROCESS_HAVE_CWD 0
 #include "sheredom/subprocess.h"
 
 #include <chrono>
@@ -171,11 +176,17 @@ json ModelLibrary::list() {
         auto job = jobs_.find(e.id);
         const bool running = job != jobs_.end() && !job->second->finished;
         const char * status = running ? "downloading" : entry_on_disk(e) ? "on_disk" : "available";
+        // Every file with its URL: a host that has no curl (a phone) downloads for itself, and the
+        // catalog is still the one place the URLs are written.
+        json files = json::array();
+        for (const CatalogFile & f : e.files)
+            files.push_back({{"name", f.name}, {"bytes", f.bytes}, {"url", f.url}});
         catalog.push_back({{"id", e.id},
                            {"title", e.title},
                            {"quant", e.quant},
                            {"file", e.files.front().name},
                            {"bytes", bytes},
+                           {"files", files},
                            {"blurb", e.blurb},
                            {"status", status},
                            {"note", e.files.size() > 1 ? std::to_string(e.files.size()) + " shards" : ""}});

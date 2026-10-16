@@ -7,6 +7,114 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **The Android app is a client of `bmoe-server`, and a complete app.** The APK's `libbmoe-server.so`
+  runs as a child process of a foreground service, on loopback with the app's data beside its
+  files, and the five screens speak its HTTP API as the web UI does: chat with conversations saved
+  on the phone (a drawer to switch, copy, regenerate, stop; a full context says so and offers a new
+  chat), Models (the server's directory, the catalog from the one `catalog/models.json` shipped as
+  an asset, the app's own resumable downloads since a phone has no `curl`, imports, loading by
+  path), Plan (the planner's decisions with their reasons, measure and apply, auto-plan on every
+  load), Settings rendered from the parameter table with a level filter and per-value reset, and
+  Metrics with the live card and the CSV views, now written by the app from the server's token and
+  done events. **Serve on the network** binds the engine to every interface with a generated key,
+  so any OpenAI-compatible client uses the phone. The Kotlin that reimplemented settings, the
+  catalog, the line protocol and the telemetry parser is deleted, not ported: no engine logic in
+  the app (`docs/application-framework.md`). The code's package is `io.bigmoeonedge.app`; the
+  application id stays, so the update installs over the previous build. Run on a 12 GB phone:
+  Gemma 4 26B and Qwen3.6-35B load from the Models screen with the planner's plan, chat with the
+  reasoning block, 3.3 tok/s, every screen live. Two things found there: Android forbids cleartext
+  HTTP even to loopback for an app targeting API 28 or later, so the app's network security
+  configuration permits it for `127.0.0.1` alone and the status line now says why the engine is
+  unreachable instead of "not running"; and the settings page no longer hides rows behind a level
+  filter: each group shows its basic rows and an **Advanced** section at the end, folded, holds the
+  advanced, experimental and debug rows grouped and marked, so no lever is lost. The page names no
+  device: the prefill device is a row like any other and the planner chooses it.
+- **`POST /api/decide`: a decision over the API.** The CLI's decide request (which of a list of
+  choices the model would answer next, from one prefill and no decode, `docs/decide.md`) is offered
+  by the server with the same fields and the same answer keys as `BMOE_DECIDE`, waits its turn like
+  a chat turn, and is published as a `decide` event. The `decide` parameter is on by default in the
+  server, which costs nothing until a decision is asked for. The request and answer are one pure
+  protocol file (`server/decide_protocol.h`) with tests. With it, Choose from options can return to
+  every UI from one endpoint (#245).
+- **What a client on a phone needs from the server.** `GET /api/models` lists every file of a
+  catalog entry with its URL (`files`), so a host with no `curl` downloads for itself from the one
+  catalog; the `done` event carries the CLI's whole `BMOE_DONE` summary (load time, faults and CPU
+  per token, the loop overhead, the speculation counters, cache churn), so a metrics view reads the
+  two front-ends alike; and the planner's device probes run in a process of their own in the server
+  too, as `bmoe-cli --auto` runs them (`--probe-device` is the child's mode, `--no-isolated-probes`
+  turns it off), so a driver that ends the process it is used from marks the device unusable
+  instead of ending the server an app is running behind.
+- **`--api-key`: the server can be reached from the network, with a key.** With `--api-key KEY`
+  every request to `/api/*` or `/v1/*` must carry `Authorization: Bearer KEY` or is refused with
+  `401`; the UI's own files are served without it, and the UI asks for the key on a `401`, keeps it
+  in the browser and sends it on every request, the event stream included (which now goes through
+  `fetch`, since `EventSource` cannot carry a header). A `--host` beyond loopback without a key is
+  refused at start, unless `--no-api-key` says the open server is meant. Who may reach the API
+  (host name, origin, key, content type) is one pure policy, `server/access.h`, with its own tests;
+  the HTTP layer only reads the request into it. `docs/server-api.md` states the result.
+- **The server is a library, and the Android builds carry it.** `bmoe_server` holds the engine
+  host, the model library, the planner adapter, the platform and the HTTP API behind one
+  `bmoe::server::run(argc, argv)`; `bmoe-server` is `main()` over it, and an app that may not start
+  a process (iOS) can call it on a thread. Every Android build (CI, the release workflow, the two
+  build scripts) now compiles the server and stages it in the APK as `libbmoe-server.so`, which the
+  app does not start yet. `docs/application-framework.md` says why: the server is the application
+  framework, one API behind every UI, in process or in a child process as the platform allows.
+
+- **The web UI shows the five screens the phone shows, the same way.** Chat, Models, Plan,
+  Settings and Metrics in that order, Metrics a page of its own with the live card. Chat keeps
+  conversations in the browser (a list to switch, open and delete; a reload finds them), writes
+  the same one-line figure under every answer the phone writes (rate, tokens, prefill, context,
+  cache), offers Copy and Regenerate, and shows the live rate line above the prompt; how many
+  tokens to generate and whether to think are Settings rows, not composer controls. Settings shows
+  each group's basic rows and one folded Advanced section with the rest, grouped and marked, in
+  place of the level filter.
+- **Choose from options, in the web UI and in the Android app.** A switch under the prompt turns
+  it into a question with a field for options, one per line; the model picks one without writing
+  an answer (one prefill, no decode, `POST /api/decide`), and every option comes back with the
+  probability the model put on it, the picked one marked. The two UIs build the same request and
+  read the answer the same way, from one pure module each, with tests; a decision is not a
+  conversation turn and stays out of the history the model is sent. The Android app had this over
+  the CLI's line protocol and lost it on its move to the server; now both have it from one endpoint.
+
+### Changed
+- **`docs/screens.md`: the five screens, specified once.** What chat, models, plan, settings and
+  metrics show, what a person can do on each, what every state means, and the rule behind them (a
+  UI knows no engine parameter by name), so the web UI, the Android app and an iOS app render the
+  same thing their own way (#236).
+- `docs/roadmap.md` opens with the product plan, in the order the work has to happen: one engine,
+  one application framework, native UIs per OS, the OpenAI-compatible endpoint everywhere. The
+  research themes are its second half.
+
+### Changed
+- **A load says it is planning.** `state` reads `planning` from the moment a load in auto mode
+  starts measuring the machine until it starts loading, and both UIs show it ("Measuring, then
+  loading…") and keep the Load buttons quiet meanwhile: on a phone the probes take tens of seconds,
+  during which a tap on Load looked like nothing.
+- **Settings: the Advanced section holds every knob.** The groups above it stay the recommended
+  configuration (the basic rows); the folded section at the end now lists every row of the table,
+  grouped and marked with its level, so an expert sees the whole engine in one place. Web and
+  Android alike.
+
+### Fixed
+- **A second plan could leave the configuration invalid and refuse every load.** A plan's values
+  were what differed from the current configuration, which already held the previous plan; a
+  choice the new plan repeated (`force-cache` on, for a cache the model's token cycle allows
+  under the generic floor) was therefore not a value, and applying the plan, which replaces the
+  layer whole, dropped it: `cache-mb` below 1500 with no `force-cache`, `valid: false`, and
+  `POST /api/session/load` answered with the validation error. Seen on a phone loading a small
+  model after a larger one. A plan is now made from, and measured against, the configuration
+  without the plan layer (`SettingsStore::planning_config`), so it is complete on its own; tested.
+- **The Windows desktop archive did not start on a machine without OpenSSL.** `bmoe-server.exe`
+  imported `libssl-3-x64.dll` and `libcrypto-3-x64.dll`, which the archive does not ship: llama.cpp's
+  `LLAMA_OPENSSL` option defaults to on, and the `cpp-httplib` the server builds from its vendor tree
+  links the OpenSSL the build runner happens to have. Double-clicking the exe hung on the "DLL was
+  not found" dialog; it worked from Git Bash only because Git for Windows carries those DLLs on its
+  `PATH`. The server speaks plain HTTP on loopback and downloads go through the system curl, so the
+  option is now off and the binary links no TLS stack. The CLI archive was never affected (#242).
+
+## [0.29.0] - 2026-10-13
+
+### Added
 - **`--auto` chooses how wide a prompt is computed (`--ubatch`), and counts its buffers at that
   width.** The compute buffers are reserved for the widest graph, which followed the context, while
   the ledger read them at llama.cpp's default of 512 tokens with a logit row per position: about
@@ -170,15 +278,12 @@ Semantic Versioning.
   Hexagon, Metal); the rest are listed as unknown, with what each use of a device asks of a backend.
 
 ### Changed
-- **A shorter README, for what the project is now.** It introduced a way to run a model past RAM
-  on a phone, CPU only. It now leads with the three things the engine is: MoE streaming on
-  llama.cpp's public API, self-configuring (`--auto`) to the model and the machine, and available
-  as an Android app, a desktop app and an OpenAI-compatible server. A third of its former length:
-  one summary table each for settings and benchmarks, with the full tables moved, not dropped, to
-  the new `docs/settings.md`, to `docs/benchmarks.md` and to `docs/benchmark-method.md`. The roadmap
-  no longer lists the choice of the prefill device as owed, `docs/hardware-planning.md` no longer
-  says no rule reads the compute devices, and `AGENTS.md` describes the llama.cpp submodule as what
-  it is: upstream plus the one-commit hook `--overlap` needs.
+- **The README says what `--auto` is and how it decides.** A paragraph in Features, a quickstart
+  line, and two schemas under "How it works": what happens on each token, and how a plan is
+  derived from the model and the machine. The roadmap no longer lists the choice of the prefill
+  device as owed, `docs/hardware-planning.md` no longer says no rule reads the compute devices,
+  and `AGENTS.md` describes the llama.cpp submodule as what it is: upstream plus the one-commit
+  hook `--overlap` needs.
 - **`--auto` estimates what can be held, not only what is reported free, on every machine that
   publishes the two facts.** The free headroom estimate (the compressor's own ratio applied to idle
   anonymous memory) was read on Linux and Android alone, so a macOS plan was sized from the reported

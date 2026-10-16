@@ -4,8 +4,12 @@
 serves the UI's static files, and exposes a small JSON API plus an OpenAI-compatible chat
 endpoint, so any OpenAI client can use it too.
 
-It binds to `127.0.0.1` by default and has no authentication: it is a local program, like the
-CLI. See [Security model](#security-model) for exactly what that does and does not protect.
+It binds to `127.0.0.1` by default and, unless started with `--api-key`, has no authentication:
+it is a local program, like the CLI. See [Security model](#security-model) for exactly what that
+does and does not protect.
+
+It is also the application framework of this project: the same server, reached the same way,
+stands behind every UI, on the desktop and on a phone ([application-framework.md](application-framework.md)).
 
 All request and response bodies are JSON (UTF-8). Errors are `{"error": "<message>"}` with a 4xx
 or 5xx status. Every `POST`, `PUT` and `DELETE` must carry `Content-Type: application/json`, body
@@ -21,7 +25,13 @@ other software, or other people, on that machine or on a network it was told to 
 **What is enforced**
 
 - It binds to `127.0.0.1` unless `--host` says otherwise. There is no environment variable that
-  widens it, and the server prints a warning at start when the address is not loopback.
+  widens it. A `--host` beyond loopback is refused at start unless a key is set (`--api-key`) or
+  `--no-api-key` says the open server is meant, and the server prints a warning in that case.
+- With `--api-key KEY`, every request to `/api/*` or `/v1/*` must carry `Authorization: Bearer
+  KEY`, whatever its origin, or is refused with `401` and a `WWW-Authenticate: Bearer` header. The
+  key is compared in constant time. The UI's own files are served without it: the UI asks for the
+  key when it gets a `401`, keeps it in the browser, and sends it on every request, the event
+  stream included.
 - On loopback it answers only to loopback host names, so a DNS-rebinding page cannot reach it
   through a name of its own.
 - A browser request to `/api/*` or `/v1/*` from another site is refused with `403`, whatever the
@@ -46,14 +56,15 @@ other software, or other people, on that machine or on a network it was told to 
 
 **What is not**
 
-- **Any local process, and any local user, can drive it.** A request without an `Origin` is a
-  local program and is accepted; loopback is not per-user. On a shared machine another account can
-  chat, read `/api/config` (which contains paths), and have the server open any file its user can
-  read as a model.
-- **`--host` with a non-loopback address removes the host-name check and adds nothing in its
-  place.** No authentication, no TLS: prompts and answers cross the network in clear, and anyone
-  who can reach the port has everything in the previous point. Use it on a network you trust, or
-  put a reverse proxy that authenticates in front.
+- **Without a key, any local process, and any local user, can drive it.** A request without an
+  `Origin` is a local program and is accepted; loopback is not per-user. On a shared machine another
+  account can chat, read `/api/config` (which contains paths), and have the server open any file its
+  user can read as a model. With a key, a local program needs the key too, and whoever can read
+  where a client keeps it (the browser's storage, a shell history) has it.
+- **`--host` with a non-loopback address removes the host-name check; the key is what stands in
+  its place.** No TLS: prompts, answers and the key cross the network in clear, and anyone who can
+  reach the port and has the key has everything in the previous point. Use it on a network you
+  trust, or put a reverse proxy that terminates TLS in front.
 - **Model output can still make the browser fetch something or offer a link.** The sanitiser
   stops scripts, form controls and styles, but an image is fetched when the answer is shown and a
   link goes where it says: text that talks the model into emitting either can leak what the URL
@@ -94,8 +105,9 @@ other software, or other people, on that machine or on a network it was told to 
 }
 ```
 
-`state` is one of `empty` (no model), `loading`, `ready`, `error` (the last load failed; `error`
-says why). `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
+`state` is one of `empty` (no model), `planning` (a load in auto mode is measuring the machine
+before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
+(the last load failed; `error` says why). `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
 on for the loaded session: with it off the engine is plain llama.cpp on mmap, and the UI must say so.
 
 ### `POST /api/session/load`
@@ -229,6 +241,40 @@ Not implemented: `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `response
 `{"object": "list", "data": [{"id": "<model file name>", "object": "model", "owned_by": "local"}]}`
 with the loaded model, or an empty list.
 
+## Decide
+
+### `POST /api/decide`
+
+A decision: which of a list of choices the model would answer next, read from one prefill with no
+decode ([decide.md](decide.md)). On a model streamed from flash that is the difference between
+seconds and minutes. Body:
+
+```json
+{"prefix": "You are choosing the next action.\nTask: ...", "suffix": "\nScreen: ...\nAnswer with the letter.",
+ "choices": ["A", "B", "C"], "reuse_prefix": true}
+```
+
+`prefix` + `suffix` is rendered as one user message through the model's own chat template, with
+reasoning off; the split only says which part is worth keeping (`reuse_prefix`, default `true`:
+the state after the prefix is kept and restored when the next prefix extends it). `choices` are
+scored by their first token, so two sharing one are refused with `400`, as is an empty list or a
+prompt past the context; `503` with no model loaded. The request waits its turn like a chat turn.
+
+```json
+{"cancelled": false, "best": 1, "choice_logp": [-3.2, -0.1, null], "n_tokens": 212, "n_reused": 180,
+ "n_prefilled": 32, "restore_s": 0.02, "store_s": 0.01, "prefill_s": 0.9, "prefill_cpu_s": 3.1,
+ "prefill_read_mib": 410.0, "prefill_io_s": 0.3, "prefill_stall_s": 0.1, "prefill_mgmt_s": 0.0,
+ "prefill_dev_tokens": 0, "prefill_dev_read_mib": 0.0, "prefill_dev_stall_s": 0.0,
+ "prefill_dev_routed": 0, "prefill_dev_demand": 0, "prefix_state_mib": 48.0}
+```
+
+`choice_logp[i]` is the log-probability of the first token of `choices[i]` over the whole
+vocabulary, in request order (`null` where it is minus infinity), not renormalised over the
+choices: the mass outside them says how unsure the model is. `best` is the index of the highest.
+The keys are the CLI's `BMOE_DECIDE` keys; `POST /api/cancel` stops a decision between prefill
+chunks, and the answer then carries `cancelled: true`. The `decide` parameter (on by default in
+the server) is what lets a session accept these; off, every decision is refused.
+
 ## Live events
 
 ### `GET /api/events`
@@ -240,7 +286,8 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 |---|---|
 | `state` | the `GET /api/info` object, on every state change |
 | `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch` |
-| `done` | per generation: `cancelled`, `tokens`, `tok_s`, `prefill_s`, `prefill_tps`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `mgmt_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `ttft_s` |
+| `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
+| `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` |
 | `config` | the `GET /api/config` object, after any change |
 
@@ -254,14 +301,17 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
   "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "bytes": 18556686912,
              "shards": 1, "arch": "qwen3moe", "streamable": true, "complete": true}],
   "catalog": [{"id": "qwen3-30b-a3b-q4_k_m", "title": "Qwen3-30B-A3B", "quant": "Q4_K_M",
-               "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "blurb": "...",
-               "status": "available", "note": ""}]
+               "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
+               "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://..."}],
+               "blurb": "...", "status": "available", "note": ""}]
 }
 ```
 
 `local` lists every gguf in the models directory (a split set once, by its first shard, with
 `complete: false` while shards are missing). `streamable` is whether this build streams the
-architecture. Catalog `status`: `on_disk`, `downloading`, `available`.
+architecture. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
+entry with its URL, in order, for a client that downloads for itself (a phone, where the server
+has no `curl`); `file` and `bytes` are the first file's name and the whole entry's size.
 
 ### `POST /api/models/download`
 
@@ -281,6 +331,9 @@ Cancels a running download. The partial file is kept so a later download resumes
 Otherwise the planner's proposal for the configured model on this machine. It runs the planner's
 probes (a second or two of storage reads and a bandwidth run, never the intrusive memory probe)
 without loading the model; `409` while a generation runs, since that would skew the measurement.
+Each compute device beyond the host is first asked in a process of its own (the server started
+again with `--probe-device`), so a driver that ends the process it is used from marks the device
+unusable instead of ending the server; `--no-isolated-probes` runs them in-process.
 
 ```json
 {"available": true, "model": "C:/models/Qwen3.6-35B-A3B-Q4_K_M.gguf",
@@ -306,4 +359,6 @@ loaded.
 ### `POST /api/plan/apply`
 
 Applies the current plan's `values` to the config without adding them to `user_keys`, and records
-the decisions so `GET /api/config` returns them under `plan`. Returns the config object.
+the decisions so `GET /api/config` returns them under `plan`. Returns the config object. A plan is
+made from the configuration without the plan layer (defaults, launch flags, the person's values),
+so its `values` are complete on their own and replace the previous plan whole.

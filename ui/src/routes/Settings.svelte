@@ -1,17 +1,22 @@
 <script lang="ts">
-  import LevelFilter from '../components/settings/LevelFilter.svelte';
   import ParamField from '../components/settings/ParamField.svelte';
   import { api } from '../lib/api';
   import { commandLine } from '../lib/format';
   import { decisionsByKnob, planDecisions } from '../lib/plan';
-  import { countByLevel, groupParams } from '../lib/schema';
+  import { ALL_LEVELS, groupParams } from '../lib/schema';
   import { server } from '../stores/server.svelte';
   import { settings } from '../stores/settings.svelte';
 
   let config = $derived(server.config);
   let params = $derived(server.params ?? []);
-  let groups = $derived(groupParams(params, new Set(settings.levels)));
-  let counts = $derived(countByLevel(params));
+  // The recommended configuration is each group's basic rows; everything else lives in one
+  // Advanced section, folded, grouped the same way (docs/screens.md).
+  let groups = $derived(groupParams(params, new Set(ALL_LEVELS)));
+  let basicGroups = $derived(groups.map((g) => ({ ...g, params: g.params.filter((p) => p.level === 'basic') })).filter((g) => g.params.length > 0));
+  // The Advanced section holds every row, the basic ones included: the whole engine in one place.
+  let advancedGroups = $derived(groups);
+  let advancedCount = $derived(groups.reduce((n, g) => n + g.params.length, 0));
+  let advancedOpen = $state(false);
   let userKeys = $derived(new Set(config?.user_keys ?? []));
   let decisions = $derived(decisionsByKnob(planDecisions(config?.plan)));
   let command = $derived(config ? commandLine(config.args) : '');
@@ -74,12 +79,10 @@
   <p class="banner error" role="alert">Reload failed: {reloadError}</p>
 {/if}
 
-<LevelFilter {counts} />
-
 {#if !server.params || !config}
   <p class="muted">Loading settings...</p>
 {:else}
-  {#each groups as g (g.group)}
+  {#each basicGroups as g (g.group)}
     <section class="card group" aria-labelledby="group-{g.group}">
       <h2 id="group-{g.group}">{g.label}</h2>
       {#each g.params as spec (spec.key)}
@@ -93,6 +96,26 @@
       {/each}
     </section>
   {/each}
+  <details class="advanced card" bind:open={advancedOpen}>
+    <summary>
+      <span class="adv-title">Advanced</span>
+      <span class="muted">every setting, {advancedCount} of them, grouped and marked with its level. The groups above are the recommended configuration; the planner sets what it can measure, and the levels beyond basic were measured once or on one device and can slow a run down or change the reply.</span>
+    </summary>
+    {#each advancedGroups as g (g.group)}
+      <section class="group" aria-labelledby="adv-{g.group}">
+        <h2 id="adv-{g.group}">{g.label}</h2>
+        {#each g.params as spec (spec.key)}
+          <ParamField
+            {spec}
+            value={config.values[spec.key]}
+            userSet={userKeys.has(spec.key)}
+            rejected={settings.rejected[spec.key]}
+            decision={decisions.get(spec.key)}
+          />
+        {/each}
+      </section>
+    {/each}
+  </details>
 {/if}
 
 <style>
@@ -115,6 +138,28 @@
   }
   .group h2 {
     margin-top: 0;
+  }
+  .advanced {
+    margin-bottom: 1rem;
+  }
+  .advanced summary {
+    cursor: pointer;
+    display: flex;
+    gap: 0.75rem;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .adv-title {
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-size: 0.85rem;
+  }
+  .advanced[open] summary {
+    margin-bottom: 0.75rem;
+  }
+  .advanced .group {
+    margin-top: 1rem;
   }
   .cmd {
     width: 100%;

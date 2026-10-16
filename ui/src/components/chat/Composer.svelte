@@ -2,27 +2,10 @@
   import { chat } from '../../stores/chat.svelte';
   import { server } from '../../stores/server.svelte';
 
-  // The only parameters the composer names: they are sent per request as max_tokens and think.
-  const N_PREDICT = 'n-predict';
-  const THINK = 'think';
-
+  // The composer names no parameter: how many tokens to generate and whether to think are
+  // request-scoped rows in Settings, and the server applies them to every message.
   let text = $state('');
-  let maxTokens = $state<number | null>(null);
-  let think = $state(false);
-  let seeded = false;
-
-  let nPredictSpec = $derived(server.params?.find((p) => p.key === N_PREDICT));
-  let hasThink = $derived(server.config ? THINK in server.config.values : false);
-
-  // Initial values come from the config, once; later config changes do not overwrite edits.
-  $effect(() => {
-    const values = server.config?.values;
-    if (seeded || !values) return;
-    seeded = true;
-    const n = values[N_PREDICT];
-    if (typeof n === 'number') maxTokens = n;
-    think = values[THINK] === true;
-  });
+  let options = $state('');
 
   // A message the server refused goes back into the box.
   $effect(() => {
@@ -32,14 +15,17 @@
     }
   });
 
-  let canSend = $derived(server.ready && !chat.busy && text.trim() !== '');
+  let canSend = $derived(server.ready && !chat.busy && text.trim() !== '' && (!chat.choose || options.trim() !== ''));
 
   function send() {
     if (!canSend) return;
     const msg = text;
     text = '';
-    const n = maxTokens !== null && Number.isFinite(maxTokens) ? maxTokens : undefined;
-    chat.send(msg, n, hasThink ? think : undefined);
+    if (chat.choose) {
+      chat.decide(msg, options);
+      return;
+    }
+    chat.send(msg);
   }
 
   function onKey(e: KeyboardEvent) {
@@ -57,36 +43,32 @@
     send();
   }}
 >
-  <label class="visually-hidden" for="composer-text">Message</label>
+  <label class="visually-hidden" for="composer-text">{chat.choose ? 'Question' : 'Message'}</label>
   <textarea
     id="composer-text"
     rows="3"
-    placeholder={server.ready ? 'Message (Enter to send, Shift+Enter for a new line)' : 'Load a model to start chatting'}
+    placeholder={!server.ready
+      ? 'Load a model to start chatting'
+      : chat.choose
+        ? 'Question (the model picks one of the options below)'
+        : 'Message (Enter to send, Shift+Enter for a new line)'}
     bind:value={text}
     onkeydown={onKey}
   ></textarea>
+  {#if chat.choose}
+    <label class="visually-hidden" for="composer-options">Options, one per line</label>
+    <textarea id="composer-options" rows="3" placeholder="Options, one per line" bind:value={options}></textarea>
+  {/if}
   <div class="row">
-    <label class="inline">
-      Max tokens
-      <input
-        type="number"
-        min={nPredictSpec?.min}
-        max={nPredictSpec?.max}
-        step="1"
-        bind:value={maxTokens}
-      />
+    <label class="inline" title="The model picks one of your options from a single prefill, with no decode: each option comes back with the probability the model put on it.">
+      <input type="checkbox" bind:checked={chat.choose} disabled={chat.busy} />
+      Choose from options
     </label>
-    {#if hasThink}
-      <label class="inline">
-        <input type="checkbox" bind:checked={think} />
-        Thinking
-      </label>
-    {/if}
     <span class="spacer"></span>
     {#if chat.busy}
       <button type="button" class="danger" onclick={() => chat.stop()}>Stop</button>
     {:else}
-      <button type="submit" class="primary" disabled={!canSend}>Send</button>
+      <button type="submit" class="primary" disabled={!canSend}>{chat.choose ? 'Choose' : 'Send'}</button>
     {/if}
   </div>
   {#if !server.ready}
@@ -116,9 +98,6 @@
     align-items: center;
     gap: 0.4rem;
     font-size: 0.9rem;
-  }
-  .inline input[type='number'] {
-    width: 6.5rem;
   }
   .spacer {
     flex: 1;

@@ -9,7 +9,7 @@
   <a href="https://trendshift.io/repositories/85652?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85652" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85652/daily?language=C%2B%2B" alt="Helldez%2FBigMoeOnEdge | Trendshift" width="250" height="55"/></a>
 </p>
 
-<p align="center"><b>Run Mixture-of-Experts models bigger than your RAM, with the streaming tuned to your model and your hardware.</b></p>
+<p align="center"><b>Run Mixture-of-Experts models bigger than your device's RAM.</b></p>
 
 <p align="center">
   <a href="https://github.com/Helldez/BigMoeOnEdge/releases/latest"><img src="https://img.shields.io/github/v/release/Helldez/BigMoeOnEdge" alt="Latest release"></a>
@@ -31,8 +31,10 @@ byte-identical to running it fully resident.
   reads the model's shape and derives the streaming settings, with the fact behind each one. The
   goal is the best streaming for any MoE model on any hardware: a phone with an NPU and an
   Apple-silicon laptop, for example, each get a different plan from the same rules.
-- **Three front-ends, one engine:** an Android app, a desktop app with a local web UI, and an
-  OpenAI-compatible server.
+- **One engine, one application layer.** `bmoe-server` is what every UI talks to: the Android app
+  runs it as a process of its own, the desktop serves a web UI from it, and both offer an
+  OpenAI-compatible API that, with a key, serves other machines too. What runs on each platform:
+  [docs/platforms.md](docs/platforms.md).
 
 <p align="center"><img src="docs/assets/hero-dsv4.gif" width="360" alt="DeepSeek V4 Flash 0731 (284B, ~91 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
 <p align="center"><em>DeepSeek V4 Flash 0731: 284B parameters, ~91 GB on disk, on a 12 GB phone.
@@ -80,14 +82,19 @@ Decode runs on the CPU. Prefill can run on a Snapdragon's Hexagon NPU or an Appl
 ## Try it
 
 **Phone.** Install the APK from the
-[latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest), open **Get a model**
-and pick one from the catalog, or paste any direct gguf URL. Models split into shards download and
-load as they are, with no merge step.
+[latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest). On the Models screen,
+pick a model from the catalog or paste any direct gguf URL under **Get a model**. Models split into
+shards download and load as they are, with no merge step. The planner configures every load and
+the Plan screen shows why. **Serve on the network**, in Settings, lets any OpenAI-compatible client
+on your network use the phone, with a generated key.
 
 **Desktop.** Download the `bmoe-desktop` archive from the same release and start `bmoe-server`. The
 UI opens at `http://127.0.0.1:8765/` (this machine only; `--port` changes it): pick a model, let
-the planner configure it, chat. Any OpenAI client can use the same address
-([docs/server-api.md](docs/server-api.md)).
+the planner configure it, chat. Any OpenAI client can use the same address, and `--host` with
+`--api-key` serves it to other machines ([docs/server-api.md](docs/server-api.md)).
+
+Both show the same five screens: chat, models, plan, settings and metrics
+([docs/screens.md](docs/screens.md)).
 
 **Command line.** See [Build from source](#build-from-source).
 
@@ -120,7 +127,7 @@ The ones that matter most when setting things by hand:
 | Expert cache | `--cache-mb N\|auto` | Keeps the most-used experts in RAM. The main lossless lever. |
 | Dense weights | `--dense-weights mmap\|warm\|anon\|ahwb` | How the always-needed weights are held. Decisive far past RAM. |
 | Read lanes | `--io-threads N` | Parallel expert reads. |
-| Overlap | `--overlap` | Issues the next reads while the current layer computes. Byte-identical. |
+| Overlap I/O | `--overlap` | Issues the next reads while the current layer computes. Byte-identical. |
 | Prefill device | `--prefill-device D` | Runs wide prompt graphs on an NPU or GPU; decode stays on the CPU. |
 
 Those change how weights are fetched, never the result. These trade quality for fewer reads, for a
@@ -129,9 +136,9 @@ model so far past memory that the alternative is no answer:
 | Setting | Flag | What it gives up |
 |---|---|---|
 | Active experts | `--n-expert-used N` | Consults fewer experts per token than the model asks for. Same prompt, same answer. |
-| Drop cold experts | `--drop-cold-experts F` | Skips an expert only when it is a cache miss and the router barely wanted it. The answer depends on what the cache held. App default 75%. |
-| Prefer cached experts | `--expert-substitute F` | Nudges the routing toward experts already in RAM. Cache-dependent. Experimental. |
-| Route-ahead | `--route-ahead N` | Commits a layer's routing early so its reads start early. Experimental. |
+| Drop cold experts | `--drop-cold-experts F` | Skips an expert only when it is a cache miss and the router barely wanted it. The answer depends on what the cache held. |
+| Expert substitution | `--expert-substitute F` | Nudges the routing toward experts already in RAM. Cache-dependent. Experimental. |
+| Route ahead | `--route-ahead N` | Commits a layer's routing early so its reads start early. Experimental. |
 
 `--mtp` and `--ngram` draft several tokens and verify them in one decode, with no loss. `--decide`
 answers a multiple-choice prompt from one prefill, with no decode ([docs/decide.md](docs/decide.md)).
@@ -223,17 +230,15 @@ scripts/build-host.sh
 build/bin/bmoe-server --open
 ```
 
-Android: `scripts/build-android.ps1`, then the APK in [`examples/android`](examples/android); the
-model must sit on a real filesystem (`/data/local/tmp/...`, not `/sdcard`).
+Android: `scripts/build-android.ps1` builds the engine and the server for arm64, then the APK in
+[`examples/android`](examples/android). A model pushed by hand for the CLI over `adb` must sit on a
+real filesystem (`/data/local/tmp/...`, not `/sdcard`).
 Tests: `cd build && ctest --output-on-failure` (needs `python3` with the `gguf` package).
 
-| Platform | In CI | Published measurements |
-|---|---|---|
-| Android | APK build, app tests | a 12 GB phone |
-| Linux | build and byte-identity gates | community reports |
-| macOS | build and smoke | a 16 GB Apple-silicon laptop |
-| Windows | compile only (build with CMake; the script is bash) | a 16 GB x86 laptop |
-| iOS | simulator compile ([`examples/ios`](examples/ios)) | none yet |
+Android, macOS, Linux and Windows have release builds; iOS builds as a measuring harness
+([`examples/ios`](examples/ios)). On Windows, build with CMake: the script is bash. What each
+platform runs, what CI checks on it and what was measured there:
+[docs/platforms.md](docs/platforms.md).
 
 ## How it works
 
@@ -266,12 +271,16 @@ management and compute, and `--csv` adds the memory picture. The apps show the s
 - [architecture.md](docs/architecture.md): the layer map and the llama.cpp relationship.
 - [hardware-planning.md](docs/hardware-planning.md): `--auto` and the rules behind each choice.
 - [settings.md](docs/settings.md): every setting.
-- [server-api.md](docs/server-api.md): the desktop server's HTTP API.
+- [platforms.md](docs/platforms.md): what runs on each operating system and backend.
+- [application-framework.md](docs/application-framework.md) and
+  [server-api.md](docs/server-api.md): the server every UI talks to, and its HTTP API.
+- [screens.md](docs/screens.md): the five screens every UI shows, specified once.
 - [adding-a-model.md](docs/adding-a-model.md): supporting a new MoE architecture.
 - [benchmarks.md](docs/benchmarks.md) and [benchmark-method.md](docs/benchmark-method.md):
   results and how they were produced.
 - [community-benchmarks.md](docs/community-benchmarks.md): results on hardware we do not own.
 - [limitations.md](docs/limitations.md): what this does not do.
+- [roadmap.md](docs/roadmap.md): where the project is going, and what was measured and refuted.
 
 ## Prior art
 
