@@ -301,7 +301,8 @@ What is still owed is measurement rather than design, and every knob the plan ca
   code and the full tables are reachable from the closed PR #230. What the measurements say is
   that on a machine whose reclaim compresses, no static reading survives pressure: the size at
   which the system starts taking the cache back is a property of the run, which is what
-  [cache-stall-sizing.md](cache-stall-sizing.md) proposes to read at run time.
+  the proposal in [#238](https://github.com/Helldez/BigMoeOnEdge/pull/238), on hold, would read at
+  run time.
 - **The graph width, anywhere but where it was measured.** `--auto` now chooses `--ubatch` from
   the compute buffers a width reserves, projected at the width the session opens with. The rule and
   its one policy figure were sized on a single laptop; a phone with an NPU, a machine with no
