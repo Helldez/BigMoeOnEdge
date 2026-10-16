@@ -104,7 +104,10 @@ Semantic Versioning.
   same thing their own way (#236).
 - `docs/roadmap.md` opens with the product plan, in the order the work has to happen: one engine,
   one application framework, native UIs per OS, the OpenAI-compatible endpoint everywhere. The
-  research themes are its second half.
+  research themes are its second half. Two steps join it: the Vulkan and OpenCL GPUs (a build that
+  carries each, a measured prefill run, then the host-memory route for streamed experts), a
+  Connect view that tells any client what it needs (#257), and one diagram of the planner's logic
+  for `docs/hardware-planning.md` and the README.
 
 ### Changed
 - **A load says it is planning.** `state` reads `planning` from the moment a load in auto mode
