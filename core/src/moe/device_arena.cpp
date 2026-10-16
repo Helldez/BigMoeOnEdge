@@ -85,10 +85,9 @@ DeviceExpertArena::~DeviceExpertArena() {
     for (void * s : staging_)
         if (s) pio::aligned_free(s);
     free_slots();
-    for (ggml_backend_buffer_t b : dense_buf_)
-        if (b) ggml_backend_buffer_free(b);
-    for (ggml_backend_buffer_t b : dense_data_buf_)
-        if (b) ggml_backend_buffer_free(b);
+    for (auto & slots : dense_slot_)
+        for (ggml_backend_buffer_t b : slots)
+            if (b) ggml_backend_buffer_free(b);
     if (dense_ctx_) ggml_free(dense_ctx_);
 }
 
@@ -269,7 +268,7 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
         }
     }
     for (int d = 0; d < 2; ++d) {
-        ggml_backend_buffer_t * bufs = d ? dense_data_buf_ : dense_buf_;
+        ggml_backend_buffer_t * bufs = dense_slot_[d];
         for (int s = 0; s < 2; ++s) {
             if (need[d][s] == 0) continue;
             bufs[s] = ggml_backend_buft_alloc_buffer(buft, need[d][s] + align);
@@ -299,7 +298,10 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
         // Fresh allocators per layer: every layer of a parity starts at the same offset, on purpose.
         ggml_tallocr ta[2] = {};
         for (int d = 0; d < 2; ++d) {
-            ggml_backend_buffer_t b = (d ? dense_data_buf_ : dense_buf_)[il % 2];
+            // One table indexed the way the slots were sized. Picking between two member arrays with a
+            // conditional and then indexing the result was read wrong by GCC 13 under ASan+UBSan: the
+            // matrix slot of layers 1, 2 and 4 came back as the other parity's, too small for them.
+            ggml_backend_buffer_t b = dense_slot_[d][il % 2];
             if (b) ta[d] = ggml_tallocr_new(b);
         }
         DenseLayer & D = dense_[il];

@@ -118,6 +118,12 @@ Semantic Versioning.
   on the web; a failed decision leaves no question behind to be sent as history.
 
 ### Fixed
+- **The prefill device's dense layer slots are read the way they were sized.** The two parities' slots
+  were picked by choosing between two member arrays with a conditional and indexing the result;
+  GCC 13 with AddressSanitizer and UndefinedBehaviorSanitizer read that as the wrong parity for the
+  matrix slot, so a hybrid model's larger recurrent layer was placed in the smaller slot and ggml
+  aborted (the new sanitizer job found it on nemotron_h_moe, gate G17). The slots are now one
+  `[data][parity]` table, indexed exactly as `init_dense` sizes them.
 - **Two gate runs on one machine no longer meet on one port.** The prefill-device gate served its
   RPC device on a fixed `127.0.0.1:50599`, so a second build tree or CI job running the gates at the
   same time failed to bind, or registered the other run's server; the port is now one the kernel
