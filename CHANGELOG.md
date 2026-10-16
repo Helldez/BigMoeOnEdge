@@ -159,6 +159,14 @@ Semantic Versioning.
   resolved; `403` `outside_models_dir` otherwise), and `--models-only` confines local clients too.
   The default host, port, context and answer length are named in `server/server.h`, and the usage
   text is built from them; `--port` is read strictly. `docs/server-api.md` says all of it.
+- **The release workflows no longer splice typed text or a secret into a shell script.** The tag a
+  person types into a manual run, and the release's tag name, were expanded straight into `run:`
+  lines, so a tag with shell syntax in it would have run on a job that signs and publishes; they
+  now reach the shell as environment variables, quoted, and a tag that is not a plain ref name
+  (letters, digits, `.`, `_`, `-`) stops the run. The signing passwords were expanded inside an
+  unquoted heredoc, where a `$` or a backtick in one is shell syntax; they are environment
+  variables written with `printf '%s'`. `ci.yml` declares `permissions: contents: read` for every
+  job but the one that attaches the APK, which already asks for its own.
 - **A request no longer fails because its answer budget is larger than the room left.** The session
   reserved the whole `n_predict` against the context before generating, so a two-word prompt was
   refused whenever Max tokens was set near or above the context size: the first outside client

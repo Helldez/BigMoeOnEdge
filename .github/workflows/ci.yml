@@ -16,6 +16,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only unless a job says otherwise: only the APK job's release attach writes, and it asks for
+# that itself.
+permissions:
+  contents: read
+
 jobs:
   # Does this push carry anything a build could break?
   #
@@ -67,7 +72,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Versions agree (and match the tag, on a tag build)
-        run: bash scripts/check-version.sh "${{ github.ref_type == 'tag' && github.ref_name || '' }}"
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: bash scripts/check-version.sh "$TAG"
 
   format:
     needs: changes

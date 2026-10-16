@@ -49,16 +49,26 @@ jobs:
             cmake_extra: -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
     runs-on: ${{ matrix.os }}
     steps:
+      # The tag is text someone typed: it reaches the shell as data (env), never spliced into the
+      # script, and only a plain ref name goes on to the steps after this one.
       - name: Resolve tag
         id: tag
         shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # `tag` names the archives; `ref` is what gets checked out. On a PR the ref stays empty,
           # which actions/checkout reads as "this PR's merge commit".
-          case "${{ github.event_name }}" in
-            release)           T="${{ github.event.release.tag_name }}"; R="$T" ;;
-            workflow_dispatch) T="${{ inputs.tag }}"; R="$T" ;;
-            *)                 T="pr-${{ github.event.pull_request.number }}"; R="" ;;
+          case "$EVENT" in
+            release)           T="$RELEASE_TAG"; R="$T" ;;
+            workflow_dispatch) T="$INPUT_TAG"; R="$T" ;;
+            *)                 T="pr-$PR_NUMBER"; R="" ;;
+          esac
+          case "$T" in
+            ''|*[!A-Za-z0-9._-]*) echo "not a plain tag name: '$T'"; exit 1 ;;
           esac
           echo "tag=$T" >> "$GITHUB_OUTPUT"
           echo "ref=$R" >> "$GITHUB_OUTPUT"
@@ -70,7 +80,9 @@ jobs:
 
       - name: Version matches the tag
         shell: bash
-        run: bash scripts/check-version.sh "${{ steps.tag.outputs.tag }}"
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: bash scripts/check-version.sh "$TAG"
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
@@ -104,8 +116,9 @@ jobs:
       - name: Package
         id: pkg
         shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
           NAME="bmoe-cli-$TAG-${{ matrix.target }}"
           mkdir -p "$NAME"
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -182,7 +195,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ steps.tag.outputs.tag }}" ${{ steps.pkg.outputs.assets }} --clobber
+          TAG: ${{ steps.tag.outputs.tag }}
+          ASSETS: ${{ steps.pkg.outputs.assets }}
+        # ASSETS is a space-separated list of archive names made from the checked tag: split on purpose.
+        run: gh release upload "$TAG" $ASSETS --clobber
 
       - name: Keep as workflow artifact (dry run)
         if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.upload)
