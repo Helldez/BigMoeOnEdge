@@ -111,6 +111,8 @@ Semantic Versioning.
   Android alike.
 
 ### Fixed
+- **The roadmap linked a page that is not on `main`.** It pointed at `docs/cache-stall-sizing.md`,
+  which exists only in the draft PR #238; it now points at the PR.
 - **A second plan could leave the configuration invalid and refuse every load.** A plan's values
   were what differed from the current configuration, which already held the previous plan; a
   choice the new plan repeated (`force-cache` on, for a cache the model's token cycle allows
