@@ -302,7 +302,14 @@ public:
     std::vector<RouteTraceRow> & trace_rows() { return trace_rows_; }
 
 private:
+    // The eval callback, and the jobs it dispatches to in the order it runs them. Each job is only
+    // reached when its feature is on, so a node no job wants costs the same few tests it always did.
     bool on_eval(ggml_tensor * t, bool ask);
+    void ctrace_observe(const ggml_tensor * t);                 // compute trace, an isolated node
+    void capture_sources(ggml_tensor * t);                      // capture warm-up, every node
+    bool arena_eval(ggml_tensor * t, bool ask, bool probe_ask); // device prefill: the arena's pace
+    void serve_rows(ggml_tensor * t);                           // row-gathered tables, before a node
+    void on_topk(ggml_tensor * t, int il);                      // a routing node, ids materialized
 
     // Row-building state for the layer whose topk we last saw. A layer's weights arrive in a
     // LATER callback than its ids, so its rows can only be built once the whole weight chain has

@@ -1,4 +1,5 @@
 #include "row_stream.h"
+#include "bmoe/log.h"
 
 #include "ggml.h"
 
@@ -33,7 +34,7 @@ bool RowStream::init(std::vector<DenseTensorRef> tensors,
     for (const std::string & p : paths) {
         readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
         if (!readers_.back()->open(p, 1, /*direct=*/true, (size_t) slab_)) {
-            std::fprintf(stderr, "bmoe: row-stream could not open %s — tables keep the dense policy\n", p.c_str());
+            log_printf(LogLevel::Warn, "row-stream could not open %s — tables keep the dense policy", p.c_str());
             readers_.clear();
             return false;
         }
@@ -43,7 +44,7 @@ bool RowStream::init(std::vector<DenseTensorRef> tensors,
     for (const DenseTensorRef & d : tensors) {
         if (!d.tensor || d.size == 0) continue;
         if (d.file_idx < 0 || (size_t) d.file_idx >= readers_.size()) {
-            std::fprintf(stderr, "bmoe: row-stream tensor points at shard %d of %zu\n", d.file_idx, readers_.size());
+            log_printf(LogLevel::Error, "row-stream tensor points at shard %d of %zu", d.file_idx, readers_.size());
             release();
             return false;
         }
@@ -55,8 +56,8 @@ bool RowStream::init(std::vector<DenseTensorRef> tensors,
         t.span = round_up(d.size, page_);
         t.base = (char *) pio::vm_reserve((size_t) t.span);
         if (!t.base) {
-            std::fprintf(stderr, "bmoe: row-stream could not reserve %llu MiB for %s\n",
-                         (unsigned long long) (t.span >> 20), d.tensor->name);
+            log_printf(LogLevel::Error, "row-stream could not reserve %llu MiB for %s",
+                       (unsigned long long) (t.span >> 20), d.tensor->name);
             release();
             return false;
         }
@@ -75,9 +76,8 @@ bool RowStream::init(std::vector<DenseTensorRef> tensors,
         return true;
     }
 
-    std::fprintf(stderr,
-                 "bmoe: row-stream — %llu MiB in %zu row-gathered table(s) served from flash, %llu MiB window\n",
-                 (unsigned long long) (table_bytes_ >> 20), tables_.size(), (unsigned long long) (budget_bytes_ >> 20));
+    log_printf(LogLevel::Info, "row-stream — %llu MiB in %zu row-gathered table(s) served from flash, %llu MiB window",
+               (unsigned long long) (table_bytes_ >> 20), tables_.size(), (unsigned long long) (budget_bytes_ >> 20));
     return true;
 }
 
@@ -121,15 +121,15 @@ bool RowStream::fetch_slab(Table & t, uint64_t s) {
     // so only the final short slab needs rounding, and it cannot run past the reservation.
     const uint64_t commit = std::min<uint64_t>(round_up(len, page_), t.span - off);
     if (!pio::vm_commit(t.base + off, (size_t) commit)) {
-        std::fprintf(stderr, "bmoe: row-stream commit failed at slab %llu of %s\n", (unsigned long long) s,
-                     t.ref.tensor->name);
+        log_printf(LogLevel::Error, "row-stream commit failed at slab %llu of %s", (unsigned long long) s,
+                   t.ref.tensor->name);
         io_errors_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     const long long got = readers_[(size_t) t.ref.file_idx]->read(0, t.base + off, t.ref.file_off + off, len);
     if (got < 0) {
-        std::fprintf(stderr, "bmoe: row-stream read failed at slab %llu of %s\n", (unsigned long long) s,
-                     t.ref.tensor->name);
+        log_printf(LogLevel::Error, "row-stream read failed at slab %llu of %s", (unsigned long long) s,
+                   t.ref.tensor->name);
         io_errors_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
@@ -213,10 +213,10 @@ bool RowStream::materialize(const ggml_tensor * table) {
     Table * t = find(table);
     if (!t) return true;
     if (t->whole) return true;
-    std::fprintf(stderr,
-                 "bmoe: row-stream — %s is read by a node that is not a row gather; pulling the whole "
-                 "%llu MiB table in\n",
-                 t->ref.tensor->name, (unsigned long long) (t->ref.size >> 20));
+    log_printf(LogLevel::Warn,
+               "row-stream — %s is read by a node that is not a row gather; pulling the whole "
+               "%llu MiB table in",
+               t->ref.tensor->name, (unsigned long long) (t->ref.size >> 20));
     for (uint64_t s = 0; s < t->n_slabs; ++s)
         if (!fetch_slab(*t, s)) return false;
     // A materialized table leaves the LRU: it is resident for the rest of the run, and an eviction

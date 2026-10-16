@@ -1,4 +1,5 @@
 #include "expert_stream_source.h"
+#include "bmoe/log.h"
 
 #include "row_stream.h"
 
@@ -29,11 +30,11 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                               const MoeStreamConfig & cfg) {
     if (active_) return false;
     if (n_expert <= 0) {
-        std::fprintf(stderr, "bmoe: expert streaming needs a MoE model (n_expert=%d)\n", n_expert);
+        log_printf(LogLevel::Error, "expert streaming needs a MoE model (n_expert=%d)", n_expert);
         return false;
     }
     if (shard_paths.empty()) {
-        std::fprintf(stderr, "bmoe: expert streaming got no model file\n");
+        log_printf(LogLevel::Error, "expert streaming got no model file");
         return false;
     }
 
@@ -71,7 +72,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     for (int p = 0; p < MoeRecipe::max_exps; ++p)
         max_full_any = std::max(max_full_any, max_full[p]);
     if (max_full_any == 0) {
-        std::fprintf(stderr, "bmoe: no MoE layers were bound\n");
+        log_printf(LogLevel::Error, "no MoE layers were bound");
         return false;
     }
 
@@ -129,24 +130,24 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             const uint64_t deduct = std::min(avail, dense_pending);
             if (deduct > 0) {
                 avail -= deduct;
-                std::fprintf(stderr, "bmoe: cache auto — reserving %llu MiB for the dense-weight conversion\n",
-                             (unsigned long long) (deduct / (1024 * 1024)));
+                log_printf(LogLevel::Info, "cache auto — reserving %llu MiB for the dense-weight conversion",
+                           (unsigned long long) (deduct / (1024 * 1024)));
             }
         }
         if (avail == 0) {
             cache_max_ = min_budget;
-            std::fprintf(stderr, "bmoe: cache auto — available memory unknown, using the %zu MiB floor\n",
-                         min_budget / (1024 * 1024));
+            log_printf(LogLevel::Warn, "cache auto — available memory unknown, using the %zu MiB floor",
+                       min_budget / (1024 * 1024));
         } else {
             size_t budget = avail > floor ? (size_t) (avail - floor) : 0;
             budget = std::max(budget, min_budget);
             budget = std::min(budget, hard_cap);
             cache_max_ = budget;
-            std::fprintf(stderr,
-                         "bmoe: cache auto — %llu MiB available, leaving %zu MiB free → %zu MiB budget"
-                         " (cap %zu MiB)\n",
-                         (unsigned long long) (avail / (1024 * 1024)), floor / (1024 * 1024),
-                         cache_max_ / (1024 * 1024), hard_cap / (1024 * 1024));
+            log_printf(LogLevel::Info,
+                       "cache auto — %llu MiB available, leaving %zu MiB free → %zu MiB budget"
+                       " (cap %zu MiB)",
+                       (unsigned long long) (avail / (1024 * 1024)), floor / (1024 * 1024), cache_max_ / (1024 * 1024),
+                       hard_cap / (1024 * 1024));
         }
     }
 
@@ -158,7 +159,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             if (max_full[p] == 0) continue;
             slot_[p] = pio::alloc_aligned(buf_align_, max_full[p]);
             if (!slot_[p]) {
-                std::fprintf(stderr, "bmoe: slot alloc %zu failed\n", max_full[p]);
+                log_printf(LogLevel::Error, "slot alloc %zu failed", max_full[p]);
                 return false;
             }
         }
@@ -185,7 +186,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                 const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
                 lbuf_[p][il] = pio::vm_reserve(full);
                 if (!lbuf_[p][il]) {
-                    std::fprintf(stderr, "bmoe: vm_reserve %zu failed (layer %d)\n", full, il);
+                    log_printf(LogLevel::Error, "vm_reserve %zu failed (layer %d)", full, il);
                     return false;
                 }
                 lbuf_sz_[p][il] = full;
@@ -219,8 +220,8 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         if (!L.bound) continue;
         for (int p = 0; p < MoeRecipe::max_exps; ++p)
             if (L.proj[p].nb2 && (L.proj[p].file_idx < 0 || L.proj[p].file_idx >= (int) readers_.size())) {
-                std::fprintf(stderr, "bmoe: expert tensor points at shard %d of %zu\n", L.proj[p].file_idx,
-                             readers_.size());
+                log_printf(LogLevel::Error, "expert tensor points at shard %d of %zu", L.proj[p].file_idx,
+                           readers_.size());
                 return false;
             }
     }
@@ -275,7 +276,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             ranges[s] = DenseWeights::byte_ranges(std::move(exp[s]), readers_[s]->file_size());
         dense_.set_row_gathered(std::move(row_tensors_), row_budget_);
         if (!dense_.init(cfg.dense_weights, shard_paths, std::move(ranges), std::move(dense_tensors_))) {
-            std::fprintf(stderr, "bmoe: dense-weights init failed\n");
+            log_printf(LogLevel::Error, "dense-weights init failed");
             return false;
         }
     }
@@ -289,15 +290,15 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         io_pool_.emplace_back(&ExpertStreamSource::io_worker, this, lane);
 
     // effective_direct_ (set where the readers opened) is the run's o_direct fact — see above.
-    std::fprintf(stderr, "bmoe: expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB shards=%zu\n",
-                 n_expert_, (int) effective_direct_, io_threads_, cache_max_ >> 20, readers_.size());
+    log_printf(LogLevel::Info, "expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB shards=%zu",
+               n_expert_, (int) effective_direct_, io_threads_, cache_max_ >> 20, readers_.size());
     return true;
 }
 
 bool ExpertStreamSource::reopen_readers() {
     std::lock_guard<std::mutex> lk(io_mtx_);
     if (!jobs_.empty() || !spec_jobs_.empty()) {
-        std::fprintf(stderr, "bmoe: reopen_readers refused: reads are queued\n");
+        log_printf(LogLevel::Error, "reopen_readers refused: reads are queued");
         return false;
     }
     bool ok = true;
@@ -923,7 +924,7 @@ bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
     uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
     uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
     if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) {
-        std::fprintf(stderr, "bmoe: commit failed\n");
+        log_printf(LogLevel::Error, "commit failed");
         return false;
     }
     pin_pages((void *) a0, (size_t) (a1 - a0));
@@ -947,13 +948,13 @@ bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
 void ExpertStreamSource::pin_pages(void * p, size_t sz) {
     if (!pin_ || cache_max_ == 0) return; // no cache: a slice lives one token
     if (pio::vm_pin(p, sz)) {
-        if (!pin_said_) std::fprintf(stderr, "bmoe: expert cache pinned in RAM\n");
+        if (!pin_said_) log_printf(LogLevel::Info, "expert cache pinned in RAM");
         pin_said_ = true;
         return;
     }
     if (!pin_said_) {
         pin_ = false;
-        std::fprintf(stderr, "bmoe: cache pinning refused by the platform; the cache is ordinary memory\n");
+        log_printf(LogLevel::Warn, "cache pinning refused by the platform; the cache is ordinary memory");
         return;
     }
     const bool first = pin_refused_at_ == 0;
@@ -963,10 +964,10 @@ void ExpertStreamSource::pin_pages(void * p, size_t sz) {
     // budget and is ordinary memory, as it is where nothing is granted at all.
     if (first && (pin_floor_ == 0 || cresident_ < pin_floor_)) {
         pin_ = false;
-        std::fprintf(stderr,
-                     "bmoe: cache pinning refused after %zu MiB, less than one token cycle; the cache is ordinary "
-                     "memory\n",
-                     cresident_ >> 20);
+        log_printf(LogLevel::Warn,
+                   "cache pinning refused after %zu MiB, less than one token cycle; the cache is ordinary "
+                   "memory",
+                   cresident_ >> 20);
         return;
     }
     // Stepping the budget down is a trade the engine cannot price: it is right where what is not
@@ -975,10 +976,10 @@ void ExpertStreamSource::pin_pages(void * p, size_t sz) {
     if (!pin_fit_) {
         pin_ = false;
         pin_refused_at_ = std::max<size_t>(1, cresident_);
-        std::fprintf(stderr,
-                     "bmoe: cache pinning refused after %zu MiB; the rest of the cache is ordinary memory "
-                     "(--cache-pin-fit shrinks it to what was pinned instead)\n",
-                     cresident_ >> 20);
+        log_printf(LogLevel::Warn,
+                   "cache pinning refused after %zu MiB; the rest of the cache is ordinary memory "
+                   "(--cache-pin-fit shrinks it to what was pinned instead)",
+                   cresident_ >> 20);
         return;
     }
     if (first) pin_refused_at_ = std::max<size_t>(1, cresident_);
@@ -996,16 +997,16 @@ void ExpertStreamSource::pin_pages(void * p, size_t sz) {
     const size_t keep = std::max(from > slack ? from - slack : 0, std::max<size_t>(1, pin_floor_));
     if (keep < cache_max_) {
         if (first)
-            std::fprintf(stderr,
-                         "bmoe: cache pinning refused after %zu MiB; the cache budget shrinks from %zu to %zu MiB\n",
-                         cresident_ >> 20, cache_max_ >> 20, keep >> 20);
+            log_printf(LogLevel::Warn,
+                       "cache pinning refused after %zu MiB; the cache budget shrinks from %zu to %zu MiB",
+                       cresident_ >> 20, cache_max_ >> 20, keep >> 20);
         cache_max_ = keep;
         ++cache_resizes_;
         return;
     }
     pin_ = false;
-    std::fprintf(stderr, "bmoe: cache pinning refused with the cache at %zu MiB; the rest of it is ordinary memory\n",
-                 cresident_ >> 20);
+    log_printf(LogLevel::Warn, "cache pinning refused with the cache at %zu MiB; the rest of it is ordinary memory",
+               cresident_ >> 20);
 }
 
 bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, int commit_only_proj) {

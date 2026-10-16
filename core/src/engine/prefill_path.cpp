@@ -1,4 +1,5 @@
 #include "prefill_path.h"
+#include "bmoe/log.h"
 
 #include "../moe/router_hook.h"
 #include "../moe/tensor_names.h"
@@ -126,8 +127,8 @@ bool PrefillPath::open(llama_context * ctx,
         }
         layer_weights.clear();
     } else if (moe.enabled) {
-        std::fprintf(stderr, "bmoe: prefill-device: layer ends not found in the graph; layer weights stay "
-                             "resident on the device\n");
+        log_printf(LogLevel::Warn, "prefill-device: layer ends not found in the graph; layer weights stay "
+                                   "resident on the device");
     }
 
     dev_ = std::make_unique<PrefillDevice>();
@@ -135,14 +136,14 @@ bool PrefillPath::open(llama_context * ctx,
     if (!dev_->init(devs_[0], layer_weights, hook.non_matrix_weights(), perr)) return fail(": " + perr);
     std::string state_where;
     if (!dev_->init_state(devs_[0], hook.captured_state_objects(), state_where, perr)) return fail(": " + perr);
-    std::fprintf(stderr, "bmoe: prefill-device model state: %.1f MiB in %s\n",
-                 (double) dev_->state_bytes() / (1024.0 * 1024.0), state_where.c_str());
+    log_printf(LogLevel::Info, "prefill-device model state: %.1f MiB in %s",
+               (double) dev_->state_bytes() / (1024.0 * 1024.0), state_where.c_str());
     if (moe.enabled && !open_arena(cfg, moe, dense_per_layer, err)) return false;
     hook.count_device_nodes(true);
 
     if (!reserve_on_device(ctx, vocab, cfg.min_tokens)) return fail(": the device-placed reservation decode failed");
-    std::fprintf(stderr, "bmoe: prefill-device %s: %zu layer tensors, %.1f MiB copied; graphs >= %d tokens run there\n",
-                 cfg.device.c_str(), dev_->n_tensors(), (double) dev_->bytes() / (1024.0 * 1024.0), cfg.min_tokens);
+    log_printf(LogLevel::Info, "prefill-device %s: %zu layer tensors, %.1f MiB copied; graphs >= %d tokens run there",
+               cfg.device.c_str(), dev_->n_tensors(), (double) dev_->bytes() / (1024.0 * 1024.0), cfg.min_tokens);
     return true;
 }
 
@@ -166,15 +167,15 @@ bool PrefillPath::open_arena(const PrefillDeviceConfig & cfg,
         return false;
     }
     if (arena_->has_dense())
-        std::fprintf(stderr,
-                     "bmoe: prefill-device dense arena: layer weights through 2 slots, %.1f MiB; %d converted "
-                     "to a type the device takes (%.1f MiB)\n",
-                     (double) arena_->dense_slot_bytes() / (1024.0 * 1024.0), arena_->dense_converted(),
-                     (double) arena_->dense_converted_bytes() / (1024.0 * 1024.0));
-    std::fprintf(stderr, "bmoe: prefill-device expert arena: %d layers through %d slot%s of %.1f MiB, %d loaders%s\n",
-                 arena_->n_layers(), arena_->n_slots(), arena_->n_slots() == 1 ? "" : "s",
-                 (double) arena_->slot_bytes() / (double) arena_->n_slots() / (1024.0 * 1024.0), cfg.load_threads,
-                 arena_->on_demand() ? ", held only during a prefill" : "");
+        log_printf(LogLevel::Info,
+                   "prefill-device dense arena: layer weights through 2 slots, %.1f MiB; %d converted "
+                   "to a type the device takes (%.1f MiB)",
+                   (double) arena_->dense_slot_bytes() / (1024.0 * 1024.0), arena_->dense_converted(),
+                   (double) arena_->dense_converted_bytes() / (1024.0 * 1024.0));
+    log_printf(LogLevel::Info, "prefill-device expert arena: %d layers through %d slot%s of %.1f MiB, %d loaders%s",
+               arena_->n_layers(), arena_->n_slots(), arena_->n_slots() == 1 ? "" : "s",
+               (double) arena_->slot_bytes() / (double) arena_->n_slots() / (1024.0 * 1024.0), cfg.load_threads,
+               arena_->on_demand() ? ", held only during a prefill" : "");
     return true;
 }
 
@@ -218,7 +219,7 @@ bool PrefillPath::place(bool on_device) {
         if (!arena_->acquire(err)) {
             if (budget > 0) cache_->set_cache_budget(budget);
             if (!said_no_room_)
-                std::fprintf(stderr, "bmoe: prefill-device: %s; this prefill runs on the host\n", err.c_str());
+                log_printf(LogLevel::Warn, "prefill-device: %s; this prefill runs on the host", err.c_str());
             said_no_room_ = true;
             if (ctx_) {
                 llama_set_causal_attn(ctx_, false);

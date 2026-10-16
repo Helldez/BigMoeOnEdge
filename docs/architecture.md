@@ -34,6 +34,9 @@ core/
     runtime.h       run() entry point
     run_error.h     RunError: why a request failed, as a kind every front-end decides on, and its
                     stable name, the `code` of the CLI protocol and the server API
+    log.h           the log port: where the engine's diagnostics go (set_log_sink, a level). The
+                    default sink writes `bmoe: <line>` to stderr as the engine always has. Protocol
+                    lines never pass through it
     hardware_profile.h, model_profile.h, placement.h
                     the planner's inputs: a machine, a model and llama.cpp's capacity placement as
                     facts, with no platform, vendor or architecture name in them
@@ -58,7 +61,8 @@ core/
                   only during a prefill, filled from flash, whole layers or only the routed experts
                   (npu-prefill.md)
                 decide_probe - experimental per-decision expert usage and layer-exit answers (decide.md)
-    engine/     session — composition + the generation loop (open/generate/close)
+    engine/     session — composition + the generation loop (open/generate/close); open() and
+                  generate() are short sequences of named steps (see "The generation loop")
                 prefill_device - moves layer weights and model state onto a device per graph
                 prefill_path - the prefill device for one session: setup, placement, device decode
                 runtime — the one-shot run() wrapper over a Session
@@ -79,6 +83,7 @@ core/
                   measured in, then plan_run(). With the adapters because it starts the backends;
                   it decides nothing, and bmoe-cli --auto and the server's /api/plan both call it
     params.cpp  the parameter table's rows (see params.h)
+    log.cpp     the log port's default sink and level filter (see log.h)
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
@@ -139,10 +144,18 @@ The composition root is `Session` (core/src/engine/session.cpp):
 
 1. `open()` — load model (mmap on, repack off, experts on CPU); if streaming, resolve the
    architecture recipe, install the router hook, do the capture warm-up, bind the expert
-   source, clear the warm-up KV. Done **once** per model.
+   source, clear the warm-up KV. Done **once** per model. It reads as its steps, in order —
+   `load_model`, `read_model`, `build_hook`, `create_contexts`, `build_sampler`,
+   `install_abort_callback`, `init_speculation`, `bind_streaming` (capture, offsets, dense
+   weights, source init, release-mmap, traces), `open_prefill_device`, `arm_decode_traces`,
+   `describe_run`, `warn_about_load` — each a method of the session's `Impl` that fails through
+   one `Opening` context, so the order is visible in one screen and every early return is kept.
 2. `generate()` — prefill the prompt, then greedily decode `n_predict` tokens, reporting
    per-token metrics. Callable repeatedly; the expert cache stays warm between calls (see
-   [session.md](session.md)). Cancellable mid-flight via the abort callback.
+   [session.md](session.md)). Cancellable mid-flight via the abort callback. One call is a
+   `Turn` (the turn's state and what it may have to undo) run through `render_prompt`,
+   `tokenize_prompt`, `reuse_kv_prefix`, `prefill`, `decode` (each step: `draft`,
+   `verify_decode`, `accept`, `emit`), `trim_speculative_kv`, `summarize` and `finish`.
    `decide()` is the other way to use an open session: one prefill and no decode, reading which of
    a list of choices the model would answer (off unless the session is opened with it; see
    [decide.md](decide.md)).

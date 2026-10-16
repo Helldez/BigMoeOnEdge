@@ -1,4 +1,5 @@
 #include "file_reader.h"
+#include "bmoe/log.h"
 
 #include <chrono>
 #include <cstdio>
@@ -29,7 +30,7 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t m
         primary = pio::open_read(path.c_str(), false);
     }
     if (!pio::fd_ok(primary)) {
-        std::fprintf(stderr, "bmoe: open %s failed\n", path.c_str());
+        log_printf(LogLevel::Error, "open %s failed", path.c_str());
         return false;
     }
     fsize_ = pio::file_size(primary);
@@ -64,7 +65,7 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t m
             const long long gb = pio::pread_at(vfd, bbuf.data(), align_, voff);
             const bool bad = gd != want || gb != want || std::memcmp(dbuf, bbuf.data(), align_) != 0;
             if (bad) {
-                std::fprintf(stderr, "bmoe: O_DIRECT returns wrong data on this storage — using buffered I/O\n");
+                log_printf(LogLevel::Warn, "O_DIRECT returns wrong data on this storage — using buffered I/O");
                 direct_ = false;
                 pio::close_fd(primary);
                 primary = pio::open_read(path.c_str(), false);
@@ -73,7 +74,7 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t m
         if (dbuf) pio::aligned_free(dbuf);
         if (pio::fd_ok(vfd)) pio::close_fd(vfd);
         if (!pio::fd_ok(primary)) {
-            std::fprintf(stderr, "bmoe: reopen after O_DIRECT check failed\n");
+            log_printf(LogLevel::Error, "reopen after O_DIRECT check failed");
             return false;
         }
         aligned_reads_ = aligned_reads_ && direct_; // a verify downgrade reverts the mechanics too
@@ -89,7 +90,7 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t m
         fds_[lane] = (lane == 0) ? primary : pio::open_read(path.c_str(), direct_);
         fds_buf_[lane] = aligned_reads_ ? pio::open_read(path.c_str(), false) : pio::fd_invalid;
         if (!pio::fd_ok(fds_[lane])) {
-            std::fprintf(stderr, "bmoe: lane %d open failed\n", lane);
+            log_printf(LogLevel::Error, "lane %d open failed", lane);
             close();
             return false;
         }
@@ -97,12 +98,12 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t m
         // tail, which expert slices never do. But say so here, where the cause (fd pressure) is still
         // visible, rather than leaving a later tail read to fail with an unexplained EINVAL.
         if (aligned_reads_ && !pio::fd_ok(fds_buf_[lane]))
-            std::fprintf(stderr, "bmoe: lane %d buffered tail fd unavailable — EOF-tail reads will fail\n", lane);
+            log_printf(LogLevel::Warn, "lane %d buffered tail fd unavailable — EOF-tail reads will fail", lane);
         // No bounce where reads stay plain (Apple F_NOCACHE): a per-lane aligned reservation next to
         // the expert cache would buy nothing there.
         bounces_[lane] = aligned_reads_ ? pio::alloc_aligned(align_, bounce_cap) : nullptr;
         if (aligned_reads_ && !bounces_[lane]) {
-            std::fprintf(stderr, "bmoe: lane %d bounce alloc failed\n", lane);
+            log_printf(LogLevel::Error, "lane %d bounce alloc failed", lane);
             close();
             return false;
         }
@@ -126,7 +127,7 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
         for (uint64_t a = off; a < end;) {
             long long got = pio::pread_at(fd, (char *) dst + (a - off), (size_t) (end - a), a);
             if (got <= 0) {
-                std::fprintf(stderr, "bmoe: pread failed at %llu\n", (unsigned long long) a);
+                log_printf(LogLevel::Error, "pread failed at %llu", (unsigned long long) a);
                 return -1;
             }
             a += (uint64_t) got;
@@ -150,7 +151,7 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
         bounce_sz_[lane] = 0;
         bounces_[lane] = pio::alloc_aligned(align_, len);
         if (!bounces_[lane]) {
-            std::fprintf(stderr, "bmoe: bounce realloc %zu failed\n", len);
+            log_printf(LogLevel::Error, "bounce realloc %zu failed", len);
             return -1;
         }
         bounce_sz_[lane] = len;
@@ -164,21 +165,21 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
     for (uint64_t a = a0; a < bulk_end;) {
         long long got = pio::pread_at(fd, b + (a - a0), (size_t) (bulk_end - a), a);
         if (got <= 0) {
-            std::fprintf(stderr, "bmoe: pread failed at %llu\n", (unsigned long long) a);
+            log_printf(LogLevel::Error, "pread failed at %llu", (unsigned long long) a);
             return -1;
         }
         a += (uint64_t) got;
     }
     if (bulk_end < read_end && !pio::fd_ok(fd_buf)) {
         // The O_DIRECT fd would reject the sub-alignment length outright; say what is actually wrong.
-        std::fprintf(stderr, "bmoe: EOF tail at %llu needs the buffered fd, which failed to open\n",
-                     (unsigned long long) bulk_end);
+        log_printf(LogLevel::Error, "EOF tail at %llu needs the buffered fd, which failed to open",
+                   (unsigned long long) bulk_end);
         return -1;
     }
     for (uint64_t a = bulk_end; a < read_end;) { // sub-alignment EOF tail via the buffered fd
         long long got = pio::pread_at(fd_buf, b + (a - a0), (size_t) (read_end - a), a);
         if (got <= 0) {
-            std::fprintf(stderr, "bmoe: tail pread failed at %llu\n", (unsigned long long) a);
+            log_printf(LogLevel::Error, "tail pread failed at %llu", (unsigned long long) a);
             return -1;
         }
         a += (uint64_t) got;

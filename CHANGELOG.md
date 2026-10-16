@@ -88,6 +88,12 @@ Semantic Versioning.
   read the answer the same way, from one pure module each, with tests; a decision is not a
   conversation turn and stays out of the history the model is sent. The Android app had this over
   the CLI's line protocol and lost it on its move to the server; now both have it from one endpoint.
+- **A log port: where the engine's diagnostics go.** The engine wrote its ~70 diagnostic lines
+  ("prefill stays on the CPU", the cache budget it settled on, a policy disarmed) straight to stderr
+  from wherever it was; they now go through `bmoe/log.h` (`set_log_sink`, `set_log_level`, three
+  levels). The default sink writes the same `bmoe: <line>` to stderr, byte for byte, so nothing that
+  reads the CLI's stderr changes; the `BMOE_*` protocol lines and the CSV/trace sinks never pass
+  through it.
 
 ### Changed
 - **A shorter README, for what the project is now.** It introduced a way to run a model past RAM
@@ -111,6 +117,15 @@ Semantic Versioning.
   carries each, a measured prefill run, then the host-memory route for streamed experts), a
   Connect view that tells any client what it needs (#257), and one diagram of the planner's logic
   for `docs/hardware-planning.md` and the README.
+- **`Session::open()` and `Session::generate()` read as their steps.** The two functions were 690
+  and 770 lines; each is now a short sequence of named steps on the session's `Impl` (`load_model`,
+  `read_model`, `build_hook`, `create_contexts`, ..., `bind_streaming`, `describe_run`; a `Turn` with
+  `render_prompt`, `tokenize_prompt`, `reuse_kv_prefix`, `prefill`, `decode` and its `draft`,
+  `verify_decode`, `accept`, `emit`, then `summarize` and `finish`). The order of operations, the
+  error kinds and messages and every metric are unchanged, which the byte-identity gates confirm.
+  The router hook's eval callback is split the same way (capture, compute trace, device arena, row
+  tables, routing node), each job reached only when its feature is on, so a node no job wants costs
+  what it did.
 
 ### Changed
 - **A load says it is planning.** `state` reads `planning` from the moment a load in auto mode
