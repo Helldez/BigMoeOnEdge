@@ -535,8 +535,15 @@ BMOE_DECIDE {"id":<int>,"cancelled":<bool>,"best":<int>,"choice_logp":[<float|nu
              "prefill_io_s":<float>,"prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
              "prefill_dev_tokens":<int>,"prefill_dev_read_mib":<float>,"prefill_dev_stall_s":<float>,
              "prefill_dev_routed":<int>,"prefill_dev_demand":<int>,"prefix_state_mib":<float>}
-BMOE_ERROR {"id":<int>,"fatal":<bool>,"msg":"<string>"}
+BMOE_ERROR {"id":<int>,"fatal":<bool>,"code":"<string>","msg":"<string>"}
 ```
+
+`BMOE_ERROR`'s `code` is what a client decides on, `msg` is for a person and may change. The codes
+are the engine's failure kinds (`core/include/bmoe/run_error.h`): `context_full` (the conversation
+leaves no room in `n_ctx`), `empty_prompt`, `template_rejected` (the chat template refused the
+message list), `needs_chat_mode` (a message list to a session opened without the chat template),
+`invalid_request` (a malformed decide request, or decide off) and `failed` (a load, decode or
+expert-stream failure). Every code but `failed` comes with `fatal:false`.
 
 A `decide` request is answered by `BMOE_BEGIN` and then one `BMOE_DECIDE` line, with no per-token
 lines in between: nothing is decoded ([decide.md](decide.md)). `choice_logp[i]` is the log-probability
@@ -610,7 +617,9 @@ AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not jus
 total flash streamed this generation, and `stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and
 cache-management cost. `text` is the final answer and `reasoning` the final thinking span (empty
 unless the model reasoned), same split as the per-token lines. `BMOE_ERROR` with `fatal:false` is a rejected
-request (e.g. the prompt plus `n_predict` exceeds `n_ctx`) and leaves the session usable;
+request (e.g. `code:"context_full"`, a conversation that leaves no room in `n_ctx`: `n_predict` is a
+ceiling, cut to the room the prompt leaves, so only a prompt that fills the context is refused) and
+leaves the session usable;
 `fatal:true` means the process is ending.
 
 ## Decode traces

@@ -84,6 +84,13 @@ describe('api', () => {
     }
   });
 
+  it('carries the code of an error beside its message, and none when the body has none', async () => {
+    vi.stubGlobal('fetch', async () => new Response('{"error":"any wording","code":"context_full"}', { status: 400 }));
+    await expect(api.info()).rejects.toMatchObject({ status: 400, message: 'any wording', code: 'context_full' });
+    vi.stubGlobal('fetch', async () => new Response('{"error":"no code"}', { status: 400 }));
+    await expect(api.info()).rejects.toMatchObject({ code: '' });
+  });
+
   it('delivers the events of the stream by name until it ends', async () => {
     const body = 'event: state\ndata: {"state":"empty"}\n\nevent: token\ndata: {"wall_ms":3}\n\n';
     vi.stubGlobal('fetch', async () => new Response(body, { status: 200 }));

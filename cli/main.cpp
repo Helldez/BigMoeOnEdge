@@ -273,8 +273,8 @@ static bool emit_decide(Session & session, const SessionCmd & cmd) {
     req.reuse_prefix = cmd.reuse_prefix;
     const DecideResult r = session.decide(req);
     if (!r.ok && !r.cancelled) {
-        std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"msg\":\"%s\"}\n", cmd.id, r.fatal ? "true" : "false",
-                    json_escape(r.error).c_str());
+        std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"code\":\"%s\",\"msg\":\"%s\"}\n", cmd.id,
+                    r.fatal ? "true" : "false", run_error_name(r.error_kind), json_escape(r.error).c_str());
         std::fflush(stdout);
         return !r.fatal;
     }
@@ -317,7 +317,8 @@ static int run_session_loop(const RunConfig & cfg,
     std::string error;
     std::unique_ptr<Session> session = Session::open(sc, error, route_trace, compute_trace, io_trace);
     if (!session) {
-        std::printf("BMOE_ERROR {\"id\":0,\"fatal\":true,\"msg\":\"%s\"}\n", json_escape(error).c_str());
+        std::printf("BMOE_ERROR {\"id\":0,\"fatal\":true,\"code\":\"%s\",\"msg\":\"%s\"}\n",
+                    run_error_name(RunError::Failed), json_escape(error).c_str());
         std::fflush(stdout);
         return 1;
     }
@@ -419,12 +420,12 @@ static int run_session_loop(const RunConfig & cfg,
         ProgressDelta pd; // fresh per generation: the first line extends the empty state
         RunResult r = session->generate(req, [&](const TokenMetrics & m) { emit_progress_line(m, pd); }, sink);
         if (!r) {
-            // A bad request (empty prompt, context overflow) leaves the session usable; a decode
-            // failure means the context is compromised, so end the loop.
-            bool recoverable = r.error.find("exceeds the session n_ctx") != std::string::npos ||
-                               r.error.find("empty prompt") != std::string::npos;
-            std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"msg\":\"%s\"}\n", cmd.id, recoverable ? "false" : "true",
-                        json_escape(r.error).c_str());
+            // A bad request (empty prompt, a full context) leaves the session usable; a decode
+            // failure means the context is compromised, so end the loop. The kind decides, and it
+            // goes on the line as `code` so a client decides on it too, never on `msg`.
+            const bool recoverable = run_error_recoverable(r.error_kind);
+            std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"code\":\"%s\",\"msg\":\"%s\"}\n", cmd.id,
+                        recoverable ? "false" : "true", run_error_name(r.error_kind), json_escape(r.error).c_str());
             std::fflush(stdout);
             if (!recoverable) {
                 rc = 1;

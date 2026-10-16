@@ -196,7 +196,9 @@ void ensure_tool_call_ids(std::vector<ChatToolCall> & calls, const std::string &
 std::string finish_reason(const RunResult & r, int n_predict) {
     if (r.cancelled) return "cancelled";
     if (!r.tool_calls.empty()) return "tool_calls";
-    return r.summary.n_generated >= n_predict ? "length" : "stop";
+    // The session may have cut the budget to the room the context had left; that is a length stop too.
+    const int budget = r.summary.n_predict > 0 ? std::min(n_predict, r.summary.n_predict) : n_predict;
+    return r.summary.n_generated >= budget ? "length" : "stop";
 }
 
 json usage_json(const RunSummary & s) {

@@ -11,8 +11,13 @@ does and does not protect.
 It is also the application framework of this project: the same server, reached the same way,
 stands behind every UI, on the desktop and on a phone ([application-framework.md](application-framework.md)).
 
-All request and response bodies are JSON (UTF-8). Errors are `{"error": "<message>"}` with a 4xx
-or 5xx status. Every `POST`, `PUT` and `DELETE` must carry `Content-Type: application/json`, body
+All request and response bodies are JSON (UTF-8). Errors are `{"error": "<message>", "code": "<code>"}`
+with a 4xx or 5xx status: `error` is for a person and may change, `code` is what a client decides
+on, and is present wherever the failure has one. A chat or decide turn carries the engine's failure
+kind (`context_full`, `empty_prompt`, `template_rejected`, `needs_chat_mode`, `invalid_request`,
+`failed`, as in [telemetry.md](telemetry.md)) or the server's own refusal (`busy`, `no_model`).
+Inside a stream that had already answered `200`, the same pair arrives as one
+`data: {"error": {"message": ..., "code": ...}}` chunk. Every `POST`, `PUT` and `DELETE` must carry `Content-Type: application/json`, body
 or no body (`curl -X POST -H 'Content-Type: application/json' .../api/cancel`); one that does not
 gets `415`.
 
@@ -191,7 +196,7 @@ Request fields that are read:
 | `tools` | functions the model may call: `{type: "function", function: {name, description, parameters}}`. Any other tool type is refused with `400`. |
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`. A named function is honoured as `"required"`: the engine can require a call, not choose which. |
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
-| `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`). Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. |
+| `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`). Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. It is a ceiling, not a reservation: the answer gets at most what the context has left after the prompt and then stops with `finish_reason: "length"`. Only a conversation that leaves no room at all is refused, with `400`. |
 | `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, of which only `"none"` turns it off. Default: the `think` parameter. |
 
 Ignored, because the session fixes them: `model`, `temperature`, `top_p`, `seed` and every

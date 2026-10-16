@@ -116,18 +116,20 @@ object Chat {
         Engine.resetLive()
         scope.launch {
             var error: String? = null
+            var errorCode = ""
             var answer: ChatMessage? = null
             try {
                 val r = Decide.parse(Engine.api().decide(Decide.requestBody(q, options)), options)
                 if (!r.cancelled) answer = ChatMessage("assistant", "", "", r.metrics, r.scores, r.best)
             } catch (e: ApiException) {
                 error = e.message
+                errorCode = e.code
             } catch (t: Throwable) {
                 error = t.message ?: "the connection to the engine was lost"
             }
             val committed = answer?.let { withUser.copy(messages = withUser.messages + it, updatedAt = System.currentTimeMillis()) } ?: withUser
             if (committed !== withUser) persist(committed)
-            _state.update { it.copy(current = committed, streaming = false, error = error, contextFull = error?.contains("n_ctx") == true) }
+            _state.update { it.copy(current = committed, streaming = false, error = error, contextFull = errorCode == ApiException.CODE_CONTEXT_FULL) }
         }
     }
 
@@ -161,11 +163,15 @@ object Chat {
             var finish: String? = null
             var summary: org.json.JSONObject? = null
             var error: String? = null
+            var errorCode = ""
             try {
                 val body = ChatProtocol.requestBody(conversation.messages)
                 Engine.api().chatStream(body, { data ->
                     val chunk = ChatProtocol.parseChunk(data) ?: return@chatStream
-                    if (chunk.error != null) error = chunk.error
+                    if (chunk.error != null) {
+                        error = chunk.error
+                        errorCode = chunk.errorCode
+                    }
                     if (chunk.reset) {
                         content.setLength(0)
                         reasoning.setLength(0)
@@ -178,6 +184,7 @@ object Chat {
                 }, { true })
             } catch (e: ApiException) {
                 error = e.message
+                errorCode = e.code
             } catch (t: Throwable) {
                 error = if (stopRequested) null else (t.message ?: "the connection to the engine was lost")
             }
@@ -185,7 +192,7 @@ object Chat {
             val cancelled = finish == "cancelled" || stopRequested
             val metrics = summary?.let { ChatProtocol.turnMetrics(it, nCtx, cancelled) }.orEmpty()
             val answer = content.toString()
-            val contextFull = error?.contains("n_ctx") == true
+            val contextFull = errorCode == ApiException.CODE_CONTEXT_FULL
             // A turn that produced nothing and failed keeps the user's message, so it can be sent
             // again after the fix (a new chat, a loaded model); an empty cancelled turn is dropped.
             val committed = if (answer.isNotEmpty() || (error == null && !cancelled)) {

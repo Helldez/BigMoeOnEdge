@@ -10,6 +10,7 @@
 #pragma once
 
 #include "bmoe/chat.h"
+#include "bmoe/run_error.h"
 #include "bmoe/config.h"
 #include "bmoe/metrics.h"
 
@@ -27,6 +28,7 @@ struct RunResult {
     bool ok = false;
     bool cancelled = false; // generation was interrupted by Session::cancel() (ok stays true)
     std::string error;
+    RunError error_kind = RunError::None; // set with `error`; what a caller decides on
     std::string generated_text;
     // The reasoning span, when a thinking model's chat template separated it from the answer.
     // Empty otherwise (chat off, non-reasoning model, harmony no-think). Display-only; the answer

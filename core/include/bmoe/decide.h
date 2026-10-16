@@ -9,6 +9,8 @@
 // Pure policy header (no llama.cpp types). Session::decide() is the entry point.
 #pragma once
 
+#include "bmoe/run_error.h"
+
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -63,7 +65,8 @@ struct DecideResult {
     // The session cannot be trusted after this failure (a decode failed mid-prompt). A refused
     // request — no choices, colliding choices, a prompt past n_ctx — leaves it usable.
     bool fatal = false;
-    bool cancelled = false; // Session::cancel() stopped the prefill; the session is usable
+    RunError error_kind = RunError::None; // set with `error`; fatal is error_kind == Failed
+    bool cancelled = false;               // Session::cancel() stopped the prefill; the session is usable
 
     // log p(first token of choices[i]) over the WHOLE vocabulary, in the request's order. Not
     // renormalised over the choices: the mass the model puts outside them says how unsure it is,

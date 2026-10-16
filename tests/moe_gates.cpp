@@ -1322,6 +1322,46 @@ int main(int argc, char ** argv) {
         }
     }
 
+    // G19: n_predict is a ceiling, cut to the room the context leaves (#138). A budget far past
+    // n_ctx must answer, not refuse, and produce exactly what a request for that room produces;
+    // only a prompt that fills the context is refused, and the session stays usable after it.
+    {
+        SessionConfig sc;
+        sc.model_path = model;
+        sc.n_threads = stream0.n_threads;
+        sc.n_ctx = 64;
+        sc.n_batch = sc.n_ctx;
+        sc.moe = stream0.moe;
+        std::string err;
+        std::unique_ptr<Session> s = Session::open(sc, err);
+        if (!s) {
+            std::fprintf(stderr, "G19 session open failed: %s\n", err.c_str());
+            return 2;
+        }
+        const RunResult big = s->generate(GenerateRequest{stream0.prompt, 1 << 20});
+        const int room = big ? big.summary.n_predict : 0;
+        const RunResult exact = s->generate(GenerateRequest{stream0.prompt, room});
+        if (!big || !exact || room < 1 || room >= sc.n_ctx || big.summary.n_generated > room) {
+            std::printf("[FAIL] G19 a budget past n_ctx must be cut to the room (ok=%d room=%d generated=%d: %s)\n",
+                        (int) (bool) big, room, big.summary.n_generated, big ? "" : big.error.c_str());
+            ++fails;
+        } else {
+            fails += check("G19 budget past n_ctx == budget of the room", exact.generated_text, big.generated_text);
+        }
+        std::string long_prompt;
+        for (int i = 0; i < 64; ++i)
+            long_prompt += "streaming test words ";
+        const RunResult full = s->generate(GenerateRequest{long_prompt, 8});
+        const RunResult again = s->generate(GenerateRequest{stream0.prompt, room});
+        if (full || full.error_kind != RunError::ContextFull || !run_error_recoverable(full.error_kind) || !again) {
+            std::printf("[FAIL] G19 a prompt that fills n_ctx must be refused, recoverably (ok=%d: %s)\n",
+                        (int) (bool) full, full.error.c_str());
+            ++fails;
+        } else {
+            fails += check("G19 refused prompt leaves the session usable", exact.generated_text, again.generated_text);
+        }
+    }
+
     if (fails == 0) std::printf("\nall MoE byte-identity gates passed\n");
     return fails == 0 ? 0 : 1;
 }

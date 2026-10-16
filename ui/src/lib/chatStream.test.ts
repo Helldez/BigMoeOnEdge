@@ -52,10 +52,12 @@ describe('applyChunk', () => {
   });
 
   it('records an error the server sent inside the stream', () => {
-    const s = applyChunk(initialStreamState(), { error: { message: 'prompt exceeds the session n_ctx', code: 400 } });
-    expect(s.error).toBe('prompt exceeds the session n_ctx');
+    const s = applyChunk(initialStreamState(), { error: { message: 'any wording', code: 'context_full' } });
+    expect(s.error).toBe('any wording');
+    expect(s.errorCode).toBe('context_full');
     expect(s.content).toBe('');
     expect(applyChunk(initialStreamState(), { error: {} }).error).toBe('the generation failed');
+    expect(applyChunk(initialStreamState(), { error: {} }).errorCode).toBe('');
   });
 
   it('keeps an earlier finish reason when later chunks carry null', () => {

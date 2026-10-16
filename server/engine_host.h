@@ -25,9 +25,18 @@
 
 namespace bmoe::server {
 
+// The stable codes an error carries beside its message, for a client to act on (docs/server-api.md).
+// The engine's own failures use run_error_name(); these are the host's refusals before the engine.
+namespace error_code {
+inline constexpr const char * busy = "busy";               // the line of waiting requests is full
+inline constexpr const char * client_gone = "client_gone"; // never sent: the client left the line
+inline constexpr const char * no_model = "no_model";       // nothing is loaded to answer
+} // namespace error_code
+
 struct ChatOutcome {
-    int status = 200; // HTTP status; not 200 means `error` says why and `result` is empty
-    std::string error;
+    int status = 200;  // HTTP status; not 200 means `error` says why and `result` is empty
+    std::string error; // for a person
+    std::string code;  // for a client: run_error_name() of the engine's kind, or an error_code
     RunResult result;
     int n_predict = 0; // the budget the turn ran with, for the protocol's stop-or-length answer
 };
@@ -35,6 +44,7 @@ struct ChatOutcome {
 struct DecideOutcome {
     int status = 200; // as ChatOutcome
     std::string error;
+    std::string code;
     DecideResult result;
 };
 

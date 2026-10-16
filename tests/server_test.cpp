@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -163,6 +164,25 @@ static void protocol_tests() {
     plain.generated_text = "hi";
     plain.summary.n_generated = 3;
     check(finish_reason(plain, 3) == "length" && finish_reason(plain, 4) == "stop", "stop or length by the budget");
+    // Every failure kind has its own stable name, and only Failed closes the session.
+    {
+        const RunError kinds[] = {
+            RunError::None,          RunError::ContextFull,    RunError::EmptyPrompt, RunError::TemplateRejected,
+            RunError::NeedsChatMode, RunError::InvalidRequest, RunError::Failed};
+        std::set<std::string> names;
+        for (RunError k : kinds)
+            names.insert(run_error_name(k));
+        check(names.size() == sizeof(kinds) / sizeof(kinds[0]), "every failure kind has its own name");
+        check(std::string(run_error_name(RunError::ContextFull)) == "context_full", "a full context is context_full");
+        check(!run_error_recoverable(RunError::Failed) && !run_error_recoverable(RunError::None) &&
+                  run_error_recoverable(RunError::ContextFull) && run_error_recoverable(RunError::TemplateRejected),
+              "only a failed run closes the session");
+    }
+    plain.summary.n_predict = 3;
+    check(finish_reason(plain, 1000) == "length", "a budget the context cut short is a length stop");
+    plain.summary.n_predict = 8;
+    check(finish_reason(plain, 1000) == "stop", "an answer that ended under the cut budget is a stop");
+    plain.summary.n_predict = 0;
     plain.cancelled = true;
     check(finish_reason(plain, 4) == "cancelled", "a cancelled turn says so");
     check(completion_json(meta, plain, "stop")["choices"][0]["message"]["content"] == "hi" &&

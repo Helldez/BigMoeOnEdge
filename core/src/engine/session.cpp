@@ -51,6 +51,15 @@ using detail::batch_fill;
 using detail::PrefillTally;
 
 using clock_t_ = std::chrono::steady_clock;
+
+// Tokens kept free in n_ctx past the answer's budget: the end-of-turn tokens a chat template
+// appends after the answer must still fit, or the next turn's prompt would not.
+constexpr int k_turn_end_reserve = 8;
+
+// The tokenizer's first guess at a prompt's length: its byte count plus the special tokens
+// add_special may put around it. A longer result is reported, and the buffer resized to it.
+constexpr int k_tokenize_slack = 8;
+
 double secs(clock_t_::time_point a, clock_t_::time_point b) {
     return std::chrono::duration<double>(b - a).count();
 }
@@ -564,6 +573,7 @@ DecideResult Session::decide(const DecideRequest & req) {
     if (!im.cfg.decide.enabled) {
         DecideResult off;
         off.error = "decide is off for this session (open it with decide enabled)";
+        off.error_kind = RunError::InvalidRequest;
         return off;
     }
     im.cancel_requested.store(false, std::memory_order_relaxed);
@@ -618,6 +628,7 @@ DecideResult Session::decide(const DecideRequest & req) {
         r.fatal = false;
         r.cancelled = true;
         r.error = "cancelled";
+        r.error_kind = RunError::None;
     }
     return r;
 }
@@ -1347,9 +1358,10 @@ RunResult Session::generate(const GenerateRequest & req,
     im.decide_cache_chosen = false;
 
     RunResult res;
-    auto fail = [&](std::string msg) {
+    auto fail = [&](RunError kind, std::string msg) {
         res.ok = false;
         res.error = std::move(msg);
+        res.error_kind = kind;
         return res;
     };
 
@@ -1375,7 +1387,9 @@ RunResult Session::generate(const GenerateRequest & req,
     bool chat_on = im.chat_on;
     // A message list replaces the engine-held conversation instead of adding one user turn to it.
     const bool replace = !req.messages.empty();
-    if (replace && !chat_on) return fail("a message list needs chat mode: open the session with the chat template on");
+    if (replace && !chat_on)
+        return fail(RunError::NeedsChatMode,
+                    "a message list needs chat mode: open the session with the chat template on");
     bool history_pushed = false;                 // did we append this turn's user message to chat_history?
     bool history_replaced = false;               // did we swap chat_history for the request's messages?
     std::vector<common_chat_msg> history_before; // what a replaced conversation goes back to
@@ -1419,13 +1433,15 @@ RunResult Session::generate(const GenerateRequest & req,
             // to fall back to, and a conversation the template refuses is the caller's to fix.
             const bool was_replace = history_replaced;
             undo_history();
-            if (was_replace) return fail(std::string("the chat template rejected the conversation: ") + e.what());
+            if (was_replace)
+                return fail(RunError::TemplateRejected,
+                            std::string("the chat template rejected the conversation: ") + e.what());
             std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
             chat_on = false;
         }
     }
 
-    std::vector<llama_token> tokens(prompt.size() + 8);
+    std::vector<llama_token> tokens(prompt.size() + k_tokenize_slack);
     int n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
                                   /*add_special*/ true, /*parse_special*/ true);
     if (n_prompt < 0) {
@@ -1435,14 +1451,22 @@ RunResult Session::generate(const GenerateRequest & req,
     }
     if (n_prompt < 1) {
         undo_history();
-        return fail("empty prompt after tokenization");
+        return fail(RunError::EmptyPrompt, "empty prompt after tokenization");
     }
     tokens.resize(n_prompt);
-    if (n_prompt + req.n_predict + 8 > im.cfg.n_ctx) {
+    // n_predict is a ceiling on the answer, not a reservation: the answer gets what the context has
+    // left after the prompt, and stops there with the budget spent, as a length stop. Only a prompt
+    // that leaves no room at all is refused. Reserving the whole ceiling refused a two-word prompt
+    // whenever the ceiling was set near the context size (#138).
+    const int ctx_room = im.cfg.n_ctx - n_prompt - k_turn_end_reserve;
+    if (ctx_room < 1) {
         undo_history();
-        return fail("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
-                    "); open the session with a larger n_ctx");
+        return fail(RunError::ContextFull,
+                    "the conversation (" + std::to_string(n_prompt) + " tokens) exceeds the session n_ctx (" +
+                        std::to_string(im.cfg.n_ctx) +
+                        "): start a new conversation, or load the model with a larger context size");
     }
+    const int n_predict = std::min(req.n_predict, ctx_room);
 
     // The text to surface: with chat on, parse the raw output so a reasoning model's internal
     // thinking is separated from the answer. The answer is shown inline; the reasoning is handed to
@@ -1609,14 +1633,15 @@ RunResult Session::generate(const GenerateRequest & req,
                 res.cancelled = true;
                 return res;
             }
-            if (moe.overlap && im.source.fatal()) return fail("expert stream I/O failed during overlap prefill");
-            return fail("prefill decode failed");
+            if (moe.overlap && im.source.fatal())
+                return fail(RunError::Failed, "expert stream I/O failed during overlap prefill");
+            return fail(RunError::Failed, "prefill decode failed");
         }
         trace_flush();
         // The draft context has to walk the prompt too: its KV must reach the last prompt position
         // or the first draft is made from a hidden state that never saw the prompt.
         if (mtp_on && !common_speculative_process(im.mtp.get(), pf))
-            return fail("MTP draft context failed to process the prefill batch");
+            return fail(RunError::Failed, "MTP draft context failed to process the prefill batch");
     }
     im.place_prefill(false); // decode reads the host bindings
     const long long prefill_device_nodes = im.hook->device_nodes() - device_nodes0;
@@ -1704,7 +1729,7 @@ RunResult Session::generate(const GenerateRequest & req,
     // would have read.
     llama_token tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
 
-    while (n_gen < req.n_predict) {
+    while (n_gen < n_predict) {
         if (llama_vocab_is_eog(im.vocab, tok)) break;
 
         // ── draft ──
@@ -1712,8 +1737,8 @@ RunResult Session::generate(const GenerateRequest & req,
         // draft accepted past n_predict would be verified, charged for, and then discarded. The cap
         // goes in BEFORE drafting, so no source is ever asked for tokens with nowhere to go.
         int n_draft = 0;
-        double draft_s = 0.0;                       // this group's drafting + catch-up (see below)
-        const int room = req.n_predict - n_gen - 1; // tokens still wanted after `tok` itself
+        double draft_s = 0.0;                   // this group's drafting + catch-up (see below)
+        const int room = n_predict - n_gen - 1; // tokens still wanted after `tok` itself
         if (spec_on && room > 0) {
             const auto d0 = clock_t_::now();
             const uint64_t db0 = moe.enabled ? im.source.stats().read_bytes : 0;
@@ -1736,7 +1761,7 @@ RunResult Session::generate(const GenerateRequest & req,
                 // last stored position). The catch-up is what replaces those rows with ones
                 // conditioned on the target's own hidden states instead of the head's guesses.
                 if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), /*seq*/ 0, n_past, -1))
-                    return fail("the MTP draft context does not support rewinding its KV cache");
+                    return fail(RunError::Failed, "the MTP draft context does not support rewinding its KV cache");
             } else {
                 // The n-gram source reads the text and nothing else: no draft context, no decode, no
                 // expert read, so the bytes bracketed around this arm are zero by construction. When
@@ -1793,8 +1818,9 @@ RunResult Session::generate(const GenerateRequest & req,
                 res.cancelled = true;
                 break;
             }
-            if (moe.overlap && im.source.fatal()) return fail("expert stream I/O failed during overlap decode");
-            return fail("decode failed during generation");
+            if (moe.overlap && im.source.fatal())
+                return fail(RunError::Failed, "expert stream I/O failed during overlap decode");
+            return fail(RunError::Failed, "decode failed during generation");
         }
         trace_flush(); // outside the s0..s1 bracket: the trace's own writes must not bill wall_ms
         ++im.mtp_decodes;
@@ -1844,7 +1870,7 @@ RunResult Session::generate(const GenerateRequest & req,
                 const uint64_t pb0 = moe.enabled ? im.source.stats().read_bytes : 0;
                 batch_fill(im.mtp_batch, verify_toks.data(), 1 + n_acc, n_past, /*all_logits*/ false);
                 if (!common_speculative_process(im.mtp.get(), im.mtp_batch))
-                    return fail("MTP draft context failed to process the verify batch");
+                    return fail(RunError::Failed, "MTP draft context failed to process the verify batch");
                 draft_s += secs(p0, clock_t_::now());
                 if (moe.enabled) im.mtp_draft_read_bytes += im.source.stats().read_bytes - pb0;
             }
@@ -1856,7 +1882,7 @@ RunResult Session::generate(const GenerateRequest & req,
             if (n_acc < n_draft) {
                 const llama_pos keep = n_past + 1 + n_acc;
                 if (!llama_memory_seq_rm(llama_get_memory(ctx), /*seq*/ 0, keep, -1))
-                    return fail("failed to roll back the rejected draft tokens from the KV cache");
+                    return fail(RunError::Failed, "failed to roll back the rejected draft tokens from the KV cache");
             }
             if (mtp_on) common_speculative_accept(im.mtp.get(), /*seq*/ 0, (uint16_t) n_acc);
         }
@@ -1880,7 +1906,7 @@ RunResult Session::generate(const GenerateRequest & req,
             prev_ra_issue_ns = ri;
             prev_ra_wd_ns = rw;
         }
-        for (size_t e = 0; e < confirmed.size() && n_gen < req.n_predict; ++e) {
+        for (size_t e = 0; e < confirmed.size() && n_gen < n_predict; ++e) {
             const llama_token out = confirmed[e];
             char piece[256];
             int np = llama_token_to_piece(im.vocab, out, piece, sizeof(piece), 0, true);
@@ -1892,7 +1918,7 @@ RunResult Session::generate(const GenerateRequest & req,
 
             TokenMetrics m;
             m.step = n_gen;
-            m.steps = req.n_predict;
+            m.steps = n_predict;
             m.mtp_batch = (int) confirmed.size();
             m.loop_overhead_ms = e == 0 ? overhead * 1000.0 : 0.0;
             // Charged to the group's first row like every other group cost. This is a SLICE of
@@ -1951,6 +1977,7 @@ RunResult Session::generate(const GenerateRequest & req,
     RunSummary & s = res.summary;
     s.arch = im.arch;
     s.n_generated = n_gen;
+    s.n_predict = n_predict;
     s.gen_seconds = gen_seconds;
     s.s_per_token = n_gen ? gen_seconds / n_gen : 0.0;
     s.tokens_per_second = gen_seconds > 0 ? n_gen / gen_seconds : 0.0;

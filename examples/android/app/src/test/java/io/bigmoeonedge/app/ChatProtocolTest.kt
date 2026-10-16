@@ -1,5 +1,7 @@
 package io.bigmoeonedge.app
 
+import io.bigmoeonedge.app.engine.Api
+import io.bigmoeonedge.app.engine.ApiException
 import io.bigmoeonedge.app.engine.ChatMessage
 import io.bigmoeonedge.app.engine.ChatProtocol
 import org.json.JSONObject
@@ -50,7 +52,12 @@ class ChatProtocolTest {
     fun doneAndErrorsAndUsageOnlyChunks() {
         assertNull(ChatProtocol.parseChunk("[DONE]"))
         assertNull(ChatProtocol.parseChunk(""))
-        assertEquals("boom", ChatProtocol.parseChunk("""{"error":{"message":"boom","code":500}}""")!!.error)
+        assertEquals("boom", ChatProtocol.parseChunk("""{"error":{"message":"boom","code":"failed"}}""")!!.error)
+        val full = ChatProtocol.parseChunk("""{"error":{"message":"any wording","code":"context_full"}}""")!!
+        assertEquals(ApiException.CODE_CONTEXT_FULL, full.errorCode)
+        assertEquals("", ChatProtocol.parseChunk("""{"error":{"message":"no code"}}""")!!.errorCode)
+        assertEquals("context_full", Api.errorCode("""{"error":"x","code":"context_full"}"""))
+        assertEquals("", Api.errorCode("not json"))
         val usage = ChatProtocol.parseChunk("""{"choices":[],"usage":{"prompt_tokens":1}}""")!!
         assertNull(usage.content)
         assertNull(usage.finish)

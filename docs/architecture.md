@@ -32,6 +32,8 @@ core/
     recipe.h        MoeRecipe + registry
     metrics.h       TokenMetrics / RunSummary + IMetricsSink
     runtime.h       run() entry point
+    run_error.h     RunError: why a request failed, as a kind every front-end decides on, and its
+                    stable name, the `code` of the CLI protocol and the server API
     hardware_profile.h, model_profile.h, placement.h
                     the planner's inputs: a machine, a model and llama.cpp's capacity placement as
                     facts, with no platform, vendor or architecture name in them

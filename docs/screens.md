@@ -51,8 +51,8 @@ visible and every answer's cost visible.
 - **Actions.** Send (disabled with no model loaded, which the status line explains), Stop (the
   answer so far is kept), Copy an answer, Regenerate the last answer (the prompt is already in the
   KV, so only the answer is paid), New chat.
-- **Errors.** Shown in the transcript, under the turn they belong to. A full context (the server's
-  `n_ctx` error) says so and offers New chat; a server without a model offers Models; anything else
+- **Errors.** Shown in the transcript, under the turn they belong to. A full context (the error's
+  `code` is `context_full`) says so and offers New chat; a server without a model offers Models; anything else
   is dismissable. The person's message stays, so it can be sent again after the fix.
 - **The live line.** While an answer streams and after: the rate, the compute and flash shares,
   the cache hit rate, the temperature where the device reports one. The full card is in Metrics.
