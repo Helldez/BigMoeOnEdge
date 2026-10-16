@@ -102,6 +102,14 @@ Semantic Versioning.
   or in error, a turn with nothing loaded (503 `no_model`), a turn sent during a load waiting for it,
   cancel and unload during a turn, a failed decode closing the session (500) and a recoverable kind
   keeping it (400), the same for decisions, and diagnostics reaching the bus.
+- **CI runs the gates under AddressSanitizer and UndefinedBehaviorSanitizer** (a Linux job,
+  RelWithDebInfo, llama.cpp instrumented too, so ggml's reads of the streamer's own buffers are
+  checked), and **on macOS**, where the job only compiled before: the Apple I/O paths are now proven
+  byte-identical on every PR, not only on a developer's Mac. llama.cpp's own sanitizer findings,
+  which this project does not patch, are listed one by one in `tests/sanitizers/ubsan.supp` (today:
+  ggml-rpc's unaligned reads, reached by the RPC gate). The web UI job also type-checks
+  (`npm run check`) and builds. Windows stays compile-only, with the reason in the workflow: its
+  gates have never been run.
 
 ### Changed
 - **A shorter README, for what the project is now.** It introduced a way to run a model past RAM
