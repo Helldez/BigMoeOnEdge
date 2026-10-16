@@ -10,6 +10,7 @@ for the idea the project is built on.
 | [architecture.md](architecture.md) | How the layers fit together, and why llama.cpp is not forked. |
 | [moe-streaming.md](moe-streaming.md) | Why streaming experts from flash makes a >RAM model run at all. |
 | [seam.md](seam.md) | The exact contract with llama.cpp's public API, and how to upgrade the submodule. |
+| [platforms.md](platforms.md) | What runs on each operating system and backend, how far each has been taken, and what each still owes. |
 | [backends.md](backends.md) | Every compute backend the pinned llama.cpp carries, which of them this engine has actually run on, and what each use of a device asks of one. |
 | [limitations.md](limitations.md) | What this does not do, what it cannot do, and the prior art it builds on. |
 | [roadmap.md](roadmap.md) | Where the project is going as a product, in order; then the research themes, with what was measured and what was refuted. |

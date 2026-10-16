@@ -7,6 +7,10 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **`docs/platforms.md`: what runs where.** One page with a matrix per operating system (engine,
+  server, native app, planner, isolated probes, CI, release artifact, the hardware it was run on)
+  and per compute backend, each cell linked to the page that backs it, and what each platform
+  still owes. Linked from the docs index and from `docs/backends.md`.
 - **The Android app is a client of `bmoe-server`, and a complete app.** The APK's `libbmoe-server.so`
   runs as a child process of a foreground service, on loopback with the app's data beside its
   files, and the five screens speak its HTTP API as the web UI does: chat with conversations saved
