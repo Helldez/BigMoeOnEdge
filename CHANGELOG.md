@@ -7,22 +7,36 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
-- **The release APK carries the Vulkan and OpenCL backends beside Hexagon.** One APK for every
-  phone: the planner enumerates whichever GPU the phone's driver registers, measures it in a
-  process of its own and arms it as the prefill device by the rule that arms Metal and the NPU,
-  with no engine change (`docs/hardware-planning.md`). The OpenCL backend is linked against the
-  Khronos ICD loader shipped in the APK, so a phone without OpenCL still starts the engine;
-  where the phone has a vendor library the app puts it first on the linker path so the backend
-  links it directly, as llama.cpp does (opened through the loader the two deadlock, measured on
-  a Snapdragon phone), falls back to the loader when the vendor library refuses to link, and
-  gives the backend a kernel cache directory it can write.
-  `scripts/android-gpu-deps.sh` fetches the Khronos headers and builds the loader at pinned tags,
-  for the release recipe and for CI, which now cross-compiles both backends on every PR; the
-  release-apk workflow gains a dry run from any ref that keeps the APKs as an artifact. Run on a
-  Snapdragon-class phone: OpenCL is 9x the cores at prefill width and wrong, Vulkan is right in
-  fp32 and no faster than the cores, so the plan arms neither and keeps arming the NPU where the
-  ledger has room; the figures are in `docs/npu-prefill.md`, and the crash that followed the
-  NPU load there is #264.
+- **Every release carries its compute backends as modules, on every OS.** The engine knows no
+  backend at compile time: each is a library ggml loads from the executable's own directory at
+  start-up, the CPU one once per instruction-set tier with the best picked on the machine, and a
+  module whose driver library is missing is not loaded instead of keeping the binary from
+  starting (`BMOE_BACKEND_MODULES`, on by default; iOS stays linked, as the platform demands).
+  The APK carries Vulkan and OpenCL beside Hexagon, the Linux and Windows archives Vulkan, the
+  macOS one Metal; a module built with another toolchain (CUDA, HIP, SYCL) and dropped beside
+  the binary loads like the shipped ones. The planner enumerates whatever registered, measures
+  each device in a process of its own and arms a prefill device by the rule that arms Metal and
+  the NPU, with no engine change (`docs/backends.md`, `docs/hardware-planning.md`). `--overlap`
+  survives the move: the fork's expert-ready hook is reached through the CPU backend's registry
+  (`ggml_backend_reg_get_proc_address`) rather than linked, so the fork stays one commit and a
+  build on stock upstream refuses `--overlap` with the reason instead of failing to link; the
+  server's default and its `overlap_available` follow the backend that loaded
+  (`docs/seam.md`). Windows gains the device probe in a process of its own, so a GPU driver that
+  dies there ends the probe and not the server. `scripts/build-portable.sh` is gone: the default
+  build is that build.
+- **Android: the app's launcher names no backend.** The engine's linker path is its own
+  directory, plus a directory holding one symlink to the phone's OpenCL library under the
+  standard name, so the OpenCL module loads where the phone has one and not otherwise (through
+  the Khronos loader instead, the two deadlock, measured on a Snapdragon phone). A vendor
+  directory on the path and the backend tuning variables the app used to set are gone: the first
+  shadows system libraries and breaks a backend's fallback to its driver service, the second
+  presumed what the planner measures. `scripts/android-gpu-deps.sh` fetches the Khronos headers
+  and the OpenCL link-time library at pinned tags, for the release recipe and for CI, which
+  cross-compiles both GPU modules on every PR; the release-apk workflow gains a dry run from any
+  ref that keeps the APKs as an artifact. Run on a Snapdragon-class phone: OpenCL is 9x the cores
+  at prefill width and wrong, Vulkan is right in fp32 and no faster than the cores, so the plan
+  arms neither and keeps arming the NPU where the ledger has room; the figures are in
+  `docs/npu-prefill.md`, and the crash that followed the NPU load there is #264.
   `docs/backends.md` also corrects one cell: OpenCL's `buffer_from_host_ptr` is wired to a
   function that declines, not to an implementation.
 

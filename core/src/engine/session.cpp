@@ -1165,13 +1165,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             im.source.set_io_trace(true);
         }
 
-        if (cfg.moe.overlap) {
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-            im.source.enable_overlap_hook();
-#else
-            return fail("--overlap requires the bmoe llama.cpp fork (expert-ready hook not compiled in)");
-#endif
-        }
+        if (cfg.moe.overlap && !im.source.enable_overlap_hook())
+            return fail("--overlap needs the expert-ready hook of the bmoe llama.cpp fork, and the CPU backend "
+                        "loaded here does not expose it (docs/seam.md)");
 
         im.clear_memory(ctx); // discard warm-up KV
         if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);

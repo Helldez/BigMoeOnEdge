@@ -109,6 +109,10 @@ struct ChildResult {
 };
 bool can_run_self();
 ChildResult run_self(const std::vector<std::string> & args, double timeout_seconds, std::string * out);
+// The path the kernel started this process from (not argv[0], which is whatever the caller
+// typed), or "" where the platform does not say. Its directory is where a release's backend
+// modules are looked for.
+std::string self_path();
 
 // Reserved (address-only) region; physical pages appear on commit, vanish on evict.
 size_t vm_page();

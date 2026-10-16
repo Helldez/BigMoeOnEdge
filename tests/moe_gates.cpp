@@ -18,7 +18,7 @@
 //
 // If G3 passes, the streamer provably never gathers an unrouted (garbage) slice. If G4
 // passes, the async path gates each expert correctly — compute never races ahead of its read.
-// G4 is compiled only when the fork's expert-ready hook is present (BMOE_HAVE_EXPERT_READY_HOOK).
+// G4, G5b and S2 run only when the CPU backend loaded here exposes the fork's expert-ready hook.
 //
 //   S1  two sequential Session generates (warm cache) == one-shot resident, per prompt
 //   S3  same, with an explicit budget shrink between the two generates (full eviction pass)
@@ -74,6 +74,7 @@
 // and the G9b control still run and must pass.
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
+#include "bmoe/probe.h"
 #include "bmoe/session.h"
 #include "gguf_offsets.h"
 
@@ -386,64 +387,64 @@ int main(int argc, char ** argv) {
     fails += check("G15a row-stream(row-gathered tables from flash) == resident", s_res, s_rows);
     fails += check("G15b row-stream(one-slab window, evicting) == resident", s_res, s_rows_tight);
 
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-    // overlap, cache off
-    RunConfig ov0 = base(model);
-    ov0.moe.enabled = true;
-    ov0.moe.cache_mb = 0;
-    ov0.moe.io_threads = 4;
-    ov0.moe.overlap = true;
+    if (!expert_ready_hook_available()) {
+        std::printf("[SKIP] G4 (the CPU backend here has no expert-ready hook)\n");
+    } else {
+        // overlap, cache off
+        RunConfig ov0 = base(model);
+        ov0.moe.enabled = true;
+        ov0.moe.cache_mb = 0;
+        ov0.moe.io_threads = 4;
+        ov0.moe.overlap = true;
 
-    // overlap, small forced cache (same cache config as G2's streamc)
-    RunConfig ovc = base(model);
-    ovc.moe.enabled = true;
-    ovc.moe.cache_mb = 2;
-    ovc.moe.force_cache = true;
-    ovc.moe.io_threads = 4;
-    ovc.moe.overlap = true;
+        // overlap, small forced cache (same cache config as G2's streamc)
+        RunConfig ovc = base(model);
+        ovc.moe.enabled = true;
+        ovc.moe.cache_mb = 2;
+        ovc.moe.force_cache = true;
+        ovc.moe.io_threads = 4;
+        ovc.moe.overlap = true;
 
-    // overlap, cache off, single I/O lane (stress: the compute threads stall on every expert)
-    RunConfig ov1 = base(model);
-    ov1.moe.enabled = true;
-    ov1.moe.cache_mb = 0;
-    ov1.moe.io_threads = 1;
-    ov1.moe.overlap = true;
+        // overlap, cache off, single I/O lane (stress: the compute threads stall on every expert)
+        RunConfig ov1 = base(model);
+        ov1.moe.enabled = true;
+        ov1.moe.cache_mb = 0;
+        ov1.moe.io_threads = 1;
+        ov1.moe.overlap = true;
 
-    // overlap, cache, two-wave publish: the lanes wake on the first projection's jobs and the
-    // batch grows mid-generation. Exercises the grown-batch worker predicate and the split
-    // commit; the wait-per-expert hook must still gate every projection to the same bytes.
-    RunConfig ov2w = base(model);
-    ov2w.moe.enabled = true;
-    ov2w.moe.cache_mb = 2;
-    ov2w.moe.force_cache = true;
-    ov2w.moe.io_threads = 4;
-    ov2w.moe.overlap = true;
-    ov2w.moe.io_two_wave = true;
+        // overlap, cache, two-wave publish: the lanes wake on the first projection's jobs and the
+        // batch grows mid-generation. Exercises the grown-batch worker predicate and the split
+        // commit; the wait-per-expert hook must still gate every projection to the same bytes.
+        RunConfig ov2w = base(model);
+        ov2w.moe.enabled = true;
+        ov2w.moe.cache_mb = 2;
+        ov2w.moe.force_cache = true;
+        ov2w.moe.io_threads = 4;
+        ov2w.moe.overlap = true;
+        ov2w.moe.io_two_wave = true;
 
-    std::string s_ov0, s_ovc, s_ov1, s_ov2w;
-    if (!gen(ov0, s_ov0, err)) {
-        std::fprintf(stderr, "overlap(cache off) run failed: %s\n", err.c_str());
-        return 2;
+        std::string s_ov0, s_ovc, s_ov1, s_ov2w;
+        if (!gen(ov0, s_ov0, err)) {
+            std::fprintf(stderr, "overlap(cache off) run failed: %s\n", err.c_str());
+            return 2;
+        }
+        if (!gen(ovc, s_ovc, err)) {
+            std::fprintf(stderr, "overlap(cache) run failed: %s\n", err.c_str());
+            return 2;
+        }
+        if (!gen(ov1, s_ov1, err)) {
+            std::fprintf(stderr, "overlap(io_threads=1) run failed: %s\n", err.c_str());
+            return 2;
+        }
+        if (!gen(ov2w, s_ov2w, err)) {
+            std::fprintf(stderr, "overlap(two-wave) run failed: %s\n", err.c_str());
+            return 2;
+        }
+        fails += check("G4a overlap(cache off) == streaming(cache off)", s_s0, s_ov0);
+        fails += check("G4b overlap(LRU cache) == streaming(cache off)", s_s0, s_ovc);
+        fails += check("G4c overlap(io_threads=1) == streaming(cache off)", s_s0, s_ov1);
+        fails += check("G4d overlap(two-wave publish) == streaming(cache off)", s_s0, s_ov2w);
     }
-    if (!gen(ovc, s_ovc, err)) {
-        std::fprintf(stderr, "overlap(cache) run failed: %s\n", err.c_str());
-        return 2;
-    }
-    if (!gen(ov1, s_ov1, err)) {
-        std::fprintf(stderr, "overlap(io_threads=1) run failed: %s\n", err.c_str());
-        return 2;
-    }
-    if (!gen(ov2w, s_ov2w, err)) {
-        std::fprintf(stderr, "overlap(two-wave) run failed: %s\n", err.c_str());
-        return 2;
-    }
-    fails += check("G4a overlap(cache off) == streaming(cache off)", s_s0, s_ov0);
-    fails += check("G4b overlap(LRU cache) == streaming(cache off)", s_s0, s_ovc);
-    fails += check("G4c overlap(io_threads=1) == streaming(cache off)", s_s0, s_ov1);
-    fails += check("G4d overlap(two-wave publish) == streaming(cache off)", s_s0, s_ov2w);
-#else
-    std::printf("[SKIP] G4 (expert-ready hook not built)\n");
-#endif
 
     // ── S1/S2: warm cache across Session generates must not change bytes ──
     // A forced small LRU cache so the first generate leaves state (resident + evicted entries)
@@ -490,18 +491,18 @@ int main(int argc, char ** argv) {
     }
     fails += check("G5a streaming(prefetch) == streaming(cache off)", s_s0, s_pf);
 
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-    RunConfig pf_ov = pf;
-    pf_ov.moe.overlap = true;
-    std::string s_pf_ov;
-    if (!gen(pf_ov, s_pf_ov, err)) {
-        std::fprintf(stderr, "prefetch overlap run failed: %s\n", err.c_str());
-        return 2;
+    if (!expert_ready_hook_available()) {
+        std::printf("[SKIP] G5b (the CPU backend here has no expert-ready hook)\n");
+    } else {
+        RunConfig pf_ov = pf;
+        pf_ov.moe.overlap = true;
+        std::string s_pf_ov;
+        if (!gen(pf_ov, s_pf_ov, err)) {
+            std::fprintf(stderr, "prefetch overlap run failed: %s\n", err.c_str());
+            return 2;
+        }
+        fails += check("G5b overlap(prefetch) == streaming(cache off)", s_s0, s_pf_ov);
     }
-    fails += check("G5b overlap(prefetch) == streaming(cache off)", s_s0, s_pf_ov);
-#else
-    std::printf("[SKIP] G5b (expert-ready hook not built)\n");
-#endif
 
     // G5c forces speculative reads to complete synchronously, so the integrate-then-hit path (a
     // prefetched expert becoming resident and a later routing hitting it) is deterministically
@@ -515,19 +516,19 @@ int main(int argc, char ** argv) {
     }
     fails += check("G5c prefetch(sync integrate+hit) == streaming(cache off)", s_s0, s_pf_sync);
 
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-    RunConfig sess_ov = sess;
-    sess_ov.moe.overlap = true;
-    std::string s_og1, s_og2;
-    if (!session_two_gens(sess_ov, s_og1, s_og2, err)) {
-        std::fprintf(stderr, "session overlap run failed: %s\n", err.c_str());
-        return 2;
+    if (!expert_ready_hook_available()) {
+        std::printf("[SKIP] S2 (the CPU backend here has no expert-ready hook)\n");
+    } else {
+        RunConfig sess_ov = sess;
+        sess_ov.moe.overlap = true;
+        std::string s_og1, s_og2;
+        if (!session_two_gens(sess_ov, s_og1, s_og2, err)) {
+            std::fprintf(stderr, "session overlap run failed: %s\n", err.c_str());
+            return 2;
+        }
+        fails += check("S2a session+overlap generate #1 == resident", s_res, s_og1);
+        fails += check("S2b session+overlap generate #2 (warm cache) == resident", s_res, s_og2);
     }
-    fails += check("S2a session+overlap generate #1 == resident", s_res, s_og1);
-    fails += check("S2b session+overlap generate #2 (warm cache) == resident", s_res, s_og2);
-#else
-    std::printf("[SKIP] S2 (expert-ready hook not built)\n");
-#endif
 
     // G8 — cache-aware expert dropping, plumbing vs policy.
     //

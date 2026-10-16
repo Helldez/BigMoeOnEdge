@@ -144,9 +144,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF \
             -DBMOE_BUILD_TESTS=OFF \
-            -DGGML_NATIVE=OFF \
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF
           cmake --build build --config Release -j --target bmoe-cli bmoe-server
@@ -209,7 +207,6 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_SERVER=ON \
             -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF \
             -DGGML_VULKAN=ON -DGGML_OPENCL=ON $(cat build-android/gpu-deps/cmake-flags) \
-            -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" \
             -DLLAMA_CURL=OFF
           cmake --build build-android -j
       - name: Stage engine binaries into jniLibs
@@ -220,7 +217,10 @@ jobs:
           mkdir -p "$jni"
           cp build-android/bin/bmoe-cli "$jni/libbmoe-cli.so"
           cp build-android/bin/bmoe-server "$jni/libbmoe-server.so"
-          find build-android \( -name 'libggml*.so' -o -name 'libllama*.so' -o -name 'libOpenCL.so' \) -exec cp {} "$jni/" \;
+          # Everything the build put beside the engine: ggml, llama and one module per backend. The
+          # OpenCL module's link-time libOpenCL.so stays behind: on the phone it resolves to the
+          # system's own, or the module is not loaded.
+          cp build-android/bin/libggml*.so build-android/bin/libllama*.so "$jni/"
           # bmoe-cli links the c++_shared STL; ship its runtime from the NDK sysroot.
           cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$jni/"
           ls -la "$jni"

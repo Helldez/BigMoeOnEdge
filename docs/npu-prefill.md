@@ -233,16 +233,16 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
   one DSP-side skel per NPU generation (v73 to v81) inside upstream's Snapdragon toolchain container,
   and `scripts/stage-hexagon-jnilibs.ps1` stages them into the app. The release APK is built the same
   way by CI, so it carries all of them.
-- The GPU backends ride in the same APK. Vulkan needs nothing set. The OpenCL backend imports
-  `libOpenCL.so`, and the APK ships the Khronos ICD loader under that name so the import resolves
-  on a phone without OpenCL, where the loader reports no platform and the engine sees no device.
-  Where the phone has a vendor library the app puts it first on the linker path (a directory
-  holding one symlink to it), so the backend links the vendor's directly, as llama.cpp does on
-  Snapdragon: opened through the loader instead, the vendor library binds its own `cl*` calls to
-  the loader's exports and the two deadlock at the first platform query, measured on a Snapdragon
-  phone. A vendor library that refuses to link (a missing symbol) ends the process before `main`;
-  the app notices and starts the engine again with the loader. On the command line, put such a
-  directory first on `LD_LIBRARY_PATH` yourself.
+- The GPU backends ride in the same APK, as modules ([backends.md](backends.md)). Vulkan needs
+  nothing set. The OpenCL module imports `libOpenCL.so`, the phone's own, which the linker does not
+  look for on its own: the app puts a directory holding one symlink to it first on the linker path,
+  under the standard name every OpenCL phone gives it, and a phone without one simply does not load
+  the module. (It must be the phone's library and not a loader in the APK: opened through the
+  Khronos loader, the vendor library binds its own `cl*` calls to the loader's exports and the two
+  deadlock at the first platform query, measured on a Snapdragon phone.) The linker path holds
+  nothing else: a vendor directory on it shadows system libraries and breaks a backend's fallback
+  to its driver service, and no backend tuning variable is set by the app. On the command line,
+  put such a directory first on `LD_LIBRARY_PATH` yourself.
 - `--prefill-loaders N` (default 8) sets the threads that fill the slots, apart from `--io-threads`,
   which stays the decode's read lanes. Each loader reads and repacks, and a K-quant repack is
   CPU-heavy: on a Q4_K_M, 4 loaders left the NPU waiting 10.3 s of a 15.1 s prefill, 8 left it 5.0 of

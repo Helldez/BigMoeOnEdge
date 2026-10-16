@@ -879,8 +879,9 @@ int main(int argc, char ** argv) {
     if (seen.count("dense-on-device")) auto_plan = true; // a request to the planner, as before
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
+    // Every backend beside the executable, once, before anything asks ggml about devices.
+    register_backends();
     if (!probe_device.empty()) {
-        register_backends();
         llama_backend_init();
         std::string facts;
         if (!probe_one_device(cfg.model_path.c_str(), probe_device, facts)) {

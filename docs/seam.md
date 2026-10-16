@@ -64,8 +64,18 @@ CPU MoE kernel invokes.
 
 ```c
 // ggml-cpu.h
-void ggml_cpu_set_expert_ready_hook(ggml_expert_ready_hook_t hook, void * user_data);
+void ggml_cpu_set_expert_ready_hook(ggml_cpu_expert_ready_hook_t hook, void * user_data);
+// and the same setter from the CPU backend's registry, by name:
+ggml_backend_reg_get_proc_address(cpu_reg,
+                                  "ggml_cpu_set_expert_ready_hook");
 ```
+
+The engine never links the symbol: it asks the CPU backend's registry for it at run time, the
+way ggml exposes every other backend-specific function (threads, NUMA, the abort callback). That
+is what lets the CPU backend be a module loaded from beside the executable, which is how every
+release is built (`BMOE_BACKEND_MODULES`), and what lets a build on stock upstream run: the
+registry answers null, `expert_ready_hook_available()` says so, and `--overlap` is refused with
+the reason instead of failing to link.
 
 `ggml_compute_forward_mul_mat_id` calls the hook at the top of its per-expert loop, right
 after the "expert not routed this token" skip, before it consumes that expert's weight
@@ -81,11 +91,11 @@ and it can only fire *before* the expert matmuls of a layer run — it cannot pa
 through them. Overlapping expert reads with expert compute requires a per-expert wait point
 *inside* the kernel, which the public API does not provide. Hence the extension.
 
-**Graceful degradation.** CMake probes `ggml-cpu.h` for the hook symbol and, when present,
-defines `BMOE_HAVE_EXPERT_READY_HOOK`. Built against stock upstream (symbol absent) the
-whole project still compiles and runs — the serial streaming path is unchanged; only
-`--overlap` is affected, and it fails with a clear runtime error instead of silently
-falling back.
+**Graceful degradation.** Nothing is detected at configure time. Built against stock upstream
+the whole project compiles and runs - the serial streaming path is unchanged; only `--overlap`
+is affected, and it fails with a clear runtime error instead of silently falling back. The
+server's default for overlap and the `overlap_available` it reports are read from the backend
+that loaded, not from a build flag.
 
 **Sunset condition.** This fork exists *solely* for this one hook. The moment upstream
 ships an equivalent per-expert readiness/residency callback, the branch is dropped and the
@@ -265,9 +275,9 @@ If a future release moves the two hooks (a stable expert-residency API, say) ups
 this seam shrinks further or disappears — `core/` does not change.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-2609`, commit `dce9698`: the single expert-ready-hook commit
-(section 3) on top of upstream `ggml-org/llama.cpp` master `965f897` of 2026-09-26 (530 commits
-past `b10666`). On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
+`bmoe/expert-ready-hook-2609-dl`: the single expert-ready-hook commit (section 3, with the
+setter in the CPU registry's `get_proc_address` table) on top of upstream `ggml-org/llama.cpp`
+master `965f897` of 2026-09-26 (530 commits past `b10666`). On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
 before the classic loop does, so the hook fires ahead of it; G4 is what proves it still gates
 every read. Each bump gets its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /

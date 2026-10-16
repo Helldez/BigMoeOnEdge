@@ -2,10 +2,8 @@
 
 #include "row_stream.h"
 
+#include "ggml-backend.h"
 #include "ggml.h"
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-#include "ggml-cpu.h" // ggml_cpu_set_expert_ready_hook (fork-only)
-#endif
 
 #include <algorithm>
 #include <chrono>
@@ -1452,11 +1450,33 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
     stall_union_.exit();
 }
 
-void ExpertStreamSource::enable_overlap_hook() {
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-    ggml_cpu_set_expert_ready_hook(&ExpertStreamSource::c_expert_ready, this);
+// The fork's `ggml_cpu_set_expert_ready_hook`, asked of the CPU backend's registry the way ggml
+// exposes every other backend-specific function (threads, NUMA, the abort callback). Linking the
+// symbol would bind the engine to a CPU backend linked in; through the registry it is reached in
+// a build where that backend is a module loaded at start-up, and a build on stock upstream, whose
+// CPU backend has no such entry, answers null here instead of failing to link.
+namespace {
+using set_expert_ready_hook_t = void (*)(void (*)(const ggml_tensor *, int, void *), void *);
+
+set_expert_ready_hook_t resolve_expert_ready_hook() {
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (!cpu) return nullptr;
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(cpu);
+    if (!reg) return nullptr;
+    return (set_expert_ready_hook_t) ggml_backend_reg_get_proc_address(reg, "ggml_cpu_set_expert_ready_hook");
+}
+} // namespace
+
+bool expert_ready_hook_available() {
+    return resolve_expert_ready_hook() != nullptr;
+}
+
+bool ExpertStreamSource::enable_overlap_hook() {
+    set_hook_ = resolve_expert_ready_hook();
+    if (!set_hook_) return false;
+    set_hook_(&ExpertStreamSource::c_expert_ready, this);
     hook_registered_ = true;
-#endif
+    return true;
 }
 
 IExpertSource::Stats ExpertStreamSource::stats() const {
@@ -1496,14 +1516,12 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
 
 void ExpertStreamSource::shutdown() {
     if (!active_) return;
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // Unregister the process-global hook FIRST: after this no compute thread can enter
     // on_expert_ready and touch members we are about to tear down.
-    if (hook_registered_) {
-        ggml_cpu_set_expert_ready_hook(nullptr, nullptr);
+    if (hook_registered_ && set_hook_) {
+        set_hook_(nullptr, nullptr);
         hook_registered_ = false;
     }
-#endif
     // Wake any straggler blocked on a readiness flag so it observes fatal_ and unwinds.
     fatal_.store(true, std::memory_order_release);
     {

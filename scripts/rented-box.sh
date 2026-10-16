@@ -45,13 +45,10 @@ say "machine"
 cat "$OUT/machine.txt"
 
 say "build"
-# Backends are opt-in at configure time. Enable what the box has; a build without a device is a
-# valid run of this script and answers the CPU half of every question below.
-#
-# The alternative is scripts/build-portable.sh, which builds the backends as separate libraries and
-# lets ggml find them at start-up - one binary that adapts. It costs `--overlap` and the native CPU
-# tuning, so it is the right answer for shipping and the wrong one for a benchmark that has to be
-# comparable with the numbers already on record.
+# Backends are opt-in at configure time. Enable what the box has (-DGGML_CUDA=ON, -DGGML_VULKAN=ON,
+# ... through BMOE_CMAKE_EXTRA); a build without a device is a valid run of this script and answers
+# the CPU half of every question below. Each backend is built as a module beside the binary, as
+# every release is, and the plan says which of them registered on this box.
 CMAKE_EXTRA="${BMOE_CMAKE_EXTRA:-}"
 run cmake -S . -B build-rented -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=ON ${CMAKE_EXTRA}
 run cmake --build build-rented -j

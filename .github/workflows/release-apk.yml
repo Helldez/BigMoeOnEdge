@@ -81,19 +81,18 @@ jobs:
             ghcr.io/snapdragon-toolchain/arm64-android@sha256:91714433626f0d94a926538a1e46ec43756c5b8e3262b91b95df1e812940aed1 \
             bash /workspace/scripts/build-hexagon-android.sh
 
-      # An explicit list, mirroring scripts/stage-hexagon-jnilibs.ps1: nothing else the build tree
-      # holds can ride into the APK. The CLI and the server ship as libbmoe-cli.so and
-      # libbmoe-server.so because Android only extracts lib*.so from an APK. libOpenCL.so is the
-      # Khronos ICD loader the OpenCL backend links, not a vendor library
-      # (scripts/android-gpu-deps.sh).
+      # The build's bin directory and the DSP skels, mirroring scripts/stage-hexagon-jnilibs.ps1:
+      # nothing else the build tree holds can ride into the APK. The CLI and the server ship as
+      # libbmoe-cli.so and libbmoe-server.so because Android only extracts lib*.so from an APK. The
+      # OpenCL module's link-time libOpenCL.so (scripts/android-gpu-deps.sh) stays behind: on the
+      # phone the module resolves the system's own, or is not loaded.
       - name: Collect libraries
         run: |
           mkdir -p jni
           cp build-android/bin/bmoe-cli jni/libbmoe-cli.so
           cp build-android/bin/bmoe-server jni/libbmoe-server.so
-          for f in libggml.so libggml-base.so libggml-cpu.so libllama.so libllama-common.so libggml-hexagon.so \
-                   libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so \
-                   libggml-vulkan.so libggml-opencl.so libOpenCL.so; do
+          cp build-android/bin/libggml*.so build-android/bin/libllama*.so jni/
+          for f in libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so; do
             src=$(find build-android -name "$f" | head -1)
             test -n "$src" || { echo "$f not found"; exit 1; }
             cp "$src" "jni/$f"
@@ -166,11 +165,14 @@ jobs:
         run: |
           APK=examples/android/app/build/outputs/apk/dev/release/app-dev-release.apk
           unzip -l "$APK" | grep 'lib/arm64-v8a/'
-          # Every backend the release promises, and the loader the OpenCL one needs to resolve.
+          # Every backend the release promises, as modules; the CPU one in more than one tier; and
+          # no link-time stand-in for a system library.
           for f in libggml-hexagon.so libggml-htp-v73.so libggml-htp-v75.so libggml-htp-v79.so libggml-htp-v81.so \
-                   libggml-vulkan.so libggml-opencl.so libOpenCL.so; do
+                   libggml-vulkan.so libggml-opencl.so; do
             unzip -l "$APK" | grep -q "lib/arm64-v8a/$f" || { echo "missing $f in APK"; exit 1; }
           done
+          [ "$(unzip -l "$APK" | grep -c 'lib/arm64-v8a/libggml-cpu-')" -ge 2 ] || { echo "the CPU backend is not in tiers"; exit 1; }
+          if unzip -l "$APK" | grep -q 'lib/arm64-v8a/libOpenCL.so'; then echo "the OpenCL stand-in library is in the APK"; exit 1; fi
 
       - name: Upload assets to the release
         if: github.event_name == 'release' || inputs.upload

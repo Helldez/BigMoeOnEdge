@@ -3,10 +3,11 @@
 # toolchain (docs/community-benchmarks.md). Same clean-checkout rule as release-apk.yml: nothing
 # from a developer machine rides into a published artifact.
 #
-# Portability over speed: GGML_NATIVE=OFF so the binary is not tuned to the runner's CPU. The
-# x86_64 builds assume AVX2 (every desktop CPU since 2013, every N100/Ryzen mini PC); aarch64
-# assumes armv8.2-a with dotprod and fp16, the same floor the Android build uses. Anything older
-# builds from source in one command, and the archive's README says so.
+# One layout on every OS: the executable and, beside it, one module per backend and one CPU module
+# per instruction-set tier, the best picked at start-up (BMOE_BACKEND_MODULES, the top-level
+# CMakeLists). A module whose driver library the machine lacks is not loaded and the engine runs on
+# the CPU, so the same archive serves a laptop with a GPU and a server without one. Vulkan rides in
+# the Linux and Windows archives; Metal in the macOS one.
 name: release-host
 
 on:
@@ -36,17 +37,18 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: linux-x86_64
-            cmake_extra: -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+            cmake_extra: -DGGML_VULKAN=ON
           - os: ubuntu-22.04-arm
             target: linux-aarch64
-            cmake_extra: -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16
+            cmake_extra: -DGGML_VULKAN=ON
           - os: macos-14
             target: macos-arm64
             cmake_extra: ""
           - os: windows-latest
             target: windows-x86_64
-            # Static MSVC runtime: the exe must not depend on the VC++ Redistributable being installed.
-            cmake_extra: -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+            # The shared C runtime: modules and the engine must share one heap, which a static
+            # runtime in each would not; the archive's README names the redistributable.
+            cmake_extra: -DGGML_VULKAN=ON
     runs-on: ${{ matrix.os }}
     steps:
       - name: Resolve tag
@@ -72,9 +74,20 @@ jobs:
         shell: bash
         run: bash scripts/check-version.sh "${{ steps.tag.outputs.tag }}"
 
-      - name: Install ninja (Linux)
+      # Vulkan needs its shader compiler and headers on the build host; the archive needs nothing
+      # but a driver on the machine that runs it.
+      - name: Install ninja and the Vulkan toolchain (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build glslc libvulkan-dev spirv-headers
+      - name: Install the Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = "1.4.357.0"
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$v"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$v\bin"
 
       # The desktop app's web UI, built from the same checkout; the server build stages it beside
       # the binary (server/stage_assets.cmake).
@@ -85,7 +98,6 @@ jobs:
         shell: bash
         run: cd ui && npm ci && npm test && npm run build
 
-      # Static: one file to download, no libggml/libllama next to it to get wrong.
       - name: Configure & build
         shell: bash
         run: |
@@ -93,9 +105,7 @@ jobs:
           if [ "${{ runner.os }}" != "Windows" ]; then GEN="-G Ninja"; fi
           cmake -S . -B build $GEN \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF \
             -DBMOE_BUILD_TESTS=OFF \
-            -DGGML_NATIVE=OFF \
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF \
             ${{ matrix.cmake_extra }}
@@ -106,6 +116,16 @@ jobs:
         shell: bash
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
+          # The engine and its libraries travel together: ggml and llama, and one module per
+          # backend, which ggml finds beside the executable at start-up.
+          libs() { # <dir>: copy every shared library the build put beside the executables
+            # -P keeps the soname symlinks as symlinks (libggml.so.0 -> libggml.so.0.x.y): the
+            # executables name the versioned ones, and tar carries symlinks as they are.
+            if [ "${{ runner.os }}" = "Windows" ]; then cp build/bin/Release/*.dll "$1/";
+            elif [ "${{ runner.os }}" = "macOS" ]; then cp -P build/bin/*.dylib "$1/"; strip -x "$1"/*.dylib || true;
+            else cp -P build/bin/*.so* "$1/"; strip "$1"/*.so* || true; fi
+            ls "$1" | grep -q 'ggml-cpu-' || { echo "no CPU backend module in $1"; exit 1; }
+          }
           NAME="bmoe-cli-$TAG-${{ matrix.target }}"
           mkdir -p "$NAME"
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -114,6 +134,7 @@ jobs:
             cp build/bin/bmoe-cli "$NAME/"
             strip "$NAME/bmoe-cli" || true
           fi
+          libs "$NAME"
           cp LICENSE "$NAME/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             EXE='.\bmoe-cli.exe'; SHELL_NAME='PowerShell or cmd'
@@ -129,9 +150,10 @@ jobs:
             $EXE -m path/to/model.gguf --moe-stream --overlap --dense-weights anon --cache-mb 2000 --io-threads 4 -t 8 -n 64 --chatml --no-think -p "Explain MoE routing."
 
           -m is the only required flag; $EXE --help lists the rest and $EXE --list-archs the
-          supported MoE architectures. Portable build: x86_64 assumes AVX2, aarch64 assumes
-          armv8.2-a+dotprod+fp16. If it fails to start on your CPU, build from source with
-          scripts/build-host.sh in the repository, one command.
+          supported MoE architectures. Keep this folder together: the libraries beside the program
+          are its compute backends, loaded at start-up. The CPU one comes in several instruction-set
+          tiers and the best for this machine is picked; a GPU backend loads only where its driver
+          is installed, and the plan (--auto --plan-explain) says which devices were found.
 
           Benchmark on this machine, printing the tables for a benchmark-report issue (Linux and
           macOS; on Windows run the protocol command from docs/community-benchmarks.md by hand):
@@ -144,6 +166,7 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then BIN=build/bin/Release; SRV=bmoe-server.exe; else BIN=build/bin; SRV=bmoe-server; fi
           cp "$BIN/$SRV" "$DESK/"
           [ "${{ runner.os }}" = "Windows" ] || strip "$DESK/$SRV" || true
+          libs "$DESK"
           cp -r "$BIN/ui" "$BIN/catalog" "$DESK/"
           cp LICENSE "$DESK/"
           cat > "$DESK/README.txt" <<EOF
@@ -155,7 +178,9 @@ jobs:
 
           Settings and downloaded models live in your user data folder; ./$SRV --help lists the
           options. The HTTP API (OpenAI-compatible chat included) is documented in docs/server-api.md
-          in the repository.
+          in the repository. Keep this folder together: the libraries beside the program are its
+          compute backends, loaded at start-up; a GPU backend loads only where its driver is
+          installed, and the Plan page says which devices were found.
           EOF
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$NAME.zip" "$NAME" > /dev/null

@@ -12,14 +12,12 @@
 #   <prefix>/lib/libOpenCL.so           the Khronos ICD loader, built with the NDK
 #   <prefix>/cmake-flags                the cmake arguments that point a build at all of the above
 #
-# The ICD loader is the piece that makes one APK installable on every phone. The backend imports
-# libOpenCL.so as a load-time dependency, so a phone without one cannot start the process at all;
-# the loader ships under that name, resolves the import anywhere, and reports no platform where
-# there is no OpenCL. It is NOT what opens a vendor library: loaded through the loader, a vendor
-# libOpenCL.so binds its own cl* calls to the loader's exports (same soname) and the two deadlock
-# at the first platform query, measured on a Snapdragon phone. Where the phone has a vendor library
-# the app puts it first on the linker path, so the backend links it directly, as llama.cpp does
-# (examples/android, EngineService.kt).
+# The ICD loader is a link-time stand-in and nothing more. The OpenCL backend imports libOpenCL.so,
+# so its module needs one to link against; on the phone the module loads only where the system's
+# own libOpenCL.so resolves (the app puts the phone's library on the linker path), and a phone
+# without one simply has no OpenCL module loaded. Nothing from this prefix ships in the APK. (Loaded
+# through the Khronos loader instead, a vendor library binds its own cl* calls to the loader's
+# exports and the two deadlock at the first platform query, measured on a Snapdragon phone.)
 #
 #   scripts/android-gpu-deps.sh <prefix>        needs ANDROID_NDK_HOME or ANDROID_NDK_ROOT
 #   ANDROID_PLATFORM=android-29                  (default: the APK's minimum)

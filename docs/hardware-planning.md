@@ -142,17 +142,15 @@ The planner enumerates what ggml registers. A backend the build did not compile 
 beside the executable, is a device no rule can consider — so the plan reports "no accelerator" on any
 hardware, forever, and that is a property of the build printed as a property of the room.
 
-`register_backends()` calls `ggml_backend_load_all()` before enumeration, which finds backends
-shipped as separate shared libraries. Those are looked for **next to the executable**, which is why
-`CMAKE_RUNTIME_OUTPUT_DIRECTORY` is set at the root — a lone binary copied without its libraries
-silently reports a machine with no accelerator. `scripts/build-portable.sh` builds them that way
-(`GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS`) and enables the backends whose toolchain is present;
-it costs `--overlap`, whose expert-ready hook symbol lives in the CPU backend and cannot be linked
-against when that backend is loaded at runtime.
-
-What each release carries is decided by its build: the APK links in the CPU, Hexagon, Vulkan and
-OpenCL backends, so one APK fits every phone and the plan reports whichever devices the phone's
-drivers register; the desktop archives carry the CPU, and Metal on macOS.
+Every release is built with the backends as modules (`BMOE_BACKEND_MODULES`, the top-level
+CMakeLists): `register_backends()` loads them from the executable's own directory before
+enumeration, and from there only - a lone binary copied without its libraries reports a machine
+with no accelerator, and a module left in the working directory is not picked up. Which modules a
+release carries is decided by the build host's toolchain, not by a list per OS: Vulkan, OpenCL and
+Hexagon in the APK, Vulkan in the Linux and Windows archives, Metal in the macOS one; a module a
+user builds with another toolchain and drops beside the binary is loaded like the shipped ones.
+`--overlap` survives the move because the fork's hook is reached through the CPU backend's registry
+rather than linked ([seam.md](seam.md)).
 
 The profile records how many backends came linked, how many were loaded at run time, and whether
 anyone looked at all, so the plan keeps three answers apart: *this machine has no accelerator*,
@@ -577,8 +575,9 @@ process costs about 3.5 s, most of it the child measuring the host again as its 
 Starting a second process is the front-end's business, so the probe takes a runner; `bmoe-cli` and
 `bmoe-server` each give it one (`--probe-device` is the child's mode in both, `--no-isolated-probes`
 turns it off). Where a platform has no way to start one the runner is empty and the probes run
-here, as they always did: that is the case on Windows today. The time limit is two minutes, and it
-has not been seen to fire.
+here, as they always did: that is the case on iOS. Windows has its own implementation of the
+child, built and not yet run on a machine with a GPU. The time limit is two minutes, and it has not
+been seen to fire.
 
 What this does not do: it measures a matmul, not a prefill. The loaders that fill the device's
 slots from flash, and the storage under them, are not in the probe, so on a machine whose storage

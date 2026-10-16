@@ -20,6 +20,7 @@
 
 #include "bmoe/config.h"
 #include "bmoe/params.h"
+#include "bmoe/probe.h"
 #include "bmoe/recipe.h"
 #include "bmoe/version.h"
 
@@ -67,9 +68,9 @@ RunConfig server_defaults() {
     c.n_ctx = 4096;
     c.n_predict = 1024;
     c.decide.enabled = true; // POST /api/decide; costs nothing until a decision is asked for
-#if defined(BMOE_HAVE_EXPERT_READY_HOOK)
-    c.moe.overlap = true; // byte-identical and the measured best on every device; needs the hook
-#endif
+    // Byte-identical and the measured best on every device; needs the fork's hook in the CPU
+    // backend, which is a fact about the backend loaded, asked of it rather than assumed.
+    c.moe.overlap = expert_ready_hook_available();
     return c;
 }
 
@@ -619,6 +620,8 @@ int run(int argc, char ** argv) {
     Options o;
     const int rc = parse_args(argc, argv, o);
     if (rc >= 0) return rc;
+    // Every backend beside the executable, before anything asks ggml about devices or defaults.
+    register_backends();
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
     if (!o.probe_device.empty()) {

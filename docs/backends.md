@@ -63,8 +63,8 @@ Three things in that table decide what this engine can do with a backend.
 | RPC | host test builds | a test fixture only: a loopback server fronting the CPU, so the prefill-device gates have a second device | nothing a front-end can select |
 | BLAS | macOS, where llama.cpp turns it on by default | linked, never given a weight | nothing placed on it |
 | OpenCL | Android | built, in the release APK beside Hexagon (`scripts/build-hexagon-android.sh`), importing the Khronos ICD loader so a phone without OpenCL still starts the engine, and the vendor's own library where there is one; in July the dense set on a phone's integrated GPU was measured and lost 27 % (`RunConfig::dense_on_device`) | run on a Snapdragon-class phone with an Adreno GPU: 344 GiB/s at prefill width against the cores' 36, and it did not reproduce the host's result, so the plan refuses it on correctness and the prefill stays where the decode is; named by hand it is refused by the arena, whose per-expert placement its padded allocations do not fit ([npu-prefill.md](npu-prefill.md)) |
-| Vulkan | Android; Linux, Windows | built, in the release APK; on the desktop `scripts/build-portable.sh` turns it on when it finds `glslc`. One 2020 phone ran it and its driver ended the probe, which is what the isolated probe contains | run on the same phone: 44 GiB/s one token wide against the cores' 36, and 36 at prefill width, so no prefill win; its fp16 path did not reproduce the host's result and its fp32 one did. Forced by hand, a 1727-token prompt prefilled in 85 s against 65 on the cores ([npu-prefill.md](npu-prefill.md)) |
-| CUDA, HIP, SYCL | Linux, Windows | `scripts/build-portable.sh` turns each on when it finds the toolchain; none has been run here | unknown |
+| Vulkan | Android, Linux, Windows | built, in the release APK and in the Linux and Windows archives, as a module that loads only where a Vulkan driver is present. One 2020 phone ran it and its driver ended the probe, which is what the isolated probe contains | run on the same phone: 44 GiB/s one token wide against the cores' 36, and 36 at prefill width, so no prefill win; its fp16 path did not reproduce the host's result and its fp32 one did. Forced by hand, a 1727-token prompt prefilled in 85 s against 65 on the cores ([npu-prefill.md](npu-prefill.md)) |
+| CUDA, HIP, SYCL | Linux, Windows | not in any archive: a module built where the toolchain is (`-DGGML_CUDA=ON`, ...) and dropped beside the binary is loaded like the shipped ones; none has been run here | unknown |
 | MUSA, WebGPU, CANN, OpenVINO, ET, zDNN, ZenDNN, VirtGPU | - | never built here | unknown |
 
 Three backends, then, with a measurement behind them, out of eighteen.
@@ -87,8 +87,14 @@ measured: the same matmul on the model's own quantized format as the host, check
 host's result, and the cost of one host/device crossing. A device that does not reproduce the
 host's result is excluded on correctness, whatever its speed.
 
-So a backend llama.cpp adds needs no code here to be seen. It does need a build that carries it,
-and a machine to run it on: the Metal backend, the first one tried on a desktop, surfaced three
+So a backend llama.cpp adds needs no code here to be seen. It does need a module beside the
+executable, and a machine to run it on. Every release is built that way (`BMOE_BACKEND_MODULES`,
+the top-level CMakeLists): the engine knows no backend at compile time, each backend is a library
+ggml loads from the executable's directory at start-up, the CPU one comes in one library per
+instruction-set tier with the best picked on the machine, and a module whose driver library is
+missing fails to load and is simply not there, instead of keeping the binary from starting. The
+plan then reports what registered, and keeps "this machine has no accelerator" apart from "this
+build carries none". The Metal backend, the first one tried on a desktop, surfaced three
 faults no test had (one memory pool counted twice, an idle device taking graph nodes, a cache the
 kernel compressed). The honest reading of "unknown" above is that the same should be expected of
 each of the others.

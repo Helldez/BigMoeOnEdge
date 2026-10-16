@@ -44,10 +44,9 @@ class ServerProcess(private val ctx: Context) {
 
     /**
      * Start the server. With [share] it listens on every interface and requires [apiKey]; otherwise
-     * on loopback, with no key, the way the desktop runs it for its own UI. With [vendorOpenCL] the
-     * phone's own OpenCL library leads the linker path (see below).
+     * on loopback, with no key, the way the desktop runs it for its own UI.
      */
-    fun start(share: Boolean, apiKey: String, vendorOpenCL: Boolean, onExit: (code: Int, stderrTail: String) -> Unit) {
+    fun start(share: Boolean, apiKey: String, onExit: (code: Int, stderrTail: String) -> Unit) {
         val nativeDir = ctx.applicationInfo.nativeLibraryDir
         val dataDir = dataDir(ctx)
         val argv = mutableListOf(
@@ -62,35 +61,25 @@ class ServerProcess(private val ctx: Context) {
 
         val pb = ProcessBuilder(argv)
         pb.redirectErrorStream(false)
-        // The OpenCL backend imports libOpenCL.so. The APK's copy is the Khronos ICD loader, there so
-        // the import resolves on a phone with no OpenCL at all; the loader then reports no platform
-        // and the engine sees no OpenCL device. Where the phone has a vendor library the backend
-        // must link THAT one, directly, as llama.cpp does on Snapdragon: opened through the loader
-        // instead, the vendor library binds its own cl* calls to the loader's exports (same soname)
-        // and the two deadlock at the first platform query, measured on a Snapdragon phone. So a
-        // directory holding one symlink to the vendor library leads the linker path, and the loader
-        // is shadowed.
+        // The linker path is the engine's own directory and nothing else: the backends are modules
+        // there, and a module whose system library is missing is not loaded, which is how one APK
+        // runs on every phone. System directories are the linker's business; a vendor directory on
+        // the path shadows system libraries and, measured upstream, breaks a backend's fallback to
+        // its driver service. The one library a backend may need from outside and the linker does
+        // not look for is the phone's OpenCL: it is reached through a directory holding a single
+        // symlink to it, under the standard name every OpenCL phone gives it, whoever made the GPU.
         val linkerPath = buildList {
-            if (vendorOpenCL) vendorOpenClDir(ctx)?.let { add(it.absolutePath) }
-            add(nativeDir); add("/system/lib64"); add("/vendor/lib64")
+            if (hasVendorOpenCL()) vendorOpenClDir(ctx)?.let { add(it.absolutePath) }
+            add(nativeDir)
         }.joinToString(":")
         pb.environment()["LD_LIBRARY_PATH"] = linkerPath
-        // The Hexagon backend loads its DSP-side skel (libggml-htp-v<arch>.so) through fastrpc, which
-        // resolves it against ADSP_LIBRARY_PATH, not the linker path above. Without it the NPU
-        // registers and then fails to open a session.
+        // The one environment entry a backend documents it needs to find its own files: a DSP-side
+        // library is resolved through this path and not the linker's. Set whatever backends are
+        // present; where none reads it, it costs nothing.
         pb.environment()["ADSP_LIBRARY_PATH"] = nativeDir
-        // Compiled OpenCL programs are cached on disk. The backend's default is a temp dir this app
-        // cannot write, where it would disable the cache and compile every kernel at every start.
+        // Where a backend may keep compiled programs between runs. The engine's default is a temp
+        // dir this app cannot write, where the cache would disable itself.
         pb.environment()["GGML_OPENCL_KERNEL_CACHE_DIR"] = File(ctx.cacheDir, "cl-cache").absolutePath
-        if (ModelManager.hasHexagonBackend(ctx)) {
-            // Wait for the DSP by polling rather than by interrupt: the prefill arena stops the graph
-            // at every layer, twice, and measured on device polling halves the cost of each crossing.
-            // The backend polls only while a DSP op is in flight, so this costs nothing until the
-            // planner arms the NPU; and the host buffer type the prefill moves the KV cache into is
-            // only offered when asked for.
-            pb.environment()["GGML_HEXAGON_OPPOLL"] = "1"
-            pb.environment()["GGML_HEXAGON_HOSTBUF"] = "1"
-        }
         pb.directory(dataDir)
         val p = pb.start()
         process = p
@@ -138,9 +127,9 @@ class ServerProcess(private val ctx: Context) {
         /** The server's data directory (its settings.json and the catalog), beside the app's files. */
         fun dataDir(ctx: Context): File = File(ctx.filesDir, "bmoe").apply { mkdirs() }
 
-        /** The phone's own OpenCL library, where it has one. */
+        /** The phone's own OpenCL library, under the name and place every OpenCL phone gives it. */
         const val VENDOR_OPENCL = "/vendor/lib64/libOpenCL.so"
-        fun hasVendorOpenCL(): Boolean = File(VENDOR_OPENCL).exists()
+        private fun hasVendorOpenCL(): Boolean = File(VENDOR_OPENCL).exists()
 
         /**
          * A directory whose one entry is a symlink to the vendor library, so it alone can lead the
@@ -207,26 +196,11 @@ class EngineService : Service() {
         if (server?.process != null) return
         val share = AppPrefs.shareOnNetwork(this)
         val key = AppPrefs.apiKey(this)
-        val vendorOpenCL = ServerProcess.hasVendorOpenCL() && !AppPrefs.vendorOpenClBroken(this)
         Engine.serverStarting(share, key)
         val s = ServerProcess(this)
         server = s
-        val startedAt = System.nanoTime()
         try {
-            s.start(share, key, vendorOpenCL) { code, tail ->
-                // A vendor library that lacks a symbol the backend imports ends the process before
-                // main, and the linker says so on stderr (a 2020 phone did this). Remember it for
-                // this install and start again with the loader, which resolves and reports no platform.
-                val refusedToLink = vendorOpenCL && tail.contains("CANNOT LINK EXECUTABLE") &&
-                    System.nanoTime() - startedAt < 15_000_000_000L
-                if (refusedToLink) {
-                    AppPrefs.setVendorOpenClBroken(this, true)
-                    server = null
-                    startServer()
-                } else {
-                    Engine.serverExited(code, tail)
-                }
-            }
+            s.start(share, key) { code, tail -> Engine.serverExited(code, tail) }
         } catch (t: Throwable) {
             Engine.serverExited(-1, t.message ?: t.toString())
         }
