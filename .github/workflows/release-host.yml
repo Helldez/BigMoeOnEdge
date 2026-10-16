@@ -35,9 +35,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 24.04: the first Ubuntu that packages the Vulkan shader compiler the backend builds
-          # with. The archives need its glibc (2.39) or newer; older distributions build from source.
-          - os: ubuntu-24.04
+          # The oldest image that can build a target sets the oldest distribution its archive runs
+          # on, through the glibc and libstdc++ it links. x86_64 builds on 22.04 with the Vulkan
+          # shader compiler from LunarG's apt repository, as llama.cpp's own release does, so the
+          # archive runs where the previous ones did. aarch64 needs gcc-14 for the newest ARM tier
+          # and glslc, which 22.04 on arm has neither of: it builds on 24.04, also as llama.cpp
+          # does, and needs that glibc (2.38) or newer.
+          - os: ubuntu-22.04
             target: linux-x86_64
             cmake_extra: -DGGML_VULKAN=ON
           - os: ubuntu-24.04-arm
@@ -49,7 +53,8 @@ jobs:
           - os: windows-latest
             target: windows-x86_64
             # The shared C runtime: modules and the engine must share one heap, which a static
-            # runtime in each would not; the archive's README names the redistributable.
+            # runtime in each would not. Its DLLs travel in the archive (Package), so a machine
+            # without the redistributable installed still starts the binaries.
             cmake_extra: -DGGML_VULKAN=ON
     runs-on: ${{ matrix.os }}
     steps:
@@ -80,12 +85,19 @@ jobs:
       # but a driver on the machine that runs it.
       - name: Install ninja and the Vulkan toolchain (Linux)
         if: runner.os == 'Linux'
-        # gcc-14: the compiler 24.04 ships (13) does not build the newest ARM tier of the CPU
-        # backend; the same workaround llama.cpp's own release uses on this image.
+        # 22.04 packages no glslc: the SDK comes from LunarG's repository, the recipe llama.cpp's
+        # release uses there. On 24.04, gcc-14: the compiler it ships (13) does not build the
+        # newest ARM tier of the CPU backend; the same workaround llama.cpp uses on that image.
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q ninja-build glslc libvulkan-dev spirv-headers gcc-14 g++-14
-          echo "CC=gcc-14" >> "$GITHUB_ENV"
-          echo "CXX=g++-14" >> "$GITHUB_ENV"
+          if [ "$(lsb_release -rs)" = "22.04" ]; then
+            wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+            sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+            sudo apt-get update -q && sudo apt-get install -y -q ninja-build vulkan-sdk
+          else
+            sudo apt-get update -q && sudo apt-get install -y -q ninja-build glslc libvulkan-dev spirv-headers gcc-14 g++-14
+            echo "CC=gcc-14" >> "$GITHUB_ENV"
+            echo "CXX=g++-14" >> "$GITHUB_ENV"
+          fi
       - name: Install the Vulkan SDK (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -129,7 +141,18 @@ jobs:
             # -P keeps the soname symlinks as symlinks (libggml.so.0 -> libggml.so.0.x.y): the
             # executables name the versioned ones, and tar carries symlinks as they are.
             # On macOS the shared libraries are .dylib and the modules .so; both travel.
-            if [ "${{ runner.os }}" = "Windows" ]; then cp build/bin/Release/*.dll "$1/";
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              cp build/bin/Release/*.dll "$1/"
+              # The C++ runtime the binaries were linked against, copied beside them (the
+              # redistributable allows this local deployment): without it a machine that never
+              # installed the redistributable cannot start the program at all. The universal CRT
+              # ships with Windows itself.
+              VS="$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products "*" -property installationPath)"
+              CRT="$(ls -d "$(cygpath -u "$VS")"/VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT | sort | tail -1)"
+              cp "$CRT"/msvcp140*.dll "$CRT"/vcruntime140*.dll "$1/"
+              for d in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
+                [ -f "$1/$d" ] || { echo "the C++ runtime is missing $d in $1"; exit 1; }
+              done
             elif [ "${{ runner.os }}" = "macOS" ]; then cp -P build/bin/*.dylib build/bin/*.so "$1/"; strip -x "$1"/*.dylib "$1"/*.so || true;
             else cp -P build/bin/*.so* "$1/"; strip "$1"/*.so* || true; fi
             ls "$1" | grep -q 'ggml-cpu' || { echo "no CPU backend module in $1"; exit 1; }
@@ -162,8 +185,9 @@ jobs:
           are its compute backends, loaded at start-up. The CPU one comes in several instruction-set
           tiers and the best for this machine is picked; a GPU backend loads only where its driver
           is installed, and the plan (--auto --plan-explain) says which devices were found. The
-          Linux archives need glibc 2.39 or newer (Ubuntu 24.04, Debian 13, Fedora 40); on an
-          older distribution build from source with scripts/build-host.sh, one command.
+          Linux x86_64 archive runs on Ubuntu 22.04 and newer distributions; the aarch64 one needs
+          glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39). On an older distribution
+          build from source with scripts/build-host.sh, one command.
 
           Benchmark on this machine, printing the tables for a benchmark-report issue (Linux and
           macOS; on Windows run the protocol command from docs/community-benchmarks.md by hand):

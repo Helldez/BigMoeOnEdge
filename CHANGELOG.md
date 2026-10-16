@@ -23,7 +23,11 @@ Semantic Versioning.
   server's default and its `overlap_available` follow the backend that loaded
   (`docs/seam.md`). Windows gains the device probe in a process of its own, so a GPU driver that
   dies there ends the probe and not the server. `scripts/build-portable.sh` is gone: the default
-  build is that build.
+  build is that build. The modules share the engine's C runtime, so the Windows archives carry
+  the C++ runtime DLLs beside the binaries and still start on a machine that never installed the
+  Visual C++ Redistributable. The Linux x86_64 archive builds on Ubuntu 22.04 with LunarG's
+  Vulkan SDK and runs where the previous ones did; the aarch64 one builds on 24.04 for the newest
+  ARM tier, as llama.cpp's release does, and needs glibc 2.38 or newer.
 - **Android: the app's launcher names no backend.** The engine's linker path is its own
   directory, then `/system/lib64`, then `/vendor/lib64`: the OpenCL module links the phone's own
   `libOpenCL.so` where there is one (through the Khronos loader instead, the two deadlock,
