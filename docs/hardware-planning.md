@@ -482,13 +482,32 @@ prefill matched the text after the host prefill for the first 369 of 541 generat
 then chose a different word; two device runs matched each other exactly. A caller who needs the
 host's answer byte for byte passes an empty `--prefill-device`, which the plan leaves alone.
 
-On agreement. The check is a relative tolerance, not bit equality, and the bound sits between two
-populations that are far apart. Correct kernels disagree with the host by what their arithmetic
-differs in - the host multiplies a quantized weight by an activation it has itself quantized, a
-device typically by the float - measured at 4e-5 on a 4-bit type, 1.9e-4 on a 2-bit one and
-3e-4 to 4e-4 at prefill width. A wrong kernel is off by the size of the answer. The bound was 1e-4,
-which reported the 2-bit type and every wide result as wrong; it is a hundredth now, still two
-orders below "wrong".
+On agreement. The check is not bit equality, and it is not ours: it is the normalized mean
+squared error llama.cpp's `test-backend-ops` applies to a matmul, `sum((a-b)^2) / sum(a^2)` under
+5e-4. What precision a backend's kernels should have is upstream's call, made for every backend it
+ships; a stricter private bound only refuses devices its tests accept. Ours was stricter, and did:
+a laptop iGPU's Vulkan prefill accumulates in half precision and differs from the host by 4.4e-4
+(2.1% of the answer), the bound was then 1e-4 in this unit, and the device was reported as wrong -
+while the model's perplexity over a 1070-token text with its prefill on that device was 32.58
+against the host's 32.46. Correct kernels on full-precision paths sit far below, at 1.6e-9 to
+1.6e-7; a wrong kernel is off by the size of the answer, an NMSE near 1.
+
+Passing the check means a device computes what llama.cpp considers the same matmul, not the same
+bytes, and a greedy decode can choose a different word after a near tie, as the run above shows.
+It does not mean the device computes the model: a synthetic matmul cannot see a fault that only the
+model's own activations trigger. A phone GPU's Vulkan prefill, half precision too, took the same
+text's perplexity from 32.4 to 711 445 - no next token right in 1070.
+
+So the session confirms the device on the model before keeping it (`--prefill-verify`, on by
+default). After the load it prefills a fixed 64-token text on the host and on the device and keeps
+the device only if the top next token agrees in at least 90% of the positions; otherwise the device
+is handed back exactly as one that failed to open, and with `--prefill-best-effort`, which a plan
+that armed the device sets, the prefill stays on the CPU. Measured: the laptop iGPU agrees in 98%
+(logit NMSE 1.3e-3). The check costs three short prefills at load. It judges correctness only:
+it times both passes and prints the times, but at 64 tokens cold expert reads dominate, and that
+iGPU, faster there (6.5 s against 7.5), prefilled a real 1015-token prompt 8% slower than the host.
+Whether a device is faster stays the plan's estimate, which does not yet charge the expert arena's
+reads: it put the same iGPU at 1.5x.
 
 ## The widest graph
 

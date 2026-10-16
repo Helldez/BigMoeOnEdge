@@ -389,6 +389,18 @@ struct PrefillDeviceConfig {
     // its own must ask for - a speed-up the planner chose is never a reason for a model not to load.
     bool best_effort = false;
 
+    // Confirm the device on THIS model before the session keeps it: one prefill of a fixed text
+    // computed on the host and on the device, compared row by row. A device that does not pick the
+    // host's next token in nearly every row is handed back like one that failed to open
+    // (best_effort decides how). The planner's test is one synthetic matmul, which cannot see a
+    // fault only the model's own activations trigger: a phone GPU's half-precision prefill turned
+    // a model into noise. Whether the device is FASTER is not judged here - at this width cold
+    // expert reads dominate - and stays the planner's call. The cost is three short prefills at
+    // load; false skips it.
+    bool verify = true;
+    static constexpr int verify_tokens = 64;        // the probe prefill's width, under max_outputs
+    static constexpr float verify_min_agree = 0.9f; // rows whose top token must match the host's
+
     // How many layers of streamed experts the device holds at once (with moe.enabled). Two reads a
     // layer while the one before it computes; one reads each layer at its own routing node, with
     // the device waiting, and costs a layer less of memory. Same result either way.

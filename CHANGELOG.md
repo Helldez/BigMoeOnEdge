@@ -45,8 +45,21 @@ Semantic Versioning.
   `docs/npu-prefill.md`, and the crash that followed the NPU load there is #264.
   `docs/backends.md` also corrects one cell: OpenCL's `buffer_from_host_ptr` is wired to a
   function that declines, not to an implementation.
+- **A prefill device is confirmed on the model before the session keeps it** (`--prefill-verify`,
+  on by default). After the load the session prefills a fixed 64-token text on the host and on the
+  device and keeps the device only if its top next token matches the host's in at least 90% of the
+  positions; otherwise it is handed back like a device that failed to open, and a plan's device
+  leaves the prefill on the CPU. The planner's synthetic matmul cannot see a fault only the model's
+  activations trigger: a phone GPU's half-precision Vulkan prefill took a 1070-token text's
+  perplexity from 32.4 to 711 445. A laptop iGPU agrees in 98%. Three short prefills at load; the
+  check judges correctness, not speed (`docs/hardware-planning.md`).
 
 ### Fixed
+- **The device agreement check is llama.cpp's own.** The planner compared a device's matmul with
+  the host's under a private bound five times stricter than the normalized mean squared error
+  `test-backend-ops` allows a matmul (5e-4), and refused a laptop iGPU whose half-precision
+  prefill leaves the model's perplexity unchanged (32.58 against 32.46). The measure and the bound
+  are now upstream's; the confirmation above catches what a matmul cannot.
 - **A device that pads a single expert past its share of the slot is refused, not aborted on.**
   The OpenCL backend adds carve slack to every quantized tensor's allocation, so one expert's
   allocation outgrows its stride and the last expert reached past the slot, where ggml aborts
