@@ -49,8 +49,8 @@ what each use of a device asks of one. This table is the subset that has been bu
 | **CPU** | Measured | Measured | Measured by the gates in CI | Measured | Decode, prefill and expert streaming, everywhere |
 | **Hexagon** (Qualcomm NPU) | Measured, shipped in the release APK | - | - | - | Prefill on the NPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | **Metal** | - | Measured, on in every macOS build | - | - | Prefill on the GPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
-| **OpenCL** | Built, in the release APK, through the Khronos ICD loader; the dense weights on a phone GPU lost 27 % in July | - | Not built | Not built | On Android, a prefill device the planner can arm; owed a run |
-| **Vulkan** | Built, in the release APK; on one 2020 phone its driver ended the probe, which the isolated probe contains | Not built | Built by `scripts/build-portable.sh` when `glslc` is present, never run | Same as Linux | On Android, a prefill device the planner can arm; owed a run |
+| **OpenCL** | Measured on a Snapdragon-class phone, in the release APK: fast at prefill width and wrong, so the plan refuses it; the dense weights on a phone GPU lost 27 % in July | - | Not built | Not built | Nothing yet: refused on correctness ([npu-prefill.md](npu-prefill.md)) |
+| **Vulkan** | Measured on a Snapdragon-class phone, in the release APK: no faster than the cores at prefill width, not armed; on one 2020 phone its driver ended the probe, which the isolated probe contains | Not built | Built by `scripts/build-portable.sh` when `glslc` is present, never run | Same as Linux | Nothing yet: not a win on the phone measured ([npu-prefill.md](npu-prefill.md)) |
 | **CUDA, HIP, SYCL** | - | - | Built by `scripts/build-portable.sh` when the toolchain is present, never run | Same as Linux | Nothing |
 | **RPC** | - | - | Test fixture for the gates | - | Nothing a front-end can select |
 

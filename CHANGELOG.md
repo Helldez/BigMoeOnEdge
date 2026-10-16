@@ -17,10 +17,21 @@ Semantic Versioning.
   a Snapdragon phone), falls back to the loader when the vendor library refuses to link, and
   gives the backend a kernel cache directory it can write.
   `scripts/android-gpu-deps.sh` fetches the Khronos headers and builds the loader at pinned tags,
-  for the release recipe and for CI, which now cross-compiles both backends on every PR. Not run
-  on a phone yet: `docs/backends.md` and `docs/platforms.md` list both as built and owed a run.
+  for the release recipe and for CI, which now cross-compiles both backends on every PR; the
+  release-apk workflow gains a dry run from any ref that keeps the APKs as an artifact. Run on a
+  Snapdragon-class phone: OpenCL is 9x the cores at prefill width and wrong, Vulkan is right in
+  fp32 and no faster than the cores, so the plan arms neither and keeps arming the NPU where the
+  ledger has room; the figures are in `docs/npu-prefill.md`, and the crash that followed the
+  NPU load there is #264.
   `docs/backends.md` also corrects one cell: OpenCL's `buffer_from_host_ptr` is wired to a
   function that declines, not to an implementation.
+
+### Fixed
+- **A device that pads a single expert past its share of the slot is refused, not aborted on.**
+  The OpenCL backend adds carve slack to every quantized tensor's allocation, so one expert's
+  allocation outgrows its stride and the last expert reached past the slot, where ggml aborts
+  inside the allocation instead of returning. The arena checks it when it sizes the slots and
+  refuses with the reason, where a planned device still falls back to the host.
 
 ## [0.30.0] - 2026-10-16
 

@@ -77,10 +77,30 @@ With the cache left unpinned (`--no-cache-pin`) the CPU prefill of the same prom
 and the GPU's was unchanged at 3.3 to 3.4 s: the kernel was compressing the cache underneath the
 CPU path ([cache-sizing.md](cache-sizing.md)), and the arena does not go through the cache.
 
+### On the phone's GPU (Vulkan, OpenCL)
+
 The release APK carries the Vulkan and OpenCL backends beside Hexagon, so on a phone the planner
-measures the GPU too, through whichever of the two its driver offers, and arms it by the same
-rule. Neither has been run here yet; the NPU and Metal figures on this page are the only
-measurements.
+measures the GPU too, through whichever of the two its driver offers, and weighs it by the same
+rule. Measured on a Snapdragon-class phone with an Adreno GPU (12 GB class, Hexagon v81), Nemotron
+3.5 30B-A3B Q4_0, the probe's matmul against the cores' 36 GiB/s:
+
+| device | one token wide | 128 tokens wide | the host's result at 128 |
+|---|---:|---:|---|
+| OpenCL (Adreno kernels) | 29 GiB/s | 344 GiB/s | no |
+| Vulkan, fp16 (the default) | 44 GiB/s | 37 GiB/s | no |
+| Vulkan, fp32 (`GGML_VK_DISABLE_F16=1`) | 44 GiB/s | 36 GiB/s | yes |
+| Hexagon NPU | - | 57.9x the cores | yes |
+
+So the plan refuses OpenCL on correctness whatever its speed, finds Vulkan no faster than the
+cores, and arms the NPU where the ledger has room: it did at a 4096 context with 4.3 GB
+available, and refused it on memory at a 20000 context. Forced by hand, a 1727-token prompt
+prefilled in 85 s on Vulkan in fp32 against 65 s on four cores, and the fp16 Vulkan prefill
+produced text that was not text. OpenCL named by hand is refused by the arena: the backend pads
+every quantized tensor's allocation, so one expert does not fit its share of the slot. What the
+GPU buys on this phone is nothing yet; what the run bought is that the rule said so before a user
+did. The load with the NPU armed then ended in the allocator, twice, before the first token: the
+NPU figure above is the probe's, and the run is tracked in
+[#264](https://github.com/Helldez/BigMoeOnEdge/issues/264).
 
 **Memory is the limit on a model with a large KV cache.** The device path holds the two expert slots
 (1.1 GB on this model), the device's compute buffers (0.8 GB at ubatch 2048) and the model state in
