@@ -25,12 +25,14 @@ Semantic Versioning.
   dies there ends the probe and not the server. `scripts/build-portable.sh` is gone: the default
   build is that build.
 - **Android: the app's launcher names no backend.** The engine's linker path is its own
-  directory, plus a directory holding one symlink to the phone's OpenCL library under the
-  standard name, so the OpenCL module loads where the phone has one and not otherwise (through
-  the Khronos loader instead, the two deadlock, measured on a Snapdragon phone). A vendor
-  directory on the path and the backend tuning variables the app used to set are gone: the first
-  shadows system libraries and breaks a backend's fallback to its driver service, the second
-  presumed what the planner measures. `scripts/android-gpu-deps.sh` fetches the Khronos headers
+  directory, then `/system/lib64`, then `/vendor/lib64`: the OpenCL module links the phone's own
+  `libOpenCL.so` where there is one (through the Khronos loader instead, the two deadlock,
+  measured on a Snapdragon phone) and is not loaded otherwise. The vendor directory has to be on
+  the path and not reached through a symlink: a process the app starts links in the linker's
+  default namespace, which refuses a vendor library from anywhere else, and the OpenCL and
+  Hexagon modules then fail to load without a word. Last, it shadows no system library. The two
+  Hexagon variables stay set (`GGML_HEXAGON_HOSTBUF`, `GGML_HEXAGON_OPPOLL`); only that backend
+  reads them. `scripts/android-gpu-deps.sh` fetches the Khronos headers
   and the OpenCL link-time library at pinned tags, for the release recipe and for CI, which
   cross-compiles both GPU modules on every PR; the release-apk workflow gains a dry run from any
   ref that keeps the APKs as an artifact. Run on a Snapdragon-class phone: OpenCL is 9x the cores

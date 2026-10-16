@@ -9,7 +9,6 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.system.Os
 import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.data.ModelManager
 import kotlinx.coroutines.CoroutineScope
@@ -24,7 +23,6 @@ import kotlinx.coroutines.launch
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
-import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -61,22 +59,26 @@ class ServerProcess(private val ctx: Context) {
 
         val pb = ProcessBuilder(argv)
         pb.redirectErrorStream(false)
-        // The linker path is the engine's own directory and nothing else: the backends are modules
-        // there, and a module whose system library is missing is not loaded, which is how one APK
-        // runs on every phone. System directories are the linker's business; a vendor directory on
-        // the path shadows system libraries and, measured upstream, breaks a backend's fallback to
-        // its driver service. The one library a backend may need from outside and the linker does
-        // not look for is the phone's OpenCL: it is reached through a directory holding a single
-        // symlink to it, under the standard name every OpenCL phone gives it, whoever made the GPU.
-        val linkerPath = buildList {
-            if (hasVendorOpenCL()) vendorOpenClDir(ctx)?.let { add(it.absolutePath) }
-            add(nativeDir)
-        }.joinToString(":")
-        pb.environment()["LD_LIBRARY_PATH"] = linkerPath
+        // The engine's own directory first: the backends are modules there, and a module whose
+        // driver library is missing is not loaded, which is how one APK runs on every phone. Then
+        // the system directory, then the vendor one, and in that order. A process started from the
+        // app links in the linker's default namespace, which may open a vendor library (the phone's
+        // OpenCL, the DSP's libcdsprpc) only from a directory named on this path - a symlink to one
+        // from anywhere else is refused, so without /vendor/lib64 here the OpenCL and Hexagon
+        // modules fail to load and the engine says nothing. Last, it shadows nothing: a library the
+        // system directory has is found there first.
+        pb.environment()["LD_LIBRARY_PATH"] = "$nativeDir:/system/lib64:/vendor/lib64"
         // The one environment entry a backend documents it needs to find its own files: a DSP-side
         // library is resolved through this path and not the linker's. Set whatever backends are
         // present; where none reads it, it costs nothing.
         pb.environment()["ADSP_LIBRARY_PATH"] = nativeDir
+        // Read by the Hexagon backend only, so free on a phone without one. Polling instead of an
+        // interrupt halves the cost of each crossing the prefill arena makes at every layer, and is
+        // spent only while a DSP op is in flight; the host buffer type is what the NPU prefill moves
+        // the KV cache into, offered only when asked for, and without it a device graph's attention
+        // runs on the CPU (docs/npu-prefill.md).
+        pb.environment()["GGML_HEXAGON_OPPOLL"] = "1"
+        pb.environment()["GGML_HEXAGON_HOSTBUF"] = "1"
         // Where a backend may keep compiled programs between runs. The engine's default is a temp
         // dir this app cannot write, where the cache would disable itself.
         pb.environment()["GGML_OPENCL_KERNEL_CACHE_DIR"] = File(ctx.cacheDir, "cl-cache").absolutePath
@@ -126,22 +128,6 @@ class ServerProcess(private val ctx: Context) {
 
         /** The server's data directory (its settings.json and the catalog), beside the app's files. */
         fun dataDir(ctx: Context): File = File(ctx.filesDir, "bmoe").apply { mkdirs() }
-
-        /** The phone's own OpenCL library, under the name and place every OpenCL phone gives it. */
-        const val VENDOR_OPENCL = "/vendor/lib64/libOpenCL.so"
-        private fun hasVendorOpenCL(): Boolean = File(VENDOR_OPENCL).exists()
-
-        /**
-         * A directory whose one entry is a symlink to the vendor library, so it alone can lead the
-         * linker path: /vendor/lib64 itself placed first shadows system libraries the engine needs.
-         */
-        private fun vendorOpenClDir(ctx: Context): File? = runCatching {
-            val dir = File(dataDir(ctx), "vendor-ocl").apply { mkdirs() }
-            val link = File(dir, "libOpenCL.so")
-            if (Files.isSymbolicLink(link.toPath()) || link.exists()) link.delete()
-            Os.symlink(VENDOR_OPENCL, link.absolutePath)
-            dir
-        }.getOrNull()
 
         /**
          * The catalog is the project's one data file, shipped in the APK as an asset and copied out
