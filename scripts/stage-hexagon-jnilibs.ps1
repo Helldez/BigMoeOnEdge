@@ -25,8 +25,11 @@ Get-ChildItem $jni -Filter "*.so" | Remove-Item -Force
 
 Copy-Item (Find-One "bmoe-cli") (Join-Path $jni "libbmoe-cli.so") -Force
 Copy-Item (Find-One "bmoe-server") (Join-Path $jni "libbmoe-server.so") -Force
+# libOpenCL.so is the Khronos ICD loader the OpenCL backend links (scripts/android-gpu-deps.sh), not
+# a vendor library: it is what lets the engine start on a phone that has no OpenCL.
 $libs = @("libggml.so", "libggml-base.so", "libggml-cpu.so", "libllama.so", "libllama-common.so",
-          "libggml-hexagon.so", "libc++_shared.so")
+          "libggml-hexagon.so", "libggml-vulkan.so", "libggml-opencl.so", "libOpenCL.so",
+          "libc++_shared.so")
 foreach ($l in $libs) {
     Copy-Item (Find-One $l) (Join-Path $jni $l) -Force
 }

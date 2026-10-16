@@ -1,4 +1,6 @@
-# Cross-compile bmoe-cli for Android arm64 and stage it into the example app's jniLibs.
+# Cross-compile bmoe-cli for Android arm64 and stage it into the example app's jniLibs. CPU only:
+# the release recipe is scripts/build-hexagon-android.sh, which adds the Hexagon, Vulkan and OpenCL
+# backends inside upstream's Snapdragon toolchain container.
 #
 # The CLI ships as a `lib*.so` and is launched by the app via ProcessBuilder (no JNI) —
 # Android only lets an app execute binaries from its nativeLibraryDir, and only files

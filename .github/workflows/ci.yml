@@ -165,9 +165,10 @@ jobs:
       - name: Configure & build (examples/ios, simulator)
         run: scripts/build-ios.sh sim
 
-  # Cross-compiles the arm64 engine (the native compile gate) and packages the example
-  # APK around it, uploading the APK as an artifact — and attaching it to the release on a
-  # tag push. Debug-signed: for on-device validation, not Play distribution.
+  # Cross-compiles the arm64 engine (the native compile gate) with the Vulkan and OpenCL backends
+  # the release APK carries (Hexagon needs its SDK's container and is release-apk.yml's alone),
+  # and packages the example APK around it, uploading the APK as an artifact — and attaching it
+  # to the release on a tag push. Debug-signed: for on-device validation, not Play distribution.
   android-apk:
     # The long job (NDK + cross-compile + gradle). Build it on PRs (catch APK breakage before merge)
     # and on release tags (attach the APK), but not on every main push. Trigger a one-off manually
@@ -194,6 +195,10 @@ jobs:
           # r27c == 27.2.12479018, the NDK release-apk.yml builds published APKs with. These two
           # must not drift, or CI validates a build nobody installs.
           ndk-version: r27c
+      - name: Android GPU dependencies (Khronos headers, the OpenCL ICD loader)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: bash scripts/android-gpu-deps.sh build-android/gpu-deps
       - name: Cross-compile bmoe-cli (arm64)
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
@@ -202,7 +207,8 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 \
             -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_SERVER=ON \
-            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_OPENCL=OFF \
+            -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF \
+            -DGGML_VULKAN=ON -DGGML_OPENCL=ON $(cat build-android/gpu-deps/cmake-flags) \
             -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" \
             -DLLAMA_CURL=OFF
           cmake --build build-android -j
@@ -214,7 +220,7 @@ jobs:
           mkdir -p "$jni"
           cp build-android/bin/bmoe-cli "$jni/libbmoe-cli.so"
           cp build-android/bin/bmoe-server "$jni/libbmoe-server.so"
-          find build-android \( -name 'libggml*.so' -o -name 'libllama*.so' \) -exec cp {} "$jni/" \;
+          find build-android \( -name 'libggml*.so' -o -name 'libllama*.so' -o -name 'libOpenCL.so' \) -exec cp {} "$jni/" \;
           # bmoe-cli links the c++_shared STL; ship its runtime from the NDK sysroot.
           cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$jni/"
           ls -la "$jni"

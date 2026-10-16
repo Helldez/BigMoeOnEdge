@@ -75,10 +75,14 @@ most phones and PCs is reached through neither of the two GPU ones measured (Met
 Vulkan reaches any GPU with a driver - discrete and integrated on Windows and Linux, and Android -
 and OpenCL is llama.cpp's Adreno path. Both name the expert op, and both implement wrapping host
 memory without advertising it, which is the capability streamed experts computed on a device would
-need. The work, in order: carry each backend in a build (a desktop archive with Vulkan, an APK
-with OpenCL beside Hexagon), so the planner sees the device with no code here; one measured run of
-the prefill device on each, against the CPU and, on the phone, against the NPU; then the
-`buffer_from_host_ptr` route for the streamed experts where the measurement says the device wins.
+need. The work, in order: carry each backend in a build, so the planner sees the device with no
+code here - done for the APK, which carries Vulkan and OpenCL beside Hexagon, the OpenCL backend
+importing the Khronos ICD loader so a phone without OpenCL still starts the engine; owed for
+the desktop archive, where a linked Vulkan backend would keep the binary from starting on a
+machine without the loader library, so that archive waits for the loadable-backend build; one
+measured run of the prefill device on each, against the CPU and, on the phone, against the NPU;
+then the `buffer_from_host_ptr` route for the streamed experts where the measurement says the
+device wins.
 The OpenCL entry in [backends.md](backends.md) carries the one negative so far: the dense set on a
 phone's integrated GPU lost 27%. That measured the dense weights, not the prefill.
 

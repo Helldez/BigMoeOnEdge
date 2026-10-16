@@ -77,6 +77,11 @@ With the cache left unpinned (`--no-cache-pin`) the CPU prefill of the same prom
 and the GPU's was unchanged at 3.3 to 3.4 s: the kernel was compressing the cache underneath the
 CPU path ([cache-sizing.md](cache-sizing.md)), and the arena does not go through the cache.
 
+The release APK carries the Vulkan and OpenCL backends beside Hexagon, so on a phone the planner
+measures the GPU too, through whichever of the two its driver offers, and arms it by the same
+rule. Neither has been run here yet; the NPU and Metal figures on this page are the only
+measurements.
+
 **Memory is the limit on a model with a large KV cache.** The device path holds the two expert slots
 (1.1 GB on this model), the device's compute buffers (0.8 GB at ubatch 2048) and the model state in
 the device's host buffer. On a 12 GB phone Gemma 4 at an 8192-token context and a 2000 MiB expert
@@ -208,6 +213,16 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
   one DSP-side skel per NPU generation (v73 to v81) inside upstream's Snapdragon toolchain container,
   and `scripts/stage-hexagon-jnilibs.ps1` stages them into the app. The release APK is built the same
   way by CI, so it carries all of them.
+- The GPU backends ride in the same APK. Vulkan needs nothing set. The OpenCL backend imports
+  `libOpenCL.so`, and the APK ships the Khronos ICD loader under that name so the import resolves
+  on a phone without OpenCL, where the loader reports no platform and the engine sees no device.
+  Where the phone has a vendor library the app puts it first on the linker path (a directory
+  holding one symlink to it), so the backend links the vendor's directly, as llama.cpp does on
+  Snapdragon: opened through the loader instead, the vendor library binds its own `cl*` calls to
+  the loader's exports and the two deadlock at the first platform query, measured on a Snapdragon
+  phone. A vendor library that refuses to link (a missing symbol) ends the process before `main`;
+  the app notices and starts the engine again with the loader. On the command line, put such a
+  directory first on `LD_LIBRARY_PATH` yourself.
 - `--prefill-loaders N` (default 8) sets the threads that fill the slots, apart from `--io-threads`,
   which stays the decode's read lanes. Each loader reads and repacks, and a K-quant repack is
   CPU-heavy: on a Q4_K_M, 4 loaders left the NPU waiting 10.3 s of a 15.1 s prefill, 8 left it 5.0 of

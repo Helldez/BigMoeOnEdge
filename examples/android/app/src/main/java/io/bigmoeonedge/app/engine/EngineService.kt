@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.system.Os
 import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.data.ModelManager
 import kotlinx.coroutines.CoroutineScope
@@ -23,6 +24,7 @@ import kotlinx.coroutines.launch
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -42,9 +44,10 @@ class ServerProcess(private val ctx: Context) {
 
     /**
      * Start the server. With [share] it listens on every interface and requires [apiKey]; otherwise
-     * on loopback, with no key, the way the desktop runs it for its own UI.
+     * on loopback, with no key, the way the desktop runs it for its own UI. With [vendorOpenCL] the
+     * phone's own OpenCL library leads the linker path (see below).
      */
-    fun start(share: Boolean, apiKey: String, onExit: (code: Int, stderrTail: String) -> Unit) {
+    fun start(share: Boolean, apiKey: String, vendorOpenCL: Boolean, onExit: (code: Int, stderrTail: String) -> Unit) {
         val nativeDir = ctx.applicationInfo.nativeLibraryDir
         val dataDir = dataDir(ctx)
         val argv = mutableListOf(
@@ -59,11 +62,26 @@ class ServerProcess(private val ctx: Context) {
 
         val pb = ProcessBuilder(argv)
         pb.redirectErrorStream(false)
-        pb.environment()["LD_LIBRARY_PATH"] = "$nativeDir:/system/lib64:/vendor/lib64"
+        // The OpenCL backend imports libOpenCL.so. The APK's copy is the Khronos ICD loader, there so
+        // the import resolves on a phone with no OpenCL at all; the loader then reports no platform
+        // and the engine sees no OpenCL device. Where the phone has a vendor library the backend
+        // must link THAT one, directly, as llama.cpp does on Snapdragon: opened through the loader
+        // instead, the vendor library binds its own cl* calls to the loader's exports (same soname)
+        // and the two deadlock at the first platform query, measured on a Snapdragon phone. So a
+        // directory holding one symlink to the vendor library leads the linker path, and the loader
+        // is shadowed.
+        val linkerPath = buildList {
+            if (vendorOpenCL) vendorOpenClDir(ctx)?.let { add(it.absolutePath) }
+            add(nativeDir); add("/system/lib64"); add("/vendor/lib64")
+        }.joinToString(":")
+        pb.environment()["LD_LIBRARY_PATH"] = linkerPath
         // The Hexagon backend loads its DSP-side skel (libggml-htp-v<arch>.so) through fastrpc, which
         // resolves it against ADSP_LIBRARY_PATH, not the linker path above. Without it the NPU
         // registers and then fails to open a session.
         pb.environment()["ADSP_LIBRARY_PATH"] = nativeDir
+        // Compiled OpenCL programs are cached on disk. The backend's default is a temp dir this app
+        // cannot write, where it would disable the cache and compile every kernel at every start.
+        pb.environment()["GGML_OPENCL_KERNEL_CACHE_DIR"] = File(ctx.cacheDir, "cl-cache").absolutePath
         if (ModelManager.hasHexagonBackend(ctx)) {
             // Wait for the DSP by polling rather than by interrupt: the prefill arena stops the graph
             // at every layer, twice, and measured on device polling halves the cost of each crossing.
@@ -120,6 +138,22 @@ class ServerProcess(private val ctx: Context) {
         /** The server's data directory (its settings.json and the catalog), beside the app's files. */
         fun dataDir(ctx: Context): File = File(ctx.filesDir, "bmoe").apply { mkdirs() }
 
+        /** The phone's own OpenCL library, where it has one. */
+        const val VENDOR_OPENCL = "/vendor/lib64/libOpenCL.so"
+        fun hasVendorOpenCL(): Boolean = File(VENDOR_OPENCL).exists()
+
+        /**
+         * A directory whose one entry is a symlink to the vendor library, so it alone can lead the
+         * linker path: /vendor/lib64 itself placed first shadows system libraries the engine needs.
+         */
+        private fun vendorOpenClDir(ctx: Context): File? = runCatching {
+            val dir = File(dataDir(ctx), "vendor-ocl").apply { mkdirs() }
+            val link = File(dir, "libOpenCL.so")
+            if (Files.isSymbolicLink(link.toPath()) || link.exists()) link.delete()
+            Os.symlink(VENDOR_OPENCL, link.absolutePath)
+            dir
+        }.getOrNull()
+
         /**
          * The catalog is the project's one data file, shipped in the APK as an asset and copied out
          * on every start, so an app update brings the new catalog and the server reads a plain file.
@@ -173,11 +207,26 @@ class EngineService : Service() {
         if (server?.process != null) return
         val share = AppPrefs.shareOnNetwork(this)
         val key = AppPrefs.apiKey(this)
+        val vendorOpenCL = ServerProcess.hasVendorOpenCL() && !AppPrefs.vendorOpenClBroken(this)
         Engine.serverStarting(share, key)
         val s = ServerProcess(this)
         server = s
+        val startedAt = System.nanoTime()
         try {
-            s.start(share, key) { code, tail -> Engine.serverExited(code, tail) }
+            s.start(share, key, vendorOpenCL) { code, tail ->
+                // A vendor library that lacks a symbol the backend imports ends the process before
+                // main, and the linker says so on stderr (a 2020 phone did this). Remember it for
+                // this install and start again with the loader, which resolves and reports no platform.
+                val refusedToLink = vendorOpenCL && tail.contains("CANNOT LINK EXECUTABLE") &&
+                    System.nanoTime() - startedAt < 15_000_000_000L
+                if (refusedToLink) {
+                    AppPrefs.setVendorOpenClBroken(this, true)
+                    server = null
+                    startServer()
+                } else {
+                    Engine.serverExited(code, tail)
+                }
+            }
         } catch (t: Throwable) {
             Engine.serverExited(-1, t.message ?: t.toString())
         }

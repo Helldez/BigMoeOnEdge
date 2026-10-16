@@ -36,6 +36,21 @@ object AppPrefs {
     fun metricsCsv(ctx: Context): Boolean = prefs(ctx).getBoolean("metrics_csv", true)
     fun setMetricsCsv(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("metrics_csv", on).apply()
 
+    /**
+     * The phone's own OpenCL library refused to link with the engine (a symbol the backend imports
+     * is missing), so the engine runs with the APK's loader instead and sees no OpenCL device. Set
+     * by the engine service from the linker's message, and remembered for this install only: an
+     * update may import differently and gets to try again.
+     */
+    fun vendorOpenClBroken(ctx: Context): Boolean =
+        prefs(ctx).getLong("vendor_opencl_broken_install", -1L) == installStamp(ctx)
+    fun setVendorOpenClBroken(ctx: Context, on: Boolean) = prefs(ctx).edit().apply {
+        if (on) putLong("vendor_opencl_broken_install", installStamp(ctx)) else remove("vendor_opencl_broken_install")
+    }.apply()
+
+    private fun installStamp(ctx: Context): Long =
+        runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).lastUpdateTime }.getOrDefault(0L)
+
     /** Free the model after this long with no generation; the next message reloads it. */
     const val IDLE_UNLOAD_MINUTES = 10
 

@@ -30,7 +30,7 @@ The machines are described generically on purpose.
 | **Planner (`--auto`)** | Measured, in the app's load path | Measured on one laptop | Built, not run on Linux hardware | Owed: one documented run | Built, run in the simulator only |
 | **Device probes in a process of their own** | Yes | Yes | Yes | Owed: in-process only | - (no second process) |
 | **CI** | Engine cross-compiled and the APK packaged, on PRs and tags | Compiled and smoke-tested, on PRs and tags | Built, byte-identity gates and UI tests, on every push | Compiled only, on PRs and tags | Compiled for the simulator, on PRs and tags |
-| **Release artifact** | Signed APK, built by CI, with the Hexagon backend | CLI and desktop archives | CLI and desktop archives, both architectures | CLI and desktop archives | None |
+| **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends | CLI and desktop archives | CLI and desktop archives, both architectures | CLI and desktop archives | None |
 | **Run on hardware** | Measured: a 12 GB phone, Snapdragon class, UFS 4.x | Measured: a 16 GB Apple-silicon laptop | Owed: the gates only, no throughput run | Measured: an x86 laptop, 8 cores, 16 GB, NVMe | Owed: the simulator only |
 
 Sources: [application-framework.md](application-framework.md) for the server on each platform,
@@ -49,13 +49,15 @@ what each use of a device asks of one. This table is the subset that has been bu
 | **CPU** | Measured | Measured | Measured by the gates in CI | Measured | Decode, prefill and expert streaming, everywhere |
 | **Hexagon** (Qualcomm NPU) | Measured, shipped in the release APK | - | - | - | Prefill on the NPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | **Metal** | - | Measured, on in every macOS build | - | - | Prefill on the GPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
-| **OpenCL** | Tried, off in every build: the dense weights on a phone GPU lost 27 % | - | Not built | Not built | Nothing; the prefill device has not been tried on it |
-| **Vulkan** | Tried on one 2020 phone: its driver ended the process, which the isolated probe now contains | Not built | Built by `scripts/build-portable.sh` when `glslc` is present, never run | Same as Linux | Nothing |
+| **OpenCL** | Built, in the release APK, through the Khronos ICD loader; the dense weights on a phone GPU lost 27 % in July | - | Not built | Not built | On Android, a prefill device the planner can arm; owed a run |
+| **Vulkan** | Built, in the release APK; on one 2020 phone its driver ended the probe, which the isolated probe contains | Not built | Built by `scripts/build-portable.sh` when `glslc` is present, never run | Same as Linux | On Android, a prefill device the planner can arm; owed a run |
 | **CUDA, HIP, SYCL** | - | - | Built by `scripts/build-portable.sh` when the toolchain is present, never run | Same as Linux | Nothing |
 | **RPC** | - | - | Test fixture for the gates | - | Nothing a front-end can select |
 
-No release archive carries a GPU backend other than Metal: the Linux and Windows archives are
-CPU-only, and a GPU build comes from `scripts/build-portable.sh` on the machine that will run it.
+The release APK carries Vulkan and OpenCL beside Hexagon, so one APK installs on every phone and
+the planner finds whichever device the phone's drivers register. No desktop archive carries a GPU
+backend other than Metal: the Linux and Windows archives are CPU-only, and a GPU build comes from
+`scripts/build-portable.sh` on the machine that will run it.
 
 Computing the streamed experts on a GPU, rather than on the CPU cores, is half built on every
 platform: the device is measured, and the streamer's own memory is not yet handed to it
@@ -64,8 +66,9 @@ platform: the device is measured, and the streamer's own memory is not yet hande
 ## What each platform owes
 
 - **Android.** The NPU prefill run again on the release APK, the one build with the Hexagon
-  backend: the 0.30.0 phone run used a CPU-only build. Per-value provenance in the settings, so a reader sees what the plan set and what differs from the
-  default ([screens.md](screens.md)).
+  backend: the 0.30.0 phone run used a CPU-only build. The GPU prefill run on the same APK, Vulkan
+  and OpenCL against the NPU and the cores. Per-value provenance in the settings, so a reader sees
+  what the plan set and what differs from the default ([screens.md](screens.md)).
 - **macOS.** A signed installer that updates itself, in place of the archive. The byte-identity
   gates in CI, which today run on Linux only.
 - **Linux.** A throughput run on real hardware, which the community protocol can supply

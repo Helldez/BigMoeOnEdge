@@ -552,9 +552,9 @@ struct RunConfig {
     // Off by default, armed by the caller, and currently REFUSED by the planner - because it was
     // measured three times in July on a device of exactly this class and it lost by 27%: the dense
     // and expert halves interleave, so a two-device split crosses the boundary twice per layer and
-    // the boundary tax eats the CPU time the device frees. See
-    // docs/bench-data/2026-07-27-gpu-dense-offload/. Kept as a named lever so the next person to
-    // have this idea finds the verdict instead of the idea.
+    // the boundary tax eats the CPU time the device frees. See the OpenCL row of
+    // docs/backends.md. Kept as a named lever so the next person to have this idea finds the
+    // verdict instead of the idea.
     bool dense_on_device = false;
 
     // Hand llama.cpp the CPU and nothing else. Set when this plan has decided no weight goes on a

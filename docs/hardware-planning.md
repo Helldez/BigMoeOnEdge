@@ -150,6 +150,10 @@ silently reports a machine with no accelerator. `scripts/build-portable.sh` buil
 it costs `--overlap`, whose expert-ready hook symbol lives in the CPU backend and cannot be linked
 against when that backend is loaded at runtime.
 
+What each release carries is decided by its build: the APK links in the CPU, Hexagon, Vulkan and
+OpenCL backends, so one APK fits every phone and the plan reports whichever devices the phone's
+drivers register; the desktop archives carry the CPU, and Metal on macOS.
+
 The profile records how many backends came linked, how many were loaded at run time, and whether
 anyone looked at all, so the plan keeps three answers apart: *this machine has no accelerator*,
 *this build carries none*, and *nobody went to look*.
@@ -551,8 +555,10 @@ itself what the machine has - which only works if finding out cannot end the pro
 It could. On a phone from 2020, a build carrying the Vulkan backend loaded it, listed the GPU, and
 died at the first allocation: the backend calls a function that driver does not have, without
 checking, and there is no error to catch. The OpenCL backend could not be linked for the same phone
-at all, for two functions its driver lacks. Neither is a property the profile could have carried in
-advance; both are the driver's.
+at all, for two functions its driver lacks - which is why the APK ships the Khronos ICD loader as
+the library the backend imports, so the binary starts on any phone, while the app links the
+vendor's own where there is one ([npu-prefill.md](npu-prefill.md)). Neither is a property the
+profile could have carried in advance; both are the driver's.
 
 So each device beyond the host is asked in a second process first: this same executable, started
 again with the device's name, which runs everything that touches that device and prints its facts
@@ -903,8 +909,9 @@ names the device that would qualify, and arms nothing.
 wrap memory we own". It is not that answer, and reading it as one produced a wrong fact about the
 backends that matter most here.
 
-In the pinned submodule, **Vulkan, OpenCL and SYCL each report the capability `false` while wiring a
-complete implementation into their device interface.** Vulkan's is not a stub: it imports host memory
+In the pinned submodule, **Vulkan and SYCL each report the capability `false` while wiring a
+complete implementation into their device interface, and OpenCL wires one that declines.** Vulkan's
+is not a stub: it imports host memory
 through `VK_EXT_external_memory_host`, refusing only when the extension is absent or when the pointer
 and size are not multiples of the device's `minImportedHostPointerAlignment`. That is precisely why
 the capability is false — it is a blanket promise, and a backend whose support is conditional per

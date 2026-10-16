@@ -29,7 +29,7 @@ for it.
 | HIP | `GGML_HIP` | AMD GPUs through ROCm; compiles the CUDA sources | as CUDA | as CUDA | as CUDA |
 | MUSA | `GGML_MUSA` | Moore Threads GPUs; compiles the CUDA sources | as CUDA | as CUDA | as CUDA |
 | Vulkan | `GGML_VULKAN` | any GPU with a Vulkan driver | GPU, or integrated GPU | yes | no / yes |
-| OpenCL | `GGML_OPENCL` | Adreno first, other OpenCL GPUs | GPU | yes | no / yes |
+| OpenCL | `GGML_OPENCL` | Adreno first, other OpenCL GPUs | GPU | yes | no / a function that declines |
 | SYCL | `GGML_SYCL` | Intel GPUs through oneAPI | GPU, or integrated GPU | yes | no / yes |
 | WebGPU | `GGML_WEBGPU` | browsers and native WebGPU | GPU | yes | no / no |
 | Hexagon | `GGML_HEXAGON` | Qualcomm NPU (HTP) | GPU | yes | no / no |
@@ -46,9 +46,10 @@ Three things in that table decide what this engine can do with a backend.
 - **The registered type is not a description of the hardware.** NPUs register as `GPU`, and Metal
   registers as `GPU` on unified memory. Nothing here reads the type as "has memory of its own";
   that is measured ([hardware-planning.md](hardware-planning.md)).
-- **The advertised capability and the wired function disagree on four backends.** Vulkan, OpenCL,
-  SYCL and VirtGPU report `buffer_from_host_ptr` false and implement it. The planner therefore
-  records `true` as yes and anything else as unknown.
+- **The advertised capability and the wired function disagree on three backends.** Vulkan, SYCL
+  and VirtGPU report `buffer_from_host_ptr` false and implement it. OpenCL reports it false and
+  wires a function that returns nothing, so there the false holds in effect, and the call is safe
+  to make. The planner therefore records `true` as yes and anything else as unknown.
 - **There is no backend for the Apple Neural Engine, for MediaTek or Samsung NPUs, or for an Intel
   NPU outside OpenVINO.** On those the engine has the CPU and whatever GPU backend the platform has.
 
@@ -61,8 +62,9 @@ Three things in that table decide what this engine can do with a backend.
 | Metal | macOS | measured on one 16 GB Apple-silicon laptop; on in every macOS build | prefill on the GPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | RPC | host test builds | a test fixture only: a loopback server fronting the CPU, so the prefill-device gates have a second device | nothing a front-end can select |
 | BLAS | macOS, where llama.cpp turns it on by default | linked, never given a weight | nothing placed on it |
-| OpenCL | Android | off in every build script; the dense set on a phone's integrated GPU was measured and lost 27 % (`RunConfig::dense_on_device`) | nothing; the prefill device has not been tried on it |
-| CUDA, HIP, Vulkan, SYCL | Linux, Windows | `scripts/build-portable.sh` turns each on when it finds the toolchain; none has been run here | unknown |
+| OpenCL | Android | built, in the release APK beside Hexagon (`scripts/build-hexagon-android.sh`), importing the Khronos ICD loader so a phone without OpenCL still starts the engine, and the vendor's own library where there is one; in July the dense set on a phone's integrated GPU was measured and lost 27 % (`RunConfig::dense_on_device`) | a prefill device the planner measures and arms where it wins, as it does Metal and Hexagon; owed a run on a phone |
+| Vulkan | Android; Linux, Windows | built, in the release APK; on the desktop `scripts/build-portable.sh` turns it on when it finds `glslc`. One 2020 phone ran it and its driver ended the probe, which is what the isolated probe contains | as OpenCL; owed a run |
+| CUDA, HIP, SYCL | Linux, Windows | `scripts/build-portable.sh` turns each on when it finds the toolchain; none has been run here | unknown |
 | MUSA, WebGPU, CANN, OpenVINO, ET, zDNN, ZenDNN, VirtGPU | - | never built here | unknown |
 
 Three backends, then, with a measurement behind them, out of eighteen.

@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The release APK carries the Vulkan and OpenCL backends beside Hexagon.** One APK for every
+  phone: the planner enumerates whichever GPU the phone's driver registers, measures it in a
+  process of its own and arms it as the prefill device by the rule that arms Metal and the NPU,
+  with no engine change (`docs/hardware-planning.md`). The OpenCL backend is linked against the
+  Khronos ICD loader shipped in the APK, so a phone without OpenCL still starts the engine;
+  where the phone has a vendor library the app puts it first on the linker path so the backend
+  links it directly, as llama.cpp does (opened through the loader the two deadlock, measured on
+  a Snapdragon phone), falls back to the loader when the vendor library refuses to link, and
+  gives the backend a kernel cache directory it can write.
+  `scripts/android-gpu-deps.sh` fetches the Khronos headers and builds the loader at pinned tags,
+  for the release recipe and for CI, which now cross-compiles both backends on every PR. Not run
+  on a phone yet: `docs/backends.md` and `docs/platforms.md` list both as built and owed a run.
+  `docs/backends.md` also corrects one cell: OpenCL's `buffer_from_host_ptr` is wired to a
+  function that declines, not to an implementation.
+
 ## [0.30.0] - 2026-10-16
 
 ### Added
