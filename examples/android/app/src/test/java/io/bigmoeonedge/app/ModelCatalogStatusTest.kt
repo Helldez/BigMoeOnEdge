@@ -8,9 +8,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * The on-device rule for a catalog entry. The server answers for its own directory; the app adds
- * its transfers in flight and the other directories it scans. A set is on the device only when
- * every file is: the first shard alone lands seconds into a multi-hour download.
+ * The on-device rule for a catalog entry. The server answers for its own directory and lists the
+ * files of every other place it was started with; the app adds its transfers in flight. A set is
+ * on the device only when every file is: the first shard alone lands seconds into a multi-hour
+ * download.
  */
 class ModelCatalogStatusTest {
     private val files = listOf(

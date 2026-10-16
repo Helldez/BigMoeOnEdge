@@ -15,6 +15,9 @@ class ApiException(val status: Int, message: String, val code: String = "") : IO
     companion object {
         /** The code a full context is reported with: the fix is a new chat, and the screen says so. */
         const val CODE_CONTEXT_FULL = "context_full"
+
+        /** The code a turn is refused with when no model is loaded: the fix is on Models. */
+        const val CODE_NO_MODEL = "no_model"
     }
 }
 

@@ -70,9 +70,12 @@ vendor's, not Android's, so treat any figure as a per-device measurement.
 
 ## Getting a model onto the device
 
-The Models screen lists what the engine sees in its own directory (the app's internal storage,
-where in-app downloads and imports land) and what sits elsewhere on the phone. Nothing below needs
-a storage permission except the last option.
+The Models screen lists what the engine sees: its own directory (the app's internal storage, where
+in-app downloads and imports land) and the other places a model can sit on the phone, which the app
+hands the server at launch (`--scan-dir`: the app's external files directory, and on the dev flavor
+`/data/local/tmp/bmoe` and Downloads). The server groups split sets, reads each model's
+architecture and says whether this build streams it; the app reads no gguf itself. Nothing below
+needs a storage permission except the last option.
 
 1. **Built-in catalog** (both flavors): the models this engine is measured on, one tap each. The
    catalog is the project's one data file, `catalog/models.json`, shipped in the APK and read by
@@ -146,8 +149,12 @@ names a device. See `../../docs/npu-prefill.md`.
 The Metrics screen shows the live card for the current or last generation (the rate, and each
 token's time split into compute, flash wait, cache management and what nothing claims), then the
 CSV files: view one, share one, correlate its columns, or compare two on one axis. The chat shows
-the same rate in one line above the prompt while an answer streams. The fields are documented in
-`../../docs/telemetry.md` and in the screen's glossary.
+the same rate in one line above the prompt while an answer streams. The flash term and the threads
+the CPU figures divide by are the server's (`flash_wait_ms`, `compute_threads`, `busy_threads`),
+never read from the settings. The fields are documented in `../../docs/telemetry.md` and in the
+screen's glossary, whose settings half is the engine's parameter table: each setting a file was
+recorded with is shown under the table's label, typed and with its unit, and a run's identity names
+every setting that changes the reply and is off its default.
 
 ## Expected numbers
 

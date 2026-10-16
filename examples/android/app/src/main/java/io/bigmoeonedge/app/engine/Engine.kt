@@ -23,6 +23,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.ConnectException
+import kotlin.coroutines.cancellation.CancellationException
 
 // ── what the server says, as the screens read it ──
 
@@ -35,6 +37,9 @@ data class ModelInfo(
     val thinkCtl: String, // template | prefill | none
     val loadS: Double,
     val streaming: Boolean,
+    /** What a CPU figure is read against: the session's compute threads, and every busy thread. */
+    val computeThreads: Int,
+    val busyThreads: Int,
 ) {
     companion object {
         fun of(o: JSONObject?): ModelInfo? {
@@ -42,7 +47,7 @@ data class ModelInfo(
             return ModelInfo(
                 o.optString("name"), o.optString("path"), o.optString("arch"), o.optInt("n_ctx"),
                 o.optInt("n_expert_used"), o.optString("think_ctl", "template"), o.optDouble("load_s", 0.0),
-                o.optBoolean("streaming", true),
+                o.optBoolean("streaming", false), o.optInt("compute_threads", 0), o.optInt("busy_threads", 0),
             )
         }
     }
@@ -100,8 +105,6 @@ data class ConfigState(
     val autoPlan: Boolean,
 ) {
     fun value(key: String): Any? = values[key]
-    fun int(key: String, fallback: Int): Int = (values[key] as? Number)?.toInt() ?: fallback
-    fun bool(key: String, fallback: Boolean): Boolean = (values[key] as? Boolean) ?: fallback
     fun text(key: String): String = values[key]?.toString().orEmpty()
 
     companion object {
@@ -125,30 +128,51 @@ data class ConfigState(
 data class LocalModel(
     val name: String,
     val path: String,
+    /** The directory the server found it in: its models directory, or one the app gave it to scan. */
+    val dir: String,
     val bytes: Long,
     val shards: Int,
+    /** Every file of the model that is present, in shard order: what a delete removes. */
+    val files: List<String>,
     val arch: String,
     val streamable: Boolean,
     val complete: Boolean,
 )
 
-/** `GET /api/models`: the server's directory, and the catalog with the server's view of each entry. */
-data class ModelsList(val modelsDir: String, val local: List<LocalModel>, val catalog: List<CatalogEntry>) {
+/** `GET /api/models`: the server's directories, and the catalog with the server's view of each entry. */
+data class ModelsList(
+    val modelsDir: String,
+    val scanDirs: List<String>,
+    val local: List<LocalModel>,
+    val catalog: List<CatalogEntry>,
+) {
+    /** The name of every model file the server sees, shards included: what "on the device" means. */
+    val fileNames: Set<String> get() = local.flatMap { m -> m.files.map { it.substringAfterLast('/') } }.toSet()
+
     companion object {
+        private fun strings(a: JSONArray?): List<String> = a?.let { (0 until it.length()).map { i -> it.getString(i) } }.orEmpty()
+
         fun of(o: JSONObject): ModelsList {
             val local = o.optJSONArray("local")?.let { a ->
                 (0 until a.length()).map { i ->
                     val m = a.getJSONObject(i)
                     LocalModel(
-                        m.optString("name"), m.optString("path"), m.optLong("bytes"), m.optInt("shards", 1),
-                        m.optString("arch"), m.optBoolean("streamable", false), m.optBoolean("complete", true),
+                        name = m.optString("name"),
+                        path = m.optString("path"),
+                        dir = m.optString("dir"),
+                        bytes = m.optLong("bytes"),
+                        shards = m.optInt("shards", 1),
+                        files = strings(m.optJSONArray("files")),
+                        arch = m.optString("arch"),
+                        streamable = m.optBoolean("streamable", false),
+                        complete = m.optBoolean("complete", true),
                     )
                 }
             }.orEmpty()
             val catalog = o.optJSONArray("catalog")?.let { a ->
                 (0 until a.length()).mapNotNull { i -> CatalogEntry.of(a.getJSONObject(i)) }
             }.orEmpty()
-            return ModelsList(o.optString("models_dir"), local, catalog)
+            return ModelsList(o.optString("models_dir"), strings(o.optJSONArray("scan_dirs")), local, catalog)
         }
     }
 }
@@ -295,11 +319,14 @@ object Engine {
                     },
                     keepGoing = { true },
                 )
+            } catch (c: CancellationException) {
+                throw c
+            } catch (_: ConnectException) {
+                // A closed port: not up yet, or gone. Reconnecting below is the whole answer.
             } catch (t: Throwable) {
-                // Not up yet, or gone: say why in the status line, and try again. A refusal that
-                // is not a closed port (a key, a policy) is exactly what a person needs to read.
-                val why = t.message?.takeIf { it.isNotBlank() && !it.contains("ECONNREFUSED") && !it.contains("Connection refused") }
-                if (why != null) _state.update { it.copy(serverError = "Engine not reachable: $why") }
+                // Anything else (a key, a policy, a broken stream) is what a person needs to read.
+                val why = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+                _state.update { it.copy(serverError = "Engine not reachable: $why") }
             }
             if (_state.value.serverUp) _state.update { it.copy(serverUp = false) }
             delay(backoffMs)
@@ -340,6 +367,11 @@ object Engine {
             "config" -> _state.update { it.copy(config = ConfigState.of(o)) }
             "token" -> {
                 val t = _state.value.live.copy().applyToken(o)
+                // The threads the figures are read against belong to the session that produced them.
+                _state.value.info?.model?.let { m ->
+                    t.computeThreads = m.computeThreads
+                    t.busyThreads = m.busyThreads
+                }
                 if (t.step <= 1) t.avgTokensPerSecond = -1.0
                 recorder?.token(o)
                 val now = System.currentTimeMillis()

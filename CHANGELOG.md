@@ -214,6 +214,19 @@ Semantic Versioning.
   started the server; they are platform policy, and now live in `server/platform.cpp`, set first
   thing in `run()` (so a device-probe child inherits them) and only where the environment has not
   set them already.
+- **The Android app reads the server's facts and labels, and keeps no model logic.** The live line
+  and the metrics card took the threads, the read lanes and overlap from the settings with invented
+  defaults (4, 4, on); they now read the flash term and the threads the server reports. The
+  metrics screen's hand-kept labels for the CSV preamble (`CONFIG_ORDER`, `ConfigFields`) are gone:
+  a recorded setting is labelled, typed and explained by the parameter table, and a run's identity
+  names every setting that changes the reply and is off its default (the table's `lossy`), instead
+  of a list of keys. The Kotlin gguf parser that decided MoE-ness from a text marker
+  (`GgufHeader.kt`) and the shard-name regexes are deleted: the service starts the server with the
+  phone's other model folders as `--scan-dir`, the Models screen lists what the server lists, and a
+  delete removes the files the server named. A summary's rate is read by field name, not by regex,
+  a chat error is acted on by its `code` (`no_model` links to Models), a closed port is told apart
+  by `ConnectException`, not by the text of a message, and a failed message can be sent again, as
+  on the web; a failed decision leaves no question behind to be sent as history.
 - **The web UI checks what the server answers.** Every read is checked at runtime for the parts of
   its shape the UI depends on (`ui/src/lib/guards.ts`), and so is every event; an answer that is not
   the documented shape fails where it is read, with `code: "bad_response"`, instead of as an

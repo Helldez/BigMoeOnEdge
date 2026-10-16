@@ -55,6 +55,8 @@ class ServerProcess(private val ctx: Context) {
             "--models-dir", ModelManager.internalModelsDir(ctx).absolutePath,
             "--catalog", stageCatalog(ctx).absolutePath,
         )
+        // The other places a model can sit: the server lists what they hold and loads it in place.
+        for (d in ModelManager.scanDirs(ctx)) argv += listOf("--scan-dir", d.absolutePath)
         if (share) argv += listOf("--api-key", apiKey)
 
         val pb = ProcessBuilder(argv)
@@ -63,16 +65,9 @@ class ServerProcess(private val ctx: Context) {
         // The Hexagon backend loads its DSP-side skel (libggml-htp-v<arch>.so) through fastrpc, which
         // resolves it against ADSP_LIBRARY_PATH, not the linker path above. Without it the NPU
         // registers and then fails to open a session.
+        // How the Hexagon backend itself is configured is the server's (server/platform.cpp): the
+        // library paths above are how the system finds the code, which only the app knows.
         pb.environment()["ADSP_LIBRARY_PATH"] = nativeDir
-        if (ModelManager.hasHexagonBackend(ctx)) {
-            // Wait for the DSP by polling rather than by interrupt: the prefill arena stops the graph
-            // at every layer, twice, and measured on device polling halves the cost of each crossing.
-            // The backend polls only while a DSP op is in flight, so this costs nothing until the
-            // planner arms the NPU; and the host buffer type the prefill moves the KV cache into is
-            // only offered when asked for.
-            pb.environment()["GGML_HEXAGON_OPPOLL"] = "1"
-            pb.environment()["GGML_HEXAGON_HOSTBUF"] = "1"
-        }
         pb.directory(dataDir)
         val p = pb.start()
         process = p
