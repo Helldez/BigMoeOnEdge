@@ -85,6 +85,13 @@ target_link_libraries(bmoe_stall_union_test PRIVATE bmoe_core)
 target_include_directories(bmoe_stall_union_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 add_test(NAME stall_union COMMAND bmoe_stall_union_test)
 
+# How llama.cpp's tensor and graph-node names are read, and the fitter's expert-override patterns.
+# Pure string rules over the conventions every reader shares, so they run without a model.
+add_executable(bmoe_tensor_names_test tensor_names_test.cpp)
+target_link_libraries(bmoe_tensor_names_test PRIVATE bmoe_core)
+target_include_directories(bmoe_tensor_names_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
+add_test(NAME tensor_names COMMAND bmoe_tensor_names_test)
+
 # The CSV `# summary` trailer serialization. Drives the sink directly with a filled RunSummary —
 # no model, no llama.cpp — so the emitted key names and units are pinned by a test rather than by
 # whatever script last read them. The prefill keys must match BMOE_DONE's, token for token.

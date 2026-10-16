@@ -1004,26 +1004,47 @@ FlagResult apply_flag(RunConfig & cfg, const char * arg, const char * value) {
     return r;
 }
 
+namespace {
+
+// `d` at value `v` as command-line arguments, appended to `out`. A switch that says exactly this
+// value is the shortest spelling, and for a switch-only parameter the only one. Appends nothing for
+// a value no flag can express (spec=none after --mtp).
+void spell(const ParamDesc & d, const std::string & v, std::vector<std::string> & out) {
+    const ParamSwitch * sw = nullptr;
+    for (const ParamSwitch & s : d.switches)
+        if (!s.deprecated && s.value == v) sw = &s;
+    if (sw) {
+        out.push_back(sw->flag);
+    } else if (!d.flag.empty()) {
+        out.push_back(d.flag);
+        out.push_back(v);
+    }
+}
+
+} // namespace
+
 std::vector<std::string> to_args(const RunConfig & cfg) {
     const RunConfig base;
     std::vector<std::string> out;
     for (const ParamDesc & d : params()) {
         const std::string v = d.get(cfg);
         if (v == d.get(base)) continue;
-        // A switch that says exactly this value is the shortest spelling, and for a switch-only
-        // parameter the only one.
-        const ParamSwitch * sw = nullptr;
-        for (const ParamSwitch & s : d.switches)
-            if (!s.deprecated && s.value == v) sw = &s;
-        if (sw) {
-            out.push_back(sw->flag);
-        } else if (!d.flag.empty()) {
-            out.push_back(d.flag);
-            out.push_back(v);
-        }
-        // Neither: a value no flag can express (spec=none after --mtp). It is the default, so it
-        // cannot differ from base; the case is unreachable and the tests would catch a new one.
+        // A value no flag can express is the default, so it cannot differ from base; the case is
+        // unreachable and the tests would catch a new one.
+        spell(d, v, out);
     }
+    return out;
+}
+
+std::string flag_spelling(const std::string & key, const std::string & value) {
+    const ParamDesc * d = find_param(key);
+    if (!d) return "";
+    if (value.empty()) return d->flag;
+    std::vector<std::string> args;
+    spell(*d, value, args);
+    std::string out;
+    for (const std::string & a : args)
+        out += (out.empty() ? "" : " ") + a;
     return out;
 }
 

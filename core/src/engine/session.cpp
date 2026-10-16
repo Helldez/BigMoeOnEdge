@@ -16,6 +16,7 @@
 #include "../moe/decide_probe.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
+#include "../moe/tensor_names.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 
@@ -218,8 +219,7 @@ dense_bytes_per_layer(const GgufOffsets & offs, const std::vector<LayerExperts> 
     const std::unordered_set<std::string> streamed = expert_tensor_names(layers);
     std::vector<uint64_t> out((size_t) std::max(0, n_layer), 0);
     for (const auto & kv : offs.size_by_name) {
-        int il = -1;
-        if (std::sscanf(kv.first.c_str(), "blk.%d.", &il) != 1) continue;
+        const int il = tensor_names::block_layer(kv.first.c_str());
         if (il < 0 || il >= n_layer || streamed.count(kv.first)) continue;
         out[(size_t) il] += kv.second;
     }

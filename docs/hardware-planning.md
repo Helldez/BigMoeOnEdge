@@ -198,6 +198,25 @@ and `BMOE_*` env overrides both count as the caller speaking.
    allocation it had just refused: 0.23 s/token predicted where the run took 1.46 and the bound
    said 1.69.
 
+## One sequence, every front-end
+
+Steps 1 to 7 are one call, `probe_and_plan` (`core/include/bmoe/auto_plan.h`), and every front-end
+that plans makes it: `bmoe-cli --auto` and the server's `/api/plan` alike. Its order is a
+measurement, not a preference - backends registered before anything looks at a device, each device
+asked in its own process before this one uses any, the bandwidth and device-cost probes before the
+storage probe reads gigabytes, the headroom probe last because its active mode leaves the kernel
+busy - and an order written out once per front-end is an order that can drift until one of them
+measures the other's recovery. What a front-end decides is in its options: whether the storage is
+read (`--no-probe-io`), whether memory is measured by holding it (`--probe-mem`, never from the
+server), and how it starts itself again to probe a device. The composition lives with the adapters,
+because it starts llama.cpp's backends; it decides nothing, and the rules it ends in stay pure.
+
+Inside, `plan_run` is a list of named stages over one planning state - the widest graph, the regime,
+the placement, the accelerator axis, the dense policy, the ledger and the prefill device, the cache
+floor, the I/O knobs, the devices the run lists - and `allocate` a list of named steps, in the order
+this page describes them. A reason that tells a person what to type spells the flag through the
+parameter table, so a renamed flag cannot leave the rationale advising one that no longer parses.
+
 ## The facts, and which knob each one decides
 
 | fact | decides |
@@ -568,9 +587,10 @@ the run decodes at 1.87 and 2.02 tok/s on the cores with the backend's library s
 executable. On the laptop, where the device works, the plan is the same as before and the second
 process costs about 3.5 s, most of it the child measuring the host again as its own reference.
 
-Starting a second process is the front-end's business, so the probe takes a runner; `bmoe-cli` and
-`bmoe-server` each give it one (`--probe-device` is the child's mode in both, `--no-isolated-probes`
-turns it off). Where a platform has no way to start one the runner is empty and the probes run
+Starting a second process is the front-end's business, so the probe takes a runner, built from the
+arguments each front-end hands `probe_and_plan` to start itself again (`AutoPlanOptions`); `bmoe-cli`
+and `bmoe-server` each give them (`--probe-device` is the child's mode in both, and the child's whole
+side is one call, `probe_device_child`; `--no-isolated-probes` turns it off). Where a platform has no way to start one the runner is empty and the probes run
 here, as they always did: that is the case on Windows today. The time limit is two minutes, and it
 has not been seen to fire.
 

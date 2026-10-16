@@ -9,8 +9,7 @@
 // engine stays env-free. The flag always wins over the env value.
 #include "bmoe/config.h"
 #include "bmoe/params.h"
-#include "bmoe/planner.h"
-#include "bmoe/probe.h"
+#include "bmoe/auto_plan.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
 #include "bmoe/recipe.h"
@@ -18,8 +17,6 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
-
-#include "llama.h"
 
 #include <atomic>
 #include <cmath>
@@ -675,11 +672,6 @@ static void print_predict_report(const RunSummary & s) {
     }
 }
 
-// How long a device gets to answer its probe in a process of its own. Generous on purpose: the
-// child also measures the host as its reference, and a phone that is throttled takes its time. What
-// it bounds is the case with no other end - a device that never answers.
-static constexpr double k_device_probe_seconds = 120.0;
-
 int main(int argc, char ** argv) {
     RunConfig cfg;
     std::string csv_path;
@@ -891,14 +883,12 @@ int main(int argc, char ** argv) {
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
     if (!probe_device.empty()) {
-        register_backends();
-        llama_backend_init();
-        std::string facts;
-        if (!probe_one_device(cfg.model_path.c_str(), probe_device, facts)) {
+        std::string line;
+        if (!probe_device_child(cfg.model_path.c_str(), probe_device, line)) {
             std::fprintf(stderr, "bmoe: no such device to probe: %s\n", probe_device.c_str());
             return 3;
         }
-        std::printf("%s %s\n", device_facts_marker, facts.c_str());
+        std::printf("%s\n", line.c_str());
         std::fflush(stdout);
         return 0;
     }
@@ -910,42 +900,21 @@ int main(int argc, char ** argv) {
         for (const EnvOverride & e : kEnvOverrides)
             if (const char * v = std::getenv(e.var); v && *v) req.pinned.push_back(e.key);
 
-        // QUIET FIRST, DIRTY LAST, and the order is a measurement rather than a preference: backends
-        // registered before anything looks at devices; bandwidth and device costs before the storage
-        // probe reads gigabytes; the intrusive headroom probe last of all, because it leaves the
-        // kernel busy and anything measured after it measures the recovery.
-        register_backends();
-        HardwareProfile hw = probe_hardware(cfg.model_path.c_str());
-        // Every device beyond the host is asked in a process of its own first. A device is only as
-        // sound as its driver, and a driver that ends the process it is used from would otherwise
-        // end this plan - seen on a phone whose graphics driver lacks a function a backend calls
-        // without checking. What comes back is that device's facts, or the reason it has none; the
-        // probes below then leave it alone either way. Where a second process cannot be started
-        // the runner is empty and they run here, as they always did.
+        // The probe order is core's (probe_and_plan); what this front-end decides is how intrusive
+        // the probes may be and how it is started again to probe a device in a process of its own.
+        AutoPlanOptions opt;
+        opt.probe_io = probe_io;
+        opt.probe_mem = probe_mem;
         if (isolated_probes) {
             const std::string model = cfg.model_path;
-            probe_devices_isolated(hw, self_process_runner(
-                                           [model](const std::string & dev) {
-                                               return std::vector<std::string>{"-m", model, "--probe-device", dev};
-                                           },
-                                           k_device_probe_seconds));
+            opt.isolated_probe_args = [model](const std::string & dev) {
+                return std::vector<std::string>{"-m", model, "--probe-device", dev};
+            };
         }
-        const ModelProfile mp = probe_model(cfg.model_path.c_str());
-        probe_device_support(hw, mp);
-        // The cache term is the FLOOR the engine will enforce, not one token cycle. Written without
-        // std::max on purpose: windows.h defines `max` as a macro and this translation unit sees it.
-        const uint64_t guard_bytes = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
-        const uint64_t cache_floor = mp.token_cycle_bytes > guard_bytes ? mp.token_cycle_bytes : guard_bytes;
-        llama_backend_init();
-        probe_bandwidth(hw, mp);
-        probe_device_costs(hw, mp);
-        // Where the expert reads land, which on a split model is not the file the caller named.
-        const std::string & storage_path = mp.expert_file.empty() ? cfg.model_path : mp.expert_file;
-        if (probe_io) probe_storage(hw, storage_path.c_str(), mp.expert_slice_bytes);
-        probe_headroom(hw, probe_mem, mp.dense_bytes + cache_floor);
-        const Placement placement =
-            probe_placement(cfg.model_path.c_str(), mp, hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch);
-        const Plan plan = plan_run(cfg, hw, mp, placement, req);
+        const AutoPlan planned = probe_and_plan(cfg, req, opt);
+        const HardwareProfile & hw = planned.hw;
+        const ModelProfile & mp = planned.model;
+        const Plan & plan = planned.plan;
         cfg = plan.config;
         predicted_s_per_token = plan.allocation.seconds_per_token;
         if (plan.allocation.cache_bytes > 0 && mp.expert_bytes > 0)

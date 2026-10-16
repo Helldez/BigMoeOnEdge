@@ -141,6 +141,13 @@ bool parse_int_strict(const std::string & s, long long lo, long long hi, long lo
 // button and a bench cell both depend on, and which the tests check.
 std::vector<std::string> to_args(const RunConfig & cfg);
 
+// How a person types parameter `key` at `value`, as one string in the spelling to_args() emits: the
+// switch that says exactly that value ("--overlap"), or the flag and the value ("--ctx-size 4096").
+// With no value, the flag that takes one ("--ubatch"). Empty for a key the table does not have.
+// This is what prose that tells a person what to type is built from - the planner's rationale - so
+// renaming a flag in the table cannot leave advice naming one that no longer parses.
+std::string flag_spelling(const std::string & key, const std::string & value = "");
+
 // The table as a JSON array, one object per parameter, with `default` read from `defaults` — so a
 // front-end that resolves its own defaults (the CLI turns the cache on with streaming) can say so.
 std::string params_json(const RunConfig & defaults);

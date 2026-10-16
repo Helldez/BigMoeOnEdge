@@ -135,6 +135,27 @@ Semantic Versioning.
   `top_p_max`, `seed_random`, `SpecConfig::draft_p_min_max`,
   `MoeStreamConfig::drop_cold_frac_max`, `substitute_lambda_max`). The sink factories return
   `std::unique_ptr`.
+- **One probe-and-plan sequence, in core.** `bmoe-cli --auto` and the server's `/api/plan` each
+  carried the planner's probe calls in the same order, the cache-floor arithmetic behind the
+  headroom probe and the two-minute device-probe limit, kept in step by hand. Both now call
+  `probe_and_plan` (`core/include/bmoe/auto_plan.h`) with what differs between them as options (the
+  storage and memory probes, how the executable starts itself again to probe a device), the child of
+  an isolated probe is one call (`probe_device_child`), and neither front-end includes `llama.h` to
+  plan. The rules are unchanged and still pure: `plan_run` is now a list of named stages over one
+  planning state and `allocate` a list of named steps, and every plan the planner tests make is the
+  same before and after, decision for decision. A reason that tells a person what to type spells
+  the flag through the parameter table (`flag_spelling`), so a renamed flag cannot leave advice
+  naming one that no longer parses; the one reason that named a front-end flag (`--auto`) now says
+  "the planner". The smallest context the rationale suggests and the capacity fitter's device
+  margin and minimum context are named constants.
+- **Tensor and graph-node names are read in one place.** How llama.cpp spells a block's tensors, an
+  expert weight, a per-layer graph node and the router weight chain, and the capacity fitter's
+  expert-override patterns, was parsed where it was used: a `sscanf` in the session and the prefill
+  path, two copies of the node matchers in the router hook and the decide probe, a third block
+  parser in the model probe, and a `std::regex` in the placement probe. All of them now go through
+  `core/src/moe/tensor_names.{h,cpp}`, with one rule for an index (digits only, the whole of it) and
+  no regex, and `tests/tensor_names_test.cpp` covers the shapes the conventions produce and the near
+  misses each rule rejects.
 
 ### Fixed
 - **Two gate runs on one machine no longer meet on one port.** The prefill-device gate served its

@@ -514,10 +514,10 @@ private:
     // at its topk node undropped, exactly as with the policy off. That costs the first token of a
     // run its dropping and nothing else.
     //
-    // A terminal node is remembered as the INDEX of its name in kWeightNodes, not as the name: the
-    // four chain names are mutually exclusive, so the index identifies it exactly, and recording it
-    // costs neither an allocation nor a string compare on a path that runs for every weight node of
-    // every layer of every token.
+    // A terminal node is remembered as the INDEX of its name in tensor_names::k_weight_nodes, not as
+    // the name: the four chain names are mutually exclusive, so the index identifies it exactly, and
+    // recording it costs neither an allocation nor a string compare on a path that runs for every
+    // weight node of every layer of every token.
     //
     // Once it IS known, only that node is asked for. The rest of the chain exists to identify it,
     // and each extra ask is a graph split plus a compute-thread synchronization — per layer, per

@@ -41,6 +41,8 @@ core/
                     the planning rules: (machine, model, request) -> a resolved RunConfig with the
                     reason for each knob; the cost model and the memory ledger; the plan as a value
     probe.h         the adapters' entry points: what fills the two profiles
+    auto_plan.h     probe_and_plan: the one probe-and-plan sequence every front-end calls, the
+                    adapters in their order and then the rules; the options are what differs
   src/
     io/         platform_io — O_DIRECT reads and their per-file alignment, reserve/commit/evict VM,
                   the spin-wait pause: the OS and ISA branches the streaming path needs
@@ -48,6 +50,8 @@ core/
                 mapping_release - releases the model file's mapping after load (--release-mmap)
     moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), arch_registry,
                 expert_stream_source (one reader per shard), router_hook
+                tensor_names - how llama.cpp's tensor and graph-node names, and the capacity
+                  fitter's override patterns, are read: the one place, no regex, unit-tested
                 dense_weights — non-expert weight policy + the residency sensor
                 row_stream - row-gathered tables served from flash (see row-gathered-tables.md)
                 device_arena - one or two layer slots on a prefill device, held for the session or
@@ -69,8 +73,11 @@ core/
                 hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,
                   device_probe, placement_probe, isolated_probe (a device asked in a second
                   process, so a driver that ends it ends only that) - the adapters that measure a
-                  machine and read a
-                  gguf; the only place in the planner where a platform or llama.cpp may appear
+                  machine and read a gguf; the only place in the planner where a platform or
+                  llama.cpp may appear
+                auto_plan - the composition of the two: the probes in the order a plan is
+                  measured in, then plan_run(). With the adapters because it starts the backends;
+                  it decides nothing, and bmoe-cli --auto and the server's /api/plan both call it
     params.cpp  the parameter table's rows (see params.h)
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
 third_party/

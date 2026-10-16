@@ -1,6 +1,7 @@
 #include "prefill_path.h"
 
 #include "../moe/router_hook.h"
+#include "../moe/tensor_names.h"
 
 #include <cstdio>
 #include <cstring>
@@ -107,7 +108,7 @@ bool PrefillPath::open(llama_context * ctx,
     // graph inputs and KV views the capture records alongside.
     std::vector<ggml_tensor *> layer_weights;
     for (ggml_tensor * t : hook.captured_weight_objects()) {
-        if (std::strncmp(t->name, "blk.", 4) != 0) continue;
+        if (tensor_names::block_layer(t->name) < 0) continue;
         if (!t->buffer || ggml_backend_buffer_get_usage(t->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) continue;
         layer_weights.push_back(t);
     }
@@ -120,9 +121,8 @@ bool PrefillPath::open(llama_context * ctx,
     if (moe.enabled && hook.learned_layer_ends()) {
         dense_per_layer.resize((size_t) n_layer_streamed);
         for (ggml_tensor * t : layer_weights) {
-            int il = -1;
-            if (std::sscanf(t->name, "blk.%d.", &il) == 1 && il >= 0 && il < (int) dense_per_layer.size())
-                dense_per_layer[(size_t) il].push_back(t);
+            const int il = tensor_names::block_layer(t->name);
+            if (il >= 0 && il < (int) dense_per_layer.size()) dense_per_layer[(size_t) il].push_back(t);
         }
         layer_weights.clear();
     } else if (moe.enabled) {

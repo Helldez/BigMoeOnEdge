@@ -17,7 +17,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   `file_reader` (pooled positioned reader, per-consumer O_DIRECT — used by both the expert stream
   and the dense loader); `mapping_release` (hands the model file's mapping back after load).
 - `core/src/moe/` — `gguf_offsets`, `arch_registry`, `expert_stream_source`, `router_hook`;
-  `dense_weights` (the non-expert weight policy: mmap / warm / anon, plus the residency sensor).
+  `dense_weights` (the non-expert weight policy: mmap / warm / anon, plus the residency sensor);
+  `tensor_names` (the one place llama.cpp's tensor and node names are parsed: no ad-hoc sscanf or regex).
 - `core/src/engine/` — `session.cpp`, the composition root: one `Session` loads the model, binds
   the streamer and runs every generation; `runtime.cpp` is the one-shot wrapper over it. Beside it:
   the prefill device and path, the chat template and parsers, and `decide/` (`docs/decide.md`).
@@ -25,6 +26,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   (`planner`, `allocate`, `plan`) are pure functions over `hardware_profile.h` / `model_profile.h`
   and name no platform, vendor, device or architecture; the `*_probe` adapters are the only files
   that may. A rule that needs to know the platform is missing a fact: add the field, not the branch.
+  `auto_plan` (`probe_and_plan`) runs the probes in their order and then the rules; every front-end
+  plans through it rather than calling the probes itself.
 - `core/include/bmoe/params.h` + `core/src/params.cpp` — the parameter table: every tunable of a
   `RunConfig`, described once. The CLI parses and documents its flags from it; front-ends render
   their settings from its JSON (`bmoe-cli --describe-params`).

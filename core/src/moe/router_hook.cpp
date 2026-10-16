@@ -5,100 +5,22 @@
 #include "ggml-backend.h"
 #include "decide_probe.h"
 #include "device_arena.h"
+#include "tensor_names.h"
 #include "../io/platform_io.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <string_view>
 
 namespace bmoe {
+
+namespace tn = tensor_names;
 
 RouterHook::RouterHook(const MoeRecipe & recipe, int n_layer) : recipe_(recipe), n_layer_(n_layer) {
     const int n = n_layer_ > 0 ? n_layer_ : 0;
     captured_.assign(n, LayerExperts{});
     prev_ids_.assign(n, std::vector<int32_t>{});
-}
-
-// Match a tensor name of the form "blk.<il>.<suffix>.weight" against the recipe's expert
-// tensor suffixes. Returns the slot index (its position in recipe.exps_suffix) and layer,
-// or -1. The exact ".weight" tail comparison is load-bearing: a companion tensor like
-// "ffn_down_exps.scale" prefix-matches its suffix but fails the tail strcmp, so per-expert
-// scales — and every other non-".weight" tensor — are left mmap-resident, not streamed.
-static int match_expert(const char * name, const MoeRecipe & r, int & il_out) {
-    int il = -1;
-    int consumed = 0;
-    if (std::sscanf(name, "blk.%d.%n", &il, &consumed) != 1 || il < 0) return -1;
-    const char * rest = name + consumed; // "<suffix>.weight"
-    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-        const char * suffix = r.exps_suffix[p];
-        if (!suffix) continue; // unused slot (fewer than max_exps expert tensors)
-        const size_t sl = std::strlen(suffix);
-        if (std::strncmp(rest, suffix, sl) == 0 && std::strcmp(rest + sl, ".weight") == 0) {
-            il_out = il;
-            return p;
-        }
-    }
-    return -1;
-}
-
-// Every routing node this hook looks for — the topk, the weight chain, the gate matmul — is named
-// "ffn_moe_<something>". A graph has thousands of nodes and the ask pass sees all of them, so this
-// one comparison is what keeps the rest of the matching off the hot path entirely. `name` is a
-// fixed-size array inside the tensor, so reading eight bytes of it is always in bounds.
-static inline bool is_moe_node(const char * name) {
-    return std::memcmp(name, "ffn_moe_", 8) == 0;
-}
-
-// Parse the "<il>" that llama.cpp appends after the '-' on a per-layer node name. Digits only, to
-// the end of the string — the same strictness node_layer applies, and stricter than the "%d" this
-// replaces, which would have read "12abc" as layer 12. Returns -1 on anything else.
-static inline int parse_layer_tail(const char * p) {
-    if (*p < '0' || *p > '9') return -1;
-    int il = 0;
-    for (; *p; ++p) {
-        if (*p < '0' || *p > '9') return -1;
-        il = il * 10 + (*p - '0');
-        if (il > (1 << 20)) return -1; // a runaway digit run is not a layer index
-    }
-    return il;
-}
-
-// "<prefix><il>" → il, or -1 if the name does not have that shape. Used for the two singular
-// routing nodes (the topk and the gate matmul), whose prefixes carry their own length.
-static inline int match_layer_node(const char * name, std::string_view prefix) {
-    return std::memcmp(name, prefix.data(), prefix.size()) == 0 ? parse_layer_tail(name + prefix.size()) : -1;
-}
-
-// The router-weight nodes build_moe_ffn emits per layer. The chain is ffn_moe_weights →
-// (_softmax | _norm) → (_scaled), each an optional refinement of the previous, so the LAST one
-// offered for a layer carries the weight actually applied to that layer's expert outputs.
-// Last-wins is what keeps this architecture-independent: no table of which gating each model
-// uses. The '-' check is load-bearing — it rejects "ffn_moe_weights_sum-3", which prefix-matches
-// "ffn_moe_weights" but is a row sum, not a weight.
-//
-// It also makes the four names mutually exclusive, which is why the match can be reported as an
-// INDEX rather than a name: that index is how a layer's terminal node is remembered, so learning it
-// costs no allocation and comparing against it is an integer test — on a path that runs for every
-// weight node of every layer of every token whenever the drop policy is armed.
-static constexpr std::string_view kWeightNodes[] = {
-    "ffn_moe_weights",
-    "ffn_moe_weights_softmax",
-    "ffn_moe_weights_norm",
-    "ffn_moe_weights_scaled",
-};
-
-static int match_weights(const char * name, int & il_out) {
-    for (int v = 0; v < (int) (sizeof(kWeightNodes) / sizeof(kWeightNodes[0])); ++v) {
-        const std::string_view n = kWeightNodes[v];
-        if (std::memcmp(name, n.data(), n.size()) != 0 || name[n.size()] != '-') continue;
-        const int il = parse_layer_tail(name + n.size() + 1);
-        if (il < 0) continue;
-        il_out = il;
-        return v;
-    }
-    return -1;
 }
 
 // Where token j's slot k lives inside a weight node. Single source of truth for the layout: the
@@ -1274,17 +1196,6 @@ bool RouterHook::c_eval(ggml_tensor * t, bool ask, void * user_data) {
     return static_cast<RouterHook *>(user_data)->on_eval(t, ask);
 }
 
-// Layer id from a node name. llama.cpp suffixes per-layer nodes with "-<il>"; anything else
-// (embeddings, the output head, the KQ mask) belongs to no layer and reports -1. Kept generic on
-// purpose: the trace must not carry a table of which node names a given architecture emits.
-static int node_layer(const char * name) {
-    const char * dash = std::strrchr(name, '-');
-    if (!dash || !dash[1]) return -1;
-    for (const char * p = dash + 1; *p; ++p)
-        if (*p < '0' || *p > '9') return -1;
-    return std::atoi(dash + 1);
-}
-
 void RouterHook::set_compute_trace(bool on, bool per_layer) {
     ctrace_on_ = on;
     ctrace_layers_ = per_layer;
@@ -1348,7 +1259,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             // attributing it to this node's layer would misfile nearly a whole layer, since a
             // boundary node is the first node of the next one.
             ctrace_close_segment(ctrace_obs_layer_, nullptr);
-            const int nl = node_layer(t->name);
+            const int nl = tn::any_node_layer(t->name);
             if (nl >= 0) ctrace_obs_layer_ = nl; // layerless nodes (reshapes, views) don't move the cursor
         } else {
             const auto now = std::chrono::steady_clock::now();
@@ -1358,7 +1269,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             r.phase = ctrace_phase_;
             r.step = ctrace_step_;
             r.seq = ctrace_seq_++;
-            r.layer = node_layer(t->name);
+            r.layer = tn::any_node_layer(t->name);
             r.op = ggml_op_name(t->op);
             r.name = t->name;
             r.wall_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(now - ctrace_mark_).count();
@@ -1374,7 +1285,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         if (ask) {
             // Every node passes through here in graph order, so the last one carrying a layer's
             // index is that layer's end.
-            const int nl = node_layer(t->name);
+            const int nl = tn::any_node_layer(t->name);
             if (nl >= 0 && nl < (int) last_node_.size()) last_node_[(size_t) nl] = t->name;
             for (int s = 0; s < GGML_MAX_SRC; ++s) {
                 ggml_tensor * src = t->src[s];
@@ -1396,7 +1307,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                     if (leaf->op == GGML_OP_NONE && !as_matrix) non_matrix_weights_.insert(leaf);
                 }
                 int il = -1;
-                const int p = match_expert(src->name, recipe_, il);
+                const int p = tn::expert_slot(src->name, recipe_, il);
                 if (p >= 0) {
                     // An expert-named tensor: streamed, never a dense-rebind candidate - and only if
                     // it is somewhere we can serve. The streamer works by pointing `data` at bytes it
@@ -1442,8 +1353,8 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // the routing ids live in device memory, the streamer does not feed this graph, and validation
     // keeps the row policy (the one host job a device graph would still need) off this path.
     if (device_arena_) {
-        const int dl = is_moe_node(t->name) ? match_layer_node(t->name, "ffn_moe_topk-") : -1;
-        const int nl = node_layer(t->name);
+        const int dl = tn::is_moe_node(t->name) ? tn::node_layer(t->name, tn::k_topk_node) : -1;
+        const int nl = tn::any_node_layer(t->name);
         const bool layer_end = nl >= 0 && nl < (int) last_node_.size() && last_node_[(size_t) nl] == t->name;
         if (ask) return dl >= 0 || layer_end || probe_ask;
         if (dl >= 0) device_arena_->barrier(dl, t);
@@ -1479,15 +1390,15 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // ── stream: the routing nodes get the single-node barrier so we see the selected ids ──
     // One prefix test decides whether any of the three matchers below can possibly fire. The vast
     // majority of a graph's nodes fail it and leave having done nothing else.
-    const bool moe_node = is_moe_node(t->name);
-    const int il = moe_node ? match_layer_node(t->name, "ffn_moe_topk-") : -1;
+    const bool moe_node = tn::is_moe_node(t->name);
+    const int il = moe_node ? tn::node_layer(t->name, tn::k_topk_node) : -1;
     const bool is_topk = il >= 0;
     // The weight nodes are asked for by a traced run, and by the drop policy, which decides on the
     // weights the matmul will actually apply. Each extra ask is another barrier — a handful per MoE
     // layer, on tensors of a few floats — so neither is on by default.
     int wl = -1;
     const bool want_weights = trace_on_ || drop_armed();
-    const int weight_variant = (moe_node && want_weights) ? match_weights(t->name, wl) : -1;
+    const int weight_variant = (moe_node && want_weights) ? tn::weight_node(t->name, wl) : -1;
     const bool is_weights = weight_variant >= 0;
     // Which of them is worth a BARRIER is a narrower question than which of them we recognise. The
     // chain's earlier nodes exist only so the terminal one can be identified; once a layer's
@@ -1507,7 +1418,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // instead. Decode-only either way. The "-" in the pattern is what keeps
     // "ffn_moe_logits_biased-<il>" — a different node — from matching.
     const int gl = (moe_node && (predict_on() || route_ahead_ > 0) && source_ && batch_phase_ == 1)
-                       ? match_layer_node(t->name, "ffn_moe_logits-")
+                       ? tn::node_layer(t->name, tn::k_logits_node)
                        : -1;
     const bool is_logits = gl >= 0;
     if (ask && is_logits && gl < n_layer_) {
@@ -1526,7 +1437,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             if (!ctrace_layers_) {
                 ctrace_iso = true;
             } else {
-                const int nl = node_layer(t->name);
+                const int nl = tn::any_node_layer(t->name);
                 if (nl >= 0 && nl != ctrace_ask_layer_) {
                     ctrace_iso = true;
                     ctrace_ask_layer_ = nl;
@@ -1547,7 +1458,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     if (is_logits && predict_on()) predict_at_logits(t, gl);
 
     // Weights follow their layer's topk, so the pending record is already open; keep the last
-    // one offered (match_weights explains why) and let the flush read it. This runs BEFORE the drop
+    // one offered (tensor_names.h explains why) and let the flush read it. This runs BEFORE the drop
     // policy edits the same tensor, so the trace records the routing the router produced, not the
     // one the policy left behind — `dropped` is what says which is which.
     if (is_weights && t->data && t->type == GGML_TYPE_F32 && pending_.layer == wl && pending_.nu > 0)

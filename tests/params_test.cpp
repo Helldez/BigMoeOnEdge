@@ -16,7 +16,9 @@
 #include <cstdio>
 #include <functional>
 #include <set>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace bmoe;
@@ -281,6 +283,30 @@ int main() {
         c.moe.dense_weights = DenseWeightsMode::Mmap;
         const std::vector<std::string> args = to_args(c);
         check(join(args) == "--dense-weights mmap", "to_args prefers --dense-weights over the deprecated alias");
+    }
+
+    // ── flag_spelling: what prose tells a person to type ─────────────────────────────
+    {
+        check(flag_spelling("ubatch") == "--ubatch", "flag_spelling names the flag that takes a value");
+        check(flag_spelling("ctx-size", "4096") == "--ctx-size 4096", "flag_spelling spells a flag with its value");
+        check(flag_spelling("overlap", "true") == "--overlap", "flag_spelling prefers the switch that says the value");
+        check(flag_spelling("no-such-knob", "1").empty(), "flag_spelling is empty for a key the table lacks");
+        // Every spelling the planner's rationale prints must parse back to the value it names.
+        const std::pair<const char *, const char *> named[] = {
+            {"ctx-size", "4096"},   {"release-mmap", "true"}, {"dense-on-device", "true"}, {"overlap", "true"},
+            {"moe-stream", "true"}, {"ubatch", "256"},        {"prefill-device", "accel"},
+        };
+        for (const auto & kv : named) {
+            std::vector<std::string> argv;
+            std::istringstream words(flag_spelling(kv.first, kv.second));
+            for (std::string w; words >> w;)
+                argv.push_back(w);
+            RunConfig c;
+            std::string err;
+            const bool ok = !argv.empty() && parse(c, argv, err);
+            check(ok && find_param(kv.first)->get(c) == kv.second,
+                  std::string("flag_spelling(") + kv.first + ", " + kv.second + ") parses back: " + join(argv));
+        }
     }
 
     // ── schema ───────────────────────────────────────────────────────────────────────

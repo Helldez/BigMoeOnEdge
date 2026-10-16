@@ -1,6 +1,7 @@
 #include "decide_probe.h"
 
 #include "gguf_offsets.h"
+#include "tensor_names.h"
 
 #include "../io/file_reader.h"
 
@@ -21,31 +22,13 @@ static bool read_at(const std::string & path, uint64_t off, void * dst, size_t n
     return rd.read(0, dst, off, n) == (long long) n;
 }
 
-// "<prefix><il>" with nothing after the digits, or -1.
-static int layer_of(const char * name, const char * prefix) {
-    const size_t n = std::strlen(prefix);
-    if (std::strncmp(name, prefix, n) != 0) return -1;
-    const char * p = name + n;
-    if (!*p) return -1;
-    int il = 0;
-    for (; *p; ++p) {
-        if (*p < '0' || *p > '9') return -1;
-        il = il * 10 + (*p - '0');
-    }
-    return il;
-}
+namespace tn = tensor_names;
 
-// The router weight chain's nodes, in graph order; the last one a layer offers is what the expert
-// matmul applies. "ffn_moe_weights_sum-" is a row sum, not a weight, and fails the exact match.
-static const char * const k_weight_prefixes[] = {"ffn_moe_weights-", "ffn_moe_weights_softmax-",
-                                                 "ffn_moe_weights_norm-", "ffn_moe_weights_scaled-"};
-
+// The layer of a router-weight node, or -1. Any node of the chain counts: the last one a layer
+// offers is what the expert matmul applies (tensor_names.h), and observe() keeps the latest.
 static int weight_layer(const char * name) {
-    for (const char * p : k_weight_prefixes) {
-        const int il = layer_of(name, p);
-        if (il >= 0) return il;
-    }
-    return -1;
+    int il = -1;
+    return tn::weight_node(name, il) >= 0 ? il : -1;
 }
 
 DecideProbe::DecideProbe(
@@ -154,8 +137,8 @@ void DecideProbe::end() {
 
 bool DecideProbe::wants(const ggml_tensor * t) const {
     const char * n = t->name;
-    if (std::strncmp(n, "ffn_moe_", 8) == 0) return layer_of(n, "ffn_moe_topk-") >= 0 || weight_layer(n) >= 0;
-    return layer_of(n, "l_out-") >= 0;
+    if (tn::is_moe_node(n)) return tn::node_layer(n, tn::k_topk_node) >= 0 || weight_layer(n) >= 0;
+    return tn::node_layer(n, tn::k_layer_out_node) >= 0;
 }
 
 void DecideProbe::flush_layer(int il) {
@@ -176,7 +159,7 @@ void DecideProbe::flush_layer(int il) {
 void DecideProbe::observe(ggml_tensor * t) {
     if (!t->buffer && !(t->view_src && t->view_src->buffer)) return;
     const char * n = t->name;
-    int il = layer_of(n, "ffn_moe_topk-");
+    int il = tn::node_layer(n, tn::k_topk_node);
     if (il >= 0 && il < n_layer_ && t->type == GGML_TYPE_I32) {
         flush_layer(il); // an earlier graph's routing of this layer
         const int nu = (int) t->ne[0], nt = (int) t->ne[1];
@@ -200,7 +183,7 @@ void DecideProbe::observe(ggml_tensor * t) {
         ggml_backend_tensor_get(t, w_[il].data(), 0, w_[il].size() * sizeof(float));
         return;
     }
-    il = layer_of(n, "l_out-");
+    il = tn::node_layer(n, tn::k_layer_out_node);
     if (il >= 0 && il < n_layer_ && t->type == GGML_TYPE_F32 && t->ne[0] == n_embd_) {
         const int nt = (int) t->ne[1];
         hidden_[il].resize(n_embd_);
