@@ -74,12 +74,40 @@ most phones and PCs is reached through neither of the two GPU ones measured (Met
 Vulkan reaches any GPU with a driver - discrete and integrated on Windows and Linux, and Android -
 and OpenCL is llama.cpp's Adreno path. Both name the expert op, and both implement wrapping host
 memory without advertising it, which is the capability streamed experts computed on a device would
-need. The work, in order: carry each backend in a build (a desktop archive with Vulkan, an APK
-with OpenCL beside Hexagon), so the planner sees the device with no code here; one measured run of
-the prefill device on each, against the CPU and, on the phone, against the NPU; then the
-`buffer_from_host_ptr` route for the streamed experts where the measurement says the device wins.
-The OpenCL entry in [backends.md](backends.md) carries the one negative so far: the dense set on a
-phone's integrated GPU lost 27%. That measured the dense weights, not the prefill.
+need. The work, in order: one build per platform that carries every backend it can, so the same
+archive adapts to whatever device it lands on; one measured run of the prefill device on each,
+against the CPU and, on the phone, against the NPU; then the `buffer_from_host_ptr` route for the
+streamed experts where the measurement says the device wins. The OpenCL entry in
+[backends.md](backends.md) carries the one negative so far: the dense set on a phone's integrated
+GPU lost 27%. That measured the dense weights, not the prefill.
+
+That first step is what makes the solution agnostic in fact and not only in its rules: the planner
+already chooses among the devices it sees, and today the release builds decide what it can see. The
+desktop archives carry the CPU alone (Metal on macOS), the APK the CPU and Hexagon. The way out is
+the one llama.cpp ships: every backend a module loaded at start-up (`GGML_BACKEND_DL`), skipped
+when its driver is missing. What it asks of this project:
+
+- **The overlap hook, reachable from a loaded backend.** Today a build with loaded backends gives
+  up `--overlap`, because the expert-ready hook lives in the CPU backend and a module cannot be
+  linked against (`scripts/build-portable.sh`). The fork commit adds the hook to the CPU backend's
+  `get_proc_address` table, beside `ggml_backend_set_n_threads`, and the engine looks it up there.
+  It is a change to the fork commit, so it waits for agreement ([AGENTS.md](../AGENTS.md), hard
+  rule 1).
+- **The CPU in variants.** `GGML_CPU_ALL_VARIANTS` builds one CPU module per instruction-set tier
+  and the best one present is loaded. On the phone it replaces the fixed armv8.2 baseline, which is
+  there so older SoCs do not crash and keeps the int8 matmul instructions off newer ones.
+- **Isolated probes on Windows.** A GPU backend in every archive means a faulty driver on some
+  machine, and only the child process keeps it from ending the plan. Windows and iOS probe
+  in-process today.
+- **The releases.** The Windows and Linux archives carry Vulkan, which covers discrete and
+  integrated GPUs from every vendor; the APK carries OpenCL and Vulkan beside Hexagon. A smoke step
+  checks that every module loads on the runner. CUDA and HIP stay out of the default archive: their
+  runtime libraries weigh more than the rest of it, and Vulkan reaches the same GPUs.
+- **Measured before it is the default.** The load time with a GPU backend present and unused
+  against absent: on one laptop with an integrated GPU a Vulkan build loaded the model five times
+  slower, cause not found, while its prefill ran about 1.4 times faster than the CPU's (one CPU
+  baseline). Then the size of each archive and of the APK, `--overlap` working in the new build,
+  the gates on it, and a run on a phone before the release.
 
 **Connect a client from the UI.** Serving a coding agent or a chat client is what the endpoint is
 for, and today it takes launch options and hand-typed values. One Connect view in every UI, fed by

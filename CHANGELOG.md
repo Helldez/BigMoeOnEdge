@@ -107,7 +107,10 @@ Semantic Versioning.
   research themes are its second half. Two steps join it: the Vulkan and OpenCL GPUs (a build that
   carries each, a measured prefill run, then the host-memory route for streamed experts), a
   Connect view that tells any client what it needs (#257), and one diagram of the planner's logic
-  for `docs/hardware-planning.md` and the README.
+  for `docs/hardware-planning.md` and the README. The GPU step now lists what a build that adapts
+  to any device needs: the overlap hook reachable from a backend loaded at start-up, the CPU in
+  variants, isolated probes on Windows, Vulkan and OpenCL in the releases, and the load time, size
+  and gates measured before it becomes the default.
 
 ### Changed
 - **A load says it is planning.** `state` reads `planning` from the moment a load in auto mode
