@@ -23,14 +23,6 @@ struct Admission {
     std::string error;
 };
 
-// Errors after which the session is still usable (the request was bad, not the context).
-bool recoverable(const std::string & error) {
-    return error.find("exceeds the session n_ctx") != std::string::npos ||
-           error.find("empty prompt") != std::string::npos ||
-           error.find("the chat template rejected the conversation") != std::string::npos ||
-           error.find("a message list needs chat mode") != std::string::npos;
-}
-
 } // namespace
 
 EngineHost::EngineHost(EventBus & bus) : bus_(bus) {}
@@ -183,10 +175,12 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
         break;
     case TurnQueue::Admit::Full:
         out.status = 429;
+        out.code = error_code::busy;
         out.error = "busy: too many requests are already waiting for the model";
         return out;
     case TurnQueue::Admit::Abandoned:
         out.status = 499; // never sent: the client that would read it is gone
+        out.code = error_code::client_gone;
         out.error = "the client stopped waiting";
         return out;
     }
@@ -203,6 +197,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     }
     if (!s) {
         out.status = 503;
+        out.code = error_code::no_model;
         out.error = "no model is loaded";
         return out;
     }
@@ -231,7 +226,8 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
 
     if (!r) {
         out.error = r.error;
-        if (recoverable(r.error)) {
+        out.code = run_error_name(r.error_kind);
+        if (run_error_recoverable(r.error_kind)) {
             out.status = 400;
         } else {
             // A failed decode leaves the context in an unknown state: the session is not reused.
@@ -260,10 +256,12 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
         break;
     case TurnQueue::Admit::Full:
         out.status = 429;
+        out.code = error_code::busy;
         out.error = "busy: too many requests are already waiting for the model";
         return out;
     case TurnQueue::Admit::Abandoned:
         out.status = 499;
+        out.code = error_code::client_gone;
         out.error = "the client stopped waiting";
         return out;
     }
@@ -280,6 +278,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
     }
     if (!s) {
         out.status = 503;
+        out.code = error_code::no_model;
         out.error = "no model is loaded";
         return out;
     }
@@ -291,6 +290,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
 
     if (!r.ok && !r.cancelled) {
         out.error = r.error;
+        out.code = run_error_name(r.error_kind);
         if (!r.fatal) {
             out.status = 400;
         } else {

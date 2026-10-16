@@ -173,8 +173,11 @@ void send_json(httplib::Response & res, const json & j, int status = 200) {
     res.set_content(j.dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
 }
 
-void send_error(httplib::Response & res, int status, const std::string & msg) {
-    send_json(res, json{{"error", msg}}, status);
+// `error` is for a person; `code`, when the failure has one, is what a client decides on.
+void send_error(httplib::Response & res, int status, const std::string & msg, const std::string & code = "") {
+    json body{{"error", msg}};
+    if (!code.empty()) body["code"] = code;
+    send_json(res, body, status);
 }
 
 bool parse_body(const httplib::Request & req, httplib::Response & res, json & out) {
@@ -389,7 +392,7 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!cr.stream) {
             // Waiting for a turn, the only sign of a client that left is its closed connection.
             ChatOutcome out = app.host.chat(cr.turn, nullptr, [&req] { return !req.is_connection_closed(); });
-            if (out.status != 200) return send_error(res, out.status, out.error);
+            if (out.status != 200) return send_error(res, out.status, out.error, out.code);
             ensure_tool_call_ids(out.result.tool_calls, meta.id);
             return send_json(res, completion_json(meta, out.result, finish_reason(out.result, out.n_predict)));
         }
@@ -445,7 +448,7 @@ void register_routes(httplib::Server & svr, App & app) {
                     return alive;
                 });
             if (out.status != 200) {
-                write("data: " + dump(json{{"error", {{"message", out.error}, {"code", out.status}}}}) + "\n\n");
+                write("data: " + dump(json{{"error", {{"message", out.error}, {"code", out.code}}}}) + "\n\n");
             } else {
                 // The per-token text can lag the final answer (the chat parser holds back what it
                 // cannot classify yet), so close the gap before the last chunk: a client must end
@@ -491,7 +494,7 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!parse_decide_request(body, dr, err)) return send_error(res, 400, err);
         if (!app.host.ready()) return send_error(res, 503, "no model is loaded: load one from the Models page");
         DecideOutcome out = app.host.decide(dr, [&req] { return !req.is_connection_closed(); });
-        if (out.status != 200) return send_error(res, out.status, out.error);
+        if (out.status != 200) return send_error(res, out.status, out.error, out.code);
         send_json(res, decide_json(out.result));
     });
 

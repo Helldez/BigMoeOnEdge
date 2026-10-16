@@ -58,7 +58,12 @@
         <MessageView {turn} streaming={chat.busy && i === chat.turns.length - 1} last={i === chat.turns.length - 1} />
       {/each}
     </div>
-    {#if chat.error}
+    {#if chat.contextFull}
+      <p class="banner error" role="alert">
+        This conversation fills the model's context. Start a new chat, or load the model with a larger Context size.
+        <button type="button" onclick={() => chat.newChat()}>New chat</button>
+      </p>
+    {:else if chat.error}
       <p class="banner error" role="alert">{chat.error}</p>
     {/if}
     <LiveLine />

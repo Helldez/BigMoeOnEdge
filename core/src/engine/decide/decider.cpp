@@ -16,8 +16,9 @@ DecideResult run_decide(IDecideBackend & backend, IPrefixCache * cache, const De
     // the sequence held, and a refused request must not leave its tokens behind for the next
     // generate() to build on at positions it no longer knows about.
     backend.clear();
-    auto refuse = [&](std::string msg) {
+    auto refuse = [&](RunError kind, std::string msg) {
         r.error = std::move(msg);
+        r.error_kind = kind;
         r.prefix_state_bytes = cache ? cache->bytes() : 0;
         return r;
     };
@@ -29,22 +30,23 @@ DecideResult run_decide(IDecideBackend & backend, IPrefixCache * cache, const De
         choice_tokens.push_back(backend.tokenize_plain(c));
     std::vector<Token> choice_ids;
     std::string error;
-    if (!choice_first_tokens(req.choices, choice_tokens, backend.n_vocab(), choice_ids, error)) return refuse(error);
+    if (!choice_first_tokens(req.choices, choice_tokens, backend.n_vocab(), choice_ids, error))
+        return refuse(RunError::InvalidRequest, error);
 
     std::vector<Token> tokens;
-    if (!backend.render(req.prefix + req.suffix, tokens, error)) return refuse(error);
+    if (!backend.render(req.prefix + req.suffix, tokens, error)) return refuse(RunError::TemplateRejected, error);
     const int n = (int) tokens.size();
-    if (n < 1) return refuse("empty prompt after tokenization");
+    if (n < 1) return refuse(RunError::EmptyPrompt, "empty prompt after tokenization");
     if (n > backend.n_ctx())
-        return refuse("prompt of " + std::to_string(n) + " tokens exceeds the session n_ctx (" +
-                      std::to_string(backend.n_ctx()) + ")");
+        return refuse(RunError::ContextFull, "prompt of " + std::to_string(n) + " tokens exceeds the session n_ctx (" +
+                                                 std::to_string(backend.n_ctx()) + ")");
     r.n_tokens = n;
 
     const bool reuse = cache && req.reuse_prefix && !req.prefix.empty();
     int n_split = 0;
     if (reuse) {
         std::vector<Token> prefix_alone;
-        if (!backend.render(req.prefix, prefix_alone, error)) return refuse(error);
+        if (!backend.render(req.prefix, prefix_alone, error)) return refuse(RunError::TemplateRejected, error);
         n_split = prefix_split(tokens, prefix_alone);
     }
 
@@ -58,6 +60,7 @@ DecideResult run_decide(IDecideBackend & backend, IPrefixCache * cache, const De
     auto fail = [&](const char * what) {
         r.error = what;
         r.fatal = true;
+        r.error_kind = RunError::Failed;
         backend.clear();
         r.prefix_state_bytes = cache ? cache->bytes() : 0;
         return r;

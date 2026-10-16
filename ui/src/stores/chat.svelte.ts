@@ -2,7 +2,7 @@
 // the whole conversation and the engine reuses the leading tokens its KV cache already holds, so
 // a follow-up costs its own message and switching conversations costs a full prefill. What is
 // kept here is saved in this browser, one entry per conversation, and survives a reload.
-import { api, ApiError, streamChat } from '../lib/api';
+import { api, ApiError, CODE_CONTEXT_FULL, streamChat } from '../lib/api';
 import { applyChunk, initialStreamState, type StreamState } from '../lib/chatStream';
 import {
   browserStore,
@@ -39,6 +39,8 @@ class ChatStore {
   turns = $state<Turn[]>([]);
   busy = $state(false);
   error = $state('');
+  /** The error is a full context: the fix is a new chat, and the screen offers one. */
+  contextFull = $state(false);
   /** Choose mode: the prompt is a question and the model picks one of the options. */
   choose = $state(false);
 
@@ -78,6 +80,7 @@ class ChatStore {
     if (this.busy) return;
     this.turns = [];
     this.error = '';
+    this.contextFull = false;
     this.current = freshConversation();
   }
 
@@ -100,6 +103,7 @@ class ChatStore {
       best: t.best,
     }));
     this.error = '';
+    this.contextFull = false;
   }
 
   delete(id: string): void {
@@ -134,6 +138,7 @@ class ChatStore {
     const content = text.trim();
     if (!content || this.busy) return;
     this.error = '';
+    this.contextFull = false;
     this.turns.push(this.turn('user', content));
     await this.generate(maxTokens, think);
   }
@@ -145,6 +150,7 @@ class ChatStore {
     if (!last || last.role !== 'assistant' || last.choices) return;
     this.turns = this.turns.slice(0, -1);
     this.error = '';
+    this.contextFull = false;
     await this.generate(undefined, undefined);
   }
 
@@ -168,7 +174,7 @@ class ChatStore {
       );
       // A failure after the stream opened arrives as an error chunk, not as a status: handled like
       // one, so a refused turn leaves the history as it was.
-      if (state.error) this.fail(reply.id, new Error(state.error));
+      if (state.error) this.fail(reply.id, new Error(state.error), state.errorCode);
       else this.persist();
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
@@ -196,6 +202,7 @@ class ChatStore {
       return;
     }
     this.error = '';
+    this.contextFull = false;
     this.turns.push(this.turn('user', userText(question.trim(), options)));
     this.turns.push(this.turn('assistant', ''));
     const reply = this.turns[this.turns.length - 1];
@@ -246,7 +253,8 @@ class ChatStore {
     if (s.summary) t.metrics = turnMetrics(s.summary, server.info?.model?.n_ctx ?? 0, s.finishReason === 'cancelled' || s.summary.cancelled);
   }
 
-  private fail(id: number, e: unknown): void {
+  private fail(id: number, e: unknown, code = e instanceof ApiError ? e.code : ''): void {
+    this.contextFull = code === CODE_CONTEXT_FULL;
     const t = this.find(id);
     let msg = e instanceof Error ? e.message : String(e);
     if (e instanceof ApiError && e.status === 409) msg = `Busy: another generation is running (${msg}).`;

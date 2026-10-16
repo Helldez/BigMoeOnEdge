@@ -127,9 +127,17 @@ Semantic Versioning.
   session n_ctx` on every message. `n_predict` is now a ceiling: the answer gets what the context
   has left after the prompt and stops there, which the OpenAI endpoint reports as
   `finish_reason: "length"`. Only a conversation that fills the context is refused, with a message
-  that says what to do (start a new conversation or load with a larger context size); the CLI,
-  the server and both apps still recognise it and keep the session. A byte-identity gate checks
-  that a budget past the context produces exactly what a budget of the room produces (#138).
+  that says what to do (start a new conversation or load with a larger context size). A
+  byte-identity gate checks that a budget past the context produces exactly what a budget of the
+  room produces (#138).
+- **A failure is recognised by its kind, never by its wording.** The CLI, the server and the
+  Android app told a full context, an empty prompt or a refused template from a crash by searching
+  the error message for a phrase, so rewording a message would have closed sessions that were
+  fine, or offered New chat for the wrong failure. The engine now returns a kind with every
+  failure (`core/include/bmoe/run_error.h`), and its stable name travels as `code`: on
+  `BMOE_ERROR` lines, beside `error` in every API error body, and in the stream's error chunk,
+  with the server's own refusals (`busy`, `no_model`) alongside. Both UIs decide on
+  `code: "context_full"`, and the web UI now offers New chat on a full context as the phone does.
 - **The roadmap linked a page that is not on `main`.** It pointed at `docs/cache-stall-sizing.md`,
   which exists only in the draft PR #238; it now points at the PR.
 - **A second plan could leave the configuration invalid and refuse every load.** A plan's values

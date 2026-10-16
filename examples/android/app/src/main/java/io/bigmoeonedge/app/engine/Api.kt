@@ -7,8 +7,16 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 
-/** A non-2xx answer from the server, with the message its JSON body carried. */
-class ApiException(val status: Int, message: String) : IOException(message)
+/**
+ * A non-2xx answer from the server: the message its JSON body carried, for a person, and its
+ * [code], for the app to decide on (docs/server-api.md). Empty when the body had none.
+ */
+class ApiException(val status: Int, message: String, val code: String = "") : IOException(message) {
+    companion object {
+        /** The code a full context is reported with: the fix is a new chat, and the screen says so. */
+        const val CODE_CONTEXT_FULL = "context_full"
+    }
+}
 
 /**
  * The client of bmoe-server's HTTP API (docs/server-api.md), the one API every UI of this
@@ -111,7 +119,7 @@ class Api(private val baseUrl: String, private val apiKey: String? = null) {
         val code = c.responseCode
         if (code in 200..299) return c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
         val text = runCatching { c.errorStream?.use { it.readBytes().toString(Charsets.UTF_8) } }.getOrNull().orEmpty()
-        throw ApiException(code, errorMessage(code, text))
+        throw ApiException(code, errorMessage(code, text), errorCode(text))
     }
 
     private fun stream(
@@ -132,7 +140,7 @@ class Api(private val baseUrl: String, private val apiKey: String? = null) {
             val code = c.responseCode
             if (code !in 200..299) {
                 val text = runCatching { c.errorStream?.use { it.readBytes().toString(Charsets.UTF_8) } }.getOrNull().orEmpty()
-                throw ApiException(code, errorMessage(code, text))
+                throw ApiException(code, errorMessage(code, text), errorCode(text))
             }
             val parser = SseParser()
             InputStreamReader(c.inputStream, Charsets.UTF_8).use { reader ->
@@ -154,6 +162,10 @@ class Api(private val baseUrl: String, private val apiKey: String? = null) {
     }
 
     companion object {
+        /** The server's `{"code": "..."}` beside the message, or "" when it sent none. */
+        fun errorCode(text: String): String =
+            runCatching { JSONObject(text).optString("code") }.getOrNull().orEmpty()
+
         /** The server's `{"error": "..."}` when it sent one, otherwise the bare status. */
         fun errorMessage(code: Int, text: String): String =
             runCatching { JSONObject(text).optString("error") }.getOrNull()?.takeIf { it.isNotEmpty() }

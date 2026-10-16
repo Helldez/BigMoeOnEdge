@@ -9,10 +9,12 @@ export interface StreamState {
   historyDropped: boolean;
   /** Set when the server reported a failure inside the stream (the status was already 200). */
   error: string;
+  /** That failure's code, what the UI decides on. */
+  errorCode: string;
 }
 
 export function initialStreamState(): StreamState {
-  return { content: '', reasoning: '', finishReason: null, summary: null, historyDropped: false, error: '' };
+  return { content: '', reasoning: '', finishReason: null, summary: null, historyDropped: false, error: '', errorCode: '' };
 }
 
 /**
@@ -37,7 +39,10 @@ export function applyChunk(state: StreamState, chunk: ChatChunk): StreamState {
   if (choice?.finish_reason) next.finishReason = choice.finish_reason;
   if (chunk.bmoe?.summary) next.summary = chunk.bmoe.summary;
   if (chunk.bmoe?.history_dropped) next.historyDropped = true;
-  if (chunk.error) next.error = chunk.error.message || 'the generation failed';
+  if (chunk.error) {
+    next.error = chunk.error.message || 'the generation failed';
+    next.errorCode = chunk.error.code ?? '';
+  }
   return next;
 }
 

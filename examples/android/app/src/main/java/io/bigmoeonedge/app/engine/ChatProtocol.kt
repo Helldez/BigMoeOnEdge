@@ -35,6 +35,7 @@ data class ChatChunk(
     val finish: String? = null,
     val summary: JSONObject? = null,
     val error: String? = null,
+    val errorCode: String = "",
 )
 
 /**
@@ -76,7 +77,10 @@ object ChatProtocol {
         if (t.isEmpty() || t == DONE) return null
         val o = runCatching { JSONObject(t) }.getOrNull() ?: return null
         o.optJSONObject("error")?.let { e ->
-            return ChatChunk(error = e.optString("message").ifEmpty { "the server reported an error" })
+            return ChatChunk(
+                error = e.optString("message").ifEmpty { "the server reported an error" },
+                errorCode = e.optString("code"),
+            )
         }
         val choice = o.optJSONArray("choices")?.optJSONObject(0)
         val bmoe = o.optJSONObject("bmoe")

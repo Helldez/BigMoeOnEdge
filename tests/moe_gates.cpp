@@ -1353,7 +1353,7 @@ int main(int argc, char ** argv) {
             long_prompt += "streaming test words ";
         const RunResult full = s->generate(GenerateRequest{long_prompt, 8});
         const RunResult again = s->generate(GenerateRequest{stream0.prompt, room});
-        if (full || full.error.find("exceeds the session n_ctx") == std::string::npos || !again) {
+        if (full || full.error_kind != RunError::ContextFull || !run_error_recoverable(full.error_kind) || !again) {
             std::printf("[FAIL] G19 a prompt that fills n_ctx must be refused, recoverably (ok=%d: %s)\n",
                         (int) (bool) full, full.error.c_str());
             ++fails;

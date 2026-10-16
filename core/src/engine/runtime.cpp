@@ -5,6 +5,26 @@
 
 namespace bmoe {
 
+const char * run_error_name(RunError e) {
+    switch (e) {
+    case RunError::None:
+        return "none";
+    case RunError::ContextFull:
+        return "context_full";
+    case RunError::EmptyPrompt:
+        return "empty_prompt";
+    case RunError::TemplateRejected:
+        return "template_rejected";
+    case RunError::NeedsChatMode:
+        return "needs_chat_mode";
+    case RunError::InvalidRequest:
+        return "invalid_request";
+    case RunError::Failed:
+        return "failed";
+    }
+    return "failed";
+}
+
 // n_ctx is passed through untouched so the gates run at exactly the context they specify.
 SessionConfig session_config_from(const RunConfig & cfg) {
     SessionConfig sc;
@@ -42,6 +62,7 @@ RunResult run(const RunConfig & cfg,
     if (!v) {
         RunResult r;
         r.error = v.error;
+        r.error_kind = RunError::Failed;
         return r;
     }
 
@@ -52,6 +73,7 @@ RunResult run(const RunConfig & cfg,
     if (!session) {
         RunResult r;
         r.error = error;
+        r.error_kind = RunError::Failed;
         return r;
     }
 

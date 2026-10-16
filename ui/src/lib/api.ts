@@ -15,15 +15,22 @@ import type {
   Plan,
 } from './types';
 
+/** The code a full context is reported with: the fix is a new chat, and the screen says so. */
+export const CODE_CONTEXT_FULL = 'context_full';
+
 export class ApiError extends Error {
   readonly status: number;
   /** The parsed JSON body, when there was one (a 400 on load carries the config error). */
   readonly body: unknown;
+  /** The body's `code`, what the UI decides on; empty when it carried none. */
+  readonly code: string;
   constructor(status: number, message: string, body: unknown) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.body = body;
+    const code = (body as { code?: unknown } | null)?.code;
+    this.code = typeof code === 'string' ? code : '';
   }
 }
 

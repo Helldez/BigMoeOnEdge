@@ -231,5 +231,6 @@ export interface ChatChunk {
   }[];
   bmoe?: { reset?: boolean; history_dropped?: boolean; summary?: DoneSummary };
   /** Sent in place of chunks when the generation fails after the stream opened. */
-  error?: { message?: string; code?: number };
+  /** `code` is what a client decides on (docs/server-api.md); `message` is for a person. */
+  error?: { message?: string; code?: string };
 }
