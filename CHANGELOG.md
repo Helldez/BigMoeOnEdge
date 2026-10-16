@@ -141,6 +141,24 @@ Semantic Versioning.
   lists the application framework, the five screens and the visual language; the bench-data index
   lists all eighteen sessions; the agent guide's project map names `session.cpp` as the composition
   root; and the benchmark pages, bench notes and scripts call the phone "the 12 GB test phone".
+- **The server holds against malformed requests, the pages around it and the network.** A field of
+  the wrong type in a request (a `role` or a content part's `type` that is a number, a download
+  `id` that is an object, a body that is an array) threw out of the JSON library and answered
+  `500`; every read is now type-checked, a body must be an object, and anything a handler still
+  throws on a JSON value is a `400` with `code: "invalid_request"`. An answer no longer makes the
+  browser fetch anything: the Markdown renderer keeps an image only when its bytes are inline
+  (`data:`) and shows any other as its alt text, so text that talks the model into writing
+  `![](https://host/?q=...)` can no longer send what the URL carries, or GET the server's own API;
+  media, `srcset` and `background` go too. Every response now carries a Content-Security-Policy
+  (`default-src 'self'`, images from the page or `data:`, no inline script or style, no framing, no
+  form submission) with `nosniff` and `no-referrer`. A request with no `Origin` that the browser
+  marks `Sec-Fetch-Site: same-site` (another port on the same host, where a hostile local page is
+  served) was answered; only `same-origin` and `none` are now. `--api-key-file PATH` reads the key
+  from a file, since a command line is visible to every local user; `--api-key` stays. A client on
+  the network may name a model in the models directory only (canonicalised, `..` and links
+  resolved; `403` `outside_models_dir` otherwise), and `--models-only` confines local clients too.
+  The default host, port, context and answer length are named in `server/server.h`, and the usage
+  text is built from them; `--port` is read strictly. `docs/server-api.md` says all of it.
 - **A request no longer fails because its answer budget is larger than the room left.** The session
   reserved the whole `n_predict` against the context before generating, so a two-word prompt was
   refused whenever Max tokens was set near or above the context size: the first outside client

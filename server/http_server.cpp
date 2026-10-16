@@ -43,13 +43,17 @@ using namespace bmoe::server;
 
 namespace {
 
+constexpr int kPortMax = 65535;
+
 struct Options {
-    std::string host = "127.0.0.1";
-    int port = 8765;
+    std::string host = kDefaultHost;
+    int port = kDefaultPort;
     std::string ui_dir, models_dir, data_dir, catalog;
     std::vector<std::string> allow_origins;
     std::string api_key;
-    bool no_api_key = false; // listen beyond loopback with no key, on purpose
+    std::string api_key_file; // --api-key-file: the key, read at start, never on the command line
+    bool no_api_key = false;  // listen beyond loopback with no key, on purpose
+    bool models_only = false; // every client, local ones too, names models in the models folder only
     bool open_browser = false;
     bool isolated_probes = true;               // the planner asks each device in a child process first
     std::string probe_device;                  // internal: this process IS such a child; probe this device and exit
@@ -64,8 +68,8 @@ RunConfig server_defaults() {
     c.chatml = true;         // a chat UI always renders the model's own chat template
     c.moe.enabled = true;    // this is the engine the UI exists for; a dense model turns it off at load
     c.moe.cache_auto = true; // with streaming on, no cache re-reads every expert every token (#186)
-    c.n_ctx = 4096;
-    c.n_predict = 1024;
+    c.n_ctx = kChatContextTokens;
+    c.n_predict = kChatAnswerTokens;
     c.decide.enabled = true; // POST /api/decide; costs nothing until a decision is asked for
 #if defined(BMOE_HAVE_EXPERT_READY_HOOK)
     c.moe.overlap = true; // byte-identical and the measured best on every device; needs the hook
@@ -76,8 +80,8 @@ RunConfig server_defaults() {
 void print_usage(const char * argv0) {
     std::printf("usage: %s [options] [engine parameters]\n"
                 "\n"
-                "  --host ADDR          address to bind (default 127.0.0.1; anything else exposes the engine)\n"
-                "  --port N             port (default 8765)\n"
+                "  --host ADDR          address to bind (default %s; anything else exposes the engine)\n"
+                "  --port N             port (default %d)\n"
                 "  --open               open the UI in the default browser once listening\n"
                 "  --models-dir PATH    where models are listed and downloaded (default: <data dir>/models)\n"
                 "  --data-dir PATH      settings and models (default: the per-user application data folder)\n"
@@ -85,15 +89,19 @@ void print_usage(const char * argv0) {
                 "  --catalog PATH       the model catalog (default: catalog/models.json beside this binary)\n"
                 "  --allow-origin URL   also accept requests from this browser origin (a UI dev server)\n"
                 "  --api-key KEY        require this key on the API (Authorization: Bearer KEY); needed\n"
-                "                       with a --host beyond loopback\n"
+                "                       with a --host beyond loopback. Other local users can read a\n"
+                "                       command line: prefer --api-key-file\n"
+                "  --api-key-file PATH  the same, with the key read from PATH (trailing newline ignored)\n"
                 "  --no-api-key         listen beyond loopback with no key, on a network you trust\n"
+                "  --models-only        local clients too may only open models in the models folder\n"
+                "                       (clients on the network always are)\n"
                 "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
                 "  -h, --help           this text\n"
                 "      --version        print the engine version\n"
                 "\n"
                 "Engine parameters are the bmoe-cli flags (bmoe-cli --help lists them). Given here, they\n"
                 "hold for this run and outrank saved settings; -m loads that model at start.\n",
-                argv0);
+                argv0, kDefaultHost, kDefaultPort);
 }
 
 // -1: continue; otherwise the exit code.
@@ -110,9 +118,15 @@ int parse_args(int argc, char ** argv, Options & o) {
         };
         if (a == "--host")
             o.host = next();
-        else if (a == "--port")
-            o.port = std::atoi(next().c_str());
-        else if (a == "--open")
+        else if (a == "--port") {
+            long long port = 0;
+            std::string err;
+            if (!parse_int_strict(next(), 1, kPortMax, port, err)) {
+                std::fprintf(stderr, "bmoe-server: --port %s\n", err.c_str());
+                return 2;
+            }
+            o.port = (int) port;
+        } else if (a == "--open")
             o.open_browser = true;
         else if (a == "--models-dir")
             o.models_dir = next();
@@ -126,8 +140,12 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.allow_origins.push_back(next());
         else if (a == "--api-key")
             o.api_key = next();
+        else if (a == "--api-key-file")
+            o.api_key_file = next();
         else if (a == "--no-api-key")
             o.no_api_key = true;
+        else if (a == "--models-only")
+            o.models_only = true;
         else if (a == "--no-isolated-probes")
             o.isolated_probes = false;
         else if (a == "--probe-device")
@@ -153,9 +171,16 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.launch[r.param->key] = r.param->get(scratch);
         }
     }
-    if (o.port <= 0 || o.port > 65535) {
-        std::fprintf(stderr, "bmoe-server: --port must be in 1..65535\n");
-        return 2;
+    if (!o.api_key_file.empty()) {
+        if (!o.api_key.empty()) {
+            std::fprintf(stderr, "bmoe-server: --api-key and --api-key-file are alternatives; choose one\n");
+            return 2;
+        }
+        std::string err;
+        if (!read_api_key_file(o.api_key_file, o.api_key, err)) {
+            std::fprintf(stderr, "bmoe-server: %s\n", err.c_str());
+            return 2;
+        }
     }
     return -1;
 }
@@ -180,6 +205,8 @@ void send_error(httplib::Response & res, int status, const std::string & msg, co
     send_json(res, body, status);
 }
 
+// Every body this API reads is an object; anything else is refused here, so no handler reads a
+// field out of an array or a number.
 bool parse_body(const httplib::Request & req, httplib::Response & res, json & out) {
     if (req.body.empty()) {
         out = json::object();
@@ -187,11 +214,15 @@ bool parse_body(const httplib::Request & req, httplib::Response & res, json & ou
     }
     try {
         out = json::parse(req.body);
-        return true;
     } catch (const std::exception & e) {
-        send_error(res, 400, std::string("invalid JSON body: ") + e.what());
+        send_error(res, 400, std::string("invalid JSON body: ") + e.what(), "invalid_request");
         return false;
     }
+    if (!out.is_object()) {
+        send_error(res, 400, "the request body must be a JSON object", "invalid_request");
+        return false;
+    }
+    return true;
 }
 
 bool starts_with(const std::string & s, const std::string & prefix) {
@@ -242,6 +273,18 @@ struct App {
     }
 
     void publish_config() { bus.publish("config", config_object()); }
+
+    // A client on the network names a model in the models folder and nowhere else: it may not have
+    // the server open any file its user can read. A local client is the person at this machine, as
+    // the access rules have it, unless --models-only confines it too.
+    bool model_path_for(const httplib::Request & req, const json & v, json & out, std::string & err) const {
+        out = v;
+        if (!v.is_string() || (!opt.models_only && is_loopback_peer(req.remote_addr))) return true;
+        std::string path;
+        if (!confine_model_path(v.get<std::string>(), lib.models_dir(), path, err)) return false;
+        out = path;
+        return true;
+    }
 
     // On by default wherever there is a planner to ask: the point of measuring the machine is that
     // nobody has to tune it by hand. A person can turn it off and it stays off.
@@ -333,10 +376,14 @@ void register_routes(httplib::Server & svr, App & app) {
         json refused = json::object();
         for (auto it = values.begin(); it != values.end(); ++it) {
             const ParamDesc * d = find_param(it.key());
+            std::string why;
+            json model;
             if (d && d->type == ParamType::Path && it.key() != "model")
                 refused[it.key()] = "a file path other than the model is set at launch, not over the API";
+            else if (it.key() == "model" && !app.model_path_for(req, it.value(), model, why))
+                refused[it.key()] = why;
             else
-                accepted[it.key()] = it.value();
+                accepted[it.key()] = it.key() == "model" ? model : it.value();
         }
         json rejected = app.store.apply(accepted, reset_keys);
         rejected.update(refused);
@@ -349,7 +396,11 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!parse_body(req, res, body)) return;
         if (body.contains("model")) {
             if (!body["model"].is_string()) return send_error(res, 400, "model must be a path string");
-            app.store.apply(json{{"model", body["model"]}}, {});
+            json model;
+            std::string why;
+            if (!app.model_path_for(req, body["model"], model, why))
+                return send_error(res, 403, why, "outside_models_dir");
+            app.store.apply(json{{"model", model}}, {});
             app.publish_config();
         }
         const std::string err = app.load_current();
@@ -522,7 +573,9 @@ void register_routes(httplib::Server & svr, App & app) {
     svr.Post("/api/models/download", [&](const httplib::Request & req, httplib::Response & res) {
         json body;
         if (!parse_body(req, res, body)) return;
-        const std::string err = app.lib.start_download(body.value("id", ""));
+        if (!body.contains("id") || !body["id"].is_string())
+            return send_error(res, 400, "id must be a catalog id string", "invalid_request");
+        const std::string err = app.lib.start_download(body["id"].get<std::string>());
         if (!err.empty()) return send_error(res, 404, err);
         send_json(res, json{{"ok", true}}, 202);
     });
@@ -608,6 +661,24 @@ void register_guards(httplib::Server & svr, const Options & o) {
         if (d.status == 401) res.set_header("WWW-Authenticate", "Bearer realm=\"bmoe-server\"");
         send_error(res, d.status, d.error);
         return httplib::Server::HandlerResponse::Handled;
+    });
+    // On every response, the refusals above and the UI's files alike.
+    svr.set_post_routing_handler([](const httplib::Request &, httplib::Response & res) {
+        for (const auto & h : security_headers())
+            if (!res.has_header(h.first)) res.set_header(h.first, h.second);
+    });
+    // A handler that reads a field of the wrong type out of a request throws; that is the client's
+    // mistake (400), not the server's (500). Anything else is a fault here, said as one.
+    svr.set_exception_handler([](const httplib::Request &, httplib::Response & res, std::exception_ptr ep) {
+        try {
+            std::rethrow_exception(ep);
+        } catch (const json::exception & e) {
+            send_error(res, 400, std::string("malformed request: ") + e.what(), "invalid_request");
+        } catch (const std::exception & e) {
+            send_error(res, 500, std::string("internal error: ") + e.what(), "failed");
+        } catch (...) {
+            send_error(res, 500, "internal error", "failed");
+        }
     });
 }
 
