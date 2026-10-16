@@ -137,6 +137,10 @@ Semantic Versioning.
   `std::unique_ptr`.
 
 ### Fixed
+- **Two gate runs on one machine no longer meet on one port.** The prefill-device gate served its
+  RPC device on a fixed `127.0.0.1:50599`, so a second build tree or CI job running the gates at the
+  same time failed to bind, or registered the other run's server; the port is now one the kernel
+  picks per process.
 - **The docs index the pages they have, and name the test phone as a class.** `docs/README.md`
   lists the application framework, the five screens and the visual language; the bench-data index
   lists all eighteen sessions; the agent guide's project map names `session.cpp` as the composition
