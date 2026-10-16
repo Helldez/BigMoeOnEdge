@@ -26,6 +26,7 @@ import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.engine.ConfigState
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.ParamSpec
+import io.bigmoeonedge.app.engine.ServerProcess
 import io.bigmoeonedge.app.engine.paramValueFromText
 import io.bigmoeonedge.app.engine.paramValueText
 import kotlinx.coroutines.launch
@@ -123,7 +124,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             }
             if (share) {
                 val clipboard = LocalClipboardManager.current
-                Text("Address: http://<this phone's IP>:8765/v1 · key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Address: http://<this phone's IP>:${ServerProcess.PORT}/v1 · key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(key, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
                     TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }

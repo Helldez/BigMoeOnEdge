@@ -9,12 +9,15 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.system.Os
+import android.util.Log
 import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.data.ModelManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -41,8 +44,11 @@ class ServerProcess(private val ctx: Context) {
     private val errTail = StringBuilder()
 
     /**
-     * Start the server. With [share] it listens on every interface and requires [apiKey]; otherwise
-     * on loopback, with no key, the way the desktop runs it for its own UI.
+     * Start the server, always with [apiKey] required: loopback on a phone is reachable by every
+     * installed app, and without a key any of them could read a conversation off the event stream.
+     * With [share] it listens on every interface too. The key travels in a file only this app can
+     * read (`--api-key-file`), never on the command line. [onExit] runs once, on a thread of its
+     * own, when the process ends.
      */
     fun start(share: Boolean, apiKey: String, onExit: (code: Int, stderrTail: String) -> Unit) {
         val nativeDir = ctx.applicationInfo.nativeLibraryDir
@@ -54,19 +60,19 @@ class ServerProcess(private val ctx: Context) {
             "--data-dir", dataDir.absolutePath,
             "--models-dir", ModelManager.internalModelsDir(ctx).absolutePath,
             "--catalog", stageCatalog(ctx).absolutePath,
+            "--api-key-file", writeKeyFile(ctx, apiKey).absolutePath,
         )
         // The other places a model can sit: the server lists what they hold and loads it in place.
         for (d in ModelManager.scanDirs(ctx)) argv += listOf("--scan-dir", d.absolutePath)
-        if (share) argv += listOf("--api-key", apiKey)
 
         val pb = ProcessBuilder(argv)
         pb.redirectErrorStream(false)
+        // Where the system finds the engine's code, which only the app knows. How the backends are
+        // configured once found is the server's (server/platform.cpp).
         pb.environment()["LD_LIBRARY_PATH"] = "$nativeDir:/system/lib64:/vendor/lib64"
         // The Hexagon backend loads its DSP-side skel (libggml-htp-v<arch>.so) through fastrpc, which
         // resolves it against ADSP_LIBRARY_PATH, not the linker path above. Without it the NPU
         // registers and then fails to open a session.
-        // How the Hexagon backend itself is configured is the server's (server/platform.cpp): the
-        // library paths above are how the system finds the code, which only the app knows.
         pb.environment()["ADSP_LIBRARY_PATH"] = nativeDir
         pb.directory(dataDir)
         val p = pb.start()
@@ -95,7 +101,10 @@ class ServerProcess(private val ctx: Context) {
         }
     }
 
-    /** Ask the server to stop, and make sure it does: it holds a model-sized amount of memory. */
+    /**
+     * Ask the server to stop, and make sure it does: it holds a model-sized amount of memory. Blocks
+     * for up to [EXIT_GRACE_MS] + [EXIT_FORCE_MS]: never call it on the main thread.
+     */
     fun stop() {
         val p = process ?: return
         process = null
@@ -109,6 +118,7 @@ class ServerProcess(private val ctx: Context) {
     }
 
     companion object {
+        /** The one port the app's server listens on, and the one every address the app shows names. */
         const val PORT = 8765
         fun baseUrl() = "http://127.0.0.1:$PORT"
 
@@ -128,6 +138,20 @@ class ServerProcess(private val ctx: Context) {
             return f
         }
 
+        /**
+         * The key, in a file of the app's private storage that only its owner may read or write
+         * (0600), made so before the key is written, and kept out of backups. Rewritten every launch.
+         */
+        private fun writeKeyFile(ctx: Context, key: String): File {
+            val f = File(ctx.noBackupFilesDir, "server-api-key")
+            f.delete()
+            f.createNewFile()
+            Os.chmod(f.absolutePath, MODE_OWNER_RW)
+            f.writeText(key)
+            return f
+        }
+
+        private const val MODE_OWNER_RW = 0x180 // 0600
         private const val EXIT_GRACE_MS = 3000L
         private const val EXIT_FORCE_MS = 3000L
     }
@@ -138,10 +162,13 @@ class ServerProcess(private val ctx: Context) {
  * (a generation or a download in progress must not be killed with the activity) and holds a wake
  * lock while the engine generates. It owns the process; [Engine] owns the state and is what the
  * screens observe.
+ *
+ * Starting and stopping the process run one at a time, in order, on a background thread: a stop
+ * waits for the process to end (seconds, for a model-sized one) and must not block the main thread,
+ * and a restart must not start the next server before the previous one has let go of the port.
  */
 class EngineService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var server: ServerProcess? = null
     private var wake: PowerManager.WakeLock? = null
     private var watcher: Job? = null
 
@@ -150,14 +177,25 @@ class EngineService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                stopServer()
+                Engine.serverStopping()
+                lifecycle { stopServer() }
+                releaseWake()
                 stopForegroundCompat()
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_RESTART -> {
+                startForeground(NOTIF_ID, notification("Restarting the engine…"))
+                Engine.serverStopping()
+                lifecycle {
+                    stopServer()
+                    startServer()
+                }
+                if (watcher == null) watcher = scope.launch { follow() }
+            }
             else -> {
                 startForeground(NOTIF_ID, notification("Starting the engine…"))
-                startServer()
+                lifecycle { startServer() }
                 if (watcher == null) watcher = scope.launch { follow() }
             }
         }
@@ -167,22 +205,23 @@ class EngineService : Service() {
     private fun startServer() {
         if (server?.process != null) return
         val share = AppPrefs.shareOnNetwork(this)
-        val key = AppPrefs.apiKey(this)
-        Engine.serverStarting(share, key)
-        val s = ServerProcess(this)
+        // Shared, the key is the one Settings shows, so a client keeps working across restarts; on
+        // loopback alone nobody but this app needs it, and a fresh one per launch expires with it.
+        val key = if (share) AppPrefs.apiKey(this) else Api.randomKey()
+        val launch = Engine.serverStarting(share, key)
+        val s = ServerProcess(applicationContext)
         server = s
         try {
-            s.start(share, key) { code, tail -> Engine.serverExited(code, tail) }
+            s.start(share, key) { code, tail -> Engine.serverExited(launch, code, tail) }
         } catch (t: Throwable) {
-            Engine.serverExited(-1, t.message ?: t.toString())
+            server = null
+            Engine.serverExited(launch, -1, t.message ?: t.toString())
         }
     }
 
     private fun stopServer() {
-        Engine.serverStopping()
         server?.stop()
         server = null
-        releaseWake()
     }
 
     /** The notification follows the engine, and the wake lock follows a generation. */
@@ -204,6 +243,7 @@ class EngineService : Service() {
             }
     }
 
+    @Synchronized
     private fun acquireWake() {
         if (wake?.isHeld == true) return
         wake = (getSystemService(Context.POWER_SERVICE) as PowerManager)
@@ -224,7 +264,10 @@ class EngineService : Service() {
 
     override fun onDestroy() {
         watcher?.cancel()
-        stopServer()
+        // The process outlives this object for the seconds a stop takes: stopped on the lifecycle
+        // thread, which this service's own scope (cancelled below) is not.
+        lifecycle { stopServer() }
+        releaseWake()
         scope.cancel()
         super.onDestroy()
     }
@@ -249,7 +292,26 @@ class EngineService : Service() {
     companion object {
         const val ACTION_START = "io.bigmoeonedge.app.ENGINE_START"
         const val ACTION_STOP = "io.bigmoeonedge.app.ENGINE_STOP"
+        const val ACTION_RESTART = "io.bigmoeonedge.app.ENGINE_RESTART"
         private const val CHANNEL = "engine"
         private const val NOTIF_ID = 1
+
+        // The process is the app's, not one service instance's: held here, and touched only by the
+        // one consumer below, on the lifecycle scope, which no service's destruction cancels.
+        private var server: ServerProcess? = null
+        private val lifecycleScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        // Starts and stops run one at a time and in the order they were asked for: a queue with a
+        // single reader, where separate launches behind a lock would run in whatever order they
+        // reached it, and a stop asked right after a start could end up before it.
+        private val lifecycleQueue = Channel<() -> Unit>(Channel.UNLIMITED).also { q ->
+            lifecycleScope.launch {
+                for (block in q) runCatching(block).onFailure { Log.e("bmoe", "engine lifecycle step failed", it) }
+            }
+        }
+
+        private fun lifecycle(block: () -> Unit) {
+            lifecycleQueue.trySend(block)
+        }
     }
 }

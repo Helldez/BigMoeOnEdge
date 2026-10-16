@@ -24,6 +24,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.cancellation.CancellationException
 
 // ── what the server says, as the screens read it ──
@@ -234,9 +236,10 @@ data class EngineUi(
 
 /**
  * The one engine, as this app sees it: a StateFlow fed by the server's event stream, and the
- * calls the screens make. The server runs in [EngineService]'s process; this object lives in the
- * app's, connects to loopback and keeps reconnecting, so a screen never has to know whether the
- * server is up, only what the state says.
+ * calls the screens make. The server is a process of its own, a child that [EngineService] starts
+ * and keeps; this object lives in the app's process, connects to loopback with the key that launch
+ * was given, checks the server it reaches is that one, and keeps reconnecting, so a screen never
+ * has to know whether the server is up, only what the state says.
  *
  * Nothing here knows an engine parameter by name beyond the two the chat itself needs: the
  * settings screen renders whatever `GET /api/params` describes.
@@ -246,24 +249,41 @@ object Engine {
     val state: StateFlow<EngineUi> = _state.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    @Volatile private var api = Api(ServerProcess.baseUrl())
-    private var connector: Job? = null
-    private var idleUnload: Job? = null
-    private var thermal: Thermal? = null
-    private var recorder: MetricsRecorder? = null
-    private var appContext: Context? = null
+    // Until a launch says otherwise, a key no server has: nothing it reaches is taken for the app's.
+    @Volatile private var api = Api(ServerProcess.baseUrl(), Api.randomKey())
+    @Volatile private var connector: Job? = null
+    @Volatile private var idleUnload: Job? = null
+    @Volatile private var thermal: Thermal? = null
+    @Volatile private var recorder: MetricsRecorder? = null
+    @Volatile private var appContext: Context? = null
     @Volatile private var lastThermalSampleMs = 0L
+
+    // Each start of the server is a launch with its own number; what a process reports about itself
+    // (its exit) counts only while it is still the current launch. A stop moves the number on, so
+    // the exit of the server it stopped, which arrives seconds later, changes nothing.
+    private val launches = AtomicLong(0)
+    @Volatile private var currentLaunch = 0L
+    // Whether a server this app started should be up: between a stop and the next start the
+    // connector waits, rather than reconnect to the process that is still on its way out.
+    @Volatile private var serving = false
 
     val current: EngineUi get() = _state.value
 
     /** Start the service (and so the server) if it is not running, and keep the state following it. */
     fun start(ctx: Context) {
+        val app = attach(ctx)
+        ContextCompat.startForegroundService(app, Intent(app, EngineService::class.java).setAction(EngineService.ACTION_START))
+    }
+
+    /** What follows the server from this process: the event stream, the thermal sensor, the recorder. */
+    @Synchronized
+    private fun attach(ctx: Context): Context {
         val app = ctx.applicationContext
         appContext = app
         if (thermal == null) thermal = Thermal(app)
         if (recorder == null) recorder = MetricsRecorder(app)
-        ContextCompat.startForegroundService(app, Intent(app, EngineService::class.java).setAction(EngineService.ACTION_START))
         if (connector == null) connector = scope.launch { connectForever() }
+        return app
     }
 
     /** Stop the server (and free the model). The next [start] brings it back. */
@@ -272,28 +292,40 @@ object Engine {
         app.startService(Intent(app, EngineService::class.java).setAction(EngineService.ACTION_STOP))
     }
 
-    /** Apply a changed sharing setting: the server has to be started again with the other address. */
+    /**
+     * Apply a changed sharing setting or key: the server is started again with the other address.
+     * The service stops the running one and starts the next only once it has ended, so the two
+     * never race for the port.
+     */
     fun restart(ctx: Context) {
-        stop(ctx)
-        scope.launch {
-            delay(800)
-            start(ctx)
-        }
+        val app = attach(ctx)
+        ContextCompat.startForegroundService(app, Intent(app, EngineService::class.java).setAction(EngineService.ACTION_RESTART))
     }
 
     // ── what the service reports ──
 
-    internal fun serverStarting(share: Boolean, apiKey: String) {
-        api = Api(ServerProcess.baseUrl(), if (share) apiKey else null)
+    /** A server is about to start with [apiKey]: the client speaks to it, and its launch number is returned. */
+    @Synchronized
+    internal fun serverStarting(share: Boolean, apiKey: String): Long {
+        val launch = launches.incrementAndGet()
+        currentLaunch = launch
+        api = Api(ServerProcess.baseUrl(), apiKey)
+        serving = true
         _state.update { it.copy(serverError = null, shared = share) }
+        return launch
     }
 
+    @Synchronized
     internal fun serverStopping() {
+        serving = false
+        currentLaunch = launches.incrementAndGet()
         recorder?.close()
         _state.update { it.copy(serverUp = false, serverError = "The engine was stopped.", info = null) }
     }
 
-    internal fun serverExited(code: Int, stderrTail: String) {
+    @Synchronized
+    internal fun serverExited(launch: Long, code: Int, stderrTail: String) {
+        if (launch != currentLaunch) return // a server already stopped or replaced
         recorder?.close()
         val why = if (code == 0) "The engine stopped." else "The engine process ended (exit $code)."
         val tail = stderrTail.trim().takeLast(1500)
@@ -307,22 +339,54 @@ object Engine {
     private suspend fun connectForever() {
         var backoffMs = 500L
         while (true) {
+            if (!serving) {
+                if (_state.value.serverUp) _state.update { it.copy(serverUp = false) }
+                delay(500L)
+                continue
+            }
+            val a = api
             try {
-                api.events(
-                    onEvent = { ev ->
-                        if (!_state.value.serverUp) {
-                            _state.update { it.copy(serverUp = true, serverError = null) }
-                            backoffMs = 500L
-                            scope.launch { refreshStatic() }
+                if (!a.isOurs()) {
+                    // Something answers on the port, and it is not the server this launch started:
+                    // another app's, or one left over. A conversation is not handed to it.
+                    if (a === api) {
+                        _state.update {
+                            it.copy(
+                                serverUp = false,
+                                info = null,
+                                serverError = "Port ${ServerProcess.PORT} is held by a server this app did not start, so " +
+                                    "the engine cannot listen there. Close the program that holds it (or force-stop " +
+                                    "this app if it is an old engine of its own), then start the engine again.",
+                            )
                         }
-                        onEvent(ev)
+                    }
+                    delay(5_000L)
+                    continue
+                }
+                // Only while this launch is the one being served: after a stop or a restart the old
+                // process can still send a ping or a state frame for the seconds it takes to end, and
+                // one of those must not mark the engine up again or reach the screens.
+                val current = { serving && a === api }
+                a.events(
+                    onEvent = { ev ->
+                        if (current()) {
+                            if (!_state.value.serverUp) {
+                                _state.update { it.copy(serverUp = true, serverError = null) }
+                                backoffMs = 500L
+                                scope.launch { refreshStatic() }
+                            }
+                            onEvent(ev)
+                        }
                     },
-                    keepGoing = { true },
+                    keepGoing = current,
                 )
             } catch (c: CancellationException) {
                 throw c
             } catch (_: ConnectException) {
                 // A closed port: not up yet, or gone. Reconnecting below is the whole answer.
+            } catch (_: SocketTimeoutException) {
+                // The watchdog: two pings missed, the stream died without closing. Reconnect now.
+                backoffMs = 500L
             } catch (t: Throwable) {
                 // Anything else (a key, a policy, a broken stream) is what a person needs to read.
                 val why = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
@@ -336,13 +400,15 @@ object Engine {
 
     /** What does not travel on the stream: the parameter table, the config and the models. */
     private suspend fun refreshStatic() {
-        runCatching { ParamSpec.parse(api.params()) }.onSuccess { p -> _state.update { it.copy(params = p) } }
-        runCatching { ConfigState.of(api.config()) }.onSuccess { c -> _state.update { it.copy(config = c) } }
+        catching { ParamSpec.parse(api.params()) }.onSuccess { p -> _state.update { it.copy(params = p) } }
+        catching { ConfigState.of(api.config()) }.onSuccess { c -> _state.update { it.copy(config = c) } }
         refreshModels()
     }
 
     suspend fun refreshModels() {
-        runCatching { ModelsList.of(api.models()) }.onSuccess { m -> _state.update { it.copy(models = m) } }
+        withContext(Dispatchers.IO) {
+            catching { ModelsList.of(api.models()) }.onSuccess { m -> _state.update { it.copy(models = m) } }
+        }
     }
 
     private fun onEvent(ev: SseEvent) {
@@ -407,7 +473,7 @@ object Engine {
 
     suspend fun setConfig(values: Map<String, Any?>, reset: List<String> = emptyList()): Result<ConfigState> =
         withContext(Dispatchers.IO) {
-            runCatching {
+            catching {
                 val v = JSONObject()
                 for ((k, x) in values) v.put(k, x)
                 ConfigState.of(api.updateConfig(v, reset)).also { c -> _state.update { it.copy(config = c) } }
@@ -415,21 +481,21 @@ object Engine {
         }
 
     suspend fun setAutoPlan(on: Boolean): Result<ConfigState> = withContext(Dispatchers.IO) {
-        runCatching { ConfigState.of(api.updateConfig(JSONObject(), emptyList(), on)).also { c -> _state.update { it.copy(config = c) } } }
+        catching { ConfigState.of(api.updateConfig(JSONObject(), emptyList(), on)).also { c -> _state.update { it.copy(config = c) } } }
     }
 
     suspend fun plan(measure: Boolean): Result<PlanResult> = withContext(Dispatchers.IO) {
-        runCatching { PlanResult.of(api.plan(measure)) }
+        catching { PlanResult.of(api.plan(measure)) }
     }
 
     suspend fun applyPlan(): Result<ConfigState> = withContext(Dispatchers.IO) {
-        runCatching { ConfigState.of(api.applyPlan()).also { c -> _state.update { it.copy(config = c) } } }
+        catching { ConfigState.of(api.applyPlan()).also { c -> _state.update { it.copy(config = c) } } }
     }
 
     /** The client for a chat stream: the chat runs it on its own thread and owns the connection. */
     fun api(): Api = api
 
-    private suspend fun call(block: () -> Unit): Result<Unit> = withContext(Dispatchers.IO) { runCatching(block) }
+    private suspend fun call(block: () -> Unit): Result<Unit> = withContext(Dispatchers.IO) { catching(block) }
 
     // ── idle unload: a loaded model holds model-sized memory, and a phone has other things to do ──
 
@@ -438,7 +504,7 @@ object Engine {
         idleUnload = scope.launch {
             delay(AppPrefs.IDLE_UNLOAD_MINUTES * 60_000L)
             val s = _state.value
-            if (s.ready && !s.generating) runCatching { api.unload() }
+            if (s.ready && !s.generating) catching { api.unload() }
         }
     }
 
@@ -446,4 +512,16 @@ object Engine {
         idleUnload?.cancel()
         idleUnload = null
     }
+}
+
+/**
+ * [runCatching] that lets cancellation through: a coroutine that was cancelled must stop, not read
+ * its cancellation as a failed call and carry on.
+ */
+internal inline fun <T> catching(block: () -> T): Result<T> = try {
+    Result.success(block())
+} catch (c: CancellationException) {
+    throw c
+} catch (t: Throwable) {
+    Result.failure(t)
 }

@@ -94,7 +94,9 @@ other software, or other people, on that machine or on a network it was told to 
 **What is not**
 
 - **Without a key, any local process, and any local user, can drive it.** A request without an
-  `Origin` is a local program and is accepted; loopback is not per-user. On a shared machine another
+  `Origin` is a local program and is accepted; loopback is not per-user. On a phone every installed
+  app is such a process, so the Android app never starts the server without one: a random key per
+  launch, which only the app holds, or the shown key when it serves the network. On a shared machine another
   account can chat, read `/api/config` (which contains paths), and have the server open any file its
   user can read as a model (`--models-only` limits that to the folders models are listed from). With a key, a
   local program needs the key too, and whoever can read where a client keeps it (the browser's

@@ -136,6 +136,19 @@ The app's own settings close the page:
   OpenAI-compatible client then uses the phone at `http://<phone IP>:8765/v1` with
   `Authorization: Bearer <key>`: a laptop's coding agent, Open WebUI, a script. Prompts and answers
   cross the network in clear; use it on a network you trust. Changing it restarts the engine.
+
+The engine requires a key even when it is not shared: on a phone, loopback is reachable by every
+installed app, and an open server would let any of them read a conversation off the event stream.
+The app starts it with a random key per launch, written to a file in its private storage that only
+it can read (`--api-key-file`, mode 0600, never on the command line), and sends it on every request;
+shared, the key is the persistent one Settings shows, so a client keeps working across restarts.
+Before it trusts the server on the port, the app checks it is the one it started: that server
+refuses a random key and accepts the launch's. Another program's server on 8765 (an open one, or
+one with a key of its own) is reported as holding the port, and nothing is sent to it. The server
+is stopped and restarted on a background thread, one step at a time, so a restart never races the
+old process for the port and a stop never freezes the screen; a stopped server's late exit report
+changes nothing. The event stream has a watchdog: the server pings every 15 s, and a stream silent
+for two pings is reconnected.
 - **Metrics CSV**: one per-token file per loaded model, for the Metrics screen and for sharing.
 
 The prefill device (`prefill-device`) is a row like any other, and the planner chooses it: it

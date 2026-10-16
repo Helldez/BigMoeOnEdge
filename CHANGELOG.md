@@ -234,6 +234,23 @@ Semantic Versioning.
   change made while the page was cut off arrived as no event.
 
 ### Fixed
+- **Any app on the phone could read the conversations.** The Android app started the server on
+  loopback without a key unless it was shared, and loopback on a phone is reachable by every
+  installed app: any of them could follow `/api/events` and read every prompt and answer, or drive
+  the engine. The server is now always started with a key: a random one per launch
+  (`SecureRandom`), handed over in a file of the app's private storage with mode 0600
+  (`--api-key-file`, never on the command line), or the persistent key Settings shows when it is
+  shared; every request carries it. Before it trusts the server on the port the app checks that it
+  is its own (it refuses a random key and accepts the launch's), and a port held by another program
+  is reported as such and sent nothing.
+- **Stopping the engine no longer blocks the phone's main thread.** A stop waited up to six seconds
+  for the server to exit on the main thread; starts and stops now run one at a time on a background
+  thread, a restart starts the next server only once the previous one has ended (it slept 800 ms
+  and hoped), and a stopped server's exit, which arrives seconds later, no longer overwrites the
+  state of the one that replaced it (each launch has a number, and only the current one's exit
+  counts). Every call has a read timeout fitted to what it waits for, instead of none; the chat
+  stream and a decision still wait as long as they must, and the event stream has a watchdog that
+  reconnects after two missed pings. A cancelled coroutine is no longer read as a failed call.
 - **A failed message stays in the web UI's transcript.** A send refused before anything streamed
   moved the message back into the composer and out of the conversation, against the screen
   specification; it now stays, saved, with the error under it, Send again resends it as it is, and
