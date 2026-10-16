@@ -33,6 +33,14 @@ core/
     recipe.h        MoeRecipe + registry
     metrics.h       TokenMetrics / RunSummary + IMetricsSink
     runtime.h       run() entry point
+    session.h       Session: load once, then serve many prompts against the resident state
+    chat.h          a conversation as a front-end hands it over: messages, tools, the calls made
+    decide.h        a decision over a fixed set of choices from one prefill (decide.md)
+    ngram_draft.h   prompt-lookup drafting, the --ngram draft source (ngram.md)
+    route_trace.h, decode_trace.h, predict_stats.h
+                    the analysis instruments: per-layer routing, what a token's time is made of,
+                    expert-prediction accuracy (telemetry.md, expert-prediction.md)
+    version.h       the engine's version string, so a benchmark file names its build
     run_error.h     RunError: why a request failed, as a kind every front-end decides on, and its
                     stable name, the `code` of the CLI protocol and the server API
     log.h           the log port: where the engine's diagnostics go (set_log_sink, a level). The
@@ -54,6 +62,7 @@ core/
                 mapping_release - releases the model file's mapping after load (--release-mmap)
     moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), arch_registry,
                 expert_stream_source (one reader per shard), router_hook
+                stall_union - the wall time at least one thread was stalled, not the sum of stalls
                 tensor_names - how llama.cpp's tensor and graph-node names, and the capacity
                   fitter's override patterns, are read: the one place, no regex, unit-tested
                 dense_weights — non-expert weight policy + the residency sensor
@@ -67,7 +76,9 @@ core/
                 prefill_device - moves layer weights and model state onto a device per graph
                 prefill_path - the prefill device for one session: setup, placement, device decode
                 runtime — the one-shot run() wrapper over a Session
+                chat_messages — bmoe/chat.h to and from llama.cpp's chat types, in one place
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
+                ngram_draft — the prompt-lookup draft source (see ngram_draft.h)
                 thinking_control — how "thinking off" is honoured, probed per model
                 logits, prefill_support — log-softmax, batch filling and prefill attribution,
                   shared by generate / perplexity / decide
