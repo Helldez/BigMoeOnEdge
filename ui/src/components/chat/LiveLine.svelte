@@ -41,8 +41,8 @@
 <style>
   .live {
     margin: 0;
-    font-family: var(--mono);
-    font-size: 0.78rem;
+    font-family: var(--pixel);
+    font-size: 0.85rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

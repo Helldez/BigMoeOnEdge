@@ -1,23 +1,36 @@
+/* The visual language (docs/design.md): the logo's palette, a pixel face for the product's own
+   voice, square boxes with 2 px edges and a hard shadow. Dark by default, light when asked. */
+@font-face {
+  font-family: 'Pixelify Sans';
+  src: url('/fonts/PixelifySans.ttf') format('truetype');
+  font-weight: 400 700;
+  font-display: swap;
+}
+
 :root {
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --surface-2: #eef0f4;
-  --text: #1b1f27;
-  --muted: #5d6675;
-  --border: #d8dce3;
-  --accent: #2e62d9;
-  --accent-text: #ffffff;
-  --ok: #1d7a46;
-  --ok-bg: #e2f4ea;
-  --warn: #8a5a00;
-  --warn-bg: #fff3d6;
-  --err: #b42318;
-  --err-bg: #fde8e6;
-  --info-bg: #e7eefc;
-  --focus: #2e62d9;
-  --radius: 8px;
+  --bg: #0a0512;
+  --surface: #160b2a;
+  --surface-2: #2a1150;
+  --text: #f2ecff;
+  --muted: #b9a9e6;
+  --border: #3b2a63;
+  --accent: #21e6ff;
+  --accent-text: #0a0512;
+  --accent-2: #6c5aa8;
+  --ok: #7ce0b0;
+  --ok-bg: #163a2d;
+  --warn: #ffc53d;
+  --warn-bg: #3d2e0c;
+  --err: #ff6b8b;
+  --err-bg: #3f1424;
+  --info-bg: #2a1150;
+  --focus: #21e6ff;
+  --shadow: #000000;
+  --radius: 0;
+  --edge: 2px;
+  --pixel: 'Pixelify Sans', ui-monospace, monospace;
   --mono: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
-  color-scheme: light dark;
+  color-scheme: dark light;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   font-size: 15px;
   line-height: 1.5;
@@ -25,24 +38,25 @@
   background: var(--bg);
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #12151b;
-    --surface: #1a1e26;
-    --surface-2: #232834;
-    --text: #e6e9ef;
-    --muted: #9aa3b2;
-    --border: #323846;
-    --accent: #6b95f5;
-    --accent-text: #0d1220;
-    --ok: #5fd18f;
-    --ok-bg: #17321f;
-    --warn: #f2c14e;
-    --warn-bg: #362b0f;
-    --err: #ff8a80;
-    --err-bg: #3a1a18;
-    --info-bg: #1c2740;
-    --focus: #8fb0ff;
+    --bg: #f2ecff;
+    --surface: #ffffff;
+    --surface-2: #e6dcff;
+    --text: #0a0512;
+    --muted: #4b3a7a;
+    --border: #6c5aa8;
+    --accent: #0fa8c2;
+    --accent-text: #ffffff;
+    --ok: #1d7a46;
+    --ok-bg: #dff3e8;
+    --warn: #8a5a00;
+    --warn-bg: #fff3d6;
+    --err: #b42318;
+    --err-bg: #fde8e6;
+    --info-bg: #e6dcff;
+    --focus: #0fa8c2;
+    --shadow: #0a0512;
   }
 }
 
@@ -60,12 +74,19 @@ a {
   color: var(--accent);
 }
 
+h1,
+h2,
+h3 {
+  font-family: var(--pixel);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
 h1 {
-  font-size: 1.3rem;
+  font-size: 1.45rem;
   margin: 0 0 0.75rem;
 }
 h2 {
-  font-size: 1.1rem;
+  font-size: 1.15rem;
   margin: 1.25rem 0 0.5rem;
 }
 
@@ -79,13 +100,18 @@ textarea {
 
 button {
   cursor: pointer;
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   background: var(--surface-2);
-  border-radius: var(--radius);
+  border-radius: 0;
   padding: 0.35rem 0.8rem;
+  font-family: var(--pixel);
+  font-size: 0.95rem;
 }
 button:hover:not(:disabled) {
   border-color: var(--accent);
+}
+button:active:not(:disabled) {
+  transform: translate(2px, 2px);
 }
 button:disabled {
   opacity: 0.55;
@@ -93,8 +119,12 @@ button:disabled {
 }
 button.primary {
   background: var(--accent);
-  border-color: var(--accent);
+  border-color: var(--shadow);
   color: var(--accent-text);
+  box-shadow: 4px 4px 0 var(--shadow);
+}
+button.primary:active:not(:disabled) {
+  box-shadow: 2px 2px 0 var(--shadow);
 }
 button.danger {
   color: var(--err);
@@ -105,17 +135,24 @@ button.link {
   padding: 0;
   color: var(--accent);
   text-decoration: underline;
+  font-family: inherit;
+  font-size: inherit;
+  transform: none;
 }
 
 input[type='text'],
 input[type='number'],
+input[type='password'],
 select,
 textarea {
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: var(--edge) solid var(--border);
+  border-radius: 0;
   padding: 0.35rem 0.5rem;
   max-width: 100%;
+}
+input[type='checkbox'] {
+  accent-color: var(--accent);
 }
 
 :focus-visible {
@@ -130,15 +167,15 @@ code {
 }
 pre {
   background: var(--surface-2);
-  border-radius: var(--radius);
+  border: var(--edge) solid var(--border);
   padding: 0.75rem;
   overflow-x: auto;
 }
 
 .card {
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: var(--edge) solid var(--border);
+  box-shadow: 4px 4px 0 var(--shadow);
   padding: 0.9rem 1rem;
 }
 
@@ -147,7 +184,7 @@ pre {
 }
 
 .banner {
-  border-radius: var(--radius);
+  border: var(--edge) solid var(--border);
   padding: 0.6rem 0.9rem;
   margin: 0 0 0.75rem;
   display: flex;
@@ -158,10 +195,12 @@ pre {
 .banner.error {
   background: var(--err-bg);
   color: var(--err);
+  border-color: var(--err);
 }
 .banner.warn {
   background: var(--warn-bg);
   color: var(--warn);
+  border-color: var(--warn);
 }
 .banner.info {
   background: var(--info-bg);
@@ -169,37 +208,60 @@ pre {
 .banner.ok {
   background: var(--ok-bg);
   color: var(--ok);
+  border-color: var(--ok);
 }
 
 .badge {
   display: inline-block;
-  font-size: 0.75rem;
+  font-family: var(--pixel);
+  font-size: 0.8rem;
   line-height: 1.4;
   padding: 0.05rem 0.45rem;
-  border-radius: 999px;
-  border: 1px solid var(--border);
+  border: var(--edge) solid var(--border);
   color: var(--muted);
   white-space: nowrap;
 }
 .badge.ok {
   background: var(--ok-bg);
   color: var(--ok);
-  border-color: transparent;
+  border-color: var(--ok);
 }
 .badge.warn {
   background: var(--warn-bg);
   color: var(--warn);
-  border-color: transparent;
+  border-color: var(--warn);
 }
 .badge.err {
   background: var(--err-bg);
   color: var(--err);
-  border-color: transparent;
+  border-color: var(--err);
 }
 .badge.info {
   background: var(--info-bg);
-  border-color: transparent;
+  border-color: var(--accent-2);
   color: var(--text);
+}
+
+meter {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 10px;
+  border: var(--edge) solid var(--border);
+  background: var(--surface-2);
+}
+meter::-webkit-meter-bar {
+  background: var(--surface-2);
+  border: none;
+  border-radius: 0;
+}
+meter::-webkit-meter-optimum-value,
+meter::-webkit-meter-suboptimum-value,
+meter::-webkit-meter-even-less-good-value {
+  background: var(--accent);
+  border-radius: 0;
+}
+meter::-moz-meter-bar {
+  background: var(--accent);
 }
 
 .table-wrap {
@@ -213,13 +275,20 @@ th,
 td {
   text-align: left;
   padding: 0.4rem 0.6rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--edge) solid var(--border);
   vertical-align: top;
 }
 th {
+  font-family: var(--pixel);
   font-weight: 600;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.9rem;
+}
+
+/* A figure the engine reports, in the product's own face. */
+.figure {
+  font-family: var(--pixel);
+  font-variant-numeric: tabular-nums;
 }
 
 .visually-hidden {

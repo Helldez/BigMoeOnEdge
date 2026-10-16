@@ -6,7 +6,7 @@ five screens. This page says what each screen shows, what a person can do on it,
 state means, so the three toolkits render the same thing their own way. It describes behaviour,
 not layout: a phone puts the five in a bottom bar and the prompt under a thumb, a desktop puts them
 in a top navigation and the prompt at the foot of a wide column. Alike in what they show and in
-what a setting means; native in how they feel.
+what a setting means; native in how they feel. How it all looks is [design.md](design.md).
 
 The rule behind every screen: **a UI knows no engine parameter by name.** Settings, the plan's
 decisions, the metrics columns and the model list come from the API, and a knob added to the engine

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -101,15 +102,17 @@ fun MetricsScreen(modifier: Modifier = Modifier) {
                         IconButton(onClick = { back() }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
+                    } else {
+                        Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) }
                     }
                 },
                 actions = {
                     if (view == View.FILE) {
-                        TextButton(onClick = { view = View.CORRELATE }) { Text("Correlate") }
-                        picked?.let { f -> TextButton(onClick = { shareCsv(context, listOf(f)) }) { Text("Share") } }
+                        TextButton(shape = RectangleShape, onClick = { view = View.CORRELATE }) { Text("Correlate") }
+                        picked?.let { f -> TextButton(shape = RectangleShape, onClick = { shareCsv(context, listOf(f)) }) { Text("Share") } }
                     }
                     if (view == View.LIST || view == View.FILE || view == View.COMPARE) {
-                        TextButton(onClick = { view = View.GLOSSARY }) { Text("?") }
+                        TextButton(shape = RectangleShape, onClick = { view = View.GLOSSARY }) { Text("?") }
                     }
                 },
             )
@@ -119,8 +122,8 @@ fun MetricsScreen(modifier: Modifier = Modifier) {
                 BottomAppBar {
                     Spacer(Modifier.width(12.dp))
                     Text("${selection.size} selected", modifier = Modifier.weight(1f), fontSize = 13.sp)
-                    TextButton(onClick = { shareCsv(context, selection) }) { Text("Share") }
-                    TextButton(
+                    TextButton(shape = RectangleShape, onClick = { shareCsv(context, selection) }) { Text("Share") }
+                    TextButton(shape = RectangleShape, 
                         onClick = { view = View.COMPARE },
                         enabled = selection.size == 2,
                     ) { Text("Compare") }
@@ -199,7 +202,7 @@ private fun FileList(
                         fontSize = 11.sp, maxLines = 1,
                     )
                 },
-                trailingContent = { TextButton(onClick = { onDelete(f) }) { Text("Delete") } },
+                trailingContent = { TextButton(shape = RectangleShape, onClick = { onDelete(f) }) { Text("Delete") } },
                 modifier = Modifier.clickable(onClick = { onPick(f) }),
             )
             HorizontalDivider()
@@ -252,7 +255,7 @@ private fun CsvView(file: File, modifier: Modifier) {
                         // otherwise. Everything the file says is one tap away, and stays one tap
                         // away as the engine grows knobs. See #136.
                         val rows = remember(csv) { configRows(csv.info) }
-                        TextButton(
+                        TextButton(shape = RectangleShape, 
                             onClick = { showConfig = !showConfig },
                             contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                         ) {
@@ -347,7 +350,7 @@ private fun CompareView(fa: File, fb: File, modifier: Modifier) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Box {
-            OutlinedButton(onClick = { expanded = true }) { Text(metric.ifEmpty { "pick a column" }) }
+            OutlinedButton(shape = RectangleShape, onClick = { expanded = true }) { Text(metric.ifEmpty { "pick a column" }) }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 metrics.forEach { m ->
                     DropdownMenuItem(
@@ -713,7 +716,7 @@ private fun CorrelateView(file: File, modifier: Modifier) {
         if (csv.info.isNotEmpty()) Text(csv.label(), fontSize = 12.sp, fontWeight = FontWeight.Medium)
 
         Box {
-            OutlinedButton(onClick = { expanded = true }) { Text("Fields (${chosen.size})") }
+            OutlinedButton(shape = RectangleShape, onClick = { expanded = true }) { Text("Fields (${chosen.size})") }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 cols.forEach { c ->
                     DropdownMenuItem(

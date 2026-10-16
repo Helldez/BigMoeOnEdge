@@ -26,17 +26,21 @@
   }
   a {
     padding: 0.3rem 0.75rem;
-    border-radius: var(--radius);
+    border: var(--edge) solid transparent;
     text-decoration: none;
     color: var(--muted);
+    font-family: var(--pixel);
+    font-size: 1rem;
   }
   a:hover {
     color: var(--text);
-    background: var(--surface-2);
+    border-color: var(--border);
   }
   a[aria-current='page'] {
-    color: var(--text);
-    background: var(--surface-2);
-    font-weight: 600;
+    color: var(--accent-text);
+    background: var(--accent);
+    border-color: var(--shadow);
+    box-shadow: 3px 3px 0 var(--shadow);
+    font-weight: 700;
   }
 </style>
