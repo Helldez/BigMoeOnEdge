@@ -4,7 +4,7 @@ What runs where, how far each platform has been taken, and what each one still o
 the summary; the evidence behind every cell is in the page it links to, and a cell with no
 measurement behind it says so rather than implying one.
 
-Last reviewed on 2026-10-16, against `main` after release 0.29.0.
+Last reviewed on 2026-10-16, against release 0.30.0.
 
 ## How to read the tables
 
@@ -63,8 +63,8 @@ platform: the device is measured, and the streamer's own memory is not yet hande
 
 ## What each platform owes
 
-- **Android.** A run of the app on a phone before it is released, as every release gets. Per-value
-  provenance in the settings, so a reader sees what the plan set and what differs from the
+- **Android.** The NPU prefill run again on the release APK, the one build with the Hexagon
+  backend: the 0.30.0 phone run used a CPU-only build. Per-value provenance in the settings, so a reader sees what the plan set and what differs from the
   default ([screens.md](screens.md)).
 - **macOS.** A signed installer that updates itself, in place of the archive. The byte-identity
   gates in CI, which today run on Linux only.

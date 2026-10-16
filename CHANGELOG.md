@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.30.0] - 2026-10-16
 
 ### Added
 - **`docs/platforms.md`: what runs where.** One page with a matrix per operating system (engine,
