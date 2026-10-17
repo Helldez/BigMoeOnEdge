@@ -49,7 +49,7 @@ describe('turnMetrics', () => {
     tokens: 42,
     tok_s: 3.14159,
     prefill_s: 1.25,
-    prefill_tps: 10,
+    prefill_tps: 13.6,
     n_prompt: 17,
     n_past: 59,
     cache_hit_pct: 81.4,
@@ -63,7 +63,13 @@ describe('turnMetrics', () => {
     ttft_s: 1.25,
   };
   it('reads the summary into one line, the same line the phone shows', () => {
-    expect(turnMetrics(s, 4096, false)).toBe('3.1 tok/s · 42 tok · prefill 1.3s (17 tok) · ctx 59/4096 · cache 81%');
-    expect(turnMetrics(s, 0, true)).toBe('3.1 tok/s · 42 tok · prefill 1.3s (17 tok) · cache 81% · stopped');
+    expect(turnMetrics(s, 4096, false)).toBe(
+      'decode 3.1 tok/s (42 tok) · prefill 13.6 tok/s (17 tok, 1.3 s) · ctx 59/4096 · cache 81%',
+    );
+    expect(turnMetrics(s, 0, true)).toBe('decode 3.1 tok/s (42 tok) · prefill 13.6 tok/s (17 tok, 1.3 s) · cache 81% · stopped');
+  });
+  it('derives the prefill rate where the summary does not carry it', () => {
+    expect(turnMetrics({ ...s, prefill_tps: 0 }, 0, false)).toContain('prefill 13.6 tok/s (17 tok, 1.3 s)');
+    expect(turnMetrics({ ...s, prefill_s: 0 }, 0, false)).not.toContain('prefill');
   });
 });

@@ -44,8 +44,11 @@ visible and every answer's cost visible.
 - **Messages.** The person's text verbatim; the assistant's as rendered Markdown, with no scripts,
   forms or styles from the model. A reasoning model's thinking span sits folded above its answer
   ("Thinking", open while it streams, closed once committed). Under a finished answer, one line of
-  figures from the turn's own summary: rate and length, the prompt it cost, the context used, the
-  cache hit rate, and under speculation the real rate and the share of guesses kept.
+  figures from the turn's own summary, each rate named by its phase:
+  `decode 1.7 tok/s (9 tok) · prefill 3.3 tok/s (13 tok, 4.0 s) · ctx 22/4096 · cache 54%`. The
+  prefill counts the tokens this turn read, which with the conversation reused from the KV cache is
+  the new message, not the history. Under speculation the real rate and the share of guesses kept
+  follow.
 - **Streaming.** The answer appears as it is generated. Before the first token: "Reading the
   prompt…". A chunk marked `reset` replaces the text shown so far instead of appending.
 - **Actions.** Send (disabled with no model loaded, which the status line explains), Stop (the
