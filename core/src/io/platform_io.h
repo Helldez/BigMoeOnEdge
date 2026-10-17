@@ -65,7 +65,8 @@ bool direct_needs_alignment();
 //
 //   * Linux/Android: statx(STATX_DIOALIGN), which is the kernel stating exactly this, where the
 //     kernel, the headers and (on Android) the app sandbox all have it; otherwise the filesystem's
-//     fundamental block size, never below `direct_align_fallback`.
+//     fundamental block size. Neither goes below `direct_align_fallback`: a smaller legal granule
+//     is a read-size change that has not been measured, not a correctness gain.
 //   * Apple: the filesystem's fundamental block size. F_NOCACHE imposes no alignment at all (see
 //     direct_needs_alignment), so this is a safe granule to report, not a requirement.
 //   * Windows: the volume's logical sector size and the filesystem's effective physical sector size,
@@ -79,12 +80,17 @@ size_t direct_alignment(fd_t fd);
 // sector, so it stays correct on storage that wants less.
 constexpr size_t direct_align_fallback = 4096;
 
-// The widest span two independently written atomics must keep apart so they never share a cache
-// line. 64 bytes on x86 and most arm64 cores, 128 on Apple's; x86's spatial prefetcher also pulls
-// lines in adjacent pairs. The larger value is right on every target and costs a few KiB of padding,
-// where a too-small one costs a contended line on the hottest poll in the engine. A compile-time
-// value because it sizes `alignas`.
+// The span two independently written atomics must keep apart so they never share a cache line:
+// 128 bytes on Apple's cores, 64 on x86 and the other arm64 cores this engine has run on. It
+// sizes the padding of the hottest poll in the engine, one flag per expert and projection, so it
+// follows the target rather than taking the widest value everywhere: doubling that array's
+// footprint on a phone is a cost that was not measured. A compile-time value because it sizes
+// `alignas`.
+#if defined(__APPLE__) && defined(__aarch64__)
 constexpr size_t false_sharing_span = 128;
+#else
+constexpr size_t false_sharing_span = 64;
+#endif
 
 // One idle beat of a spin-wait: keep the core out of its siblings' way without entering the
 // scheduler. A pause hint where the ISA has one (single instructions, no syscall); yield elsewhere.

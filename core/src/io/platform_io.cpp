@@ -788,7 +788,12 @@ size_t block_granule(uint64_t bsize) {
 
 size_t direct_alignment(fd_t fd) {
     if (!fd_ok(fd)) return 0;
-    if (const size_t a = statx_dio_align(fd)) return a;
+    // The kernel's answer is the legality floor: a window aligned to a multiple of it is legal too.
+    // Reading at exactly 512 bytes where it allows that (ext4 on a 512-byte-sector NVMe) is a
+    // throughput change on the very SSDs this project has measured punishing small reads, and it
+    // has not been measured, so the granule stays at least the value every direct read used before
+    // the alignment was asked for. A measured win is what moves this line, not the probe.
+    if (const size_t a = statx_dio_align(fd)) return a < direct_align_fallback ? direct_align_fallback : a;
     // The filesystem's fundamental block (f_frsize; f_bsize is the preferred transfer size on some
     // systems, Apple's among them). Not what O_DIRECT is specified against - that is the device's
     // logical block, or the filesystem's own where it is stricter (f2fs) - but a filesystem block

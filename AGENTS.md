@@ -34,7 +34,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `cli/main.cpp`: `bmoe-cli`; the ONLY place engine environment overrides are read.
 - `server/`: `bmoe-server`, the engine behind the desktop web UI (`docs/server-api.md`). A
   front-end like the CLI: HTTP, files and the platform live here, never in `core/`. Its only env
-  read is the per-user data folder on POSIX (`server/platform.cpp`).
+  read is the per-user data folder on POSIX, and its only env writes are the two tuning entries the
+  Hexagon backend documents it reads, set before the backend loads (`server/platform.cpp`).
 - `ui/`: the web UI (Svelte + TypeScript). Settings are rendered from `GET /api/params`: never
   name an engine parameter in the UI. `catalog/models.json`: the model catalog, as data.
 - `third_party/llama.cpp` — the pinned submodule: upstream plus one commit, the expert-ready hook

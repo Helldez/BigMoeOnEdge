@@ -111,19 +111,22 @@ Semantic Versioning.
   names every setting that changes the reply and is off its default (the table's `lossy`), instead
   of a list of keys. The Kotlin gguf parser that decided MoE-ness from a text marker
   (`GgufHeader.kt`) and the shard-name regexes are deleted: the service starts the server with the
-  phone's other model folders as `--scan-dir`, the Models screen lists what the server lists, and a
+  phone's other model folders as `--scan-dir`, the Models screen lists what the server lists -
+  every gguf, so a dense model the engine runs as plain mmap now appears too, labelled as one this
+  build does not stream, where the app used to hide it - and a
   delete removes the files the server named. A summary's rate is read by field name, not by regex,
   a chat error is acted on by its `code` (`no_model` links to Models), a closed port is told apart
   by `ConnectException`, not by the text of a message, and a failed message can be sent again, as
   on the web; a failed decision leaves no question behind to be sent as history.
 
 ### Fixed
-- **The prefill device's dense layer slots are read the way they were sized.** The two parities' slots
-  were picked by choosing between two member arrays with a conditional and indexing the result;
-  GCC 13 with AddressSanitizer and UndefinedBehaviorSanitizer read that as the wrong parity for the
-  matrix slot, so a hybrid model's larger recurrent layer was placed in the smaller slot and ggml
-  aborted (the new sanitizer job found it on nemotron_h_moe, gate G17). The slots are now one
-  `[data][parity]` table, indexed exactly as `init_dense` sizes them.
+- **The prefill device's dense layer slots are one table, indexed as they were sized**, in place
+  of a conditional between two member arrays. The two spell the same selection, so this changes no
+  behaviour: it was made while gate G17 (nemotron_h_moe) aborted under AddressSanitizer and
+  UndefinedBehaviorSanitizer with a recurrent layer placed in the wrong parity's slot, and the
+  gate has passed since, but the cause of that abort was not found and this rewrite cannot have
+  been it. The fault is recorded as open (a race in the arena's workers or an uninitialised read
+  are the candidates), and the sanitizer job is where it would show again.
 - **Two gate runs on one machine no longer meet on one port.** The prefill-device gate served its
   RPC device on a fixed `127.0.0.1:50599`, so a second build tree or CI job running the gates at the
   same time failed to bind, or registered the other run's server; the port is now one the kernel

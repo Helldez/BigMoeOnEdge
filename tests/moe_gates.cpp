@@ -107,7 +107,9 @@ using namespace bmoe;
 // A port the kernel picks per process: two gate runs on one machine (two build trees, two CI jobs on
 // one runner) must not meet on a fixed port, where the second would register the first's server.
 // The probe socket is closed before the server binds, so another process could take the port in
-// between; the server then fails to bind and the gate reports no RPC device, never a stranger's one.
+// between: the server then fails to bind and, if the taker answers on it, the gate would register a
+// stranger's endpoint. The window is the few milliseconds between the two binds on a loopback port
+// the kernel just handed out, which is small enough to accept for a test fixture, not zero.
 static int free_loopback_port() {
 #if defined(_WIN32)
     static bool wsa = [] {

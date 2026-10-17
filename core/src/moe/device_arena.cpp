@@ -298,9 +298,13 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
         // Fresh allocators per layer: every layer of a parity starts at the same offset, on purpose.
         ggml_tallocr ta[2] = {};
         for (int d = 0; d < 2; ++d) {
-            // One table indexed the way the slots were sized. Picking between two member arrays with a
-            // conditional and then indexing the result was read wrong by GCC 13 under ASan+UBSan: the
-            // matrix slot of layers 1, 2 and 4 came back as the other parity's, too small for them.
+            // One table, indexed the way init_dense sized it. This replaced picking between two member
+            // arrays with a conditional; the two are the same selection and the same layout, so it
+            // changes nothing. It was made while gate G17 (nemotron_h_moe) aborted under ASan+UBSan
+            // with a recurrent layer in the wrong parity's slot, and the gate passed afterwards; the
+            // cause of that abort was NOT found and this rewrite cannot have been it, so treat a
+            // return of that failure as the same open fault (a race in the arena, or an
+            // uninitialised read), not as a regression of this line.
             ggml_backend_buffer_t b = dense_slot_[d][il % 2];
             if (b) ta[d] = ggml_tallocr_new(b);
         }
