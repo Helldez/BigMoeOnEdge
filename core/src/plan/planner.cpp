@@ -769,6 +769,7 @@ Plan plan_run(const RunConfig & base,
         const ComputeDevice * wrong = nullptr;
         uint32_t n_accel = 0, n_measured = 0;
         uint32_t n_broken = 0;
+        std::string unweighed;
         for (const ComputeDevice & d : hw.devices) {
             if (d.is_cpu || d.is_host_helper) continue;
             ++n_accel;
@@ -776,7 +777,16 @@ Plan plan_run(const RunConfig & base,
                 ++n_broken;
                 continue;
             }
-            if (d.wide_matmul_gibs <= 0.0) continue;
+            if (d.wide_matmul_gibs <= 0.0) {
+                // Not weighed, and the plan says so: a device that drops out here without a word
+                // reads as a device the planner never saw, which is the wrong lesson when it is the
+                // fastest one on the machine for another model.
+                unweighed += "; " + d.name + " was not weighed: " +
+                             (d.runs_expert_op == Tri::No
+                                  ? "it does not run this model's expert matmul in the model's own format"
+                                  : "it gave no measurement at that width");
+                continue;
+            }
             ++n_measured;
             if (d.wide_identity_ok != Tri::Yes) {
                 wrong = &d;
@@ -784,6 +794,9 @@ Plan plan_run(const RunConfig & base,
             }
             if (!best || d.wide_matmul_gibs > best->wide_matmul_gibs) best = &d;
         }
+        const auto prefill_note = [&](std::string value, Source src, std::string reason) {
+            note("prefill-device", std::move(value), src, std::move(reason) + unweighed);
+        };
         const double host_wide = hw.host_wide_matmul_gibs;
         auto ratio = [&](const ComputeDevice & d) {
             char b[32];
@@ -810,31 +823,32 @@ Plan plan_run(const RunConfig & base,
         if (n_accel == 0) {
             // The same three answers as the offload line: only one of them is about this machine.
             const bool build_blind = hw.backends_looked && hw.backends_linked <= 1 && hw.backends_loaded == 0;
-            note("prefill-device", "off", hw.backends_looked && !build_blind ? Source::Measured : Source::Unprobed,
-                 build_blind ? "this build carries no accelerator backend, so there was no device to consider: a "
+            prefill_note("off", hw.backends_looked && !build_blind ? Source::Measured : Source::Unprobed,
+                         build_blind
+                             ? "this build carries no accelerator backend, so there was no device to consider: a "
                                "property of the build, not of this machine"
                              : "no compute device beyond the host CPU was enumerated, so the prefill runs where "
                                "the decode does");
         } else if (n_broken == n_accel) {
-            note("prefill-device", "off", Source::Measured,
-                 "every device here failed its own probe, so the prefill runs where the decode does; see the "
-                 "devices line for what each one did");
+            prefill_note("off", Source::Measured,
+                         "every device here failed its own probe, so the prefill runs where the decode does; see the "
+                         "devices line for what each one did");
         } else if (host_wide <= 0.0 || n_measured == 0) {
-            note("prefill-device", "off", Source::Unprobed,
-                 "a prefill is many tokens wide and bound by compute, not by the bandwidth a one-token graph "
-                 "measures, and no device here was measured at that width: an unmeasured device is not armed");
+            prefill_note("off", Source::Unprobed,
+                         "a prefill is many tokens wide and bound by compute, not by the bandwidth a one-token graph "
+                         "measures, and no device here was measured at that width: an unmeasured device is not armed");
         } else if (!best) {
-            note("prefill-device", "off", Source::Measured,
-                 wrong->name + " ran this model's matmul " + width +
-                     " and did not reproduce the host's result: refused on correctness, whatever its speed");
+            prefill_note("off", Source::Measured,
+                         wrong->name + " ran this model's matmul " + width +
+                             " and did not reproduce the host's result: refused on correctness, whatever its speed");
         } else if (best->wide_matmul_gibs <= host_wide * (1.0 + (double) pol.min_backend_win)) {
-            note("prefill-device", "off", Source::Measured,
-                 best->name + " computes this model's matmul " + width + " at " + ratio(*best) +
-                     " the host's rate, which is not a win worth a second placement");
+            prefill_note("off", Source::Measured,
+                         best->name + " computes this model's matmul " + width + " at " + ratio(*best) +
+                             " the host's rate, which is not a win worth a second placement");
         } else if (!conflict.empty()) {
-            note("prefill-device", "off", Source::Derived,
-                 best->name + " computes a wide prefill at " + ratio(*best) +
-                     " the host's rate and is not armed, because " + conflict);
+            prefill_note("off", Source::Derived,
+                         best->name + " computes a wide prefill at " + ratio(*best) +
+                             " the host's rate and is not armed, because " + conflict);
         } else {
             // It pays. Whether it FITS is the ledger's to say, with the device as a row: the run
             // must still stream - a cache of at least one token cycle - and the dense set must not
@@ -872,43 +886,45 @@ Plan plan_run(const RunConfig & base,
             const uint64_t least =
                 prefill_need(slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_min);
             if (slots == 0 && own_short) {
-                note("prefill-device", "off", Source::Measured,
-                     best->name + " computes a wide prefill at " + ratio(*best) + " the host's rate and has " +
-                         u64s(mib(best->memory_free)) + " MiB free of the " + u64s(mib(least)) +
-                         " MiB even one layer of this model takes there: refused on memory");
+                prefill_note("off", Source::Measured,
+                             best->name + " computes a wide prefill at " + ratio(*best) + " the host's rate and has " +
+                                 u64s(mib(best->memory_free)) + " MiB free of the " + u64s(mib(least)) +
+                                 " MiB even one layer of this model takes there: refused on memory");
             } else if (slots == 0) {
-                note("prefill-device", "off", Source::Derived,
-                     best->name + " computes a wide prefill at " + ratio(*best) +
-                         " the host's rate and is refused on memory: with a single expert slot it would still "
-                         "hold " +
-                         u64s(mib(with.device_bytes + with.device_turn_bytes)) +
-                         " MiB of this pool (a layer of this model and its compute buffer), which leaves " +
-                         (streams ? "the dense set or the cache without the protection it has"
-                                  : "the expert cache " + u64s(mib(armed.cache_bytes)) +
-                                        " MiB against a token cycle of " + u64s(mib(host_model.token_cycle_bytes))) +
-                         ". That is paid on every decoded token, and a prefill is paid once");
+                prefill_note("off", Source::Derived,
+                             best->name + " computes a wide prefill at " + ratio(*best) +
+                                 " the host's rate and is refused on memory: with a single expert slot it would still "
+                                 "hold " +
+                                 u64s(mib(with.device_bytes + with.device_turn_bytes)) +
+                                 " MiB of this pool (a layer of this model and its compute buffer), which leaves " +
+                                 (streams ? "the dense set or the cache without the protection it has"
+                                          : "the expert cache " + u64s(mib(armed.cache_bytes)) +
+                                                " MiB against a token cycle of " +
+                                                u64s(mib(host_model.token_cycle_bytes))) +
+                                 ". That is paid on every decoded token, and a prefill is paid once");
             } else {
                 ai = with;
                 p.config.prefill.device = best->name;
                 p.config.prefill.best_effort = true;
                 p.config.prefill.slots = slots;
                 p.config.prefill.slots_on_demand = turns;
-                note("prefill-device", best->name, Source::Measured,
-                     "computes this model's matmul " + width + " at " + ratio(*best) +
-                         " the host's rate with the same result, and its " + u64s(mib(with.device_bytes)) + " MiB" +
-                         (with.device_turn_bytes ? ", plus " + u64s(mib(with.device_turn_bytes)) +
-                                                       " MiB of expert slots that take turns with the cache,"
-                                                 : "") +
-                         " fit the ledger with " +
-                         (slots == PrefillDeviceConfig::slots_max
-                              ? "two expert slots, so a layer is read while the one before it computes"
-                              : "one expert slot - two did not fit - so the device waits for each layer's read") +
-                         ": the expert cache gives up " +
-                         u64s(mib(alloc.cache_bytes > armed.cache_bytes ? alloc.cache_bytes - armed.cache_bytes : 0)) +
-                         " MiB for it. Decode stays on the host. If the device cannot be set up at load the "
-                         "prefill runs on the host instead. A device's arithmetic is not the host's to the "
-                         "last bit, so the text that follows can differ from a host prefill's: pass an empty "
-                         "--prefill-device to keep the prefill on the host");
+                prefill_note(
+                    best->name, Source::Measured,
+                    "computes this model's matmul " + width + " at " + ratio(*best) +
+                        " the host's rate with the same result, and its " + u64s(mib(with.device_bytes)) + " MiB" +
+                        (with.device_turn_bytes ? ", plus " + u64s(mib(with.device_turn_bytes)) +
+                                                      " MiB of expert slots that take turns with the cache,"
+                                                : "") +
+                        " fit the ledger with " +
+                        (slots == PrefillDeviceConfig::slots_max
+                             ? "two expert slots, so a layer is read while the one before it computes"
+                             : "one expert slot - two did not fit - so the device waits for each layer's read") +
+                        ": the expert cache gives up " +
+                        u64s(mib(alloc.cache_bytes > armed.cache_bytes ? alloc.cache_bytes - armed.cache_bytes : 0)) +
+                        " MiB for it. Decode stays on the host. If the device cannot be set up at load the "
+                        "prefill runs on the host instead. A device's arithmetic is not the host's to the "
+                        "last bit, so the text that follows can differ from a host prefill's: pass an empty "
+                        "--prefill-device to keep the prefill on the host");
                 alloc = armed;
             }
         }
