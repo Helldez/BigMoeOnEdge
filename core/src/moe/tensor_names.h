@@ -1,18 +1,16 @@
 // llama.cpp's tensor and graph-node names, read in one place.
 //
 // The engine finds everything it touches by name: a block's weights are "blk.<il>.<rest>", an
-// expert weight is "blk.<il>.<recipe suffix>.weight", a per-layer graph node is "<name>-<il>", and
+// expert weight is "blk.<il>.<suffix>.weight", a per-layer graph node is "<name>-<il>", and
 // the capacity fitter hands back its placement as regex patterns over those same names. Those are
 // the format's and the graph builder's conventions, shared by every architecture llama.cpp
 // converts - not a model's - and each was once parsed where it was used, with a sscanf here, a
 // strncmp there and a std::regex in the planner. A rename upstream is now one file to change, and
 // every reader parses the same way: digits only, the whole index, nothing after it.
 //
-// Which tensors are EXPERTS stays the recipe's to say (bmoe/recipe.h); this only knows how a name
-// is spelled. Pure: no llama.cpp, no ggml, no allocation on the per-node paths.
+// Which tensors are EXPERTS is the layout's to say (bmoe/expert_layout.h), from their shapes; this
+// only knows how a name is spelled. Pure: no llama.cpp, no ggml, no allocation on the per-node paths.
 #pragma once
-
-#include "bmoe/recipe.h"
 
 #include <cstring>
 #include <string>
@@ -27,11 +25,11 @@ namespace bmoe::tensor_names {
 // one whose index is not all digits.
 int block_layer(const char * name, const char ** rest = nullptr);
 
-// The recipe slot (its position in exps_suffix) whose expert weight tensor `name` is, with its
-// layer in `il_out`, or -1. Exactly "blk.<il>.<suffix>.weight": the ".weight" tail is load-bearing,
-// since a companion tensor like "ffn_down_exps.scale" prefix-matches its suffix and must stay a
-// mapped, resident tensor rather than a streamed one.
-int expert_slot(const char * name, const MoeRecipe & recipe, int & il_out);
+// The suffix of a block weight: for "blk.<il>.<suffix>.weight" the suffix, with the layer in
+// `il_out`; an empty view for any other name - a block tensor with another tail (".scale", ".bias"),
+// a tensor outside any block. The ".weight" tail is load-bearing: a companion like
+// "ffn_down_exps.scale" shares an expert's suffix and must stay a mapped, resident tensor.
+std::string_view weight_suffix(const char * name, int & il_out);
 
 // ── graph nodes ─────────────────────────────────────────────────────────────────────
 

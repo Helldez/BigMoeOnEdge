@@ -127,9 +127,8 @@ moe-cache: <pct>% hit, resident <mib> MiB
 
 The `mode:` line is printed on every run, streaming or not, and is the first thing to read: without
 `--moe-stream` the engine is plain llama.cpp on mmap and every `moe-*` line below is absent, so a
-report missing them is a baseline and not a measurement of this engine. On a MoE architecture the
-build has a recipe for, that case names the flag; on any other model it says the architecture is not
-one this build streams.
+report missing them is a baseline and not a measurement of this engine. On a file that declares
+routed experts, that case names the flag; on a dense model it says so.
 
 The `compute:` line decomposes the residual: low CPU occupancy points at a throttled/preempted
 core (a frequency cap, a co-resident process) rather than heavy math, and non-zero major

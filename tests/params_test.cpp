@@ -217,7 +217,7 @@ int main() {
 
     // Flags the table must NOT claim: they belong to the front-end, not to a run's configuration.
     for (const char * f : {"-p", "--prompt", "--progress", "--session", "--csv", "--route-trace", "--compute-trace",
-                           "--compute-trace-layers", "--io-trace", "--ppl", "--list-archs", "--help", "--version"}) {
+                           "--compute-trace-layers", "--io-trace", "--ppl", "--help", "--version"}) {
         RunConfig c;
         check(!apply_flag(c, f, "x").matched, std::string("front-end flag ") + f + " is not in the table");
     }

@@ -10,6 +10,8 @@
 // (shard index, offset in that shard) instead of an offset in one file.
 #pragma once
 
+#include "bmoe/expert_layout.h"
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -32,6 +34,10 @@ struct GgufOffsets {
     // what turns an embedding table from a residency cost into a per-token demand. Filled from the
     // same parse as everything else rather than from a second one.
     std::unordered_map<std::string, uint64_t> rows_by_name;
+    // Every tensor's name with the third extent of a 3-D one (0 for any other rank): the two facts
+    // that tell a routed expert weight from everything else in the file (bmoe/expert_layout.h),
+    // read off the same parse.
+    std::vector<TensorExtent> extents;
     // tensor name -> index into shard_paths. Always filled; 0 for every tensor of a
     // single-file model, so consumers index shard_paths unconditionally.
     std::unordered_map<std::string, int> file_by_name;

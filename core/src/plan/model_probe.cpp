@@ -13,7 +13,7 @@
 
 #include "../moe/gguf_offsets.h"
 #include "../moe/tensor_names.h"
-#include "bmoe/recipe.h"
+#include "bmoe/expert_layout.h"
 
 #include <algorithm>
 #include <cstring>
@@ -54,11 +54,13 @@ ModelProfile probe_model(const char * model_path) {
     m.n_expert_used = (uint32_t) std::max(0, meta.info.n_expert_used);
     m.n_embd = (uint32_t) std::max(0, meta.info.n_embd);
 
-    const MoeRecipe * recipe = find_moe_recipe(m.arch.c_str());
-    if (m.n_expert > 1 && !recipe) {
-        // The same refusal the streamer makes: without a recipe the expert tensors cannot be
-        // identified, and a plan that guessed at them would be worse than no plan.
-        m.error = "no MoE recipe for architecture '" + m.arch + "': cannot identify expert tensors";
+    // Which tensors are the routed experts, read off the file's shapes, and the same refusal the
+    // streamer makes: a file whose experts cannot be told apart gets no plan, since a plan that
+    // guessed at them would be worse than none. A dense model is not an error here - it has a plan,
+    // with streaming off - so only a declared expert count that fails the reading is one.
+    const ExpertLayout layout = discover_expert_layout(meta.offsets.extents, (int) m.n_expert);
+    if (m.n_expert > 1 && !layout.ok) {
+        m.error = "not a MoE this engine streams: " + layout.error;
         return m;
     }
     m.ok = true;
@@ -107,11 +109,10 @@ ModelProfile probe_model(const char * model_path) {
         if (name == "output.weight") saw_output_weight = true;
         if (name == "token_embd.weight") saw_token_embd = true;
 
-        // Only the `.weight` tensors a recipe row names: a scale, a bias or a probs tensor is not an
-        // expert weight however much its name resembles one.
+        // Only the layout's expert weights: a scale, a bias or a probs tensor is not an expert
+        // weight however much its name resembles one, and the layout told them apart by rank.
         int elayer = 0;
-        const bool is_expert =
-            recipe && m.n_expert > 0 && tensor_names::expert_slot(name.c_str(), *recipe, elayer) >= 0;
+        const bool is_expert = layout.slot_of(name.c_str(), elayer) >= 0;
 
         WeightGroup g = WeightGroup::Other;
         if (is_expert) {

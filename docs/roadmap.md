@@ -231,12 +231,12 @@ byte-correct, it just cannot hit. See [cache-sizing.md](cache-sizing.md).
 
 ## More architectures
 
-`qwen3moe`, `qwen2moe`, `qwen35moe` (the hybrid attention/SSM family, e.g. Qwen3.6-35B-A3B),
-`gemma4` (merged `ffn_gate_up_exps` plus shared experts), OpenAI `gpt-oss` (MXFP4, purely
-routed) and `nemotron_h_moe` (gate-less `ffn_up_exps`/`ffn_down_exps`) are supported; other
-`build_moe_ffn` models are one recipe row each. The remaining frontier is architectures whose
-routing node is not the shared `ffn_moe_topk` — custom gating, which the capture/stream hook
-would need to learn. See [adding-a-model.md](adding-a-model.md).
+Any MoE llama.cpp loads whose experts come in one of the three layouts it builds (split, fused
+`ffn_gate_up_exps`, gate-less) streams with no change here, since which tensors are the routed
+experts is read from the file rather than from a table
+([which-models-stream.md](which-models-stream.md)); each layout has a byte-identity gate. The
+remaining frontier is architectures whose routing node is not the shared `ffn_moe_topk` — custom
+gating, which the capture/stream hook would need to learn.
 
 ## Steering the routing toward what is resident — built, measured on the desktop
 

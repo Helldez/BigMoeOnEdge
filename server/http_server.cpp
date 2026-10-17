@@ -20,7 +20,6 @@
 
 #include "bmoe/config.h"
 #include "bmoe/params.h"
-#include "bmoe/recipe.h"
 #include "bmoe/version.h"
 
 #include <cpp-httplib/httplib.h>
@@ -330,8 +329,10 @@ struct App {
         RunConfig effective = requested;
         const std::vector<std::string> ops = store.operator_keys();
         const bool pinned = std::find(ops.begin(), ops.end(), "moe-stream") != ops.end();
-        const std::string arch = lib.probe_arch(requested.model_path);
-        if (effective.moe.enabled && !pinned && !arch.empty() && !find_moe_recipe(arch.c_str()))
+        // A readable file with no routed experts this engine streams runs as plain mmap, unless the
+        // operator pinned streaming on, in which case the engine refuses the load with its reason.
+        const ModelLibrary::ModelFacts facts = lib.probe(requested.model_path);
+        if (effective.moe.enabled && !pinned && !facts.arch.empty() && !facts.streamable)
             effective.moe.enabled = false;
         if (!effective.moe.enabled) drop_streaming_only(effective);
         return host.load(effective, requested);

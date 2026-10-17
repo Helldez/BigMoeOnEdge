@@ -1,5 +1,5 @@
 #include "bmoe/session.h"
-#include "bmoe/recipe.h"
+#include "bmoe/expert_layout.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
@@ -205,7 +205,7 @@ std::unordered_set<std::string> expert_tensor_names(const std::vector<LayerExper
     std::unordered_set<std::string> names;
     for (const LayerExperts & L : layers) {
         if (!L.bound) continue;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+        for (int p = 0; p < ExpertLayout::max_slots; ++p)
             if (L.proj[p].tensor) names.insert(L.proj[p].tensor->name);
     }
     return names;
@@ -695,7 +695,7 @@ struct Session::Impl::Opening {
     }
     const GgufModelInfo & gguf() { return meta().info; }
 
-    const MoeRecipe * recipe = nullptr; // set by read_model when streaming
+    ExpertLayout layout; // set by read_model when streaming; left !ok otherwise, and then no tensor matches it
     int n_layer_streamed = 0;           // set by build_hook
 
     bool fail(std::string msg) {
@@ -843,10 +843,13 @@ bool Session::Impl::read_model(Opening & o) {
     arch = arch_buf;
 
     if (cfg.moe.enabled) {
-        o.recipe = find_moe_recipe(arch_buf);
-        if (!o.recipe)
-            return o.fail(std::string("no MoE recipe for architecture '") + arch_buf +
-                          "' — add one in core/src/moe/arch_registry.cpp (see docs/adding-a-model.md)");
+        // Which tensors are the routed experts, read off the file's shapes. A dense model, or a MoE
+        // laid out in a way this engine has not proved byte-identical, is refused here with the reason
+        // rather than streamed by a guess.
+        o.layout = discover_expert_layout(o.meta().offsets.extents, o.gguf().n_expert);
+        if (!o.layout.ok)
+            return o.fail("not a MoE this engine streams: " + o.layout.error +
+                          " (docs/which-models-stream.md; without --moe-stream the file runs as plain mmap)");
     }
 
     // Chat templates are model-bound: initialise once here, apply per prompt in generate().
@@ -873,7 +876,7 @@ bool Session::Impl::build_hook(Opening & o) {
     // and the tensor naming identical, so this bound is the only thing standing between the streamer
     // and the MTP experts — left at n_layer they are silently skipped and stay mmap-resident.
     o.n_layer_streamed = n_layer + (cfg.spec.is_mtp() ? n_layer_nextn : 0);
-    hook = std::make_unique<RouterHook>(o.recipe ? *o.recipe : MoeRecipe{}, o.n_layer_streamed);
+    hook = std::make_unique<RouterHook>(o.layout, o.n_layer_streamed);
     hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
     hook->set_expert_substitute(cfg.moe.substitute_lambda);
@@ -1051,12 +1054,9 @@ bool Session::Impl::bind_expert_offsets(Opening & o,
     for (LayerExperts & L : layers) {
         if (!L.bound) continue;
         ++n_bound;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-            if (!o.recipe->exps_suffix[p]) continue; // slot unused by this architecture
+        for (int p = 0; p < o.layout.n_slots; ++p) {
             ggml_tensor * t = L.proj[p].tensor;
-            if (!t)
-                return o.fail(std::string("captured MoE layer is missing expert tensor '") + o.recipe->exps_suffix[p] +
-                              "'");
+            if (!t) return o.fail("captured MoE layer is missing expert tensor '" + o.layout.suffix[p] + "'");
             auto it = offs.off_by_name.find(t->name);
             if (it == offs.off_by_name.end()) return o.fail(std::string("no gguf offset for tensor ") + t->name);
             L.proj[p].file_off = it->second;
@@ -2189,6 +2189,7 @@ struct Session::Impl::Turn {
     void summarize(IMetricsSink * sink) {
         RunSummary & s = res.summary;
         s.arch = im.arch;
+        s.n_expert = im.info.n_expert;
         s.n_generated = n_gen;
         s.n_predict = n_predict;
         s.gen_seconds = gen_seconds;
