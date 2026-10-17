@@ -156,6 +156,12 @@ jobs:
             elif [ "${{ runner.os }}" = "macOS" ]; then cp -P build/bin/*.dylib build/bin/*.so "$1/"; strip -x "$1"/*.dylib "$1"/*.so || true;
             else cp -P build/bin/*.so* "$1/"; strip "$1"/*.so* || true; fi
             ls "$1" | grep -q 'ggml-cpu' || { echo "no CPU backend module in $1"; exit 1; }
+            # And the GPU module this archive promises: a Vulkan SDK step that failed quietly would
+            # otherwise ship a CPU-only archive under the name of one that carries Vulkan.
+            case "${{ matrix.target }}" in
+              macos-*) ls "$1" | grep -q 'ggml-metal' || { echo "no Metal backend module in $1"; exit 1; } ;;
+              *) ls "$1" | grep -q 'ggml-vulkan' || { echo "no Vulkan backend module in $1"; exit 1; } ;;
+            esac
           }
           NAME="bmoe-cli-$TAG-${{ matrix.target }}"
           mkdir -p "$NAME"

@@ -286,6 +286,25 @@ int main(int argc, char ** argv) {
         return 2;
     }
     const std::string model = argv[1];
+    // --require-hook: this build is expected to carry the fork's expert-ready hook, so the overlap
+    // gates must run and their absence is a failure, not a skip. A module build only learns at run
+    // time which CPU backend it loaded; without this, a bump or a stripped module would retire G4,
+    // G5b and S2 without a word and the suite would stay green. CI passes it on the job whose
+    // purpose is to prove --overlap byte-identical (BMOE_GATES_REQUIRE_HOOK).
+    bool require_hook = false;
+    for (int i = 2; i < argc; ++i)
+        if (std::string(argv[i]) == "--require-hook") require_hook = true;
+    // The backends come from beside this executable, loaded the way the engine loads them, and the
+    // hook is judged on what loaded: asked before any backend is registered, the registry has no
+    // CPU device and the answer would be "absent" on every build.
+    register_backends();
+    const bool have_hook = expert_ready_hook_available();
+    int hook_missing = 0;
+    if (require_hook && !have_hook) {
+        std::printf("[FAIL] the CPU backend loaded here has no expert-ready hook, and --require-hook says this build "
+                    "must: G4, G5b and S2 cannot run\n");
+        hook_missing = 1;
+    }
     const bool adjacent_moe = has_adjacent_moe_layers(model);
 
     // resident reference
@@ -374,7 +393,7 @@ int main(int argc, char ** argv) {
         return 2;
     }
 
-    int fails = 0;
+    int fails = hook_missing; // --require-hook with the hook absent: one failure before any gate
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);
     fails += check("G2 streaming(cache off) == streaming(LRU cache)", s_s0, s_sc);
     fails += check("G3 streaming(selective) == streaming(load-all)", s_s0, s_all);
@@ -387,7 +406,7 @@ int main(int argc, char ** argv) {
     fails += check("G15a row-stream(row-gathered tables from flash) == resident", s_res, s_rows);
     fails += check("G15b row-stream(one-slab window, evicting) == resident", s_res, s_rows_tight);
 
-    if (!expert_ready_hook_available()) {
+    if (!have_hook) {
         std::printf("[SKIP] G4 (the CPU backend here has no expert-ready hook)\n");
     } else {
         // overlap, cache off
@@ -491,7 +510,7 @@ int main(int argc, char ** argv) {
     }
     fails += check("G5a streaming(prefetch) == streaming(cache off)", s_s0, s_pf);
 
-    if (!expert_ready_hook_available()) {
+    if (!have_hook) {
         std::printf("[SKIP] G5b (the CPU backend here has no expert-ready hook)\n");
     } else {
         RunConfig pf_ov = pf;
@@ -516,7 +535,7 @@ int main(int argc, char ** argv) {
     }
     fails += check("G5c prefetch(sync integrate+hit) == streaming(cache off)", s_s0, s_pf_sync);
 
-    if (!expert_ready_hook_available()) {
+    if (!have_hook) {
         std::printf("[SKIP] S2 (the CPU backend here has no expert-ready hook)\n");
     } else {
         RunConfig sess_ov = sess;

@@ -769,17 +769,43 @@ size_t ExpertStreamSource::entry_bytes(int il) const {
         bytes += (size_t) L.proj[p].nb2; // absent slots contribute 0
     return bytes;
 }
-// Release the physical pages fully contained in an entry's slices (never a partial page shared
-// with a neighbouring expert, nor the head of a slice, which is the slack the expert before it may
-// be read past into). Shared by eviction and by discarding an incomplete spec entry.
+// Release the physical pages of an entry's slices that no other entry still needs. A slice is
+// committed over its own pages and through the slack after it (slice_pages), so the pages at a
+// slice boundary belong to two entries: the one that ends there, whose kernels may read past the
+// end into them, and the one that starts there. They are released with the last of the two to go.
+// Releasing only the pages between the two boundaries, as this once did, left the head page of
+// every slice whose left neighbour had ever been resident committed until the buffer was freed:
+// one page per expert and projection, outside the ledger `cresident_` keeps. Shared by eviction
+// and by discarding an incomplete spec entry; eval thread only, like every LRU mutation.
 void ExpertStreamSource::release_entry_pages(int32_t id) {
     const int il = id / n_expert_, e = id % n_expert_;
+    // A neighbour's pages must stay while it is resident or while a speculative read of it is in
+    // flight; the workers that finish those reads write the counters under io_mtx_, and only this
+    // thread ever raises one, so a value read here can only fall afterwards, which is safe.
+    bool left = false, right = false;
+    {
+        std::lock_guard<std::mutex> lk(io_mtx_);
+        const auto live = [&](int x) {
+            if (x < 0 || x >= n_expert_) return false;
+            const int32_t xid = il * n_expert_ + x;
+            return cvalid_[xid] != 0 || spec_remaining_[xid] != 0;
+        };
+        left = live(e - 1);
+        right = live(e + 1);
+    }
     for (int p = 0; p < MoeRecipe::max_exps; ++p) {
         const uint64_t slice = layers_[il].proj[p].nb2;
         if (slice == 0) continue; // absent slot in a fused layout
         char * s = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-        uintptr_t a0 = ((uintptr_t) s + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
-        uintptr_t a1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
+        // head: the pages the left neighbour's slack reaches into; body: ours alone; tail: the
+        // pages our slack reaches into, which are the right neighbour's head.
+        const uintptr_t head0 = (uintptr_t) s & ~(uintptr_t) (page_ - 1);
+        const uintptr_t body0 = ((uintptr_t) s + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
+        const uintptr_t body1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
+        const uintptr_t tail1 =
+            ((uintptr_t) s + slice + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
+        const uintptr_t a0 = left ? body0 : head0;
+        const uintptr_t a1 = right ? body1 : tail1;
         if (a1 > a0) pio::vm_evict((void *) a0, (size_t) (a1 - a0));
     }
 }

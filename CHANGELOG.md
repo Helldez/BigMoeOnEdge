@@ -21,7 +21,10 @@ Semantic Versioning.
   (`ggml_backend_reg_get_proc_address`) rather than linked, so the fork stays one commit and a
   build on stock upstream refuses `--overlap` with the reason instead of failing to link; the
   server's default and its `overlap_available` follow the backend that loaded
-  (`docs/seam.md`). Windows gains the device probe in a process of its own, so a GPU driver that
+  (`docs/seam.md`). The gates that prove `--overlap` (G4, G5b, S2) skip themselves where the
+  hook is absent, and with `-DBMOE_GATES_REQUIRE_HOOK=ON`, which CI's gate job passes, fail
+  instead, so a CPU module without the hook cannot pass the suite unseen. Windows gains the
+  device probe in a process of its own, so a GPU driver that
   dies there ends the probe and not the server. `scripts/build-portable.sh` is gone: the default
   build is that build. The modules share the engine's C runtime, so the Windows archives carry
   the C++ runtime DLLs beside the binaries and still start on a machine that never installed the
@@ -46,15 +49,24 @@ Semantic Versioning.
   `docs/backends.md` also corrects one cell: OpenCL's `buffer_from_host_ptr` is wired to a
   function that declines, not to an implementation.
 - **A prefill device is confirmed on the model before the session keeps it** (`--prefill-verify`,
-  on by default). After the load the session prefills a fixed 64-token text on the host and on the
-  device and keeps the device only if its top next token matches the host's in at least 90% of the
-  positions; otherwise it is handed back like a device that failed to open, and a plan's device
-  leaves the prefill on the CPU. The planner's synthetic matmul cannot see a fault only the model's
+  on by default). After the load the session prefills a fixed text, 64 tokens or the device's
+  narrowest graph where that is wider, on the host and on the device and keeps the device only if
+  its top next token matches the host's in at least 90% of the positions; otherwise it is handed
+  back like a device that failed to open, and a plan's device leaves the prefill on the CPU. A
+  check that cannot run (a text that does not tokenize, no graph that wide within what one graph
+  may return) leaves the device as set and says so: not confirming is no evidence against it. The
+  planner's synthetic matmul cannot see a fault only the model's
   activations trigger: a phone GPU's half-precision Vulkan prefill took a 1070-token text's
   perplexity from 32.4 to 711 445. A laptop iGPU agrees in 98%. Three short prefills at load; the
   check judges correctness, not speed (`docs/hardware-planning.md`).
 
 ### Fixed
+- **The page two experts' slices share is released with the last of the two.** A slice is
+  committed through the slack after it, which is the head page of the next slice; eviction
+  released only the pages between the two boundaries, so once an expert had been resident the
+  head page of its right neighbour stayed committed until the buffer was freed, outside the
+  cache ledger: one page per expert and projection, up to 72 MiB on a 48-layer, 128-expert
+  model. A boundary page now goes when neither neighbour is resident or being read.
 - **The device agreement check is llama.cpp's own.** The planner compared a device's matmul with
   the host's under a private bound five times stricter than the normalized mean squared error
   `test-backend-ops` allows a matmul (5e-4), and refused a laptop iGPU whose half-precision

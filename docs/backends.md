@@ -69,6 +69,14 @@ Three things in that table decide what this engine can do with a backend.
 
 Three backends, then, with a measurement behind them, out of eighteen.
 
+Two decisions behind the archives, written down so they are not re-made by accident. CUDA and HIP
+stay out of the default archives: their runtime libraries weigh more than the rest of the archive,
+and Vulkan reaches the same GPUs; a module built where the toolchain is loads from beside the
+binary like the shipped ones. And a module that is present and never given a weight is not known
+to be free: on one laptop with an integrated GPU, a build with Vulkan linked in loaded the model
+five times slower than one without, cause not found. The modules build owes that measurement, on
+the same machine, before the load time with an idle GPU module is called a non-event.
+
 ## What each role asks of a backend
 
 The engine uses a device in one of four ways, and each asks for something different.

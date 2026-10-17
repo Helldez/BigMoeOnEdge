@@ -6,10 +6,11 @@
 # eval-callback and public gguf accessors, so it tracks upstream with nothing more than a
 # submodule pointer bump — no in-tree patch. The one exception is the optional `--overlap`
 # feature, which needs a per-expert wait point the public API does not expose: the submodule
-# pins a fork branch (`bmoe/expert-ready-hook` on Helldez/llama.cpp) adding one ~25-line
-# readiness hook, detected here as BMOE_HAVE_EXPERT_READY_HOOK. It is zero-cost when absent,
-# the serial path still builds against stock upstream, and it sunsets the moment upstream
-# ships an equivalent callback. See docs/seam.md § 3.
+# pins a fork branch on Helldez/llama.cpp, one commit on upstream, that adds one readiness hook
+# to the CPU backend and lists its setter in that backend's `get_proc_address` table. The engine
+# resolves it there at run time, so nothing here links against the fork: a build on stock
+# upstream starts and refuses `--overlap` with the reason, and the hook sunsets the moment
+# upstream ships an equivalent callback. See docs/seam.md § 3.
 #
 # llama.cpp is an optional dependency at configure time: when the submodule is absent
 # only the pure-policy code (config validation) compiles, so the scaffold and a subset

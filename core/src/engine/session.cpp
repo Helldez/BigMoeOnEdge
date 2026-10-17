@@ -1221,13 +1221,18 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             toks.resize((size_t) -nt);
             nt = llama_tokenize(im.vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), true, false);
         }
-        const int want = std::min({PrefillDeviceConfig::verify_tokens, PrefillDeviceConfig::max_outputs,
-                                   prefill_piece(im.cfg), cfg.n_ctx - 1});
+        // At least as wide as the narrowest graph the device is handed, so what is confirmed is a
+        // placement the device will actually see; bounded by what one graph may return.
+        const int want = std::min({std::max(PrefillDeviceConfig::verify_tokens, cfg.prefill.min_tokens),
+                                   PrefillDeviceConfig::max_outputs, prefill_piece(im.cfg), cfg.n_ctx - 1});
         double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0;
+        // A check that cannot run is not a verdict: the device stays as the plan or the caller set it,
+        // and the line below says it was not confirmed.
+        std::string unchecked;
         if (nt <= 1) {
-            why = "the confirmation text does not tokenize";
+            unchecked = "the confirmation text does not tokenize";
         } else if (want < cfg.prefill.min_tokens) {
-            why = "the confirmation prefill would be narrower than the narrowest graph the device is handed";
+            unchecked = "no graph as wide as the narrowest the device is handed fits a confirmation";
         } else {
             // Repeat the text (without its leading special token) until the probe is as wide as asked.
             const int body = toks[0] == llama_vocab_bos(im.vocab) ? 1 : 0;
@@ -1296,15 +1301,20 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
             llama_batch_free(b);
             im.clear_memory(ctx);
         }
-        std::fprintf(stderr,
-                     "bmoe: prefill-device %s confirmation: %d tokens, top token agrees %.0f%%, logit NMSE %.2e, "
-                     "host %.2f s, device %.2f s%s%s\n",
-                     cfg.prefill.device.c_str(), want, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
-                     why.c_str());
-        if (!why.empty()) {
-            const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
-            if (!cfg.prefill.best_effort) return fail(perr);
-            hand_back(perr);
+        if (!unchecked.empty()) {
+            std::fprintf(stderr, "bmoe: prefill-device %s not confirmed: %s; kept as set\n", cfg.prefill.device.c_str(),
+                         unchecked.c_str());
+        } else {
+            std::fprintf(stderr,
+                         "bmoe: prefill-device %s confirmation: %d tokens, top token agrees %.0f%%, logit NMSE %.2e, "
+                         "host %.2f s, device %.2f s%s%s\n",
+                         cfg.prefill.device.c_str(), want, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
+                         why.c_str());
+            if (!why.empty()) {
+                const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
+                if (!cfg.prefill.best_effort) return fail(perr);
+                hand_back(perr);
+            }
         }
     }
 

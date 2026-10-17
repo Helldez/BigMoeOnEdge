@@ -75,7 +75,11 @@ way ggml exposes every other backend-specific function (threads, NUMA, the abort
 is what lets the CPU backend be a module loaded from beside the executable, which is how every
 release is built (`BMOE_BACKEND_MODULES`), and what lets a build on stock upstream run: the
 registry answers null, `expert_ready_hook_available()` says so, and `--overlap` is refused with
-the reason instead of failing to link.
+the reason instead of failing to link. The gates that prove `--overlap` byte-identical (G4, G5b,
+S2) skip themselves on such a build, and the build whose job is to prove it passes
+`-DBMOE_GATES_REQUIRE_HOOK=ON`, under which a missing hook is a failure: whether the CPU module a
+build loads carries the hook is decided at run time now, and a bump or a stripped module must not
+be able to retire those gates quietly.
 
 `ggml_compute_forward_mul_mat_id` calls the hook at the top of its per-expert loop, right
 after the "expert not routed this token" skip, before it consumes that expert's weight

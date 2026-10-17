@@ -504,10 +504,13 @@ model's own activations trigger. A phone GPU's Vulkan prefill, half precision to
 text's perplexity from 32.4 to 711 445 - no next token right in 1070.
 
 So the session confirms the device on the model before keeping it (`--prefill-verify`, on by
-default). After the load it prefills a fixed 64-token text on the host and on the device and keeps
-the device only if the top next token agrees in at least 90% of the positions; otherwise the device
-is handed back exactly as one that failed to open, and with `--prefill-best-effort`, which a plan
-that armed the device sets, the prefill stays on the CPU. Measured: the laptop iGPU agrees in 98%
+default). After the load it prefills a fixed text on the host and on the device - 64 tokens, or the
+device's narrowest graph (`--prefill-min-tokens`) where that is wider - and keeps the device only
+if the top next token agrees in at least 90% of the positions; otherwise the device is handed back
+exactly as one that failed to open, and with `--prefill-best-effort`, which a plan that armed the
+device sets, the prefill stays on the CPU. A check that cannot run - a text the vocabulary does not
+tokenize, no graph as wide as the device's narrowest within what one graph may return - leaves the
+device as set and says so: not confirming is no evidence against it. Measured: the laptop iGPU agrees in 98%
 (logit NMSE 1.3e-3). The check costs three short prefills at load. It judges correctness only:
 it times both passes and prints the times, but at 64 tokens cold expert reads dominate, and that
 iGPU, faster there (6.5 s against 7.5), prefilled a real 1015-token prompt 8% slower than the host.
