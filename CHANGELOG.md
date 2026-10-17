@@ -72,6 +72,12 @@ Semantic Versioning.
   plan's ledger held none of it. The devices given bytes are now the ones asked, each with a stated
   size; where one shares the host's memory the placement is quoted and not applied, as it already
   was where every device does.
+- **A prefill device is charged its own compute buffer, not the fitter's sum.** The fitter projects
+  compute buffers for the devices it places layers on, and the planner charged their sum to
+  whichever device would prefill. On a phone that put a GPU's 467 MiB on the NPU beside it, which
+  the fitter never places on, and took it from the expert cache (904 MiB instead of about 1370, and
+  one expert slot instead of two). Each device's part is now kept, and the prefill device pays its
+  own.
 
 ## [0.30.0] - 2026-10-16
 

@@ -211,6 +211,10 @@ Placement probe_placement(const char * model_path,
             pl.device_bytes += (uint64_t) dm[i].model + (uint64_t) dm[i].context + (uint64_t) dm[i].compute;
             pl.device_compute_bytes += (uint64_t) dm[i].compute;
             pl.device_context_bytes += (uint64_t) dm[i].context;
+            if (dm[i].compute && i < devs.size() && ggml_backend_dev_name(devs[i])) {
+                pl.projected_devices.push_back(ggml_backend_dev_name(devs[i]));
+                pl.projected_compute_bytes.push_back((uint64_t) dm[i].compute);
+            }
         }
         pl.compute_width = cparams.n_ubatch;
 

@@ -1288,6 +1288,23 @@ int main() {
         check(sz.config.prefill.device == "accel" && szr && szr->bytes == stays && ledger_row(sz, "device slots"),
               "prefill: a device that claims its own memory and states no size is charged to the host");
 
+        // The fitter's compute buffers are per device: the prefill device pays its own part, and
+        // none of one projected for a device beside it (a GPU's charged to an NPU, on a phone).
+        Placement projected;
+        projected.device_compute_bytes = 256 * MiB;
+        projected.projected_devices = {"gpu"};
+        projected.projected_compute_bytes = {256 * MiB};
+        const Plan other = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, projected, PlanRequest{});
+        const LedgerRow * orow = ledger_row(other, "device");
+        check(other.config.prefill.device == "accel" && orow && orow->bytes == stays,
+              "prefill: a compute buffer projected for another device is not charged to this one",
+              orow ? std::to_string((unsigned long long) (orow->bytes >> 20)) + " MiB" : "no row");
+        projected.projected_devices = {"accel"};
+        const Plan mine = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, projected, PlanRequest{});
+        const LedgerRow * mrow = ledger_row(mine, "device");
+        check(mrow && mrow->bytes == stays + 256 * MiB, "prefill: and the one projected for it is",
+              mrow ? std::to_string((unsigned long long) (mrow->bytes >> 20)) + " MiB" : "no row");
+
         disc.devices[1].memory_free = 256 * MiB;
         check(!plan_run(base_cfg(), disc, mm, PlanRequest{}).config.prefill.enabled(),
               "prefill: and refused when its own memory cannot take even one layer");
