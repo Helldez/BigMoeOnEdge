@@ -9,7 +9,7 @@ add_library(bmoe_core STATIC
     src/config.cpp
     src/params.cpp
     src/log.cpp
-    src/moe/arch_registry.cpp
+    src/moe/expert_layout.cpp
     src/moe/tensor_names.cpp
     src/engine/ngram_draft.cpp
     src/plan/plan.cpp

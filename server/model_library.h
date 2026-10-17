@@ -52,8 +52,14 @@ public:
     // The /api/models object: local files and the catalog with each entry's status.
     json list();
 
-    // general.architecture of a gguf, read from its metadata only; "" when unreadable.
-    std::string probe_arch(const std::string & path);
+    // What a gguf is, from its headers alone (no tensor bytes): its architecture, and whether it
+    // carries routed experts in a layout this engine streams (docs/which-models-stream.md). "" and
+    // false when unreadable.
+    struct ModelFacts {
+        std::string arch;
+        bool streamable = false;
+    };
+    ModelFacts probe(const std::string & path);
 
     std::string start_download(const std::string & id); // "" once started
     bool cancel_download(const std::string & id);
@@ -88,12 +94,12 @@ private:
 
     std::mutex m_;
     std::map<std::string, std::unique_ptr<Job>> jobs_;
-    struct ArchCacheEntry {
+    struct FactsCacheEntry {
         uint64_t size = 0;
         long long mtime = 0;
-        std::string arch;
+        ModelFacts facts;
     };
-    std::map<std::string, ArchCacheEntry> arch_cache_;
+    std::map<std::string, FactsCacheEntry> facts_cache_;
 };
 
 } // namespace bmoe::server

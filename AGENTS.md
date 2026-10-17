@@ -16,7 +16,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `core/src/io/` — `platform_io` (cross-platform O_DIRECT reads + reserve/commit/evict VM);
   `file_reader` (pooled positioned reader, per-consumer O_DIRECT — used by both the expert stream
   and the dense loader); `mapping_release` (hands the model file's mapping back after load).
-- `core/src/moe/` — `gguf_offsets`, `arch_registry`, `expert_stream_source`, `router_hook`;
+- `core/src/moe/` — `gguf_offsets`, `expert_layout` (which tensors are the routed experts, from the
+  file's shapes), `expert_stream_source`, `router_hook`;
   `dense_weights` (the non-expert weight policy: mmap / warm / anon, plus the residency sensor);
   `tensor_names` (the one place llama.cpp's tensor and node names are parsed: no ad-hoc sscanf or regex).
 - `core/src/engine/` — `session.cpp`, the composition root: one `Session` loads the model, binds
@@ -72,9 +73,10 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
    `RunConfig`; the CLI resolves any env overrides before building it.
 4. **No hardcoding.** A new tunable is a `RunConfig` field plus one row in `params.cpp` (its flag,
    bounds from named constants, help); never a hand-written flag, usage line or UI control.
-   New architectures are recipe rows in `arch_registry.cpp`; expert
-   counts, strides and offsets are discovered at runtime. No model-specific constants in
-   the streaming path.
+   There is no table of architectures: which tensors are the routed experts is read from the file
+   (`expert_layout`: a block's 3-D weights indexed by the declared expert count), as are expert
+   counts, strides and offsets. A new expert layout gets a byte-identity gate, never a row. No
+   model-specific constants in the streaming path.
 5. **Gates must pass before merge.** `bmoe_moe_gates` proves streamed == resident. If you
    touch the streamer, the seam, or bump the submodule, run them.
 6. **Docs and changelog ship with the change.** Every PR updates `CHANGELOG.md` and the docs

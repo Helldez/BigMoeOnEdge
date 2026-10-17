@@ -12,7 +12,6 @@
 #include "bmoe/auto_plan.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
-#include "bmoe/recipe.h"
 #include "bmoe/metrics.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
@@ -590,7 +589,6 @@ static void print_usage(const char * argv0) {
                 "                          flash-bandwidth claim is checked against the reads that made it\n"
                 "  -h, --help              show this text and exit\n"
                 "      --version           print the engine version and exit\n"
-                "      --list-archs        print supported MoE architectures and exit\n"
                 "\n"
                 "  Perplexity (score a fixed text instead of generating):\n"
                 "      --ppl FILE          measure teacher-forced perplexity of FILE instead of generating.\n"
@@ -788,11 +786,6 @@ int main(int argc, char ** argv) {
                 if (comma == std::string::npos) break;
                 start = comma + 1;
             }
-        } else if (a == "--list-archs") {
-            std::printf("supported MoE architectures:\n");
-            for (int k = 0; k < n_moe_recipes(); ++k)
-                std::printf("  %s\n", moe_recipe_at(k)->arch);
-            return 0;
         } else if (a == "-h" || a == "--help") {
             print_usage(argv[0]);
             return 0;
@@ -1212,14 +1205,13 @@ int main(int argc, char ** argv) {
             else
                 std::snprintf(cache, sizeof(cache), "cache off");
             std::printf("mode: expert streaming, %s, dense %s%s\n", cache, dense, cfg.moe.overlap ? ", overlap" : "");
-        } else if (!s.arch.empty() && find_moe_recipe(s.arch.c_str())) {
-            std::printf("mode: mmap. Expert streaming is OFF on a MoE model (%s), so this run is a "
+        } else if (s.n_expert > 1) {
+            std::printf("mode: mmap. Expert streaming is OFF on a MoE model (%s, %d experts), so this run is a "
                         "baseline, not this engine: add --moe-stream --overlap to stream the routed "
                         "experts from flash.\n",
-                        s.arch.c_str());
+                        s.arch.c_str(), s.n_expert);
         } else {
-            std::printf("mode: mmap (%s is not a MoE architecture this build streams; --list-archs "
-                        "lists the supported ones)\n",
+            std::printf("mode: mmap (%s declares no routed experts: a dense model, run as plain llama.cpp)\n",
                         s.arch.empty() ? "the model" : s.arch.c_str());
         }
     }

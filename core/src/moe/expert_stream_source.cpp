@@ -59,17 +59,17 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     // Largest full-tensor byte size per projection, over all bound layers → shared-slot
     // and bounce sizing. Absent projection slots (a fused layout uses fewer than max_exps
     // expert tensors) keep nb2 == 0, so their max_full stays 0 and they are skipped below.
-    size_t max_full[MoeRecipe::max_exps] = {0, 0, 0};
+    size_t max_full[ExpertLayout::max_slots] = {0, 0, 0};
     for (const LayerExperts & L : layers_) {
         if (!L.bound) continue;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
             max_full[p] = std::max(max_full[p], full);
             total_expert_bytes_ += full; // every expert of every bound layer resident = the full set
         }
     }
     size_t max_full_any = 0;
-    for (int p = 0; p < MoeRecipe::max_exps; ++p)
+    for (int p = 0; p < ExpertLayout::max_slots; ++p)
         max_full_any = std::max(max_full_any, max_full[p]);
     if (max_full_any == 0) {
         log_printf(LogLevel::Error, "no MoE layers were bound");
@@ -155,7 +155,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // One shared slot per present projection, reused across layers (one layer computes
         // at a time). Rebind every bound layer's expert tensors onto them; only routed
         // slices are ever valid. Absent slots (max_full[p] == 0) get no buffer.
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             if (max_full[p] == 0) continue;
             slot_[p] = pio::alloc_aligned(buf_align_, max_full[p]);
             if (!slot_[p]) {
@@ -165,7 +165,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         }
         for (LayerExperts & L : layers_) {
             if (!L.bound) continue;
-            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            for (int p = 0; p < ExpertLayout::max_slots; ++p)
                 if (L.proj[p].tensor) L.proj[p].tensor->data = slot_[p];
         }
     } else {
@@ -174,14 +174,14 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // each expert at its canonical offset e*nb2 inside tensor->data, so the buffers
         // live at fixed per-layer addresses; lazy commit keeps that affordable. (page_ is already
         // set above: the dense-residency probe needs it in every cache mode, not just this one.)
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             lbuf_[p].assign(n_layer_, nullptr);
             lbuf_sz_[p].assign(n_layer_, 0);
         }
         for (int il = 0; il < n_layer_; ++il) {
             LayerExperts & L = layers_[il];
             if (!L.bound) continue;
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            for (int p = 0; p < ExpertLayout::max_slots; ++p) {
                 if (!L.proj[p].tensor) continue; // absent slot in a fused layout
                 const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
                 lbuf_[p][il] = pio::vm_reserve(full);
@@ -218,7 +218,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         effective_direct_ = effective_direct_ && r->direct();
     for (const LayerExperts & L : layers_) {
         if (!L.bound) continue;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+        for (int p = 0; p < ExpertLayout::max_slots; ++p)
             if (L.proj[p].nb2 && (L.proj[p].file_idx < 0 || L.proj[p].file_idx >= (int) readers_.size())) {
                 log_printf(LogLevel::Error, "expert tensor points at shard %d of %zu", L.proj[p].file_idx,
                            readers_.size());
@@ -227,7 +227,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     }
 
     seen_.assign(n_expert_, 0);
-    jobs_.reserve((size_t) n_expert_ * MoeRecipe::max_exps);
+    jobs_.reserve((size_t) n_expert_ * ExpertLayout::max_slots);
     batch_gen_ = 0;
     next_idx_ = 0;
     done_cnt_ = 0;
@@ -238,7 +238,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // One readiness cell per (projection, expert), and a map from each bound expert tensor
         // (the persistent model weight, stable across decodes) back to its (layer, projection)
         // so the hook can find the cell to wait on. Built after the rebind above.
-        ready_ = std::vector<ReadyFlag>((size_t) MoeRecipe::max_exps * (size_t) n_expert_);
+        ready_ = std::vector<ReadyFlag>((size_t) ExpertLayout::max_slots * (size_t) n_expert_);
         async_gen_.store(0);
         cur_il_.store(-1);
         fatal_.store(false);
@@ -246,11 +246,11 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         batch_flag_gen_ = 0;
         staged_.reserve(n_expert_);
         texp_.clear();
-        texp_.reserve((size_t) n_layer_ * MoeRecipe::max_exps);
+        texp_.reserve((size_t) n_layer_ * ExpertLayout::max_slots);
         for (int il = 0; il < n_layer_; ++il) {
             const LayerExperts & L = layers_[il];
             if (!L.bound) continue;
-            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            for (int p = 0; p < ExpertLayout::max_slots; ++p)
                 if (L.proj[p].tensor)
                     texp_.emplace_back((const void *) L.proj[p].tensor, ((uint32_t) il << 8) | (uint32_t) p);
         }
@@ -266,7 +266,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         std::vector<std::vector<std::pair<uint64_t, uint64_t>>> exp(readers_.size());
         for (const LayerExperts & L : layers_) {
             if (!L.bound) continue;
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            for (int p = 0; p < ExpertLayout::max_slots; ++p) {
                 const uint64_t sz = (uint64_t) L.proj[p].nb2 * (uint64_t) n_expert_;
                 if (sz) exp[L.proj[p].file_idx].push_back({L.proj[p].file_off, L.proj[p].file_off + sz});
             }
@@ -459,7 +459,7 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
         const size_t mark = staged.size();
         int njobs = 0;
         bool ok = true;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue;
             char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
@@ -757,7 +757,7 @@ void ExpertStreamSource::lru_push_back(int32_t id) {
 size_t ExpertStreamSource::entry_bytes(int il) const {
     const LayerExperts & L = layers_[il];
     size_t bytes = 0;
-    for (int p = 0; p < MoeRecipe::max_exps; ++p)
+    for (int p = 0; p < ExpertLayout::max_slots; ++p)
         bytes += (size_t) L.proj[p].nb2; // absent slots contribute 0
     return bytes;
 }
@@ -765,7 +765,7 @@ size_t ExpertStreamSource::entry_bytes(int il) const {
 // with a neighbouring expert). Shared by eviction and by discarding an incomplete spec entry.
 void ExpertStreamSource::release_entry_pages(int32_t id) {
     const int il = id / n_expert_, e = id % n_expert_;
-    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+    for (int p = 0; p < ExpertLayout::max_slots; ++p) {
         const uint64_t slice = layers_[il].proj[p].nb2;
         if (slice == 0) continue; // absent slot in a fused layout
         char * s = (char *) lbuf_[p][il] + (uint64_t) e * slice;
@@ -1032,7 +1032,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
     // (With commit_only_proj, the caller also contracts to commit the other projections before it
     // emits their jobs; the residency accounting below still covers the whole entry, because the
     // entry lives and is evicted as a unit either way.)
-    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+    for (int p = 0; p < ExpertLayout::max_slots; ++p) {
         if (commit_only_proj >= 0 && p != commit_only_proj) continue;
         if (!commit_proj_pages(il, e, p)) return false;
     }
@@ -1064,7 +1064,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
 
     auto stage = [&](int e) -> bool {
         if (cache_max_ == 0) {
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+            for (int p = 0; p < ExpertLayout::max_slots; ++p) {
                 const uint64_t slice = L.proj[p].nb2;
                 if (slice == 0) continue; // absent slot in a fused layout
                 jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
@@ -1078,7 +1078,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
         // A miss: emit this expert's reads, expert-major. The drain below waits on them all, so the
         // order only has to be complete, not clever — unlike the overlap path, where it feeds a
         // kernel that is already blocking.
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue; // absent slot in a fused layout
             jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
@@ -1228,7 +1228,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     if (cache_max_ == 0) {
         // Cache off: every (projection, expert) is a fresh read into the shared full-size slot
         // at its canonical offset e*slice. Emit projection-major.
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue; // absent slot in a fused layout
             for (int e : staged_) {
@@ -1249,7 +1249,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
         // already read. io_drain copies jobs under the lock and the worker wait predicate admits
         // a grown batch, so appending mid-generation is safe.
         const int p0 = [&] {
-            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            for (int p = 0; p < ExpertLayout::max_slots; ++p)
                 if (L.proj[p].nb2) return p;
             return -1;
         }();
@@ -1265,7 +1265,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
                 return false;
             }
             if (hit) { // resolved without a read — release every projection's waiter now
-                for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                for (int p = 0; p < ExpertLayout::max_slots; ++p)
                     if (L.proj[p].nb2) mark_ready(p, e);
                 continue;
             }
@@ -1283,7 +1283,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             }
         };
         if (!two_wave) {
-            for (int p = 0; p < MoeRecipe::max_exps; ++p)
+            for (int p = 0; p < ExpertLayout::max_slots; ++p)
                 emit_proj(p);
         } else {
             // Wave one: the first projection's jobs, published before anything else is committed.
@@ -1304,7 +1304,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             // flags this batch will now never flip — go fatal and wake them to observe it.
             for (int e : staged_) {
                 if (!seen_[e]) continue;
-                for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+                for (int p = 0; p < ExpertLayout::max_slots; ++p) {
                     if (p == p0) continue;
                     if (!commit_proj_pages(il, e, p)) {
                         fatal_.store(true, std::memory_order_release);
@@ -1318,7 +1318,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
             }
             {
                 std::lock_guard<std::mutex> lk(io_mtx_);
-                for (int p = 0; p < MoeRecipe::max_exps; ++p)
+                for (int p = 0; p < ExpertLayout::max_slots; ++p)
                     if (p != p0) emit_proj(p);
                 batch_njobs_ = jobs_.size();
             }
@@ -1511,12 +1511,12 @@ void ExpertStreamSource::shutdown() {
     spec_done_pending_.store(0, std::memory_order_relaxed);
     spec_touched_.clear();
 
-    for (int p = 0; p < MoeRecipe::max_exps; ++p)
+    for (int p = 0; p < ExpertLayout::max_slots; ++p)
         if (slot_[p]) {
             pio::aligned_free(slot_[p]);
             slot_[p] = nullptr;
         }
-    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+    for (int p = 0; p < ExpertLayout::max_slots; ++p) {
         for (int il = 0; il < (int) lbuf_[p].size(); ++il)
             if (lbuf_[p][il]) pio::vm_release(lbuf_[p][il], lbuf_sz_[p][il]);
         lbuf_[p].clear();

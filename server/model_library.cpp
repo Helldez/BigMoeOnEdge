@@ -2,9 +2,8 @@
 
 #include "model_files.h"
 
-#include "bmoe/recipe.h"
 
-#include "gguf.h"
+#include "bmoe/probe.h"
 
 // The server never starts a child in a directory of its own, and the header's detection of the
 // chdir file action trusts any libc that is not glibc or Apple's to have it, which bionic does not
@@ -97,7 +96,7 @@ ModelLibrary::~ModelLibrary() {
     }
 }
 
-std::string ModelLibrary::probe_arch(const std::string & path) {
+ModelLibrary::ModelFacts ModelLibrary::probe(const std::string & path) {
     const fs::path p = fs::u8path(path);
     std::error_code ec;
     const uint64_t size = file_size_or_zero(p);
@@ -105,19 +104,19 @@ std::string ModelLibrary::probe_arch(const std::string & path) {
     const long long mt = ec ? 0 : (long long) mtime.time_since_epoch().count();
     {
         std::lock_guard<std::mutex> lk(m_);
-        auto it = arch_cache_.find(path);
-        if (it != arch_cache_.end() && it->second.size == size && it->second.mtime == mt) return it->second.arch;
+        auto it = facts_cache_.find(path);
+        if (it != facts_cache_.end() && it->second.size == size && it->second.mtime == mt) return it->second.facts;
     }
-    std::string arch;
-    gguf_init_params gp = {/*no_alloc*/ true, /*ctx*/ nullptr};
-    if (gguf_context * g = gguf_init_from_file(p.string().c_str(), gp)) {
-        const int64_t k = gguf_find_key(g, "general.architecture");
-        if (k >= 0 && gguf_get_kv_type(g, k) == GGUF_TYPE_STRING) arch = gguf_get_val_str(g, k);
-        gguf_free(g);
-    }
+    // The planner's own reading of the file - the headers of every shard, no tensor bytes - so the
+    // listing, the plan and the load agree on what a file is. Streamable means it declares routed
+    // experts laid out the way the engine streams them; a dense model reads fine and is not.
+    const ModelProfile m = probe_model(path.c_str());
+    ModelFacts facts;
+    facts.arch = m.arch;
+    facts.streamable = m.ok && m.is_moe;
     std::lock_guard<std::mutex> lk(m_);
-    arch_cache_[path] = {size, mt, arch};
-    return arch;
+    facts_cache_[path] = {size, mt, facts};
+    return facts;
 }
 
 const CatalogEntry * ModelLibrary::find(const std::string & id) const {
@@ -149,15 +148,15 @@ void ModelLibrary::list_dir(const std::string & dir, json & out) {
         const fs::path first = base / fs::u8path(m.first);
         // Only the first shard carries the metadata; a set without it has no architecture to read.
         const bool has_first = !m.files.empty() && m.files.front() == m.first;
-        const std::string arch = has_first ? probe_arch(first.u8string()) : "";
+        const ModelFacts facts = has_first ? probe(first.u8string()) : ModelFacts{};
         out.push_back({{"name", m.first},
                        {"path", first.generic_u8string()},
                        {"dir", base.generic_u8string()},
                        {"bytes", bytes},
                        {"shards", m.count},
                        {"files", files},
-                       {"arch", arch},
-                       {"streamable", !arch.empty() && find_moe_recipe(arch.c_str()) != nullptr},
+                       {"arch", facts.arch},
+                       {"streamable", facts.streamable},
                        {"complete", m.complete()}});
     }
 }

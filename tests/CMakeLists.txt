@@ -101,6 +101,13 @@ target_link_libraries(bmoe_tensor_names_test PRIVATE bmoe_core)
 target_include_directories(bmoe_tensor_names_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 add_test(NAME tensor_names COMMAND bmoe_tensor_names_test)
 
+# Which tensors of a file are its routed experts, from their shapes and the declared expert count:
+# every layout the gates run, the companions that share a name but not a rank, and the refusals.
+# Pure, so it runs without a model; the gates then prove each layout streams byte-identical.
+add_executable(bmoe_expert_layout_test expert_layout_test.cpp)
+target_link_libraries(bmoe_expert_layout_test PRIVATE bmoe_core)
+add_test(NAME expert_layout COMMAND bmoe_expert_layout_test)
+
 # The CSV `# summary` trailer serialization. Drives the sink directly with a filled RunSummary —
 # no model, no llama.cpp — so the emitted key names and units are pinned by a test rather than by
 # whatever script last read them. The prefill keys must match BMOE_DONE's, token for token.

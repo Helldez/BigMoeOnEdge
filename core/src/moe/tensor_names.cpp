@@ -51,20 +51,14 @@ int block_layer(const char * name, const char ** rest) {
     return il;
 }
 
-int expert_slot(const char * name, const MoeRecipe & recipe, int & il_out) {
+std::string_view weight_suffix(const char * name, int & il_out) {
     const char * rest = nullptr;
     const int il = block_layer(name, &rest);
-    if (il < 0) return -1;
-    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-        const char * suffix = recipe.exps_suffix[p];
-        if (!suffix) continue; // unused slot (fewer than max_exps expert tensors)
-        const size_t sl = std::strlen(suffix);
-        if (std::strncmp(rest, suffix, sl) == 0 && k_weight_tail == rest + sl) {
-            il_out = il;
-            return p;
-        }
-    }
-    return -1;
+    if (il < 0) return {};
+    const size_t len = std::strlen(rest);
+    if (len <= k_weight_tail.size() || k_weight_tail != rest + (len - k_weight_tail.size())) return {};
+    il_out = il;
+    return std::string_view(rest, len - k_weight_tail.size());
 }
 
 int node_layer(const char * name, std::string_view prefix) {
