@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- `docs/roadmap.md` gains a step that makes measuring and loading readable in every UI: each
+  measurement step with its result and duration, the load's progress with a cancel, a notice before
+  measuring, and measurements kept between loads if the recorded durations show it pays.
+
 ## [0.30.0] - 2026-10-16
 
 ### Added
