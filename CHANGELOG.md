@@ -65,6 +65,13 @@ Semantic Versioning.
   allocation outgrows its stride and the last expert reached past the slot, where ggml aborts
   inside the allocation instead of returning. The arena checks it when it sizes the slots and
   refuses with the reason, where a planned device still falls back to the host.
+- **The capacity fitter's placement is applied only where every device it used has memory of its
+  own.** The check was whether any device on the machine did. On a phone an NPU, whose buffers
+  come from a kernel allocator and states no size, passed it, and the fitter's answer, 41 layers
+  and 2106 MiB on the GPU beside it, was applied although that GPU's memory is the host's and the
+  plan's ledger held none of it. The devices given bytes are now the ones asked, each with a stated
+  size; where one shares the host's memory the placement is quoted and not applied, as it already
+  was where every device does.
 
 ## [0.30.0] - 2026-10-16
 

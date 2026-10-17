@@ -117,9 +117,35 @@ Placement probe_placement(const char * model_path,
     // credits a shared pool as separate capacity. `has_own_memory()` is true only where the probe
     // established it by allocating on the device and watching what the host lost - and an unsettled
     // device reads as shared, which is the safe direction.
+    //
+    // And it is asked of the devices the fitter PUT BYTES ON, not of the machine. A device with
+    // memory of its own somewhere else in the room says nothing about the one that was given the
+    // layers: on a phone an NPU measured as not drawing on the host (its buffers come from a kernel
+    // allocator this process cannot see) let the fitter put 41 layers on the GPU beside it, whose
+    // memory is the host's, and the plan applied 2106 MiB "on devices" that its ledger never held.
+    // "Its own" also needs a size, for the reason the prefill rule gives: a pool with no stated
+    // size is not one the fitter can have budgeted against.
+    std::vector<ggml_backend_dev_t> devs;
+    uint32_t hp_ngl = 0, hp_nct = 0, hp_nex = 0;
+    const common_device_memory_data_vec dm = common_get_device_memory_data(model_path, &mparams, &cparams, devs, hp_ngl,
+                                                                           hp_nct, hp_nex, GGML_LOG_LEVEL_WARN);
     size_t n_dev_local = 0;
     for (const ComputeDevice & d : hw.devices)
-        if (d.has_own_memory()) ++n_dev_local;
+        if (d.has_own_memory() && d.memory_total > 0) ++n_dev_local;
+    const ComputeDevice * placed_on_shared = nullptr;
+    bool placed_unknown = false;
+    for (size_t i = 0; i + 1 < dm.size() && i < devs.size(); ++i) {
+        if (dm[i].model + dm[i].context + dm[i].compute == 0) continue;
+        const char * name = ggml_backend_dev_name(devs[i]);
+        const ComputeDevice * facts = nullptr;
+        for (const ComputeDevice & d : hw.devices)
+            if (!d.is_cpu && name && d.name == name) facts = &d;
+        if (!facts)
+            placed_unknown = true; // not in the profile: nothing says its memory is its own
+        else if (!(facts->has_own_memory() && facts->memory_total > 0) && !placed_on_shared)
+            placed_on_shared = facts;
+    }
+    if (placed_on_shared || placed_unknown) n_dev_local = 0;
     pl.n_gpu_layers = n_dev_local ? mparams.n_gpu_layers : 0;
 
     // Where no device has memory of its own, the whole first stage has nothing to say. A capacity
@@ -165,10 +191,6 @@ Placement probe_placement(const char * model_path,
     // The host memory the placed model is projected to take. The breakdown's last entry is the
     // CPU; its `model` term still counts the experts that stayed on the host, which the streamer
     // takes off the books — so those are subtracted, pro rata by layer.
-    std::vector<ggml_backend_dev_t> devs;
-    uint32_t hp_ngl = 0, hp_nct = 0, hp_nex = 0;
-    const common_device_memory_data_vec dm = common_get_device_memory_data(model_path, &mparams, &cparams, devs, hp_ngl,
-                                                                           hp_nct, hp_nex, GGML_LOG_LEVEL_WARN);
     if (!dm.empty()) {
         const common_device_memory_data & cpu = dm.back();
         pl.raw_host_model_bytes = (uint64_t) cpu.model;
@@ -222,7 +244,9 @@ Placement probe_placement(const char * model_path,
     if (shared_memory_only) {
         pl.shared_memory_placement = true;
         pl.fitted = false;
-        pl.outcome = "the capacity fitter ran, and had only devices whose memory is this host's own";
+        pl.outcome = placed_on_shared ? "the capacity fitter ran, and placed layers on " + placed_on_shared->name +
+                                            ", whose memory is this host's own"
+                                      : "the capacity fitter ran, and had only devices whose memory is this host's own";
     }
     return pl;
 }

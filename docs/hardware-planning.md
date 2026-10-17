@@ -50,7 +50,12 @@ zero.
 
 Three of the fitter's answers are read rather than trusted. Left at 0 it picks the model's full
 training context, so our context is always the pin. On a machine with no GPU it leaves
-`n_gpu_layers` at its default, which means "all", so devices are counted instead. And its host
+`n_gpu_layers` at its default, which means "all", so devices are counted instead: the placement is
+applied only when every device the fitter gave bytes to was measured to have memory of its own and
+states its size. Where one reads the host's memory, the fitter has counted one pool twice, and the
+placement is quoted under `placement-declined` and not applied. Asking the machine instead of those
+devices let an NPU on a phone vouch for the GPU beside it, and 2106 MiB went "on devices" that the
+plan's ledger never held. And its host
 `model` term is neither the file nor the dense set, so dense bytes come from the gguf profile and
 only the context and compute reservations come from the fitter — the one thing it knows that the
 profile does not, and 605 MiB the earlier budget had overcommitted on the desktop.

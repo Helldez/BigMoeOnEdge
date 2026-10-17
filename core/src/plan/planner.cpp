@@ -430,9 +430,9 @@ Plan plan_run(const RunConfig & base,
     } else {
         note("placement", "none", placement.shared_memory_placement ? Source::Derived : Source::Unprobed,
              placement.shared_memory_placement
-                 ? "the capacity fitter ran and its answer was set aside: every device here reads this "
-                   "host's own memory, so 'what fits where' has one pool and no answer. Everything is on "
-                   "the host, which is what it already was"
+                 ? "the capacity fitter ran and its answer was set aside: the device it placed layers on "
+                   "reads this host's own memory, so 'what fits where' has one pool and no answer. "
+                   "Everything is on the host, which is what it already was"
                  : "the capacity fitter was not run, so no layer is placed on a device: everything is on "
                    "the host");
     }
