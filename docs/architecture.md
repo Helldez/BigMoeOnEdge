@@ -30,7 +30,7 @@ core/
                     bounds, help); the CLI parses from it, front-ends render settings from its JSON
     expert_source.h IExpertSource — the residency strategy port
     row_source.h    IRowSource - the row-gathered residency port
-    recipe.h        MoeRecipe + registry
+    expert_layout.h ExpertLayout: which tensors are the routed experts, read from the file's shapes
     metrics.h       TokenMetrics / RunSummary + IMetricsSink
     runtime.h       run() entry point
     session.h       Session: load once, then serve many prompts against the resident state
@@ -60,7 +60,7 @@ core/
                   the spin-wait pause: the OS and ISA branches the streaming path needs
                 file_reader — pooled positioned reader, per-consumer O_DIRECT
                 mapping_release - releases the model file's mapping after load (--release-mmap)
-    moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), arch_registry,
+    moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), expert_layout,
                 expert_stream_source (one reader per shard), router_hook
                 stall_union - the wall time at least one thread was stalled, not the sum of stalls
                 tensor_names - how llama.cpp's tensor and graph-node names, and the capacity
@@ -107,7 +107,7 @@ examples/ios    a harness app with bmoe-cli compiled in (an app there may not st
 Dependencies point inward: adapters depend on the port headers, the CLI and the server compose
 them. The server and the web UI meet only at the HTTP API; the UI knows no engine parameter by
 name, it renders whatever `GET /api/params` describes.
-The pure-policy code (`config.cpp`, `arch_registry.cpp`) compiles with no native
+The pure-policy code (`config.cpp`, `expert_layout.cpp`, `tensor_names.cpp`) compiles with no native
 dependency, so a subset of the project builds and is testable before llama.cpp is
 fetched.
 
@@ -154,8 +154,8 @@ on.
 
 The composition root is `Session` (core/src/engine/session.cpp):
 
-1. `open()` — load model (mmap on, repack off, experts on CPU); if streaming, resolve the
-   architecture recipe, install the router hook, do the capture warm-up, bind the expert
+1. `open()` — load model (mmap on, repack off, experts on CPU); if streaming, read the
+   expert layout off the file, install the router hook, do the capture warm-up, bind the expert
    source, clear the warm-up KV. Done **once** per model. It reads as its steps, in order —
    `load_model`, `read_model`, `build_hook`, `create_contexts`, `build_sampler`,
    `install_abort_callback`, `init_speculation`, `bind_streaming` (capture, offsets, dense

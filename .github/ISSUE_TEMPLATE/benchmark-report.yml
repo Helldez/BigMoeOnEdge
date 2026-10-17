@@ -31,7 +31,7 @@ body:
     id: model
     attributes:
       label: Model and quantization
-      description: Any MoE the engine supports (`bmoe-cli --list-archs`), in any quant. Name, quant, file size, and where it came from.
+      description: Any MoE llama.cpp loads (docs/which-models-stream.md), in any quant. Name, quant, file size, and where it came from.
       placeholder: "Qwen3.6-35B-A3B Q4_K_M, 22.3 GB, bartowski/Qwen_Qwen3.6-35B-A3B-GGUF"
     validations:
       required: true

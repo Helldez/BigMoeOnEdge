@@ -18,7 +18,7 @@
 #include "bmoe/config.h"
 #include "bmoe/decode_trace.h"
 #include "stall_union.h"
-#include "bmoe/recipe.h"
+#include "bmoe/expert_layout.h"
 #include "../io/platform_io.h"
 #include "../io/file_reader.h"
 #include "dense_weights.h" // DenseWeights + DenseTensorRef
@@ -45,12 +45,12 @@ struct ExpertTensorRef {
     int file_idx = 0;               // which shard file holds the bytes (0 for a single-file model)
 };
 
-// The expert weight tensors of one MoE layer, one per recipe suffix slot. The split
-// layout fills all three ({gate, up, down}); a fused-gate_up layout fills two and leaves
-// the tail slot empty (tensor == nullptr). Unbound layers (dense, or non-MoE) stay false.
+// The expert weight tensors of one MoE layer, one per layout slot (bmoe/expert_layout.h). The
+// split layout fills all three; a fused or gate-less layout fills two and leaves the tail slot
+// empty (tensor == nullptr). Unbound layers (dense, or non-MoE) stay false.
 struct LayerExperts {
     bool bound = false;
-    ExpertTensorRef proj[MoeRecipe::max_exps];
+    ExpertTensorRef proj[ExpertLayout::max_slots];
 };
 
 class ExpertStreamSource final : public IExpertSource {
@@ -275,7 +275,7 @@ private:
     std::vector<LayerExperts> layers_;
 
     // shared-slot mode (cache off): one full-size slot per projection, reused by layers
-    void * slot_[MoeRecipe::max_exps] = {nullptr, nullptr, nullptr};
+    void * slot_[ExpertLayout::max_slots] = {nullptr, nullptr, nullptr};
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
     size_t cache_max_ = 0; // live budget in bytes; only an explicit set_cache_budget() moves it
@@ -314,8 +314,8 @@ private:
     size_t layer_demand_accum_ = 0;
     size_t layer_demand_ = 0;
     int last_il_ = -1;
-    std::vector<void *> lbuf_[MoeRecipe::max_exps];
-    std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];
+    std::vector<void *> lbuf_[ExpertLayout::max_slots];
+    std::vector<size_t> lbuf_sz_[ExpertLayout::max_slots];
     std::vector<uint8_t> cvalid_;
     std::vector<int32_t> cprev_, cnext_;
     std::vector<uint32_t> cstamp_;
