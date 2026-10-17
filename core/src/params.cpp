@@ -516,6 +516,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("prefill-verify", "Confirm the prefill device", G::Streaming, L::Experimental,
+                          "Before keeping a prefill device, prefill a short fixed text on the CPU and on the "
+                          "device and keep the device only if it picks the same next token in nearly every "
+                          "position. Costs three short prefills at load.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--prefill-verify", "true"}, {"--no-prefill-verify", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.prefill.verify; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("prefill-min-tokens", "Prefill device width", G::Streaming, L::Experimental,
                           "Narrowest prefill piece sent to the prefill device; a shorter tail runs on the CPU.");
         d.value_hint = "N";

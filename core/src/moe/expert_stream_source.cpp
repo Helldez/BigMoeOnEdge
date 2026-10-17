@@ -2,10 +2,8 @@
 
 #include "row_stream.h"
 
+#include "ggml-backend.h"
 #include "ggml.h"
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-#include "ggml-cpu.h" // ggml_cpu_set_expert_ready_hook (fork-only)
-#endif
 
 #include <algorithm>
 #include <chrono>
@@ -21,6 +19,16 @@
 namespace bmoe {
 
 using clock_t_ = std::chrono::steady_clock;
+
+namespace {
+// The pages a resident slice is committed over: its own, rounded out, and through the slack after
+// it, because a kernel may read past its last block, and where the platform faults on a reserved
+// page that was never committed (Windows) that read must land on one that was.
+void slice_pages(const char * dst, uint64_t slice, size_t page, uintptr_t & a0, uintptr_t & a1) {
+    a0 = (uintptr_t) dst & ~(uintptr_t) (page - 1);
+    a1 = ((uintptr_t) dst + slice + pio::tensor_tail_slack() + page - 1) & ~(uintptr_t) (page - 1);
+}
+} // namespace
 
 ExpertStreamSource::~ExpertStreamSource() {
     shutdown();
@@ -146,7 +154,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // slices are ever valid. Absent slots (max_full[p] == 0) get no buffer.
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             if (max_full[p] == 0) continue;
-            slot_[p] = pio::alloc_aligned(align_, max_full[p]);
+            slot_[p] = pio::alloc_aligned(align_, max_full[p] + pio::tensor_tail_slack());
             if (!slot_[p]) {
                 std::fprintf(stderr, "bmoe: slot alloc %zu failed\n", max_full[p]);
                 return false;
@@ -172,7 +180,8 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             if (!L.bound) continue;
             for (int p = 0; p < MoeRecipe::max_exps; ++p) {
                 if (!L.proj[p].tensor) continue; // absent slot in a fused layout
-                const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
+                // The last expert's slice is followed by the slack a kernel may read past it.
+                const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_ + pio::tensor_tail_slack();
                 lbuf_[p][il] = pio::vm_reserve(full);
                 if (!lbuf_[p][il]) {
                     std::fprintf(stderr, "bmoe: vm_reserve %zu failed (layer %d)\n", full, il);
@@ -462,8 +471,8 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue;
             char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-            uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
-            uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
+            uintptr_t a0 = 0, a1 = 0;
+            slice_pages(dst, slice, page_, a0, a1);
             if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) { // low on memory — stop quietly
                 ok = false;
                 break;
@@ -760,16 +769,43 @@ size_t ExpertStreamSource::entry_bytes(int il) const {
         bytes += (size_t) L.proj[p].nb2; // absent slots contribute 0
     return bytes;
 }
-// Release the physical pages fully contained in an entry's slices (never a partial page shared
-// with a neighbouring expert). Shared by eviction and by discarding an incomplete spec entry.
+// Release the physical pages of an entry's slices that no other entry still needs. A slice is
+// committed over its own pages and through the slack after it (slice_pages), so the pages at a
+// slice boundary belong to two entries: the one that ends there, whose kernels may read past the
+// end into them, and the one that starts there. They are released with the last of the two to go.
+// Releasing only the pages between the two boundaries, as this once did, left the head page of
+// every slice whose left neighbour had ever been resident committed until the buffer was freed:
+// one page per expert and projection, outside the ledger `cresident_` keeps. Shared by eviction
+// and by discarding an incomplete spec entry; eval thread only, like every LRU mutation.
 void ExpertStreamSource::release_entry_pages(int32_t id) {
     const int il = id / n_expert_, e = id % n_expert_;
+    // A neighbour's pages must stay while it is resident or while a speculative read of it is in
+    // flight; the workers that finish those reads write the counters under io_mtx_, and only this
+    // thread ever raises one, so a value read here can only fall afterwards, which is safe.
+    bool left = false, right = false;
+    {
+        std::lock_guard<std::mutex> lk(io_mtx_);
+        const auto live = [&](int x) {
+            if (x < 0 || x >= n_expert_) return false;
+            const int32_t xid = il * n_expert_ + x;
+            return cvalid_[xid] != 0 || spec_remaining_[xid] != 0;
+        };
+        left = live(e - 1);
+        right = live(e + 1);
+    }
     for (int p = 0; p < MoeRecipe::max_exps; ++p) {
         const uint64_t slice = layers_[il].proj[p].nb2;
         if (slice == 0) continue; // absent slot in a fused layout
         char * s = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-        uintptr_t a0 = ((uintptr_t) s + page_ - 1) & ~(uintptr_t) (page_ - 1);
-        uintptr_t a1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
+        // head: the pages the left neighbour's slack reaches into; body: ours alone; tail: the
+        // pages our slack reaches into, which are the right neighbour's head.
+        const uintptr_t head0 = (uintptr_t) s & ~(uintptr_t) (page_ - 1);
+        const uintptr_t body0 = ((uintptr_t) s + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
+        const uintptr_t body1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
+        const uintptr_t tail1 =
+            ((uintptr_t) s + slice + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
+        const uintptr_t a0 = left ? body0 : head0;
+        const uintptr_t a1 = right ? body1 : tail1;
         if (a1 > a0) pio::vm_evict((void *) a0, (size_t) (a1 - a0));
     }
 }
@@ -920,8 +956,8 @@ bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
     const uint64_t slice = L.proj[p].nb2;
     if (slice == 0) return true; // absent slot in a fused layout
     char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-    uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
-    uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
+    uintptr_t a0 = 0, a1 = 0;
+    slice_pages(dst, slice, page_, a0, a1);
     if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) {
         std::fprintf(stderr, "bmoe: commit failed\n");
         return false;
@@ -1452,11 +1488,33 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
     stall_union_.exit();
 }
 
-void ExpertStreamSource::enable_overlap_hook() {
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-    ggml_cpu_set_expert_ready_hook(&ExpertStreamSource::c_expert_ready, this);
+// The fork's `ggml_cpu_set_expert_ready_hook`, asked of the CPU backend's registry the way ggml
+// exposes every other backend-specific function (threads, NUMA, the abort callback). Linking the
+// symbol would bind the engine to a CPU backend linked in; through the registry it is reached in
+// a build where that backend is a module loaded at start-up, and a build on stock upstream, whose
+// CPU backend has no such entry, answers null here instead of failing to link.
+namespace {
+using set_expert_ready_hook_t = void (*)(void (*)(const ggml_tensor *, int, void *), void *);
+
+set_expert_ready_hook_t resolve_expert_ready_hook() {
+    ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (!cpu) return nullptr;
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(cpu);
+    if (!reg) return nullptr;
+    return (set_expert_ready_hook_t) ggml_backend_reg_get_proc_address(reg, "ggml_cpu_set_expert_ready_hook");
+}
+} // namespace
+
+bool expert_ready_hook_available() {
+    return resolve_expert_ready_hook() != nullptr;
+}
+
+bool ExpertStreamSource::enable_overlap_hook() {
+    set_hook_ = resolve_expert_ready_hook();
+    if (!set_hook_) return false;
+    set_hook_(&ExpertStreamSource::c_expert_ready, this);
     hook_registered_ = true;
-#endif
+    return true;
 }
 
 IExpertSource::Stats ExpertStreamSource::stats() const {
@@ -1496,14 +1554,12 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
 
 void ExpertStreamSource::shutdown() {
     if (!active_) return;
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // Unregister the process-global hook FIRST: after this no compute thread can enter
     // on_expert_ready and touch members we are about to tear down.
-    if (hook_registered_) {
-        ggml_cpu_set_expert_ready_hook(nullptr, nullptr);
+    if (hook_registered_ && set_hook_) {
+        set_hook_(nullptr, nullptr);
         hook_registered_ = false;
     }
-#endif
     // Wake any straggler blocked on a readiness flag so it observes fatal_ and unwinds.
     fatal_.store(true, std::memory_order_release);
     {

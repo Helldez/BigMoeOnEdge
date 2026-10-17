@@ -1,4 +1,6 @@
-# Cross-compile bmoe-cli for Android arm64 and stage it into the example app's jniLibs.
+# Cross-compile bmoe-cli for Android arm64 and stage it into the example app's jniLibs. CPU only:
+# the release recipe is scripts/build-hexagon-android.sh, which adds the Hexagon, Vulkan and OpenCL
+# backends inside upstream's Snapdragon toolchain container.
 #
 # The CLI ships as a `lib*.so` and is launched by the app via ProcessBuilder (no JNI) —
 # Android only lets an app execute binaries from its nativeLibraryDir, and only files
@@ -7,16 +9,9 @@
 # Requires the Android NDK. Point $env:ANDROID_NDK_HOME at it, or let this script try the
 # default SDK location.
 #
-# CPU target — armv8.2-a + dotprod + fp16, deliberately NOT i8mm. i8mm (armv8.6) is only on
-# ~2021+ flagships; a build that pins it SIGILLs during the prefill GEMM on older SoCs (e.g. the
-# Snapdragon 865 / OnePlus 8 Pro). dotprod + fp16 (armv8.2, ~2018+) is supported by every SoC
-# that can realistically run a >RAM MoE model, so this one binary is device-agnostic across the
-# viable device range while keeping every int8/fp16 kernel that matters for Q4_K experts.
-#
-# Note: ggml's per-device runtime dispatch (GGML_CPU_ALL_VARIANTS + GGML_BACKEND_DL) is NOT used
-# because it splits the CPU backend into dlopen'd variant .so's, which drops the bmoe fork's
-# statically-linked `ggml_cpu_set_expert_ready_hook` (the I/O–compute overlap hook) — the two are
-# mutually exclusive today. A single dotprod baseline keeps overlap and still covers the field.
+# The CPU backend is built once per instruction-set tier and the best one is picked on the phone at
+# start-up (BMOE_BACKEND_MODULES, the top-level CMakeLists), so one APK runs the right kernels on a
+# 2018 SoC and on one with i8mm or SME without pinning a target here.
 param(
     [string]$BuildDir = "build-android",
     [string]$Abi      = "arm64-v8a",
@@ -65,32 +60,25 @@ Invoke-Native "cmake configure" {
         -DGGML_NATIVE=OFF `
         -DGGML_OPENCL=OFF `
         -DGGML_OPENMP=OFF `
-        -DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16" `
         -DLLAMA_CURL=OFF
 }
 
 Invoke-Native "cmake build" { cmake --build $buildPath -j }
 
-# Stage the CLI, the server and the shared libs they need into the app's jniLibs as lib*.so.
-# The list is explicit, and jniLibs is wiped first: a recursive sweep of the build tree once
-# staged a libggml-opencl.so left over from a GPU experiment's cmake cache, and it rode along
-# into two published APKs. If a submodule bump adds a library, the app fails at dlopen — loud —
-# instead of the APK silently growing a binary nobody chose to ship.
-$libs = @("libggml.so", "libggml-base.so", "libggml-cpu.so", "libllama.so", "libllama-common.so")
-
+# Stage the CLI, the server and every library beside them into the app's jniLibs as lib*.so.
+# Only the build's bin directory is read, never the whole tree, and jniLibs is wiped first: a
+# recursive sweep once staged a libggml-opencl.so left over from an experiment's cmake cache, and
+# it rode along into two published APKs. bin holds exactly what this configuration built.
 $jni = Join-Path $root "examples\android\app\src\main\jniLibs\$Abi"
 New-Item -ItemType Directory -Force -Path $jni | Out-Null
 Get-ChildItem $jni -Filter "*.so" | Remove-Item -Force
 
-$cli = Join-Path $buildPath "bin\bmoe-cli"
-Copy-Item $cli (Join-Path $jni "libbmoe-cli.so") -Force
-$server = Join-Path $buildPath "bin\bmoe-server"
-Copy-Item $server (Join-Path $jni "libbmoe-server.so") -Force
-foreach ($name in $libs) {
-    $src = Get-ChildItem -Path $buildPath -Recurse -Filter $name | Select-Object -First 1
-    if (-not $src) { throw "$name not found in $buildPath" }
-    Copy-Item $src.FullName (Join-Path $jni $name) -Force
-}
+$bin = Join-Path $buildPath "bin"
+Copy-Item (Join-Path $bin "bmoe-cli") (Join-Path $jni "libbmoe-cli.so") -Force
+Copy-Item (Join-Path $bin "bmoe-server") (Join-Path $jni "libbmoe-server.so") -Force
+$libs = Get-ChildItem $bin -Filter "lib*.so"
+if (-not ($libs | Where-Object { $_.Name -like "libggml-cpu-*.so" })) { throw "no CPU backend module under $bin" }
+foreach ($lib in $libs) { Copy-Item $lib.FullName (Join-Path $jni $lib.Name) -Force }
 
 # bmoe-cli links the c++_shared STL, so its runtime must ride along in the APK —
 # it lives in the NDK sysroot, not the build tree.

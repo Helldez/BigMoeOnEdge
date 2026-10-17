@@ -6,10 +6,11 @@
 # eval-callback and public gguf accessors, so it tracks upstream with nothing more than a
 # submodule pointer bump — no in-tree patch. The one exception is the optional `--overlap`
 # feature, which needs a per-expert wait point the public API does not expose: the submodule
-# pins a fork branch (`bmoe/expert-ready-hook` on Helldez/llama.cpp) adding one ~25-line
-# readiness hook, detected here as BMOE_HAVE_EXPERT_READY_HOOK. It is zero-cost when absent,
-# the serial path still builds against stock upstream, and it sunsets the moment upstream
-# ships an equivalent callback. See docs/seam.md § 3.
+# pins a fork branch on Helldez/llama.cpp, one commit on upstream, that adds one readiness hook
+# to the CPU backend and lists its setter in that backend's `get_proc_address` table. The engine
+# resolves it there at run time, so nothing here links against the fork: a build on stock
+# upstream starts and refuses `--overlap` with the reason, and the hook sunsets the moment
+# upstream ships an equivalent callback. See docs/seam.md § 3.
 #
 # llama.cpp is an optional dependency at configure time: when the submodule is absent
 # only the pure-policy code (config validation) compiles, so the scaffold and a subset
@@ -43,6 +44,16 @@ option(BMOE_BUILD_SERVER "Build bmoe-server, the engine behind the local web UI"
 # Off by default: diagnostics, not part of the product. They need no llama.cpp, so they can be
 # configured and cross-compiled on their own without building the engine.
 option(BMOE_BUILD_TOOLS "Build standalone diagnostic tools (bmoe-iobench)" OFF)
+# Every ggml backend as a module loaded from beside the executable at start-up, and the CPU backend
+# once per instruction-set tier. The engine then knows no backend at compile time; the same layout
+# ships on every OS; a module whose driver library is missing fails to load and is simply not
+# there, instead of keeping the binary from starting; and the planner measures what registered
+# (docs/backends.md). iOS is the exception the platform imposes: an app there is one signed
+# executable, so its build stays linked.
+option(BMOE_BACKEND_MODULES "Build the ggml backends as modules loaded from beside the executable" ON)
+if(IOS)
+    set(BMOE_BACKEND_MODULES OFF CACHE BOOL "" FORCE)
+endif()
 
 # --- Optional native dependency: llama.cpp ----------------------------------------
 # The streaming seam uses only the public C API (llama.h). We additionally link llama.cpp's
@@ -64,6 +75,31 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     # archives ship no libssl: bmoe-server speaks plain HTTP on loopback, downloads go through
     # the system curl, so the binary must not depend on a TLS stack (#242).
     set(LLAMA_OPENSSL       OFF CACHE BOOL "" FORCE)
+    if(BMOE_BACKEND_MODULES)
+        set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+        set(GGML_BACKEND_DL   ON CACHE BOOL "" FORCE)
+        # A module tuned to the build machine would be the one thing in the layout bound to it.
+        set(GGML_NATIVE       OFF CACHE BOOL "" FORCE)
+        # One CPU library per instruction-set tier, the best one picked at start-up. Not forced:
+        # a target ggml has no tier list for passes OFF and gets the one baseline library. Apple
+        # silicon is one family and gets that one library: its tiers differ in features the
+        # compilers Apple ships with the CI images refuse to target.
+        if(APPLE)
+            set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "ggml: build all variants of the CPU backend")
+            set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "ggml: embed the Metal library")
+        else()
+            set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "ggml: build all variants of the CPU backend")
+        endif()
+        # Everything a release copies sits in one directory, and the executables find the shared
+        # libraries beside themselves wherever that directory is copied to.
+        set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+        set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
+        if(APPLE)
+            set(CMAKE_INSTALL_RPATH "@loader_path")
+        elseif(UNIX)
+            set(CMAKE_INSTALL_RPATH "$ORIGIN")
+        endif()
+    endif()
     # The prefill-device gate (G16) needs a second device to move weights onto, and the one every
     # host has is a loopback rpc-server fronting the CPU. A test fixture, not a feature: host test
     # builds only (releases build without tests), no front-end accepts an RPC endpoint, and it is

@@ -1,4 +1,5 @@
 #include "engine_host.h"
+#include "bmoe/probe.h"
 
 #include "decide_protocol.h"
 
@@ -146,11 +147,7 @@ bool EngineHost::reload_required(const RunConfig & current) const {
 }
 
 json EngineHost::info() const {
-#if defined(BMOE_HAVE_EXPERT_READY_HOOK)
-    const bool overlap = true;
-#else
-    const bool overlap = false;
-#endif
+    const bool overlap = expert_ready_hook_available();
     std::lock_guard<std::mutex> lk(m_);
     return json{{"version", version()},
                 {"overlap_available", overlap},

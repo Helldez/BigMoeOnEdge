@@ -102,6 +102,16 @@ add_test(NAME decide_policy COMMAND bmoe_decide_test)
 
 find_program(PYTHON3 NAMES python3 python)
 
+# The overlap gates (G4, G5b, S2) need the fork's expert-ready hook, which a module build only finds
+# at run time, in the CPU backend it loaded. By default they skip themselves where it is absent, so a
+# build on stock upstream still passes its gates; the build whose job is to prove --overlap turns
+# this on, and a missing hook is then a failure (CI's host-linux job).
+option(BMOE_GATES_REQUIRE_HOOK "The byte-identity gates fail, instead of skipping, where the expert-ready hook is absent" OFF)
+set(_gate_args)
+if(BMOE_GATES_REQUIRE_HOOK)
+    set(_gate_args --require-hook)
+endif()
+
 if(PYTHON3)
     # arch → (fixture id, gguf filename). Each gets a generate fixture + a gate run.
     foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe")
@@ -114,7 +124,7 @@ if(PYTHON3)
         )
         set_tests_properties(moe_make_tiny_model_${spec} PROPERTIES FIXTURES_SETUP ${_fixture})
 
-        add_test(NAME moe_gates_${spec} COMMAND bmoe_moe_gates ${_model})
+        add_test(NAME moe_gates_${spec} COMMAND bmoe_moe_gates ${_model} ${_gate_args})
         set_tests_properties(moe_gates_${spec} PROPERTIES FIXTURES_REQUIRED ${_fixture})
     endforeach()
 
@@ -131,7 +141,7 @@ if(PYTHON3)
     set_tests_properties(moe_make_tiny_model_split PROPERTIES FIXTURES_SETUP TINY_MOE_MODEL_split)
 
     add_test(NAME moe_gates_split
-             COMMAND bmoe_moe_gates "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-split-00001-of-00004.gguf")
+             COMMAND bmoe_moe_gates "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-split-00001-of-00004.gguf" ${_gate_args})
     set_tests_properties(moe_gates_split PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_split)
 else()
     message(WARNING "python3 not found: MoE gates will not run (models cannot be generated)")

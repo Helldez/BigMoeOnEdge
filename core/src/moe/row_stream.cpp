@@ -52,8 +52,8 @@ bool RowStream::init(std::vector<DenseTensorRef> tensors,
         t.ref = d;
         t.row_bytes = (uint64_t) d.tensor->nb[1];
         t.n_rows = (uint64_t) d.tensor->ne[1];
-        if (t.row_bytes == 0 || t.n_rows == 0) continue; // not a row-shaped weight; leave it alone
-        t.span = round_up(d.size, page_);
+        if (t.row_bytes == 0 || t.n_rows == 0) continue;             // not a row-shaped weight; leave it alone
+        t.span = round_up(d.size + pio::tensor_tail_slack(), page_); // readable past the last row
         t.base = (char *) pio::vm_reserve((size_t) t.span);
         if (!t.base) {
             std::fprintf(stderr, "bmoe: row-stream could not reserve %llu MiB for %s\n",
@@ -111,6 +111,16 @@ static uint64_t slab_len(const uint64_t size, const uint64_t s, const uint64_t s
     return std::min<uint64_t>(slab, size - off);
 }
 
+// Bytes a slab is committed over: whole pages, since the slab is a multiple of the page and the
+// reservation is page-aligned. The last slab also owns the slack after the table, which no other
+// slab shares, so it is committed and released with it.
+static uint64_t
+slab_commit(const uint64_t size, const uint64_t span, const uint64_t s, const uint64_t slab, const uint64_t page) {
+    const uint64_t off = s * slab;
+    if (off + slab >= size) return span - off;
+    return std::min<uint64_t>(round_up(slab_len(size, s, slab), page), span - off);
+}
+
 bool RowStream::fetch_slab(Table & t, uint64_t s) {
     if (t.resident[(size_t) s]) {
         touch(t, s);
@@ -118,9 +128,7 @@ bool RowStream::fetch_slab(Table & t, uint64_t s) {
     }
     const uint64_t off = s * slab_bytes;
     const uint64_t len = slab_len(t.ref.size, s, slab_bytes);
-    // Commit whole pages: the slab is a multiple of the page and the reservation is page-aligned,
-    // so only the final short slab needs rounding, and it cannot run past the reservation.
-    const uint64_t commit = std::min<uint64_t>(round_up(len, page_), t.span - off);
+    const uint64_t commit = slab_commit(t.ref.size, t.span, s, slab_bytes, page_);
     if (!pio::vm_commit(t.base + off, (size_t) commit)) {
         std::fprintf(stderr, "bmoe: row-stream commit failed at slab %llu of %s\n", (unsigned long long) s,
                      t.ref.tensor->name);
@@ -156,8 +164,7 @@ void RowStream::evict_to_budget(uint64_t headroom) {
             continue;
         }
         const uint64_t off = s * slab_bytes;
-        const uint64_t len = slab_len(t.ref.size, s, slab_bytes);
-        const uint64_t commit = std::min<uint64_t>(round_up(len, page_), t.span - off);
+        const uint64_t commit = slab_commit(t.ref.size, t.span, s, slab_bytes, page_);
         pio::vm_evict(t.base + off, (size_t) commit);
         t.resident[(size_t) s] = 0;
         t.spot[(size_t) s] = lru_.end();

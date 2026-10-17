@@ -117,10 +117,6 @@ object ModelManager {
     fun serverPath(ctx: Context): String =
         File(ctx.applicationInfo.nativeLibraryDir, "libbmoe-server.so").absolutePath
 
-    /** Whether this APK carries the Hexagon backend (release builds do; a plain local build does not). */
-    fun hasHexagonBackend(ctx: Context): Boolean =
-        File(ctx.applicationInfo.nativeLibraryDir, "libggml-hexagon.so").exists()
-
     /** Empty-state guidance, phrased for the current flavor's model-acquisition paths. */
     fun pushHint(): String =
         if (BuildConfig.SHARED_STORAGE) {

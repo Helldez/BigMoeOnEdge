@@ -53,12 +53,14 @@ case "$TARGET" in
 esac
 
 # Static libraries, so the app is one executable with nothing to embed and sign beside it; the
-# Metal shaders compiled in for the same reason. The rest is what the host builds already say.
+# Metal shaders compiled in for the same reason. The one platform where the backends are not
+# modules loaded from beside the executable (the top-level CMakeLists turns that off for iOS).
 cmake -S . -B "$BUILD_DIR" -G Xcode \
     -DCMAKE_SYSTEM_NAME=iOS \
     -DCMAKE_OSX_SYSROOT="$SYSROOT" \
     -DCMAKE_OSX_ARCHITECTURES="$ARCHS" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_MIN_VERSION" \
+    -DBMOE_BACKEND_MODULES=OFF \
     -DBUILD_SHARED_LIBS=OFF \
     -DBMOE_BUILD_TESTS=OFF \
     -DGGML_NATIVE=OFF \
