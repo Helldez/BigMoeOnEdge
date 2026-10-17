@@ -1,12 +1,18 @@
-// The one-line figure under a finished answer, from the turn's own summary: rate and length, the
-// prompt it cost, the context used, the cache hit rate, and under speculation the real rate and
-// the share of guesses kept. The same line the Android app writes, so a turn reads alike on both.
+// The one-line figure under a finished answer, from the turn's own summary: the decode rate and
+// length, the prefill rate with the tokens it read and the time it took, the context used, the
+// cache hit rate, and under speculation the real rate and the share of guesses kept. Each rate
+// names its phase, since the two differ by an order of magnitude and a bare "tok/s" reads as
+// either. The same line the Android app writes (docs/screens.md), so a turn reads alike on both.
 import type { DoneSummary } from './types';
 
 export function turnMetrics(s: DoneSummary, nCtx: number, cancelled: boolean): string {
-  const parts: string[] = [`${s.tok_s.toFixed(1)} tok/s`, `${s.tokens} tok`];
+  const parts: string[] = [`decode ${s.tok_s.toFixed(1)} tok/s (${s.tokens} tok)`];
   if (s.prefill_s > 0) {
-    parts.push(`prefill ${s.prefill_s.toFixed(1)}s` + (s.n_prompt >= 0 ? ` (${s.n_prompt} tok)` : ''));
+    // The tokens this turn prefilled: with the conversation's leading tokens reused from the KV
+    // cache, that is the new message, not the whole history.
+    const tps = s.prefill_tps > 0 ? s.prefill_tps : s.n_prompt > 0 ? s.n_prompt / s.prefill_s : 0;
+    const read = s.n_prompt >= 0 ? `${s.n_prompt} tok, ` : '';
+    parts.push(`prefill ${tps.toFixed(1)} tok/s (${read}${s.prefill_s.toFixed(1)} s)`);
   }
   if (s.n_past >= 0 && nCtx > 0) parts.push(`ctx ${s.n_past}/${nCtx}`);
   if (s.cache_hit_pct >= 0) parts.push(`cache ${Math.round(s.cache_hit_pct)}%`);

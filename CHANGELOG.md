@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **The line under an answer names each rate by its phase, and gives the prefill a rate.** It read
+  `1.7 tok/s · 9 tok · prefill 4.0s (13 tok)`: a bare rate that was the decode's, and a prefill
+  given only as time. It now reads `decode 1.7 tok/s (9 tok) · prefill 3.3 tok/s (13 tok, 4.0 s)`,
+  in the web UI and in the app alike, from the `prefill_tps` the server already sends. The prefill
+  counts the tokens the turn read, which with the conversation reused from the KV cache is the new
+  message. `docs/screens.md` gives the line.
+
 ## [0.30.0] - 2026-10-16
 
 ### Added
