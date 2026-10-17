@@ -16,8 +16,9 @@
 // asks it rather than re-deriving them.
 //
 // Not in the table, because they are not tunables of a run: the prompt (a request's payload), the
-// line-protocol switch (`progress`, an output mode of the CLI) and the compute-trace granularity
-// (a property of a diagnostics sink). Front-ends own those.
+// line-protocol switch (`--progress`, an output mode of the CLI, which reaches the engine as
+// RunOutputs::render_text) and the compute-trace granularity (IComputeTraceSink::layers_only(), a
+// property of a diagnostics sink). Front-ends own those, and none of them is a RunConfig field.
 //
 // Pure policy: no llama.cpp, no I/O, no environment.
 #pragma once
@@ -129,11 +130,23 @@ struct FlagResult {
 };
 FlagResult apply_flag(RunConfig & cfg, const char * arg, const char * value);
 
+// The table's own integer reading, for a front-end value that is not a parameter (a CLI mode's
+// count, a server's port): the whole string must be the number, and it must lie in [lo, hi]. What
+// atoi() would make of "4x" or "abc" is an error here, with the reason in `err`.
+bool parse_int_strict(const std::string & s, long long lo, long long hi, long long & out, std::string & err);
+
 // The config as command-line arguments: every parameter that differs from a default RunConfig, in
 // table order, in the spelling apply_flag() reads back. Parsing the result into a default config
 // reproduces `cfg` for every parameter the table describes — the property a "copy as command"
 // button and a bench cell both depend on, and which the tests check.
 std::vector<std::string> to_args(const RunConfig & cfg);
+
+// How a person types parameter `key` at `value`, as one string in the spelling to_args() emits: the
+// switch that says exactly that value ("--overlap"), or the flag and the value ("--ctx-size 4096").
+// With no value, the flag that takes one ("--ubatch"). Empty for a key the table does not have.
+// This is what prose that tells a person what to type is built from - the planner's rationale - so
+// renaming a flag in the table cannot leave advice naming one that no longer parses.
+std::string flag_spelling(const std::string & key, const std::string & value = "");
 
 // The table as a JSON array, one object per parameter, with `default` read from `defaults` — so a
 // front-end that resolves its own defaults (the CLI turns the cache on with streaming) can say so.

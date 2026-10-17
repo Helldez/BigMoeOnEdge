@@ -17,5 +17,13 @@ maintained docs for current guidance; read these to check where a number came fr
 | `2026-07-14-warmup/` | dense warm-up A/B | Feeds `cache-sizing.md` and `warmup-analysis.md`. |
 | `2026-07-15-route-trace/` | first `--route-trace` capture (Qwen / Gemma / gpt-oss) | Routing data, not throughput: every run had the trace **on**, so its `tok/s` are not comparable with `benchmarks.md` and must not feed those tables. |
 | `2026-07-17/` | all-O_DIRECT dense weights (`--dense-weights anon`) | Source of the gpt-oss steady-state numbers. **Several cells are contaminated by run order** (a fixed cooldown does not reach baseline) — `NOTES.md` marks exactly which, and which claims survive. Do not read a top-k or lane claim out of it. |
+| `2026-07-20-cache-replay/` | offline replay of the route traces through hypothetical cache policies | Answers whether a low hit rate is the policy or the working set; feeds `cache-sizing.md` and `prefetch.md`. No device time. |
+| `2026-07-20-sidecar/` | contiguous per-expert sidecar file | **Refuted** at engine level; the implementation survives at tag `expert-sidecar-refuted`. |
+| `2026-07-21-pinned-dense-ab/` | `--dense-weights ahwb` vs `anon` | Source of the pinned-dense numbers in `settings.md` and `android-memory.md`. |
+| `2026-07-21-pinned-memory/` | bandwidth of a locked `AHardwareBuffer` | A gate, not a win: pinned memory reads at anonymous-memory speed. |
+| `2026-07-22-drop-cold-experts/` | `--drop-cold-experts` throughput A/B | Source of the throughput tables in `expert-dropping.md`. |
+| `2026-07-22-drop-quality/` | `--drop-cold-experts` on GSM8K | 15 questions: rules out a large quality regression, not a small one. |
 | `2026-07-24-desktop-qwen36/` | desktop (x86 laptop) streaming, Qwen3.6-35B at ~1.5× RAM | Source of the README Desktop table. Decode is DRAM-bandwidth-bound there, the opposite of the phone; round 1 carries a documented `--cache-mb auto` confound that round 2 (fixed cache) resolves. |
 | `2026-08-26-cache-aware-substitution/` | desktop streaming, Qwen3.6-35B, `--expert-substitute` at 0 / 0.15 / 0.30 / 0.60 | Source of the tables in `cache-aware-substitution.md`. Perplexity is token-by-token (`--ppl-step`); the one-batch cells are kept as the record of why that mode exists, and must not be read as the policy's cost. |
+| `2026-08-29-mmap-serialisation/` | the model file's mapping serialising reads (desktop) | Source of `--release-mmap` in `settings.md`. |
+| `2026-09-29-prefill-routed/` | routed expert arena with the NPU prefill (phone) | Source of `npu-prefill.md`. |

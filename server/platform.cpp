@@ -124,6 +124,17 @@ std::string default_data_dir() {
 #endif
 }
 
+void prepare_compute_backends() {
+#if defined(__ANDROID__)
+    // Polling halves the cost of each crossing to the DSP, and the prefill arena stops the graph at
+    // every layer, twice (measured on device). The backend polls only while a DSP op is in flight,
+    // so neither costs anything until the planner arms the NPU, and neither is read where the
+    // Hexagon backend is not built in. setenv with overwrite 0 leaves a value someone set alone.
+    setenv("GGML_HEXAGON_OPPOLL", "1", 0);
+    setenv("GGML_HEXAGON_HOSTBUF", "1", 0);
+#endif
+}
+
 void open_url(const std::string & url) {
 #if defined(_WIN32)
     ShellExecuteW(nullptr, L"open", widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);

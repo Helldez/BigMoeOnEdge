@@ -77,8 +77,12 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   CPU is large enough to matter: compute + flash wait + mgmt can exceed `wall_ms`, and the panel
   clamps the unattributed remainder at 0 in that case instead of displaying the overlap.
   **Flash wait** = `io_ms` (serial) / `stall_ms` (overlap) read as
-  measured in both the live and the end-of-run summary views (`io_s_tok` / `stall_s_tok` in
-  `BMOE_DONE`), **cache mgmt** = `mgmt_ms`, and **unattributed** = the non-negative wall-time
+  measured in both the live and the end-of-run summary views; it arrives already chosen, as
+  `flash_wait_s_tok` in `BMOE_DONE` and in `bmoe-server`'s summary and as `flash_wait_ms` on each of
+  the server's token events, so a UI need not know the mode
+  ([server-api.md](server-api.md#live-events)). The compute bar divides by the session's compute
+  threads and the CPU-busy diagnostic by its busy threads, which the server reports with the loaded
+  model (`compute_threads`, `busy_threads`). **Cache mgmt** = `mgmt_ms`, and **unattributed** = the non-negative wall-time
   remainder — the off-CPU time (zram swap-in, preemption, frequency caps) the residual used to
   paint as compute. The bars are deliberately not rescaled to total 100 %: measurement noise is
   preferred to a fabricated normalization. The CPU-busy diagnostic keeps its own denominator —
@@ -292,6 +296,8 @@ effective top-k after any override. Fields to read carefully:
   number looks against `cache_min_mb`. The engine warns once at load when that is the case. See
   [cache-sizing.md](cache-sizing.md).
 - `predict_log=1`, `prefetch_sync=1` or `compute_trace_layers>0` mean **the run was instrumented**.
+  `compute_trace_layers` is read from the compute trace attached to the session (`1` for
+  `--compute-trace-layers`), so it is `0` on a run with no compute trace at all.
   A probed or traced run is not a benchmark run — see the warning under [Decode
   traces](#decode-traces).
 - `temp>0` means the run was **stochastic**: not comparable token-for-token with a greedy one, and
@@ -521,7 +527,8 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "prefill_s":<float>,"prefill_tps":<float>,"load_s":<float>,"cache_hit_pct":<float>,
             "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
-            "stall_s_tok":<float>,"mgmt_s_tok":<float>,"majflt_tok":<float>,"cpu_s_tok":<float>,
+            "stall_s_tok":<float>,"flash_wait_s_tok":<float>,"mgmt_s_tok":<float>,
+            "majflt_tok":<float>,"cpu_s_tok":<float>,
             "prefill_cpu_s":<float>,"prefill_read_mib":<float>,"prefill_io_s":<float>,
             "prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
             "prefill_dev_tokens":<int>,"prefill_dev_nodes":<int>,"prefill_dev_read_mib":<float>,
@@ -615,7 +622,8 @@ context is. `prefill_tps` is the prompt prefill rate; `compute_s_tok`/`io_s_tok`
 AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not just the last token).
 `cache_resident_mib`/`cache_budget_mib` track the fixed cache, `read_mib` is the
 total flash streamed this generation, and `stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and
-cache-management cost. `text` is the final answer and `reasoning` the final thinking span (empty
+cache-management cost. `flash_wait_s_tok` is the flash term that adds to wall time, already chosen
+for the run's mode (`io_s_tok` serial, `stall_s_tok` under overlap), so a client need not know the mode. `text` is the final answer and `reasoning` the final thinking span (empty
 unless the model reasoned), same split as the per-token lines. `BMOE_ERROR` with `fatal:false` is a rejected
 request (e.g. `code:"context_full"`, a conversation that leaves no room in `n_ctx`: `n_predict` is a
 ceiling, cut to the room the prompt leaves, so only a prompt that fills the context is refused) and

@@ -10,10 +10,10 @@ export function mibPerSec(readMib: number, wallMs: number): number {
   return wallMs > 0 ? (readMib * 1000) / wallMs : 0;
 }
 
-/** Share of the token's wall time spent waiting on reads, clamped to [0, 1]. */
-export function stallShare(stallMs: number, wallMs: number): number {
+/** Share of the token's wall time a wall-additive term took (the flash wait), clamped to [0, 1]. */
+export function wallShare(termMs: number, wallMs: number): number {
   if (wallMs <= 0) return 0;
-  return Math.min(1, Math.max(0, stallMs / wallMs));
+  return Math.min(1, Math.max(0, termMs / wallMs));
 }
 
 /**

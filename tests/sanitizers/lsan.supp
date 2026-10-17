@@ -1,0 +1,11 @@
+# LeakSanitizer findings in third_party/llama.cpp, which this project does not patch (AGENTS.md hard
+# rule 1). Each line names one upstream site and why it is here; a leak whose stack starts in our own
+# code gets no entry - it is a bug to fix, not to suppress.
+
+# The loopback rpc-server gate G16 registers lives as long as the process: its thread serves until
+# exit (it has no stop call), and the CPU backend it serves from is never freed.
+leak:ggml_backend_rpc_start_server
+# The RPC registry and device that ggml_backend_rpc_add_server creates, and the buffer type a device
+# hands out (ggml_backend_rpc_buffer_type), are process-lifetime objects upstream never frees.
+leak:ggml_backend_rpc_add_server
+leak:ggml_backend_rpc_buffer_type

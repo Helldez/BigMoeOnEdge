@@ -217,11 +217,14 @@ private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit) {
                                         modifier = Modifier.weight(1f),
                                     )
                                     TextButton(shape = RectangleShape, onClick = { Chat.newConversation() }) { Text("New chat") }
-                                } else if (err.contains("Load a model")) {
+                                } else if (chat.noModel) {
                                     Spacer(Modifier.weight(1f))
                                     TextButton(shape = RectangleShape, onClick = onOpenModels) { Text("Models") }
                                 } else {
                                     Spacer(Modifier.weight(1f))
+                                    if (chat.canRetry) {
+                                        TextButton(shape = RectangleShape, onClick = { Chat.retry() }) { Text("Send again") }
+                                    }
                                     TextButton(shape = RectangleShape, onClick = { Chat.clearError() }) { Text("Dismiss") }
                                 }
                             }
@@ -400,11 +403,7 @@ private fun LiveLine() {
     val chat by Chat.state.collectAsStateWithLifecycle()
     val t = engine.live
     if (t.step == 0 && t.avgTokensPerSecond <= 0) return
-    val cfg = engine.config
-    val threads = cfg?.int("threads", 4) ?: 4
-    val overlap = cfg?.bool("overlap", true) ?: true
-    val ioThreads = cfg?.int("io-threads", 4) ?: 4
-    val b = breakdown(t, overlap, busyThreads = threads + if (overlap) ioThreads else 0, computeThreads = threads)
+    val b = breakdown(t)
     val loc = Locale.US
     val rate = if (b.isAverage) String.format(loc, "%.1f tok/s avg", t.avgTokensPerSecond)
     else String.format(loc, "%.1f tok/s", t.tokensPerSecond)

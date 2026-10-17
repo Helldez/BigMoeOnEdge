@@ -1,4 +1,5 @@
 #include "thinking_control.h"
+#include "bmoe/log.h"
 
 #include <cstdio>
 #include <exception>
@@ -115,7 +116,7 @@ ThinkControl probe_think_control(const common_chat_templates * tmpls) {
         // reasons" would be a louder lie than the silence this probe exists to end.
         return ThinkControl::Template;
     } catch (const std::exception & e) {
-        std::fprintf(stderr, "bmoe: thinking-control probe failed (%s); assuming the template honours it\n", e.what());
+        log_printf(LogLevel::Warn, "thinking-control probe failed (%s); assuming the template honours it", e.what());
         return ThinkControl::Template;
     }
 }

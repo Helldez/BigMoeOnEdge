@@ -22,7 +22,6 @@
       <StreamingBadge streaming={info.model.streaming} />
     {:else if info.state === 'empty'}
       <span class="muted">No model loaded</span>
-      <StreamingBadge streaming={null} />
     {/if}
     {#if info.generating}
       <span class="badge info">Generating</span>

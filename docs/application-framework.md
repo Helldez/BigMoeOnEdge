@@ -19,7 +19,7 @@ project speaks that API, and nothing else:
 | Platform | How the UI reaches the server | Why that way |
 |---|---|---|
 | Windows, macOS, Linux | `bmoe-server` as its own process; the web UI and any OpenAI client over HTTP on loopback, or on the network with `--api-key` | A process of its own is the crash boundary: a driver that ends the engine does not end the UI |
-| Android | The same binary, shipped in the APK as `libbmoe-server.so` and started by the app as a child process, the way the CLI is today; the app is an HTTP client of loopback | Same crash boundary, same API, and the phone serves the network with the same flag the desktop uses |
+| Android | The same binary, shipped in the APK as `libbmoe-server.so` and started by the app as a child process, the way the CLI is today; the app is an HTTP client of loopback, always with a key (on a phone every installed app reaches loopback) | Same crash boundary, same API, and the phone serves the network with the same flag the desktop uses |
 | iOS | An app may not start a process: the app links `bmoe_server` and calls `run()` on a thread, then speaks to loopback inside its own process | The one platform without the boundary still gets the one API, with no second implementation |
 
 What follows from one API with one implementation:
@@ -43,7 +43,9 @@ and one event stream per UI, which is microseconds against the tens of milliseco
 ## What stays platform-specific, and where
 
 The server has one file with platform `#if`s (`server/platform.cpp`): the data directory, the
-executable's own directory, opening a browser. Everything else platform-shaped is an adapter the
+executable's own directory, opening a browser, and what the compute backends are told before they
+load (on Android, the Hexagon backend's polling and host buffer, set only where the environment has
+not set them). Everything else platform-shaped is an adapter the
 host app supplies or the server does without:
 
 - **Downloads.** The desktop server runs the system `curl`. Android has no `curl`, and the system
@@ -52,8 +54,9 @@ host app supplies or the server does without:
   `URLSession`. The catalog is still the server's data file.
 - **Process isolation for the planner's device probes.** Where a process may start another, each
   compute device is asked in a child process first; iOS probes in-process.
-- **Where files live.** The app passes `--data-dir`, `--models-dir` and `--catalog`; the server
-  compiles no path in.
+- **Where files live.** The app passes `--data-dir`, `--models-dir` and `--catalog`, and a
+  `--scan-dir` for each other place a model can sit on that device; the server compiles no path in,
+  and lists what every one of them holds.
 
 ## The UIs
 

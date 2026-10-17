@@ -11,12 +11,11 @@ data class Telemetry(
     var steps: Int = 0,
     var wallMs: Double = 0.0,
     var computeMs: Double = 0.0,
-    // The measured, wall-additive flash term: io_ms in serial (the blocking read), stall_ms under
-    // overlap (the wall time compute sat idle on a read). The panel shows the one that matches the
-    // run's mode as "flash wait" instead of inverting the clamped compute residual, which mislabels
-    // the token when compute_ms was clamped to 0.
-    var ioMs: Double = 0.0,
-    var stallMs: Double = 0.0,
+    // The measured, wall-additive flash term, as the server chose it for the run's mode: the blocking
+    // read in serial, the wall time compute sat idle on a read under overlap (`flash_wait_ms`). The
+    // panel shows it as "flash wait" instead of inverting the clamped compute residual, and without
+    // knowing whether the session overlaps.
+    var flashWaitMs: Double = 0.0,
     // Cache-management time this token — measured, unlike the legacy compute_ms residual. The
     // four-way breakdown no longer sums to the wall exactly (unattributed is the honest remainder),
     // which is the point: a tidy total was coming from pretending unknown time was compute.
@@ -28,6 +27,11 @@ data class Telemetry(
     // means a throttled/preempted core. 0 when the platform can't measure them.
     var majflt: Double = 0.0,
     var cpuMs: Double = 0.0,
+    // What the CPU figures are read against, from the loaded model in `/api/info` when the token
+    // arrived: the compute threads (the compute bar) and every thread busy in a decode (CPU busy).
+    // 0 when unknown, which leaves the compute bar empty rather than guessed.
+    var computeThreads: Int = 0,
+    var busyThreads: Int = 0,
     var text: String = "",
     // The thinking span so far when the model is reasoning, kept apart from [text] so the UI can
     // render it as a distinct block. Empty with thinking off or on a non-reasoning model.
@@ -42,13 +46,11 @@ data class Telemetry(
     // the unattributed term. -1 until generation finishes.
     var avgComputeMs: Double = -1.0,
     var avgMgmtMs: Double = -1.0,
-    // The measured flash terms of the same run averages, from the done event's io_s_tok / stall_s_tok:
-    // serial reads io, overlap reads stall. The summary used to reconstruct flash wait from the
-    // clamped compute residual instead — against the documented contract — which over-attributed
-    // to flash exactly when compute_ms had been clamped to 0 (issue #98). -1 until generation
-    // finishes or on an engine older than the fields.
-    var avgIoMs: Double = -1.0,
-    var avgStallMs: Double = -1.0,
+    // The measured flash term of the same run averages, from the done event's flash_wait_s_tok. The
+    // summary used to reconstruct flash wait from the clamped compute residual instead — against the
+    // documented contract — which over-attributed to flash exactly when compute_ms had been clamped
+    // to 0 (issue #98). -1 until generation finishes.
+    var avgFlashWaitMs: Double = -1.0,
     // End-of-run figures from the done event; -1 / 0 until generation finishes.
     var prefillTps: Double = -1.0,      // prompt prefill rate (tok/s)
     var ttftS: Double = -1.0,           // time-to-first-token = model load + prompt prefill (s)
@@ -127,19 +129,21 @@ data class Breakdown(
  * Both branches — live (last token) and end-of-run (averages) — now derive the SAME way (issue
  * #98; they used to disagree, and the end-of-run one inverted the clamped compute residual, which
  * the telemetry contract warns against). Flash wait is always the MEASURED wall-additive read
- * term: stall under overlap (the wall time at least one compute thread sat idle on a read), io in
- * serial (the blocking read). Compute is process CPU time over the compute threads — a measured
+ * term the server reports (stall under overlap, io in serial). Compute is process CPU time over
+ * the compute threads — a measured
  * attribution proxy for matmul work, not the legacy `compute_ms` residual, which by definition
  * absorbs everything unmeasured (zram swap-in, preemption, faults); what that residual used to
  * hide lands in [Breakdown.unattributedMs] instead. A missing measurement contributes 0 to its
  * bar and its time stays unattributed — it is never reconstructed from the wall.
  *
- * [busyThreads] (CPU-busy diagnostic) must include the I/O lanes under overlap — the CPU numerator
- * is whole-process. [computeThreads] (displayed compute) divides that same numerator down to a
+ * The busy threads (CPU-busy diagnostic) include the I/O lanes under overlap — the CPU numerator
+ * is whole-process. The compute threads (displayed compute) divide that same numerator down to a
  * per-compute-thread figure; the two denominators are different on purpose and must not be
- * "simplified" into one.
+ * "simplified" into one. Both are the server's (`busy_threads`, `compute_threads`), never guessed.
  */
-fun breakdown(t: Telemetry, overlap: Boolean, busyThreads: Int, computeThreads: Int): Breakdown {
+fun breakdown(t: Telemetry): Breakdown {
+    val busyThreads = t.busyThreads
+    val computeThreads = t.computeThreads
     // Summary mode is gated by the summary itself, not by the legacy residual: the bars no longer
     // read avgComputeMs at all, so it must not control which branch they take either.
     val useAvg = t.avgTokensPerSecond > 0
@@ -148,11 +152,7 @@ fun breakdown(t: Telemetry, overlap: Boolean, busyThreads: Int, computeThreads: 
     // Every component is measured or zero. A missing measurement is NOT reconstructed from the
     // wall — that is exactly the attribution error #98 exists to fix (the residual silently
     // absorbed zram, preemption, faults as "compute"). What is unmeasured stays unattributed.
-    val flashWait = (if (useAvg) {
-        if (overlap) t.avgStallMs else t.avgIoMs
-    } else {
-        if (overlap) t.stallMs else t.ioMs
-    }).coerceAtLeast(0.0)
+    val flashWait = (if (useAvg) t.avgFlashWaitMs else t.flashWaitMs).coerceAtLeast(0.0)
     val cpuMs = if (useAvg) {
         if (t.avgCpuSPerTok >= 0) t.avgCpuSPerTok * 1000.0 else 0.0
     } else {
@@ -186,8 +186,7 @@ fun Telemetry.applyToken(o: JSONObject): Telemetry = apply {
     steps = o.optInt("steps")
     wallMs = o.optDouble("wall_ms", 0.0)
     computeMs = o.optDouble("compute_ms", 0.0)
-    ioMs = o.optDouble("io_ms", 0.0)
-    stallMs = o.optDouble("stall_ms", 0.0)
+    flashWaitMs = o.optDouble("flash_wait_ms", 0.0)
     mgmtMs = o.optDouble("mgmt_ms", 0.0)
     cacheHitPct = o.optDouble("cache_hit_pct", -1.0)
     majflt = o.optDouble("majflt", 0.0)
@@ -199,8 +198,7 @@ fun Telemetry.applyDone(o: JSONObject): Telemetry = apply {
     avgTokensPerSecond = o.optDouble("tok_s", -1.0)
     avgComputeMs = o.optDouble("compute_s_tok", -0.001) * 1000.0
     avgMgmtMs = o.optDouble("mgmt_s_tok", -0.001) * 1000.0
-    avgIoMs = o.optDouble("io_s_tok", -0.001) * 1000.0
-    avgStallMs = o.optDouble("stall_s_tok", -0.001) * 1000.0
+    avgFlashWaitMs = o.optDouble("flash_wait_s_tok", -0.001) * 1000.0
     prefillTps = o.optDouble("prefill_tps", -1.0)
     val loadS = o.optDouble("load_s", -1.0)
     val prefillS = o.optDouble("prefill_s", -1.0)

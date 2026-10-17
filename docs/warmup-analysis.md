@@ -7,7 +7,7 @@ that window token by token, and it turns out the *shape* of the warm-up depends 
 ratio: **model size vs. device RAM**.
 
 This note reads the warm-up out of the CSVs for two regimes measured on the reference
-device (OnePlus 15R, 11.3 GB RAM, UFS 4.x):
+device (a 12 GB Android phone, 11.3 GB usable RAM, UFS 4.x):
 
 - **Models near RAM** — Qwen3-30B-A3B (18.5 GB, ≈1.6× RAM) and Gemma-4-26B-A4B
   (17.0 GB, ≈1.5× RAM): warm-up is **I/O-bound** and the overlap path largely hides it.

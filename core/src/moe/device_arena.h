@@ -242,8 +242,9 @@ private:
 
     std::vector<DenseLayer> dense_; // by layer id; empty when init_dense was not called
     ggml_context * dense_ctx_ = nullptr;
-    ggml_backend_buffer_t dense_buf_[2] = {};      // matmul matrices, usage WEIGHTS
-    ggml_backend_buffer_t dense_data_buf_[2] = {}; // every other layer weight, plain memory
+    // The dense layer slots, [data][parity] as init_dense sizes them: data 0 holds the matmul
+    // matrices (usage WEIGHTS), data 1 every other layer weight (plain memory).
+    ggml_backend_buffer_t dense_slot_[2][2] = {};
     size_t dense_slot_bytes_ = 0;
     int dense_converted_ = 0;
     size_t dense_converted_bytes_ = 0;

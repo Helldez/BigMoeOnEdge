@@ -104,7 +104,41 @@ using namespace bmoe;
 // kernels the local CPU uses, placement is the ONLY thing that differs: the output must be
 // byte-identical. Hexagon's own numerics (fp16 on HMX) are a device question, not this gate's.
 
-static const char * const kRpcEndpoint = "127.0.0.1:50599";
+// A port the kernel picks per process: two gate runs on one machine (two build trees, two CI jobs on
+// one runner) must not meet on a fixed port, where the second would register the first's server.
+// The probe socket is closed before the server binds, so another process could take the port in
+// between: the server then fails to bind and, if the taker answers on it, the gate would register a
+// stranger's endpoint. The window is the few milliseconds between the two binds on a loopback port
+// the kernel just handed out, which is small enough to accept for a test fixture, not zero.
+static int free_loopback_port() {
+#if defined(_WIN32)
+    static bool wsa = [] {
+        WSADATA d;
+        return WSAStartup(MAKEWORD(2, 2), &d) == 0;
+    }();
+    if (!wsa) return 0;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return 0;
+    int len = sizeof(sockaddr_in);
+#else
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) return 0;
+    socklen_t len = sizeof(sockaddr_in);
+#endif
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = 0;
+    inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    int port = 0;
+    if (bind(s, (sockaddr *) &a, sizeof(a)) == 0 && getsockname(s, (sockaddr *) &a, &len) == 0)
+        port = ntohs(a.sin_port);
+#if defined(_WIN32)
+    closesocket(s);
+#else
+    close(s);
+#endif
+    return port;
+}
 
 // True once something accepts on the endpoint. The RPC client aborts the process when it cannot
 // connect, so the server has to be seen listening before it is registered.
@@ -145,15 +179,19 @@ static std::string loopback_rpc_device() {
     auto start = (start_fn) ggml_backend_reg_get_proc_address(rpc, "ggml_backend_rpc_start_server");
     auto add = (add_fn) ggml_backend_reg_get_proc_address(rpc, "ggml_backend_rpc_add_server");
     if (!start || !add) return "";
+    // One port per process: a second call meets the server the first one started, as it always has.
+    static const int port = free_loopback_port();
+    if (port == 0) return "";
+    static const std::string endpoint = "127.0.0.1:" + std::to_string(port);
     // Serves until the process exits; the gates are one process.
     std::thread([start, cpu] {
         ggml_backend_dev_t devs[1] = {cpu};
-        start(kRpcEndpoint, nullptr, 2, 1, devs);
+        start(endpoint.c_str(), nullptr, 2, 1, devs);
     }).detach();
-    for (int i = 0; i < 200 && !port_accepts(50599); ++i)
+    for (int i = 0; i < 200 && !port_accepts(port); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
-    if (!port_accepts(50599)) return "";
-    ggml_backend_reg_t srv = add(kRpcEndpoint);
+    if (!port_accepts(port)) return "";
+    ggml_backend_reg_t srv = add(endpoint.c_str());
     if (!srv || ggml_backend_reg_dev_count(srv) == 0) return "";
     ggml_backend_register(srv);
     return ggml_backend_dev_name(ggml_backend_reg_dev_get(srv, 0));

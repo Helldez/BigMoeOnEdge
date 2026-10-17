@@ -77,7 +77,7 @@ ValidationResult validate(const RunConfig & cfg) {
         if (cfg.sampling.top_k < 0) {
             return fail("sampling.top_k must be >= 0 (0 disables the top-k stage)");
         }
-        if (cfg.sampling.top_p <= 0.0f || cfg.sampling.top_p > 1.0f) {
+        if (!(cfg.sampling.top_p > 0.0f && cfg.sampling.top_p <= SamplingConfig::top_p_max)) {
             return fail("sampling.top_p must be in (0, 1]");
         }
     }
@@ -99,7 +99,7 @@ ValidationResult validate(const RunConfig & cfg) {
     // A probability, so [0,1]. 1 would mean "only draft what the head is certain of", which is a
     // legitimate (if extreme) setting; above 1 nothing would ever be drafted and the flag would be
     // an expensive way to decode one token at a time.
-    if (cfg.spec.is_mtp() && (cfg.spec.draft_p_min < 0.0f || cfg.spec.draft_p_min > 1.0f)) {
+    if (cfg.spec.is_mtp() && !(cfg.spec.draft_p_min >= 0.0f && cfg.spec.draft_p_min <= SpecConfig::draft_p_min_max)) {
         return fail("spec.draft_p_min must be in [0, 1]");
     }
     // Both of these are source-specific knobs. Accepting one against the other source would silently
@@ -302,7 +302,7 @@ ValidationResult validate(const RunConfig & cfg) {
         }
         // Written as a negated inclusive range so NaN (every comparison false) is rejected too,
         // instead of slipping past both this check and the cache_on one above.
-        if (!(m.drop_cold_frac >= 0.0f && m.drop_cold_frac <= 1.0f)) {
+        if (!(m.drop_cold_frac >= 0.0f && m.drop_cold_frac <= MoeStreamConfig::drop_cold_frac_max)) {
             return fail("moe.drop_cold_frac must be in [0, 1] (0 = off). Above 1.0 the threshold can "
                         "exceed the largest weight in a routing, which would discard every expert of a "
                         "layer; 1.0 is the uniform share 1/n_expert_used and the useful maximum.");
@@ -313,7 +313,7 @@ ValidationResult validate(const RunConfig & cfg) {
                         "would be the router's own.");
         }
         // Negated inclusive range, so NaN is rejected here too.
-        if (!(m.substitute_lambda >= 0.0f && m.substitute_lambda <= 1.0f)) {
+        if (!(m.substitute_lambda >= 0.0f && m.substitute_lambda <= MoeStreamConfig::substitute_lambda_max)) {
             return fail("moe.substitute_lambda must be in [0, 1] (0 = off). At 1.0 a resident expert "
                         "outranks every non-resident one whatever their scores, which is the strongest "
                         "preference the margin can express.");

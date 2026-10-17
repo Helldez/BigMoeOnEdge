@@ -8,11 +8,13 @@
 #pragma once
 
 #include "chat_turn.h"
+#include "hosted_session.h"
 #include "turn_queue.h"
 #include "event_bus.h"
 #include "json_util.h"
 
 #include "bmoe/config.h"
+#include "bmoe/log.h"
 #include "bmoe/session.h"
 
 #include <atomic>
@@ -54,7 +56,10 @@ inline constexpr size_t k_max_waiting_turns = 16;
 
 class EngineHost {
 public:
-    explicit EngineHost(EventBus & bus);
+    // `open` makes the session a load installs; a test passes a scripted one (hosted_session.h).
+    // The host also routes the engine's diagnostics (bmoe/log.h) to the bus as `log` events, still
+    // writing them to stderr as before, for as long as it lives.
+    explicit EngineHost(EventBus & bus, SessionOpener open = open_real_session);
     ~EngineHost();
 
     // What /api/info adds about the machine; called on every state publish.
@@ -101,7 +106,10 @@ private:
 
     void publish_state() const;
 
+    static void log_to_bus(LogLevel level, const char * message, void * self);
+
     EventBus & bus_;
+    const SessionOpener open_;
     std::function<json()> host_info_;
     std::atomic<bool> planner_available_{false};
     std::atomic<bool> planning_{false};
@@ -115,7 +123,7 @@ private:
     mutable std::mutex m_; // guards everything below except loader_ (see life_m_)
     State state_ = State::Empty;
     std::string error_;
-    std::shared_ptr<Session> session_;
+    std::shared_ptr<HostedSession> session_;
     RunConfig requested_;
     json model_ = nullptr;
     std::thread loader_;

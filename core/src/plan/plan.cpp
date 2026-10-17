@@ -140,7 +140,7 @@ std::string Plan::to_flags() const {
     if (!config.moe.enabled) {
         // A plan that streams nothing is a real plan and has to be reproducible too: the flags that
         // matter are the ones it did NOT set, so say so rather than printing an empty line.
-        return "# streaming declined; run without --moe-stream";
+        return "# streaming declined; run without " + flag_spelling("moe-stream", "true");
     }
     std::string f;
     for (const std::string & arg : reproduce_args()) {

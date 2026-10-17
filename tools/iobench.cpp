@@ -223,14 +223,14 @@ bool run_row(const std::string & path,
              bool reopen_lanes,
              double * mibs_out) {
     bmoe::FileReader r;
-    // Ask the OS rather than assuming 4096: alignment is exactly the variable this tool exists to
-    // characterise, so a device with a 16 KiB page must be measured at its own page size, not ours.
-    const size_t align = bmoe::pio::vm_page();
-    const size_t bounce_cap = slice + 2 * align; // mirrors what the streamer asks for
-    if (!r.open(path, lanes, direct, align, bounce_cap)) {
+    if (!r.open(path, lanes, direct, slice)) {
         std::fprintf(stderr, "open failed (lanes=%d)\n", lanes);
         return false;
     }
+    // The reader asks the descriptor for its direct-I/O granule, as the streamer's readers do, and
+    // never goes under a page for a destination: alignment is exactly the variable this tool exists
+    // to characterise, so a device must be measured at what its own storage and page state.
+    const size_t align = r.buffer_align();
     // The mapping is opened AFTER the lanes and, with --reopen-lanes, dropped before they are
     // reopened: on Windows a lane opened while a section was alive keeps serialising against it
     // even once the section is gone, so the two halves of that behaviour are separable here.
