@@ -14,8 +14,10 @@
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <sys/sysctl.h>
+#include <sys/stat.h>
 #include <climits>
 #else
+#include <sys/stat.h>
 #include <fstream>
 #include <sstream>
 #include <unistd.h>
@@ -142,6 +144,19 @@ bool started_by_double_click() {
     return GetConsoleProcessList(&pid, 1) == 1;
 #else
     return false;
+#endif
+}
+
+void restrict_file_to_user(const std::string & path) {
+#if defined(_WIN32)
+    // Best effort by design: a file inside the per-user application data directory is already
+    // governed by that directory's ACL; there is no per-file 0600 on Windows.
+    (void) path;
+#else
+    // The warm-up file holds conversation contents, so it is user-only, whatever the process
+    // umask was when it was written. Failures are deliberately ignored: a stat-able path under
+    // the user's own data directory is the common case, and warm-up is never worth an error.
+    ::chmod(fs::u8path(path).c_str(), S_IRUSR | S_IWUSR); // 0600
 #endif
 }
 

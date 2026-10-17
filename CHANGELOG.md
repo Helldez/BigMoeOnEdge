@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **Conversation warm-up on the server.** After a finished, non-cancelled chat turn, `bmoe-server`
+  saves the conversation prefix (everything but the message being answered) to `warmup.json` in the
+  data directory, keyed by model, and the next load of that model replays it into the KV as
+  prefill-only segments before the first request arrives — so a restarting server's first turn pays
+  only its own tokens, not a full re-prefill. The replay is speculative by construction (the
+  session's reuse rule cuts a changed prefix at its first divergence, so the worst case is spent
+  prefill, never a wrong answer), runs ~300 tokens per segment so a real request waits at most one
+  segment and takes over, skips tool-calling conversations a replay could never match, and is off
+  entirely with `--no-warmup`. The file holds conversation contents, so it is written atomically
+  and restricted to the user.
+
 ## [0.30.0] - 2026-10-16
 
 ### Added

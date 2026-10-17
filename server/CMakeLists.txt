@@ -36,6 +36,7 @@ add_library(bmoe_server STATIC
     model_library.cpp
     planner_adapter.cpp
     platform.cpp
+    warmup.cpp
 )
 target_link_libraries(bmoe_server PUBLIC bmoe_server_core PRIVATE cpp-httplib)
 target_include_directories(bmoe_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
