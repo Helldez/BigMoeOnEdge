@@ -78,6 +78,13 @@ Semantic Versioning.
   the fitter never places on, and took it from the expert cache (904 MiB instead of about 1370, and
   one expert slot instead of two). Each device's part is now kept, and the prefill device pays its
   own.
+- **Every buffer the engine allocates for tensor data keeps a page readable past its end.** One of
+  ggml's CPU kernels (Q6_K, on cores with SVE and int8 matmul) loads 14 bytes past a block's end,
+  which llama.cpp's own buffers absorb. A dense weight in a buffer sized to it exactly, with a guard
+  page after it, faulted: seen on a phone, at random, once the release carried that CPU variant.
+  The dense copies, the expert slots and cache regions, the row-gathered tables and the probe's
+  host copy now end with the OS's page of slack, committed wherever the platform faults on a page
+  that was only reserved.
 
 ## [0.30.0] - 2026-10-16
 

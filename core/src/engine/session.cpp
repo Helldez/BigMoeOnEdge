@@ -30,6 +30,7 @@
 #include "speculative.h"
 
 #include <algorithm>
+#include <limits>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -1210,9 +1211,16 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // prefilled a 1015-token prompt 8% slower than the host.
     if (im.prefill && cfg.prefill.verify) {
         std::string why;
-        std::vector<llama_token> toks(1024);
-        const int nt = llama_tokenize(im.vocab, k_verify_text, (int) std::strlen(k_verify_text), toks.data(),
-                                      (int) toks.size(), /*add_special*/ true, /*parse_special*/ false);
+        // Sized as llama.cpp's own common_tokenize sizes it: a guess, and once more at the size a
+        // buffer too small is told it needs (returned negated).
+        const int text_len = (int) std::strlen(k_verify_text);
+        std::vector<llama_token> toks((size_t) text_len + 2);
+        int nt = llama_tokenize(im.vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), /*add_special*/ true,
+                                /*parse_special*/ false);
+        if (nt < 0 && nt != std::numeric_limits<int32_t>::min()) { // INT32_MIN: the count overflowed
+            toks.resize((size_t) -nt);
+            nt = llama_tokenize(im.vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), true, false);
+        }
         const int want = std::min({PrefillDeviceConfig::verify_tokens, PrefillDeviceConfig::max_outputs,
                                    prefill_piece(im.cfg), cfg.n_ctx - 1});
         double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0;

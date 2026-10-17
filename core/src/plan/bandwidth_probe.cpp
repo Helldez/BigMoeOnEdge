@@ -30,6 +30,8 @@
 
 #include "bmoe/probe.h"
 
+#include "../io/platform_io.h"
+
 #include "ggml-backend.h"
 #include "ggml.h"
 
@@ -202,8 +204,9 @@ RunResult run_gemv(ggml_backend_dev_t dev, const Probe & p, int n_threads, bool 
             // Our memory, handed to the device. If it really honours host pointers, the graph below
             // reads the values we wrote here without any copy — exactly what the streamer needs in
             // order to rebind a tensor onto a slice it just read from flash.
-            host_copy = p.weight;
-            host_buf = ggml_backend_dev_buffer_from_host_ptr(dev, host_copy.data(), host_copy.size(), 0);
+            host_copy.assign(p.weight.size() + pio::tensor_tail_slack(), 0); // readable past the last block
+            std::memcpy(host_copy.data(), p.weight.data(), p.weight.size());
+            host_buf = ggml_backend_dev_buffer_from_host_ptr(dev, host_copy.data(), p.weight.size(), 0);
             if (host_buf) {
                 w->buffer = host_buf;
                 w->data = host_copy.data();

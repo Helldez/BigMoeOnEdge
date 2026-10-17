@@ -273,11 +273,12 @@ bool DenseWeights::read_anonymous(size_t align) {
         }
         void * buf = nullptr;
         pio::PinnedAlloc pa;
+        const size_t held = (size_t) d.size + pio::tensor_tail_slack(); // readable past the last block
         // A tensor larger than one buffer may be was never going to fit and says nothing about
         // the store's total: it takes an ordinary buffer alone, and the tensors after it still pin.
-        const bool too_big = pinned && d.size > pio::pinned_max_bytes();
+        const bool too_big = pinned && held > pio::pinned_max_bytes();
         bool pin_this = pinned && !too_big;
-        if (pin_this && !pio::pinned_alloc((size_t) d.size, &pa)) {
+        if (pin_this && !pio::pinned_alloc(held, &pa)) {
             std::fprintf(stderr,
                          "bmoe: pinned dense buffer %llu MiB refused after %llu MiB (per-buffer ceiling %llu MiB); "
                          "the rest of the dense set is ordinary memory\n",
@@ -291,7 +292,7 @@ bool DenseWeights::read_anonymous(size_t align) {
             buf = pa.base;
         } else {
             if (mode_ == DenseWeightsMode::Pinned) pin_refused_bytes_ += d.size;
-            buf = pio::alloc_aligned(align, (size_t) d.size);
+            buf = pio::alloc_aligned(align, held);
             if (!buf) {
                 std::fprintf(stderr, "bmoe: dense buffer alloc %llu failed\n", (unsigned long long) d.size);
                 return false;

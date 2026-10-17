@@ -116,6 +116,15 @@ std::string self_path();
 
 // Reserved (address-only) region; physical pages appear on commit, vanish on evict.
 size_t vm_page();
+// Readable bytes every buffer we allocate to hold tensor data keeps past the tensor's last byte.
+// ggml's CPU kernels may load a vector that reaches beyond the last block (one Q6_K path reads 32
+// bytes from a 16-byte field at the block's end), which llama.cpp's own buffers absorb because
+// something always follows the last tensor in them. A buffer sized to its tensor exactly can end
+// on a page boundary with a guard page after it, and that load faults - seen on a phone, at random,
+// as the next mapping varied. One page, the OS's own, covers any vector a CPU loads at once.
+inline size_t tensor_tail_slack() {
+    return vm_page();
+}
 void * vm_reserve(size_t sz);
 bool vm_commit(void * p, size_t sz);
 // Ask the kernel to keep a committed span in RAM: not swapped, not compressed. False where the

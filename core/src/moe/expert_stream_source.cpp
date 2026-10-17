@@ -20,6 +20,16 @@ namespace bmoe {
 
 using clock_t_ = std::chrono::steady_clock;
 
+namespace {
+// The pages a resident slice is committed over: its own, rounded out, and through the slack after
+// it, because a kernel may read past its last block, and where the platform faults on a reserved
+// page that was never committed (Windows) that read must land on one that was.
+void slice_pages(const char * dst, uint64_t slice, size_t page, uintptr_t & a0, uintptr_t & a1) {
+    a0 = (uintptr_t) dst & ~(uintptr_t) (page - 1);
+    a1 = ((uintptr_t) dst + slice + pio::tensor_tail_slack() + page - 1) & ~(uintptr_t) (page - 1);
+}
+} // namespace
+
 ExpertStreamSource::~ExpertStreamSource() {
     shutdown();
 }
@@ -144,7 +154,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // slices are ever valid. Absent slots (max_full[p] == 0) get no buffer.
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             if (max_full[p] == 0) continue;
-            slot_[p] = pio::alloc_aligned(align_, max_full[p]);
+            slot_[p] = pio::alloc_aligned(align_, max_full[p] + pio::tensor_tail_slack());
             if (!slot_[p]) {
                 std::fprintf(stderr, "bmoe: slot alloc %zu failed\n", max_full[p]);
                 return false;
@@ -170,7 +180,8 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             if (!L.bound) continue;
             for (int p = 0; p < MoeRecipe::max_exps; ++p) {
                 if (!L.proj[p].tensor) continue; // absent slot in a fused layout
-                const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
+                // The last expert's slice is followed by the slack a kernel may read past it.
+                const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_ + pio::tensor_tail_slack();
                 lbuf_[p][il] = pio::vm_reserve(full);
                 if (!lbuf_[p][il]) {
                     std::fprintf(stderr, "bmoe: vm_reserve %zu failed (layer %d)\n", full, il);
@@ -460,8 +471,8 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue;
             char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-            uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
-            uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
+            uintptr_t a0 = 0, a1 = 0;
+            slice_pages(dst, slice, page_, a0, a1);
             if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) { // low on memory — stop quietly
                 ok = false;
                 break;
@@ -759,14 +770,15 @@ size_t ExpertStreamSource::entry_bytes(int il) const {
     return bytes;
 }
 // Release the physical pages fully contained in an entry's slices (never a partial page shared
-// with a neighbouring expert). Shared by eviction and by discarding an incomplete spec entry.
+// with a neighbouring expert, nor the head of a slice, which is the slack the expert before it may
+// be read past into). Shared by eviction and by discarding an incomplete spec entry.
 void ExpertStreamSource::release_entry_pages(int32_t id) {
     const int il = id / n_expert_, e = id % n_expert_;
     for (int p = 0; p < MoeRecipe::max_exps; ++p) {
         const uint64_t slice = layers_[il].proj[p].nb2;
         if (slice == 0) continue; // absent slot in a fused layout
         char * s = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-        uintptr_t a0 = ((uintptr_t) s + page_ - 1) & ~(uintptr_t) (page_ - 1);
+        uintptr_t a0 = ((uintptr_t) s + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
         uintptr_t a1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
         if (a1 > a0) pio::vm_evict((void *) a0, (size_t) (a1 - a0));
     }
@@ -918,8 +930,8 @@ bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
     const uint64_t slice = L.proj[p].nb2;
     if (slice == 0) return true; // absent slot in a fused layout
     char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-    uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
-    uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
+    uintptr_t a0 = 0, a1 = 0;
+    slice_pages(dst, slice, page_, a0, a1);
     if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) {
         std::fprintf(stderr, "bmoe: commit failed\n");
         return false;
