@@ -9,7 +9,8 @@ Thanks for your interest. BigMoeOnEdge stays deliberately small and disciplined.
 - **The byte-identity gates must pass.** Streaming must stay lossless. Run
   `ctest --output-on-failure` before opening a PR; if you change the streamer or the seam,
   say so in the PR and note the gate result.
-- **No hardcoding.** New MoE architectures are recipe rows (`docs/adding-a-model.md`).
+- **No hardcoding.** There is no table of architectures: which tensors are the routed experts is
+  read from the file (`docs/which-models-stream.md`). A new expert layout gets a byte-identity gate.
 - English everywhere. Conventional Commits. Match `.clang-format`.
 
 ## Getting set up
@@ -49,7 +50,7 @@ The web UI: `cd ui && npm ci && npm test && npm run check && npm run build`.
   runs the fixed protocol and prints the tables; open a
   [benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
   See `docs/community-benchmarks.md` for the hardware list and what a row needs.
-- A new MoE architecture recipe + its gate (`docs/adding-a-model.md`).
+- A byte-identity gate for an expert layout the gates do not cover yet (`docs/which-models-stream.md`).
 - Read coalescing / expert-contiguous layout experiments (see `docs/roadmap.md`).
 
 ## Reporting problems
