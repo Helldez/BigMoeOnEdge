@@ -29,8 +29,8 @@ The machines are described generically on purpose.
 | **Native app** | Measured: the Compose app, a client of the server | - (web UI in the browser) | - (web UI in the browser) | - (web UI in the browser) | Owed: a measuring harness only, not a chat app |
 | **Planner (`--auto`)** | Measured, in the app's load path | Measured on one laptop | Built, not run on Linux hardware | Owed: one documented run | Built, run in the simulator only |
 | **Device probes in a process of their own** | Yes | Yes | Yes | Yes, built; owed a run | - (no second process) |
-| **CI** | Engine cross-compiled and the APK packaged, on PRs and tags | Compiled and smoke-tested, on PRs and tags | Built, byte-identity gates and UI tests, on every push | Compiled only, on PRs and tags | Compiled for the simulator, on PRs and tags |
-| **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends as modules | CLI and desktop archives, with Metal | CLI and desktop archives, both architectures, with Vulkan | CLI and desktop archives, with Vulkan | None |
+| **CI** | Engine cross-compiled and the APK packaged, on PRs and tags | Compiled and smoke-tested, on PRs and tags | Built, byte-identity gates and UI tests, on every push | Compiled only, on PRs and tags | Compiled for the simulator, on PRs and tags; packaged by the release workflow |
+| **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends as modules | CLI and desktop archives, with Metal | CLI and desktop archives, both architectures, with Vulkan | CLI and desktop archives, with Vulkan | Harness app for the simulator, unsigned, built by CI |
 | **Run on hardware** | Measured: a 12 GB phone, Snapdragon class, UFS 4.x | Measured: a 16 GB Apple-silicon laptop | Owed: the gates only, no throughput run | Measured: an x86 laptop, 8 cores, 16 GB, NVMe | Owed: the simulator only |
 
 Sources: [application-framework.md](application-framework.md) for the server on each platform,
@@ -80,7 +80,8 @@ platform: the device is measured, and the streamer's own memory is not yet hande
   a GPU; the cache lock, the residency sample, the byte-identity gates in its CI job, one
   documented planner run, and a signed installer. Tracked in
   [#234](https://github.com/Helldez/BigMoeOnEdge/issues/234).
-- **iOS.** A device, an Apple development team and the memory entitlements, none of which this
+- **iOS.** The release carries the harness for the simulator; a device, an Apple development
+  team and the memory entitlements, none of which this
   project has, then an app on the shared framework running the server in-process. Tracked in
   [#235](https://github.com/Helldez/BigMoeOnEdge/issues/235) as a call for a contributor.
 - **Every platform.** The planner's owed measurements and the loop that compares its prediction

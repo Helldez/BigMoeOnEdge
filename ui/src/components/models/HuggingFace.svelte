@@ -5,9 +5,9 @@
   names an engine parameter: the facts card shows what the server answered.
 -->
 <script lang="ts">
-  import { api } from '../../lib/api';
-  import { formatBytes } from '../../lib/format';
-  import type { HfFacts, HfModel } from '../../lib/types';
+  import { api, ApiError, CODE_NOT_A_REPO } from '../../lib/api';
+  import { formatBytes, formatNum } from '../../lib/format';
+  import type { HfFacts, HfModel, HfRepoHit } from '../../lib/types';
 
   let { onAdded }: { onAdded: (id: string) => Promise<void> | void } = $props();
 
@@ -16,6 +16,7 @@
   let askToken = $state(false);
   let listed = $state(''); // the repository the list below came from
   let models = $state<HfModel[] | null>(null);
+  let hits = $state<HfRepoHit[] | null>(null); // a search's repositories, when the text was not one
   let selected = $state('');
   let facts = $state<HfFacts | null>(null);
   let busy = $state('');
@@ -40,7 +41,17 @@
     run('list', async () => {
       facts = null;
       added = '';
-      const r = await api.hfModels(repo, token || undefined);
+      hits = null;
+      let r;
+      try {
+        r = await api.hfModels(repo, token || undefined);
+      } catch (e) {
+        // Not a repository: a name to search for, and the repositories found are offered instead.
+        if (!(e instanceof ApiError) || e.code !== CODE_NOT_A_REPO) throw e;
+        models = null;
+        hits = (await api.hfSearch(repo, token || undefined)).repos;
+        return;
+      }
       models = r.models;
       listed = r.repo;
       // A URL that named a file preselects it; a repository with one model needs no choice.
@@ -62,6 +73,11 @@
     });
   }
 
+  function pick(hit: HfRepoHit) {
+    repo = hit.id;
+    list();
+  }
+
   function choose(name: string) {
     selected = name;
     facts = null;
@@ -73,7 +89,7 @@
 
 <section class="card hf">
   <h3>From Hugging Face</h3>
-  <p class="muted">A repository id or its URL. The server lists its gguf files, reads a model's header before any download, and says what it is and whether it fits here.</p>
+  <p class="muted">A model's name to search for, or a repository id or URL. The server lists the repository's gguf files, reads a model's header before any download, and says what it is and whether it fits here.</p>
   <form
     class="row"
     onsubmit={(e) => {
@@ -81,8 +97,8 @@
       list();
     }}
   >
-    <input type="text" bind:value={repo} placeholder="owner/name, or a huggingface.co link" aria-label="Repository" autocomplete="off" />
-    <button type="submit" class="primary" disabled={!repo.trim() || busy !== ''}>{busy === 'list' ? 'Listing...' : 'List'}</button>
+    <input type="text" bind:value={repo} placeholder="a name to search, owner/name, or a huggingface.co link" aria-label="Repository or search" autocomplete="off" />
+    <button type="submit" class="primary" disabled={!repo.trim() || busy !== ''}>{busy === 'list' ? 'Looking...' : 'Find'}</button>
     <button type="button" onclick={() => (askToken = !askToken)}>{askToken ? 'Hide token' : 'Token'}</button>
   </form>
   {#if askToken}
@@ -92,6 +108,22 @@
     </label>
   {/if}
   {#if error}<p class="banner error" role="alert">{error}</p>{/if}
+
+  {#if hits}
+    {#if hits.length === 0}
+      <p class="muted">No repository with gguf files matches <code>{repo}</code>.</p>
+    {:else}
+      <ul class="models" aria-label="Repositories found">
+        {#each hits as h (h.id)}
+          <li>
+            <button type="button" class="link" onclick={() => pick(h)}>{h.id}</button>
+            <span class="muted">{formatNum(h.downloads, 0)} downloads · {formatNum(h.likes, 0)} likes</span>
+            {#if h.gated}<span class="badge warn" title="Needs an access token">gated</span>{/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {/if}
 
   {#if models}
     {#if models.length === 0}
@@ -189,6 +221,12 @@
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
+  }
+  .models li {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
   }
   .models label {
     display: flex;
