@@ -67,12 +67,19 @@ class ServerProcess(private val ctx: Context) {
 
         val pb = ProcessBuilder(argv)
         pb.redirectErrorStream(false)
-        // Where the system finds the engine's code, which only the app knows. How the backends are
-        // configured once found is the server's (server/platform.cpp).
+        // The engine's own directory first: the backends are modules there, and a module whose
+        // driver library is missing is not loaded, which is how one APK runs on every phone. Then
+        // the system directory, then the vendor one, and in that order. A process started from the
+        // app links in the linker's default namespace, which may open a vendor library (the phone's
+        // OpenCL, the DSP's libcdsprpc) only from a directory named on this path - a symlink to one
+        // from anywhere else is refused, so without /vendor/lib64 here the OpenCL and Hexagon
+        // modules fail to load and the engine says nothing. Last, it shadows nothing: a library the
+        // system directory has is found there first.
+        // How the backends are configured once found is the server's (server/platform.cpp).
         pb.environment()["LD_LIBRARY_PATH"] = "$nativeDir:/system/lib64:/vendor/lib64"
-        // The Hexagon backend loads its DSP-side skel (libggml-htp-v<arch>.so) through fastrpc, which
-        // resolves it against ADSP_LIBRARY_PATH, not the linker path above. Without it the NPU
-        // registers and then fails to open a session.
+        // The one environment entry a backend documents it needs to find its own files: a DSP-side
+        // library is resolved through this path and not the linker's. Set whatever backends are
+        // present; where none reads it, it costs nothing.
         pb.environment()["ADSP_LIBRARY_PATH"] = nativeDir
         pb.directory(dataDir)
         val p = pb.start()

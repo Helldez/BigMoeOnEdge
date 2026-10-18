@@ -244,12 +244,23 @@ uint32_t g_backends_loaded = 0;
 bool g_backends_looked = false;
 
 void register_backends() {
-    // ggml looks beside the executable, and in GGML_BACKEND_DIR where the build set one, for
-    // libraries named after each backend. In a build that linked them statically this finds nothing
-    // and costs a few failed lookups; in one built with GGML_BACKEND_DL it is the difference between
-    // a machine with an accelerator and a machine that appears to have none.
+    // Once: llama_backend_init() loads nothing when the registry is already filled, and a second
+    // pass here would count the modules the first one loaded as linked in.
+    if (g_backends_looked) return;
+    // What the registry holds before anything is loaded is what came linked in (the CPU backend
+    // in a build that links it, nothing in one that loads it). Then the modules: ggml looks for
+    // libraries named after each backend, and left to itself it looks in the working directory
+    // too, which is wherever the process happened to be started from. Only the directory the
+    // executable is in is a place a release put files; a module it did not ship is not loaded.
     g_backends_linked = (uint32_t) ggml_backend_reg_count();
-    ggml_backend_load_all();
+    const std::string self = pio::self_path();
+    if (!self.empty()) {
+        const size_t slash = self.find_last_of("/\\");
+        const std::string dir = slash == std::string::npos ? std::string(".") : self.substr(0, slash);
+        ggml_backend_load_all_from_path(dir.c_str());
+    } else {
+        ggml_backend_load_all();
+    }
     const uint32_t after = (uint32_t) ggml_backend_reg_count();
     g_backends_loaded = after > g_backends_linked ? after - g_backends_linked : 0;
     g_backends_looked = true;

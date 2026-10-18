@@ -65,8 +65,22 @@ CPU MoE kernel invokes.
 
 ```c
 // ggml-cpu.h
-void ggml_cpu_set_expert_ready_hook(ggml_expert_ready_hook_t hook, void * user_data);
+void ggml_cpu_set_expert_ready_hook(ggml_cpu_expert_ready_hook_t hook, void * user_data);
+// and the same setter from the CPU backend's registry, by name:
+ggml_backend_reg_get_proc_address(cpu_reg,
+                                  "ggml_cpu_set_expert_ready_hook");
 ```
+
+The engine never links the symbol: it asks the CPU backend's registry for it at run time, the
+way ggml exposes every other backend-specific function (threads, NUMA, the abort callback). That
+is what lets the CPU backend be a module loaded from beside the executable, which is how every
+release is built (`BMOE_BACKEND_MODULES`), and what lets a build on stock upstream run: the
+registry answers null, `expert_ready_hook_available()` says so, and `--overlap` is refused with
+the reason instead of failing to link. The gates that prove `--overlap` byte-identical (G4, G5b,
+S2) skip themselves on such a build, and the build whose job is to prove it passes
+`-DBMOE_GATES_REQUIRE_HOOK=ON`, under which a missing hook is a failure: whether the CPU module a
+build loads carries the hook is decided at run time now, and a bump or a stripped module must not
+be able to retire those gates quietly.
 
 `ggml_compute_forward_mul_mat_id` calls the hook at the top of its per-expert loop, right
 after the "expert not routed this token" skip, before it consumes that expert's weight
@@ -82,11 +96,11 @@ and it can only fire *before* the expert matmuls of a layer run — it cannot pa
 through them. Overlapping expert reads with expert compute requires a per-expert wait point
 *inside* the kernel, which the public API does not provide. Hence the extension.
 
-**Graceful degradation.** CMake probes `ggml-cpu.h` for the hook symbol and, when present,
-defines `BMOE_HAVE_EXPERT_READY_HOOK`. Built against stock upstream (symbol absent) the
-whole project still compiles and runs — the serial streaming path is unchanged; only
-`--overlap` is affected, and it fails with a clear runtime error instead of silently
-falling back.
+**Graceful degradation.** Nothing is detected at configure time. Built against stock upstream
+the whole project compiles and runs - the serial streaming path is unchanged; only `--overlap`
+is affected, and it fails with a clear runtime error instead of silently falling back. The
+server's default for overlap and the `overlap_available` it reports are read from the backend
+that loaded, not from a build flag.
 
 **Sunset condition.** This fork exists *solely* for this one hook. The moment upstream
 ships an equivalent per-expert readiness/residency callback, the branch is dropped and the

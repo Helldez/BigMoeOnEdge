@@ -32,6 +32,7 @@
 #include "speculative.h"
 
 #include <algorithm>
+#include <limits>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -247,6 +248,17 @@ int prefill_piece(const SessionConfig & cfg) {
     return cfg.n_ubatch > 0 ? std::min(cfg.n_ubatch, cfg.n_batch) : cfg.n_batch;
 }
 
+// The text a prefill device is confirmed on (PrefillDeviceConfig::verify). Ordinary prose, so the
+// model's next-token choices are confident in most rows and a device that computes the same model
+// agrees with the host on them; a device whose numerics break the model agrees on almost none.
+constexpr const char * k_verify_text =
+    "The river runs past the old mill and under the stone bridge before it reaches the town. In the "
+    "morning the market opens on the square, and people come from the villages to sell bread, cheese "
+    "and vegetables. Children walk to school along the canal, and the baker has been awake since four. "
+    "By noon the square is full, the church bell rings twelve times, and the cafes put their chairs "
+    "out in the sun. In the afternoon the farmers drive home, the stalls are folded away, and the town "
+    "becomes quiet again until the evening, when the lights come on along the water.";
+
 } // namespace
 
 // All native state lives here, behind the pimpl. Built once by Session::open(); every
@@ -400,6 +412,8 @@ struct Session::Impl {
     release_mapping(const SessionConfig & cfg, const GgufOffsets & offs, const std::vector<std::string> & unaccounted);
     void arm_route_trace(Opening & o, int n_expert, std::vector<uint64_t> dense_bytes);
     bool open_prefill_device(Opening & o);
+    void hand_back_prefill(const std::string & why);
+    bool confirm_prefill_device(Opening & o);
     void arm_decode_traces(Opening & o);
     void describe_run(Opening & o);
     void warn_about_load(const SessionConfig & cfg);
@@ -1268,13 +1282,9 @@ bool Session::Impl::bind_streaming(Opening & o) {
         source.set_io_trace(true);
     }
 
-    if (cfg.moe.overlap) {
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-        source.enable_overlap_hook();
-#else
-        return o.fail("--overlap requires the bmoe llama.cpp fork (expert-ready hook not compiled in)");
-#endif
-    }
+    if (cfg.moe.overlap && !source.enable_overlap_hook())
+        return o.fail("--overlap needs the expert-ready hook of the bmoe llama.cpp fork, and the CPU backend "
+                      "loaded here does not expose it (docs/seam.md)");
 
     clear_memory(ctx.get()); // discard warm-up KV
     if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);
@@ -1287,15 +1297,136 @@ bool Session::Impl::open_prefill_device(Opening & o) {
     std::string perr;
     if (prefill->open(ctx.get(), vocab, *hook, cfg.prefill, cfg.moe, o.n_layer_streamed, perr)) return true;
     if (!cfg.prefill.best_effort) return o.fail(perr);
-    // Asked for as a speed-up, not as a condition: undo it and run on the CPU. Destroying
-    // the path hands every weight and the model state back to where the load put them, so
-    // what is left is the session a run without the flag would have had.
-    log_printf(LogLevel::Warn, "%s; prefill stays on the CPU", perr.c_str());
+    hand_back_prefill(perr);
+    return true;
+}
+
+// Asked for as a speed-up, not as a condition: undo it and run on the CPU. Destroying the path
+// hands every weight and the model state back to where the load put them, so what is left is the
+// session a run without the flag would have had.
+void Session::Impl::hand_back_prefill(const std::string & why) {
+    log_printf(LogLevel::Warn, "%s; prefill stays on the CPU", why.c_str());
     hook->set_device_arena(nullptr);
     hook->count_device_nodes(false);
     prefill.reset();
-    this->cfg.prefill.device.clear();
+    cfg.prefill.device.clear();
     clear_memory(ctx.get());
+}
+
+// Confirm the device on this model (PrefillDeviceConfig::verify): the same short prefill on the
+// host and on the device, compared row by row. A device that fails is handed back exactly as one
+// that failed to open. The two are timed and the times printed, but not judged: at this width the
+// cold expert reads dominate, and a laptop iGPU measured faster here (6.5 s against 7.5) prefilled
+// a 1015-token prompt 8% slower than the host.
+bool Session::Impl::confirm_prefill_device(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    llama_context * c = ctx.get();
+    std::string why;
+    // Sized as llama.cpp's own common_tokenize sizes it: a guess, and once more at the size a
+    // buffer too small is told it needs (returned negated).
+    const int text_len = (int) std::strlen(k_verify_text);
+    std::vector<llama_token> toks((size_t) text_len + 2);
+    int nt = llama_tokenize(vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), /*add_special*/ true,
+                            /*parse_special*/ false);
+    if (nt < 0 && nt != std::numeric_limits<int32_t>::min()) { // INT32_MIN: the count overflowed
+        toks.resize((size_t) -nt);
+        nt = llama_tokenize(vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), true, false);
+    }
+    // At least as wide as the narrowest graph the device is handed, so what is confirmed is a
+    // placement the device will actually see; bounded by what one graph may return.
+    const int want = std::min({std::max(PrefillDeviceConfig::verify_tokens, cfg.prefill.min_tokens),
+                               PrefillDeviceConfig::max_outputs, prefill_piece(this->cfg), cfg.n_ctx - 1});
+    double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0;
+    // A check that cannot run is not a verdict: the device stays as the plan or the caller set it,
+    // and the line below says it was not confirmed.
+    std::string unchecked;
+    if (nt <= 1) {
+        unchecked = "the confirmation text does not tokenize";
+    } else if (want < cfg.prefill.min_tokens) {
+        unchecked = "no graph as wide as the narrowest the device is handed fits a confirmation";
+    } else {
+        // Repeat the text (without its leading special token) until the probe is as wide as asked.
+        const int body = toks[0] == llama_vocab_bos(vocab) ? 1 : 0;
+        std::vector<llama_token> probe(toks.begin(), toks.begin() + nt);
+        while ((int) probe.size() < want)
+            probe.insert(probe.end(), toks.begin() + body, toks.begin() + nt);
+        probe.resize((size_t) want);
+
+        llama_batch b = llama_batch_init(want, 0, 1);
+        std::vector<float> host_logits((size_t) want * (size_t) n_vocab);
+        // 0 ran, 1 the device had no room, -1 the decode failed.
+        auto pass = [&](bool device, bool keep, double & secs) -> int {
+            // Two wide graphs of one shape in a row would let llama.cpp reuse the first for the
+            // second although the weights moved between them, which crashes (the reason min_tokens
+            // keeps the two placements' shapes apart). A one-token host graph between them breaks
+            // the shape at the cost of one token.
+            clear_memory(c);
+            batch_fill(b, probe.data(), 1, 0, /*all_logits*/ false);
+            if (decode_placed(c, b) != 0) return -1;
+            clear_memory(c);
+            const bool placed = place_prefill(device);
+            if (device && !placed) return 1;
+            batch_fill(b, probe.data(), want, 0, /*all_logits*/ true);
+            hook->set_batch_phase(0);
+            const auto t0 = std::chrono::steady_clock::now();
+            const int rc = decode_placed(c, b);
+            llama_synchronize(c);
+            secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            place_prefill(false);
+            if (rc != 0) return -1;
+            if (keep)
+                for (int j = 0; j < want; ++j)
+                    std::memcpy(host_logits.data() + (size_t) j * n_vocab, llama_get_logits_ith(c, j),
+                                sizeof(float) * (size_t) n_vocab);
+            return 0;
+        };
+        // The device first and untimed: its first graph pays for kernel compilation and the arena's
+        // first fill, which a timed pass would charge to every prefill after it.
+        double warm = 0.0;
+        int rc = pass(true, false, warm);
+        if (rc == 0) rc = pass(false, true, host_s);
+        if (rc == 0) rc = pass(true, false, dev_s);
+        if (rc == 1) {
+            why = "the device had no room for the confirmation prefill";
+        } else if (rc != 0) {
+            why = "the confirmation prefill failed";
+        } else {
+            int same = 0;
+            double num = 0.0, den = 0.0;
+            for (int j = 0; j < want; ++j) {
+                const float * h = host_logits.data() + (size_t) j * n_vocab;
+                const float * d = llama_get_logits_ith(c, j);
+                if (argmax(h, n_vocab) == argmax(d, n_vocab)) ++same;
+                for (int v = 0; v < n_vocab; ++v) {
+                    const double e = (double) d[v] - (double) h[v];
+                    num += e * e;
+                    den += (double) h[v] * (double) h[v];
+                }
+            }
+            agree = (double) same / want;
+            nmse = den > 0.0 ? num / den : 0.0;
+            if (agree < PrefillDeviceConfig::verify_min_agree)
+                why = "it picked the host's next token in " + std::to_string(same) + " of " + std::to_string(want) +
+                      " positions of a " + std::to_string(want) + "-token prefill: it does not compute this model";
+        }
+        llama_batch_free(b);
+        clear_memory(c);
+    }
+    if (!unchecked.empty()) {
+        log_printf(LogLevel::Warn, "prefill-device %s not confirmed: %s; kept as set", cfg.prefill.device.c_str(),
+                   unchecked.c_str());
+        return true;
+    }
+    log_printf(LogLevel::Info,
+               "prefill-device %s confirmation: %d tokens, top token agrees %.0f%%, logit NMSE %.2e, host %.2f s, "
+               "device %.2f s%s%s",
+               cfg.prefill.device.c_str(), want, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
+               why.c_str());
+    if (!why.empty()) {
+        const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
+        if (!cfg.prefill.best_effort) return o.fail(perr);
+        hand_back_prefill(perr);
+    }
     return true;
 }
 
@@ -1472,6 +1603,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (!im.init_speculation(o)) return nullptr;
     if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;
     if (im.prefill && !im.open_prefill_device(o)) return nullptr;
+    if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);
     im.describe_run(o);
     im.warn_about_load(cfg);
