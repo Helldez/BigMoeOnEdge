@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import HuggingFace from '../components/models/HuggingFace.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
   import { api } from '../lib/api';
   import { formatBytes } from '../lib/format';
@@ -54,6 +55,23 @@
     });
   }
 
+  // A model added from a repository is a catalog entry like the others; it can be forgotten
+  // (its files stay) and, right after it is added, downloaded in the same breath.
+  async function added(id: string) {
+    await refresh();
+    await act(`dl:${id}`, async () => {
+      await api.download(id);
+      await refresh();
+    });
+  }
+
+  function remove(entry: CatalogEntry) {
+    act(`rm:${entry.id}`, async () => {
+      await api.removeAdded(entry.id);
+      await refresh();
+    });
+  }
+
   function isDownloading(entry: CatalogEntry): boolean {
     const d = server.downloads[entry.id];
     return d ? d.state === 'running' : entry.status === 'downloading';
@@ -91,7 +109,7 @@
 
   <h2>On this machine</h2>
   {#if data.local.length === 0}
-    <p class="muted">No gguf files in the models directory yet. Download one from the catalog below.</p>
+    <p class="muted">No gguf files in the models directory yet. Get one below: from a Hugging Face repository, or from the catalog.</p>
   {:else}
     <div class="table-wrap">
       <table>
@@ -134,6 +152,9 @@
     </div>
   {/if}
 
+  <h2>Get a model</h2>
+  <HuggingFace onAdded={added} />
+
   <h2>Catalog</h2>
   <div class="catalog">
     {#each data.catalog as entry (entry.id)}
@@ -141,7 +162,8 @@
       <article class="card entry">
         <header>
           <h3>{entry.title}</h3>
-          <span class="badge">{entry.quant}</span>
+          {#if entry.quant}<span class="badge">{entry.quant}</span>{/if}
+          {#if entry.added}<span class="badge" title="Added from a repository">added</span>{/if}
           <span class="badge {entry.status === 'on_disk' ? 'ok' : ''}">{statusLabel[entry.status] ?? entry.status}</span>
         </header>
         <p class="muted size">{formatBytes(entry.bytes)}, <code>{entry.file}</code></p>
@@ -163,6 +185,11 @@
           {:else if entry.status !== 'on_disk'}
             <button type="button" class="primary" disabled={pending[`dl:${entry.id}`]} onclick={() => download(entry)}>
               Download<span class="visually-hidden"> {entry.title}</span>
+            </button>
+          {/if}
+          {#if entry.added && !isDownloading(entry)}
+            <button type="button" disabled={pending[`rm:${entry.id}`]} onclick={() => remove(entry)} title="Forget this entry; its files stay">
+              Remove<span class="visually-hidden"> {entry.title} from the catalog</span>
             </button>
           {/if}
         </div>

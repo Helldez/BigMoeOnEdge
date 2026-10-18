@@ -83,8 +83,10 @@ Decode runs on the CPU. Prefill can run on a Snapdragon's Hexagon NPU or an Appl
 
 **Phone.** Install the APK from the
 [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest). On the Models screen,
-pick a model from the catalog or paste any direct gguf URL under **Get a model**. Models split into
-shards download and load as they are, with no merge step. The planner configures every load and
+under **Get a model**, take any gguf from its Hugging Face repository: the engine reads the model's
+header before the download and says what it is and whether it fits this phone. Two reference
+models are one tap away in the catalog, and a direct gguf URL works too. Models split into shards
+download and load as they are, with no merge step. The planner configures every load and
 the Plan screen shows why. **Serve on the network**, in Settings, lets any OpenAI-compatible client
 on your network use the phone, with a generated key.
 

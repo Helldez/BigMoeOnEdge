@@ -15,6 +15,7 @@
 
 #include "access.h"
 #include "decide_protocol.h"
+#include "hf_repo.h"
 #include "json_util.h"
 #include "model_files.h"
 #include "openai_chat.h"
@@ -640,6 +641,104 @@ static void model_files_tests() {
           "a set missing its first shard is still listed under the first shard's name, incomplete");
 }
 
+// A repository as a person types it, what a listing holds, and the catalog entry a model becomes.
+static void hf_tests() {
+    HfRef r;
+    std::string err;
+    check(parse_hf_ref("ggml-org/gemma-4-26B-A4B-it-GGUF", r, err) && r.repo == "ggml-org/gemma-4-26B-A4B-it-GGUF" &&
+              r.revision == "main" && r.file.empty(),
+          "hf: an id is owner/name on main");
+    check(parse_hf_ref("  https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/main/UD-IQ3_XXS ", r, err) &&
+              r.repo == "unsloth/Qwen3.8-Flash-Next-GGUF" && r.revision == "main" && r.file.empty(),
+          "hf: a tree URL names the repository and no file");
+    check(parse_hf_ref("https://hf.co/a/b/resolve/v2/sub/model-Q4_0.gguf?download=true", r, err) && r.repo == "a/b" &&
+              r.revision == "v2" && r.file == "sub/model-Q4_0.gguf",
+          "hf: a resolve URL names the file, the revision, and drops the query");
+    check(!parse_hf_ref("https://example.com/a/b", r, err), "hf: another host is refused");
+    check(!parse_hf_ref("onlyowner", r, err), "hf: one segment is refused");
+    check(!parse_hf_ref("a/b/blob/main/../x.gguf", r, err), "hf: a path that climbs is refused");
+    check(!parse_hf_ref("a/b c", r, err), "hf: a space in the id is refused");
+    check(!parse_hf_ref("a/b/resolve/main/x%2F..%2Fy.gguf", r, err), "hf: an escaped path is refused");
+
+    check(quant_from_name("Qwen3.6-35B-A3B-Q4_K_M.gguf") == "Q4_K_M", "hf: quant Q4_K_M");
+    check(quant_from_name("UD-IQ3_XXS/Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf") == "UD-IQ3_XXS",
+          "hf: quant with the unsloth prefix, off a shard name");
+    check(quant_from_name("gemma-4-26B-A4B-it-BF16.gguf") == "BF16", "hf: quant BF16");
+    check(quant_from_name("mmproj-gemma-4-26B-A4B-it.gguf").empty(), "hf: no quant token is empty");
+
+    const json tree = json::parse(R"([
+      {"type":"file","path":"README.md","size":467},
+      {"type":"file","path":"Qwen3.6-35B-A3B-Q4_K_M.gguf","size":20419565568},
+      {"type":"file","path":"mmproj-Qwen3.6-35B-A3B-Q8_0.gguf","size":614194304},
+      {"type":"file","path":"Q2_K/big-Q2_K-00002-of-00003.gguf","size":200},
+      {"type":"file","path":"Q2_K/big-Q2_K-00001-of-00003.gguf","size":100},
+      {"type":"directory","path":"Q2_K"}
+    ])");
+    std::vector<HfModel> models;
+    check(parse_hf_tree(tree, models, err) && models.size() == 3, "hf: a listing's gguf files, shards grouped");
+    check(models[0].name == "Q2_K/big-Q2_K-00001-of-00003.gguf" && models[0].count == 3 &&
+              models[0].files.size() == 2 && !models[0].complete() && models[0].bytes == 300 &&
+              models[0].files[0].bytes == 100,
+          "hf: a split set is listed by its first shard, in shard order, with the shards it has");
+    check(models[1].name == "Qwen3.6-35B-A3B-Q4_K_M.gguf" && models[1].quant == "Q4_K_M" && models[1].complete() &&
+              models[1].bytes == 20419565568ull,
+          "hf: a lone file is a complete model of one");
+    std::vector<HfModel> none;
+    check(!parse_hf_tree(json{{"error", "Repository not found"}}, none, err) && err == "Repository not found" &&
+              none.empty(),
+          "hf: the site's error object is the reason, and the listing is empty");
+
+    check(hf_tree_url("https://huggingface.co", r) == "https://huggingface.co/api/models/a/b/tree/v2?recursive=true",
+          "hf: the listing URL");
+    HfRef g;
+    parse_hf_ref("ggml-org/gemma-4-26B-A4B-it-GGUF", g, err);
+    const CatalogEntry e = hf_catalog_entry("https://huggingface.co", g, models[1]);
+    check(e.id == "hf:ggml-org/gemma-4-26B-A4B-it-GGUF/Qwen3.6-35B-A3B-Q4_K_M.gguf" &&
+              e.title == "Qwen3.6-35B-A3B-Q4_K_M" && e.quant == "Q4_K_M" && e.files.size() == 1 &&
+              e.files[0].name == "Qwen3.6-35B-A3B-Q4_K_M.gguf" &&
+              e.files[0].url == "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/"
+                                "Qwen3.6-35B-A3B-Q4_K_M.gguf?download=true" &&
+              e.files[0].bytes == 20419565568ull && is_hf_catalog_id(e.id),
+          "hf: the catalog entry a model becomes");
+    const CatalogEntry split = hf_catalog_entry("https://mirror.example", g, models[0]);
+    check(split.files.size() == 2 && split.files[1].name == "big-Q2_K-00002-of-00003.gguf" &&
+              split.files[1].url == "https://mirror.example/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/Q2_K/"
+                                    "big-Q2_K-00002-of-00003.gguf?download=true",
+          "hf: shards keep their names and their folder in the URL, on the endpoint given");
+
+    FitInputs in;
+    in.file_bytes = 10ull << 30;
+    in.disk_free = 4ull << 30;
+    in.readable = true;
+    in.is_moe = true;
+    in.streamable = true;
+    in.dense_bytes = 1ull << 30;
+    in.token_cycle = 512ull << 20;
+    in.budget = 6ull << 30;
+    FitVerdict v = fit_verdict(in);
+    check(!v.downloadable && v.disk.find("6144 MiB short") != std::string::npos && v.mode == "streams",
+          "hf: a disk too small is the one thing that refuses the download, and says by how much");
+    in.disk_free = 40ull << 30;
+    in.present_bytes = 2ull << 30;
+    v = fit_verdict(in);
+    check(v.downloadable && v.disk.find("needs 8192 MiB") != std::string::npos &&
+              v.memory.find("fits in the 6144 MiB") != std::string::npos,
+          "hf: what is already on disk is not downloaded again, and the floor against the budget");
+    in.budget = 1ull << 30;
+    check(fit_verdict(in).memory.find("more than the 1024 MiB") != std::string::npos,
+          "hf: a floor past the budget says so");
+    in.is_moe = false;
+    in.streamable = false;
+    check(fit_verdict(in).mode == "plain mmap", "hf: a dense model runs as plain mmap");
+    in.is_moe = true;
+    in.refusal = "layer 1 names {ffn_up_exps} where layer 0 names more";
+    v = fit_verdict(in);
+    check(v.mode == "plain mmap" && v.memory.find(in.refusal) != std::string::npos,
+          "hf: a refused MoE carries the reason");
+    in.readable = false;
+    check(fit_verdict(in).mode == "not readable", "hf: an unreadable header is a fact, not a guess");
+}
+
 int main() {
     protocol_tests();
     queue_tests();
@@ -650,6 +749,7 @@ int main() {
     file_tests();
     decide_tests();
     model_files_tests();
+    hf_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

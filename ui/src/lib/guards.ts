@@ -2,7 +2,20 @@
 // cast trusts the wire; these make a server of another version, a proxy's error page or a
 // truncated body fail where it is read, with a message, instead of as an undefined deep inside a
 // component. They check structure, not every field: a field the UI does not read may change freely.
-import type { Config, DecideResult, DoneSummary, DownloadEvent, Info, ModelsResponse, ParamSpec, Plan, TokenEvent } from './types';
+import type {
+  Config,
+  DecideResult,
+  DoneSummary,
+  DownloadEvent,
+  HfAdded,
+  HfFacts,
+  HfModelsResponse,
+  Info,
+  ModelsResponse,
+  ParamSpec,
+  Plan,
+  TokenEvent,
+} from './types';
 
 type Obj = Record<string, unknown>;
 
@@ -37,6 +50,34 @@ export function isModelsResponse(v: unknown): v is ModelsResponse {
     Array.isArray(v.catalog) &&
     v.catalog.every((e) => isObject(e) && isStr(e.id) && isStr(e.title))
   );
+}
+
+export function isHfModelsResponse(v: unknown): v is HfModelsResponse {
+  return (
+    isObject(v) &&
+    isStr(v.repo) &&
+    Array.isArray(v.models) &&
+    v.models.every((m) => isObject(m) && isStr(m.name) && isNum(m.bytes) && isBool(m.complete) && Array.isArray(m.files))
+  );
+}
+
+export function isHfFacts(v: unknown): v is HfFacts {
+  return (
+    isObject(v) &&
+    isStr(v.name) &&
+    isNum(v.bytes) &&
+    isObject(v.model) &&
+    isBool(v.model.readable) &&
+    isObject(v.verdict) &&
+    isBool(v.verdict.downloadable) &&
+    isStr(v.verdict.mode) &&
+    isStr(v.verdict.disk) &&
+    isStr(v.verdict.memory)
+  );
+}
+
+export function isHfAdded(v: unknown): v is HfAdded {
+  return isObject(v) && isStr(v.id);
 }
 
 export function isPlan(v: unknown): v is Plan {
