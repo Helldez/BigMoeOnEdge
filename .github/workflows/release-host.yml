@@ -8,6 +8,10 @@
 # CMakeLists). A module whose driver library the machine lacks is not loaded and the engine runs on
 # the CPU, so the same archive serves a laptop with a GPU and a server without one. Vulkan rides in
 # the Linux and Windows archives; Metal in the macOS one.
+#
+# iOS rides along as the harness app built for the simulator, unsigned: the one build of this
+# engine for that platform anyone can run without an Apple team, on a Mac with Xcode
+# (examples/ios/README.md). A device build is signed by whoever has the device.
 name: release-host
 
 on:
@@ -272,3 +276,86 @@ jobs:
         with:
           name: host-${{ matrix.target }}
           path: bmoe-*-${{ matrix.target }}.*
+
+  ios-harness:
+    runs-on: macos-14
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          case "$EVENT" in
+            release)           T="$RELEASE_TAG"; R="$T" ;;
+            workflow_dispatch) T="$INPUT_TAG"; R="$T" ;;
+            *)                 T="pr-$PR_NUMBER"; R="" ;;
+          esac
+          case "$T" in
+            ''|*[!A-Za-z0-9._-]*) echo "not a plain tag name: '$T'"; exit 1 ;;
+          esac
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
+          echo "ref=$R" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          submodules: recursive
+
+      - name: Version matches the tag
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: bash scripts/check-version.sh "$TAG"
+
+      - name: Configure & build (examples/ios, simulator)
+        run: scripts/build-ios.sh sim
+
+      - name: Package
+        id: pkg
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          APP="$(find build-ios-sim -maxdepth 4 -name bmoe-harness.app -type d | head -n 1)"
+          [ -n "$APP" ] || { echo "no bmoe-harness.app in build-ios-sim"; exit 1; }
+          NAME="bmoe-ios-harness-sim-$TAG"
+          mkdir -p "$NAME"
+          cp -R "$APP" "$NAME/"
+          cp LICENSE "$NAME/"
+          cat > "$NAME/README.txt" <<EOF
+          BigMoeOnEdge iOS harness $TAG, for the iOS simulator on a Mac with Xcode (unsigned)
+
+          bmoe-cli compiled into an app, since an app on iOS may not start a process. It proves
+          the engine builds and runs on the platform; what a device does is a device's to say,
+          and a device build is signed by whoever has one (examples/ios/README.md in the
+          repository, and the call for a contributor in issue #235).
+
+            xcrun simctl boot <device>                        # one of: xcrun simctl list devices
+            xcrun simctl install booted bmoe-harness.app
+            cp model.gguf "\$(xcrun simctl get_app_container booted io.bigmoeonedge.harness data)/Documents/"
+            xcrun simctl launch --console booted io.bigmoeonedge.harness --bmoe --auto --plan -m model.gguf
+
+          Everything after --bmoe goes to bmoe-cli; its --help lists the flags.
+          EOF
+          ditto -c -k --keepParent "$NAME" "$NAME.zip"
+          echo "assets=$NAME.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Upload asset to the release
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          ASSETS: ${{ steps.pkg.outputs.assets }}
+        run: gh release upload "$TAG" $ASSETS --clobber
+
+      - name: Keep as workflow artifact (dry run)
+        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.upload)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-harness-sim
+          path: bmoe-ios-harness-sim-*.zip

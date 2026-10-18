@@ -7,6 +7,12 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **iOS rides with every release: the harness app for the simulator, as a release asset.** The
+  `release-host` workflow gains an `ios-harness` job that builds `examples/ios` for the simulator,
+  unsigned, and attaches `bmoe-ios-harness-sim-<tag>.zip` (the app, a README with the simulator
+  commands, the licence) to the release, or keeps it as an artifact on a dry run. The one build of
+  this engine for the platform anyone can run without an Apple team; a device build stays signed by
+  whoever has the device (#235). `docs/platforms.md` and the harness README say so.
 - **A model from any Hugging Face repository, with its header read before the download.** The
   Models screen of the web UI and of the Android app takes a repository id or URL and the server
   does three things in turn (`POST /api/hf/models`, `/inspect`, `/add`, `docs/server-api.md`):
