@@ -15,6 +15,12 @@ app works and nothing about a phone. What the planner reads on
 real hardware (the process's memory share, whether memory can be locked, whether a model larger
 than memory can be mapped at all) is unmeasured.
 
+## From a release
+
+Every release attaches `bmoe-ios-harness-sim-<tag>.zip`: the harness built for the simulator,
+unsigned, with a README that gives the commands below. It runs on a Mac with Xcode and needs no
+Apple team; a device build does, and is yours to make from the same tag.
+
 ## Build
 
 Needs Xcode (the command line tools alone carry no iOS SDK) and CMake.
