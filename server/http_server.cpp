@@ -12,7 +12,10 @@
 #include "engine_host.h"
 #include "openai_chat.h"
 #include "event_bus.h"
+#include "hf_repo.h"
+#include "http_fetch.h"
 #include "json_util.h"
+#include "model_inspect.h"
 #include "model_library.h"
 #include "planner_adapter.h"
 #include "platform.h"
@@ -44,6 +47,8 @@ namespace {
 
 constexpr int kPortMax = 65535;
 
+constexpr const char * kDefaultHfEndpoint = "https://huggingface.co";
+
 struct Options {
     std::string host = kDefaultHost;
     int port = kDefaultPort;
@@ -55,9 +60,10 @@ struct Options {
     bool no_api_key = false;  // listen beyond loopback with no key, on purpose
     bool models_only = false; // every client, local ones too, names models in the models folder only
     bool open_browser = false;
-    bool isolated_probes = true;               // the planner asks each device in a child process first
-    std::string probe_device;                  // internal: this process IS such a child; probe this device and exit
-    std::map<std::string, std::string> launch; // engine parameters given on the command line
+    bool isolated_probes = true;                  // the planner asks each device in a child process first
+    std::string hf_endpoint = kDefaultHfEndpoint; // where repositories are listed and fetched from
+    std::string probe_device;                     // internal: this process IS such a child; probe this device and exit
+    std::map<std::string, std::string> launch;    // engine parameters given on the command line
 };
 
 // What a chat front-end wants when nobody has said otherwise. These are the server's defaults, not
@@ -97,12 +103,13 @@ void print_usage(const char * argv0) {
                 "  --models-only        local clients too may only open models from the folders models\n"
                 "                       are listed from (clients on the network always are)\n"
                 "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
+                "  --hf-endpoint URL    where Hugging Face repositories are read from (default %s; a mirror)\n"
                 "  -h, --help           this text\n"
                 "      --version        print the engine version\n"
                 "\n"
                 "Engine parameters are the bmoe-cli flags (bmoe-cli --help lists them). Given here, they\n"
                 "hold for this run and outrank saved settings; -m loads that model at start.\n",
-                argv0, kDefaultHost, kDefaultPort);
+                argv0, kDefaultHost, kDefaultPort, kDefaultHfEndpoint);
 }
 
 // -1: continue; otherwise the exit code.
@@ -153,7 +160,15 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.isolated_probes = false;
         else if (a == "--probe-device")
             o.probe_device = next();
-        else if (a == "-h" || a == "--help") {
+        else if (a == "--hf-endpoint") {
+            o.hf_endpoint = next();
+            while (!o.hf_endpoint.empty() && o.hf_endpoint.back() == '/')
+                o.hf_endpoint.pop_back();
+            if (o.hf_endpoint.compare(0, 8, "https://") != 0 && o.hf_endpoint.compare(0, 7, "http://") != 0) {
+                std::fprintf(stderr, "bmoe-server: --hf-endpoint must be an http(s) URL\n");
+                return 2;
+            }
+        } else if (a == "-h" || a == "--help") {
             print_usage(argv[0]);
             return 0;
         } else if (a == "--version") {
@@ -256,9 +271,19 @@ struct App {
     // measurement and must not replace it.
     PlanOutcome load_plan;
 
-    App(Options o, std::string settings_path, std::string models_dir, std::string catalog)
+    // The network, for reading a repository (http_fetch.h), and where its bytes in flight go.
+    std::unique_ptr<HttpFetch> net;
+    std::string scratch_dir;
+
+    App(Options o,
+        std::string settings_path,
+        std::string models_dir,
+        std::string catalog,
+        std::string added,
+        std::string scratch)
         : opt(std::move(o)), store(server_defaults(), std::move(settings_path)), host(bus),
-          lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), bus) {}
+          lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), std::move(added), bus),
+          net(curl_fetch(scratch)), scratch_dir(std::move(scratch)) {}
 
     json config_object(const json * rejected = nullptr) {
         const RunConfig cfg = store.config();
@@ -349,6 +374,84 @@ struct App {
         c.moe.row_stream = false;
     }
 };
+
+// ── a model from a Hugging Face repository (hf_repo.h) ──
+// Three steps, each a request the UI makes in turn: list what a repository holds, inspect one
+// model's header against this machine, add it to the catalog. The download is then the catalog's,
+// by id, as for every other entry. The server fetches only from its endpoint, with a repository
+// id and paths it validated; a token a person pastes is used for the request and kept nowhere.
+struct HfRequest {
+    HfRef ref;
+    std::string name, token;
+};
+
+// The request's repository, model name and token; false with the response already sent.
+bool read_hf_request(const httplib::Request & req, httplib::Response & res, HfRequest & out, bool need_name) {
+    json body;
+    if (!parse_body(req, res, body)) return false;
+    if (!body.contains("repo") || !body["repo"].is_string()) {
+        send_error(res, 400, "repo must be a repository id or URL string", "invalid_request");
+        return false;
+    }
+    std::string err;
+    if (!parse_hf_ref(body["repo"].get<std::string>(), out.ref, err)) {
+        send_error(res, 400, err, "invalid_request");
+        return false;
+    }
+    if (body.contains("token")) {
+        if (!body["token"].is_string()) {
+            send_error(res, 400, "token must be a string", "invalid_request");
+            return false;
+        }
+        out.token = body["token"].get<std::string>();
+    }
+    if (body.contains("name") && body["name"].is_string()) out.name = body["name"].get<std::string>();
+    if (out.name.empty()) out.name = out.ref.file;
+    if (need_name && out.name.empty()) {
+        send_error(res, 400, "name must be the model's first file in the repository", "invalid_request");
+        return false;
+    }
+    return true;
+}
+
+// The repository's models, fetched and parsed; false with the response already sent.
+bool list_hf_models(App & app, httplib::Response & res, const HfRequest & r, std::vector<HfModel> & models) {
+    std::string body, err;
+    if (!app.net->get(hf_tree_url(app.opt.hf_endpoint, r.ref), 0, 0, r.token, body, err)) {
+        send_error(res, 502, "could not read " + r.ref.repo + ": " + err, "upstream");
+        return false;
+    }
+    json tree;
+    try {
+        tree = json::parse(body);
+    } catch (const std::exception &) {
+        send_error(res, 502, "the listing of " + r.ref.repo + " is not JSON", "upstream");
+        return false;
+    }
+    if (!parse_hf_tree(tree, models, err)) {
+        send_error(res, 404, r.ref.repo + ": " + err, "not_found");
+        return false;
+    }
+    return true;
+}
+
+bool find_hf_model(httplib::Response & res, const HfRequest & r, const std::vector<HfModel> & models, HfModel & out) {
+    for (const HfModel & m : models)
+        if (m.name == r.name) {
+            out = m;
+            return true;
+        }
+    send_error(res, 404, r.ref.repo + " has no model named " + r.name, "not_found");
+    return false;
+}
+
+json hf_model_json(const HfModel & m) {
+    json files = json::array();
+    for (const HfFile & f : m.files)
+        files.push_back({{"path", f.path}, {"bytes", f.bytes}});
+    return json{{"name", m.name},   {"quant", m.quant},         {"bytes", m.bytes},
+                {"count", m.count}, {"complete", m.complete()}, {"files", files}};
+}
 
 void register_routes(httplib::Server & svr, App & app) {
     svr.Get("/api/info", [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.host.info()); });
@@ -592,6 +695,55 @@ void register_routes(httplib::Server & svr, App & app) {
         send_json(res, json{{"ok", cancelled}}, cancelled ? 200 : 404);
     });
 
+    // ── a model from a Hugging Face repository (hf_repo.h, the helpers above register_routes) ──
+    svr.Post("/api/hf/models", [&](const httplib::Request & req, httplib::Response & res) {
+        HfRequest r;
+        std::vector<HfModel> models;
+        if (!read_hf_request(req, res, r, false) || !list_hf_models(app, res, r, models)) return;
+        json out = json::array();
+        for (const HfModel & m : models)
+            out.push_back(hf_model_json(m));
+        send_json(res, json{{"repo", r.ref.repo}, {"revision", r.ref.revision}, {"file", r.ref.file}, {"models", out}});
+    });
+
+    svr.Post("/api/hf/inspect", [&](const httplib::Request & req, httplib::Response & res) {
+        HfRequest r;
+        std::vector<HfModel> models;
+        HfModel m;
+        if (!read_hf_request(req, res, r, true) || !list_hf_models(app, res, r, models) ||
+            !find_hf_model(res, r, models, m))
+            return;
+        json facts;
+        std::string err;
+        if (!inspect_remote_model(*app.net, app.opt.hf_endpoint, r.ref, m, r.token, app.scratch_dir,
+                                  app.lib.models_dir(), facts, err))
+            return send_error(res, 502, "could not read the header of " + m.name + ": " + err, "upstream");
+        send_json(res, facts);
+    });
+
+    svr.Post("/api/hf/add", [&](const httplib::Request & req, httplib::Response & res) {
+        HfRequest r;
+        std::vector<HfModel> models;
+        HfModel m;
+        if (!read_hf_request(req, res, r, true) || !list_hf_models(app, res, r, models) ||
+            !find_hf_model(res, r, models, m))
+            return;
+        if (!m.complete())
+            return send_error(res, 409, r.ref.repo + ": " + m.name + " is a split set with shards missing",
+                              "incomplete");
+        const CatalogEntry e = hf_catalog_entry(app.opt.hf_endpoint, r.ref, m);
+        const std::string err = app.lib.add_entry(e);
+        if (!err.empty()) return send_error(res, 409, err);
+        send_json(res, json{{"id", e.id}, {"title", e.title}, {"quant", e.quant}, {"bytes", m.bytes}}, 201);
+    });
+
+    svr.Delete(R"(/api/hf/entry/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
+        const std::string id = req.matches[1].str();
+        if (!is_hf_catalog_id(id)) return send_error(res, 404, "not an added entry", "not_found");
+        const bool removed = app.lib.remove_entry(id);
+        send_json(res, json{{"ok", removed}}, removed ? 200 : 404);
+    });
+
     svr.Get("/api/plan", [&](const httplib::Request & req, httplib::Response & res) {
         if (!planner_available())
             return send_json(res, json{{"available", false},
@@ -732,8 +884,10 @@ int run(int argc, char ** argv) {
                                    : o.ui_dir;
     const std::string catalog = o.catalog.empty() ? (exe / "catalog" / "models.json").u8string() : o.catalog;
     const std::string settings = (fs::u8path(data_dir) / "settings.json").u8string();
+    const std::string added = (fs::u8path(data_dir) / "added-models.json").u8string();
+    const std::string scratch = (fs::u8path(data_dir) / "tmp").u8string();
 
-    App app(o, settings, models_dir, catalog);
+    App app(o, settings, models_dir, catalog, added, scratch);
     for (const std::string & w : app.store.load())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     for (const std::string & w : app.lib.warnings())

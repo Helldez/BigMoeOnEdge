@@ -7,6 +7,31 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **A model from any Hugging Face repository, with its header read before the download.** The
+  Models screen of the web UI and of the Android app takes a repository id or URL and the server
+  does three things in turn (`POST /api/hf/models`, `/inspect`, `/add`, `docs/server-api.md`):
+  lists the gguf files the repository holds (a split set as one model), reads one model's header
+  through a range request and parses it with the planner's own model probe, and says what it is
+  on this machine: architecture, experts and top-k, what stays resident and what streams, whether
+  this engine streams it or runs it as plain mmap, how much disk it needs against what is free and
+  the resident floor against what this process may hold. Added, the model is a catalog entry like
+  the others (`"added": true`, kept between runs, removable; its files stay) and its download is
+  the catalog's: the server's `curl` on the desktop, the app's own downloader on the phone. The
+  server fetches only from its endpoint (`--hf-endpoint`, the site or a mirror) with a repository
+  id and paths it validated, never a URL a client wrote; a token for a gated repository is used for
+  the requests through a file only this process reads and kept nowhere. The rules (what a person
+  typed, what a listing holds, the entry a model becomes, the verdict from the numbers) are one
+  pure module, `server/hf_repo`, with tests; the network is a port with the system's `curl` behind
+  it, and the core gains `probe_gguf_header()` so a gguf that parses can be told from one this
+  engine does not stream without reading an error's words.
+
+### Changed
+- **The catalog is the two reference models.** `catalog/models.json` offers Qwen3.6-35B-A3B
+  (Q4_K_M) and Gemma 4 26B-A4B-it (Q4_0), both from ggml-org, the models the engine is measured
+  on and a first run starts from; every other model comes from its own repository through the
+  Models screen, where the server reads its header first. The five other entries are gone, not
+  because they stopped working but because a list cannot keep up with what is published, and the
+  product is the engine's rules, not the list.
 - **A security policy and the forms a contributor expects.** `SECURITY.md` says how to report a
   problem privately and what is in scope; a bug-report issue form and a pull-request checklist
   (gates, changelog and docs in the same PR, no hand-written tunable) join the benchmark form.

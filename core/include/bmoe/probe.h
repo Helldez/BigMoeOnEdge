@@ -33,6 +33,18 @@ HardwareProfile probe_hardware(const char * model_path);
 // declines on.
 ModelProfile probe_model(const char * model_path);
 
+// The file's header alone: its architecture and expert counts, with ok=false when it is not a
+// gguf that parses. A MoE whose expert layout probe_model refuses to plan still reads here, so a
+// caller can tell "not a gguf" from "a gguf this engine does not stream" without reading an
+// error's words. Only the first shard is read.
+struct GgufHeaderFacts {
+    std::string arch;
+    int n_expert = 0;
+    int n_expert_used = 0;
+    bool ok = false;
+};
+GgufHeaderFacts probe_gguf_header(const char * model_path);
+
 // Ask every registered device whether it can execute THIS model's expert matmul on THIS model's
 // quantized layout, and whether placing such a weight there would need a repack. Asking the backend
 // about the real operation is what keeps the answer vendor-neutral and current: a backend that

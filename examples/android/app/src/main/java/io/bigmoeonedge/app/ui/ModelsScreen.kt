@@ -147,8 +147,16 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
             // ── the catalog ──
             HorizontalDivider()
             Text("Get a model", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+            HuggingFaceSection(onAdded = { id ->
+                // The entry is in the list the server just answered; the download is the app's, as
+                // for every catalog entry, so progress shows on its row below.
+                Engine.state.value.models?.catalog?.firstOrNull { it.id == id }?.let { e ->
+                    ModelDownloader.enqueueEntry(context, e).onFailure { say("${e.title}: ${it.message ?: "download failed to start"}") }
+                }
+            })
+            HorizontalDivider()
             Text(
-                "The models this engine is measured on. Any other MoE gguf works too, below.",
+                "The models this engine is measured on, and the ones added above.",
                 fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             models?.catalog.orEmpty().forEach { e ->
@@ -165,6 +173,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                         val dir = ModelManager.internalModelsDir(context)
                         deleteTarget = e.files.map { File(dir, it.name) }.filter { it.isFile }
                     },
+                    onRemove = if (e.added) ({ scope.launch { Engine.removeAdded(e.id).onFailure { say(it.message ?: "could not remove") } } }) else null,
                 )
             }
 
@@ -271,6 +280,8 @@ private fun CatalogRow(
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onDelete: () -> Unit,
+    /** Forget an entry added from a repository; its files stay. Null for the catalog's own. */
+    onRemove: (() -> Unit)? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -285,8 +296,16 @@ private fun CatalogRow(
                 }
             }
         }
-        Text("${entry.quant} · ~${gbLabel(entry.bytes)} · ${entry.blurb}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            listOf(entry.quant, "~${gbLabel(entry.bytes)}", entry.blurb).filter { it.isNotEmpty() }.joinToString(" · "),
+            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         if (progress != null) DownloadProgress(progress, onCancel = null, showName = false)
+        if (onRemove != null && status != CatalogStatus.DOWNLOADING) {
+            TextButton(shape = RectangleShape, onClick = onRemove, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                Text("Remove from the catalog", fontSize = 12.sp)
+            }
+        }
     }
 }
 

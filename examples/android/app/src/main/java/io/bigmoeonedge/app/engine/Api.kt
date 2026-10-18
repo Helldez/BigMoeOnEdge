@@ -65,6 +65,12 @@ class Api(private val baseUrl: String, private val apiKey: String) {
     // ── models and the plan ──
 
     fun models(): JSONObject = getJson("/api/models", QUICK_MS)
+
+    // ── a model from a Hugging Face repository (the server lists, inspects and adds; the app downloads) ──
+    fun hfModels(body: JSONObject): JSONObject = send("POST", "/api/hf/models", body, SLOW_MS)
+    fun hfInspect(body: JSONObject): JSONObject = send("POST", "/api/hf/inspect", body, SLOW_MS)
+    fun hfAdd(body: JSONObject): JSONObject = send("POST", "/api/hf/add", body, SLOW_MS)
+    fun removeAdded(id: String): JSONObject = send("DELETE", "/api/hf/entry/" + java.net.URLEncoder.encode(id, "UTF-8"), null, QUICK_MS)
     fun plan(measure: Boolean): JSONObject = getJson(if (measure) "/api/plan?measure=1" else "/api/plan", SLOW_MS)
     fun applyPlan(): JSONObject = send("POST", "/api/plan/apply", null, QUICK_MS)
 

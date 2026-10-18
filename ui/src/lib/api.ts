@@ -3,13 +3,16 @@ import { SseParser, isDoneSentinel } from './sse';
 import type { SseEvent } from './sse';
 import { auth } from './auth';
 import { parseChunk } from './chatStream';
-import { isConfig, isDecideResult, isInfo, isModelsResponse, isParamSpecList, isPlan } from './guards';
+import { isConfig, isDecideResult, isHfAdded, isHfFacts, isHfModelsResponse, isInfo, isModelsResponse, isParamSpecList, isPlan } from './guards';
 import type {
   ChatChunk,
   ChatMessage,
   Config,
   ConfigUpdate,
   DecideResult,
+  HfAdded,
+  HfFacts,
+  HfModelsResponse,
   Info,
   ModelsResponse,
   ParamSpec,
@@ -103,6 +106,16 @@ export const api = {
   models: () => request<ModelsResponse>('GET', 'api/models', undefined, isModelsResponse),
   download: (id: string) => request<unknown>('POST', 'api/models/download', { id }),
   cancelDownload: (id: string) => request<unknown>('DELETE', `api/models/download/${encodeURIComponent(id)}`),
+  /** A Hugging Face repository's gguf files, by the server (docs/server-api.md, "Models"). */
+  hfModels: (repo: string, token?: string) =>
+    request<HfModelsResponse>('POST', 'api/hf/models', token ? { repo, token } : { repo }, isHfModelsResponse),
+  /** One model's header against this machine, before any download. */
+  hfInspect: (repo: string, name: string, token?: string) =>
+    request<HfFacts>('POST', 'api/hf/inspect', token ? { repo, name, token } : { repo, name }, isHfFacts),
+  /** The model as a catalog entry; the download is then `download(id)`. */
+  hfAdd: (repo: string, name: string, token?: string) =>
+    request<HfAdded>('POST', 'api/hf/add', token ? { repo, name, token } : { repo, name }, isHfAdded),
+  removeAdded: (id: string) => request<unknown>('DELETE', `api/hf/entry/${encodeURIComponent(id)}`),
   /** The plan in force; `measure` runs the planner's probes again instead. */
   plan: (measure = false) => request<Plan>('GET', measure ? 'api/plan?measure=1' : 'api/plan', undefined, isPlan),
   applyPlan: () => request<Config>('POST', 'api/plan/apply', undefined, isConfig),

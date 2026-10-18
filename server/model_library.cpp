@@ -35,11 +35,47 @@ bool has_exact_size(const fs::path & p, uint64_t bytes) {
 
 } // namespace
 
+namespace {
+
+// One catalog document's entries, as catalog/models.json spells them; the added file uses the
+// same shape, so one reader serves both.
+std::vector<CatalogEntry> read_catalog(std::istream & in) {
+    std::vector<CatalogEntry> out;
+    json doc;
+    in >> doc;
+    for (const json & m : doc.at("models")) {
+        CatalogEntry e;
+        e.id = m.at("id").get<std::string>();
+        e.title = m.value("title", e.id);
+        e.quant = m.value("quant", "");
+        e.blurb = m.value("blurb", "");
+        for (const json & f : m.at("files"))
+            e.files.push_back(
+                {f.at("name").get<std::string>(), f.at("url").get<std::string>(), f.value("bytes", (uint64_t) 0)});
+        if (!e.files.empty()) out.push_back(std::move(e));
+    }
+    return out;
+}
+
+json catalog_json(const std::vector<CatalogEntry> & entries) {
+    json models = json::array();
+    for (const CatalogEntry & e : entries) {
+        json files = json::array();
+        for (const CatalogFile & f : e.files)
+            files.push_back({{"name", f.name}, {"url", f.url}, {"bytes", f.bytes}});
+        models.push_back({{"id", e.id}, {"title", e.title}, {"quant", e.quant}, {"blurb", e.blurb}, {"files", files}});
+    }
+    return json{{"version", 1}, {"models", models}};
+}
+
+} // namespace
+
 ModelLibrary::ModelLibrary(std::string models_dir,
                            std::vector<std::string> scan_dirs,
                            std::string catalog_path,
+                           std::string added_path,
                            EventBus & bus)
-    : dir_(std::move(models_dir)), bus_(bus) {
+    : dir_(std::move(models_dir)), added_path_(std::move(added_path)), bus_(bus) {
     // A scan directory that is the models directory, or repeats another, would list its models twice.
     std::set<fs::path> seen;
     const auto key = [](const std::string & d) {
@@ -60,23 +96,67 @@ ModelLibrary::ModelLibrary(std::string models_dir,
         return;
     }
     try {
-        json doc;
-        in >> doc;
-        for (const json & m : doc.at("models")) {
-            CatalogEntry e;
-            e.id = m.at("id").get<std::string>();
-            e.title = m.value("title", e.id);
-            e.quant = m.value("quant", "");
-            e.blurb = m.value("blurb", "");
-            for (const json & f : m.at("files"))
-                e.files.push_back(
-                    {f.at("name").get<std::string>(), f.at("url").get<std::string>(), f.value("bytes", (uint64_t) 0)});
-            if (!e.files.empty()) catalog_.push_back(std::move(e));
-        }
+        catalog_ = read_catalog(in);
     } catch (const std::exception & ex) {
         warnings_.push_back("model catalog " + catalog_path + " is malformed: " + ex.what());
         catalog_.clear();
     }
+    if (added_path_.empty()) return;
+    std::ifstream added(fs::u8path(added_path_));
+    if (!added) return; // nothing added yet
+    try {
+        added_ = read_catalog(added);
+    } catch (const std::exception & ex) {
+        warnings_.push_back("the added models file " + added_path_ + " is malformed and is ignored: " + ex.what());
+        added_.clear();
+    }
+}
+
+void ModelLibrary::save_added() {
+    if (added_path_.empty()) return;
+    std::error_code ec;
+    fs::create_directories(fs::u8path(added_path_).parent_path(), ec);
+    std::ofstream out(fs::u8path(added_path_), std::ios::trunc);
+    out << catalog_json(added_).dump(2) << "\n";
+}
+
+std::string ModelLibrary::add_entry(const CatalogEntry & e) {
+    if (e.id.empty() || e.files.empty()) return "an entry needs an id and at least one file";
+    for (const CatalogFile & f : e.files)
+        if (f.name.empty() || f.name.find_first_of("/\\") != std::string::npos || f.name == "." || f.name == "..")
+            return "a file name must be a plain name";
+    std::lock_guard<std::mutex> lk(m_);
+    for (const CatalogEntry & c : catalog_)
+        if (c.id == e.id) return "the catalog already has " + e.id;
+    for (CatalogEntry & a : added_)
+        if (a.id == e.id) {
+            a = e;
+            save_added();
+            return "";
+        }
+    added_.push_back(e);
+    save_added();
+    return "";
+}
+
+bool ModelLibrary::remove_entry(const std::string & id) {
+    std::lock_guard<std::mutex> lk(m_);
+    for (auto it = added_.begin(); it != added_.end(); ++it)
+        if (it->id == id) {
+            added_.erase(it);
+            save_added();
+            return true;
+        }
+    return false;
+}
+
+bool ModelLibrary::entry(const std::string & id, CatalogEntry & out) const {
+    std::lock_guard<std::mutex> lk(m_);
+    if (const CatalogEntry * e = find(id)) {
+        out = *e;
+        return true;
+    }
+    return false;
 }
 
 ModelLibrary::~ModelLibrary() {
@@ -120,6 +200,8 @@ ModelLibrary::ModelFacts ModelLibrary::probe(const std::string & path) {
 
 const CatalogEntry * ModelLibrary::find(const std::string & id) const {
     for (const CatalogEntry & e : catalog_)
+        if (e.id == id) return &e;
+    for (const CatalogEntry & e : added_)
         if (e.id == id) return &e;
     return nullptr;
 }
@@ -170,7 +252,13 @@ json ModelLibrary::list() {
 
     json catalog = json::array();
     std::lock_guard<std::mutex> lk(m_);
-    for (const CatalogEntry & e : catalog_) {
+    std::vector<std::pair<const CatalogEntry *, bool>> entries; // entry, added at run time
+    for (const CatalogEntry & e : catalog_)
+        entries.emplace_back(&e, false);
+    for (const CatalogEntry & e : added_)
+        entries.emplace_back(&e, true);
+    for (const auto & [ep, added] : entries) {
+        const CatalogEntry & e = *ep;
         uint64_t bytes = 0;
         for (const CatalogFile & f : e.files)
             bytes += f.bytes;
@@ -190,6 +278,7 @@ json ModelLibrary::list() {
                            {"files", files},
                            {"blurb", e.blurb},
                            {"status", status},
+                           {"added", added},
                            {"note", e.files.size() > 1 ? std::to_string(e.files.size()) + " shards" : ""}});
     }
     json scan = json::array();
@@ -213,9 +302,9 @@ void ModelLibrary::publish(const std::string & id,
 }
 
 std::string ModelLibrary::start_download(const std::string & id) {
+    std::lock_guard<std::mutex> lk(m_);
     const CatalogEntry * e = find(id);
     if (!e) return "no catalog entry '" + id + "'";
-    std::lock_guard<std::mutex> lk(m_);
     auto it = jobs_.find(id);
     if (it != jobs_.end()) {
         if (!it->second->finished) return "";

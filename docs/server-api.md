@@ -75,7 +75,12 @@ other software, or other people, on that machine or on a network it was told to 
 - `max_tokens` on a chat request is clamped to the `n-predict` parameter's upper bound, and one
   that is not a non-negative integer is refused with `400`.
 - Downloads take a catalog id, never a URL or a path. `DELETE` on a download cancels it and
-  removes no model.
+  removes no model. An entry added from a Hugging Face repository (`POST /api/hf/add`) is built by
+  the server from a repository id and file names it validated (letters, digits, `.`, `_`, `-`,
+  `+`, folders, no `..`), on the one endpoint it was started with (`--hf-endpoint`, the site or a
+  mirror); the server never fetches a URL a client wrote. A token sent with those requests goes to
+  that endpoint as a bearer token through a file only this process reads, never on a command line
+  or in a log, and is kept nowhere.
 - Over the API a client may name one file, the model, and it is only read. Parameters that make
   the engine write a file are set at launch and are refused over `PUT /api/config`.
 - A client on the network (a connection whose peer address is not loopback) may name a model only
@@ -380,6 +385,62 @@ the models directory. `202`; progress arrives as `download` events.
 ### `DELETE /api/models/download/<id>`
 
 Cancels a running download. The partial file is kept so a later download resumes it.
+
+### `POST /api/hf/models`
+
+Body `{"repo": "<owner/name, or a huggingface.co URL>", "token": "<optional>"}`. The gguf files
+of the repository, as models: a split set is one model named by its first shard. A URL to a tree,
+a blob or a resolve link names its revision, and a file where it has one (`file`), so a UI can
+preselect it.
+
+```json
+{"repo": "ggml-org/gemma-4-26B-A4B-it-GGUF", "revision": "main", "file": "",
+ "models": [{"name": "gemma-4-26B-A4B-it-Q4_0.gguf", "quant": "Q4_0", "bytes": 14618145824,
+             "count": 1, "complete": true, "files": [{"path": "gemma-4-26B-A4B-it-Q4_0.gguf", "bytes": 14618145824}]}]}
+```
+
+`400` for text that is not a repository id or a URL on the site; `502` when the listing could
+not be fetched (the server runs the system `curl`, as for downloads; a repository that does not
+exist or needs a token answers through it as `401`); `404` when the site answers with an error.
+
+### `POST /api/hf/inspect`
+
+Body `{"repo", "name": "<a model's name from the listing>", "token"}`. What the model is before
+a byte of it is downloaded: its header, read through a range request (the first tens of
+megabytes of each shard) and parsed by the planner's own model probe, set against this machine.
+
+```json
+{"repo": "...", "revision": "main", "name": "gemma-4-26B-A4B-it-Q4_0.gguf", "quant": "Q4_0",
+ "bytes": 14618145824, "files": 1, "complete": true,
+ "model": {"readable": true, "arch": "gemma4", "is_moe": true, "n_expert": 128, "n_expert_used": 8,
+           "n_layer": 30, "n_moe_layer": 30, "n_embd": 2816, "dense_bytes": 1755954296,
+           "expert_bytes": 12846366720, "token_cycle_bytes": 802897920, "largest_dense_tensor": 784334848,
+           "has_mtp": false, "streamable": true, "refusal": ""},
+ "machine": {"residency_budget": 5736517632, "memory_total": 15919931392, "disk_free": 38495465472, "present_bytes": 0},
+ "verdict": {"downloadable": true, "mode": "streams",
+             "disk": "needs 13940 MiB of disk; the models folder has 36712 MiB free",
+             "memory": "the experts stream from flash and 1674 MiB stays resident, plus a cache of at least one token cycle (765 MiB); that fits in the 5470 MiB this process may hold, and the plan sizes the cache from the rest"}}
+```
+
+`model.readable` false means the header did not parse, and the rest of `model` is empty; a MoE
+whose experts this engine does not stream carries the reason in `refusal` and `streamable` false.
+`verdict.mode` is `streams`, `plain mmap` or `not readable`; `downloadable` is false only when the
+disk cannot take what is still to download (`present_bytes` is what is already there, complete).
+The two sentences are the facts in words, for a UI to show as they are. `404` when the listing
+has no such model, `502` when a header could not be fetched.
+
+### `POST /api/hf/add`
+
+Body `{"repo", "name", "token"}`. The model becomes a catalog entry, id
+`hf:<repo>/<name>`, one file per shard with its resolve URL, listed by `GET /api/models` with
+`"added": true` and kept between runs (`added-models.json` beside the settings). `201` with
+`{"id", "title", "quant", "bytes"}`; the download is then `POST /api/models/download` with that
+id, or, on a host that downloads for itself, the entry's `files[].url`. `409` for a split set
+with shards missing, or an id the catalog already has.
+
+### `DELETE /api/hf/entry/<id>`
+
+Forgets an added entry. Files on disk stay. `404` for an id that is not an added entry.
 
 ## Plan
 

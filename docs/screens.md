@@ -76,11 +76,21 @@ What it is: what is on this device, how to get a model onto it, and which one is
   deletes as a unit, every file the server listed for it). The other places a model can sit on the
   phone (adb-pushed, shared storage) are directories the app hands the server at launch
   (`--scan-dir`), so they are listed the same way and loaded in place.
-- **The catalog.** The entries of `catalog/models.json`, as the server lists them: title,
-  quantisation, size, one line on why you would pick it, and one action for its state:
-  Download, Cancel (with one progress bar over the whole entry, shards included), On device
-  (with Delete). The desktop server downloads for itself; the phone's app does the transfers,
-  resumable, surviving the app being killed.
+- **From Hugging Face.** A repository id or its URL, and three steps the server does
+  (`docs/server-api.md`, "Models"): List (every gguf the repository holds, split sets as one
+  model, with quantisation, size and whether every shard is there), Check (the model's header
+  read through a range request before any download: architecture, experts and top-k, layers,
+  what stays resident and what streams, and the verdict on this machine: streams, plain mmap or
+  not readable, needs so much disk against what is free, the resident floor against what this
+  process may hold), Add (the model becomes a catalog entry and its download starts). A token
+  field for a gated or private repository, used for the requests and kept nowhere. The UI shows
+  what the server answered and reads no gguf.
+- **The catalog.** The two reference models of `catalog/models.json` and the entries added from
+  a repository, as the server lists them: title, quantisation, size, one line on why you would
+  pick it, and one action for its state: Download, Cancel (with one progress bar over the whole
+  entry, shards included), On device (with Delete). An added entry can be removed; its files stay.
+  The desktop server downloads for itself; the phone's app does the transfers, resumable,
+  surviving the app being killed.
 - **Any other model.** A direct gguf URL, or a file picked from the device and imported.
 - **Loading.** With auto-plan on (the default where the planner is built in), Load unloads the
   previous model, measures the machine, applies the plan, then loads; the status line follows.

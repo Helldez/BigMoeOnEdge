@@ -97,9 +97,10 @@ I/O. A download needs free space equal to the model size, with no temporary seco
 ### Sharded models (gpt-oss-120b, DeepSeek V4 Flash, Qwen3.8-Flash-Next)
 
 Models above Hugging Face's 50 GB per-file limit ship as several shard files
-(`-00001-of-0000N.gguf`). The engine streams a split set natively: the shards download one at a
-time (each resumable), the row shows one progress bar over the set, and the model list offers the
-set once, by its first shard, which is the file the engine opens. For adb-pushed models push every
+(`-00001-of-0000N.gguf`). The engine streams a split set natively: the repository listing shows
+the set as one model by its first shard, the shards download one at a time (each resumable), the
+row shows one progress bar over the set, and the model list offers the set once, by that first
+shard, which is the file the engine opens. For adb-pushed models push every
 shard to the same directory. Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk,
 Qwen3.8-Flash-Next UD-IQ3_XXS ~82 GB and its Q2_K build ~80 GB.
 

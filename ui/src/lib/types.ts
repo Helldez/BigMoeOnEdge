@@ -147,6 +147,80 @@ export interface CatalogEntry {
   blurb: string;
   status: CatalogStatus | (string & {});
   note: string;
+  /** Added at run time from a repository (`POST /api/hf/add`); it can be removed. */
+  added?: boolean;
+}
+
+/** One gguf file of a Hugging Face repository (`POST /api/hf/models`). */
+export interface HfFile {
+  path: string;
+  bytes: number;
+}
+
+/** One model a repository offers: a gguf, or a split set listed by its first shard. */
+export interface HfModel {
+  name: string;
+  quant: string;
+  bytes: number;
+  count: number;
+  complete: boolean;
+  files: HfFile[];
+}
+
+export interface HfModelsResponse {
+  repo: string;
+  revision: string;
+  /** The file the request's URL named, "" when it named none. */
+  file: string;
+  models: HfModel[];
+}
+
+/** What a model is before a byte of it is downloaded (`POST /api/hf/inspect`). */
+export interface HfFacts {
+  repo: string;
+  revision: string;
+  name: string;
+  quant: string;
+  bytes: number;
+  files: number;
+  complete: boolean;
+  model: {
+    readable: boolean;
+    arch: string;
+    is_moe: boolean;
+    n_expert: number;
+    n_expert_used: number;
+    n_layer: number;
+    n_moe_layer: number;
+    n_embd: number;
+    dense_bytes: number;
+    expert_bytes: number;
+    token_cycle_bytes: number;
+    largest_dense_tensor: number;
+    has_mtp: boolean;
+    streamable: boolean;
+    refusal: string;
+  };
+  machine: {
+    residency_budget: number;
+    memory_total: number;
+    disk_free: number;
+    present_bytes: number;
+  };
+  verdict: {
+    downloadable: boolean;
+    mode: string;
+    disk: string;
+    memory: string;
+  };
+}
+
+/** The catalog entry a model became (`POST /api/hf/add`). */
+export interface HfAdded {
+  id: string;
+  title: string;
+  quant: string;
+  bytes: number;
 }
 
 export interface ModelsResponse {
