@@ -24,9 +24,12 @@ The order is the order of dependence, and each step ships on its own.
 
 **Release what is on `main`.** Shipped: the planner, the parameter table, the macOS port, the
 desktop server and the iOS harness in 0.29.0; the server as the framework, the Android app on it
-and one visual language in 0.30.0, after a run of the app on a phone and of the desktop server on
-Windows. Owed from that run: the NPU prefill on the release APK, the one build that carries the
-Hexagon backend.
+and one visual language in 0.30.0; the compute backends as modules on every OS, any model from
+its Hugging Face repository with the header read before the download, the expert layout read
+from the file instead of a table, and llama.cpp at its 2026-10 master in 0.31.0, after a run of
+the app on a phone (CPU build) and of the desktop server on Windows. Owed: the NPU prefill on the
+release APK, the one build that carries the Hexagon backend, where a load with the NPU armed last
+ended in the allocator ([#264](https://github.com/Helldez/BigMoeOnEdge/issues/264)).
 
 **One application framework.** The server is it ([application-framework.md](application-framework.md)).
 Its policy - the engine host with its one session and its turn line, the model library, the
