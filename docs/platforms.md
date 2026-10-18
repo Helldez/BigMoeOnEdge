@@ -4,7 +4,7 @@ What runs where, how far each platform has been taken, and what each one still o
 the summary; the evidence behind every cell is in the page it links to, and a cell with no
 measurement behind it says so rather than implying one.
 
-Last reviewed on 2026-10-16, against release 0.30.0.
+Last reviewed on 2026-10-18, against release 0.31.0.
 
 ## How to read the tables
 
@@ -67,11 +67,12 @@ platform: the device is measured, and the streamer's own memory is not yet hande
 ## What each platform owes
 
 - **Android.** The NPU prefill run again on the release APK, the one build with the Hexagon
-  backend: the 0.30.0 phone run used a CPU-only build. The GPU prefill run on the same APK, Vulkan
-  and OpenCL against the NPU and the cores. Per-value provenance in the settings, so a reader sees
+  backend: the 0.30.0 and 0.31.0 phone runs used CPU-only builds, and the last load with the NPU
+  armed on the full-backend APK ended in the allocator (#264). The GPU prefill run on the same APK,
+  Vulkan and OpenCL against the NPU and the cores. Per-value provenance in the settings, so a reader sees
   what the plan set and what differs from the default ([screens.md](screens.md)).
-- **macOS.** A signed installer that updates itself, in place of the archive. The byte-identity
-  gates in CI, which today run on Linux only.
+- **macOS.** A signed installer that updates itself, in place of the archive. A run of the
+  desktop archive with its Metal module on a Mac, before and after each release.
 - **Linux.** A throughput run on real hardware, which the community protocol can supply
   ([community-benchmarks.md](community-benchmarks.md)). A discrete GPU, for the planner's capacity
   fitter, prefill-device and graph-width rules.

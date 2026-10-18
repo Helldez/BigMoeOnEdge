@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.31.0] - 2026-10-18
 
 ### Added
 - **A model from any Hugging Face repository, with its header read before the download.** The
