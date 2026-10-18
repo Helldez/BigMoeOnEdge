@@ -10,6 +10,8 @@
 
 #include <set>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace bmoe::server {
 
@@ -54,5 +56,31 @@ AccessDecision check_access(const AccessPolicy & policy, const RequestFacts & re
 // Why the server may not start with these launch options, or "" when it may. Listening beyond
 // loopback without a key is refused unless asked for by name (`no_api_key`).
 std::string launch_refusal(const std::string & bind_host, const std::string & api_key, bool no_api_key);
+
+// The key held in the file at `path` (--api-key-file): its contents without trailing line breaks
+// and blanks, so `echo KEY > file` works. A key on the command line is visible to every local user
+// through the process list; a file can be readable by its owner alone. False, with the reason, when
+// the file cannot be read or holds no key.
+bool read_api_key_file(const std::string & path, std::string & key, std::string & err);
+
+// The peer address of a connection is this machine: 127.0.0.0/8, ::1, or an IPv4-mapped 127.x.
+// Unlike is_loopback_host() this is the socket's own address, which a client cannot choose.
+bool is_loopback_peer(const std::string & remote_addr);
+
+// The model path a client named, as the path the engine will open: canonical, symbolic links and
+// `..` resolved, and inside one of `roots` - the folders whose models the server lists. A relative
+// path is taken relative to the first root, the models folder. False, with the reason, for a path
+// that resolves anywhere else, so a confined client cannot have the server open another file
+// through `../` or a link. An empty path (no model) is returned as it is.
+bool confine_model_path(const std::string & requested,
+                        const std::vector<std::string> & roots,
+                        std::string & out,
+                        std::string & err);
+
+// Headers every response carries, the UI's files above all: what a browser may do with what this
+// server sends. The page loads its script, styles, fonts and images from this origin and nothing
+// else (an image in model output cannot be fetched from another host), runs no inline script,
+// cannot be framed, sends no referrer, and has no content type guessed for it.
+const std::vector<std::pair<std::string, std::string>> & security_headers();
 
 } // namespace bmoe::server

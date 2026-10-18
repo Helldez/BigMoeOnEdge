@@ -1,4 +1,5 @@
 #include "row_stream.h"
+#include "bmoe/log.h"
 
 #include "ggml.h"
 
@@ -18,23 +19,22 @@ static uint64_t round_up(uint64_t v, uint64_t a) {
 
 bool RowStream::init(std::vector<DenseTensorRef> tensors,
                      const std::vector<std::string> & paths,
-                     size_t align,
                      uint64_t budget_bytes) {
     if (tensors.empty()) return true;
-    align_ = align ? align : 4096;
     page_ = pio::vm_page();
+    slab_ = round_up(slab_min_bytes, page_);
     budget_bytes_ = budget_bytes ? budget_bytes : default_budget_bytes;
     // A budget below one slab would make every gather evict what it just read. Round it up rather
     // than reject the run: the caller asked for "as little as possible", not for a stall.
-    budget_bytes_ = std::max<uint64_t>(budget_bytes_, slab_bytes);
+    budget_bytes_ = std::max<uint64_t>(budget_bytes_, slab_);
 
     // One single-lane reader per shard, sized for a slab window. Independent of both the expert
     // stream's readers and the dense loader's, for the same reason theirs are independent of each
     // other: the O_DIRECT decision belongs to the consumer, not to the file.
     for (const std::string & p : paths) {
         readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
-        if (!readers_.back()->open(p, 1, /*direct=*/true, align_, (size_t) slab_bytes + 2 * align_)) {
-            std::fprintf(stderr, "bmoe: row-stream could not open %s — tables keep the dense policy\n", p.c_str());
+        if (!readers_.back()->open(p, 1, /*direct=*/true, (size_t) slab_)) {
+            log_printf(LogLevel::Warn, "row-stream could not open %s — tables keep the dense policy", p.c_str());
             readers_.clear();
             return false;
         }
@@ -44,7 +44,7 @@ bool RowStream::init(std::vector<DenseTensorRef> tensors,
     for (const DenseTensorRef & d : tensors) {
         if (!d.tensor || d.size == 0) continue;
         if (d.file_idx < 0 || (size_t) d.file_idx >= readers_.size()) {
-            std::fprintf(stderr, "bmoe: row-stream tensor points at shard %d of %zu\n", d.file_idx, readers_.size());
+            log_printf(LogLevel::Error, "row-stream tensor points at shard %d of %zu", d.file_idx, readers_.size());
             release();
             return false;
         }
@@ -56,12 +56,12 @@ bool RowStream::init(std::vector<DenseTensorRef> tensors,
         t.span = round_up(d.size, page_);
         t.base = (char *) pio::vm_reserve((size_t) t.span);
         if (!t.base) {
-            std::fprintf(stderr, "bmoe: row-stream could not reserve %llu MiB for %s\n",
-                         (unsigned long long) (t.span >> 20), d.tensor->name);
+            log_printf(LogLevel::Error, "row-stream could not reserve %llu MiB for %s",
+                       (unsigned long long) (t.span >> 20), d.tensor->name);
             release();
             return false;
         }
-        t.n_slabs = round_up(d.size, slab_bytes) / slab_bytes;
+        t.n_slabs = round_up(d.size, slab_) / slab_;
         t.resident.assign((size_t) t.n_slabs, 0);
         t.stamp.assign((size_t) t.n_slabs, 0);
         t.spot.assign((size_t) t.n_slabs, lru_.end());
@@ -76,9 +76,8 @@ bool RowStream::init(std::vector<DenseTensorRef> tensors,
         return true;
     }
 
-    std::fprintf(stderr,
-                 "bmoe: row-stream — %llu MiB in %zu row-gathered table(s) served from flash, %llu MiB window\n",
-                 (unsigned long long) (table_bytes_ >> 20), tables_.size(), (unsigned long long) (budget_bytes_ >> 20));
+    log_printf(LogLevel::Info, "row-stream — %llu MiB in %zu row-gathered table(s) served from flash, %llu MiB window",
+               (unsigned long long) (table_bytes_ >> 20), tables_.size(), (unsigned long long) (budget_bytes_ >> 20));
     return true;
 }
 
@@ -116,21 +115,21 @@ bool RowStream::fetch_slab(Table & t, uint64_t s) {
         touch(t, s);
         return true;
     }
-    const uint64_t off = s * slab_bytes;
-    const uint64_t len = slab_len(t.ref.size, s, slab_bytes);
-    // Commit whole pages: the slab is a multiple of the page and the reservation is page-aligned,
+    const uint64_t off = s * slab_;
+    const uint64_t len = slab_len(t.ref.size, s, slab_);
+    // Commit whole pages: the slab is a whole number of pages and the reservation is page-aligned,
     // so only the final short slab needs rounding, and it cannot run past the reservation.
     const uint64_t commit = std::min<uint64_t>(round_up(len, page_), t.span - off);
     if (!pio::vm_commit(t.base + off, (size_t) commit)) {
-        std::fprintf(stderr, "bmoe: row-stream commit failed at slab %llu of %s\n", (unsigned long long) s,
-                     t.ref.tensor->name);
+        log_printf(LogLevel::Error, "row-stream commit failed at slab %llu of %s", (unsigned long long) s,
+                   t.ref.tensor->name);
         io_errors_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     const long long got = readers_[(size_t) t.ref.file_idx]->read(0, t.base + off, t.ref.file_off + off, len);
     if (got < 0) {
-        std::fprintf(stderr, "bmoe: row-stream read failed at slab %llu of %s\n", (unsigned long long) s,
-                     t.ref.tensor->name);
+        log_printf(LogLevel::Error, "row-stream read failed at slab %llu of %s", (unsigned long long) s,
+                   t.ref.tensor->name);
         io_errors_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
@@ -155,8 +154,8 @@ void RowStream::evict_to_budget(uint64_t headroom) {
             ++it;
             continue;
         }
-        const uint64_t off = s * slab_bytes;
-        const uint64_t len = slab_len(t.ref.size, s, slab_bytes);
+        const uint64_t off = s * slab_;
+        const uint64_t len = slab_len(t.ref.size, s, slab_);
         const uint64_t commit = std::min<uint64_t>(round_up(len, page_), t.span - off);
         pio::vm_evict(t.base + off, (size_t) commit);
         t.resident[(size_t) s] = 0;
@@ -189,12 +188,12 @@ bool RowStream::gather(const ggml_tensor * table, const int32_t * idx, int n) {
         if (r < 0 || (uint64_t) r >= t->n_rows) continue; // the graph defines validity, not us
         const uint64_t a = (uint64_t) r * t->row_bytes;
         const uint64_t b = std::min<uint64_t>(a + t->row_bytes, t->ref.size);
-        for (uint64_t s = a / slab_bytes; s * slab_bytes < b; ++s) {
+        for (uint64_t s = a / slab_; s * slab_ < b; ++s) {
             if (s >= t->n_slabs) break;
             if (t->stamp[(size_t) s] == gen_) continue;
             t->stamp[(size_t) s] = gen_;
             need_.push_back(s);
-            if (!t->resident[(size_t) s]) missing += slab_bytes;
+            if (!t->resident[(size_t) s]) missing += slab_;
         }
     }
     if (need_.empty()) return true;
@@ -214,10 +213,10 @@ bool RowStream::materialize(const ggml_tensor * table) {
     Table * t = find(table);
     if (!t) return true;
     if (t->whole) return true;
-    std::fprintf(stderr,
-                 "bmoe: row-stream — %s is read by a node that is not a row gather; pulling the whole "
-                 "%llu MiB table in\n",
-                 t->ref.tensor->name, (unsigned long long) (t->ref.size >> 20));
+    log_printf(LogLevel::Warn,
+               "row-stream — %s is read by a node that is not a row gather; pulling the whole "
+               "%llu MiB table in",
+               t->ref.tensor->name, (unsigned long long) (t->ref.size >> 20));
     for (uint64_t s = 0; s < t->n_slabs; ++s)
         if (!fetch_slab(*t, s)) return false;
     // A materialized table leaves the LRU: it is resident for the rest of the run, and an eviction

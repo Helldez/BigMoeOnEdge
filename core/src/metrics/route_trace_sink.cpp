@@ -53,9 +53,9 @@ private:
 
 } // namespace
 
-IRouteTraceSink * make_csv_route_trace_sink(const std::string & path) {
+std::unique_ptr<IRouteTraceSink> make_csv_route_trace_sink(const std::string & path) {
     std::FILE * f = std::fopen(path.c_str(), "w");
-    return f ? new CsvRouteTraceSink(f) : nullptr;
+    return f ? std::make_unique<CsvRouteTraceSink>(f) : nullptr;
 }
 
 } // namespace bmoe

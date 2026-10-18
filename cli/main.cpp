@@ -9,8 +9,7 @@
 // engine stays env-free. The flag always wins over the env value.
 #include "bmoe/config.h"
 #include "bmoe/params.h"
-#include "bmoe/planner.h"
-#include "bmoe/probe.h"
+#include "bmoe/auto_plan.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
 #include "bmoe/recipe.h"
@@ -18,8 +17,6 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
-
-#include "llama.h"
 
 #include <atomic>
 #include <cmath>
@@ -45,11 +42,6 @@
 #endif
 
 using namespace bmoe;
-
-static int env_int(const char * k, int dflt) {
-    const char * v = std::getenv(k);
-    return (v && *v) ? std::atoi(v) : dflt;
-}
 
 static std::string json_escape(const std::string & s) {
     std::string o;
@@ -437,7 +429,8 @@ static int run_session_loop(const RunConfig & cfg,
         std::printf("BMOE_DONE {\"id\":%d,\"cancelled\":%s,\"tokens\":%d,\"tok_s\":%.3f,\"prefill_s\":%.3f,"
                     "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
-                    "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
+                    "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"flash_wait_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,"
+                    "\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
                     "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,"
                     "\"prefill_stall_s\":%.3f,\"prefill_mgmt_s\":%.3f,"
                     "\"prefill_dev_tokens\":%d,\"prefill_dev_nodes\":%lld,\"prefill_dev_read_mib\":%.1f,"
@@ -448,13 +441,13 @@ static int run_session_loop(const RunConfig & cfg,
                     cmd.id, r.cancelled ? "true" : "false", s.n_generated, s.tokens_per_second, s.prefill_seconds,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
-                    s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
-                    s.majflt_per_token, s.cpu_s_per_token, s.prefill_cpu_seconds, s.prefill_read_mib,
-                    s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.prefill_device_tokens,
-                    s.prefill_device_nodes, s.prefill_device_read_mib, s.prefill_device_stall_seconds,
-                    s.token_demand_mib, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token,
-                    s.drafted_steps, s.loop_overhead_s_per_token, json_escape(r.reasoning_text).c_str(),
-                    json_escape(r.generated_text).c_str());
+                    s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_flash_wait_s_per_token,
+                    s.moe_mgmt_s_per_token, s.majflt_per_token, s.cpu_s_per_token, s.prefill_cpu_seconds,
+                    s.prefill_read_mib, s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds,
+                    s.prefill_device_tokens, s.prefill_device_nodes, s.prefill_device_read_mib,
+                    s.prefill_device_stall_seconds, s.token_demand_mib, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes,
+                    s.mtp_draft_s_per_token, s.drafted_steps, s.loop_overhead_s_per_token,
+                    json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
 
@@ -680,11 +673,6 @@ static void print_predict_report(const RunSummary & s) {
     }
 }
 
-// How long a device gets to answer its probe in a process of its own. Generous on purpose: the
-// child also measures the host as its reference, and a phone that is throttled takes its time. What
-// it bounds is the case with no other end - a device that never answers.
-static constexpr double k_device_probe_seconds = 120.0;
-
 int main(int argc, char ** argv) {
     RunConfig cfg;
     std::string csv_path;
@@ -695,8 +683,10 @@ int main(int argc, char ** argv) {
     std::string ppl_list;                 // --ppl-list: one text path per line, scored in one session
     std::vector<std::string> ppl_choices; // --ppl-choices: strings whose first-token log-prob is reported
     std::string compute_trace_path;
+    bool compute_trace_layers = false; // the compute trace's granularity: a property of the sink
     std::string io_trace_path;
     bool session_mode = false;
+    bool progress = false; // the line protocol (docs/telemetry.md) instead of inline text
 
     bool describe_params = false;
     bool show_config = false;
@@ -730,7 +720,7 @@ int main(int argc, char ** argv) {
         if (a == "-p" || a == "--prompt")
             cfg.prompt = next("-p");
         else if (a == "--progress") {
-            cfg.progress = true;
+            progress = true;
             seen.insert("progress");
         } else if (a == "--describe-params")
             describe_params = true;
@@ -771,14 +761,21 @@ int main(int argc, char ** argv) {
             compute_trace_path = next("--compute-trace");
         else if (a == "--compute-trace-layers") {
             compute_trace_path = next("--compute-trace-layers");
-            cfg.compute_trace_layers = true;
+            compute_trace_layers = true;
         } else if (a == "--io-trace")
             io_trace_path = next("--io-trace");
         else if (a == "--ppl")
             ppl_path = next("--ppl");
-        else if (a == "--ppl-skip")
-            ppl_skip = std::atoi(next("--ppl-skip"));
-        else if (a == "--ppl-step")
+        else if (a == "--ppl-skip") {
+            const char * v = next("--ppl-skip");
+            long long n = 0;
+            std::string err;
+            if (!parse_int_strict(v, 0, RunConfig::tokens_max, n, err)) {
+                std::fprintf(stderr, "bmoe: --ppl-skip %s\n", err.c_str());
+                return 2;
+            }
+            ppl_skip = (int) n;
+        } else if (a == "--ppl-step")
             ppl_step = true;
         else if (a == "--ppl-list")
             ppl_list = next("--ppl-list");
@@ -837,12 +834,15 @@ int main(int argc, char ** argv) {
 
     // Env overrides (flag wins: only apply when the parameter was not typed). Asking whether it was
     // typed, not whether its value still equals the default, is what makes an explicit --cache-mb 0
-    // (cache off) or --io-threads 4 stick. An unset or empty variable leaves the field alone.
+    // (cache off) or --io-threads 4 stick. An unset or empty variable leaves the field alone. A
+    // front-end switch (`front_end`) is not a parameter and is set here directly; it is keyed in
+    // `seen` like one, so its flag wins the same way.
     struct EnvOverride {
         const char * var;
         const char * key;
+        bool * front_end = nullptr;
     };
-    static const EnvOverride kEnvOverrides[] = {
+    const EnvOverride kEnvOverrides[] = {
         {"BMOE_CACHE_MB", "cache-mb"},
         {"BMOE_IO_THREADS", "io-threads"},
         {"BMOE_OVERLAP", "overlap"},
@@ -850,17 +850,21 @@ int main(int argc, char ** argv) {
         {"BMOE_N_EXPERT_USED", "n-expert-used"},
         {"BMOE_PREDICT_LOG", "predict-log"},
         {"BMOE_PREDICT_PREFETCH", "predict-prefetch"},
+        {"BMOE_PROGRESS", "progress", &progress},
     };
     for (const EnvOverride & e : kEnvOverrides) {
         const char * v = std::getenv(e.var);
         if (seen.count(e.key) || !v || !*v) continue;
+        if (e.front_end) {
+            *e.front_end = std::atoi(v) != 0; // the reading these switches always had: non-zero is on
+            continue;
+        }
         const ParamDesc * d = find_param(e.key);
         // Booleans keep the reading these variables always had: any non-zero integer is on.
         const std::string val = d->type == ParamType::Bool ? (std::atoi(v) != 0 ? "true" : "false") : v;
         std::string err;
         if (!d->set(cfg, val, err)) std::fprintf(stderr, "warning: ignoring %s: %s\n", e.var, err.c_str());
     }
-    if (!seen.count("progress")) cfg.progress = env_int("BMOE_PROGRESS", 0) != 0;
 
     // A default the CLI resolves rather than the library, so an embedder's explicit 0 keeps meaning
     // "no cache". With streaming on, a budget of 0 re-reads every routed expert from flash every
@@ -880,14 +884,12 @@ int main(int argc, char ** argv) {
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
     if (!probe_device.empty()) {
-        register_backends();
-        llama_backend_init();
-        std::string facts;
-        if (!probe_one_device(cfg.model_path.c_str(), probe_device, facts)) {
+        std::string line;
+        if (!probe_device_child(cfg.model_path.c_str(), probe_device, line)) {
             std::fprintf(stderr, "bmoe: no such device to probe: %s\n", probe_device.c_str());
             return 3;
         }
-        std::printf("%s %s\n", device_facts_marker, facts.c_str());
+        std::printf("%s\n", line.c_str());
         std::fflush(stdout);
         return 0;
     }
@@ -899,42 +901,21 @@ int main(int argc, char ** argv) {
         for (const EnvOverride & e : kEnvOverrides)
             if (const char * v = std::getenv(e.var); v && *v) req.pinned.push_back(e.key);
 
-        // QUIET FIRST, DIRTY LAST, and the order is a measurement rather than a preference: backends
-        // registered before anything looks at devices; bandwidth and device costs before the storage
-        // probe reads gigabytes; the intrusive headroom probe last of all, because it leaves the
-        // kernel busy and anything measured after it measures the recovery.
-        register_backends();
-        HardwareProfile hw = probe_hardware(cfg.model_path.c_str());
-        // Every device beyond the host is asked in a process of its own first. A device is only as
-        // sound as its driver, and a driver that ends the process it is used from would otherwise
-        // end this plan - seen on a phone whose graphics driver lacks a function a backend calls
-        // without checking. What comes back is that device's facts, or the reason it has none; the
-        // probes below then leave it alone either way. Where a second process cannot be started
-        // the runner is empty and they run here, as they always did.
+        // The probe order is core's (probe_and_plan); what this front-end decides is how intrusive
+        // the probes may be and how it is started again to probe a device in a process of its own.
+        AutoPlanOptions opt;
+        opt.probe_io = probe_io;
+        opt.probe_mem = probe_mem;
         if (isolated_probes) {
             const std::string model = cfg.model_path;
-            probe_devices_isolated(hw, self_process_runner(
-                                           [model](const std::string & dev) {
-                                               return std::vector<std::string>{"-m", model, "--probe-device", dev};
-                                           },
-                                           k_device_probe_seconds));
+            opt.isolated_probe_args = [model](const std::string & dev) {
+                return std::vector<std::string>{"-m", model, "--probe-device", dev};
+            };
         }
-        const ModelProfile mp = probe_model(cfg.model_path.c_str());
-        probe_device_support(hw, mp);
-        // The cache term is the FLOOR the engine will enforce, not one token cycle. Written without
-        // std::max on purpose: windows.h defines `max` as a macro and this translation unit sees it.
-        const uint64_t guard_bytes = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
-        const uint64_t cache_floor = mp.token_cycle_bytes > guard_bytes ? mp.token_cycle_bytes : guard_bytes;
-        llama_backend_init();
-        probe_bandwidth(hw, mp);
-        probe_device_costs(hw, mp);
-        // Where the expert reads land, which on a split model is not the file the caller named.
-        const std::string & storage_path = mp.expert_file.empty() ? cfg.model_path : mp.expert_file;
-        if (probe_io) probe_storage(hw, storage_path.c_str(), mp.expert_slice_bytes);
-        probe_headroom(hw, probe_mem, mp.dense_bytes + cache_floor);
-        const Placement placement =
-            probe_placement(cfg.model_path.c_str(), mp, hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch);
-        const Plan plan = plan_run(cfg, hw, mp, placement, req);
+        const AutoPlan planned = probe_and_plan(cfg, req, opt);
+        const HardwareProfile & hw = planned.hw;
+        const ModelProfile & mp = planned.model;
+        const Plan & plan = planned.plan;
         cfg = plan.config;
         predicted_s_per_token = plan.allocation.seconds_per_token;
         if (plan.allocation.cache_bytes > 0 && mp.expert_bytes > 0)
@@ -1015,7 +996,7 @@ int main(int argc, char ** argv) {
 
     std::unique_ptr<IMetricsSink> sink;
     if (!csv_path.empty()) {
-        sink.reset(make_csv_metrics_sink(csv_path));
+        sink = make_csv_metrics_sink(csv_path);
         if (!sink) std::fprintf(stderr, "warning: could not open csv %s\n", csv_path.c_str());
     }
 
@@ -1026,7 +1007,7 @@ int main(int argc, char ** argv) {
             // observe, and a header-only trace looks like a model that routed nothing.
             std::fprintf(stderr, "warning: --route-trace needs --moe-stream; no trace will be written\n");
         } else {
-            route_trace.reset(make_csv_route_trace_sink(route_trace_path));
+            route_trace = make_csv_route_trace_sink(route_trace_path);
             if (!route_trace)
                 std::fprintf(stderr, "warning: could not open route trace %s\n", route_trace_path.c_str());
         }
@@ -1036,7 +1017,7 @@ int main(int argc, char ** argv) {
     // needs too — so unlike the other two it carries no --moe-stream requirement.
     std::unique_ptr<IComputeTraceSink> compute_trace;
     if (!compute_trace_path.empty()) {
-        compute_trace.reset(make_csv_compute_trace_sink(compute_trace_path));
+        compute_trace = make_csv_compute_trace_sink(compute_trace_path, compute_trace_layers);
         if (!compute_trace)
             std::fprintf(stderr, "warning: could not open compute trace %s\n", compute_trace_path.c_str());
     }
@@ -1046,7 +1027,7 @@ int main(int argc, char ** argv) {
         if (!cfg.moe.enabled) {
             std::fprintf(stderr, "warning: --io-trace needs --moe-stream; no trace will be written\n");
         } else {
-            io_trace.reset(make_csv_io_trace_sink(io_trace_path));
+            io_trace = make_csv_io_trace_sink(io_trace_path);
             if (!io_trace) std::fprintf(stderr, "warning: could not open io trace %s\n", io_trace_path.c_str());
         }
     }
@@ -1120,14 +1101,15 @@ int main(int argc, char ** argv) {
         return 0;
     }
 
-    if (!cfg.progress) {
+    if (!progress) {
         std::printf("%s", cfg.prompt.c_str());
         std::fflush(stdout);
     }
 
     ProgressDelta pd; // one generation per one-shot run
-    auto on_token = [&](const TokenMetrics & m) {
-        if (cfg.progress) {
+    RunOutputs outs;
+    outs.on_token = [&](const TokenMetrics & m) {
+        if (progress) {
             emit_progress_line(m, pd);
         } else {
             std::fwrite(m.piece.data(), 1, m.piece.size(), stdout);
@@ -1135,14 +1117,20 @@ int main(int argc, char ** argv) {
         }
     };
 
-    RunResult r = run(cfg, on_token, sink.get(), route_trace.get(), compute_trace.get(), io_trace.get());
+    // Only the line protocol reads the per-token answer; the inline path writes `piece` as it goes.
+    outs.render_text = progress;
+    outs.sink = sink.get();
+    outs.route_trace = route_trace.get();
+    outs.compute_trace = compute_trace.get();
+    outs.io_trace = io_trace.get();
+    RunResult r = run(cfg, outs);
     if (!r) {
         std::fprintf(stderr, "\nerror: %s\n", r.error.c_str());
         return 1;
     }
 
     const RunSummary & s = r.summary;
-    if (cfg.progress) {
+    if (progress) {
         std::printf("=== answer ===\n%s\n=== perf ===\n", r.generated_text.c_str());
     } else {
         std::printf("\n\n");

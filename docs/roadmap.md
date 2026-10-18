@@ -136,7 +136,7 @@ useful cache, but throughput on the ones that do now depends on compute.
 
 This section used to open by asserting that effective O_DIRECT bandwidth sits well below the
 drive's ceiling *because the routed slices are scattered*. That premise was measured on
-2026-07-20 with `tools/bmoe-iobench` and **does not hold on the reference device**
+2026-07-20 with `bmoe-iobench` (`tools/iobench.cpp`) and **does not hold on the reference device**
 ([bench-data/2026-07-20-cache-replay/iobench-ceiling.md](bench-data/2026-07-20-cache-replay/iobench-ceiling.md)):
 
 - Random O_DIRECT reads **saturate at 2 lanes** (~2460 MiB/s cold); 8, 16 and 32 lanes are

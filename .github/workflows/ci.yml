@@ -16,6 +16,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Read-only unless a job says otherwise: only the APK job's release attach writes, and it asks for
+# that itself.
+permissions:
+  contents: read
+
 jobs:
   # Does this push carry anything a build could break?
   #
@@ -67,7 +72,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Versions agree (and match the tag, on a tag build)
-        run: bash scripts/check-version.sh "${{ github.ref_type == 'tag' && github.ref_name || '' }}"
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: bash scripts/check-version.sh "$TAG"
 
   format:
     needs: changes
@@ -98,9 +105,46 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install gguf numpy
       - name: Configure & build
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+        # The diagnostic tools link the I/O layer on their own, so a change to it that only the
+        # engine build sees would otherwise leave them broken until someone measures with them.
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TOOLS=ON && cmake --build build -j
       - name: Byte-identity gates
         run: cd build && ctest --output-on-failure
+
+  sanitizers:
+    # The same gates under AddressSanitizer and UndefinedBehaviorSanitizer. The streamer rebinds
+    # tensor->data onto buffers it allocates itself and fills from several I/O lanes, which is where
+    # an overrun or a use-after-free would hide from a byte-identity check: the output can still
+    # match. llama.cpp is instrumented too, so ggml's reads of those buffers are checked as well;
+    # its own findings, which this project does not patch (AGENTS.md hard rule 1), are listed one
+    # by one in tests/sanitizers/ubsan.supp. RelWithDebInfo: close to the Release code shape the
+    # gates normally see, with line numbers in the reports.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake ninja-build
+          python3 -m pip install --upgrade pip
+          python3 -m pip install gguf numpy
+      - name: Configure & build (ASan + UBSan)
+        run: |
+          SAN="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_FLAGS="$SAN" -DCMAKE_CXX_FLAGS="$SAN" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-asan -j
+      - name: Byte-identity gates, sanitized
+        env:
+          ASAN_OPTIONS: halt_on_error=1:detect_leaks=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/sanitizers/lsan.supp
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1:suppressions=${{ github.workspace }}/tests/sanitizers/ubsan.supp
+        run: cd build-asan && ctest --output-on-failure
 
   ui:
     # The web UI's unit tests (ui/src/lib). release-host runs them too, but only once a release is
@@ -115,10 +159,20 @@ jobs:
           node-version: '22'
       - name: Web UI unit tests
         run: cd ui && npm ci && npm test
+      # svelte-check type-checks the components and the TypeScript the unit tests do not reach; the
+      # build is what release-host stages beside bmoe-server, so a PR finds out here if it breaks.
+      - name: Type check
+        run: cd ui && npm run check
+      - name: Build
+        run: cd ui && npm run build
 
   host-windows:
     # Windows minutes bill at 2x. It only compile-checks the Win32 I/O paths, so run it where it
     # matters — PRs (before merge) and release tags — not on every main push (already tested on PR).
+    # Compile-only on purpose: the gates have never run on Windows (MSVC, the RPC loopback gate's
+    # Winsock path, the tiny-model generator under the runner's Python), and switching them on
+    # unverified would turn every PR red rather than test anything. Enable them once they have been
+    # run on a Windows machine.
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
@@ -127,31 +181,40 @@ jobs:
           submodules: recursive
       - name: Configure & build (compile-check the Win32 I/O paths)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_TOOLS=ON
           cmake --build build --config Release -j
 
   host-macos:
-    # Compile-check the Apple path on PRs; release-host was previously
-    # the only workflow that built __APPLE__ code.
+    # The Apple path on PRs, gates included: release-host builds __APPLE__ code only when a
+    # release is cut, and builds no tests, so this is where F_NOCACHE and the Apple VM paths are
+    # proven to stream byte-identically.
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
-      # Keep this in sync with the macos-arm64 release-host configuration.
-      - name: Configure & build (compile-check the Apple I/O paths)
+      # The runner's own python3 is externally managed (PEP 668), so pip may not install into it.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps (the gates' tiny-model generator)
+        run: python3 -m pip install gguf numpy
+      # Keep this in sync with the macos-arm64 release-host configuration, which differs only in
+      # leaving the tests out.
+      - name: Configure & build (the Apple I/O paths, and the gates)
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
-            -DBMOE_BUILD_TESTS=OFF \
             -DGGML_NATIVE=OFF \
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF
-          cmake --build build --config Release -j --target bmoe-cli bmoe-server
+          cmake --build build --config Release -j
       - name: Smoke
         run: build/bin/bmoe-cli --version && build/bin/bmoe-server --version
+      - name: Byte-identity gates
+        run: cd build && ctest --output-on-failure
 
   ios-harness:
     # Compile-check the iOS paths: the engine and bmoe-cli inside the harness app, for the

@@ -163,7 +163,7 @@ private:
     // One readiness cell per (projection, expert). A cell is "ready for the layer in flight"
     // exactly when gen == async_gen_; padded to a cache line so the compute threads polling it
     // do not false-share the LRU/job bookkeeping the load thread mutates alongside.
-    struct alignas(64) ReadyFlag {
+    struct alignas(pio::false_sharing_span) ReadyFlag {
         std::atomic<uint32_t> gen{0};
     };
 
@@ -258,7 +258,9 @@ private:
     long long drain_wait_ns_ = 0, adopt_wait_ns_ = 0;
     int n_layer_ = 0;
     int n_expert_ = 0;
-    size_t align_ = 4096;
+    // What shared slots are aligned to: the coarsest read granule over the shards' readers, never
+    // less than a page. Settled at init, once the readers have asked the files.
+    size_t buf_align_ = 0;
 
     // The positioned readers that own the fd pools, bounces and O_DIRECT decision — one per shard
     // file, in shard order (a single-file model has exactly one). Expert slices are read through
@@ -277,7 +279,7 @@ private:
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
     size_t cache_max_ = 0; // live budget in bytes; only an explicit set_cache_budget() moves it
-    size_t page_ = 4096;
+    size_t page_ = pio::vm_page();
 
     // Every expert of every bound layer resident: the ceiling any budget is clamped to, and (under
     // cache_auto) the cap the init-time sizing starts from. Auto sizing derives cache_max_ once at

@@ -67,12 +67,12 @@ public:
 
     // Apply `mode` for the model files `paths` (per-shard dense `ranges` precomputed via byte_ranges;
     // `tensors` is what Anonymous/Pinned read, and what every mode checks for a tensor too large to
-    // be resident — see hold_back_oversized). `align` is the O_DIRECT block size. Runs once at load,
-    // before the streamer's workers start (Anonymous rebinds tensor->data on the caller's thread).
+    // be resident — see hold_back_oversized). The readers it opens ask each file for its own read
+    // alignment. Runs once at load, before the streamer's workers start (Anonymous rebinds
+    // tensor->data on the caller's thread).
     // Returns false only on a hard Anonymous failure (alloc/read); Mmap and Warmed cannot fail.
     bool init(DenseWeightsMode mode,
               const std::vector<std::string> & paths,
-              size_t align,
               std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges,
               std::vector<DenseTensorRef> tensors);
 
@@ -123,7 +123,7 @@ private:
     // Random-access advice on the mmap of every held-back tensor: a fault brings in one page, not a
     // readahead window the gather will never touch.
     void advise_random_mapped();
-    bool read_anonymous(size_t align);
+    bool read_anonymous();
     void warm();
     void drop_mmap_copies(size_t page);
     void sample_anon(size_t page);
@@ -134,7 +134,6 @@ private:
     DenseWeightsMode mode_ = DenseWeightsMode::Warmed;
     std::vector<std::string> paths_;     // one per shard, in shard order
     std::vector<std::string> basenames_; // what /proc/self/maps entries are matched against
-    size_t align_ = 4096;
 
     // Anonymous/Pinned: our own readers (one per shard; FileReader is not movable, hence the
     // unique_ptr), the tensors we read, and the buffers backing them. `bases_` is what the sensor

@@ -41,15 +41,23 @@ struct RunResult {
     explicit operator bool() const { return ok; }
 };
 
-// Run one generation. `on_token` (nullable) is invoked once per generated token before
-// the next decode; `sink` (nullable) receives the same per-token metrics plus the final
-// summary. The trace sinks (all nullable) are diagnostics that perturb what they measure — see
-// bmoe/route_trace.h and bmoe/decode_trace.h. Blocks until generation completes or errors.
-RunResult run(const RunConfig & cfg,
-              const std::function<void(const TokenMetrics &)> & on_token = nullptr,
-              IMetricsSink * sink = nullptr,
-              IRouteTraceSink * route_trace = nullptr,
-              IComputeTraceSink * compute_trace = nullptr,
-              IIoTraceSink * io_trace = nullptr);
+// Where a run reports to. None of it is configuration: it changes what a front-end is told, never
+// what is generated, which is why it is not in RunConfig (and not in the parameter table).
+struct RunOutputs {
+    // Invoked once per generated token before the next decode. Nullable.
+    std::function<void(const TokenMetrics &)> on_token;
+    // Fill TokenMetrics::text and ::reasoning on every token. Only a reader of the per-token answer
+    // (a line protocol, a live view) wants it: it re-parses the whole generation each token. The
+    // final answer is parsed once at the end either way.
+    bool render_text = false;
+    IMetricsSink * sink = nullptr; // the same per-token metrics plus the final summary
+    // Diagnostics that perturb what they measure — see bmoe/route_trace.h and bmoe/decode_trace.h.
+    IRouteTraceSink * route_trace = nullptr;
+    IComputeTraceSink * compute_trace = nullptr;
+    IIoTraceSink * io_trace = nullptr;
+};
+
+// Run one generation. Blocks until generation completes or errors.
+RunResult run(const RunConfig & cfg, const RunOutputs & out = {});
 
 } // namespace bmoe

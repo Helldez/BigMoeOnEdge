@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ema, mibPerSec, pushSample, sparklinePoints, stallShare, tokPerSec } from './metrics';
+import { ema, mibPerSec, pushSample, sparklinePoints, tokPerSec, wallShare } from './metrics';
 
 describe('rates', () => {
   it('tok/s is 1000 / wall_ms', () => {
@@ -12,10 +12,10 @@ describe('rates', () => {
     expect(mibPerSec(10, 0)).toBe(0);
   });
 
-  it('stall share is clamped to [0, 1]', () => {
-    expect(stallShare(50, 200)).toBe(0.25);
-    expect(stallShare(300, 200)).toBe(1);
-    expect(stallShare(5, 0)).toBe(0);
+  it('a share of the wall is clamped to [0, 1]', () => {
+    expect(wallShare(50, 200)).toBe(0.25);
+    expect(wallShare(300, 200)).toBe(1);
+    expect(wallShare(5, 0)).toBe(0);
   });
 });
 

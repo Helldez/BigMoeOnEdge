@@ -31,10 +31,12 @@ void write_csv_field(std::FILE * f, const std::string & v) {
 
 class CsvComputeTraceSink final : public IComputeTraceSink {
 public:
-    explicit CsvComputeTraceSink(std::FILE * f) : f_(f) {}
+    CsvComputeTraceSink(std::FILE * f, bool layers) : f_(f), layers_(layers) {}
     ~CsvComputeTraceSink() override {
         if (f_) std::fclose(f_);
     }
+
+    bool layers_only() const override { return layers_; }
 
     void on_static(const DecodeTraceStatic & s) override {
         write_static(f_, "compute_trace", s);
@@ -56,6 +58,7 @@ public:
 
 private:
     std::FILE * f_ = nullptr;
+    bool layers_ = false;
 };
 
 class CsvIoTraceSink final : public IIoTraceSink {
@@ -88,14 +91,14 @@ private:
 
 } // namespace
 
-IComputeTraceSink * make_csv_compute_trace_sink(const std::string & path) {
+std::unique_ptr<IComputeTraceSink> make_csv_compute_trace_sink(const std::string & path, bool layers) {
     std::FILE * f = std::fopen(path.c_str(), "wb");
-    return f ? new CsvComputeTraceSink(f) : nullptr;
+    return f ? std::make_unique<CsvComputeTraceSink>(f, layers) : nullptr;
 }
 
-IIoTraceSink * make_csv_io_trace_sink(const std::string & path) {
+std::unique_ptr<IIoTraceSink> make_csv_io_trace_sink(const std::string & path) {
     std::FILE * f = std::fopen(path.c_str(), "wb");
-    return f ? new CsvIoTraceSink(f) : nullptr;
+    return f ? std::make_unique<CsvIoTraceSink>(f) : nullptr;
 }
 
 } // namespace bmoe

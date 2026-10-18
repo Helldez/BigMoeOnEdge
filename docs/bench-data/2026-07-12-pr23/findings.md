@@ -5,7 +5,7 @@
 > tuning it below are kept as a record of why that decision was made — they are not actionable.
 > See [../README.md](../README.md).
 
-OnePlus 15R (11.3 GB), 256-token decode, prompt-processing + steady-state. Each config on top of
+The 12 GB test phone (11.3 GB usable), 256-token decode, prompt-processing + steady-state. Each config on top of
 its model's best measured baseline (Qwen: cache 4000, lane 4, overlap; Gemma: cache 2000, lane 4,
 overlap). See `summary.md` for the full tables. Device was cooler than the 2026-07-12 baseline run,
 so absolute tok/s is higher; the A/B is within-session (same 45 s cooldowns, back-to-back).

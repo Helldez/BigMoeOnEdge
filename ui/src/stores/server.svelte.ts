@@ -2,7 +2,8 @@
 import { api, openEvents } from '../lib/api';
 import { auth } from '../lib/auth';
 import type { SseEvent } from '../lib/sse';
-import { ema, mibPerSec, pushSample, stallShare, tokPerSec } from '../lib/metrics';
+import { isConfig, isDoneSummary, isDownloadEvent, isInfo, isTokenEvent } from '../lib/guards';
+import { ema, mibPerSec, pushSample, tokPerSec, wallShare } from '../lib/metrics';
 import type { Config, DoneSummary, DownloadEvent, Info, ParamSpec, TokenEvent } from '../lib/types';
 
 const HISTORY = 120;
@@ -13,13 +14,14 @@ export interface LiveMetrics {
   last: TokenEvent | null;
   tokS: number | null;
   readMibS: number | null;
-  stall: number | null;
+  /** Share of the wall the flash wait took (the term the server chose for the run's mode). */
+  flashWait: number | null;
   tokHistory: number[];
   readHistory: number[];
 }
 
 function emptyMetrics(): LiveMetrics {
-  return { last: null, tokS: null, readMibS: null, stall: null, tokHistory: [], readHistory: [] };
+  return { last: null, tokS: null, readMibS: null, flashWait: null, tokHistory: [], readHistory: [] };
 }
 
 class ServerStore {
@@ -40,6 +42,7 @@ class ServerStore {
 
   private stream: AbortController | null = null;
   private retryMs = RECONNECT_MIN_MS;
+  private openedBefore = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   start(): void {
@@ -48,8 +51,7 @@ class ServerStore {
       this.authRequired = true;
     });
     this.connect();
-    this.loadParams();
-    api.config().then((c) => (this.config = c), () => {});
+    this.refreshStatic();
   }
 
   /** The key the person typed: kept for this browser, and everything is asked again with it. */
@@ -58,8 +60,25 @@ class ServerStore {
     this.authRequired = false;
     this.retryMs = RECONNECT_MIN_MS;
     this.connect();
+    this.refreshStatic();
+  }
+
+  /**
+   * What the event stream does not carry from its start: the schema, and the config, which only
+   * arrives as an event when it changes. Asked again on every (re)connection, since a server
+   * restarted meanwhile may have a new schema and a config this page never saw change.
+   */
+  refreshStatic(): void {
     this.loadParams();
-    api.config().then((c) => (this.config = c), () => {});
+    this.loadConfig();
+  }
+
+  async loadConfig(): Promise<void> {
+    try {
+      this.config = await api.config();
+    } catch {
+      // unreachable or refused: the next connection asks again, and a 401 already asked for a key
+    }
   }
 
   async loadParams(): Promise<void> {
@@ -88,6 +107,10 @@ class ServerStore {
       () => {
         this.connected = true;
         this.retryMs = RECONNECT_MIN_MS;
+        // A reconnection may follow a server restart: the schema and the config can have changed,
+        // and a config change made while this page was cut off arrived as no event.
+        if (this.openedBefore) this.refreshStatic();
+        this.openedBefore = true;
       },
       (ev) => this.onEvent(ev),
       ac.signal,
@@ -106,19 +129,19 @@ class ServerStore {
   private onEvent(ev: SseEvent): void {
     switch (ev.event) {
       case 'state':
-        this.onJson<Info>(ev, (d) => (this.info = d));
+        this.onJson<Info>(ev, isInfo, (d) => (this.info = d));
         break;
       case 'config':
-        this.onJson<Config>(ev, (d) => (this.config = d));
+        this.onJson<Config>(ev, isConfig, (d) => (this.config = d));
         break;
       case 'token':
-        this.onJson<TokenEvent>(ev, (d) => this.onToken(d));
+        this.onJson<TokenEvent>(ev, isTokenEvent, (d) => this.onToken(d));
         break;
       case 'done':
-        this.onJson<DoneSummary>(ev, (d) => (this.lastDone = d));
+        this.onJson<DoneSummary>(ev, isDoneSummary, (d) => (this.lastDone = d));
         break;
       case 'download':
-        this.onJson<DownloadEvent>(ev, (d) => this.onDownload(d));
+        this.onJson<DownloadEvent>(ev, isDownloadEvent, (d) => this.onDownload(d));
         break;
       default:
         break; // a ping, or an event this UI does not know
@@ -130,18 +153,18 @@ class ServerStore {
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
       this.connect();
-      // A reconnect may follow a server restart: the schema can have changed too.
-      this.loadParams();
     }, this.retryMs);
     this.retryMs = Math.min(this.retryMs * 2, RECONNECT_MAX_MS);
   }
 
-  private onJson<T>(e: SseEvent, apply: (data: T) => void): void {
+  private onJson<T>(e: SseEvent, guard: (v: unknown) => v is T, apply: (data: T) => void): void {
+    let data: unknown;
     try {
-      apply(JSON.parse(e.data) as T);
+      data = JSON.parse(e.data);
     } catch {
-      // a malformed event is dropped; the next one carries full state again
+      return; // a malformed event is dropped; the next one carries full state again
     }
+    if (guard(data)) apply(data); // and so is one that is not the shape the UI reads
   }
 
   private onToken(t: TokenEvent): void {
@@ -152,7 +175,7 @@ class ServerStore {
       last: t,
       tokS: ema(m.tokS, tok),
       readMibS: ema(m.readMibS, read),
-      stall: ema(m.stall, stallShare(t.stall_ms, t.wall_ms)),
+      flashWait: ema(m.flashWait, wallShare(t.flash_wait_ms ?? 0, t.wall_ms)),
       tokHistory: pushSample(m.tokHistory, tok, HISTORY),
       readHistory: pushSample(m.readHistory, read, HISTORY),
     };

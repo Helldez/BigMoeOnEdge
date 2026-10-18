@@ -70,9 +70,12 @@ vendor's, not Android's, so treat any figure as a per-device measurement.
 
 ## Getting a model onto the device
 
-The Models screen lists what the engine sees in its own directory (the app's internal storage,
-where in-app downloads and imports land) and what sits elsewhere on the phone. Nothing below needs
-a storage permission except the last option.
+The Models screen lists what the engine sees: its own directory (the app's internal storage, where
+in-app downloads and imports land) and the other places a model can sit on the phone, which the app
+hands the server at launch (`--scan-dir`: the app's external files directory, and on the dev flavor
+`/data/local/tmp/bmoe` and Downloads). The server groups split sets, reads each model's
+architecture and says whether this build streams it; the app reads no gguf itself. Nothing below
+needs a storage permission except the last option.
 
 1. **Built-in catalog** (both flavors): the models this engine is measured on, one tap each. The
    catalog is the project's one data file, `catalog/models.json`, shipped in the APK and read by
@@ -133,6 +136,19 @@ The app's own settings close the page:
   OpenAI-compatible client then uses the phone at `http://<phone IP>:8765/v1` with
   `Authorization: Bearer <key>`: a laptop's coding agent, Open WebUI, a script. Prompts and answers
   cross the network in clear; use it on a network you trust. Changing it restarts the engine.
+
+The engine requires a key even when it is not shared: on a phone, loopback is reachable by every
+installed app, and an open server would let any of them read a conversation off the event stream.
+The app starts it with a random key per launch, written to a file in its private storage that only
+it can read (`--api-key-file`, mode 0600, never on the command line), and sends it on every request;
+shared, the key is the persistent one Settings shows, so a client keeps working across restarts.
+Before it trusts the server on the port, the app checks it is the one it started: that server
+refuses a random key and accepts the launch's. Another program's server on 8765 (an open one, or
+one with a key of its own) is reported as holding the port, and nothing is sent to it. The server
+is stopped and restarted on a background thread, one step at a time, so a restart never races the
+old process for the port and a stop never freezes the screen; a stopped server's late exit report
+changes nothing. The event stream has a watchdog: the server pings every 15 s, and a stream silent
+for two pings is reconnected.
 - **Metrics CSV**: one per-token file per loaded model, for the Metrics screen and for sharing.
 
 The prefill device (`prefill-device`) is a row like any other, and the planner chooses it: it
@@ -146,8 +162,12 @@ names a device. See `../../docs/npu-prefill.md`.
 The Metrics screen shows the live card for the current or last generation (the rate, and each
 token's time split into compute, flash wait, cache management and what nothing claims), then the
 CSV files: view one, share one, correlate its columns, or compare two on one axis. The chat shows
-the same rate in one line above the prompt while an answer streams. The fields are documented in
-`../../docs/telemetry.md` and in the screen's glossary.
+the same rate in one line above the prompt while an answer streams. The flash term and the threads
+the CPU figures divide by are the server's (`flash_wait_ms`, `compute_threads`, `busy_threads`),
+never read from the settings. The fields are documented in `../../docs/telemetry.md` and in the
+screen's glossary, whose settings half is the engine's parameter table: each setting a file was
+recorded with is shown under the table's label, typed and with its unit, and a run's identity names
+every setting that changes the reply and is off its default.
 
 ## Expected numbers
 

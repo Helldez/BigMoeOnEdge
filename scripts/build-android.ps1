@@ -8,8 +8,8 @@
 # default SDK location.
 #
 # CPU target — armv8.2-a + dotprod + fp16, deliberately NOT i8mm. i8mm (armv8.6) is only on
-# ~2021+ flagships; a build that pins it SIGILLs during the prefill GEMM on older SoCs (e.g. the
-# Snapdragon 865 / OnePlus 8 Pro). dotprod + fp16 (armv8.2, ~2018+) is supported by every SoC
+# ~2021+ flagships; a build that pins it SIGILLs during the prefill GEMM on older SoCs (e.g. a
+# 2020 armv8.2 flagship). dotprod + fp16 (armv8.2, ~2018+) is supported by every SoC
 # that can realistically run a >RAM MoE model, so this one binary is device-agnostic across the
 # viable device range while keeping every int8/fp16 kernel that matters for Q4_K experts.
 #
