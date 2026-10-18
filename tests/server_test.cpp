@@ -8,13 +8,15 @@
 //   * the JSON edges: form values to parameter strings and back;
 //   * access: which host names, origins, keys and content types reach the API, and when the server
 //     may not start at all;
-//   * decide: the request fields a decision is read from, and its answer on the wire.
+//   * decide: the request fields a decision is read from, and its answer on the wire;
+//   * model files: which names make a split set, and how a directory's files group into models.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "access.h"
 #include "decide_protocol.h"
 #include "json_util.h"
+#include "model_files.h"
 #include "openai_chat.h"
 #include "settings_store.h"
 #include "turn_queue.h"
@@ -23,6 +25,7 @@
 #include <chrono>
 #include <limits>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
 #include <set>
@@ -107,6 +110,32 @@ static void protocol_tests() {
     check(!ok, "an unknown tool_choice is refused");
     parsed(R"j({"messages":[]})j", &ok);
     check(!ok, "an empty conversation is refused");
+    // A field of the wrong type is the client's mistake: refused with a reason, never thrown.
+    parsed(R"j({"messages":[{"role":1,"content":"hi"}]})j", &ok, &err);
+    check(!ok && err.find("role") != std::string::npos, "a role that is not a string is refused, not thrown");
+    parsed(R"j({"messages":[{"role":"user","content":[{"type":{"x":1},"text":"a"}]}]})j", &ok, &err);
+    check(!ok && err.find("content") != std::string::npos, "a part type that is not a string is refused");
+    parsed(R"j({"messages":[{"role":"user","content":"hi"}],"tools":[{"type":7,"function":{"name":"f"}}]})j", &ok);
+    check(!ok, "a tool type that is not a string is refused");
+    parsed(R"j({"messages":[{"role":"user","content":"hi"}],"tools":[{"function":{"name":"f"}}]})j", &ok);
+    check(ok, "a tool with no type is a function, as before");
+    parsed(R"j({"messages":[{"role":null,"content":"hi"}]})j", &ok, &err);
+    check(!ok && err.find("role") != std::string::npos, "a null role is an unsupported one");
+    int shape = 0;
+    for (const char * body : {R"j({"messages":[{"role":"user","content":"hi","tool_calls":7}]})j",
+                              R"j({"messages":[{"role":"assistant","content":"a","tool_calls":[{"function":
+                                  {"name":"f","arguments":[1]}}]},{"role":"user","content":"b"}]})j",
+                              R"j({"messages":"hi"})j", R"j({"messages":[[1]]})j", R"j([1])j", R"j(7)j",
+                              R"j({"messages":[{"role":"user","content":"hi"}],"stream":"yes","think":3,
+                                  "stream_options":7,"tool_choice":7,"max_tokens":"9"})j"}) {
+        bool threw = false;
+        try {
+            parsed(body, &ok, &err);
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        check(!threw, "a body of the wrong shape is answered, not thrown (#" + std::to_string(++shape) + ")");
+    }
     check(!parsed(R"j({"messages":[{"role":"user","content":"hi"}],"think":false})j").turn.think &&
               !parsed(R"j({"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none"})j").turn.think &&
               parsed(R"j({"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"low"})j").turn.think &&
@@ -413,6 +442,24 @@ static void access_tests() {
         RequestFacts h = req("GET", "/assets/app.js");
         h.sec_fetch_site = "cross-site";
         check(check_access(local, h).allowed(), "the UI's files are not the API");
+        // Another port of the same host is the same site, and exactly where a hostile local page is.
+        for (const char * site : {"same-site", "cross-site", "something-new"}) {
+            RequestFacts s = req("GET", "/api/plan");
+            s.sec_fetch_site = site;
+            check(check_access(local, s).status == 403,
+                  std::string("Sec-Fetch-Site: ") + site + " is refused on the API");
+        }
+        for (const char * site : {"same-origin", "none", ""}) {
+            RequestFacts s = req("GET", "/api/plan");
+            s.sec_fetch_site = site;
+            check(check_access(local, s).allowed(),
+                  std::string("Sec-Fetch-Site: '") + site + "' (this page, the person, or no browser) is answered");
+        }
+        RequestFacts so = req("GET", "/api/plan");
+        so.sec_fetch_site = "same-site";
+        so.has_origin = true;
+        so.origin = "http://127.0.0.1:8765";
+        check(check_access(local, so).allowed(), "an Origin the server knows decides over Sec-Fetch-Site");
     }
     {
         AccessPolicy keyed = local;
@@ -443,6 +490,87 @@ static void access_tests() {
           "beyond loopback without a key the server does not start");
     check(launch_refusal("0.0.0.0", "s3cret", false).empty() && launch_refusal("0.0.0.0", "", true).empty(),
           "a key, or --no-api-key, lets it");
+
+    check(is_loopback_peer("127.0.0.1") && is_loopback_peer("127.8.9.10") && is_loopback_peer("::1") &&
+              is_loopback_peer("::ffff:127.0.0.1"),
+          "a loopback peer, IPv4, IPv6 or mapped");
+    check(!is_loopback_peer("192.168.1.10") && !is_loopback_peer("::ffff:10.0.0.2") && !is_loopback_peer("") &&
+              !is_loopback_peer("fe80::1") && !is_loopback_peer("1127.0.0.1"),
+          "anything else is the network");
+
+    const auto csp = [] {
+        for (const auto & h : security_headers())
+            if (h.first == "Content-Security-Policy") return h.second;
+        return std::string();
+    }();
+    check(csp.find("img-src 'self' data:;") != std::string::npos &&
+              csp.find("frame-ancestors 'none'") != std::string::npos &&
+              csp.find("script-src 'self';") != std::string::npos && csp.find("unsafe-") == std::string::npos,
+          "the page loads images from itself or data: only, runs no inline script and cannot be framed");
+    std::set<std::string> names;
+    for (const auto & h : security_headers())
+        names.insert(h.first);
+    check(names.count("X-Content-Type-Options") && names.count("Referrer-Policy"), "no sniffing, no referrer");
+}
+
+static void file_tests() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("bmoe-server-test-" + std::to_string(std::rand()));
+    fs::create_directories(dir / "models" / "sub");
+    const auto write = [](const fs::path & p, const char * s) {
+        std::error_code ec;
+        fs::create_directories(p.parent_path(), ec);
+        std::FILE * f = std::fopen(p.u8string().c_str(), "wb");
+        check(f != nullptr, "the test can write its fixture");
+        if (!f) return;
+        std::fputs(s, f);
+        std::fclose(f);
+    };
+
+    std::string key, err;
+    write(dir / "key", "s3cret\r\n");
+    check(read_api_key_file((dir / "key").u8string(), key, err) && key == "s3cret",
+          "a key file is read without its trailing line break");
+    write(dir / "blank", " \n\n");
+    key = "kept";
+    check(!read_api_key_file((dir / "blank").u8string(), key, err) && !err.empty() && key == "kept",
+          "a key file with no key is refused");
+    check(!read_api_key_file((dir / "absent").u8string(), key, err) && !err.empty(), "and so is a missing one");
+
+    const std::vector<std::string> models = {(dir / "models").u8string()};
+    write(dir / "models" / "a.gguf", "");
+    write(dir / "secret.gguf", "");
+    std::string out;
+    check(confine_model_path((dir / "models" / "a.gguf").u8string(), models, out, err) &&
+              fs::equivalent(fs::u8path(out), dir / "models" / "a.gguf"),
+          "a model in the models folder is opened");
+    check(confine_model_path("sub/b.gguf", models, out, err) &&
+              fs::u8path(out).lexically_relative(fs::weakly_canonical(dir / "models")) == fs::path("sub/b.gguf"),
+          "a relative path is taken inside the models folder");
+    check(!confine_model_path((dir / "secret.gguf").u8string(), models, out, err) && !err.empty(),
+          "a file outside it is refused");
+    check(!confine_model_path((dir / "models" / ".." / "secret.gguf").u8string(), models, out, err),
+          "and so is a way out through ..");
+    check(!confine_model_path("../secret.gguf", models, out, err), "relative too");
+    check(!confine_model_path(models.front(), models, out, err), "the folder itself is not a model");
+    std::error_code ec;
+    fs::create_symlink(dir / "secret.gguf", dir / "models" / "link.gguf", ec);
+    if (!ec)
+        check(!confine_model_path((dir / "models" / "link.gguf").u8string(), models, out, err),
+              "a link inside the folder to a file outside it is refused");
+    check(confine_model_path("", models, out, err) && out.empty(), "no model is no path to confine");
+    // A folder the server lists models from beside the models folder (--scan-dir) is a root too, and
+    // only the models folder takes relative paths.
+    write(dir / "elsewhere" / "c.gguf", "");
+    const std::vector<std::string> roots = {models.front(), (dir / "elsewhere").u8string()};
+    check(confine_model_path((dir / "elsewhere" / "c.gguf").u8string(), roots, out, err) &&
+              fs::equivalent(fs::u8path(out), dir / "elsewhere" / "c.gguf"),
+          "a model in a scanned folder is opened");
+    check(!confine_model_path((dir / "elsewhere" / "c.gguf").u8string(), models, out, err),
+          "and refused where that folder is not listed");
+    check(!confine_model_path((dir / "secret.gguf").u8string(), roots, out, err), "a second root widens nothing else");
+    check(!confine_model_path("x.gguf", {}, out, err) && !err.empty(), "no folder at all opens nothing");
+    fs::remove_all(dir, ec);
 }
 
 static void decide_tests() {
@@ -482,6 +610,36 @@ static void decide_tests() {
           "the counts, the prefill figures and the kept state travel with it");
 }
 
+static void model_files_tests() {
+    ShardName sh;
+    check(parse_shard_name("Qwen3-235B-A22B-Q2_K-00002-of-00005.gguf", sh) && sh.stem == "Qwen3-235B-A22B-Q2_K" &&
+              sh.index == 2 && sh.count == 5,
+          "a gguf-split name parses into stem, index and count");
+    check(parse_shard_name("m-00001-OF-00002.GGUF", sh) && sh.stem == "m" && sh.index == 1 && sh.count == 2,
+          "the separator and the extension match in any case");
+    check(!parse_shard_name("model.gguf", sh) && !parse_shard_name("-00001-of-00002.gguf", sh) &&
+              !parse_shard_name("m-0001-of-00002.gguf", sh) && !parse_shard_name("m-00001-of-0002.gguf", sh) &&
+              !parse_shard_name("m-000a1-of-00002.gguf", sh) && !parse_shard_name("m-00001_of-00002.gguf", sh) &&
+              !parse_shard_name("m-00001-of-00002.gguf.part", sh),
+          "anything else is not a shard: no stem, a digit short, a letter, another separator, a partial file");
+    check(!parse_shard_name("m-00000-of-00002.gguf", sh) && !parse_shard_name("m-00003-of-00002.gguf", sh) &&
+              !parse_shard_name("m-00001-of-00000.gguf", sh),
+          "an index of 0, past the count, or a count of 0 cannot be a shard");
+    check(shard_file_name("m", 1, 12) == "m-00001-of-00012.gguf", "a shard's name, as gguf-split writes it");
+    check(is_gguf_name("a.GGUF") && !is_gguf_name("a.gguf.part") && !is_gguf_name("gguf"), "what a gguf file is");
+
+    const std::vector<ModelFiles> g =
+        group_model_files({"b-00002-of-00003.gguf", "a.gguf", "notes.txt", "b-00001-of-00003.gguf",
+                           "c-00002-of-00002.gguf", "a.gguf.part"});
+    check(g.size() == 3, "three models: a file, a set, and a set without its first shard");
+    check(g.size() == 3 && g[0].first == "a.gguf" && g[0].count == 1 && g[0].complete(), "a single file is complete");
+    check(g.size() == 3 && g[1].first == "b-00001-of-00003.gguf" && g[1].count == 3 && !g[1].complete() &&
+              g[1].files == std::vector<std::string>{"b-00001-of-00003.gguf", "b-00002-of-00003.gguf"},
+          "a set is listed by its first shard, with the files present in shard order");
+    check(g.size() == 3 && g[2].first == "c-00001-of-00002.gguf" && g[2].files.size() == 1 && !g[2].complete(),
+          "a set missing its first shard is still listed under the first shard's name, incomplete");
+}
+
 int main() {
     protocol_tests();
     queue_tests();
@@ -489,7 +647,9 @@ int main() {
     planning_config_tests();
     json_tests();
     access_tests();
+    file_tests();
     decide_tests();
+    model_files_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

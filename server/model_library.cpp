@@ -1,8 +1,8 @@
 #include "model_library.h"
 
-#include "bmoe/recipe.h"
+#include "model_files.h"
 
-#include "gguf.h"
+#include "bmoe/probe.h"
 
 // The server never starts a child in a directory of its own, and the header's detection of the
 // chdir file action trusts any libc that is not glibc or Apple's to have it, which bionic does not
@@ -14,7 +14,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <regex>
 #include <set>
 
 namespace fs = std::filesystem;
@@ -34,14 +33,24 @@ bool has_exact_size(const fs::path & p, uint64_t bytes) {
     return fs::is_regular_file(p, ec) && (bytes == 0 || file_size_or_zero(p) == bytes);
 }
 
-// "<stem>-00002-of-00005.gguf" -> stem, index 2, count 5. The naming llama.cpp's gguf-split writes
-// and the engine resolves from the first shard.
-const std::regex kShard(R"(^(.*)-(\d{5})-of-(\d{5})\.gguf$)", std::regex::icase);
-
 } // namespace
 
-ModelLibrary::ModelLibrary(std::string models_dir, std::string catalog_path, EventBus & bus)
+ModelLibrary::ModelLibrary(std::string models_dir,
+                           std::vector<std::string> scan_dirs,
+                           std::string catalog_path,
+                           EventBus & bus)
     : dir_(std::move(models_dir)), bus_(bus) {
+    // A scan directory that is the models directory, or repeats another, would list its models twice.
+    std::set<fs::path> seen;
+    const auto key = [](const std::string & d) {
+        std::error_code ec;
+        const fs::path p = fs::weakly_canonical(fs::u8path(d), ec);
+        return ec ? fs::u8path(d) : p;
+    };
+    seen.insert(key(dir_));
+    for (std::string & d : scan_dirs)
+        if (!d.empty() && seen.insert(key(d)).second) scan_dirs_.push_back(std::move(d));
+
     std::error_code ec;
     fs::create_directories(fs::u8path(dir_), ec);
 
@@ -86,7 +95,7 @@ ModelLibrary::~ModelLibrary() {
     }
 }
 
-std::string ModelLibrary::probe_arch(const std::string & path) {
+ModelLibrary::ModelFacts ModelLibrary::probe(const std::string & path) {
     const fs::path p = fs::u8path(path);
     std::error_code ec;
     const uint64_t size = file_size_or_zero(p);
@@ -94,19 +103,19 @@ std::string ModelLibrary::probe_arch(const std::string & path) {
     const long long mt = ec ? 0 : (long long) mtime.time_since_epoch().count();
     {
         std::lock_guard<std::mutex> lk(m_);
-        auto it = arch_cache_.find(path);
-        if (it != arch_cache_.end() && it->second.size == size && it->second.mtime == mt) return it->second.arch;
+        auto it = facts_cache_.find(path);
+        if (it != facts_cache_.end() && it->second.size == size && it->second.mtime == mt) return it->second.facts;
     }
-    std::string arch;
-    gguf_init_params gp = {/*no_alloc*/ true, /*ctx*/ nullptr};
-    if (gguf_context * g = gguf_init_from_file(p.string().c_str(), gp)) {
-        const int64_t k = gguf_find_key(g, "general.architecture");
-        if (k >= 0 && gguf_get_kv_type(g, k) == GGUF_TYPE_STRING) arch = gguf_get_val_str(g, k);
-        gguf_free(g);
-    }
+    // The planner's own reading of the file - the headers of every shard, no tensor bytes - so the
+    // listing, the plan and the load agree on what a file is. Streamable means it declares routed
+    // experts laid out the way the engine streams them; a dense model reads fine and is not.
+    const ModelProfile m = probe_model(path.c_str());
+    ModelFacts facts;
+    facts.arch = m.arch;
+    facts.streamable = m.ok && m.is_moe;
     std::lock_guard<std::mutex> lk(m_);
-    arch_cache_[path] = {size, mt, arch};
-    return arch;
+    facts_cache_[path] = {size, mt, facts};
+    return facts;
 }
 
 const CatalogEntry * ModelLibrary::find(const std::string & id) const {
@@ -121,51 +130,43 @@ bool ModelLibrary::entry_on_disk(const CatalogEntry & e) const {
     return true;
 }
 
-json ModelLibrary::list() {
-    // Group the directory's ggufs: a split set is one model, listed by its first shard.
-    struct Group {
-        std::string first;
-        int count = 1;
-        std::set<int> present;
-        uint64_t bytes = 0;
-    };
-    std::map<std::string, Group> groups;
+void ModelLibrary::list_dir(const std::string & dir, json & out) {
+    std::vector<std::string> names;
     std::error_code ec;
-    for (const auto & ent : fs::directory_iterator(fs::u8path(dir_), ec)) {
-        if (!ent.is_regular_file(ec)) continue;
-        const std::string name = ent.path().filename().u8string();
-        if (name.size() < 5 || name.compare(name.size() - 5, 5, ".gguf") != 0) continue;
-        std::smatch sm;
-        if (std::regex_match(name, sm, kShard)) {
-            Group & g = groups[sm[1].str()];
-            g.count = std::stoi(sm[3].str());
-            g.present.insert(std::stoi(sm[2].str()));
-            g.bytes += file_size_or_zero(ent.path());
-            char first[64];
-            std::snprintf(first, sizeof(first), "-00001-of-%05d.gguf", g.count);
-            g.first = sm[1].str() + first;
-        } else {
-            Group & g = groups[name];
-            g.first = name;
-            g.present.insert(1);
-            g.bytes = file_size_or_zero(ent.path());
-        }
-    }
+    for (const auto & ent : fs::directory_iterator(fs::u8path(dir), ec))
+        if (ent.is_regular_file(ec)) names.push_back(ent.path().filename().u8string());
 
-    json local = json::array();
-    for (auto & kv : groups) {
-        const Group & g = kv.second;
-        const fs::path first = fs::u8path(dir_) / fs::u8path(g.first);
-        const bool complete = (int) g.present.size() == g.count;
-        const std::string arch = g.present.count(1) ? probe_arch(first.u8string()) : "";
-        local.push_back({{"name", g.first},
-                         {"path", first.generic_u8string()},
-                         {"bytes", g.bytes},
-                         {"shards", g.count},
-                         {"arch", arch},
-                         {"streamable", !arch.empty() && find_moe_recipe(arch.c_str()) != nullptr},
-                         {"complete", complete}});
+    const fs::path base = fs::u8path(dir);
+    for (const ModelFiles & m : group_model_files(names)) {
+        uint64_t bytes = 0;
+        json files = json::array();
+        for (const std::string & f : m.files) {
+            bytes += file_size_or_zero(base / fs::u8path(f));
+            files.push_back((base / fs::u8path(f)).generic_u8string());
+        }
+        const fs::path first = base / fs::u8path(m.first);
+        // Only the first shard carries the metadata; a set without it has no architecture to read.
+        const bool has_first = !m.files.empty() && m.files.front() == m.first;
+        const ModelFacts facts = has_first ? probe(first.u8string()) : ModelFacts{};
+        out.push_back({{"name", m.first},
+                       {"path", first.generic_u8string()},
+                       {"dir", base.generic_u8string()},
+                       {"bytes", bytes},
+                       {"shards", m.count},
+                       {"files", files},
+                       {"arch", facts.arch},
+                       {"streamable", facts.streamable},
+                       {"complete", m.complete()}});
     }
+}
+
+json ModelLibrary::list() {
+    // The models directory first, then each scan directory in the order given: the order a host
+    // app ranks them in (a real filesystem before an emulated one).
+    json local = json::array();
+    list_dir(dir_, local);
+    for (const std::string & d : scan_dirs_)
+        list_dir(d, local);
 
     json catalog = json::array();
     std::lock_guard<std::mutex> lk(m_);
@@ -191,7 +192,13 @@ json ModelLibrary::list() {
                            {"status", status},
                            {"note", e.files.size() > 1 ? std::to_string(e.files.size()) + " shards" : ""}});
     }
-    return json{{"models_dir", fs::u8path(dir_).generic_u8string()}, {"local", local}, {"catalog", catalog}};
+    json scan = json::array();
+    for (const std::string & d : scan_dirs_)
+        scan.push_back(fs::u8path(d).generic_u8string());
+    return json{{"models_dir", fs::u8path(dir_).generic_u8string()},
+                {"scan_dirs", scan},
+                {"local", local},
+                {"catalog", catalog}};
 }
 
 void ModelLibrary::publish(const std::string & id,

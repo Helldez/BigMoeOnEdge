@@ -26,8 +26,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.bigmoeonedge.app.data.Better
-import io.bigmoeonedge.app.data.ConfigFields
+import io.bigmoeonedge.app.data.ConfigGlossary
 import io.bigmoeonedge.app.data.Csv
+import io.bigmoeonedge.app.data.PreambleFacts
 import io.bigmoeonedge.app.data.MetricFields
 import io.bigmoeonedge.app.data.fmt
 import io.bigmoeonedge.app.data.pearson
@@ -213,6 +214,7 @@ private fun FileList(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CsvView(file: File, modifier: Modifier) {
+    val glossary = rememberGlossary()
     // One row per token — thousands at worst, ~112 bytes each — so the whole file fits in memory
     // and there is nothing to gain from streaming it.
     val csv = remember(file) { Csv.read(file) }
@@ -234,18 +236,12 @@ private fun CsvView(file: File, modifier: Modifier) {
             item {
                 Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(csv.label(), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Text(csv.label(glossary), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        // The session's facts at a glance, as the server reported them at load.
                         Text(
-                            listOfNotNull(
-                                csv.info["arch"]?.let { "arch $it" },
-                                csv.info["n_layer"]?.let { "$it layers" },
-                                csv.info["n_expert"]?.let { "$it experts" },
-                                csv.info["threads"]?.let { "$it threads" },
-                                csv.info["n_ctx"]?.let { "ctx $it" },
-                                if (csv.info["o_direct"] == "1") "O_DIRECT" else null,
-                                csv.info["dense_weights"]?.takeIf { csv.info["moe_stream"] == "1" }?.let { "dense=$it" },
-                                if (csv.info["force_cache"] == "1") "forced" else null,
-                            ).joinToString(" · "),
+                            PreambleFacts.all.filter { it.key != PreambleFacts.MODEL }
+                                .mapNotNull { f -> csv.info[f.key]?.let { "${f.label} ${glossary.value(f.key, it)}" } }
+                                .joinToString(" · "),
                             fontSize = 11.sp,
                         )
                         // The lines above are a glance, not the record: they name a handful of
@@ -254,7 +250,7 @@ private fun CsvView(file: File, modifier: Modifier) {
                         // just the speed) are the ones a saved run is least able to state
                         // otherwise. Everything the file says is one tap away, and stays one tap
                         // away as the engine grows knobs. See #136.
-                        val rows = remember(csv) { configRows(csv.info) }
+                        val rows = remember(csv, glossary) { glossary.rows(csv.info) }
                         TextButton(shape = RectangleShape, 
                             onClick = { showConfig = !showConfig },
                             contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
@@ -265,7 +261,7 @@ private fun CsvView(file: File, modifier: Modifier) {
                                 fontSize = 11.sp,
                             )
                         }
-                        if (showConfig) ConfigRows(csv.info, MaterialTheme.colorScheme.primary, emptySet())
+                        if (showConfig) ConfigRows(rows, MaterialTheme.colorScheme.primary, emptySet())
                     }
                 }
                 Spacer(Modifier.height(4.dp))
@@ -323,6 +319,7 @@ private fun Cell(text: String, bold: Boolean = false) {
 
 @Composable
 private fun CompareView(fa: File, fb: File, modifier: Modifier) {
+    val glossary = rememberGlossary()
     val a = remember(fa) { Csv.read(fa) }
     val b = remember(fb) { Csv.read(fb) }
     // Only columns both files actually have: plotting a series against a blank is not a comparison.
@@ -366,8 +363,8 @@ private fun CompareView(fa: File, fb: File, modifier: Modifier) {
         val sb = b.column(metric).orEmpty()
         LineChart(sa, sb, colorA, colorB, Modifier.fillMaxWidth().height(240.dp))
 
-        Legend(fa.name, a.label(), colorA, sa)
-        Legend(fb.name, b.label(), colorB, sb)
+        Legend(fa.name, a.label(glossary), colorA, sa)
+        Legend(fb.name, b.label(glossary), colorB, sb)
         Text(
             "x = token index within the file (turns run end to end). Both series share one y scale, " +
                 "which is the only way the comparison means anything.",
@@ -401,91 +398,11 @@ private fun Legend(name: String, label: String, color: Color, series: List<Float
     }
 }
 
-// Display order and labels for the preamble keys this build knows about. It is NOT a filter: a key
-// the engine writes and this list does not mention is still rendered, after these, under its own
-// name (see [configRows]). That is the invariant — a knob added to the metrics sink must never need
-// an app change before a saved run can say whether it was on. The previous whitelist quietly drifted
-// behind the engine until a file could not tell you its own drop fraction (#136).
-private val CONFIG_ORDER = listOf(
-    "model" to "Model",
-    "engine" to "Engine build",
-    "arch" to "Architecture",
-    "n_layer" to "Layers",
-    "n_expert" to "Experts",
-    "n_expert_used" to "Active experts (top-k)",
-    "n_ctx" to "Context",
-    "n_ubatch" to "Compute batch (n_ubatch)",
-    "threads" to "Compute threads",
-    "chatml" to "Chat template",
-    "moe_stream" to "MoE streaming",
-    "cache_mb" to "Cache budget (MiB)",
-    "cache_auto" to "Cache auto-size",
-    "cache_floor_mb" to "Cache floor (MiB)",
-    "cache_ceil_mb" to "Cache ceiling (MiB)",
-    "cache_cycle_mb" to "Token cycle (MiB)",
-    "force_cache" to "Force cache",
-    "io_threads" to "I/O lanes",
-    "o_direct" to "Direct I/O",
-    "overlap" to "I/O–compute overlap",
-    "io_two_wave" to "Two-wave publish",
-    "load_all" to "Load all experts",
-    "prefetch" to "Temporal prefetch",
-    "route_ahead" to "Route-ahead (layers)",
-    "predict_prefetch" to "Predictive prefetch",
-    "predict_spec_max" to "Speculated misses/layer",
-    "predict_log" to "Prediction probe",
-    "prefetch_sync" to "Synchronous prefetch",
-    "dense_weights" to "Dense weights",
-    "drop_cold_frac" to "Drop cold experts",
-    "drop_renorm" to "Drop renormalise",
-    "drop_prefill" to "Drop in prefill",
-    "substitute_lambda" to "Prefer cached experts",
-    "temp" to "Temperature",
-    "top_k" to "top-k",
-    "top_p" to "top-p",
-    "seed" to "Seed",
-    "compute_trace_layers" to "Compute trace (layers)",
-)
-private val CONFIG_LABELS = CONFIG_ORDER.toMap()
-private val CONFIG_BOOLS = setOf(
-    "moe_stream", "cache_auto", "force_cache", "o_direct", "overlap", "io_two_wave", "load_all",
-    "predict_prefetch", "predict_log", "prefetch_sync", "drop_renorm", "drop_prefill", "chatml",
-    "compute_trace_layers",
-)
-
-/**
- * The run's whole configuration as (key, label, value), curated keys first and everything else after
- * — so a file written by a newer engine still shows what it was run with, under raw key names, on a
- * build that predates the setting. Keys the preamble does not carry are simply absent: an older
- * engine wrote fewer, and inventing a default for them would be a claim the file never made.
- */
-private fun configRows(info: Map<String, String>): List<Triple<String, String, String>> {
-    val known = CONFIG_ORDER.mapNotNull { (k, label) ->
-        info[k]?.let { Triple(k, label, prettyConfigValue(k, it, info)) }
-    }
-    val rest = info.keys.filter { it !in CONFIG_LABELS }.sorted()
-        .map { k -> Triple(k, k, prettyConfigValue(k, info.getValue(k), info)) }
-    return known + rest
-}
-
-/**
- * One preamble value, rendered as what it MEANT for the run — which sometimes takes the rest of
- * [info] to know, because a knob the run never consulted is recorded all the same.
- */
-private fun prettyConfigValue(key: String, v: String, info: Map<String, String>): String = when {
-    // Read ahead is a property of the prediction, so with the prediction off the engine's own
-    // default (2, config.h) lands in the preamble governing nothing at all — it is the one field of
-    // that block session.cpp does not neutralise when the feature is off. Printing the bare number
-    // reads as "this run speculated two misses per layer", which is exactly false.
-    key == "predict_spec_max" && info["predict_prefetch"] != "1" -> "— (predictive prefetch off)"
-    key in CONFIG_BOOLS -> if (v == "1") "on" else "off"
-    // A zero here is not a small setting, it is the feature being off, and reading "0" as "some
-    // dropping happened" is exactly the misreading this display exists to prevent. The drop
-    // fraction is shown as the engine took it (a fraction of the uniform share 1/top-k, not of the
-    // routing) so it matches --drop-cold-experts and the settings screen.
-    (key == "prefetch" || key == "route_ahead" || key == "drop_cold_frac" || key == "substitute_lambda") && v.toFloatOrNull() == 0f -> "off"
-    key == "predict_spec_max" && v == "0" -> "0 (retention only)"
-    else -> v
+/** The parameter table as the preamble's glossary; empty (raw key names) until the engine answers. */
+@Composable
+private fun rememberGlossary(): ConfigGlossary {
+    val engine by Engine.state.collectAsStateWithLifecycle()
+    return remember(engine.params) { ConfigGlossary(engine.params.orEmpty()) }
 }
 
 /**
@@ -495,6 +412,7 @@ private fun prettyConfigValue(key: String, v: String, info: Map<String, String>)
  */
 @Composable
 private fun FullConfig(csv: Csv, accent: Color, changed: Set<String>) {
+    val glossary = rememberGlossary()
     if (csv.info.isEmpty()) {
         Text("No run header in this file — its configuration is unknown.",
              fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
@@ -506,7 +424,7 @@ private fun FullConfig(csv: Csv, accent: Color, changed: Set<String>) {
                 Canvas(Modifier.size(12.dp)) { drawRect(accent) }
                 Text(csv.info["model"] ?: "run", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
-            ConfigRows(csv.info, accent, changed)
+            ConfigRows(glossary.rows(csv.info), accent, changed)
         }
     }
 }
@@ -516,8 +434,8 @@ private fun FullConfig(csv: Csv, accent: Color, changed: Set<String>) {
  * file view and the compare view so the two can never disagree about what a file says it was.
  */
 @Composable
-private fun ConfigRows(info: Map<String, String>, accent: Color, changed: Set<String>) {
-    configRows(info).forEach { (key, label, value) ->
+private fun ConfigRows(rows: List<Triple<String, String, String>>, accent: Color, changed: Set<String>) {
+    rows.forEach { (key, label, value) ->
         val isChanged = key in changed
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("$label:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -617,6 +535,7 @@ private fun FieldNote(name: String) {
 
 @Composable
 private fun GlossaryView(modifier: Modifier) {
+    val glossary = rememberGlossary()
     LazyColumn(modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         // Two halves, in the order a file is read: the preamble says what the run was configured
         // with, the columns say what it then measured.
@@ -651,14 +570,33 @@ private fun GlossaryView(modifier: Modifier) {
                 top = 24.dp,
             )
         }
-        items(ConfigFields.all) { c ->
-            Column(Modifier.padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(c.name, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                Text(c.what, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        items(PreambleFacts.all) { f ->
+            GlossaryEntry(f.key, f.label, f.what)
+        }
+        // Every setting, from the parameter table: its label and help are the engine's own words,
+        // so a reader who follows a setting into Settings or the code finds the same sentence.
+        if (glossary.params.isEmpty()) {
+            item {
+                Text(
+                    "The settings are explained by the engine's parameter table, which arrives once the engine is running.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            HorizontalDivider()
+        }
+        items(glossary.params) { p ->
+            GlossaryEntry(ConfigGlossary.preambleKey(p.key), p.label + if (p.lossy) " (changes the reply)" else "", p.help)
         }
     }
+}
+
+@Composable
+private fun GlossaryEntry(key: String, label: String, what: String) {
+    Column(Modifier.padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(key, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        if (what.isNotEmpty()) Text(what, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    HorizontalDivider()
 }
 
 /** A glossary section heading and its one-paragraph framing, so both halves are introduced alike. */
@@ -713,7 +651,7 @@ private fun CorrelateView(file: File, modifier: Modifier) {
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        if (csv.info.isNotEmpty()) Text(csv.label(), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        if (csv.info.isNotEmpty()) Text(csv.label(rememberGlossary()), fontSize = 12.sp, fontWeight = FontWeight.Medium)
 
         Box {
             OutlinedButton(shape = RectangleShape, onClick = { expanded = true }) { Text("Fields (${chosen.size})") }
@@ -819,7 +757,6 @@ private fun MultiLineChart(series: List<List<Float?>>, palette: List<Color>, mod
 private fun LiveCard() {
     val engine by Engine.state.collectAsStateWithLifecycle()
     val t = engine.live
-    val cfg = engine.config
     val loc = Locale.US
     ElevatedCard(Modifier.fillMaxWidth().padding(12.dp)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -846,10 +783,7 @@ private fun LiveCard() {
                 )
                 return@Column
             }
-            val threads = cfg?.int("threads", 4) ?: 4
-            val overlap = cfg?.bool("overlap", true) ?: true
-            val ioThreads = cfg?.int("io-threads", 4) ?: 4
-            val b = breakdown(t, overlap, busyThreads = threads + if (overlap) ioThreads else 0, computeThreads = threads)
+            val b = breakdown(t)
             val suffix = if (b.isAverage) " avg" else ""
             if (b.wallMs > 0.0) {
                 Text(String.format(loc, "%.0f ms/token  →  %.2f tok/s", b.wallMs, 1000.0 / b.wallMs), fontWeight = FontWeight.SemiBold, fontSize = 15.sp)

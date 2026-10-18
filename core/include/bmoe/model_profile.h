@@ -12,8 +12,8 @@
 // "dense weights" prices things that differ by three orders of magnitude identically. So the file
 // is decomposed into groups by ACCESS SHAPE, and each carries its own per-token demand.
 //
-// On not hardcoding: the tensor names that identify EXPERT weights come from the architecture
-// recipe (bmoe/recipe.h), so a new MoE family stays one table row. The remaining names —
+// On not hardcoding: which tensors are EXPERT weights is read from the file's shapes
+// (bmoe/expert_layout.h), so a new MoE family needs nothing here. The remaining names —
 // `token_embd`, `output`, `blk.N.attn_*`, `blk.N.ffn_*` — are the gguf naming convention itself,
 // which every architecture llama.cpp converts shares; they are a property of the FORMAT, not of
 // any model, and a name that matches nothing lands in Other and is priced as read-whole, which is

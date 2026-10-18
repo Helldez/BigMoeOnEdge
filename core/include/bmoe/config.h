@@ -22,10 +22,13 @@ namespace bmoe {
 struct SamplingConfig {
     float temp = 0.0f;           // <= 0: greedy (argmax). > 0: stochastic sampling.
     int top_k = 40;              // 0 disables the top-k stage (llama.cpp convention)
-    float top_p = 0.95f;         // nucleus cutoff, in (0, 1]
-    uint32_t seed = 0xFFFFFFFFu; // == LLAMA_DEFAULT_SEED (random per run); static_assert'd in session.cpp
+    float top_p = 0.95f;         // nucleus cutoff, in (0, top_p_max]
+    uint32_t seed = seed_random; // == LLAMA_DEFAULT_SEED, static_assert'd in session.cpp
 
-    static constexpr int top_k_max = 1000; // the widest cutoff a form offers; validate() does not enforce it
+    static constexpr uint32_t seed_random = 0xFFFFFFFFu; // the seed that draws a fresh one per run
+    static constexpr int top_k_max = 1000;   // the widest cutoff a form offers; validate() does not enforce it
+    static constexpr float temp_max = 2.0f;  // the hottest a form offers; validate() does not enforce it
+    static constexpr float top_p_max = 1.0f; // a probability mass: the whole distribution
 };
 
 // How the dense (non-expert) model weights are kept resident. See MoeStreamConfig::dense_weights and
@@ -292,6 +295,8 @@ struct MoeStreamConfig {
     static constexpr int prefetch_layers_max = 8;
     static constexpr int route_ahead_max = 8; // beyond this the staleness has no measured meaning
     static constexpr int predict_spec_max_limit = 8;
+    static constexpr float drop_cold_frac_max = 1.0f;    // the uniform share: never empties a routing
+    static constexpr float substitute_lambda_max = 1.0f; // the whole score range: residency always wins
 };
 
 // Where the draft tokens of a self-speculative step come from. The verify half of the loop is
@@ -358,6 +363,7 @@ struct SpecConfig {
 
     static constexpr int draft_max_limit = 8;
     static constexpr int ngram_match_limit = 64;
+    static constexpr float draft_p_min_max = 1.0f; // a probability: only drafts the head is sure of
 
     bool enabled() const { return source != DraftSource::none; }
     bool is_mtp() const { return source == DraftSource::mtp; }
@@ -523,8 +529,7 @@ struct RunConfig {
     // Decode is unaffected: a decode graph is one token wide whatever this says. The cost is
     // prefill throughput, which processes a long prompt in more, smaller passes.
     int n_ubatch = 0;
-    bool chatml = false;   // wrap the prompt in the model family's chat turn (arch-aware)
-    bool progress = false; // emit machine telemetry (one JSON line per token)
+    bool chatml = false; // wrap the prompt in the model family's chat turn (arch-aware)
 
     // Render the chat template with reasoning enabled. Passed to the template as the
     // `enable_thinking` kwarg, so a reasoning model (Qwen3, thinking Gemma, …) only emits
@@ -539,13 +544,6 @@ struct RunConfig {
     // changes the output. Applied at load via a llama.cpp kv_override on the arch-prefixed
     // expert_used_count metadata key; must stay in [1, n_expert]. Independent of streaming.
     int n_expert_used = 0;
-
-    // Compute-trace granularity. false (default): a barrier per graph node — exact per-op
-    // attribution, but it serializes the graph against the expert stream and distorts the run.
-    // true: a barrier only at layer boundaries, cheap enough that the traced numbers stay close
-    // to an untraced run. Only meaningful when a compute-trace sink is attached; see
-    // bmoe/decode_trace.h for what the layer-mode rows contain.
-    bool compute_trace_layers = false;
 
     // ── what the first stage (llama.cpp's capacity fitter) decided ─────────────────
     // Layers stored on devices, counted from the top the way llama.cpp fills them, and the

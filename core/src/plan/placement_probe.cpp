@@ -11,13 +11,14 @@
 #include "bmoe/config.h"
 #include "bmoe/probe.h"
 
+#include "../moe/tensor_names.h"
+
 #include "fit.h"
 #include "ggml-backend.h"
 #include "llama.h"
 
-#include <cstring>
 #include <algorithm>
-#include <regex>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,16 @@ namespace {
 // Below this a graph is not a prefill graph any more, and halving it measures the constant part of
 // the buffer rather than the slope.
 constexpr uint32_t min_projection_width = 64;
+
+// What the fitter leaves free on each device. Upstream's own default (`--fit-target`) rather than a
+// policy of ours: the second stage applies its own margin to the host budget separately, from what
+// a reclaim costs there, and a device margin of our choosing would be a number nothing measured.
+constexpr size_t fitter_device_margin_bytes = (size_t) 1 << 30;
+
+// The shortest context the fitter may shrink to before it moves weights instead. Upstream's default
+// too (`--fit-ctx`). It binds only when the context is left to the fitter, which this adapter never
+// does - the context is pinned below - so it is passed for the call's contract, not as a choice.
+constexpr uint32_t fitter_n_ctx_min = 4096;
 } // namespace
 
 Placement probe_placement(const char * model_path,
@@ -74,14 +85,11 @@ Placement probe_placement(const char * model_path,
         o.pattern = nullptr;
         o.buft = nullptr;
     }
-    // Per-device margins, in bytes: leave a little on each device. The value is upstream's own
-    // default (1 GiB) rather than a policy of ours; the second stage applies its own margin to the
-    // host budget separately, from what a reclaim costs there.
-    std::vector<size_t> margins(llama_max_devices() + 1, (size_t) 1024 * 1024 * 1024);
+    std::vector<size_t> margins(llama_max_devices() + 1, fitter_device_margin_bytes);
 
     const common_params_fit_status st =
         common_fit_params(model_path, &mparams, &cparams, tensor_split.data(), overrides.data(), margins.data(),
-                          /*n_ctx_min=*/4096, /*extra=*/nullptr, GGML_LOG_LEVEL_WARN);
+                          fitter_n_ctx_min, /*extra=*/nullptr, GGML_LOG_LEVEL_WARN);
     if (st == COMMON_PARAMS_FIT_STATUS_ERROR) {
         pl.outcome = "the capacity fitter hit an error; planning as if there were no devices";
         return pl;
@@ -175,15 +183,12 @@ Placement probe_placement(const char * model_path,
     for (uint32_t il = 0; il < first_device_layer; ++il)
         host[il] = true;
 
-    const std::regex exps_re(R"(blk\\\.(\d+)\\\.ffn_\(up\|down\|gate_up\|gate\)_\(ch\|\)exps)");
     for (const auto & o : overrides) {
         if (!o.pattern) break;
         pl.override_patterns.push_back(o.pattern);
-        std::cmatch m;
-        if (o.buft == cpu_buft && std::regex_search(o.pattern, m, exps_re)) {
-            const uint32_t il = (uint32_t) std::stoul(m[1].str());
-            if (il < n_layer) host[il] = true;
-        }
+        if (o.buft != cpu_buft) continue;
+        const int il = tensor_names::expert_override_layer(o.pattern);
+        if (il >= 0 && (uint32_t) il < n_layer) host[(size_t) il] = true;
     }
     for (uint32_t il = 0; il < n_layer; ++il)
         if (host[il]) pl.host_expert_layers.push_back(il);

@@ -1,8 +1,8 @@
 // The hardware planner, as the server offers it.
 //
 // The planner is a library the engine may or may not carry (see server/CMakeLists.txt). With it,
-// this runs the same probes in the same order as `bmoe-cli --auto` and turns the Plan into what
-// the API returns: its decisions, and the parameter values it would set, expressed through the
+// this makes the plan with the same call as `bmoe-cli --auto` (bmoe/auto_plan.h) and turns the Plan
+// into what the API returns: its decisions, and the parameter values it would set, expressed through the
 // parameter table so they land in the same settings layers as everything else. Without it, every
 // call says so.
 #pragma once

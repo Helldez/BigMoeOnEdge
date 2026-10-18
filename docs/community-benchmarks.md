@@ -11,7 +11,7 @@ the code, and you do not pick any settings: the protocol fixes them so rows comp
 
 ## Start here
 
-**Which model?** Any MoE the engine supports (`bmoe-cli --list-archs`), any quantization. No model
+**Which model?** Any MoE llama.cpp loads ([which-models-stream.md](which-models-stream.md)), any quantization. No model
 yet? The [catalog table](#models-that-line-up-with-the-readme) lists what the app ships. Larger
 than your RAM is the interesting case; one that fits is still a valid row (it measures what
 streaming costs against running resident). The report asks which of the two you are in.

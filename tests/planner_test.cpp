@@ -1209,6 +1209,24 @@ int main() {
         check(!slow.config.prefill.enabled() && reason(slow).find("not a win") != std::string::npos,
               "prefill: a device inside the margin is not a second placement");
 
+        // A device that could not be measured at that width is named with the reason, not dropped:
+        // the plan reads the same whether the second device is absent or cannot run this model.
+        HardwareProfile pair = machine(205.0, Tri::Yes);
+        ComputeDevice other = pair.devices[1];
+        other.name = "other";
+        other.wide_matmul_gibs = 0.0;
+        other.runs_expert_op = Tri::No;
+        pair.devices.push_back(other);
+        const Plan named = plan_run(base_cfg(), pair, mm, PlanRequest{});
+        check(!named.config.prefill.enabled() && reason(named).find("not a win") != std::string::npos &&
+                  reason(named).find("other was not weighed") != std::string::npos &&
+                  reason(named).find("expert matmul") != std::string::npos,
+              "prefill: a device that cannot run the model's matmul is named with the reason", reason(named));
+        pair.devices.back().runs_expert_op = Tri::Unknown;
+        const Plan unmeasured = plan_run(base_cfg(), pair, mm, PlanRequest{});
+        check(reason(unmeasured).find("other was not weighed: it gave no measurement") != std::string::npos,
+              "prefill: and one that gave no figure says so", reason(unmeasured));
+
         // Two slots do not fit and one does: the device is armed with one, and the plan says so.
         // The layer is sized so that the difference between the two is exactly what decides it.
         ModelProfile mid = mm;
@@ -1294,9 +1312,9 @@ int main() {
         projected.device_compute_bytes = 256 * MiB;
         projected.projected_devices = {"gpu"};
         projected.projected_compute_bytes = {256 * MiB};
-        const Plan other = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, projected, PlanRequest{});
-        const LedgerRow * orow = ledger_row(other, "device");
-        check(other.config.prefill.device == "accel" && orow && orow->bytes == stays,
+        const Plan beside = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, projected, PlanRequest{});
+        const LedgerRow * orow = ledger_row(beside, "device");
+        check(beside.config.prefill.device == "accel" && orow && orow->bytes == stays,
               "prefill: a compute buffer projected for another device is not charged to this one",
               orow ? std::to_string((unsigned long long) (orow->bytes >> 20)) + " MiB" : "no row");
         projected.projected_devices = {"accel"};

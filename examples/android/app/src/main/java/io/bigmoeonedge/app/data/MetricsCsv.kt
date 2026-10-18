@@ -3,6 +3,7 @@ package io.bigmoeonedge.app.data
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
+import io.bigmoeonedge.app.engine.ParamSpec
 import java.io.File
 import java.util.Locale
 import kotlin.math.abs
@@ -28,31 +29,20 @@ internal class Csv(
     val summaries: List<String>,
     val info: Map<String, String>,
 ) {
-    /** The run's identity, short enough to sit under a chart line. Empty for a pre-preamble CSV. */
-    fun label(): String {
+    /**
+     * The run's identity, short enough to sit under a chart line: the model, whether it streamed,
+     * and every setting that changes the reply and differs from its default. Those belong in the
+     * identity, not only in the config table: a run that dropped experts is not the same KIND of run
+     * as one that did not, and two compare legends that differ only by one used to read as identical
+     * (#136). Which settings change the reply is the parameter table's to say. Empty for a
+     * pre-preamble CSV.
+     */
+    fun label(glossary: ConfigGlossary): String {
         if (info.isEmpty()) return ""
-        val cache = when {
-            info["cache_auto"] == "1" -> "cache auto(${info["cache_mb"]})"
-            else -> "cache ${info["cache_mb"]}"
-        }
-        return listOfNotNull(
-            info["model"],
-            info["n_expert_used"]?.let { "top-$it" },
-            if (info["moe_stream"] == "1") cache else "mmap baseline",
-            info["io_threads"]?.let { "$it lanes" },
-            if (info["overlap"] == "1") "overlap" else null,
-            info["prefetch"]?.takeIf { it != "0" }?.let { "prefetch $it" },
-            // The lossy levers belong in the identity, not only in the config table: a run that
-            // dropped experts is not the same KIND of run as one that did not, and two compare
-            // legends that differ only by this used to read as identical (#136).
-            if (info["predict_prefetch"] == "1") "predict" else null,
-            info["route_ahead"]?.takeIf { it != "0" }?.let { "route-ahead $it" },
-            info["drop_cold_frac"]?.takeIf { (it.toFloatOrNull() ?: 0f) > 0f }?.let { "drop $it" },
-            // Same argument, and stronger: under speculation a decode confirms a whole group, so
-            // the per-token rows are not even accounted the same way (mtp_batch). Two runs that
-            // differ by this must never read as the same kind of run.
-            info["spec"]?.takeIf { it != "off" }?.let { "$it ${info["spec_draft_max"]}" },
-        ).joinToString(" · ")
+        val streamed = (info[PreambleFacts.STREAMING] ?: info[PreambleFacts.STREAMING_BEFORE])
+            ?.let { if (it == "1") "streamed" else "mmap baseline" }
+        val lossy = glossary.lossyChanged(info).map { (spec, v) -> "${spec.label} ${glossary.value(spec.key, v)}" }
+        return (listOfNotNull(info[PreambleFacts.MODEL], streamed) + lossy).joinToString(" · ")
     }
 
     /**
@@ -110,9 +100,69 @@ internal fun runTitle(file: File): String {
     if (model.isEmpty()) return ""
     val initial = model.first().uppercaseChar()
     val tps = lines.filter { it.startsWith("# summary") }
-        .mapNotNull { Regex("""tok/s=([0-9.]+)""").find(it)?.groupValues?.get(1)?.toFloatOrNull() }
+        .mapNotNull { summaryFields(it)["tok/s"]?.toFloatOrNull() }
     val tpsStr = if (tps.isEmpty()) "" else tps.joinToString("→") { fmt(it) } + " t/s"
     return listOf(initial.toString(), tpsStr).filter { it.isNotEmpty() }.joinToString(" · ")
+}
+
+/**
+ * One `# summary` line's fields: whitespace-separated `key=value`, order-independent, the same
+ * contract as the preamble, so a field is read by its name and a new one breaks nothing.
+ */
+internal fun summaryFields(line: String): Map<String, String> =
+    line.removePrefix("#").trim().removePrefix("summary").trim().split(' ', '\t')
+        .mapNotNull { tok -> tok.split("=", limit = 2).takeIf { it.size == 2 && it[0].isNotEmpty() } }
+        .associate { it[0] to it[1] }
+
+/**
+ * The preamble's settings, explained by the parameter table (`GET /api/params`): a setting is
+ * written under its parameter's key with `_` for `-`, so its label, its type, its unit, its help
+ * and whether it changes the reply are the table's, never a copy kept here. A key the table does
+ * not know (a fact the app wrote from `/api/info`, or a setting of another build) is shown under
+ * its own name: unexplained, which is the right failure, and not a reason to hide it.
+ */
+internal class ConfigGlossary(val params: List<ParamSpec>) {
+    private val byKey = params.associateBy { preambleKey(it.key) }
+
+    fun spec(key: String): ParamSpec? = byKey[key]
+    fun label(key: String): String = spec(key)?.label ?: PreambleFacts.label(key) ?: key
+
+    /** A preamble value as the table types it: a switch as on/off, a number with its unit. */
+    fun value(key: String, v: String): String {
+        val s = spec(key) ?: return v
+        return when {
+            s.type == "bool" -> if (v == "1" || v == "true") "on" else "off"
+            s.unit != null && v.toDoubleOrNull() != null -> "$v ${s.unit}"
+            else -> v
+        }
+    }
+
+    /** Every row of a preamble as (key, label, value): the facts first, then the table's order, then the rest. */
+    fun rows(info: Map<String, String>): List<Triple<String, String, String>> {
+        val facts = info.keys.filter { PreambleFacts.label(it) != null && spec(it) == null }
+        val settings = params.map { preambleKey(it.key) }.filter { it in info }
+        val rest = info.keys.filter { it !in facts && it !in settings }.sorted()
+        return (facts + settings + rest).map { k -> Triple(k, label(k), value(k, info.getValue(k))) }
+    }
+
+    /** The settings of a run that change the reply and are not at their default, in table order. */
+    fun lossyChanged(info: Map<String, String>): List<Pair<ParamSpec, String>> =
+        params.filter { it.lossy }.mapNotNull { s ->
+            val v = info[preambleKey(s.key)] ?: return@mapNotNull null
+            if (sameValue(s, v, s.default)) null else s to v
+        }
+
+    private fun sameValue(s: ParamSpec, v: String, default: Any?): Boolean = when (default) {
+        null -> false
+        is Boolean -> (v == "1" || v == "true") == default
+        is Number -> v.toDoubleOrNull() == default.toDouble()
+        else -> v == default.toString()
+    }
+
+    companion object {
+        /** How the recorder writes a parameter's key in the preamble. */
+        fun preambleKey(paramKey: String): String = paramKey.replace('-', '_')
+    }
 }
 
 /** Enough significant digits to tell two runs apart, without a column of noise. */

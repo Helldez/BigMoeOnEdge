@@ -48,7 +48,11 @@ export interface ModelInfo {
   n_expert_used: number;
   think_ctl: string;
   load_s: number;
+  /** Expert streaming is on for this session; off, the engine is plain llama.cpp on mmap. */
   streaming: boolean;
+  /** What a CPU figure is read against: compute threads, and every thread busy in a decode. */
+  compute_threads: number;
+  busy_threads: number;
 }
 
 export interface Info {
@@ -121,6 +125,10 @@ export type Plan = PlanUnavailable | PlanAvailable;
 export interface LocalModel {
   name: string;
   path: string;
+  /** The directory it was found in: the models directory or one of `scan_dirs`. */
+  dir: string;
+  /** Every file of the model that is present, in shard order. */
+  files: string[];
   bytes: number;
   shards: number;
   arch: string;
@@ -143,6 +151,8 @@ export interface CatalogEntry {
 
 export interface ModelsResponse {
   models_dir: string;
+  /** Other directories whose models are listed and loaded in place (`--scan-dir`). */
+  scan_dirs: string[];
   local: LocalModel[];
   catalog: CatalogEntry[];
 }
@@ -155,6 +165,8 @@ export interface TokenEvent {
   compute_ms: number;
   mgmt_ms: number;
   stall_ms: number;
+  /** The flash term that is a share of wall_ms, chosen for the run's mode (io serial, stall overlap); absent from an older server. */
+  flash_wait_ms?: number;
   read_mib: number;
   cache_hit_pct: number;
   cache_budget_mib: number;
@@ -179,6 +191,8 @@ export interface DoneSummary {
   io_s_tok: number;
   compute_s_tok: number;
   stall_s_tok: number;
+  /** Per token, the flash term that is a share of the wall (as TokenEvent.flash_wait_ms). */
+  flash_wait_s_tok?: number;
   mgmt_s_tok: number;
   cache_resident_mib: number;
   cache_budget_mib: number;

@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #if !defined(_WIN32)
+#include <dirent.h>
 #include <sys/stat.h>
 #endif
 #include <algorithm>
@@ -49,13 +50,29 @@ Overflow probe_anon_overflow() {
 #endif
 #else
     // What the machine reclaims INTO. /proc/swaps would say directly, but an unprivileged process
-    // on Android may not read it (nor /sys/block/zram0's contents). Two things it CAN see suffice:
+    // on Android may not read it (nor a zram device's own files). Two things it CAN see suffice:
     // whether a zram block device EXISTS (the directory entry is visible even where its files are
     // not) and whether /proc/meminfo reports any swap at all. A zram device means anonymous memory
     // is compressed in RAM; swap without zram means it is written out; no swap at all means it
     // cannot be evicted, and pressure ends in a kill.
-    struct stat st {};
-    const bool has_zram = ::stat("/sys/block/zram0", &st) == 0;
+    //
+    // Any zram device, not the first: devices are numbered as they are added, and a machine that
+    // removed zram0 or configures several swaps on zram1.. compresses just the same. Where the
+    // listing is refused, the device the kernel creates first is still asked for by name.
+    bool has_zram = false;
+    if (DIR * d = ::opendir("/sys/block")) {
+        while (const dirent * e = ::readdir(d)) {
+            if (std::strncmp(e->d_name, "zram", 4) == 0) {
+                has_zram = true;
+                break;
+            }
+        }
+        ::closedir(d);
+    }
+    if (!has_zram) {
+        struct stat st {};
+        has_zram = ::stat("/sys/block/zram0", &st) == 0;
+    }
     uint64_t swap_total_kb = 0;
     if (FILE * f = std::fopen("/proc/meminfo", "re")) {
         char line[256];

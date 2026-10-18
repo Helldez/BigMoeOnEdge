@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <memory>
 #include <string>
 
 using namespace bmoe;
@@ -34,7 +35,7 @@ int main(int argc, char ** argv) {
     // Next to the test binary's invocation, in the test working directory: parallel ctest runs
     // each get their own file and nothing is left behind.
     const std::string out = argc > 1 ? argv[1] : "csv-summary-test.csv";
-    IMetricsSink * sink = make_csv_metrics_sink(out);
+    std::unique_ptr<IMetricsSink> sink = make_csv_metrics_sink(out);
     if (!sink) {
         std::printf("[FAIL] could not open %s for writing\n", out.c_str());
         return 1;
@@ -53,7 +54,7 @@ int main(int argc, char ** argv) {
     s.prefill_device_read_mib = 18432.04;     // %.1f -> 18432.0
     s.prefill_device_stall_seconds = 0.12345; // %.3f -> 0.123
     sink->on_summary(s);
-    delete sink; // the destructor closes and flushes the file
+    sink.reset(); // the destructor closes and flushes the file
 
     std::ifstream in(out);
     std::string line, summary;

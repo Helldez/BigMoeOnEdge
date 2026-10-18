@@ -6,6 +6,18 @@ namespace bmoe::server {
 
 namespace {
 
+// A field that must be a string when present. Read through here, never with value(k, ""): that
+// throws on a number or an object, and a client's wrong type is a 400, not a server fault.
+bool string_field(const json & o, const char * k, const std::string & if_absent, std::string & out) {
+    if (!o.contains(k) || o[k].is_null()) {
+        out = if_absent;
+        return true;
+    }
+    if (!o[k].is_string()) return false;
+    out = o[k].get<std::string>();
+    return true;
+}
+
 // A message's text: a string, an array of {type:"text"} parts, or null (an assistant turn that only
 // calls tools has no content). False for anything else - an image part is not something to drop
 // silently.
@@ -18,7 +30,8 @@ bool message_text(const json & content, std::string & out) {
     }
     if (!content.is_array()) return false;
     for (const json & part : content) {
-        if (!part.is_object() || part.value("type", "") != "text" || !part.contains("text") ||
+        std::string type;
+        if (!part.is_object() || !string_field(part, "type", "", type) || type != "text" || !part.contains("text") ||
             !part["text"].is_string())
             return false;
         out += part["text"].get<std::string>();
@@ -38,7 +51,10 @@ bool parse_message(const json & m, ChatMessage & out, std::string & err) {
         err = "every message must be an object";
         return false;
     }
-    out.role = m.value("role", "");
+    if (!string_field(m, "role", "", out.role)) {
+        err = "a message role must be a string";
+        return false;
+    }
     if (out.role == "developer") out.role = "system"; // the newer OpenAI name for the same thing
     if (out.role != "system" && out.role != "user" && out.role != "assistant" && out.role != "tool") {
         err = "unsupported message role '" + out.role + "' (system, user, assistant and tool are)";
@@ -84,8 +100,9 @@ bool parse_tools(const json & body, ChatRequest & turn, std::string & err) {
     }
     for (const json & t : body["tools"]) {
         const json fn = t.is_object() ? t.value("function", json()) : json();
-        if (!t.is_object() || t.value("type", "function") != "function" || !fn.is_object() || !fn.contains("name") ||
-            !fn["name"].is_string()) {
+        std::string type;
+        if (!t.is_object() || !string_field(t, "type", "function", type) || type != "function" || !fn.is_object() ||
+            !fn.contains("name") || !fn["name"].is_string()) {
             err = "every tool must be {type: \"function\", function: {name, ...}}";
             return false;
         }

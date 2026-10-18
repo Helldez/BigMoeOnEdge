@@ -4,7 +4,8 @@
 serves the UI's static files, and exposes a small JSON API plus an OpenAI-compatible chat
 endpoint, so any OpenAI client can use it too.
 
-It binds to `127.0.0.1` by default and, unless started with `--api-key`, has no authentication:
+It binds to `127.0.0.1` on port 8765 by default and, unless started with a key (`--api-key-file` or
+`--api-key`), has no authentication:
 it is a local program, like the CLI. See [Security model](#security-model) for exactly what that
 does and does not protect.
 
@@ -15,7 +16,10 @@ All request and response bodies are JSON (UTF-8). Errors are `{"error": "<messag
 with a 4xx or 5xx status: `error` is for a person and may change, `code` is what a client decides
 on, and is present wherever the failure has one. A chat or decide turn carries the engine's failure
 kind (`context_full`, `empty_prompt`, `template_rejected`, `needs_chat_mode`, `invalid_request`,
-`failed`, as in [telemetry.md](telemetry.md)) or the server's own refusal (`busy`, `no_model`).
+`failed`, as in [telemetry.md](telemetry.md)) or the server's own refusal (`busy`, `no_model`,
+`outside_models_dir`). A body that is not JSON, not a JSON object, or carries a field of the wrong
+type (a `role` that is a number, an `id` that is an object) is a `400` with `code:
+"invalid_request"`, never a `500`: the server's own faults are the only `500`s.
 Inside a stream that had already answered `200`, the same pair arrives as one
 `data: {"error": {"message": ..., "code": ...}}` chunk. Every `POST`, `PUT` and `DELETE` must carry `Content-Type: application/json`, body
 or no body (`curl -X POST -H 'Content-Type: application/json' .../api/cancel`); one that does not
@@ -30,50 +34,80 @@ other software, or other people, on that machine or on a network it was told to 
 **What is enforced**
 
 - It binds to `127.0.0.1` unless `--host` says otherwise. There is no environment variable that
-  widens it. A `--host` beyond loopback is refused at start unless a key is set (`--api-key`) or
-  `--no-api-key` says the open server is meant, and the server prints a warning in that case.
-- With `--api-key KEY`, every request to `/api/*` or `/v1/*` must carry `Authorization: Bearer
-  KEY`, whatever its origin, or is refused with `401` and a `WWW-Authenticate: Bearer` header. The
-  key is compared in constant time. The UI's own files are served without it: the UI asks for the
-  key when it gets a `401`, keeps it in the browser, and sends it on every request, the event
-  stream included.
+  widens it. A `--host` beyond loopback is refused at start unless a key is set (`--api-key-file`
+  or `--api-key`) or `--no-api-key` says the open server is meant, and the server prints a warning
+  in that case.
+- With a key, every request to `/api/*` or `/v1/*` must carry `Authorization: Bearer KEY`,
+  whatever its origin, or is refused with `401` and a `WWW-Authenticate: Bearer` header. The key is
+  compared in constant time. The UI's own files are served without it: the UI asks for the key
+  when it gets a `401`, keeps it in the browser, and sends it on every request, the event stream
+  included. `--api-key-file PATH` reads the key from a file (trailing line breaks and blanks
+  ignored; an empty file refuses to start), and is the way to pass one: a command line, and so
+  `--api-key KEY`, is visible to every local user in the process list. `--api-key` stays for
+  compatibility; the two together are refused.
 - On loopback it answers only to loopback host names, so a DNS-rebinding page cannot reach it
   through a name of its own.
-- A browser request to `/api/*` or `/v1/*` from another site is refused with `403`, whatever the
-  method: one that carries an `Origin` other than the server's own, or one the browser marks
-  `Sec-Fetch-Site: cross-site`. No CORS header is ever sent. `--allow-origin URL` admits one more
-  origin, for a UI dev server.
+- A browser request to `/api/*` or `/v1/*` from anywhere but the UI's own page is refused with
+  `403`, whatever the method: one that carries an `Origin` other than the server's own, or, with no
+  `Origin`, one the browser marks with any `Sec-Fetch-Site` but `same-origin` or `none` (the person
+  typed the URL). `same-site` is refused too: another port on the same host is the same site, and
+  that is exactly where a hostile local page is served from. No CORS header is ever sent.
+  `--allow-origin URL` admits one more origin, for a UI dev server.
 - A request to `/api/*` or `/v1/*` that is not a `GET` must declare `Content-Type:
   application/json` (any case, a `; charset=` parameter allowed), whether or not it has a body;
   anything else is refused with `415` before it reaches a handler. An HTML form cannot send that
   type, so markup that ends up inside the UI's own page cannot post to the API.
 - Model output is rendered as sanitised Markdown with no scripts, no form controls (`form`,
   `input`, `button`, `textarea`, `select`, `option`) and no styles (`style` blocks and
-  attributes): an answer cannot carry something to click that submits, or restyle the page.
+  attributes): an answer cannot carry something to click that submits, or restyle the page. It
+  fetches nothing either: an image is kept only when its bytes are inline (`data:image/png`,
+  `gif`, `jpeg`, `webp`) and is otherwise shown as its alt text, and media (`video`, `audio`,
+  `picture`, `source`), `srcset`, `poster` and `background` are dropped. Text that talks the
+  model into writing an image can no longer send what its URL carries anywhere, or have the
+  browser GET one of the server's own endpoints.
+- Every response carries `Content-Security-Policy: default-src 'self'; script-src 'self';
+  style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; media-src 'none';
+  object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, with
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`.
+  The UI is one script and one stylesheet from its own origin with no inline script or style, so
+  nothing needs `'unsafe-inline'`; whatever slips past the sanitiser still cannot load from
+  another host, run inline, submit a form or put the page in a frame.
 - `max_tokens` on a chat request is clamped to the `n-predict` parameter's upper bound, and one
   that is not a non-negative integer is refused with `400`.
 - Downloads take a catalog id, never a URL or a path. `DELETE` on a download cancels it and
   removes no model.
 - Over the API a client may name one file, the model, and it is only read. Parameters that make
   the engine write a file are set at launch and are refused over `PUT /api/config`.
+- A client on the network (a connection whose peer address is not loopback) may name a model only
+  in a folder the server lists models from: the models directory and each `--scan-dir`. The path is
+  made canonical first, with every `..` and symbolic link resolved, a relative one taken inside the
+  models directory, and anything that resolves elsewhere
+  is refused: `403` with `code: "outside_models_dir"` on `POST /api/session/load`, a `rejected`
+  entry on `PUT /api/config`. A local client is the person at the machine and may still open a
+  model anywhere (the Android app reads models from shared storage), unless `--models-only`
+  confines every client. Behind a reverse proxy on the same machine every request arrives from
+  loopback, so start such a server with `--models-only`. The `-m` given at launch is the
+  operator's and is not confined.
 - Request bodies are capped at 8 MiB. Loads, unloads and plan measurements are serialised; a
   second measurement while one runs gets `409`.
 
 **What is not**
 
 - **Without a key, any local process, and any local user, can drive it.** A request without an
-  `Origin` is a local program and is accepted; loopback is not per-user. On a shared machine another
+  `Origin` is a local program and is accepted; loopback is not per-user. On a phone every installed
+  app is such a process, so the Android app never starts the server without one: a random key per
+  launch, which only the app holds, or the shown key when it serves the network. On a shared machine another
   account can chat, read `/api/config` (which contains paths), and have the server open any file its
-  user can read as a model. With a key, a local program needs the key too, and whoever can read
-  where a client keeps it (the browser's storage, a shell history) has it.
+  user can read as a model (`--models-only` limits that to the folders models are listed from). With a key, a
+  local program needs the key too, and whoever can read where a client keeps it (the browser's
+  storage, a shell history, the key file if its permissions allow) has it.
 - **`--host` with a non-loopback address removes the host-name check; the key is what stands in
   its place.** No TLS: prompts, answers and the key cross the network in clear, and anyone who can
   reach the port and has the key has everything in the previous point. Use it on a network you
   trust, or put a reverse proxy that terminates TLS in front.
-- **Model output can still make the browser fetch something or offer a link.** The sanitiser
-  stops scripts, form controls and styles, but an image is fetched when the answer is shown and a
-  link goes where it says: text that talks the model into emitting either can leak what the URL
-  carries.
+- **Model output can still offer a link.** A link goes where it says, in a new tab with no
+  referrer, once the person clicks it: text that talks the model into writing one can leak what its
+  URL carries to whoever follows it.
 - **Downloads run the system's `curl`**, found on `PATH`, against the URLs in the catalog file
   beside the executable. Both are trusted as installed.
 
@@ -105,7 +139,7 @@ other software, or other people, on that machine or on a network it was told to 
   "error": "",
   "model": {"path": "C:/models/Qwen3-30B-A3B-Q4_K_M.gguf", "name": "Qwen3-30B-A3B-Q4_K_M.gguf",
             "arch": "qwen3moe", "n_ctx": 4096, "n_expert_used": 8, "think_ctl": "template",
-            "load_s": 12.4, "streaming": true},
+            "load_s": 12.4, "streaming": true, "compute_threads": 8, "busy_threads": 12},
   "generating": false
 }
 ```
@@ -114,6 +148,11 @@ other software, or other people, on that machine or on a network it was told to 
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
 (the last load failed; `error` says why). `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
 on for the loaded session: with it off the engine is plain llama.cpp on mmap, and the UI must say so.
+Whether a model will stream is only known once it has loaded (a dense model, a plan that declines),
+so a UI says nothing about it before. `compute_threads` and `busy_threads` are what a CPU figure is
+read against: the session's compute threads, and every thread busy in a decode (the compute threads
+plus the read lanes when they run beside compute, under overlap). A UI that divides `cpu_ms` by
+threads reads these, never the parameters.
 
 ### `POST /api/session/load`
 
@@ -290,11 +329,18 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 | event | data |
 |---|---|
 | `state` | the `GET /api/info` object, on every state change |
-| `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch` |
-| `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
+| `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `flash_wait_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch` |
+| `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `flash_wait_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
 | `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` |
 | `config` | the `GET /api/config` object, after any change |
+| `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
+
+`flash_wait_ms` (per token) and `flash_wait_s_tok` (the run's average) are the flash term that is a
+share of the wall, already chosen for the run's mode: the blocking read (`io_*`) in serial, the stall
+(`stall_*`) under overlap, where `io_*` is summed lane time and can exceed the wall
+([telemetry.md](telemetry.md)). They are the term the engine subtracts for its compute residual, so
+a UI shows "flash" from them without knowing whether the session overlaps.
 
 ## Models
 
@@ -303,8 +349,10 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 ```json
 {
   "models_dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
-  "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "bytes": 18556686912,
-             "shards": 1, "arch": "qwen3moe", "streamable": true, "complete": true}],
+  "scan_dirs": [],
+  "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
+             "bytes": 18556686912, "shards": 1, "files": ["..."], "arch": "qwen3moe", "streamable": true,
+             "complete": true}],
   "catalog": [{"id": "qwen3-30b-a3b-q4_k_m", "title": "Qwen3-30B-A3B", "quant": "Q4_K_M",
                "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
                "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://..."}],
@@ -312,8 +360,14 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 }
 ```
 
-`local` lists every gguf in the models directory (a split set once, by its first shard, with
-`complete: false` while shards are missing). `streamable` is whether this build streams the
+`local` lists every gguf in the models directory, then in each directory given with `--scan-dir
+PATH` (repeatable; `scan_dirs` lists them), in that order: a split set once, by its first shard, with
+`complete: false` while shards are missing. `dir` is the directory a model was found in, and `files`
+every file of it that is present, in shard order, so a client that deletes a model deletes the set
+and never has to know how shards are named. A scan directory is only read: downloads land in the
+models directory, and a model in a scan directory is loaded in place by its `path`. The host app is
+what knows where else models sit (the phone's adb-pushed and shared-storage folders); the server is
+what says what they are. `streamable` is whether this build streams the
 architecture. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
 entry with its URL, in order, for a client that downloads for itself (a phone, where the server
 has no `curl`); `file` and `bytes` are the first file's name and the whole entry's size.

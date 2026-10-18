@@ -111,7 +111,8 @@ The engine loads with `use_extra_bufts=false`; this is load-bearing, not a tunin
 
 ## Assumptions to re-check on a submodule bump
 
-- The routing node is named `ffn_moe_topk-<il>` and the expert tensors
-  `blk.<il>.ffn_{gate,up,down}_exps.weight`. The recipe isolates these names.
+- The routing node is named `ffn_moe_topk-<il>`. The expert tensors are not assumed by name: they
+  are the block weights with three dimensions indexed by the declared expert count
+  (`bmoe/expert_layout.h`), which is how llama.cpp shapes every `mul_mat_id` weight.
 - The eval-callback fires per decode (not skipped by graph reuse) and computes a
   marked node alone before the non-ask callback. The gates catch a regression here.

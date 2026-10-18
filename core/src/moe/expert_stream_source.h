@@ -18,7 +18,7 @@
 #include "bmoe/config.h"
 #include "bmoe/decode_trace.h"
 #include "stall_union.h"
-#include "bmoe/recipe.h"
+#include "bmoe/expert_layout.h"
 #include "../io/platform_io.h"
 #include "../io/file_reader.h"
 #include "dense_weights.h" // DenseWeights + DenseTensorRef
@@ -45,12 +45,12 @@ struct ExpertTensorRef {
     int file_idx = 0;               // which shard file holds the bytes (0 for a single-file model)
 };
 
-// The expert weight tensors of one MoE layer, one per recipe suffix slot. The split
-// layout fills all three ({gate, up, down}); a fused-gate_up layout fills two and leaves
-// the tail slot empty (tensor == nullptr). Unbound layers (dense, or non-MoE) stay false.
+// The expert weight tensors of one MoE layer, one per layout slot (bmoe/expert_layout.h). The
+// split layout fills all three; a fused or gate-less layout fills two and leaves the tail slot
+// empty (tensor == nullptr). Unbound layers (dense, or non-MoE) stay false.
 struct LayerExperts {
     bool bound = false;
-    ExpertTensorRef proj[MoeRecipe::max_exps];
+    ExpertTensorRef proj[ExpertLayout::max_slots];
 };
 
 class ExpertStreamSource final : public IExpertSource {
@@ -165,7 +165,7 @@ private:
     // One readiness cell per (projection, expert). A cell is "ready for the layer in flight"
     // exactly when gen == async_gen_; padded to a cache line so the compute threads polling it
     // do not false-share the LRU/job bookkeeping the load thread mutates alongside.
-    struct alignas(64) ReadyFlag {
+    struct alignas(pio::false_sharing_span) ReadyFlag {
         std::atomic<uint32_t> gen{0};
     };
 
@@ -260,7 +260,9 @@ private:
     long long drain_wait_ns_ = 0, adopt_wait_ns_ = 0;
     int n_layer_ = 0;
     int n_expert_ = 0;
-    size_t align_ = 4096;
+    // What shared slots are aligned to: the coarsest read granule over the shards' readers, never
+    // less than a page. Settled at init, once the readers have asked the files.
+    size_t buf_align_ = 0;
 
     // The positioned readers that own the fd pools, bounces and O_DIRECT decision — one per shard
     // file, in shard order (a single-file model has exactly one). Expert slices are read through
@@ -275,11 +277,11 @@ private:
     std::vector<LayerExperts> layers_;
 
     // shared-slot mode (cache off): one full-size slot per projection, reused by layers
-    void * slot_[MoeRecipe::max_exps] = {nullptr, nullptr, nullptr};
+    void * slot_[ExpertLayout::max_slots] = {nullptr, nullptr, nullptr};
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
     size_t cache_max_ = 0; // live budget in bytes; only an explicit set_cache_budget() moves it
-    size_t page_ = 4096;
+    size_t page_ = pio::vm_page();
 
     // Every expert of every bound layer resident: the ceiling any budget is clamped to, and (under
     // cache_auto) the cap the init-time sizing starts from. Auto sizing derives cache_max_ once at
@@ -314,8 +316,8 @@ private:
     size_t layer_demand_accum_ = 0;
     size_t layer_demand_ = 0;
     int last_il_ = -1;
-    std::vector<void *> lbuf_[MoeRecipe::max_exps];
-    std::vector<size_t> lbuf_sz_[MoeRecipe::max_exps];
+    std::vector<void *> lbuf_[ExpertLayout::max_slots];
+    std::vector<size_t> lbuf_sz_[ExpertLayout::max_slots];
     std::vector<uint8_t> cvalid_;
     std::vector<int32_t> cprev_, cnext_;
     std::vector<uint32_t> cstamp_;

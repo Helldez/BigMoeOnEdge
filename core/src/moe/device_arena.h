@@ -153,12 +153,12 @@ private:
     };
     struct Layer {
         int il = -1;
-        ggml_tensor * t[MoeRecipe::max_exps] = {};
-        Proj proj[MoeRecipe::max_exps];
-        ggml_backend_buffer_t host_buffer[MoeRecipe::max_exps] = {};
-        void * host_data[MoeRecipe::max_exps] = {};
-        void * host_extra[MoeRecipe::max_exps] = {};
-        int variant[MoeRecipe::max_exps] = {}; // which slot tensor of the projection this layer uses
+        ggml_tensor * t[ExpertLayout::max_slots] = {};
+        Proj proj[ExpertLayout::max_slots];
+        ggml_backend_buffer_t host_buffer[ExpertLayout::max_slots] = {};
+        void * host_data[ExpertLayout::max_slots] = {};
+        void * host_extra[ExpertLayout::max_slots] = {};
+        int variant[ExpertLayout::max_slots] = {}; // which slot tensor of the projection this layer uses
     };
     // A slot tensor for one (type, shape) variant of a projection, and a view per expert into it.
     struct Twin {
@@ -203,7 +203,7 @@ private:
     // with the slots, views included, and never per fill: a repacking backend keeps per-tensor state
     // for each, so recreating them per fill would grow without bound. On demand they are rebuilt
     // per prefill together with the buffer that state belongs to.
-    std::vector<Twin> twins_[max_slots][MoeRecipe::max_exps];
+    std::vector<Twin> twins_[max_slots][ExpertLayout::max_slots];
     size_t slot_bytes_ = 0;
     // The slots' layout, kept so they can be built again (build_slots): what init worked out once.
     bool on_demand_ = false;
@@ -212,8 +212,8 @@ private:
     size_t align_ = 0;
     size_t slot_size_ = 0;
     size_t n_slot_tensors_ = 0;
-    size_t region_off_[MoeRecipe::max_exps] = {};
-    std::vector<const ggml_tensor *> variants_[MoeRecipe::max_exps];
+    size_t region_off_[ExpertLayout::max_slots] = {};
+    std::vector<const ggml_tensor *> variants_[ExpertLayout::max_slots];
     bool build_slots(std::string & err);
     void free_slots();
 
@@ -242,8 +242,9 @@ private:
 
     std::vector<DenseLayer> dense_; // by layer id; empty when init_dense was not called
     ggml_context * dense_ctx_ = nullptr;
-    ggml_backend_buffer_t dense_buf_[2] = {};      // matmul matrices, usage WEIGHTS
-    ggml_backend_buffer_t dense_data_buf_[2] = {}; // every other layer weight, plain memory
+    // The dense layer slots, [data][parity] as init_dense sizes them: data 0 holds the matmul
+    // matrices (usage WEIGHTS), data 1 every other layer weight (plain memory).
+    ggml_backend_buffer_t dense_slot_[2][2] = {};
     size_t dense_slot_bytes_ = 0;
     int dense_converted_ = 0;
     size_t dense_converted_bytes_ = 0;

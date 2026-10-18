@@ -23,9 +23,18 @@ data class ChatUi(
     val reasoning: String = "",
     val streaming: Boolean = false,
     val error: String? = null,
+    /** The error's code (docs/server-api.md), what the screen decides on; empty when it had none. */
+    val errorCode: String = "",
+) {
     /** The error is a full context: the fix is a new chat, and the screen says so. */
-    val contextFull: Boolean = false,
-)
+    val contextFull: Boolean get() = errorCode == ApiException.CODE_CONTEXT_FULL
+
+    /** The error is a server without a model: the fix is on Models, and the screen links there. */
+    val noModel: Boolean get() = errorCode == ApiException.CODE_NO_MODEL
+
+    /** The last message is the person's, unanswered: a turn failed, and it can be sent again as it is. */
+    val canRetry: Boolean get() = !streaming && current.messages.lastOrNull()?.role == "user"
+}
 
 /**
  * Conversations and the turn in flight. The server keeps no history: every request carries the
@@ -50,13 +59,13 @@ object Chat {
 
     fun newConversation() {
         if (_state.value.streaming) return
-        _state.update { it.copy(current = Conversation.fresh(), answer = "", reasoning = "", error = null, contextFull = false) }
+        _state.update { it.copy(current = Conversation.fresh(), answer = "", reasoning = "", error = null, errorCode = "") }
     }
 
     fun select(id: String) {
         if (_state.value.streaming) return
         val c = store?.load(id) ?: return
-        _state.update { it.copy(current = c, answer = "", reasoning = "", error = null, contextFull = false) }
+        _state.update { it.copy(current = c, answer = "", reasoning = "", error = null, errorCode = "") }
     }
 
     fun delete(id: String) {
@@ -67,7 +76,7 @@ object Chat {
         }
     }
 
-    fun clearError() = _state.update { it.copy(error = null, contextFull = false) }
+    fun clearError() = _state.update { it.copy(error = null, errorCode = "") }
 
     /** Send [text] as the next user turn of the current conversation. */
     fun send(text: String) {
@@ -75,7 +84,7 @@ object Chat {
         if (prompt.isEmpty() || _state.value.streaming) return
         val engine = Engine.current
         if (!engine.ready) {
-            _state.update { it.copy(error = if (engine.serverUp) "Load a model first, from Models." else "The engine is not running.") }
+            notReady(engine)
             return
         }
         val before = _state.value.current
@@ -86,7 +95,7 @@ object Chat {
             model = engine.info?.model?.name ?: before.model,
         )
         persist(withUser)
-        _state.update { it.copy(current = withUser, answer = "", reasoning = "", streaming = true, error = null, contextFull = false) }
+        _state.update { it.copy(current = withUser, answer = "", reasoning = "", streaming = true, error = null, errorCode = "") }
         run(withUser)
     }
 
@@ -100,7 +109,7 @@ object Chat {
         if (q.isEmpty() || options.size < 2 || _state.value.streaming) return
         val engine = Engine.current
         if (!engine.ready) {
-            _state.update { it.copy(error = if (engine.serverUp) "Load a model first, from Models." else "The engine is not running.") }
+            notReady(engine)
             return
         }
         val before = _state.value.current
@@ -111,7 +120,7 @@ object Chat {
             model = engine.info?.model?.name ?: before.model,
         )
         persist(withUser)
-        _state.update { it.copy(current = withUser, answer = "", reasoning = "", streaming = true, error = null, contextFull = false) }
+        _state.update { it.copy(current = withUser, answer = "", reasoning = "", streaming = true, error = null, errorCode = "") }
         stopRequested = false
         Engine.resetLive()
         scope.launch {
@@ -127,9 +136,11 @@ object Chat {
             } catch (t: Throwable) {
                 error = t.message ?: "the connection to the engine was lost"
             }
-            val committed = answer?.let { withUser.copy(messages = withUser.messages + it, updatedAt = System.currentTimeMillis()) } ?: withUser
-            if (committed !== withUser) persist(committed)
-            _state.update { it.copy(current = committed, streaming = false, error = error, contextFull = errorCode == ApiException.CODE_CONTEXT_FULL) }
+            // A decision's question is not a conversation turn: without its answer it would be sent
+            // as history with the next message, so a failed or cancelled one leaves none behind.
+            val committed = answer?.let { withUser.copy(messages = withUser.messages + it, updatedAt = System.currentTimeMillis()) } ?: before
+            persist(committed)
+            _state.update { it.copy(current = committed, streaming = false, error = error, errorCode = errorCode) }
         }
     }
 
@@ -138,13 +149,25 @@ object Chat {
         val cur = _state.value.current
         if (_state.value.streaming || cur.messages.lastOrNull()?.role != "assistant" || cur.messages.last().choices != null) return
         if (!Engine.current.ready) {
-            _state.update { it.copy(error = "Load a model first, from Models.") }
+            notReady(Engine.current)
             return
         }
         val trimmed = cur.copy(messages = cur.messages.dropLast(1), updatedAt = System.currentTimeMillis())
         persist(trimmed)
-        _state.update { it.copy(current = trimmed, answer = "", reasoning = "", streaming = true, error = null, contextFull = false) }
+        _state.update { it.copy(current = trimmed, answer = "", reasoning = "", streaming = true, error = null, errorCode = "") }
         run(trimmed)
+    }
+
+    /** Send the conversation again as it stands, after a failed turn left the person's message last. */
+    fun retry() {
+        val s = _state.value
+        if (!s.canRetry) return
+        if (!Engine.current.ready) {
+            notReady(Engine.current)
+            return
+        }
+        _state.update { it.copy(answer = "", reasoning = "", streaming = true, error = null, errorCode = "") }
+        run(s.current)
     }
 
     /** Stop the turn in flight; what streamed so far is kept as the answer. */
@@ -192,7 +215,6 @@ object Chat {
             val cancelled = finish == "cancelled" || stopRequested
             val metrics = summary?.let { ChatProtocol.turnMetrics(it, nCtx, cancelled) }.orEmpty()
             val answer = content.toString()
-            val contextFull = errorCode == ApiException.CODE_CONTEXT_FULL
             // A turn that produced nothing and failed keeps the user's message, so it can be sent
             // again after the fix (a new chat, a loaded model); an empty cancelled turn is dropped.
             val committed = if (answer.isNotEmpty() || (error == null && !cancelled)) {
@@ -205,8 +227,16 @@ object Chat {
             _state.update {
                 // The person may have moved on to another conversation only when not streaming,
                 // which cannot happen here: the current one is the one that ran.
-                it.copy(current = committed, answer = "", reasoning = "", streaming = false, error = error, contextFull = contextFull)
+                it.copy(current = committed, answer = "", reasoning = "", streaming = false, error = error, errorCode = errorCode)
             }
+        }
+    }
+
+    /** Nothing to send to: said with the code the server itself would answer, so one rule reads both. */
+    private fun notReady(engine: EngineUi) {
+        _state.update {
+            if (engine.serverUp) it.copy(error = "Load a model first, from Models.", errorCode = ApiException.CODE_NO_MODEL)
+            else it.copy(error = "The engine is not running.", errorCode = "")
         }
     }
 

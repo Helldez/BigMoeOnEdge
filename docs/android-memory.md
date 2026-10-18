@@ -1,7 +1,7 @@
 # Android memory reclaim, from the engine's point of view
 
 Why a >RAM streaming engine loses its working set on an Android phone, which levers exist (almost
-none), and which numbers to check before believing any theory about it. Measured on a OnePlus 15R
+none), and which numbers to check before believing any theory about it. Measured on the 12 GB test phone
 (Android 16, kernel 6.12, 11.4 GB RAM, 12 GB swap, **not rooted**) while running gpt-oss-120b; the
 mechanisms are generic, the constants are this device's.
 

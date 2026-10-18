@@ -20,6 +20,7 @@ add_library(bmoe_server_core STATIC
     turn_queue.cpp
     event_bus.cpp
     json_util.cpp
+    model_files.cpp
     settings_store.cpp
 )
 target_link_libraries(bmoe_server_core PUBLIC bmoe_core)

@@ -1,9 +1,10 @@
 #include "bmoe/session.h"
-#include "bmoe/recipe.h"
+#include "bmoe/expert_layout.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
 #include "bmoe/ngram_draft.h"
+#include "bmoe/log.h"
 #include "chat_messages.h"
 #include "chat_parse.h"
 #include "decide/decider.h"
@@ -16,6 +17,7 @@
 #include "../moe/decide_probe.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
+#include "../moe/tensor_names.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 
@@ -172,10 +174,11 @@ struct GenTally {
             // the stall whenever a minority of threads did the waiting, and the difference quietly
             // became "compute".
             m.stall_ms = (st->stall_seconds - prev_stall_s) * 1000.0;
-            m.compute_ms = m.wall_ms - m.stall_ms - m.mgmt_ms;
+            m.flash_wait_ms = m.stall_ms;
         } else {
-            m.compute_ms = m.wall_ms - m.io_ms - m.mgmt_ms;
+            m.flash_wait_ms = m.io_ms;
         }
+        m.compute_ms = m.wall_ms - m.flash_wait_ms - m.mgmt_ms;
         if (m.compute_ms < 0) m.compute_ms = 0;
         m.cache_hit_pct = st->cache_lookups > 0 ? 100.0 * st->cache_hits / st->cache_lookups : -1.0;
         m.drain_ms = (st->drain_wait_seconds - prev_drain_s) * 1000.0;
@@ -203,7 +206,7 @@ std::unordered_set<std::string> expert_tensor_names(const std::vector<LayerExper
     std::unordered_set<std::string> names;
     for (const LayerExperts & L : layers) {
         if (!L.bound) continue;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+        for (int p = 0; p < ExpertLayout::max_slots; ++p)
             if (L.proj[p].tensor) names.insert(L.proj[p].tensor->name);
     }
     return names;
@@ -219,8 +222,7 @@ dense_bytes_per_layer(const GgufOffsets & offs, const std::vector<LayerExperts> 
     const std::unordered_set<std::string> streamed = expert_tensor_names(layers);
     std::vector<uint64_t> out((size_t) std::max(0, n_layer), 0);
     for (const auto & kv : offs.size_by_name) {
-        int il = -1;
-        if (std::sscanf(kv.first.c_str(), "blk.%d.", &il) != 1) continue;
+        const int il = tensor_names::block_layer(kv.first.c_str());
         if (il < 0 || il >= n_layer || streamed.count(kv.first)) continue;
         out[(size_t) il] += kv.second;
     }
@@ -375,6 +377,36 @@ struct Session::Impl {
     bool info_sent = false;
 
     std::atomic<bool> cancel_requested{false};
+
+    // ── open(), one named step at a time, in the order open() calls them (see Opening) ──
+    struct Opening;
+    bool load_model(Opening & o);
+    bool read_model(Opening & o);
+    bool build_hook(Opening & o);
+    bool create_contexts(Opening & o);
+    void build_sampler(const SessionConfig & c);
+    void install_abort_callback();
+    bool init_speculation(Opening & o);
+    bool bind_streaming(Opening & o);
+    bool capture_warmup(Opening & o);
+    bool bind_expert_offsets(Opening & o, const GgufOffsets & offs, std::vector<LayerExperts> & layers, int & n_expert);
+    void hand_over_dense_weights(const SessionConfig & cfg,
+                                 const GgufOffsets & offs,
+                                 const std::vector<LayerExperts> & layers,
+                                 std::vector<std::string> & unaccounted);
+    void
+    release_mapping(const SessionConfig & cfg, const GgufOffsets & offs, const std::vector<std::string> & unaccounted);
+    void arm_route_trace(Opening & o, int n_expert, std::vector<uint64_t> dense_bytes);
+    bool open_prefill_device(Opening & o);
+    void hand_back_prefill(const std::string & why);
+    bool confirm_prefill_device(Opening & o);
+    void arm_decode_traces(Opening & o);
+    void describe_run(Opening & o);
+    void warn_about_load(const SessionConfig & cfg);
+
+    // ── generate(): the steps before a turn, and the turn itself (see Turn) ──
+    void begin_generate(const GenerateRequest & req, IMetricsSink * sink);
+    struct Turn;
 
     ~Impl() {
         // Deterministic teardown order: stop the I/O pool (it holds fds into the mmap and its
@@ -649,27 +681,16 @@ void Session::cancel() {
     impl_->cancel_requested.store(true, std::memory_order_relaxed);
 }
 
-std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
-                                       std::string & error,
-                                       IRouteTraceSink * route_trace,
-                                       IComputeTraceSink * compute_trace,
-                                       IIoTraceSink * io_trace) {
-    auto fail = [&](std::string msg) -> std::unique_ptr<Session> {
-        error = std::move(msg);
-        return nullptr;
-    };
-
-    // Create the session first so its Impl destructor owns backend teardown from this point
-    // on: any failure below returns nullptr, destroying `self`, which frees the backend once.
-    std::unique_ptr<Session> self(new Session());
-    Impl & im = *self->impl_;
-    im.cfg = cfg;
-
-    // llama_backend_init/free is process-global and reference counted; init here, free in ~Impl.
-    llama_backend_init();
-    im.backend_inited = true;
-
-    const auto t_load0 = clock_t_::now();
+// What open()'s steps hand one another: the request, the facts settled so far, and the caller's
+// error out-parameter. A step that fails sets the error through fail() and returns false, and
+// open() stops there, so a step never runs after one that failed — the same early returns the
+// single function had, now one per step.
+struct Session::Impl::Opening {
+    const SessionConfig & cfg; // the caller's: im.cfg is a copy a step may correct (a device dropped)
+    std::string & error;
+    IRouteTraceSink * route_trace;
+    IComputeTraceSink * compute_trace;
+    IIoTraceSink * io_trace;
 
     // The gguf header answers several separate questions below — the arch-prefixed key for a
     // top-k override, the route trace's effective top-k, the run info's top-k/expert count, and
@@ -679,34 +700,45 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // common path never needs. One parse serves both the model info and the offsets.
     GgufMeta gguf_meta;
     bool gguf_meta_read = false;
-    auto meta = [&]() -> const GgufMeta & {
+    const GgufMeta & meta() {
         if (!gguf_meta_read) {
             gguf_meta = read_gguf_meta(cfg.model_path.c_str());
             gguf_meta_read = true;
         }
         return gguf_meta;
-    };
-    auto gguf = [&]() -> const GgufModelInfo & { return meta().info; };
+    }
+    const GgufModelInfo & gguf() { return meta().info; }
 
-    // Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
-    // q4_K buffer would break the rebind), and every expert the streamer serves in host memory.
-    //
-    // Layers on devices are the first stage's decision (llama.cpp's capacity fitter, via the
-    // planner), carried in as n_gpu_layers plus the override patterns it wrote. With nothing
-    // planned this is the historical behaviour, everything on the host.
-    //
-    // Every pattern is routed to the CPU buffer type. That is what the fitter itself does for the
-    // experts it leaves on the host, and it is the one placement the streamer can serve: it rebinds
-    // `data` onto bytes it read itself, and only a host address can be rebound.
-    //
-    // Routing them to a DEVICE's host buffer type instead - the obvious way to let an accelerator
-    // compute a streamed expert - does not work, and the two reasons are both in this submodule.
-    // `llama-model-loader.cpp` ("avoid using a host buffer when using mmap") replaces any host
-    // buffer type with the CPU's whenever the model is mmap'd, which this engine always is; and
-    // `ggml-cuda.cu`'s `supports_buft` accepts the CUDA host buffer only on an `integrated` device,
-    // so on a discrete one the op falls back to the CPU regardless. See docs/hardware-planning.md
-    // for what a working version would have to do instead - wrap our own reservation with
-    // `ggml_backend_dev_buffer_from_host_ptr`, which CUDA does not implement and Metal does.
+    ExpertLayout layout;      // set by read_model when streaming; left !ok otherwise, and then no tensor matches it
+    int n_layer_streamed = 0; // set by build_hook
+
+    bool fail(std::string msg) {
+        error = std::move(msg);
+        return false;
+    }
+};
+
+// Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
+// q4_K buffer would break the rebind), and every expert the streamer serves in host memory.
+//
+// Layers on devices are the first stage's decision (llama.cpp's capacity fitter, via the
+// planner), carried in as n_gpu_layers plus the override patterns it wrote. With nothing
+// planned this is the historical behaviour, everything on the host.
+//
+// Every pattern is routed to the CPU buffer type. That is what the fitter itself does for the
+// experts it leaves on the host, and it is the one placement the streamer can serve: it rebinds
+// `data` onto bytes it read itself, and only a host address can be rebound.
+//
+// Routing them to a DEVICE's host buffer type instead - the obvious way to let an accelerator
+// compute a streamed expert - does not work, and the two reasons are both in this submodule.
+// `llama-model-loader.cpp` ("avoid using a host buffer when using mmap") replaces any host
+// buffer type with the CPU's whenever the model is mmap'd, which this engine always is; and
+// `ggml-cuda.cu`'s `supports_buft` accepts the CUDA host buffer only on an `integrated` device,
+// so on a discrete one the op falls back to the CPU regardless. See docs/hardware-planning.md
+// for what a working version would have to do instead - wrap our own reservation with
+// `ggml_backend_dev_buffer_from_host_ptr`, which CUDA does not implement and Metal does.
+bool Session::Impl::load_model(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
     llama_model_params mparams = llama_model_default_params();
     // A device we are not using should not be in the room. Left registered, the scheduler hands it
     // every node it can execute - the weightless ones especially - purely because it is there, and
@@ -756,17 +788,17 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (cfg.prefill.enabled()) {
         std::string derr;
         if (ggml_backend_dev_t dev = detail::PrefillPath::find_device(cfg.prefill.device, derr)) {
-            im.prefill = std::make_unique<detail::PrefillPath>(dev);
-            mparams.devices = im.prefill->model_devices();
+            prefill = std::make_unique<detail::PrefillPath>(dev);
+            mparams.devices = prefill->model_devices();
             // With a device listed, llama.cpp would put CPU weights in the device's host buffer type,
             // which is an allocation and a copy, not the file mapping. The mapping is load-bearing.
             mparams.no_host = true;
         } else {
-            std::fprintf(stderr, "bmoe: %s; prefill stays on the CPU\n", derr.c_str());
-            im.cfg.prefill.device.clear();
+            log_printf(LogLevel::Warn, "%s; prefill stays on the CPU", derr.c_str());
+            this->cfg.prefill.device.clear();
         }
     }
-    if (!im.prefill && !cpu_only) {
+    if (!prefill && !cpu_only) {
         if (const ggml_backend_dev_t * devs = detail::PrefillPath::devices_without_prefill(auto_devices)) {
             mparams.devices = const_cast<ggml_backend_dev_t *>(devs);
         }
@@ -781,14 +813,14 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     llama_model_kv_override kv_overrides[2];
     std::memset(kv_overrides, 0, sizeof(kv_overrides)); // second entry stays the key[0]==0 terminator
     if (cfg.n_expert_used > 0) {
-        const GgufModelInfo & info = gguf();
-        if (!info.ok) return fail("cannot read gguf metadata: " + cfg.model_path);
-        if (info.arch.empty()) return fail("gguf has no general.architecture; cannot set n_expert_used");
+        const GgufModelInfo & info = o.gguf();
+        if (!info.ok) return o.fail("cannot read gguf metadata: " + cfg.model_path);
+        if (info.arch.empty()) return o.fail("gguf has no general.architecture; cannot set n_expert_used");
         if (info.n_expert <= 0)
-            return fail("n_expert_used was set but the model is not MoE (no " + info.arch + ".expert_count)");
+            return o.fail("n_expert_used was set but the model is not MoE (no " + info.arch + ".expert_count)");
         if (cfg.n_expert_used > info.n_expert)
-            return fail("n_expert_used=" + std::to_string(cfg.n_expert_used) + " exceeds the model's expert count (" +
-                        std::to_string(info.n_expert) + ")");
+            return o.fail("n_expert_used=" + std::to_string(cfg.n_expert_used) + " exceeds the model's expert count (" +
+                          std::to_string(info.n_expert) + ")");
         const std::string key = info.arch + ".expert_used_count";
         kv_overrides[0].tag = LLAMA_KV_OVERRIDE_TYPE_INT;
         std::snprintf(kv_overrides[0].key, sizeof(kv_overrides[0].key), "%s", key.c_str());
@@ -796,69 +828,87 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         mparams.kv_overrides = kv_overrides;
     }
 
-    llama_model * model = llama_model_load_from_file(cfg.model_path.c_str(), mparams);
-    if (!model) return fail("failed to load model: " + cfg.model_path);
-    im.model.reset(model);
+    llama_model * m = llama_model_load_from_file(cfg.model_path.c_str(), mparams);
+    if (!m) return o.fail("failed to load model: " + cfg.model_path);
+    model.reset(m);
+    return true;
+}
 
-    im.vocab = llama_model_get_vocab(model);
-    im.n_vocab = llama_vocab_n_tokens(im.vocab);
-    im.n_layer = llama_model_n_layer(model);
+// The loaded model's own facts, the streaming recipe for its architecture, and its chat template.
+bool Session::Impl::read_model(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    llama_model * m = model.get();
+    vocab = llama_model_get_vocab(m);
+    n_vocab = llama_vocab_n_tokens(vocab);
+    n_layer = llama_model_n_layer(m);
     // Excluded from n_layer by llama.cpp, so ask for it separately. Zero on every model without a
     // trained MTP head — which is most ggufs, including quants of MTP-capable models that were
     // converted without the nextn tensors.
-    im.n_layer_nextn = llama_model_n_layer_nextn(model);
-    if (cfg.spec.is_mtp() && im.n_layer_nextn <= 0)
-        return fail("--mtp needs a model with a trained MTP head, and this gguf has no nextn block "
-                    "(nextn_predict_layers is absent or zero). Qwen3.5/3.6 carry one in their "
-                    "ordinary quantisations; other architectures have none. --ngram speculates on any "
-                    "model, since it drafts from the text rather than from the weights. See "
-                    "docs/mtp.md and docs/ngram.md.");
+    n_layer_nextn = llama_model_n_layer_nextn(m);
+    if (cfg.spec.is_mtp() && n_layer_nextn <= 0)
+        return o.fail("--mtp needs a model with a trained MTP head, and this gguf has no nextn block "
+                      "(nextn_predict_layers is absent or zero). Qwen3.5/3.6 carry one in their "
+                      "ordinary quantisations; other architectures have none. --ngram speculates on any "
+                      "model, since it drafts from the text rather than from the weights. See "
+                      "docs/mtp.md and docs/ngram.md.");
 
-    char arch[128] = {0};
-    llama_model_meta_val_str(model, "general.architecture", arch, sizeof(arch));
-    im.arch = arch;
+    char arch_buf[128] = {0};
+    llama_model_meta_val_str(m, "general.architecture", arch_buf, sizeof(arch_buf));
+    arch = arch_buf;
 
-    const MoeRecipe * recipe = nullptr;
     if (cfg.moe.enabled) {
-        recipe = find_moe_recipe(arch);
-        if (!recipe)
-            return fail(std::string("no MoE recipe for architecture '") + arch +
-                        "' — add one in core/src/moe/arch_registry.cpp (see docs/adding-a-model.md)");
+        // Which tensors are the routed experts, read off the file's shapes. A dense model, or a MoE
+        // laid out in a way this engine has not proved byte-identical, is refused here with the reason
+        // rather than streamed by a guess.
+        o.layout = discover_expert_layout(o.meta().offsets.extents, o.gguf().n_expert);
+        if (!o.layout.ok)
+            return o.fail("not a MoE this engine streams: " + o.layout.error +
+                          " (docs/which-models-stream.md; without --moe-stream the file runs as plain mmap)");
     }
 
     // Chat templates are model-bound: initialise once here, apply per prompt in generate().
     if (cfg.chatml) {
         try {
-            im.chat_tmpls = common_chat_templates_init(model, "");
-            im.chat_on = true;
+            chat_tmpls = common_chat_templates_init(m, "");
+            chat_on = true;
             // Which "thinking off" mechanism this template supports is a property of the model, so
             // it is settled once here rather than re-derived on every turn.
-            im.think_ctl = detail::probe_think_control(im.chat_tmpls.get());
+            think_ctl = detail::probe_think_control(chat_tmpls.get());
         } catch (const std::exception & e) {
-            std::fprintf(stderr, "bmoe: chat template unavailable (%s); using raw prompts\n", e.what());
-            im.chat_on = false;
+            log_printf(LogLevel::Warn, "chat template unavailable (%s); using raw prompts", e.what());
+            chat_on = false;
         }
     }
+    return true;
+}
 
+// The router hook, configured for every job this session asked of it, and the decide probe.
+bool Session::Impl::build_hook(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
     // The MTP block lives at layer index n_layer and routes experts of its own, so with speculation
     // on the hook and the streamer must span the trunk PLUS the head. The index space is contiguous
     // and the tensor naming identical, so this bound is the only thing standing between the streamer
     // and the MTP experts — left at n_layer they are silently skipped and stay mmap-resident.
-    const int n_layer_streamed = im.n_layer + (cfg.spec.is_mtp() ? im.n_layer_nextn : 0);
-    im.hook = std::make_unique<RouterHook>(recipe ? *recipe : MoeRecipe{}, n_layer_streamed);
-    im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
-    im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
-    im.hook->set_expert_substitute(cfg.moe.substitute_lambda);
-    im.hook->set_predict_log(cfg.moe.predict_log);
-    im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
-    im.hook->set_route_ahead(cfg.moe.route_ahead);
+    o.n_layer_streamed = n_layer + (cfg.spec.is_mtp() ? n_layer_nextn : 0);
+    hook = std::make_unique<RouterHook>(o.layout, o.n_layer_streamed);
+    hook->set_prefetch_layers(cfg.moe.prefetch_layers);
+    hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
+    hook->set_expert_substitute(cfg.moe.substitute_lambda);
+    hook->set_predict_log(cfg.moe.predict_log);
+    hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
+    hook->set_route_ahead(cfg.moe.route_ahead);
     if (cfg.decide.enabled && !cfg.decide.probe_path.empty()) {
-        im.decide_probe = std::make_unique<DecideProbe>(cfg.model_path, im.n_layer, gguf().n_expert,
-                                                        llama_model_n_embd(model), cfg.decide.probe_path);
-        if (!im.decide_probe->ok()) return fail("decide probe: " + im.decide_probe->error());
-        im.hook->set_probe(im.decide_probe.get());
+        decide_probe = std::make_unique<DecideProbe>(cfg.model_path, n_layer, o.gguf().n_expert,
+                                                     llama_model_n_embd(model.get()), cfg.decide.probe_path);
+        if (!decide_probe->ok()) return o.fail("decide probe: " + decide_probe->error());
+        hook->set_probe(decide_probe.get());
     }
+    return true;
+}
 
+// The target context, and the MTP draft context beside it when speculation drafts from the head.
+bool Session::Impl::create_contexts(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
     cparams.n_batch = cfg.n_batch;
@@ -870,13 +920,13 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
     // The prefill device needs it once, for the capture that finds the layer weights.
-    if (cfg.moe.enabled || compute_trace || im.prefill) {
+    if (cfg.moe.enabled || o.compute_trace || prefill) {
         cparams.cb_eval = &RouterHook::c_eval;
-        cparams.cb_eval_user_data = im.hook.get();
+        cparams.cb_eval_user_data = hook.get();
     }
     // Placement is decided here, by moving weights; a backend's own offload heuristic would move
     // ops of CPU-resident weights to the device on its own (GPU backends do for wide batches).
-    if (im.prefill) {
+    if (prefill) {
         cparams.op_offload = false;
         cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
     }
@@ -885,14 +935,14 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // the sequence, which would hand back exactly the decode the speculation just saved.
     if (cfg.spec.enabled()) cparams.n_rs_seq = (uint32_t) cfg.spec.draft_max;
 
-    llama_context * ctx = llama_init_from_model(model, cparams);
-    if (!ctx) return fail("failed to create context");
-    im.ctx.reset(ctx);
+    llama_context * c = llama_init_from_model(model.get(), cparams);
+    if (!c) return o.fail("failed to create context");
+    ctx.reset(c);
     // Decode and prefill get their own counts. They are different workloads: prefill is compute-bound
     // and scales with cores, a streamed decode waits on flash. 0 means "the same", which is what
     // every caller got before this existed.
     const int n_threads_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
-    llama_set_n_threads(ctx, cfg.n_threads, n_threads_batch);
+    llama_set_n_threads(c, cfg.n_threads, n_threads_batch);
 
     // The MTP draft context: same model, same eval callback, but ctx_type = MTP so llama.cpp builds
     // the nextn graph. It keeps its own (single-position) KV, hence n_rs_seq = 0 — nothing is ever
@@ -913,36 +963,45 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // into ubatches of the width below.
         dparams.n_ubatch = (uint32_t) std::max(cfg.spec.draft_max + 1, mtp_draft_ubatch);
         if (dparams.n_ubatch > cparams.n_ubatch) dparams.n_ubatch = cparams.n_ubatch;
-        llama_context * ctx_dft = llama_init_from_model(model, dparams);
-        if (!ctx_dft) return fail("failed to create the MTP draft context");
-        im.ctx_dft.reset(ctx_dft);
-        llama_set_n_threads(ctx_dft, cfg.n_threads, n_threads_batch);
+        llama_context * d = llama_init_from_model(model.get(), dparams);
+        if (!d) return o.fail("failed to create the MTP draft context");
+        ctx_dft.reset(d);
+        llama_set_n_threads(d, cfg.n_threads, n_threads_batch);
     }
+    return true;
+}
 
-    // Opt-in sampling. temp <= 0 leaves smpl null and the decode loop on argmax — the deterministic
-    // default the byte-identity gates rely on. temp > 0 builds the standard chain, using only the
-    // public llama_sampler_* API (hard rule 1): common_sampler lives in the non-stable common layer.
+// Opt-in sampling. temp <= 0 leaves smpl null and the decode loop on argmax — the deterministic
+// default the byte-identity gates rely on. temp > 0 builds the standard chain, using only the
+// public llama_sampler_* API (hard rule 1): common_sampler lives in the non-stable common layer.
+void Session::Impl::build_sampler(const SessionConfig & c) {
     static_assert(SamplingConfig{}.seed == LLAMA_DEFAULT_SEED,
                   "SamplingConfig::seed default must mirror LLAMA_DEFAULT_SEED");
-    if (cfg.sampling.temp > 0.0f) {
-        im.smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-        llama_sampler_chain_add(im.smpl, llama_sampler_init_top_k(cfg.sampling.top_k));
-        llama_sampler_chain_add(im.smpl, llama_sampler_init_top_p(cfg.sampling.top_p, /*min_keep*/ 1));
-        llama_sampler_chain_add(im.smpl, llama_sampler_init_temp(cfg.sampling.temp));
-        llama_sampler_chain_add(im.smpl, llama_sampler_init_dist(cfg.sampling.seed));
+    if (c.sampling.temp > 0.0f) {
+        smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_k(c.sampling.top_k));
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(c.sampling.top_p, /*min_keep*/ 1));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(c.sampling.temp));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(c.sampling.seed));
     }
+}
 
-    // One abort callback for the session's whole life, checking two independent predicates:
-    // an explicit cancel() request (any mode) and a fatal streaming I/O error (overlap only).
-    // Installing it unconditionally is what lets cancel() interrupt a serial decode too.
+// One abort callback for the session's whole life, checking two independent predicates:
+// an explicit cancel() request (any mode) and a fatal streaming I/O error (overlap only).
+// Installing it unconditionally is what lets cancel() interrupt a serial decode too.
+void Session::Impl::install_abort_callback() {
     llama_set_abort_callback(
-        ctx,
+        ctx.get(),
         [](void * ud) -> bool {
             auto * p = static_cast<Impl *>(ud);
             return p->cancel_requested.load(std::memory_order_relaxed) || p->source.fatal();
         },
-        &im);
+        this);
+}
 
+// The speculative driver (MTP) and the verify batch every speculation source shares.
+bool Session::Impl::init_speculation(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
     // Built before the capture warm-up on purpose: the driver's constructor turns on nextn
     // extraction for both contexts, which is what the target graph looks like for the rest of the
     // session. Capturing the graph it actually runs beats capturing the one it briefly had.
@@ -956,10 +1015,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // width becomes adaptive per step. See SpecConfig::draft_p_min for why that pays twice on a
         // streamed device.
         sp.draft.p_min = cfg.spec.draft_p_min;
-        sp.draft.ctx_tgt = ctx; // self-speculation: one model, two contexts over it
-        sp.draft.ctx_dft = im.ctx_dft.get();
-        im.mtp.reset(common_speculative_init(sp, /*n_seq*/ 1));
-        if (!im.mtp) return fail("failed to initialise MTP speculative decoding");
+        sp.draft.ctx_tgt = ctx.get(); // self-speculation: one model, two contexts over it
+        sp.draft.ctx_dft = ctx_dft.get();
+        mtp.reset(common_speculative_init(sp, /*n_seq*/ 1));
+        if (!mtp) return o.fail("failed to initialise MTP speculative decoding");
     }
 
     // The wide verify batch belongs to the loop, not to a source: whoever drafted, the target is
@@ -967,393 +1026,436 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // lets the n-gram source reuse the whole verify half without a draft context.
     if (cfg.spec.enabled()) {
         // One batch for the session, wide enough for the larger of its two roles.
-        im.mtp_batch = llama_batch_init(std::max(cfg.n_batch, cfg.spec.draft_max + 1), /*embd*/ 0, /*n_seq_max*/ 1);
-        im.mtp_batch_owned = true;
-        im.draft_buf.reserve((size_t) cfg.spec.draft_max);
+        mtp_batch = llama_batch_init(std::max(cfg.n_batch, cfg.spec.draft_max + 1), /*embd*/ 0, /*n_seq_max*/ 1);
+        mtp_batch_owned = true;
+        draft_buf.reserve((size_t) cfg.spec.draft_max);
+    }
+    return true;
+}
+
+// Capture warm-up: one mmap-resident decode so the eval-callback can harvest the expert
+// tensor pointers from the graph. Any valid token builds the same graph (the expert
+// tensor structure is prompt-independent), so use BOS; KV is wiped afterwards.
+bool Session::Impl::capture_warmup(Opening & o) {
+    llama_context * c = ctx.get();
+    hook->begin_capture();
+    llama_token warm_tok = llama_vocab_bos(vocab);
+    if (warm_tok < 0) warm_tok = 0;
+    if (o.cfg.spec.is_mtp()) {
+        batch_fill(mtp_batch, &warm_tok, 1, /*pos0*/ 0, /*all_logits*/ true);
+        if (llama_decode(c, mtp_batch) != 0) return o.fail("capture warm-up decode failed");
+        // The MTP graph is built only by a decode on the draft context, and process() is what
+        // issues it. Without this pass the head's expert layer never reaches the eval callback,
+        // so it would stay unbound and silently mmap-resident — the one thing streaming exists
+        // to avoid on a model that does not fit.
+        if (!common_speculative_process(mtp.get(), mtp_batch))
+            return o.fail("MTP capture warm-up failed: the draft context could not process the batch");
+    } else {
+        llama_batch warm = llama_batch_get_one(&warm_tok, 1);
+        if (llama_decode(c, warm) != 0) return o.fail("capture warm-up decode failed");
+    }
+    hook->end_capture();
+    return true;
+}
+
+// Give every captured expert tensor its place in the file, and check the layers agree on how many
+// experts there are.
+bool Session::Impl::bind_expert_offsets(Opening & o,
+                                        const GgufOffsets & offs,
+                                        std::vector<LayerExperts> & layers,
+                                        int & n_expert) {
+    int n_bound = 0;
+    for (LayerExperts & L : layers) {
+        if (!L.bound) continue;
+        ++n_bound;
+        for (int p = 0; p < o.layout.n_slots; ++p) {
+            ggml_tensor * t = L.proj[p].tensor;
+            if (!t) return o.fail("captured MoE layer is missing expert tensor '" + o.layout.suffix[p] + "'");
+            auto it = offs.off_by_name.find(t->name);
+            if (it == offs.off_by_name.end()) return o.fail(std::string("no gguf offset for tensor ") + t->name);
+            L.proj[p].file_off = it->second;
+            L.proj[p].file_idx = offs.file_by_name.at(t->name); // same parse as the offset, so present
+            const int ne2 = (int) t->ne[2];
+            if (n_expert == 0)
+                n_expert = ne2;
+            else if (ne2 != n_expert)
+                return o.fail(std::string("inconsistent expert count: tensor ") + t->name + " has " +
+                              std::to_string(ne2) + ", expected " + std::to_string(n_expert));
+        }
+    }
+    if (n_bound == 0) return o.fail("no MoE expert tensors captured — is this a MoE model?");
+    return true;
+}
+
+// Hand the streamer the dense (non-expert) model weights: every captured weight leaf that IS
+// a gguf tensor (dropping graph inputs and KV, which share the leaf shape) and is NOT one of
+// the streamed experts. Called before init consumes `layers`. Anonymous/Pinned read these into
+// their own buffers; every mode needs the list to hold back a tensor too large to be
+// resident at all (qwen4exp's n-gram table), which must also leave the warm sweep and the
+// residency sensor — see DenseWeights::hold_back_oversized.
+//
+// `unaccounted` receives the file tensors no policy owns, which decides release-mmap later.
+void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
+                                            const GgufOffsets & offs,
+                                            const std::vector<LayerExperts> & layers,
+                                            std::vector<std::string> & unaccounted) {
+    const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
+    // The subset the graph only row-gathers, when the run asked for the row policy. Their
+    // membership is the hook's verdict on what the graph did, and this is a filter over the
+    // dense list rather than a second list, so a table cannot be both resident and streamed.
+    const std::unordered_set<std::string> row_names =
+        cfg.moe.row_stream ? hook->row_gathered_weights() : std::unordered_set<std::string>();
+    // Walk the captured OBJECTS, not the name map: a tied output head gives two tensors
+    // one name over one file range, and a name-keyed walk would rebind only one of them
+    // and leave the other reading the mmap for the life of the run. Twins are folded into
+    // one entry's alias list so the bytes are still read and allocated exactly once.
+    std::vector<DenseTensorRef> dense, rows;
+    std::unordered_map<uint64_t, size_t> dense_at; // (shard, file offset) -> index in `dense`
+    for (ggml_tensor * t : hook->captured_weight_objects()) {
+        if (!t) continue;
+        const std::string name = t->name;
+        if (expert_names.count(name)) continue;
+        auto off = offs.off_by_name.find(name);
+        auto sz = offs.size_by_name.find(name);
+        if (off == offs.off_by_name.end() || sz == offs.size_by_name.end()) continue; // not a file tensor
+        const int file_idx = offs.file_by_name.at(name);
+        const uint64_t key = ((uint64_t) (uint32_t) file_idx << 48) ^ off->second;
+        auto seen = dense_at.find(key);
+        if (seen != dense_at.end()) {
+            dense[seen->second].aliases.push_back(t);
+            continue;
+        }
+        DenseTensorRef d;
+        d.tensor = t;
+        d.file_off = off->second;
+        d.size = sz->second;
+        d.file_idx = file_idx;
+        dense_at.emplace(key, dense.size());
+        dense.push_back(d);
+        // A table with a twin is by definition also read some other way, so it cannot have
+        // qualified as row-gathered; the guard costs nothing and keeps that coupling explicit.
+        if (row_names.count(name)) rows.push_back(d);
+    }
+    for (const DenseTensorRef & d : dense)
+        if (!d.aliases.empty())
+            log_printf(LogLevel::Info, "'%s' is bound %zu times over one range (tied head) — all rebound",
+                       d.tensor->name, d.aliases.size() + 1);
+    // Every gguf tensor that is neither streamed nor in the dense list is one the capture
+    // decode never touched. With speculation off that is a tensor llama.cpp did not even load
+    // (load_mtp is off, so the MTP block stays in the file): nothing in this session can
+    // reach it. With the MTP draft on, a second context builds a second graph, and a tensor
+    // the capture missed may be one that graph reads, so the list then blocks release-mmap.
+    // Only release-mmap reads this list, so only a run that asked for it pays to build it.
+    if (cfg.moe.release_mmap) {
+        std::unordered_set<std::string> owned;
+        owned.reserve(dense.size());
+        for (const DenseTensorRef & d : dense)
+            if (d.tensor) owned.insert(d.tensor->name);
+        for (const auto & kv : offs.off_by_name)
+            if (!expert_names.count(kv.first) && !owned.count(kv.first)) unaccounted.push_back(kv.first);
+    }
+    const uint64_t row_budget = (uint64_t) std::max(0, cfg.moe.row_stream_mb) * 1024ull * 1024ull;
+    source.set_dense_tensors(std::move(dense));
+    source.set_row_tensors(std::move(rows), row_budget);
+}
+
+// Drop the model file's mapping once nothing reads through it (core/src/io/mapping_release.h).
+// Safety is decided here, not in the module, and it is decided by looking rather than by
+// reasoning: the release is correct only while nothing still dereferences the mapping, so the
+// engine asks the OS whether any weight the graph read still points inside it. That covers
+// every residency policy at once — a dense set left mmap'd, a table held back as oversized,
+// and the twin a tied output head creates, which carries the same name as the embedding table
+// and which no name-based accounting can see.
+//
+// It is a check over the pointers the capture pass observed, not a proof about the ones it
+// did not: a graph shape this session never built could hold another. That residue, plus the
+// gguf tensors no policy owns once the MTP draft adds a second graph, is why the flag is
+// opt-in rather than on by default.
+void Session::Impl::release_mapping(const SessionConfig & cfg,
+                                    const GgufOffsets & offs,
+                                    const std::vector<std::string> & unaccounted) {
+    std::vector<const void *> weight_addrs;
+    if (cfg.moe.release_mmap) {
+        weight_addrs.reserve(hook->captured_weight_objects().size());
+        for (const ggml_tensor * t : hook->captured_weight_objects())
+            if (t && t->data) weight_addrs.push_back(t->data);
+    }
+    const size_t still_mapped =
+        cfg.moe.release_mmap ? pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs) : 0;
+    if (!cfg.moe.release_mmap) return;
+    if (still_mapped) {
+        log_printf(LogLevel::Info, "release-mmap skipped: %zu weight(s) still read the model's mapping", still_mapped);
+    } else if (!unaccounted.empty() && cfg.spec.is_mtp()) {
+        log_printf(LogLevel::Info, "release-mmap skipped: %zu file tensor(s) no policy owns (first: %s)",
+                   unaccounted.size(), unaccounted.front().c_str());
+    } else {
+        const pio::MappingReleaseReport r = pio::release_file_mappings(offs.shard_paths, &mapping_placeholders);
+        // Lanes opened while the section was alive stay serialised against it even once it
+        // is gone (measured: iobench S3 vs S4), so the readers are reopened after the release.
+        if (r.supported && (r.views_unmapped || r.sections_closed) && !source.reopen_readers())
+            log_printf(LogLevel::Warn, "release-mmap: reader reopen failed; reads stay serialised");
+        if (r.supported) // POSIX has nothing to undo and says nothing
+            log_printf(LogLevel::Info, "release-mmap: %d view(s) unmapped (%llu MiB), %d section(s) closed%s%s%s",
+                       r.views_unmapped, (unsigned long long) (r.bytes >> 20), r.sections_closed,
+                       r.plugs_missed ? ", handle slot not reclaimed" : "", r.error.empty() ? "" : "; ",
+                       r.error.c_str());
+    }
+}
+
+// The route trace's static block: the streamed span, its experts, and each layer's bytes.
+void Session::Impl::arm_route_trace(Opening & o, int n_expert, std::vector<uint64_t> dense_bytes) {
+    const SessionConfig & cfg = o.cfg;
+    route_trace = o.route_trace;
+    hook->set_trace(true);
+
+    RouteTraceStatic st;
+    st.model = cfg.model_path;
+    st.arch = arch;
+    // The streamed span, not the trunk: with speculation on, the MTP block is a layer the
+    // streamer manages like any other, and a trace that stopped at the trunk would drop it.
+    st.n_layer = o.n_layer_streamed;
+    st.n_expert = n_expert;
+    // The effective top-k: an override IS the applied width, otherwise the model's own.
+    st.n_expert_used = cfg.n_expert_used;
+    if (st.n_expert_used <= 0) {
+        const GgufModelInfo & info = o.gguf();
+        st.n_expert_used = info.ok ? info.n_expert_used : 0;
+    }
+    st.dense_bytes_per_layer = std::move(dense_bytes);
+    st.expert_bytes_per_layer.resize((size_t) o.n_layer_streamed);
+    for (int il = 0; il < o.n_layer_streamed; ++il)
+        st.expert_bytes_per_layer[(size_t) il] = source.expert_bytes(il);
+    o.route_trace->on_static(st);
+}
+
+// Everything streaming adds to a loaded model: capture the expert tensors, place them in the file,
+// hand the dense weights and the row tables to their policies, start the expert source, and arm
+// what watches it. Ends with the warm-up's KV discarded.
+bool Session::Impl::bind_streaming(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    if (!capture_warmup(o)) return false;
+
+    const GgufOffsets & offs = o.meta().offsets;
+    if (!offs.ok) return o.fail("cannot read gguf offsets: " + cfg.model_path);
+
+    std::vector<LayerExperts> layers = hook->captured();
+    int n_expert = 0;
+    if (!bind_expert_offsets(o, offs, layers, n_expert)) return false;
+
+    // Computed before init consumes `layers`: the dense split needs the captured expert
+    // tensor names and the gguf sizes together.
+    std::vector<uint64_t> dense_bytes;
+    if (o.route_trace) dense_bytes = dense_bytes_per_layer(offs, layers, o.n_layer_streamed);
+
+    std::vector<std::string> unaccounted; // file tensors no policy owns; decides release-mmap below
+    hand_over_dense_weights(cfg, offs, layers, unaccounted);
+
+    if (prefill) prefill->keep_stream_layout(layers, offs.shard_paths);
+    if (prefill && cfg.prefill.slots_on_demand) prefill->share_memory_with(&source);
+    if (!source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
+        return o.fail("expert stream source init failed");
+    hook->set_source(&source);
+    // The row policy exists only once dense_.init has taken the tables over; null means nothing
+    // qualified or the takeover declined, and the hook then costs exactly nothing per node.
+    hook->set_row_source(source.row_source());
+
+    release_mapping(cfg, offs, unaccounted);
+
+    if (o.route_trace) arm_route_trace(o, n_expert, std::move(dense_bytes));
+
+    if (o.io_trace) {
+        io_trace = o.io_trace;
+        source.set_io_trace(true);
     }
 
-    if (cfg.moe.enabled) {
-        // Capture warm-up: one mmap-resident decode so the eval-callback can harvest the expert
-        // tensor pointers from the graph. Any valid token builds the same graph (the expert
-        // tensor structure is prompt-independent), so use BOS; KV is wiped afterwards.
-        im.hook->begin_capture();
-        llama_token warm_tok = llama_vocab_bos(im.vocab);
-        if (warm_tok < 0) warm_tok = 0;
-        if (cfg.spec.is_mtp()) {
-            batch_fill(im.mtp_batch, &warm_tok, 1, /*pos0*/ 0, /*all_logits*/ true);
-            if (llama_decode(ctx, im.mtp_batch) != 0) return fail("capture warm-up decode failed");
-            // The MTP graph is built only by a decode on the draft context, and process() is what
-            // issues it. Without this pass the head's expert layer never reaches the eval callback,
-            // so it would stay unbound and silently mmap-resident — the one thing streaming exists
-            // to avoid on a model that does not fit.
-            if (!common_speculative_process(im.mtp.get(), im.mtp_batch))
-                return fail("MTP capture warm-up failed: the draft context could not process the batch");
+    if (cfg.moe.overlap && !source.enable_overlap_hook())
+        return o.fail("--overlap needs the expert-ready hook of the bmoe llama.cpp fork, and the CPU backend "
+                      "loaded here does not expose it (docs/seam.md)");
+
+    clear_memory(ctx.get()); // discard warm-up KV
+    if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);
+    return true;
+}
+
+// Open the prefill device on the loaded session; a best-effort device that will not open is undone.
+bool Session::Impl::open_prefill_device(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    std::string perr;
+    if (prefill->open(ctx.get(), vocab, *hook, cfg.prefill, cfg.moe, o.n_layer_streamed, perr)) return true;
+    if (!cfg.prefill.best_effort) return o.fail(perr);
+    hand_back_prefill(perr);
+    return true;
+}
+
+// Asked for as a speed-up, not as a condition: undo it and run on the CPU. Destroying the path
+// hands every weight and the model state back to where the load put them, so what is left is the
+// session a run without the flag would have had.
+void Session::Impl::hand_back_prefill(const std::string & why) {
+    log_printf(LogLevel::Warn, "%s; prefill stays on the CPU", why.c_str());
+    hook->set_device_arena(nullptr);
+    hook->count_device_nodes(false);
+    prefill.reset();
+    cfg.prefill.device.clear();
+    clear_memory(ctx.get());
+}
+
+// Confirm the device on this model (PrefillDeviceConfig::verify): the same short prefill on the
+// host and on the device, compared row by row. A device that fails is handed back exactly as one
+// that failed to open. The two are timed and the times printed, but not judged: at this width the
+// cold expert reads dominate, and a laptop iGPU measured faster here (6.5 s against 7.5) prefilled
+// a 1015-token prompt 8% slower than the host.
+bool Session::Impl::confirm_prefill_device(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    llama_context * c = ctx.get();
+    std::string why;
+    // Sized as llama.cpp's own common_tokenize sizes it: a guess, and once more at the size a
+    // buffer too small is told it needs (returned negated).
+    const int text_len = (int) std::strlen(k_verify_text);
+    std::vector<llama_token> toks((size_t) text_len + 2);
+    int nt = llama_tokenize(vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), /*add_special*/ true,
+                            /*parse_special*/ false);
+    if (nt < 0 && nt != std::numeric_limits<int32_t>::min()) { // INT32_MIN: the count overflowed
+        toks.resize((size_t) -nt);
+        nt = llama_tokenize(vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), true, false);
+    }
+    // At least as wide as the narrowest graph the device is handed, so what is confirmed is a
+    // placement the device will actually see; bounded by what one graph may return.
+    const int want = std::min({std::max(PrefillDeviceConfig::verify_tokens, cfg.prefill.min_tokens),
+                               PrefillDeviceConfig::max_outputs, prefill_piece(this->cfg), cfg.n_ctx - 1});
+    double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0;
+    // A check that cannot run is not a verdict: the device stays as the plan or the caller set it,
+    // and the line below says it was not confirmed.
+    std::string unchecked;
+    if (nt <= 1) {
+        unchecked = "the confirmation text does not tokenize";
+    } else if (want < cfg.prefill.min_tokens) {
+        unchecked = "no graph as wide as the narrowest the device is handed fits a confirmation";
+    } else {
+        // Repeat the text (without its leading special token) until the probe is as wide as asked.
+        const int body = toks[0] == llama_vocab_bos(vocab) ? 1 : 0;
+        std::vector<llama_token> probe(toks.begin(), toks.begin() + nt);
+        while ((int) probe.size() < want)
+            probe.insert(probe.end(), toks.begin() + body, toks.begin() + nt);
+        probe.resize((size_t) want);
+
+        llama_batch b = llama_batch_init(want, 0, 1);
+        std::vector<float> host_logits((size_t) want * (size_t) n_vocab);
+        // 0 ran, 1 the device had no room, -1 the decode failed.
+        auto pass = [&](bool device, bool keep, double & secs) -> int {
+            // Two wide graphs of one shape in a row would let llama.cpp reuse the first for the
+            // second although the weights moved between them, which crashes (the reason min_tokens
+            // keeps the two placements' shapes apart). A one-token host graph between them breaks
+            // the shape at the cost of one token.
+            clear_memory(c);
+            batch_fill(b, probe.data(), 1, 0, /*all_logits*/ false);
+            if (decode_placed(c, b) != 0) return -1;
+            clear_memory(c);
+            const bool placed = place_prefill(device);
+            if (device && !placed) return 1;
+            batch_fill(b, probe.data(), want, 0, /*all_logits*/ true);
+            hook->set_batch_phase(0);
+            const auto t0 = std::chrono::steady_clock::now();
+            const int rc = decode_placed(c, b);
+            llama_synchronize(c);
+            secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            place_prefill(false);
+            if (rc != 0) return -1;
+            if (keep)
+                for (int j = 0; j < want; ++j)
+                    std::memcpy(host_logits.data() + (size_t) j * n_vocab, llama_get_logits_ith(c, j),
+                                sizeof(float) * (size_t) n_vocab);
+            return 0;
+        };
+        // The device first and untimed: its first graph pays for kernel compilation and the arena's
+        // first fill, which a timed pass would charge to every prefill after it.
+        double warm = 0.0;
+        int rc = pass(true, false, warm);
+        if (rc == 0) rc = pass(false, true, host_s);
+        if (rc == 0) rc = pass(true, false, dev_s);
+        if (rc == 1) {
+            why = "the device had no room for the confirmation prefill";
+        } else if (rc != 0) {
+            why = "the confirmation prefill failed";
         } else {
-            llama_batch warm = llama_batch_get_one(&warm_tok, 1);
-            if (llama_decode(ctx, warm) != 0) return fail("capture warm-up decode failed");
-        }
-        im.hook->end_capture();
-
-        const GgufOffsets & offs = meta().offsets;
-        if (!offs.ok) return fail("cannot read gguf offsets: " + cfg.model_path);
-
-        std::vector<LayerExperts> layers = im.hook->captured();
-        int n_expert = 0;
-        int n_bound = 0;
-        for (LayerExperts & L : layers) {
-            if (!L.bound) continue;
-            ++n_bound;
-            for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-                if (!recipe->exps_suffix[p]) continue; // slot unused by this architecture
-                ggml_tensor * t = L.proj[p].tensor;
-                if (!t)
-                    return fail(std::string("captured MoE layer is missing expert tensor '") + recipe->exps_suffix[p] +
-                                "'");
-                auto it = offs.off_by_name.find(t->name);
-                if (it == offs.off_by_name.end()) return fail(std::string("no gguf offset for tensor ") + t->name);
-                L.proj[p].file_off = it->second;
-                L.proj[p].file_idx = offs.file_by_name.at(t->name); // same parse as the offset, so present
-                const int ne2 = (int) t->ne[2];
-                if (n_expert == 0)
-                    n_expert = ne2;
-                else if (ne2 != n_expert)
-                    return fail(std::string("inconsistent expert count: tensor ") + t->name + " has " +
-                                std::to_string(ne2) + ", expected " + std::to_string(n_expert));
-            }
-        }
-        if (n_bound == 0) return fail("no MoE expert tensors captured — is this a MoE model?");
-
-        // Computed before init consumes `layers`: the dense split needs the captured expert
-        // tensor names and the gguf sizes together.
-        std::vector<uint64_t> dense_bytes;
-        if (route_trace) dense_bytes = dense_bytes_per_layer(offs, layers, n_layer_streamed);
-
-        // Hand the streamer the dense (non-expert) model weights: every captured weight leaf that IS
-        // a gguf tensor (dropping graph inputs and KV, which share the leaf shape) and is NOT one of
-        // the streamed experts. Built before init consumes `layers`. Anonymous/Pinned read these into
-        // their own buffers; every mode needs the list to hold back a tensor too large to be
-        // resident at all (qwen4exp's n-gram table), which must also leave the warm sweep and the
-        // residency sensor — see DenseWeights::hold_back_oversized.
-        std::vector<std::string> unaccounted; // file tensors no policy owns; decides release-mmap below
-        {
-            const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
-            // The subset the graph only row-gathers, when the run asked for the row policy. Their
-            // membership is the hook's verdict on what the graph did, and this is a filter over the
-            // dense list rather than a second list, so a table cannot be both resident and streamed.
-            const std::unordered_set<std::string> row_names =
-                cfg.moe.row_stream ? im.hook->row_gathered_weights() : std::unordered_set<std::string>();
-            // Walk the captured OBJECTS, not the name map: a tied output head gives two tensors
-            // one name over one file range, and a name-keyed walk would rebind only one of them
-            // and leave the other reading the mmap for the life of the run. Twins are folded into
-            // one entry's alias list so the bytes are still read and allocated exactly once.
-            std::vector<DenseTensorRef> dense, rows;
-            std::unordered_map<uint64_t, size_t> dense_at; // (shard, file offset) -> index in `dense`
-            for (ggml_tensor * t : im.hook->captured_weight_objects()) {
-                if (!t) continue;
-                const std::string name = t->name;
-                if (expert_names.count(name)) continue;
-                auto off = offs.off_by_name.find(name);
-                auto sz = offs.size_by_name.find(name);
-                if (off == offs.off_by_name.end() || sz == offs.size_by_name.end()) continue; // not a file tensor
-                const int file_idx = offs.file_by_name.at(name);
-                const uint64_t key = ((uint64_t) (uint32_t) file_idx << 48) ^ off->second;
-                auto seen = dense_at.find(key);
-                if (seen != dense_at.end()) {
-                    dense[seen->second].aliases.push_back(t);
-                    continue;
+            int same = 0;
+            double num = 0.0, den = 0.0;
+            for (int j = 0; j < want; ++j) {
+                const float * h = host_logits.data() + (size_t) j * n_vocab;
+                const float * d = llama_get_logits_ith(c, j);
+                if (argmax(h, n_vocab) == argmax(d, n_vocab)) ++same;
+                for (int v = 0; v < n_vocab; ++v) {
+                    const double e = (double) d[v] - (double) h[v];
+                    num += e * e;
+                    den += (double) h[v] * (double) h[v];
                 }
-                DenseTensorRef d;
-                d.tensor = t;
-                d.file_off = off->second;
-                d.size = sz->second;
-                d.file_idx = file_idx;
-                dense_at.emplace(key, dense.size());
-                dense.push_back(d);
-                // A table with a twin is by definition also read some other way, so it cannot have
-                // qualified as row-gathered; the guard costs nothing and keeps that coupling explicit.
-                if (row_names.count(name)) rows.push_back(d);
             }
-            for (const DenseTensorRef & d : dense)
-                if (!d.aliases.empty())
-                    std::fprintf(stderr, "bmoe: '%s' is bound %zu times over one range (tied head) — all rebound\n",
-                                 d.tensor->name, d.aliases.size() + 1);
-            // Every gguf tensor that is neither streamed nor in the dense list is one the capture
-            // decode never touched. With speculation off that is a tensor llama.cpp did not even load
-            // (load_mtp is off, so the MTP block stays in the file): nothing in this session can
-            // reach it. With the MTP draft on, a second context builds a second graph, and a tensor
-            // the capture missed may be one that graph reads, so the list then blocks release-mmap.
-            // Only release-mmap reads this list, so only a run that asked for it pays to build it.
-            if (cfg.moe.release_mmap) {
-                std::unordered_set<std::string> owned;
-                owned.reserve(dense.size());
-                for (const DenseTensorRef & d : dense)
-                    if (d.tensor) owned.insert(d.tensor->name);
-                for (const auto & kv : offs.off_by_name)
-                    if (!expert_names.count(kv.first) && !owned.count(kv.first)) unaccounted.push_back(kv.first);
-            }
-            const uint64_t row_budget = (uint64_t) std::max(0, cfg.moe.row_stream_mb) * 1024ull * 1024ull;
-            im.source.set_dense_tensors(std::move(dense));
-            im.source.set_row_tensors(std::move(rows), row_budget);
+            agree = (double) same / want;
+            nmse = den > 0.0 ? num / den : 0.0;
+            if (agree < PrefillDeviceConfig::verify_min_agree)
+                why = "it picked the host's next token in " + std::to_string(same) + " of " + std::to_string(want) +
+                      " positions of a " + std::to_string(want) + "-token prefill: it does not compute this model";
         }
-
-        if (im.prefill) im.prefill->keep_stream_layout(layers, offs.shard_paths);
-        if (im.prefill && cfg.prefill.slots_on_demand) im.prefill->share_memory_with(&im.source);
-        if (!im.source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
-            return fail("expert stream source init failed");
-        im.hook->set_source(&im.source);
-        // The row policy exists only once dense_.init has taken the tables over; null means nothing
-        // qualified or the takeover declined, and the hook then costs exactly nothing per node.
-        im.hook->set_row_source(im.source.row_source());
-
-        // Drop the model file's mapping once nothing reads through it (core/src/io/mapping_release.h).
-        // Safety is decided here, not in the module, and it is decided by looking rather than by
-        // reasoning: the release is correct only while nothing still dereferences the mapping, so the
-        // engine asks the OS whether any weight the graph read still points inside it. That covers
-        // every residency policy at once — a dense set left mmap'd, a table held back as oversized,
-        // and the twin a tied output head creates, which carries the same name as the embedding table
-        // and which no name-based accounting can see.
-        //
-        // It is a check over the pointers the capture pass observed, not a proof about the ones it
-        // did not: a graph shape this session never built could hold another. That residue, plus the
-        // gguf tensors no policy owns once the MTP draft adds a second graph, is why the flag is
-        // opt-in rather than on by default.
-        std::vector<const void *> weight_addrs;
-        if (cfg.moe.release_mmap) {
-            weight_addrs.reserve(im.hook->captured_weight_objects().size());
-            for (const ggml_tensor * t : im.hook->captured_weight_objects())
-                if (t && t->data) weight_addrs.push_back(t->data);
-        }
-        const size_t still_mapped =
-            cfg.moe.release_mmap ? pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs) : 0;
-        if (cfg.moe.release_mmap) {
-            if (still_mapped) {
-                std::fprintf(stderr, "bmoe: release-mmap skipped: %zu weight(s) still read the model's mapping\n",
-                             still_mapped);
-            } else if (!unaccounted.empty() && cfg.spec.is_mtp()) {
-                std::fprintf(stderr, "bmoe: release-mmap skipped: %zu file tensor(s) no policy owns (first: %s)\n",
-                             unaccounted.size(), unaccounted.front().c_str());
-            } else {
-                const pio::MappingReleaseReport r =
-                    pio::release_file_mappings(offs.shard_paths, &im.mapping_placeholders);
-                // Lanes opened while the section was alive stay serialised against it even once it
-                // is gone (measured: iobench S3 vs S4), so the readers are reopened after the release.
-                if (r.supported && (r.views_unmapped || r.sections_closed) && !im.source.reopen_readers())
-                    std::fprintf(stderr, "bmoe: release-mmap: reader reopen failed; reads stay serialised\n");
-                if (r.supported) // POSIX has nothing to undo and says nothing
-                    std::fprintf(stderr,
-                                 "bmoe: release-mmap: %d view(s) unmapped (%llu MiB), %d section(s) closed%s%s%s\n",
-                                 r.views_unmapped, (unsigned long long) (r.bytes >> 20), r.sections_closed,
-                                 r.plugs_missed ? ", handle slot not reclaimed" : "", r.error.empty() ? "" : "; ",
-                                 r.error.c_str());
-            }
-        }
-
-        if (route_trace) {
-            im.route_trace = route_trace;
-            im.hook->set_trace(true);
-
-            RouteTraceStatic st;
-            st.model = cfg.model_path;
-            st.arch = im.arch;
-            // The streamed span, not the trunk: with speculation on, the MTP block is a layer the
-            // streamer manages like any other, and a trace that stopped at the trunk would drop it.
-            st.n_layer = n_layer_streamed;
-            st.n_expert = n_expert;
-            // The effective top-k: an override IS the applied width, otherwise the model's own.
-            st.n_expert_used = cfg.n_expert_used;
-            if (st.n_expert_used <= 0) {
-                const GgufModelInfo & info = gguf();
-                st.n_expert_used = info.ok ? info.n_expert_used : 0;
-            }
-            st.dense_bytes_per_layer = std::move(dense_bytes);
-            st.expert_bytes_per_layer.resize((size_t) n_layer_streamed);
-            for (int il = 0; il < n_layer_streamed; ++il)
-                st.expert_bytes_per_layer[(size_t) il] = im.source.expert_bytes(il);
-            route_trace->on_static(st);
-        }
-
-        if (io_trace) {
-            im.io_trace = io_trace;
-            im.source.set_io_trace(true);
-        }
-
-        if (cfg.moe.overlap && !im.source.enable_overlap_hook())
-            return fail("--overlap needs the expert-ready hook of the bmoe llama.cpp fork, and the CPU backend "
-                        "loaded here does not expose it (docs/seam.md)");
-
-        im.clear_memory(ctx); // discard warm-up KV
-        if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+        llama_batch_free(b);
+        clear_memory(c);
     }
-
-    // Asked for as a speed-up, not as a condition: undo it and run on the CPU. Destroying the path
-    // hands every weight and the model state back to where the load put them, so what is left is
-    // the session a run without the flag would have had.
-    auto hand_back = [&](const std::string & perr) {
-        std::fprintf(stderr, "bmoe: %s; prefill stays on the CPU\n", perr.c_str());
-        im.hook->set_device_arena(nullptr);
-        im.hook->count_device_nodes(false);
-        im.prefill.reset();
-        im.cfg.prefill.device.clear();
-        im.clear_memory(ctx);
-    };
-    if (im.prefill) {
-        std::string perr;
-        if (!im.prefill->open(ctx, im.vocab, *im.hook, cfg.prefill, cfg.moe, n_layer_streamed, perr)) {
-            if (!cfg.prefill.best_effort) return fail(perr);
-            hand_back(perr);
-        }
+    if (!unchecked.empty()) {
+        log_printf(LogLevel::Warn, "prefill-device %s not confirmed: %s; kept as set", cfg.prefill.device.c_str(),
+                   unchecked.c_str());
+        return true;
     }
-
-    // Confirm the device on this model (PrefillDeviceConfig::verify): the same short prefill on the
-    // host and on the device, compared row by row. A device that fails is handed back exactly as one
-    // that failed to open. The two are timed and the times printed, but not judged: at this width
-    // the cold expert reads dominate, and a laptop iGPU measured faster here (6.5 s against 7.5)
-    // prefilled a 1015-token prompt 8% slower than the host.
-    if (im.prefill && cfg.prefill.verify) {
-        std::string why;
-        // Sized as llama.cpp's own common_tokenize sizes it: a guess, and once more at the size a
-        // buffer too small is told it needs (returned negated).
-        const int text_len = (int) std::strlen(k_verify_text);
-        std::vector<llama_token> toks((size_t) text_len + 2);
-        int nt = llama_tokenize(im.vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), /*add_special*/ true,
-                                /*parse_special*/ false);
-        if (nt < 0 && nt != std::numeric_limits<int32_t>::min()) { // INT32_MIN: the count overflowed
-            toks.resize((size_t) -nt);
-            nt = llama_tokenize(im.vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), true, false);
-        }
-        // At least as wide as the narrowest graph the device is handed, so what is confirmed is a
-        // placement the device will actually see; bounded by what one graph may return.
-        const int want = std::min({std::max(PrefillDeviceConfig::verify_tokens, cfg.prefill.min_tokens),
-                                   PrefillDeviceConfig::max_outputs, prefill_piece(im.cfg), cfg.n_ctx - 1});
-        double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0;
-        // A check that cannot run is not a verdict: the device stays as the plan or the caller set it,
-        // and the line below says it was not confirmed.
-        std::string unchecked;
-        if (nt <= 1) {
-            unchecked = "the confirmation text does not tokenize";
-        } else if (want < cfg.prefill.min_tokens) {
-            unchecked = "no graph as wide as the narrowest the device is handed fits a confirmation";
-        } else {
-            // Repeat the text (without its leading special token) until the probe is as wide as asked.
-            const int body = toks[0] == llama_vocab_bos(im.vocab) ? 1 : 0;
-            std::vector<llama_token> probe(toks.begin(), toks.begin() + nt);
-            while ((int) probe.size() < want)
-                probe.insert(probe.end(), toks.begin() + body, toks.begin() + nt);
-            probe.resize((size_t) want);
-
-            llama_batch b = llama_batch_init(want, 0, 1);
-            std::vector<float> host_logits((size_t) want * (size_t) im.n_vocab);
-            // 0 ran, 1 the device had no room, -1 the decode failed.
-            auto pass = [&](bool device, bool keep, double & secs) -> int {
-                // Two wide graphs of one shape in a row would let llama.cpp reuse the first for the
-                // second although the weights moved between them, which crashes (the reason
-                // min_tokens keeps the two placements' shapes apart). A one-token host graph
-                // between them breaks the shape at the cost of one token.
-                im.clear_memory(ctx);
-                batch_fill(b, probe.data(), 1, 0, /*all_logits*/ false);
-                if (im.decode_placed(ctx, b) != 0) return -1;
-                im.clear_memory(ctx);
-                const bool placed = im.place_prefill(device);
-                if (device && !placed) return 1;
-                batch_fill(b, probe.data(), want, 0, /*all_logits*/ true);
-                im.hook->set_batch_phase(0);
-                const auto t0 = std::chrono::steady_clock::now();
-                const int rc = im.decode_placed(ctx, b);
-                llama_synchronize(ctx);
-                secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-                im.place_prefill(false);
-                if (rc != 0) return -1;
-                if (keep)
-                    for (int j = 0; j < want; ++j)
-                        std::memcpy(host_logits.data() + (size_t) j * im.n_vocab, llama_get_logits_ith(ctx, j),
-                                    sizeof(float) * (size_t) im.n_vocab);
-                return 0;
-            };
-            // The device first and untimed: its first graph pays for kernel compilation and the
-            // arena's first fill, which a timed pass would charge to every prefill after it.
-            double warm = 0.0;
-            int rc = pass(true, false, warm);
-            if (rc == 0) rc = pass(false, true, host_s);
-            if (rc == 0) rc = pass(true, false, dev_s);
-            if (rc == 1) {
-                why = "the device had no room for the confirmation prefill";
-            } else if (rc != 0) {
-                why = "the confirmation prefill failed";
-            } else {
-                int same = 0;
-                double num = 0.0, den = 0.0;
-                for (int j = 0; j < want; ++j) {
-                    const float * h = host_logits.data() + (size_t) j * im.n_vocab;
-                    const float * d = llama_get_logits_ith(ctx, j);
-                    if (argmax(h, im.n_vocab) == argmax(d, im.n_vocab)) ++same;
-                    for (int v = 0; v < im.n_vocab; ++v) {
-                        const double e = (double) d[v] - (double) h[v];
-                        num += e * e;
-                        den += (double) h[v] * (double) h[v];
-                    }
-                }
-                agree = (double) same / want;
-                nmse = den > 0.0 ? num / den : 0.0;
-                if (agree < PrefillDeviceConfig::verify_min_agree)
-                    why = "it picked the host's next token in " + std::to_string(same) + " of " + std::to_string(want) +
-                          " positions of a " + std::to_string(want) + "-token prefill: it does not compute this model";
-            }
-            llama_batch_free(b);
-            im.clear_memory(ctx);
-        }
-        if (!unchecked.empty()) {
-            std::fprintf(stderr, "bmoe: prefill-device %s not confirmed: %s; kept as set\n", cfg.prefill.device.c_str(),
-                         unchecked.c_str());
-        } else {
-            std::fprintf(stderr,
-                         "bmoe: prefill-device %s confirmation: %d tokens, top token agrees %.0f%%, logit NMSE %.2e, "
-                         "host %.2f s, device %.2f s%s%s\n",
-                         cfg.prefill.device.c_str(), want, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
-                         why.c_str());
-            if (!why.empty()) {
-                const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
-                if (!cfg.prefill.best_effort) return fail(perr);
-                hand_back(perr);
-            }
-        }
+    log_printf(LogLevel::Info,
+               "prefill-device %s confirmation: %d tokens, top token agrees %.0f%%, logit NMSE %.2e, host %.2f s, "
+               "device %.2f s%s%s",
+               cfg.prefill.device.c_str(), want, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
+               why.c_str());
+    if (!why.empty()) {
+        const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
+        if (!cfg.prefill.best_effort) return o.fail(perr);
+        hand_back_prefill(perr);
     }
+    return true;
+}
 
-    // Decode traces. Outside the streaming block on purpose: the compute trace measures the graph,
-    // which exists with or without the streamer, so a dense mmap baseline can be traced and
-    // compared. The I/O trace was armed above (it needs the source) and only reports here.
-    if (compute_trace || im.io_trace) {
-        DecodeTraceStatic st;
-        st.model = cfg.model_path;
-        st.arch = im.arch;
-        st.n_layer = im.n_layer;
-        st.n_threads = cfg.n_threads;
-        st.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
-        st.o_direct = cfg.moe.enabled && im.source.stats().o_direct; // the open's outcome, not the request
-        st.overlap = cfg.moe.enabled && cfg.moe.overlap;
-        if (compute_trace) {
-            im.compute_trace = compute_trace;
-            im.hook->set_compute_trace(true, cfg.compute_trace_layers);
-            compute_trace->on_static(st);
-        }
-        if (im.io_trace) im.io_trace->on_static(st);
+// Decode traces. Outside the streaming step on purpose: the compute trace measures the graph,
+// which exists with or without the streamer, so a dense mmap baseline can be traced and
+// compared. The I/O trace was armed by bind_streaming (it needs the source) and only reports here.
+void Session::Impl::arm_decode_traces(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    if (!o.compute_trace && !io_trace) return;
+    DecodeTraceStatic st;
+    st.model = cfg.model_path;
+    st.arch = arch;
+    st.n_layer = n_layer;
+    st.n_threads = cfg.n_threads;
+    st.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
+    st.o_direct = cfg.moe.enabled && source.stats().o_direct; // the open's outcome, not the request
+    st.overlap = cfg.moe.enabled && cfg.moe.overlap;
+    if (o.compute_trace) {
+        compute_trace = o.compute_trace;
+        hook->set_compute_trace(true, compute_trace->layers_only());
+        o.compute_trace->on_static(st);
     }
+    if (io_trace) io_trace->on_static(st);
+}
 
-    // What this session IS, for any metrics sink that will describe what it DOES. Built here, where
-    // every fact is resolved: cache_mb in particular is what the streamer settled on, which under
-    // auto-sizing is a number no flag ever mentioned.
+// What this session IS, for any metrics sink that will describe what it DOES. Built here, where
+// every fact is resolved: cache_mb in particular is what the streamer settled on, which under
+// auto-sizing is a number no flag ever mentioned. Then the effective routing width.
+void Session::Impl::describe_run(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
     {
-        RunInfo & ri = im.info;
+        RunInfo & ri = info;
         const std::string & p = cfg.model_path;
         const size_t slash = p.find_last_of("/\\");
         ri.model = slash == std::string::npos ? p : p.substr(slash + 1);
-        ri.arch = im.arch;
-        ri.n_layer = im.n_layer;
+        ri.arch = arch;
+        ri.n_layer = n_layer;
         ri.engine_version = version();
         ri.n_threads = cfg.n_threads;
         ri.n_ctx = cfg.n_ctx;
         ri.n_ubatch = cfg.n_ubatch;
         ri.chatml = cfg.chatml;
-        ri.compute_trace_layers = cfg.compute_trace_layers;
+        ri.compute_trace_layers = compute_trace && compute_trace->layers_only();
         ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";
         ri.spec_draft_max = cfg.spec.enabled() ? cfg.spec.draft_max : 0;
         ri.mtp_p_min = cfg.spec.is_mtp() ? cfg.spec.draft_p_min : 0.0f;
@@ -1387,7 +1489,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                            : cfg.moe.dense_weights == DenseWeightsMode::Pinned    ? "ahwb"
                                                                                   : "warm";
         if (cfg.moe.enabled) {
-            const IExpertSource::Stats st = im.source.stats();
+            const IExpertSource::Stats st = source.stats();
             ri.cache_mb = (int) (st.cache_budget_bytes / (1024ull * 1024ull));
             // o_direct from the same sample: whether the shard readers actually got cache bypass
             // (O_DIRECT honoured, or F_NOCACHE applied on Apple), never what the flag asked for.
@@ -1398,7 +1500,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // cannot be compared against one whose top-k differs, which is most of the point.
         ri.n_expert_used = cfg.n_expert_used;
         if (ri.n_expert_used <= 0 || ri.n_expert == 0) {
-            const GgufModelInfo & mi = gguf();
+            const GgufModelInfo & mi = o.gguf();
             if (mi.ok) {
                 ri.n_expert = mi.n_expert;
                 if (ri.n_expert_used <= 0) ri.n_expert_used = mi.n_expert_used;
@@ -1408,19 +1510,22 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         // width that was actually applied. Rounded UP — a cycle reported as smaller than it is
         // would put a budget on the wrong side of the cliff in exactly the borderline case.
         ri.cache_cycle_mb =
-            (int) ((im.source.worst_cycle_bytes(ri.n_expert_used) + 1024ull * 1024ull - 1) / (1024ull * 1024ull));
-        im.source.set_pin_floor(im.source.worst_cycle_bytes(ri.n_expert_used));
+            (int) ((source.worst_cycle_bytes(ri.n_expert_used) + 1024ull * 1024ull - 1) / (1024ull * 1024ull));
+        source.set_pin_floor(source.worst_cycle_bytes(ri.n_expert_used));
     }
 
     // The effective routing width, resolved once: an override IS the applied width, otherwise the
     // model's own count. Exposed so a UI can interpret drop_cold_frac, and used by the warning below.
-    im.n_expert_used = cfg.n_expert_used;
-    if (im.n_expert_used <= 0) {
-        const GgufModelInfo & mi = gguf();
-        im.n_expert_used = mi.ok ? mi.n_expert_used : 0;
+    n_expert_used = cfg.n_expert_used;
+    if (n_expert_used <= 0) {
+        const GgufModelInfo & mi = o.gguf();
+        n_expert_used = mi.ok ? mi.n_expert_used : 0;
     }
+}
 
-    // Cache-aware dropping on a narrow routing: say so once, at load.
+// The two configurations that are legal and still worth a word at load, said once.
+void Session::Impl::warn_about_load(const SessionConfig & cfg) {
+    // Cache-aware dropping on a narrow routing.
     //
     // The threshold is a fraction of the uniform share 1/top-k, so what it removes scales with how
     // wide the routing is. At top-k 8 (where it was measured) it trims a long tail; at top-k 2 the
@@ -1429,16 +1534,16 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // a given model, so it states the fact rather than clamping the flag — a silent adjustment
     // would be worse than a loud caveat.
     if (cfg.moe.enabled && cfg.moe.drop_cold_frac > 0.0f) {
-        const int k = im.n_expert_used;
+        const int k = n_expert_used;
         if (k > 0 && k <= MoeStreamConfig::drop_low_topk_warn)
-            std::fprintf(stderr,
-                         "bmoe: WARNING drop-cold-experts=%.2f with top-k %d — the threshold is %.1f%% of the "
-                         "routing here, against 12.5%% at the top-k 8 this was measured on. Expect it to discard "
-                         "much more, and check output quality on your own task.\n",
-                         (double) cfg.moe.drop_cold_frac, k, 100.0 * cfg.moe.drop_cold_frac / k);
+            log_printf(LogLevel::Warn,
+                       "WARNING drop-cold-experts=%.2f with top-k %d — the threshold is %.1f%% of the "
+                       "routing here, against 12.5%% at the top-k 8 this was measured on. Expect it to discard "
+                       "much more, and check output quality on your own task.",
+                       (double) cfg.moe.drop_cold_frac, k, 100.0 * cfg.moe.drop_cold_frac / k);
     }
 
-    // A cache budget below one token's worst-case cycle: say so once, at load.
+    // A cache budget below one token's worst-case cycle.
     //
     // The number is computable from the model's shape alone, so this costs nothing and is available
     // at the only moment it can still be acted on. It is a warning, not a rejection: the budget is
@@ -1448,86 +1553,191 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // budget. Below the cycle no entry survives to the next token, so the run pays management and
     // RAM for a cache that cannot hit. The engine states the fact; what to do about it is
     // docs/cache-sizing.md's business, not a knob the engine should editorialize about.
-    if (im.info.cache_mb > 0 && im.info.cache_cycle_mb > 0 && im.info.cache_mb < im.info.cache_cycle_mb) {
-        std::fprintf(stderr,
-                     "bmoe: WARNING expert cache %d MiB is below this model's worst-case token cycle of %d MiB "
-                     "at top-k %d — no entry can survive to the next token, so expect a hit rate near zero.\n",
-                     im.info.cache_mb, im.info.cache_cycle_mb, im.info.n_expert_used);
+    if (info.cache_mb > 0 && info.cache_cycle_mb > 0 && info.cache_mb < info.cache_cycle_mb) {
+        log_printf(LogLevel::Warn,
+                   "WARNING expert cache %d MiB is below this model's worst-case token cycle of %d MiB "
+                   "at top-k %d — no entry can survive to the next token, so expect a hit rate near zero.",
+                   info.cache_mb, info.cache_cycle_mb, info.n_expert_used);
     }
+}
+
+std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
+                                       std::string & error,
+                                       IRouteTraceSink * route_trace,
+                                       IComputeTraceSink * compute_trace,
+                                       IIoTraceSink * io_trace) {
+    // Create the session first so its Impl destructor owns backend teardown from this point
+    // on: any failure below returns nullptr, destroying `self`, which frees the backend once.
+    std::unique_ptr<Session> self(new Session());
+    Impl & im = *self->impl_;
+    im.cfg = cfg;
+
+    // llama_backend_init/free is process-global and reference counted; init here, free in ~Impl.
+    llama_backend_init();
+    im.backend_inited = true;
+
+    const auto t_load0 = clock_t_::now();
+    Impl::Opening o{cfg, error, route_trace, compute_trace, io_trace};
+
+    // The order is load-bearing; each step's comment says what it needs from the ones before.
+    if (!im.load_model(o)) return nullptr;
+    if (!im.read_model(o)) return nullptr;
+    if (!im.build_hook(o)) return nullptr;
+    if (!im.create_contexts(o)) return nullptr;
+    im.build_sampler(cfg);
+    im.install_abort_callback();
+    if (!im.init_speculation(o)) return nullptr;
+    if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;
+    if (im.prefill && !im.open_prefill_device(o)) return nullptr;
+    if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
+    im.arm_decode_traces(o);
+    im.describe_run(o);
+    im.warn_about_load(cfg);
 
     im.load_seconds = secs(t_load0, clock_t_::now());
     return self;
 }
 
-RunResult Session::generate(const GenerateRequest & req,
-                            const std::function<void(const TokenMetrics &)> & on_token,
-                            IMetricsSink * sink) {
-    Impl & im = *impl_;
-    const MoeStreamConfig & moe = im.cfg.moe;
-    llama_context * ctx = im.ctx.get();
-
+// Before a turn touches the context: say what the run is, reset the cancel latch, drop a kept
+// decide() prefix, and — on a new chat — the conversation.
+void Session::Impl::begin_generate(const GenerateRequest & req, IMetricsSink * sink) {
     // Before anything is written about what this run did, say what it was.
-    if (sink && !im.info_sent) {
-        sink->on_run_info(im.info);
-        im.info_sent = true;
+    if (sink && !info_sent) {
+        sink->on_run_info(info);
+        info_sent = true;
     }
 
     // Fresh cancel latch for this generation; a stale request from a prior aborted call must
     // not carry over. (cancel() sets it; the abort callback reads it.)
-    im.cancel_requested.store(false, std::memory_order_relaxed);
+    cancel_requested.store(false, std::memory_order_relaxed);
 
     // A kept decide() prefix is worth its RAM only while decisions follow one another. Back in a
     // conversation it would sit, until close, in the memory the expert cache lives in, so it goes
     // now; the next decide() builds a fresh one.
-    im.decide_cache.reset();
-    im.decide_cache_chosen = false;
-
-    RunResult res;
-    auto fail = [&](RunError kind, std::string msg) {
-        res.ok = false;
-        res.error = std::move(msg);
-        res.error_kind = kind;
-        return res;
-    };
+    decide_cache.reset();
+    decide_cache_chosen = false;
 
     // clear_kv = "new chat": drop the KV and the engine-held conversation. Otherwise this turn
     // continues the conversation, reusing the KV prefix already decoded from earlier turns.
     if (req.clear_kv) {
-        im.clear_memory(ctx);
+        clear_memory(ctx.get());
         // The draft context tracks the target's positions and must be dropped with it, or the first
         // draft of the new conversation is conditioned on the previous one.
-        if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
-        im.chat_history.clear();
-        im.kv_tokens.clear();
+        if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);
+        chat_history.clear();
+        kv_tokens.clear();
         // A new chat resets the sampler RNG, so a fixed seed reproduces the same transcript from a
         // fresh conversation. A continued turn (clear_kv=false) keeps the stream going, matching the
         // KV it decodes against.
-        if (im.smpl) llama_sampler_reset(im.smpl);
+        if (smpl) llama_sampler_reset(smpl);
+    }
+}
+
+// One generate() call: everything the turn decides, measures and may have to undo, and the steps
+// that run it in order — render the prompt, tokenize it, reuse the KV prefix, prefill, decode,
+// account, and commit (or roll back) the conversation. A step that ends the turn early returns
+// false with `res` already holding the answer: an error kind, or a cancellation.
+struct Session::Impl::Turn {
+    Impl & im;
+    const GenerateRequest & req;
+    RunResult & res;
+    const MoeStreamConfig & moe;
+    llama_context * ctx;
+
+    // ── the prompt ──
+    std::string prompt;
+    bool chat_on;
+    bool history_pushed = false;                 // did we append this turn's user message to chat_history?
+    bool history_replaced = false;               // did we swap chat_history for the request's messages?
+    std::vector<common_chat_msg> history_before; // what a replaced conversation goes back to
+    bool prefilled_answer = false;               // closed the reasoning span in the prompt, so skip reasoning parse
+    common_chat_parser_params parse_params;
+    std::vector<llama_token> tokens;
+    int n_prompt = 0;
+    int n_predict = 0;
+    size_t n_common = 0; // leading prompt tokens the KV already held
+
+    // The frame the I/O rows are stamped with at flush; the other traces carry their own.
+    int trace_phase = 0, trace_step = 0;
+
+    // ── prefill ──
+    PrefillTally prefill_tally;
+    // Two predicates, deliberately distinct. spec_on is "the verify loop runs" — a wide batch, an
+    // accept pass, a rollback — and both sources need all of it. mtp_on is "the draft comes from the
+    // head", which is the only thing that needs the second context and llama.cpp's `common`
+    // speculative driver. Conflating them is what would make the n-gram source pay for a draft
+    // context it never uses.
+    bool spec_on = false;
+    bool mtp_on = false;
+    int prefill_device_tokens = 0;
+    uint64_t arena_read0 = 0;
+    double arena_stall0 = 0.0;
+    long long prefill_device_nodes = 0;
+    double prefill_seconds = 0.0;
+    const float * logits = nullptr;
+
+    // ── decode ──
+    std::string gen;
+    int n_gen = 0;
+    double gen_seconds = 0.0;
+    GenTally tally;
+    long long prev_spec_bytes = 0, prev_spec_experts = 0, prev_spec_useful = 0;
+    long long prev_routed = 0, prev_dropped = 0, prev_reranked = 0, prev_substituted = 0;
+    long long prev_ra_issue_ns = 0, prev_ra_wd_ns = 0;
+    clock_t_::time_point loop_mark;
+    double loop_overhead_s = 0.0;
+    llama_pos n_past = 0;
+    std::vector<llama_token> mtp_ctx;
+    std::vector<llama_token> verify_toks; // [confirmed token, drafts...] for the verify batch
+    std::vector<llama_token> confirmed;   // what one decode confirmed, in order
+    long long mtp0_drafted = 0, mtp0_accepted = 0, mtp0_decodes = 0, mtp0_drafted_steps = 0;
+    double mtp0_draft_s = 0.0;
+    uint64_t mtp0_draft_bytes = 0;
+    llama_token tok = 0;
+
+    // One decode of the loop: the confirmed token and whatever was drafted after it, verified in
+    // one batch, and what that decode cost.
+    struct Step {
+        int n_draft = 0;
+        double draft_s = 0.0; // this group's drafting + catch-up
+        bool wide = false;
+        double overhead = 0.0; // everything since the previous decode returned
+        clock_t_::time_point s0, s1;
+        uint64_t f0 = 0, f1 = 0;
+        double c0 = 0.0, c1 = 0.0;
+        int n_acc = 0;
+        bool eog_hit = false;
+    };
+
+    Turn(Impl & im_, const GenerateRequest & req_, RunResult & res_)
+        : im(im_), req(req_), res(res_), moe(im_.cfg.moe), ctx(im_.ctx.get()), prompt(req_.prompt),
+          chat_on(im_.chat_on) {}
+
+    bool fail(RunError kind, std::string msg) {
+        res.ok = false;
+        res.error = std::move(msg);
+        res.error_kind = kind;
+        return false;
+    }
+
+    // Put the conversation back as it was before this turn touched it. Every way out that is not a
+    // finished turn goes through here, or the next turn renders a history this one never answered.
+    void undo_history() {
+        if (history_replaced) im.chat_history = std::move(history_before);
+        if (history_pushed) im.chat_history.pop_back();
+        history_replaced = history_pushed = false;
     }
 
     // Format the prompt. With chat on, render the model's OWN chat template (real Jinja) over the
     // WHOLE conversation so far, and set up reasoning parsing so a thinking model's internal
     // reasoning is stripped from the shown answer. req.think drives enable_thinking, per prompt.
-    std::string prompt = req.prompt;
-    bool chat_on = im.chat_on;
-    // A message list replaces the engine-held conversation instead of adding one user turn to it.
-    const bool replace = !req.messages.empty();
-    if (replace && !chat_on)
-        return fail(RunError::NeedsChatMode,
-                    "a message list needs chat mode: open the session with the chat template on");
-    bool history_pushed = false;                 // did we append this turn's user message to chat_history?
-    bool history_replaced = false;               // did we swap chat_history for the request's messages?
-    std::vector<common_chat_msg> history_before; // what a replaced conversation goes back to
-    // Put the conversation back as it was before this turn touched it. Every way out that is not a
-    // finished turn goes through here, or the next turn renders a history this one never answered.
-    auto undo_history = [&]() {
-        if (history_replaced) im.chat_history = std::move(history_before);
-        if (history_pushed) im.chat_history.pop_back();
-        history_replaced = history_pushed = false;
-    };
-    bool prefilled_answer = false; // closed the reasoning span in the prompt, so skip reasoning parse
-    common_chat_parser_params parse_params;
-    if (chat_on) {
+    bool render_prompt() {
+        // A message list replaces the engine-held conversation instead of adding one user turn to it.
+        const bool replace = !req.messages.empty();
+        if (replace && !chat_on)
+            return fail(RunError::NeedsChatMode,
+                        "a message list needs chat mode: open the session with the chat template on");
+        if (!chat_on) return true;
         try {
             if (replace) {
                 history_before = std::move(im.chat_history);
@@ -1561,37 +1771,42 @@ RunResult Session::generate(const GenerateRequest & req,
             if (was_replace)
                 return fail(RunError::TemplateRejected,
                             std::string("the chat template rejected the conversation: ") + e.what());
-            std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
+            log_printf(LogLevel::Warn, "chat template apply failed (%s); using raw prompt", e.what());
             chat_on = false;
         }
+        return true;
     }
 
-    std::vector<llama_token> tokens(prompt.size() + k_tokenize_slack);
-    int n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
-                                  /*add_special*/ true, /*parse_special*/ true);
-    if (n_prompt < 0) {
-        tokens.resize(-n_prompt);
+    // Tokenize the prompt and settle the answer's budget against the room the context has left.
+    bool tokenize_prompt() {
+        tokens.resize(prompt.size() + k_tokenize_slack);
         n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
-                                  true, true);
+                                  /*add_special*/ true, /*parse_special*/ true);
+        if (n_prompt < 0) {
+            tokens.resize(-n_prompt);
+            n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
+                                      true, true);
+        }
+        if (n_prompt < 1) {
+            undo_history();
+            return fail(RunError::EmptyPrompt, "empty prompt after tokenization");
+        }
+        tokens.resize(n_prompt);
+        // n_predict is a ceiling on the answer, not a reservation: the answer gets what the context
+        // has left after the prompt, and stops there with the budget spent, as a length stop. Only a
+        // prompt that leaves no room at all is refused. Reserving the whole ceiling refused a
+        // two-word prompt whenever the ceiling was set near the context size (#138).
+        const int ctx_room = im.cfg.n_ctx - n_prompt - k_turn_end_reserve;
+        if (ctx_room < 1) {
+            undo_history();
+            return fail(RunError::ContextFull,
+                        "the conversation (" + std::to_string(n_prompt) + " tokens) exceeds the session n_ctx (" +
+                            std::to_string(im.cfg.n_ctx) +
+                            "): start a new conversation, or load the model with a larger context size");
+        }
+        n_predict = std::min(req.n_predict, ctx_room);
+        return true;
     }
-    if (n_prompt < 1) {
-        undo_history();
-        return fail(RunError::EmptyPrompt, "empty prompt after tokenization");
-    }
-    tokens.resize(n_prompt);
-    // n_predict is a ceiling on the answer, not a reservation: the answer gets what the context has
-    // left after the prompt, and stops there with the budget spent, as a length stop. Only a prompt
-    // that leaves no room at all is refused. Reserving the whole ceiling refused a two-word prompt
-    // whenever the ceiling was set near the context size (#138).
-    const int ctx_room = im.cfg.n_ctx - n_prompt - k_turn_end_reserve;
-    if (ctx_room < 1) {
-        undo_history();
-        return fail(RunError::ContextFull,
-                    "the conversation (" + std::to_string(n_prompt) + " tokens) exceeds the session n_ctx (" +
-                        std::to_string(im.cfg.n_ctx) +
-                        "): start a new conversation, or load the model with a larger context size");
-    }
-    const int n_predict = std::min(req.n_predict, ctx_room);
 
     // The text to surface: with chat on, parse the raw output so a reasoning model's internal
     // thinking is separated from the answer. The answer is shown inline; the reasoning is handed to
@@ -1601,7 +1816,7 @@ RunResult Session::generate(const GenerateRequest & req,
         std::string content;   // the answer, reasoning stripped
         std::string reasoning; // the thinking span, empty unless the parser split one out
     };
-    auto shown_view = [&](const std::string & raw, bool partial) -> ShownView {
+    ShownView shown_view(const std::string & raw, bool partial) const {
         if (!chat_on) return {raw, ""};
         // A prefilled turn resumes mid-answer: the reasoning span and the turn header the parser
         // anchors on are already in the prompt, not in the stream, so there is nothing to strip —
@@ -1616,15 +1831,15 @@ RunResult Session::generate(const GenerateRequest & req,
             detail::warn_parse_failed_once(e.what());
             return {raw, ""};
         }
-    };
+    }
 
     // Reuse the KV prefix already decoded from earlier turns (chat mode only): find how many
     // leading tokens still match the cache, drop the divergent tail, and prefill only the suffix.
     // Keeping at least one token to decode means a turn is never a no-op. clear_kv leaves
     // kv_tokens empty, so n_common = 0 and this reduces to a full prefill — the one-shot path the
     // byte-identity gates exercise stays unchanged.
-    size_t n_common = 0;
-    if (chat_on && !im.kv_tokens.empty()) {
+    void reuse_kv_prefix() {
+        if (!chat_on || im.kv_tokens.empty()) return;
         const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
         while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
             ++n_common;
@@ -1648,7 +1863,7 @@ RunResult Session::generate(const GenerateRequest & req,
 
     // Roll this turn back to the state before it started: drop the KV added this turn, forget the
     // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
-    auto rollback_turn = [&]() {
+    void rollback_turn() {
         if (chat_on) {
             if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) im.clear_memory(ctx);
             im.kv_tokens.resize(n_common);
@@ -1663,14 +1878,12 @@ RunResult Session::generate(const GenerateRequest & req,
             if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, keep, -1))
                 llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
         }
-    };
+    }
 
     // Route trace: frame one decode's rows, then hand them to the sink once it has returned —
     // never from inside the callback, which runs on a compute thread mid-graph. `base_pos` is
     // the context position of the batch's first token, so prefill rows carry real step numbers.
-    // The frame the I/O rows are stamped with at flush; the other traces carry their own.
-    int trace_phase = 0, trace_step = 0;
-    auto trace_begin = [&](int base_pos, int n_tokens, int phase) {
+    void trace_begin(int base_pos, int n_tokens, int phase) {
         // Not a trace concern, but the same per-decode frame: the drop policy is decode-only
         // unless armed for prefill, so it has to be told which phase this batch is.
         im.hook->set_batch_phase(phase);
@@ -1680,8 +1893,8 @@ RunResult Session::generate(const GenerateRequest & req,
         if (im.compute_trace) im.hook->begin_compute_batch(base_pos + n_tokens - 1, phase, im.turn);
         trace_phase = phase;
         trace_step = base_pos + n_tokens - 1;
-    };
-    auto trace_flush = [&]() {
+    }
+    void trace_flush() {
         // Close the compute trace's dangling interval FIRST: at layer granularity the "post" row
         // is charged the wall since the last boundary, and everything trace_flush does before the
         // close would be billed to the LM head.
@@ -1709,216 +1922,205 @@ RunResult Session::generate(const GenerateRequest & req,
             if (!im.io_rows_scratch.empty()) im.io_trace->on_rows(im.io_rows_scratch.data(), im.io_rows_scratch.size());
             im.io_rows_scratch.clear();
         }
-    };
+    }
 
     // ── prefill (chunked by n_batch; positions auto-continue from the reused prefix) ──
-    // Prefill attribution (#173): the cumulative counters are pinned before the prompt chunks so
-    // their deltas across prefill carry the same wall-additive terms the decode phase reports.
-    // The session layer already holds everything needed; the streamer is untouched.
-    PrefillTally prefill_tally;
-    prefill_tally.begin(moe.enabled, im.source);
-    const auto t_prefill0 = clock_t_::now();
-    // Two predicates, deliberately distinct. spec_on is "the verify loop runs" — a wide batch, an
-    // accept pass, a rollback — and both sources need all of it. mtp_on is "the draft comes from the
-    // head", which is the only thing that needs the second context and llama.cpp's `common`
-    // speculative driver. Conflating them is what would make the n-gram source pay for a draft
-    // context it never uses.
-    const bool spec_on = im.cfg.spec.enabled();
-    const bool mtp_on = im.mtp != nullptr;
-    // With a prefill device the prompt goes in one ubatch per decode, so each graph's width is one we
-    // chose and can place: wide pieces on the device, a narrow tail on the CPU. Left to llama_decode,
-    // a batch would be split into ubatches whose last one could be one token wide — the shape of the
-    // decode graph that follows, which llama.cpp would then reuse without re-scheduling it.
-    const int pf_step = im.prefill ? prefill_piece(im.cfg) : im.cfg.n_batch;
-    Impl::PlacementGuard placement_guard{im};
-    int prefill_device_tokens = 0;
-    const uint64_t arena_read0 = im.prefill ? im.prefill->arena_read_bytes() : 0;
-    const double arena_stall0 = im.prefill ? im.prefill->arena_stall_seconds() : 0.0;
-    const long long device_nodes0 = im.hook->device_nodes();
-    for (int i = (int) n_common; i < n_prompt; i += pf_step) {
-        const int chunk = std::min(pf_step, n_prompt - i);
-        if (im.prefill) {
-            const bool on_dev = im.place_prefill(chunk >= im.cfg.prefill.min_tokens);
-            if (on_dev) prefill_device_tokens += chunk;
-        }
-        llama_batch pf;
-        if (mtp_on) {
-            // Positions are absolute here — the prompt token at index i sits at position i, reused
-            // prefix included — which is exactly what llama_batch_get_one would have inferred.
-            batch_fill(im.mtp_batch, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ false);
-            pf = im.mtp_batch;
-        } else {
-            pf = llama_batch_get_one(tokens.data() + i, chunk);
-        }
-        trace_begin(i, chunk, /*phase*/ 0);
-        if (im.decode_placed(ctx, pf) != 0) {
-            if (im.cancel_requested.load(std::memory_order_relaxed)) {
-                rollback_turn();
-                res.ok = true;
-                res.cancelled = true;
-                return res;
+    // The caller holds the PlacementGuard for the rest of the turn.
+    bool prefill() {
+        // Prefill attribution (#173): the cumulative counters are pinned before the prompt chunks so
+        // their deltas across prefill carry the same wall-additive terms the decode phase reports.
+        // The session layer already holds everything needed; the streamer is untouched.
+        prefill_tally.begin(moe.enabled, im.source);
+        const auto t_prefill0 = clock_t_::now();
+        spec_on = im.cfg.spec.enabled();
+        mtp_on = im.mtp != nullptr;
+        // With a prefill device the prompt goes in one ubatch per decode, so each graph's width is one
+        // we chose and can place: wide pieces on the device, a narrow tail on the CPU. Left to
+        // llama_decode, a batch would be split into ubatches whose last one could be one token wide —
+        // the shape of the decode graph that follows, which llama.cpp would then reuse without
+        // re-scheduling it.
+        const int pf_step = im.prefill ? prefill_piece(im.cfg) : im.cfg.n_batch;
+        arena_read0 = im.prefill ? im.prefill->arena_read_bytes() : 0;
+        arena_stall0 = im.prefill ? im.prefill->arena_stall_seconds() : 0.0;
+        const long long device_nodes0 = im.hook->device_nodes();
+        for (int i = (int) n_common; i < n_prompt; i += pf_step) {
+            const int chunk = std::min(pf_step, n_prompt - i);
+            if (im.prefill) {
+                const bool on_dev = im.place_prefill(chunk >= im.cfg.prefill.min_tokens);
+                if (on_dev) prefill_device_tokens += chunk;
             }
-            if (moe.overlap && im.source.fatal())
-                return fail(RunError::Failed, "expert stream I/O failed during overlap prefill");
-            return fail(RunError::Failed, "prefill decode failed");
-        }
-        trace_flush();
-        // The draft context has to walk the prompt too: its KV must reach the last prompt position
-        // or the first draft is made from a hidden state that never saw the prompt.
-        if (mtp_on && !common_speculative_process(im.mtp.get(), pf))
-            return fail(RunError::Failed, "MTP draft context failed to process the prefill batch");
-    }
-    im.place_prefill(false); // decode reads the host bindings
-    const long long prefill_device_nodes = im.hook->device_nodes() - device_nodes0;
-    // The suffix is now in the KV; record it so the next turn can diff against it.
-    if (chat_on)
-        for (int i = (int) n_common; i < n_prompt; ++i)
-            im.kv_tokens.push_back(tokens[i]);
-    // Announced only once the prompt is in both contexts: begin() checks how far the draft context
-    // has actually got, so calling it before prefill would warn about a gap that is about to close.
-    if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
-    const double prefill_seconds = secs(t_prefill0, clock_t_::now());
-    // Prefill attribution, closed here (the begin() snapshot sits above the chunk loop): deltas
-    // of the cumulative counters across the prompt, the quantities the decode phase reports per
-    // token. Read with the same rules: io is summed lane busy time under overlap, stall is the
-    // union of stalled intervals, cpu is whole-process (upper bound on compute-thread time).
-    prefill_tally.end(moe.enabled, im.source);
-    const float * logits = llama_get_logits_ith(ctx, -1);
-
-    // ── greedy generation ──
-    res.ok = true;
-    std::string gen;
-    int n_gen = 0;
-    double gen_seconds = 0.0;
-
-    // Baseline seeded from prefill's closing sample: the summary reports the generation phase
-    // only, from real per-token deltas (prefill routes near the whole bank, so folding it into a
-    // per-token average would badly inflate the flash-I/O figure). Nothing runs between the two
-    // phases, so end()'s snapshot IS the decode baseline — one reading of the counters at the
-    // boundary instead of two that could drift apart. In a warm session these counters carry the
-    // prior prompts' totals; the deltas make each prompt self-relative.
-    GenTally tally;
-    tally.overlap = moe.overlap;
-    if (moe.enabled) {
-        const IExpertSource::Stats & st0 = prefill_tally.post;
-        tally.prev_bytes = (long long) st0.read_bytes;
-        tally.prev_io_s = st0.read_seconds;
-        tally.prev_mgmt_s = st0.mgmt_seconds;
-        tally.prev_stall_s = st0.stall_seconds;
-        tally.prev_drain_s = st0.drain_wait_seconds;
-        tally.prev_adopt_s = st0.adopt_wait_seconds;
-    }
-    const IExpertSource::Stats st_spec0 = moe.enabled ? im.source.stats() : IExpertSource::Stats{};
-    long long prev_spec_bytes = (long long) st_spec0.spec_read_bytes;
-    long long prev_spec_experts = st_spec0.spec_experts;
-    long long prev_spec_useful = st_spec0.spec_useful;
-    // Taken after prefill, so the drop counters describe generation — the phase the policy is armed
-    // for and the one the tok/s number is about.
-    const long long prev_routed = im.hook->experts_routed();
-    const long long prev_dropped = im.hook->experts_dropped();
-    const long long prev_reranked = im.hook->experts_reranked();
-    const long long prev_substituted = im.hook->experts_substituted();
-    // Per-token cursors for the hook's own eval-thread meters (route-ahead issue + watchdog): the
-    // hook accumulates for the session, the rows want this token's share.
-    long long prev_ra_issue_ns = im.hook->route_ahead_issue_ns();
-    long long prev_ra_wd_ns = im.hook->route_ahead_wd_ns();
-
-    // The decode bracket below measures llama_decode and nothing else, which is what makes
-    // compute_ms a clean residual — but it also means everything BETWEEN two decodes (sampling,
-    // detokenization, rendering, the sinks) is charged to nobody and disappears from tok/s. Mark
-    // where the last decode ended so each token can report the gap it actually waited through.
-    auto loop_mark = clock_t_::now();
-    double loop_overhead_s = 0.0;
-
-    // Absolute position the next decoded token occupies. Prefill left the context filled up to
-    // n_prompt-1; without speculation this simply tracks n_prompt + n_gen, but a verify decode
-    // advances it by a whole accepted group, so it is carried explicitly.
-    llama_pos n_past = n_prompt;
-    // The token sequence the draft source conditions on: the prompt plus everything confirmed since.
-    // Only built when speculating — the plain path has no use for it. The head reads it as the
-    // sequence to seed from; the n-gram source searches it, and it IS the whole corpus.
-    std::vector<llama_token> mtp_ctx;
-    if (spec_on) mtp_ctx = tokens;
-    std::vector<llama_token> verify_toks; // [confirmed token, drafts...] for the verify batch
-    std::vector<llama_token> confirmed;   // what one decode confirmed, in order
-    const long long mtp0_drafted = im.mtp_drafted;
-    const long long mtp0_accepted = im.mtp_accepted;
-    const long long mtp0_decodes = im.mtp_decodes;
-    const long long mtp0_drafted_steps = im.drafted_steps;
-    const double mtp0_draft_s = im.mtp_draft_seconds;
-    const uint64_t mtp0_draft_bytes = im.mtp_draft_read_bytes;
-
-    // The token the last decode settled on, not yet in the KV. Greedy stays argmax (byte-identical
-    // to the resident reference the gates check); with a sampling chain, draw from the context's
-    // last-position logits, which llama_sampler_sample reads at index -1 — the same logits argmax
-    // would have read.
-    llama_token tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
-
-    while (n_gen < n_predict) {
-        if (llama_vocab_is_eog(im.vocab, tok)) break;
-
-        // ── draft ──
-        // The source proposes a continuation of `tok`, capped at the caller's remaining budget: a
-        // draft accepted past n_predict would be verified, charged for, and then discarded. The cap
-        // goes in BEFORE drafting, so no source is ever asked for tokens with nowhere to go.
-        int n_draft = 0;
-        double draft_s = 0.0;                   // this group's drafting + catch-up (see below)
-        const int room = n_predict - n_gen - 1; // tokens still wanted after `tok` itself
-        if (spec_on && room > 0) {
-            const auto d0 = clock_t_::now();
-            const uint64_t db0 = moe.enabled ? im.source.stats().read_bytes : 0;
-            im.draft_buf.clear();
+            llama_batch pf;
             if (mtp_on) {
-                common_speculative_draft_params & dp = common_speculative_get_draft_params(im.mtp.get(), /*seq*/ 0);
-                dp.drafting = true;
-                dp.n_max = std::min(im.cfg.spec.draft_max, room);
-                dp.pos0 = n_past; // upstream renamed n_past -> pos0 (#28715); text-only, so the same value
-                dp.id_last = tok;
-                dp.prompt = &mtp_ctx;
-                dp.result = &im.draft_buf;
-                common_speculative_draft(im.mtp.get());
-                if ((int) im.draft_buf.size() > room) im.draft_buf.resize((size_t) room);
-                n_draft = (int) im.draft_buf.size();
-
-                // Drafting WROTE into the draft context's KV at the very positions the catch-up
-                // below is about to occupy. Rewind to where the draft started, or the second decode
-                // collides with the first (llama.cpp requires a batch to begin strictly after the
-                // last stored position). The catch-up is what replaces those rows with ones
-                // conditioned on the target's own hidden states instead of the head's guesses.
-                if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), /*seq*/ 0, n_past, -1))
-                    return fail(RunError::Failed, "the MTP draft context does not support rewinding its KV cache");
+                // Positions are absolute here — the prompt token at index i sits at position i, reused
+                // prefix included — which is exactly what llama_batch_get_one would have inferred.
+                batch_fill(im.mtp_batch, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ false);
+                pf = im.mtp_batch;
             } else {
-                // The n-gram source reads the text and nothing else: no draft context, no decode, no
-                // expert read, so the bytes bracketed around this arm are zero by construction. When
-                // it finds no confident match it returns 0 and the step below is an ordinary
-                // single-token decode — the property the head does not have, and the reason the
-                // floor of this source is the baseline rather than a loss.
-                n_draft = ngram_draft(mtp_ctx, tok, std::min(im.cfg.spec.draft_max, room), im.cfg.spec.ngram_min_match,
-                                      im.cfg.spec.ngram_max_match, im.draft_buf);
+                pf = llama_batch_get_one(tokens.data() + i, chunk);
             }
-            im.mtp_drafted += n_draft;
-            if (n_draft > 0) ++im.drafted_steps;
-            draft_s += secs(d0, clock_t_::now());
-            if (moe.enabled) im.mtp_draft_read_bytes += im.source.stats().read_bytes - db0;
+            trace_begin(i, chunk, /*phase*/ 0);
+            if (im.decode_placed(ctx, pf) != 0) {
+                if (im.cancel_requested.load(std::memory_order_relaxed)) {
+                    rollback_turn();
+                    res.ok = true;
+                    res.cancelled = true;
+                    return false;
+                }
+                if (moe.overlap && im.source.fatal())
+                    return fail(RunError::Failed, "expert stream I/O failed during overlap prefill");
+                return fail(RunError::Failed, "prefill decode failed");
+            }
+            trace_flush();
+            // The draft context has to walk the prompt too: its KV must reach the last prompt position
+            // or the first draft is made from a hidden state that never saw the prompt.
+            if (mtp_on && !common_speculative_process(im.mtp.get(), pf))
+                return fail(RunError::Failed, "MTP draft context failed to process the prefill batch");
         }
+        im.place_prefill(false); // decode reads the host bindings
+        prefill_device_nodes = im.hook->device_nodes() - device_nodes0;
+        // The suffix is now in the KV; record it so the next turn can diff against it.
+        if (chat_on)
+            for (int i = (int) n_common; i < n_prompt; ++i)
+                im.kv_tokens.push_back(tokens[i]);
+        // Announced only once the prompt is in both contexts: begin() checks how far the draft context
+        // has actually got, so calling it before prefill would warn about a gap that is about to close.
+        if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
+        prefill_seconds = secs(t_prefill0, clock_t_::now());
+        // Prefill attribution, closed here (the begin() snapshot sits above the chunk loop): deltas
+        // of the cumulative counters across the prompt, the quantities the decode phase reports per
+        // token. Read with the same rules: io is summed lane busy time under overlap, stall is the
+        // union of stalled intervals, cpu is whole-process (upper bound on compute-thread time).
+        prefill_tally.end(moe.enabled, im.source);
+        logits = llama_get_logits_ith(ctx, -1);
+        return true;
+    }
 
-        // ── verify batch: the confirmed token, then every draft, all asking for logits ──
-        //
-        // With nothing drafted there is nothing to verify, so the step takes the plain path — one
-        // token, one logits row, no rollback. That is not an optimisation of the speculative loop,
-        // it IS the loop's floor: a step that drafts nothing must cost exactly what it would have
-        // cost with speculation off, or a source that abstains would still be paying for the
-        // scaffolding. It applies to the head too, whenever p_min stops it drafting.
-        const bool wide = spec_on && n_draft > 0;
+    // The decode phase's baselines, taken where prefill left off, and the first token.
+    void begin_decode() {
+        // Baseline seeded from prefill's closing sample: the summary reports the generation phase
+        // only, from real per-token deltas (prefill routes near the whole bank, so folding it into a
+        // per-token average would badly inflate the flash-I/O figure). Nothing runs between the two
+        // phases, so end()'s snapshot IS the decode baseline — one reading of the counters at the
+        // boundary instead of two that could drift apart. In a warm session these counters carry the
+        // prior prompts' totals; the deltas make each prompt self-relative.
+        tally.overlap = moe.overlap;
+        if (moe.enabled) {
+            const IExpertSource::Stats & st0 = prefill_tally.post;
+            tally.prev_bytes = (long long) st0.read_bytes;
+            tally.prev_io_s = st0.read_seconds;
+            tally.prev_mgmt_s = st0.mgmt_seconds;
+            tally.prev_stall_s = st0.stall_seconds;
+            tally.prev_drain_s = st0.drain_wait_seconds;
+            tally.prev_adopt_s = st0.adopt_wait_seconds;
+        }
+        const IExpertSource::Stats st_spec0 = moe.enabled ? im.source.stats() : IExpertSource::Stats{};
+        prev_spec_bytes = (long long) st_spec0.spec_read_bytes;
+        prev_spec_experts = st_spec0.spec_experts;
+        prev_spec_useful = st_spec0.spec_useful;
+        // Taken after prefill, so the drop counters describe generation — the phase the policy is
+        // armed for and the one the tok/s number is about.
+        prev_routed = im.hook->experts_routed();
+        prev_dropped = im.hook->experts_dropped();
+        prev_reranked = im.hook->experts_reranked();
+        prev_substituted = im.hook->experts_substituted();
+        // Per-token cursors for the hook's own eval-thread meters (route-ahead issue + watchdog): the
+        // hook accumulates for the session, the rows want this token's share.
+        prev_ra_issue_ns = im.hook->route_ahead_issue_ns();
+        prev_ra_wd_ns = im.hook->route_ahead_wd_ns();
+
+        // The decode bracket below measures llama_decode and nothing else, which is what makes
+        // compute_ms a clean residual — but it also means everything BETWEEN two decodes (sampling,
+        // detokenization, rendering, the sinks) is charged to nobody and disappears from tok/s. Mark
+        // where the last decode ended so each token can report the gap it actually waited through.
+        loop_mark = clock_t_::now();
+
+        // Absolute position the next decoded token occupies. Prefill left the context filled up to
+        // n_prompt-1; without speculation this simply tracks n_prompt + n_gen, but a verify decode
+        // advances it by a whole accepted group, so it is carried explicitly.
+        n_past = n_prompt;
+        // The token sequence the draft source conditions on: the prompt plus everything confirmed
+        // since. Only built when speculating — the plain path has no use for it. The head reads it as
+        // the sequence to seed from; the n-gram source searches it, and it IS the whole corpus.
+        if (spec_on) mtp_ctx = tokens;
+        mtp0_drafted = im.mtp_drafted;
+        mtp0_accepted = im.mtp_accepted;
+        mtp0_decodes = im.mtp_decodes;
+        mtp0_drafted_steps = im.drafted_steps;
+        mtp0_draft_s = im.mtp_draft_seconds;
+        mtp0_draft_bytes = im.mtp_draft_read_bytes;
+
+        // The token the last decode settled on, not yet in the KV. Greedy stays argmax (byte-identical
+        // to the resident reference the gates check); with a sampling chain, draw from the context's
+        // last-position logits, which llama_sampler_sample reads at index -1 — the same logits argmax
+        // would have read.
+        tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
+    }
+
+    // ── draft ──
+    // The source proposes a continuation of `tok`, capped at the caller's remaining budget: a
+    // draft accepted past n_predict would be verified, charged for, and then discarded. The cap
+    // goes in BEFORE drafting, so no source is ever asked for tokens with nowhere to go.
+    bool draft(Step & s) {
+        const int room = n_predict - n_gen - 1; // tokens still wanted after `tok` itself
+        if (!spec_on || room <= 0) return true;
+        const auto d0 = clock_t_::now();
+        const uint64_t db0 = moe.enabled ? im.source.stats().read_bytes : 0;
+        im.draft_buf.clear();
+        if (mtp_on) {
+            common_speculative_draft_params & dp = common_speculative_get_draft_params(im.mtp.get(), /*seq*/ 0);
+            dp.drafting = true;
+            dp.n_max = std::min(im.cfg.spec.draft_max, room);
+            dp.pos0 = n_past; // upstream renamed n_past -> pos0 (#28715); text-only, so the same value
+            dp.id_last = tok;
+            dp.prompt = &mtp_ctx;
+            dp.result = &im.draft_buf;
+            common_speculative_draft(im.mtp.get());
+            if ((int) im.draft_buf.size() > room) im.draft_buf.resize((size_t) room);
+            s.n_draft = (int) im.draft_buf.size();
+
+            // Drafting WROTE into the draft context's KV at the very positions the catch-up
+            // below is about to occupy. Rewind to where the draft started, or the second decode
+            // collides with the first (llama.cpp requires a batch to begin strictly after the
+            // last stored position). The catch-up is what replaces those rows with ones
+            // conditioned on the target's own hidden states instead of the head's guesses.
+            if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), /*seq*/ 0, n_past, -1))
+                return fail(RunError::Failed, "the MTP draft context does not support rewinding its KV cache");
+        } else {
+            // The n-gram source reads the text and nothing else: no draft context, no decode, no
+            // expert read, so the bytes bracketed around this arm are zero by construction. When
+            // it finds no confident match it returns 0 and the step below is an ordinary
+            // single-token decode — the property the head does not have, and the reason the
+            // floor of this source is the baseline rather than a loss.
+            s.n_draft = ngram_draft(mtp_ctx, tok, std::min(im.cfg.spec.draft_max, room), im.cfg.spec.ngram_min_match,
+                                    im.cfg.spec.ngram_max_match, im.draft_buf);
+        }
+        im.mtp_drafted += s.n_draft;
+        if (s.n_draft > 0) ++im.drafted_steps;
+        s.draft_s += secs(d0, clock_t_::now());
+        if (moe.enabled) im.mtp_draft_read_bytes += im.source.stats().read_bytes - db0;
+        return true;
+    }
+
+    // ── verify batch: the confirmed token, then every draft, all asking for logits ──
+    //
+    // With nothing drafted there is nothing to verify, so the step takes the plain path — one
+    // token, one logits row, no rollback. That is not an optimisation of the speculative loop,
+    // it IS the loop's floor: a step that drafts nothing must cost exactly what it would have
+    // cost with speculation off, or a source that abstains would still be paying for the
+    // scaffolding. It applies to the head too, whenever p_min stops it drafting.
+    //
+    // Returns llama_decode's result.
+    int verify_decode(Step & s) {
+        s.wide = spec_on && s.n_draft > 0;
         llama_batch step;
         if (spec_on) {
             verify_toks.clear();
             verify_toks.push_back(tok);
             // n_draft, not draft_buf.size(): on the last token of a run there is no room to draft
             // and the buffer still holds the previous step's proposal.
-            verify_toks.insert(verify_toks.end(), im.draft_buf.begin(), im.draft_buf.begin() + n_draft);
+            verify_toks.insert(verify_toks.end(), im.draft_buf.begin(), im.draft_buf.begin() + s.n_draft);
         }
-        if (wide) {
+        if (s.wide) {
             batch_fill(im.mtp_batch, verify_toks.data(), (int) verify_toks.size(), n_past, /*all_logits*/ true);
             step = im.mtp_batch;
         } else {
@@ -1927,96 +2129,88 @@ RunResult Session::generate(const GenerateRequest & req,
 
         // Bracket ONLY the decode: major faults and CPU-time deltas here decompose this token's
         // compute residual into flash-fault stalls vs. genuine (or throttled) computation.
-        const uint64_t f0 = pio::major_faults();
-        const double c0 = pio::process_cpu_seconds();
-        auto s0 = clock_t_::now();
-        const double overhead = secs(loop_mark, s0); // everything since the previous decode returned
-        loop_overhead_s += overhead;
-        trace_begin(n_past, /*n_tokens*/ 1 + n_draft, /*phase*/ 1);
-        int dec = llama_decode(ctx, step);
-        auto s1 = clock_t_::now();
-        loop_mark = s1; // the next token's overhead is measured from here
-        const uint64_t f1 = pio::major_faults();
-        const double c1 = pio::process_cpu_seconds();
-        if (dec != 0) {
-            if (im.cancel_requested.load(std::memory_order_relaxed)) {
-                res.cancelled = true;
-                break;
-            }
-            if (moe.overlap && im.source.fatal())
-                return fail(RunError::Failed, "expert stream I/O failed during overlap decode");
-            return fail(RunError::Failed, "decode failed during generation");
-        }
-        trace_flush(); // outside the s0..s1 bracket: the trace's own writes must not bill wall_ms
-        ++im.mtp_decodes;
+        s.f0 = pio::major_faults();
+        s.c0 = pio::process_cpu_seconds();
+        s.s0 = clock_t_::now();
+        s.overhead = secs(loop_mark, s.s0); // everything since the previous decode returned
+        loop_overhead_s += s.overhead;
+        trace_begin(n_past, /*n_tokens*/ 1 + s.n_draft, /*phase*/ 1);
+        const int dec = llama_decode(ctx, step);
+        s.s1 = clock_t_::now();
+        loop_mark = s.s1; // the next token's overhead is measured from here
+        s.f1 = pio::major_faults();
+        s.c1 = pio::process_cpu_seconds();
+        return dec;
+    }
 
-        // ── accept ──
-        // `tok` was settled before the decode, so it is confirmed unconditionally. Each draft is
-        // confirmed only while it matches what the target itself would have produced at that
-        // position — no approximation enters here. The batch's arithmetic is still not bit-identical
-        // to a single-token pass, so a near-tie can land differently; see docs/mtp.md.
+    // ── accept ──
+    // `tok` was settled before the decode, so it is confirmed unconditionally. Each draft is
+    // confirmed only while it matches what the target itself would have produced at that
+    // position — no approximation enters here. The batch's arithmetic is still not bit-identical
+    // to a single-token pass, so a near-tie can land differently; see docs/mtp.md.
+    bool accept(Step & s) {
         confirmed.clear();
         confirmed.push_back(tok);
-        int n_acc = 0;
-        bool eog_hit = false;
-        for (int i = 0; i < n_draft; ++i) {
+        for (int i = 0; i < s.n_draft; ++i) {
             const llama_token want = argmax(llama_get_logits_ith(ctx, i), im.n_vocab);
             if (want != im.draft_buf[i]) break;
-            ++n_acc; // accepted: it is in the KV whether or not the caller gets to see it
+            ++s.n_acc; // accepted: it is in the KV whether or not the caller gets to see it
             if (llama_vocab_is_eog(im.vocab, want)) {
-                eog_hit = true; // end-of-generation is never emitted, here as on the plain path
+                s.eog_hit = true; // end-of-generation is never emitted, here as on the plain path
                 break;
             }
             confirmed.push_back(want);
         }
-        if (spec_on) {
-            im.mtp_accepted += n_acc;
+        if (!spec_on) return true;
+        im.mtp_accepted += s.n_acc;
 
-            // Catch the draft context up on the ACCEPTED PREFIX ONLY.
-            //
-            // The catch-up re-runs the MTP block over the batch so the draft context holds rows
-            // conditioned on the target's own hidden states, and accept() below seeds the next draft
-            // from the row at index n_acc. Handing it the whole verify batch — the obvious ordering,
-            // and the one upstream's own loop uses — computes the rejected tail as well, and that
-            // tail is deleted a few statements later: those drafts were wrong and nothing ever reads
-            // their rows. Acceptance depends only on the target's logits, which are already in hand
-            // by this point, so the tail simply never has to be submitted.
-            //
-            // Identical state, strictly less work. accept() seeds from row min(n_acc, n_rows-1),
-            // which is row n_acc under either batch, and the KV this leaves behind is exactly the
-            // range the rollback used to carve out. What it saves is (n_draft - n_acc) positions
-            // through the MTP block — and that block routes experts of its own, so on a streamed
-            // device the saving is flash reads, not just arithmetic.
-            //
-            // The n-gram source has no state to catch up: its next draft is read off the token
-            // history the emit block appends to, which is already correct by the time it is read.
-            if (mtp_on) {
-                const auto p0 = clock_t_::now();
-                const uint64_t pb0 = moe.enabled ? im.source.stats().read_bytes : 0;
-                batch_fill(im.mtp_batch, verify_toks.data(), 1 + n_acc, n_past, /*all_logits*/ false);
-                if (!common_speculative_process(im.mtp.get(), im.mtp_batch))
-                    return fail(RunError::Failed, "MTP draft context failed to process the verify batch");
-                draft_s += secs(p0, clock_t_::now());
-                if (moe.enabled) im.mtp_draft_read_bytes += im.source.stats().read_bytes - pb0;
-            }
-            im.mtp_draft_seconds += draft_s;
-
-            // Drop the rejected tail from the target; the bounded-rollback snapshots asked for at
-            // context creation are what make this a restore rather than a replay. The draft context
-            // needs no rollback of its own — it was never given the tail.
-            if (n_acc < n_draft) {
-                const llama_pos keep = n_past + 1 + n_acc;
-                if (!llama_memory_seq_rm(llama_get_memory(ctx), /*seq*/ 0, keep, -1))
-                    return fail(RunError::Failed, "failed to roll back the rejected draft tokens from the KV cache");
-            }
-            if (mtp_on) common_speculative_accept(im.mtp.get(), /*seq*/ 0, (uint16_t) n_acc);
+        // Catch the draft context up on the ACCEPTED PREFIX ONLY.
+        //
+        // The catch-up re-runs the MTP block over the batch so the draft context holds rows
+        // conditioned on the target's own hidden states, and accept() below seeds the next draft
+        // from the row at index n_acc. Handing it the whole verify batch — the obvious ordering,
+        // and the one upstream's own loop uses — computes the rejected tail as well, and that
+        // tail is deleted a few statements later: those drafts were wrong and nothing ever reads
+        // their rows. Acceptance depends only on the target's logits, which are already in hand
+        // by this point, so the tail simply never has to be submitted.
+        //
+        // Identical state, strictly less work. accept() seeds from row min(n_acc, n_rows-1),
+        // which is row n_acc under either batch, and the KV this leaves behind is exactly the
+        // range the rollback used to carve out. What it saves is (n_draft - n_acc) positions
+        // through the MTP block — and that block routes experts of its own, so on a streamed
+        // device the saving is flash reads, not just arithmetic.
+        //
+        // The n-gram source has no state to catch up: its next draft is read off the token
+        // history the emit block appends to, which is already correct by the time it is read.
+        if (mtp_on) {
+            const auto p0 = clock_t_::now();
+            const uint64_t pb0 = moe.enabled ? im.source.stats().read_bytes : 0;
+            batch_fill(im.mtp_batch, verify_toks.data(), 1 + s.n_acc, n_past, /*all_logits*/ false);
+            if (!common_speculative_process(im.mtp.get(), im.mtp_batch))
+                return fail(RunError::Failed, "MTP draft context failed to process the verify batch");
+            s.draft_s += secs(p0, clock_t_::now());
+            if (moe.enabled) im.mtp_draft_read_bytes += im.source.stats().read_bytes - pb0;
         }
+        im.mtp_draft_seconds += s.draft_s;
 
-        // ── emit ──
-        // One metrics row per confirmed token, but ONE decode produced them all: its cost goes to
-        // the first row and the rest carry zeros (see TokenMetrics::mtp_batch). Splitting the wall
-        // evenly would read as several equally-cheap tokens, which is not what happened.
-        const double wall = secs(s0, s1);
+        // Drop the rejected tail from the target; the bounded-rollback snapshots asked for at
+        // context creation are what make this a restore rather than a replay. The draft context
+        // needs no rollback of its own — it was never given the tail.
+        if (s.n_acc < s.n_draft) {
+            const llama_pos keep = n_past + 1 + s.n_acc;
+            if (!llama_memory_seq_rm(llama_get_memory(ctx), /*seq*/ 0, keep, -1))
+                return fail(RunError::Failed, "failed to roll back the rejected draft tokens from the KV cache");
+        }
+        if (mtp_on) common_speculative_accept(im.mtp.get(), /*seq*/ 0, (uint16_t) s.n_acc);
+        return true;
+    }
+
+    // ── emit ──
+    // One metrics row per confirmed token, but ONE decode produced them all: its cost goes to
+    // the first row and the rest carry zeros (see TokenMetrics::mtp_batch). Splitting the wall
+    // evenly would read as several equally-cheap tokens, which is not what happened.
+    void emit(const Step & s, const std::function<void(const TokenMetrics &)> & on_token, IMetricsSink * sink) {
+        const double wall = secs(s.s0, s.s1);
         gen_seconds += wall;
         const IExpertSource::Stats st = moe.enabled ? im.source.stats() : IExpertSource::Stats{};
         // Route-ahead's eval-thread meters accumulate per DECODE, and one decode can confirm a whole
@@ -2045,10 +2239,10 @@ RunResult Session::generate(const GenerateRequest & req,
             m.step = n_gen;
             m.steps = n_predict;
             m.mtp_batch = (int) confirmed.size();
-            m.loop_overhead_ms = e == 0 ? overhead * 1000.0 : 0.0;
+            m.loop_overhead_ms = e == 0 ? s.overhead * 1000.0 : 0.0;
             // Charged to the group's first row like every other group cost. This is a SLICE of
             // loop_overhead_ms, not an addition to it: both measure time outside the decode.
-            m.mtp_draft_ms = e == 0 ? draft_s * 1000.0 : 0.0;
+            m.mtp_draft_ms = e == 0 ? s.draft_s * 1000.0 : 0.0;
             m.ra_issue_ms = e == 0 ? ra_issue_ms : 0.0;
             m.ra_wd_ms = e == 0 ? ra_wd_ms : 0.0;
             m.piece = delta;
@@ -2060,28 +2254,55 @@ RunResult Session::generate(const GenerateRequest & req,
                 m.reasoning = std::move(sv.reasoning);
             }
             if (e == 0)
-                tally.record(m, wall, f1 - f0, c1 - c0, im.turn, moe.enabled ? &st : nullptr);
+                tally.record(m, wall, s.f1 - s.f0, s.c1 - s.c0, im.turn, moe.enabled ? &st : nullptr);
             else
                 tally.record(m, 0.0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr);
             if (on_token) on_token(m);
             if (sink) sink->on_token(m);
         }
+    }
 
-        if (eog_hit) break;
-        // The accepted group is now KV-resident, and the logits at the first unverified position
-        // hold the target's own continuation — the next token, arrived at for free. Off the
-        // speculative path the row index stays -1, exactly as before: one token, one row.
-        n_past += 1 + n_acc;
-        const int32_t row = wide ? n_acc : -1;
-        logits = llama_get_logits_ith(ctx, row);
-        tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, row) : argmax(logits, im.n_vocab);
+    // ── greedy generation ──
+    // Returns false only on a failure; a cancel ends the loop with res.cancelled set.
+    bool decode(const std::function<void(const TokenMetrics &)> & on_token, IMetricsSink * sink) {
+        res.ok = true;
+        begin_decode();
+        while (n_gen < n_predict) {
+            if (llama_vocab_is_eog(im.vocab, tok)) break;
+            Step s;
+            if (!draft(s)) return false;
+            if (verify_decode(s) != 0) {
+                if (im.cancel_requested.load(std::memory_order_relaxed)) {
+                    res.cancelled = true;
+                    break;
+                }
+                if (moe.overlap && im.source.fatal())
+                    return fail(RunError::Failed, "expert stream I/O failed during overlap decode");
+                return fail(RunError::Failed, "decode failed during generation");
+            }
+            trace_flush(); // outside the s0..s1 bracket: the trace's own writes must not bill wall_ms
+            ++im.mtp_decodes;
+            if (!accept(s)) return false;
+            emit(s, on_token, sink);
+
+            if (s.eog_hit) break;
+            // The accepted group is now KV-resident, and the logits at the first unverified position
+            // hold the target's own continuation — the next token, arrived at for free. Off the
+            // speculative path the row index stays -1, exactly as before: one token, one row.
+            n_past += 1 + s.n_acc;
+            const int32_t row = s.wide ? s.n_acc : -1;
+            logits = llama_get_logits_ith(ctx, row);
+            tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, row) : argmax(logits, im.n_vocab);
+        }
+        return true;
     }
 
     // Speculation can leave the KV ahead of what the caller received: an accepted end-of-generation
     // token is decoded but never emitted, and a group can be cut short by n_predict. The KV and
     // kv_tokens must agree exactly or the next turn's prefix reuse decodes from a state that never
     // produced this answer, so trim back to what was actually emitted.
-    if (spec_on) {
+    void trim_speculative_kv() {
+        if (!spec_on) return;
         const llama_pos emitted_end = (llama_pos) n_prompt + n_gen;
         if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, emitted_end, -1)) {
             // Nothing survives that we can still describe, so say so rather than leave kv_tokens
@@ -2096,148 +2317,174 @@ RunResult Session::generate(const GenerateRequest & req,
             llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
     }
 
-    ++im.turn; // this turn is written; label the next one apart
-
     // ── summary ──
-    RunSummary & s = res.summary;
-    s.arch = im.arch;
-    s.n_generated = n_gen;
-    s.n_predict = n_predict;
-    s.gen_seconds = gen_seconds;
-    s.s_per_token = n_gen ? gen_seconds / n_gen : 0.0;
-    s.tokens_per_second = gen_seconds > 0 ? n_gen / gen_seconds : 0.0;
-    // Close the accounting: the tail after the last decode belongs to no row, so add it here.
-    loop_overhead_s += secs(loop_mark, clock_t_::now());
-    s.loop_overhead_s_per_token = n_gen ? loop_overhead_s / n_gen : 0.0;
-    s.n_prompt = n_prompt - (int) n_common; // tokens actually prefilled this turn (after KV reuse)
-    s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
-    s.load_seconds = im.load_seconds;
-    s.prefill_seconds = prefill_seconds;
-    s.prefill_device_tokens = prefill_device_tokens;
-    s.prefill_device_nodes = prefill_device_nodes;
-    if (im.prefill) {
-        s.prefill_device_read_mib = (double) (im.prefill->arena_read_bytes() - arena_read0) / (1024.0 * 1024.0);
-        s.prefill_device_stall_seconds = im.prefill->arena_stall_seconds() - arena_stall0;
+    void summarize(IMetricsSink * sink) {
+        RunSummary & s = res.summary;
+        s.arch = im.arch;
+        s.n_expert = im.info.n_expert;
+        s.n_generated = n_gen;
+        s.n_predict = n_predict;
+        s.gen_seconds = gen_seconds;
+        s.s_per_token = n_gen ? gen_seconds / n_gen : 0.0;
+        s.tokens_per_second = gen_seconds > 0 ? n_gen / gen_seconds : 0.0;
+        // Close the accounting: the tail after the last decode belongs to no row, so add it here.
+        loop_overhead_s += secs(loop_mark, clock_t_::now());
+        s.loop_overhead_s_per_token = n_gen ? loop_overhead_s / n_gen : 0.0;
+        s.n_prompt = n_prompt - (int) n_common; // tokens actually prefilled this turn (after KV reuse)
+        s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
+        s.load_seconds = im.load_seconds;
+        s.prefill_seconds = prefill_seconds;
+        s.prefill_device_tokens = prefill_device_tokens;
+        s.prefill_device_nodes = prefill_device_nodes;
+        if (im.prefill) {
+            s.prefill_device_read_mib = (double) (im.prefill->arena_read_bytes() - arena_read0) / (1024.0 * 1024.0);
+            s.prefill_device_stall_seconds = im.prefill->arena_stall_seconds() - arena_stall0;
+        }
+        s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
+        s.prefill_read_mib = prefill_tally.read_mib;
+        s.prefill_io_seconds = prefill_tally.io_seconds;
+        s.prefill_stall_seconds = prefill_tally.stall_seconds;
+        s.prefill_mgmt_seconds = prefill_tally.mgmt_seconds;
+        s.majflt_per_token = n_gen ? (double) tally.majflt / n_gen : 0.0;
+        s.cpu_s_per_token = n_gen ? tally.cpu_seconds / n_gen : 0.0;
+        if (moe.enabled) {
+            IExpertSource::Stats st = im.source.stats();
+            s.moe_read_mib = tally.read_bytes / (1024.0 * 1024.0);
+            s.moe_io_seconds = tally.io_seconds;
+            s.moe_io_s_per_token = n_gen ? tally.io_seconds / n_gen : 0.0;
+            s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
+            s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
+            s.moe_flash_wait_s_per_token = moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
+            s.moe_compute_s_per_token = s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token;
+            if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
+            s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
+            s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);
+            s.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
+            s.cache_resizes = st.cache_resizes;
+            s.cache_evictions = st.evictions;
+            s.cache_rereads = st.rereads;
+            const RowSourceStats rs = im.source.row_stats();
+            s.row_table_mib = rs.table_bytes / (1024.0 * 1024.0);
+            s.row_resident_mib = rs.resident_bytes / (1024.0 * 1024.0);
+            s.row_read_mib = rs.bytes_read / (1024.0 * 1024.0);
+            s.row_rows = (long long) rs.rows;
+            s.row_slab_reads = (long long) rs.slab_reads;
+            s.row_evictions = (long long) rs.evictions;
+            s.row_io_errors = (long long) rs.io_errors;
+            s.moe_drain_s_per_token = n_gen ? tally.drain_seconds / n_gen : 0.0;
+            s.moe_adopt_s_per_token = n_gen ? tally.adopt_seconds / n_gen : 0.0;
+            s.token_demand_mib = st.token_demand_bytes / (1024.0 * 1024.0);
+            s.layer_demand_mib = st.layer_demand_bytes / (1024.0 * 1024.0);
+            s.moe_spec_read_mib = ((long long) st.spec_read_bytes - prev_spec_bytes) / (1024.0 * 1024.0);
+            s.moe_spec_experts = st.spec_experts - prev_spec_experts;
+            s.moe_spec_useful = st.spec_useful - prev_spec_useful;
+        }
+        s.experts_routed = im.hook->experts_routed() - prev_routed;
+        s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
+        s.experts_reranked = im.hook->experts_reranked() - prev_reranked;
+        s.experts_substituted = im.hook->experts_substituted() - prev_substituted;
+        // Per-turn deltas, like every other generation figure here: a warm session's counters are
+        // cumulative, and an acceptance rate averaged over earlier prompts would describe none of them.
+        s.mtp_drafted = im.mtp_drafted - mtp0_drafted;
+        s.mtp_accepted = im.mtp_accepted - mtp0_accepted;
+        s.mtp_decodes = im.mtp_decodes - mtp0_decodes;
+        s.drafted_steps = im.drafted_steps - mtp0_drafted_steps;
+        s.mtp_draft_s_per_token = n_gen > 0 ? (im.mtp_draft_seconds - mtp0_draft_s) / n_gen : 0.0;
+        s.mtp_draft_read_mib = (double) (im.mtp_draft_read_bytes - mtp0_draft_bytes) / (1024.0 * 1024.0);
+        if (moe.predict_log) {
+            // Session totals, not a per-generation delta: these are an accuracy estimate, and every
+            // turn's routings are equally valid samples of it. See RunSummary.
+            s.predict_stale = im.hook->predict_stale();
+            s.predict_stale2 = im.hook->predict_stale2();
+            s.predict_prev = im.hook->predict_prev();
+            s.predict_self = im.hook->predict_self();
+            s.predict_stale_by_layer = im.hook->predict_stale_by_layer();
+            s.predict_prev_by_layer = im.hook->predict_prev_by_layer();
+            s.predict_self_by_layer = im.hook->predict_self_by_layer();
+            s.predict_unscored = im.hook->predict_unscored();
+        }
+        if (moe.route_ahead > 0) {
+            // Session totals, like the probe's: every overridden routing is an equally valid sample of
+            // the perturbation the flag buys, whichever turn produced it.
+            s.route_ahead_overridden = im.hook->route_ahead_overridden();
+            s.route_ahead_passthrough = im.hook->route_ahead_passthrough();
+            s.route_ahead_slots = im.hook->route_ahead_slots();
+            s.route_ahead_hits = im.hook->route_ahead_hits();
+            s.route_ahead_gemv_ns = im.hook->route_ahead_gemv_ns();
+            s.route_ahead_gemv_jobs = im.hook->route_ahead_gemv_jobs();
+            s.route_ahead_issue_ns = im.hook->route_ahead_issue_ns();
+            s.route_ahead_wd_ns = im.hook->route_ahead_wd_ns();
+        }
+        if (sink) sink->on_summary(s);
     }
-    s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
-    s.prefill_read_mib = prefill_tally.read_mib;
-    s.prefill_io_seconds = prefill_tally.io_seconds;
-    s.prefill_stall_seconds = prefill_tally.stall_seconds;
-    s.prefill_mgmt_seconds = prefill_tally.mgmt_seconds;
-    s.majflt_per_token = n_gen ? (double) tally.majflt / n_gen : 0.0;
-    s.cpu_s_per_token = n_gen ? tally.cpu_seconds / n_gen : 0.0;
-    if (moe.enabled) {
-        IExpertSource::Stats st = im.source.stats();
-        s.moe_read_mib = tally.read_bytes / (1024.0 * 1024.0);
-        s.moe_io_seconds = tally.io_seconds;
-        s.moe_io_s_per_token = n_gen ? tally.io_seconds / n_gen : 0.0;
-        s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
-        s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
-        s.moe_compute_s_per_token =
-            s.s_per_token - (moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token) - s.moe_mgmt_s_per_token;
-        if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
-        s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
-        s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);
-        s.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
-        s.cache_resizes = st.cache_resizes;
-        s.cache_evictions = st.evictions;
-        s.cache_rereads = st.rereads;
-        const RowSourceStats rs = im.source.row_stats();
-        s.row_table_mib = rs.table_bytes / (1024.0 * 1024.0);
-        s.row_resident_mib = rs.resident_bytes / (1024.0 * 1024.0);
-        s.row_read_mib = rs.bytes_read / (1024.0 * 1024.0);
-        s.row_rows = (long long) rs.rows;
-        s.row_slab_reads = (long long) rs.slab_reads;
-        s.row_evictions = (long long) rs.evictions;
-        s.row_io_errors = (long long) rs.io_errors;
-        s.moe_drain_s_per_token = n_gen ? tally.drain_seconds / n_gen : 0.0;
-        s.moe_adopt_s_per_token = n_gen ? tally.adopt_seconds / n_gen : 0.0;
-        s.token_demand_mib = st.token_demand_bytes / (1024.0 * 1024.0);
-        s.layer_demand_mib = st.layer_demand_bytes / (1024.0 * 1024.0);
-        s.moe_spec_read_mib = ((long long) st.spec_read_bytes - prev_spec_bytes) / (1024.0 * 1024.0);
-        s.moe_spec_experts = st.spec_experts - prev_spec_experts;
-        s.moe_spec_useful = st.spec_useful - prev_spec_useful;
-    }
-    s.experts_routed = im.hook->experts_routed() - prev_routed;
-    s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
-    s.experts_reranked = im.hook->experts_reranked() - prev_reranked;
-    s.experts_substituted = im.hook->experts_substituted() - prev_substituted;
-    // Per-turn deltas, like every other generation figure here: a warm session's counters are
-    // cumulative, and an acceptance rate averaged over earlier prompts would describe none of them.
-    s.mtp_drafted = im.mtp_drafted - mtp0_drafted;
-    s.mtp_accepted = im.mtp_accepted - mtp0_accepted;
-    s.mtp_decodes = im.mtp_decodes - mtp0_decodes;
-    s.drafted_steps = im.drafted_steps - mtp0_drafted_steps;
-    s.mtp_draft_s_per_token = n_gen > 0 ? (im.mtp_draft_seconds - mtp0_draft_s) / n_gen : 0.0;
-    s.mtp_draft_read_mib = (double) (im.mtp_draft_read_bytes - mtp0_draft_bytes) / (1024.0 * 1024.0);
-    if (moe.predict_log) {
-        // Session totals, not a per-generation delta: these are an accuracy estimate, and every
-        // turn's routings are equally valid samples of it. See RunSummary.
-        s.predict_stale = im.hook->predict_stale();
-        s.predict_stale2 = im.hook->predict_stale2();
-        s.predict_prev = im.hook->predict_prev();
-        s.predict_self = im.hook->predict_self();
-        s.predict_stale_by_layer = im.hook->predict_stale_by_layer();
-        s.predict_prev_by_layer = im.hook->predict_prev_by_layer();
-        s.predict_self_by_layer = im.hook->predict_self_by_layer();
-        s.predict_unscored = im.hook->predict_unscored();
-    }
-    if (moe.route_ahead > 0) {
-        // Session totals, like the probe's: every overridden routing is an equally valid sample of
-        // the perturbation the flag buys, whichever turn produced it.
-        s.route_ahead_overridden = im.hook->route_ahead_overridden();
-        s.route_ahead_passthrough = im.hook->route_ahead_passthrough();
-        s.route_ahead_slots = im.hook->route_ahead_slots();
-        s.route_ahead_hits = im.hook->route_ahead_hits();
-        s.route_ahead_gemv_ns = im.hook->route_ahead_gemv_ns();
-        s.route_ahead_gemv_jobs = im.hook->route_ahead_gemv_jobs();
-        s.route_ahead_issue_ns = im.hook->route_ahead_issue_ns();
-        s.route_ahead_wd_ns = im.hook->route_ahead_wd_ns();
-    }
-    if (sink) sink->on_summary(s);
 
-    // One non-partial parse of the finished generation, shared by the returned text and the history
-    // commit below. They asked the same question of the same string and each paid a full parse for
-    // it; a reasoning model's answer is the whole turn's output, so that was not a small double.
-    common_chat_msg final_msg;
-    bool final_parsed = false;
-    if (chat_on && !prefilled_answer) {
-        try {
-            final_msg = common_chat_parse(gen, /*is_partial*/ false, parse_params);
-            final_parsed = true;
-        } catch (const std::exception & e) {
-            detail::warn_parse_failed_once(e.what());
+    // The answer, and the conversation it leaves: committed, or — on cancel — rolled back.
+    void finish() {
+        // One non-partial parse of the finished generation, shared by the returned text and the
+        // history commit below. They asked the same question of the same string and each paid a full
+        // parse for it; a reasoning model's answer is the whole turn's output, so that was not a
+        // small double.
+        common_chat_msg final_msg;
+        bool final_parsed = false;
+        if (chat_on && !prefilled_answer) {
+            try {
+                final_msg = common_chat_parse(gen, /*is_partial*/ false, parse_params);
+                final_parsed = true;
+            } catch (const std::exception & e) {
+                detail::warn_parse_failed_once(e.what());
+            }
+        }
+        if (final_parsed) {
+            res.generated_text = final_msg.content;
+            res.reasoning_text = final_msg.reasoning_content;
+            res.tool_calls = detail::from_common_tool_calls(final_msg.tool_calls);
+        } else {
+            // Not chat, a prefilled turn (the stream IS the answer), or a parse that threw: the raw
+            // generation stands on its own, exactly as shown_view would have reported it.
+            res.generated_text = gen;
+        }
+
+        if (res.cancelled) {
+            // Undo the whole turn (KV, fed tokens, and the pushed user message) so the conversation
+            // is left exactly as it was before this prompt and stays continuable.
+            rollback_turn();
+        } else if (chat_on) {
+            // Commit the assistant turn to the running conversation. Parsing separates a thinking
+            // model's reasoning from the answer; the next turn re-renders history from these
+            // messages. Reuses the parse above. A prefilled turn has no turn header in the stream to
+            // parse — the generation is the answer verbatim — and is committed without the prefill,
+            // so history holds a normal assistant message and the next turn re-renders cleanly
+            // whatever this turn's think setting was. A parse that threw falls back the same way.
+            common_chat_msg assistant;
+            if (final_parsed)
+                assistant = std::move(final_msg);
+            else
+                assistant.content = gen;
+            assistant.role = "assistant";
+            im.chat_history.push_back(assistant);
         }
     }
-    if (final_parsed) {
-        res.generated_text = final_msg.content;
-        res.reasoning_text = final_msg.reasoning_content;
-        res.tool_calls = detail::from_common_tool_calls(final_msg.tool_calls);
-    } else {
-        // Not chat, a prefilled turn (the stream IS the answer), or a parse that threw: the raw
-        // generation stands on its own, exactly as shown_view would have reported it.
-        res.generated_text = gen;
-    }
+};
 
-    if (res.cancelled) {
-        // Undo the whole turn (KV, fed tokens, and the pushed user message) so the conversation
-        // is left exactly as it was before this prompt and stays continuable.
-        rollback_turn();
-    } else if (chat_on) {
-        // Commit the assistant turn to the running conversation. Parsing separates a thinking
-        // model's reasoning from the answer; the next turn re-renders history from these messages.
-        // Reuses the parse above. A prefilled turn has no turn header in the stream to parse — the
-        // generation is the answer verbatim — and is committed without the prefill, so history holds
-        // a normal assistant message and the next turn re-renders cleanly whatever this turn's think
-        // setting was. A parse that threw falls back the same way.
-        common_chat_msg assistant;
-        if (final_parsed)
-            assistant = std::move(final_msg);
-        else
-            assistant.content = gen;
-        assistant.role = "assistant";
-        im.chat_history.push_back(assistant);
-    }
+RunResult Session::generate(const GenerateRequest & req,
+                            const std::function<void(const TokenMetrics &)> & on_token,
+                            IMetricsSink * sink) {
+    Impl & im = *impl_;
+    im.begin_generate(req, sink);
+
+    RunResult res;
+    Impl::Turn turn(im, req, res);
+    if (!turn.render_prompt()) return res;
+    if (!turn.tokenize_prompt()) return res;
+    turn.reuse_kv_prefix();
+    // Every exit from here on leaves the weights on the host (see PlacementGuard).
+    Impl::PlacementGuard placement_guard{im};
+    if (!turn.prefill()) return res; // a failure, or a cancel already rolled back
+    if (!turn.decode(on_token, sink)) return res;
+    turn.trim_speculative_kv();
+    ++im.turn; // this turn is written; label the next one apart
+    turn.summarize(sink);
+    turn.finish();
     return res;
 }
 

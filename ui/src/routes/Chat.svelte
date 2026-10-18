@@ -64,7 +64,15 @@
         <button type="button" onclick={() => chat.newChat()}>New chat</button>
       </p>
     {:else if chat.error}
-      <p class="banner error" role="alert">{chat.error}</p>
+      <p class="banner error" role="alert">
+        {chat.error}
+        {#if chat.noModel}
+          <a href="#/models">Models</a>
+        {:else if chat.retryable}
+          <button type="button" onclick={() => chat.retry()} disabled={chat.busy}>Send again</button>
+        {/if}
+        <button type="button" onclick={() => chat.clearError()}>Dismiss</button>
+      </p>
     {/if}
     <LiveLine />
     <Composer />

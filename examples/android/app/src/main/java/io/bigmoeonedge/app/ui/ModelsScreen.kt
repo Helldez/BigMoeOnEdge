@@ -26,7 +26,6 @@ import io.bigmoeonedge.app.data.SafImport
 import io.bigmoeonedge.app.data.catalogStatus
 import io.bigmoeonedge.app.data.gbLabel
 import io.bigmoeonedge.app.engine.Engine
-import io.bigmoeonedge.app.engine.LocalModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -34,9 +33,9 @@ import java.io.File
 import java.util.Locale
 
 /**
- * Models: what is on the phone (the server's own directory, and the other places a model can sit),
- * the catalog to get one from, and the escape hatches for any other gguf. Loading is one tap; with
- * auto-plan on, the engine measures the phone and chooses the run before it loads.
+ * Models: what is on the phone (the server lists its own directory and the other places the app
+ * started it with), the catalog to get one from, and the escape hatches for any other gguf. Loading
+ * is one tap; with auto-plan on, the engine measures the phone and chooses the run before it loads.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,7 +46,6 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
     val snackbar = remember { SnackbarHostState() }
 
     var progress by remember { mutableStateOf<Map<String, ModelDownloader.Progress>>(emptyMap()) }
-    var elsewhere by remember { mutableStateOf<List<File>>(emptyList()) }
     var refreshKey by remember { mutableStateOf(0) }
     var deleteTarget by remember { mutableStateOf<List<File>?>(null) }
     var importStatus by remember { mutableStateOf<String?>(null) }
@@ -57,10 +55,9 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
 
     fun say(msg: String) = scope.launch { snackbar.showSnackbar(msg) }
 
-    // The server lists its directory; the scan finds what sits outside it (dev flavor, old builds).
+    // The server lists every place a model can sit; a refresh asks it again.
     LaunchedEffect(refreshKey, engine.serverUp) {
         Engine.refreshModels()
-        elsewhere = withContext(Dispatchers.IO) { ModelManager.listModelsElsewhere(context) }
     }
     // Follow the app's own downloads: a landed one is finalized before it is reported.
     LaunchedEffect(Unit) {
@@ -86,9 +83,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
 
     val models = engine.models
     val loadedPath = engine.info?.model?.path
-    val present = remember(models, elsewhere) {
-        models?.local?.map { it.name }.orEmpty().toSet() + ModelManager.allGgufNames(context)
-    }
+    val present = remember(models) { models?.fileNames.orEmpty() }
 
     Scaffold(
         modifier = modifier,
@@ -122,7 +117,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
             // ── on the phone ──
             Text("On this phone", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
             val local = models?.local.orEmpty()
-            if (local.isEmpty() && elsewhere.isEmpty()) {
+            if (local.isEmpty()) {
                 Text(
                     if (models == null) "Waiting for the engine…" else ModelManager.pushHint(),
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -137,26 +132,15 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                         if (m.shards > 1) "${m.shards} shards" else null,
                         if (!m.complete) "incomplete" else null,
                         if (m.complete && !m.streamable) "not a MoE this build streams" else null,
+                        m.dir.takeIf { it.isNotEmpty() && it != models?.modelsDir },
                     ).joinToString(" · "),
                     loaded = m.path == loadedPath,
                     loadable = m.complete && engine.serverUp && !engine.loading,
                     onLoad = { scope.launch { Engine.load(m.path).onFailure { say(it.message ?: "load failed") } } },
                     onUnload = { scope.launch { Engine.unload() } },
-                    onDelete = {
-                        val dir = File(models?.modelsDir ?: ModelManager.internalModelsDir(context).absolutePath)
-                        deleteTarget = groupFiles(dir, m)
-                    },
-                )
-            }
-            elsewhere.forEach { f ->
-                LocalModelRow(
-                    name = f.name,
-                    detail = "${gbLabel(f.length())} · ${f.parentFile?.absolutePath}",
-                    loaded = f.absolutePath == loadedPath,
-                    loadable = engine.serverUp && !engine.loading,
-                    onLoad = { scope.launch { Engine.load(f.absolutePath).onFailure { say(it.message ?: "load failed") } } },
-                    onUnload = { scope.launch { Engine.unload() } },
-                    onDelete = if (ModelManager.isAppDeletable(f)) ({ deleteTarget = listOf(f) }) else null,
+                    // Every file the server listed for it: a split set deletes as a unit, never
+                    // leaving a 40 GB tail, and the app never has to know how shards are named.
+                    onDelete = m.files.map(::File).takeIf { ModelManager.canDelete(it) }?.let { files -> { deleteTarget = files } },
                 )
             }
 
@@ -177,6 +161,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                     },
                     onCancel = { ModelDownloader.cancelEntry(context, e) },
                     onDelete = {
+                        // The app's own downloads, in its models directory; a copy elsewhere is listed above.
                         val dir = ModelManager.internalModelsDir(context)
                         deleteTarget = e.files.map { File(dir, it.name) }.filter { it.isFile }
                     },
@@ -233,7 +218,8 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                 TextButton(shape = RectangleShape, 
                     onClick = {
                         scope.launch {
-                            withContext(Dispatchers.IO) { files.forEach { runCatching { it.delete() } } }
+                            val kept = withContext(Dispatchers.IO) { files.filter { it.exists() && !it.delete() } }
+                            if (kept.isNotEmpty()) say("Could not delete ${kept.joinToString { it.name }}")
                             deleteTarget = null
                             refreshKey++
                         }
@@ -244,13 +230,6 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
             dismissButton = { TextButton(shape = RectangleShape, onClick = { deleteTarget = null }) { Text("Cancel") } },
         )
     }
-}
-
-/** Every file of a model the server listed: a split set deletes as a unit, never leaving a 40 GB tail. */
-private fun groupFiles(dir: File, m: LocalModel): List<File> {
-    if (m.shards <= 1) return listOf(File(m.path)).filter { it.isFile }
-    val stem = m.name.replace(Regex("-00001-of-(\\d{5})\\.gguf$"), "")
-    return (1..m.shards).map { i -> File(dir, String.format(Locale.US, "%s-%05d-of-%05d.gguf", stem, i, m.shards)) }.filter { it.isFile }
 }
 
 @Composable

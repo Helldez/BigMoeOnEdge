@@ -135,9 +135,9 @@ private:
 
 } // namespace
 
-IMetricsSink * make_csv_metrics_sink(const std::string & path) {
+std::unique_ptr<IMetricsSink> make_csv_metrics_sink(const std::string & path) {
     std::FILE * f = std::fopen(path.c_str(), "w");
-    return f ? new CsvMetricsSink(f) : nullptr;
+    return f ? std::make_unique<CsvMetricsSink>(f) : nullptr;
 }
 
 } // namespace bmoe

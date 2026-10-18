@@ -13,8 +13,6 @@
 namespace bmoe {
 
 namespace {
-constexpr size_t kAlign = 4096; // O_DIRECT alignment, as the streamer uses
-
 // Whether the device runs a matmul whose weight is `type`, shaped like `w`, from its own buffer. Asked
 // of the device itself rather than read off a list, so any backend answers for its own kernels. The
 // probe weight is allocated: a backend may remember an unallocated weight (Hexagon notes it for
@@ -87,10 +85,9 @@ DeviceExpertArena::~DeviceExpertArena() {
     for (void * s : staging_)
         if (s) pio::aligned_free(s);
     free_slots();
-    for (ggml_backend_buffer_t b : dense_buf_)
-        if (b) ggml_backend_buffer_free(b);
-    for (ggml_backend_buffer_t b : dense_data_buf_)
-        if (b) ggml_backend_buffer_free(b);
+    for (auto & slots : dense_slot_)
+        for (ggml_backend_buffer_t b : slots)
+            if (b) ggml_backend_buffer_free(b);
     if (dense_ctx_) ggml_free(dense_ctx_);
 }
 
@@ -113,7 +110,7 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
     n_slots_ = n_slots;
 
     // The bound layers, in graph order, and the distinct (type, shape) variants of each projection.
-    std::vector<const ggml_tensor *> variants[MoeRecipe::max_exps];
+    std::vector<const ggml_tensor *> variants[ExpertLayout::max_slots];
     k_of_layer_.assign(layers.size(), -1);
     uint64_t max_nb2 = 0;
     for (size_t il = 0; il < layers.size(); ++il) {
@@ -122,7 +119,7 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
         Layer a;
         a.il = (int) il;
         int np = 0;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             ggml_tensor * t = L.proj[p].tensor;
             if (!t) break; // recipes fill their slots from the front
             if (n_expert_ == 0) n_expert_ = (int) t->ne[2];
@@ -167,7 +164,7 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
     // below, so it must divide evenly.
     ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
     const size_t align = ggml_backend_buft_get_alignment(buft);
-    size_t region_off[MoeRecipe::max_exps] = {};
+    size_t region_off[ExpertLayout::max_slots] = {};
     size_t slot_size = 0;
     size_t n_tensors = 0;
     for (int p = 0; p < n_proj_; ++p) {
@@ -208,7 +205,7 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
     }
     slot_bytes_ = (size_t) n_slots_ * slot_size;
 
-    for (int p = 0; p < MoeRecipe::max_exps; ++p) {
+    for (int p = 0; p < ExpertLayout::max_slots; ++p) {
         variants_[p] = variants[p];
         region_off_[p] = region_off[p];
     }
@@ -221,16 +218,19 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
     // Held for the session, or built for each prefill and given back after it (see acquire()).
     if (!on_demand_ && !build_slots(err)) return false;
 
+    // Staging is filled by every shard's reader, so it is aligned for the coarsest of them.
+    size_t stage_align = pio::vm_page();
     for (const std::string & sp : shard_paths) {
         readers_.push_back(std::unique_ptr<FileReader>(new FileReader()));
-        if (!readers_.back()->open(sp, threads, direct, kAlign, (size_t) max_nb2 + 2 * kAlign)) {
+        if (!readers_.back()->open(sp, threads, direct, (size_t) max_nb2)) {
             err = "cannot open " + sp;
             return false;
         }
+        stage_align = std::max(stage_align, readers_.back()->buffer_align());
     }
     staging_.assign((size_t) threads, nullptr);
     for (int i = 0; i < threads; ++i) {
-        staging_[(size_t) i] = pio::alloc_aligned(kAlign, (size_t) max_nb2);
+        staging_[(size_t) i] = pio::alloc_aligned(stage_align, (size_t) max_nb2);
         if (!staging_[(size_t) i]) {
             err = "cannot allocate loader staging";
             return false;
@@ -289,7 +289,7 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
         }
     }
     for (int d = 0; d < 2; ++d) {
-        ggml_backend_buffer_t * bufs = d ? dense_data_buf_ : dense_buf_;
+        ggml_backend_buffer_t * bufs = dense_slot_[d];
         for (int s = 0; s < 2; ++s) {
             if (need[d][s] == 0) continue;
             bufs[s] = ggml_backend_buft_alloc_buffer(buft, need[d][s] + align);
@@ -319,7 +319,14 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
         // Fresh allocators per layer: every layer of a parity starts at the same offset, on purpose.
         ggml_tallocr ta[2] = {};
         for (int d = 0; d < 2; ++d) {
-            ggml_backend_buffer_t b = (d ? dense_data_buf_ : dense_buf_)[il % 2];
+            // One table, indexed the way init_dense sized it. This replaced picking between two member
+            // arrays with a conditional; the two are the same selection and the same layout, so it
+            // changes nothing. It was made while gate G17 (nemotron_h_moe) aborted under ASan+UBSan
+            // with a recurrent layer in the wrong parity's slot, and the gate passed afterwards; the
+            // cause of that abort was NOT found and this rewrite cannot have been it, so treat a
+            // return of that failure as the same open fault (a race in the arena, or an
+            // uninitialised read), not as a regression of this line.
+            ggml_backend_buffer_t b = dense_slot_[d][il % 2];
             if (b) ta[d] = ggml_tallocr_new(b);
         }
         DenseLayer & D = dense_[il];
@@ -431,7 +438,7 @@ void DeviceExpertArena::free_slots() {
     for (int s = 0; s < max_slots; ++s) {
         if (slot_buf_[s]) ggml_backend_buffer_free(slot_buf_[s]);
         slot_buf_[s] = nullptr;
-        for (int p = 0; p < MoeRecipe::max_exps; ++p)
+        for (int p = 0; p < ExpertLayout::max_slots; ++p)
             twins_[s][p].clear();
     }
     if (ctx_) ggml_free(ctx_);

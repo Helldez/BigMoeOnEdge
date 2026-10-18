@@ -65,6 +65,15 @@ if(TARGET bmoe_server_core)
     add_test(NAME server_logic COMMAND bmoe_server_test)
 endif()
 
+# bmoe-server's engine host: loads, turns, cancel and unload across threads, and which failures
+# close the session, over a scripted session behind the host's seam (server/hosted_session.h).
+# No model.
+if(TARGET bmoe_server)
+    add_executable(bmoe_engine_host_test engine_host_test.cpp)
+    target_link_libraries(bmoe_engine_host_test PRIVATE bmoe_server)
+    add_test(NAME engine_host COMMAND bmoe_engine_host_test)
+endif()
+
 # release_file_mappings: on Windows it must find and drop this process's own view + section of a
 # file and leave the placeholders in place; on POSIX it must report unsupported and touch nothing.
 add_executable(bmoe_mapping_release_test mapping_release_test.cpp)
@@ -84,6 +93,20 @@ add_executable(bmoe_stall_union_test stall_union_test.cpp)
 target_link_libraries(bmoe_stall_union_test PRIVATE bmoe_core)
 target_include_directories(bmoe_stall_union_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 add_test(NAME stall_union COMMAND bmoe_stall_union_test)
+
+# How llama.cpp's tensor and graph-node names are read, and the fitter's expert-override patterns.
+# Pure string rules over the conventions every reader shares, so they run without a model.
+add_executable(bmoe_tensor_names_test tensor_names_test.cpp)
+target_link_libraries(bmoe_tensor_names_test PRIVATE bmoe_core)
+target_include_directories(bmoe_tensor_names_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
+add_test(NAME tensor_names COMMAND bmoe_tensor_names_test)
+
+# Which tensors of a file are its routed experts, from their shapes and the declared expert count:
+# every layout the gates run, the companions that share a name but not a rank, and the refusals.
+# Pure, so it runs without a model; the gates then prove each layout streams byte-identical.
+add_executable(bmoe_expert_layout_test expert_layout_test.cpp)
+target_link_libraries(bmoe_expert_layout_test PRIVATE bmoe_core)
+add_test(NAME expert_layout COMMAND bmoe_expert_layout_test)
 
 # The CSV `# summary` trailer serialization. Drives the sink directly with a filled RunSummary —
 # no model, no llama.cpp — so the emitted key names and units are pinned by a test rather than by

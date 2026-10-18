@@ -41,14 +41,20 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
+      # The tag is text someone typed. It reaches the shell as data (env), never spliced into the
+      # script, and only a plain ref name goes on to the steps after this one.
       - name: Resolve tag
         id: tag
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
-          fi
+          if [ "$EVENT" = "workflow_dispatch" ]; then T="$INPUT_TAG"; else T="$RELEASE_TAG"; fi
+          case "$T" in
+            ''|*[!A-Za-z0-9._-]*) echo "not a plain tag name: '$T'"; exit 1 ;;
+          esac
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
 
       # Before anything is built or signed: an APK whose engine reports another release's number
       # is not the one this tag names.
@@ -57,7 +63,9 @@ jobs:
           ref: ${{ steps.tag.outputs.tag }}
           persist-credentials: false
       - name: Version matches the tag
-        run: bash scripts/check-version.sh "${{ steps.tag.outputs.tag }}"
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: bash scripts/check-version.sh "$TAG"
 
   # The engine with the Hexagon NPU, Vulkan and OpenCL backends, built by
   # scripts/build-hexagon-android.sh inside upstream's Snapdragon toolchain image (the Hexagon SDK
@@ -142,17 +150,18 @@ jobs:
           find "$JNI" -name '*.so' ! -name 'libggml-htp-*.so' -print0 |
             xargs -0 "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded
 
+      # The secrets travel as environment variables and are written with printf '%s', so a `$`, a
+      # backtick or a quote in a password is a character of the password, not shell syntax.
       - name: Materialize signing keystore
         env:
           KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
-          echo "$KEYSTORE_B64" | base64 -d > examples/android/bmoe-release.jks
-          cat > examples/android/keystore.properties <<EOF
-          storeFile=bmoe-release.jks
-          storePassword=${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-          keyAlias=${{ secrets.RELEASE_KEY_ALIAS }}
-          keyPassword=${{ secrets.RELEASE_KEY_PASSWORD }}
-          EOF
+          printf '%s' "$KEYSTORE_B64" | base64 -d > examples/android/bmoe-release.jks
+          printf '%s\n' "storeFile=bmoe-release.jks" "storePassword=$STORE_PASSWORD" \
+            "keyAlias=$KEY_ALIAS" "keyPassword=$KEY_PASSWORD" > examples/android/keystore.properties
 
       - name: Build APKs
         run: |
@@ -178,9 +187,10 @@ jobs:
         if: github.event_name == 'release' || inputs.upload
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
         run: |
           OUT=examples/android/app/build/outputs/apk/dev
-          gh release upload "${{ needs.tag.outputs.tag }}" \
+          gh release upload "$TAG" \
             "$OUT/release/app-dev-release.apk" \
             "$OUT/debug/app-dev-debug.apk" \
             --clobber

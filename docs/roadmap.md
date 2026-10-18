@@ -96,6 +96,29 @@ that comes out with its reasons, for prefill and decode apart. It goes in
 [hardware-planning.md](hardware-planning.md) and, in a short form, in the README, so a reader
 sees in one picture why the same rules give a different plan on a phone, a laptop and a desktop.
 
+**Measuring and loading, made readable.** A load in auto mode already measures the chosen model
+on a quiet machine: the model in use is unloaded first, then the machine is measured, then the
+model loads. What the person sees is one fixed line, "measuring the machine, then loading", for
+tens of seconds on a phone, then "loading the model", with no progress for either: the probes
+report nothing while they run and the load does not use llama.cpp's progress callback. Owed, in
+every UI and from server events rather than from each UI, in this order:
+
+- **Each step of the measurement, with its result and its duration.** The probes report through a
+  callback the core takes, the CLI prints it, the server publishes it, and a UI lists whatever
+  arrives (the drive's read rate, the memory the run may hold, each compute device with its figure
+  or the reason it was left out), naming no probe, device or platform. The durations are also the
+  first record of what measuring costs, which nothing keeps today.
+- **The load's own progress, and a way to cancel it.** llama.cpp's progress callback for its part,
+  and the engine's own for the dense loader and the prefill device's slots, where the time goes
+  when the file is mapped.
+- **A notice before measuring.** What is measured and why, how long it took last time on this
+  machine, that the device is busy meanwhile and that other heavy apps skew the result.
+- **Measurements kept, if the durations say it pays.** The machine's facts and each device's
+  figure for a given quantization, kept by the server and used again until the build, the
+  backends, the devices or the drive change, with the date shown and a button to measure again.
+  The memory headroom and the placement are read at every load. Most of the measuring time may be
+  the per-device matmuls, which depend on the model, so this waits for the first step's numbers.
+
 Not now: a cache that resizes itself at run time. It is the agnostic answer to the available-memory
 problem and it stays behind the static readings until those have been measured.
 
@@ -115,7 +138,7 @@ useful cache, but throughput on the ones that do now depends on compute.
 
 This section used to open by asserting that effective O_DIRECT bandwidth sits well below the
 drive's ceiling *because the routed slices are scattered*. That premise was measured on
-2026-07-20 with `tools/bmoe-iobench` and **does not hold on the reference device**
+2026-07-20 with `bmoe-iobench` (`tools/iobench.cpp`) and **does not hold on the reference device**
 ([bench-data/2026-07-20-cache-replay/iobench-ceiling.md](bench-data/2026-07-20-cache-replay/iobench-ceiling.md)):
 
 - Random O_DIRECT reads **saturate at 2 lanes** (~2460 MiB/s cold); 8, 16 and 32 lanes are
@@ -233,12 +256,12 @@ byte-correct, it just cannot hit. See [cache-sizing.md](cache-sizing.md).
 
 ## More architectures
 
-`qwen3moe`, `qwen2moe`, `qwen35moe` (the hybrid attention/SSM family, e.g. Qwen3.6-35B-A3B),
-`gemma4` (merged `ffn_gate_up_exps` plus shared experts), OpenAI `gpt-oss` (MXFP4, purely
-routed) and `nemotron_h_moe` (gate-less `ffn_up_exps`/`ffn_down_exps`) are supported; other
-`build_moe_ffn` models are one recipe row each. The remaining frontier is architectures whose
-routing node is not the shared `ffn_moe_topk` — custom gating, which the capture/stream hook
-would need to learn. See [adding-a-model.md](adding-a-model.md).
+Any MoE llama.cpp loads whose experts come in one of the three layouts it builds (split, fused
+`ffn_gate_up_exps`, gate-less) streams with no change here, since which tensors are the routed
+experts is read from the file rather than from a table
+([which-models-stream.md](which-models-stream.md)); each layout has a byte-identity gate. The
+remaining frontier is architectures whose routing node is not the shared `ffn_moe_topk` — custom
+gating, which the capture/stream hook would need to learn.
 
 ## Steering the routing toward what is resident — built, measured on the desktop
 
