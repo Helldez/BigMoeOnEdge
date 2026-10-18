@@ -9,6 +9,7 @@
 // engine stays env-free. The flag always wins over the env value.
 #include "bmoe/config.h"
 #include "bmoe/params.h"
+#include "bmoe/probe.h"
 #include "bmoe/auto_plan.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
@@ -876,6 +877,8 @@ int main(int argc, char ** argv) {
     if (seen.count("dense-on-device")) auto_plan = true; // a request to the planner, as before
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
+    // Every backend beside the executable, once, before anything asks ggml about devices.
+    register_backends();
     if (!probe_device.empty()) {
         std::string line;
         if (!probe_device_child(cfg.model_path.c_str(), probe_device, line)) {

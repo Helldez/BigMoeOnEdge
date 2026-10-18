@@ -176,6 +176,27 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
                       " in a way the arena cannot address one expert at a time";
                 return false;
             }
+            // A single expert is placed at e * (dev / n_expert) and must fit inside that share. A
+            // backend that pads every tensor by a fixed slack (OpenCL reserves carve room on each
+            // quantized tensor) makes one expert's allocation larger than its share, and the last
+            // expert would reach past the slot; ggml aborts on that rather than returning, so it is
+            // refused here, where the load can still fall back to the host.
+            {
+                ggml_init_params sp{};
+                sp.mem_size = ggml_tensor_overhead() * 2;
+                sp.no_alloc = true;
+                ggml_context * c = ggml_init(sp);
+                ggml_tensor * one = ggml_new_tensor_3d(c, v->type, v->ne[0], v->ne[1], 1);
+                const size_t one_size = ggml_backend_buft_get_alloc_size(buft, one);
+                ggml_free(c);
+                if (one_size > dev / (size_t) n_expert_) {
+                    err = std::string("the device pads a single expert of ") + v->name +
+                          " past its share of the whole tensor (" + std::to_string(one_size) + " against " +
+                          std::to_string(dev / (size_t) n_expert_) +
+                          " bytes), so the arena cannot address one expert at a time";
+                    return false;
+                }
+            }
             biggest = std::max(biggest, dev);
             n_tensors += 1 + (size_t) n_expert_;
         }

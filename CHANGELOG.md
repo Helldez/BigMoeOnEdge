@@ -7,6 +7,58 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Every release carries its compute backends as modules, on every OS.** The engine knows no
+  backend at compile time: each is a library ggml loads from the executable's own directory at
+  start-up, the CPU one once per instruction-set tier with the best picked on the machine, and a
+  module whose driver library is missing is not loaded instead of keeping the binary from
+  starting (`BMOE_BACKEND_MODULES`, on by default; iOS stays linked, as the platform demands).
+  The APK carries Vulkan and OpenCL beside Hexagon, the Linux and Windows archives Vulkan, the
+  macOS one Metal; a module built with another toolchain (CUDA, HIP, SYCL) and dropped beside
+  the binary loads like the shipped ones. The planner enumerates whatever registered, measures
+  each device in a process of its own and arms a prefill device by the rule that arms Metal and
+  the NPU, with no engine change (`docs/backends.md`, `docs/hardware-planning.md`). `--overlap`
+  survives the move: the fork's expert-ready hook is reached through the CPU backend's registry
+  (`ggml_backend_reg_get_proc_address`) rather than linked, so the fork stays one commit and a
+  build on stock upstream refuses `--overlap` with the reason instead of failing to link; the
+  server's default and its `overlap_available` follow the backend that loaded
+  (`docs/seam.md`). The gates that prove `--overlap` (G4, G5b, S2) skip themselves where the
+  hook is absent, and with `-DBMOE_GATES_REQUIRE_HOOK=ON`, which CI's gate job passes, fail
+  instead, so a CPU module without the hook cannot pass the suite unseen. Windows gains the
+  device probe in a process of its own, so a GPU driver that
+  dies there ends the probe and not the server. `scripts/build-portable.sh` is gone: the default
+  build is that build. The modules share the engine's C runtime, so the Windows archives carry
+  the C++ runtime DLLs beside the binaries and still start on a machine that never installed the
+  Visual C++ Redistributable. The Linux x86_64 archive builds on Ubuntu 22.04 with LunarG's
+  Vulkan SDK and runs where the previous ones did; the aarch64 one builds on 24.04 for the newest
+  ARM tier, as llama.cpp's release does, and needs glibc 2.38 or newer.
+- **Android: the app's launcher names no backend.** The engine's linker path is its own
+  directory, then `/system/lib64`, then `/vendor/lib64`: the OpenCL module links the phone's own
+  `libOpenCL.so` where there is one (through the Khronos loader instead, the two deadlock,
+  measured on a Snapdragon phone) and is not loaded otherwise. The vendor directory has to be on
+  the path and not reached through a symlink: a process the app starts links in the linker's
+  default namespace, which refuses a vendor library from anywhere else, and the OpenCL and
+  Hexagon modules then fail to load without a word. Last, it shadows no system library. The two
+  Hexagon variables stay set (`GGML_HEXAGON_HOSTBUF`, `GGML_HEXAGON_OPPOLL`); only that backend
+  reads them. `scripts/android-gpu-deps.sh` fetches the Khronos headers
+  and the OpenCL link-time library at pinned tags, for the release recipe and for CI, which
+  cross-compiles both GPU modules on every PR; the release-apk workflow gains a dry run from any
+  ref that keeps the APKs as an artifact. Run on a Snapdragon-class phone: OpenCL is 9x the cores
+  at prefill width and wrong, Vulkan is right in fp32 and no faster than the cores, so the plan
+  arms neither and keeps arming the NPU where the ledger has room; the figures are in
+  `docs/npu-prefill.md`, and the crash that followed the NPU load there is #264.
+  `docs/backends.md` also corrects one cell: OpenCL's `buffer_from_host_ptr` is wired to a
+  function that declines, not to an implementation.
+- **A prefill device is confirmed on the model before the session keeps it** (`--prefill-verify`,
+  on by default). After the load the session prefills a fixed text, 64 tokens or the device's
+  narrowest graph where that is wider, on the host and on the device and keeps the device only if
+  its top next token matches the host's in at least 90% of the positions; otherwise it is handed
+  back like a device that failed to open, and a plan's device leaves the prefill on the CPU. A
+  check that cannot run (a text that does not tokenize, no graph that wide within what one graph
+  may return) leaves the device as set and says so: not confirming is no evidence against it. The
+  planner's synthetic matmul cannot see a fault only the model's
+  activations trigger: a phone GPU's half-precision Vulkan prefill took a 1070-token text's
+  perplexity from 32.4 to 711 445. A laptop iGPU agrees in 98%. Three short prefills at load; the
+  check judges correctness, not speed (`docs/hardware-planning.md`).
 - **A security policy and the forms a contributor expects.** `SECURITY.md` says how to report a
   problem privately and what is in scope; a bug-report issue form and a pull-request checklist
   (gates, changelog and docs in the same PR, no hand-written tunable) join the benchmark form.
@@ -127,8 +179,6 @@ Semantic Versioning.
   in the web UI and in the app alike, from the `prefill_tps` the server already sends. The prefill
   counts the tokens the turn read, which with the conversation reused from the KV cache is the new
   message. `docs/screens.md` gives the line.
-
-### Changed
 - **No table of architectures: which tensors are the routed experts is read from the file.** A
   routed expert weight is a block's `.weight` with three dimensions whose third is the expert count
   the file declares, which is how llama.cpp lays out every weight it hands to the expert matmul; the
@@ -145,6 +195,42 @@ Semantic Versioning.
   without streaming from a dense model.
 
 ### Fixed
+- **The page two experts' slices share is released with the last of the two.** A slice is
+  committed through the slack after it, which is the head page of the next slice; eviction
+  released only the pages between the two boundaries, so once an expert had been resident the
+  head page of its right neighbour stayed committed until the buffer was freed, outside the
+  cache ledger: one page per expert and projection, up to 72 MiB on a 48-layer, 128-expert
+  model. A boundary page now goes when neither neighbour is resident or being read.
+- **The device agreement check is llama.cpp's own.** The planner compared a device's matmul with
+  the host's under a private bound five times stricter than the normalized mean squared error
+  `test-backend-ops` allows a matmul (5e-4), and refused a laptop iGPU whose half-precision
+  prefill leaves the model's perplexity unchanged (32.58 against 32.46). The measure and the bound
+  are now upstream's; the confirmation above catches what a matmul cannot.
+- **A device that pads a single expert past its share of the slot is refused, not aborted on.**
+  The OpenCL backend adds carve slack to every quantized tensor's allocation, so one expert's
+  allocation outgrows its stride and the last expert reached past the slot, where ggml aborts
+  inside the allocation instead of returning. The arena checks it when it sizes the slots and
+  refuses with the reason, where a planned device still falls back to the host.
+- **The capacity fitter's placement is applied only where every device it used has memory of its
+  own.** The check was whether any device on the machine did. On a phone an NPU, whose buffers
+  come from a kernel allocator and states no size, passed it, and the fitter's answer, 41 layers
+  and 2106 MiB on the GPU beside it, was applied although that GPU's memory is the host's and the
+  plan's ledger held none of it. The devices given bytes are now the ones asked, each with a stated
+  size; where one shares the host's memory the placement is quoted and not applied, as it already
+  was where every device does.
+- **A prefill device is charged its own compute buffer, not the fitter's sum.** The fitter projects
+  compute buffers for the devices it places layers on, and the planner charged their sum to
+  whichever device would prefill. On a phone that put a GPU's 467 MiB on the NPU beside it, which
+  the fitter never places on, and took it from the expert cache (904 MiB instead of about 1370, and
+  one expert slot instead of two). Each device's part is now kept, and the prefill device pays its
+  own.
+- **Every buffer the engine allocates for tensor data keeps a page readable past its end.** One of
+  ggml's CPU kernels (Q6_K, on cores with SVE and int8 matmul) loads 14 bytes past a block's end,
+  which llama.cpp's own buffers absorb. A dense weight in a buffer sized to it exactly, with a guard
+  page after it, faulted: seen on a phone, at random, once the release carried that CPU variant.
+  The dense copies, the expert slots and cache regions, the row-gathered tables and the probe's
+  host copy now end with the OS's page of slack, committed wherever the platform faults on a page
+  that was only reserved.
 - **A turn sent the moment a load is announced waits for the load.** `EngineHost::load()` reads
   "loading" before its thread has taken the generation lock, and a request in that gap took the lock
   first, found no session and answered 503 for a model seconds from ready. A turn now gives the lock

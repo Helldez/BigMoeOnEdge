@@ -189,6 +189,18 @@ Placement Placement::at_width(uint32_t width) const {
     return q;
 }
 
+uint64_t Placement::device_compute_of(const std::string & device) const {
+    // Each device's part is taken at the projected width and kept in proportion as the sum moves
+    // along its slope: the slope was measured for the sum, not per device.
+    uint64_t part = 0, projected = 0;
+    for (size_t i = 0; i < projected_devices.size() && i < projected_compute_bytes.size(); ++i) {
+        projected += projected_compute_bytes[i];
+        if (projected_devices[i] == device) part += projected_compute_bytes[i];
+    }
+    if (part == 0 || projected == 0) return 0;
+    return (uint64_t) ((double) device_compute_bytes * (double) part / (double) projected);
+}
+
 bool PlanRequest::is_pinned(const char * knob) const {
     for (const std::string & p : pinned)
         if (p == knob) return true;
@@ -463,9 +475,9 @@ void apply_placement(Planning & s) {
     if (!placement.fitted) {
         s.note("placement", "none", placement.shared_memory_placement ? Source::Derived : Source::Unprobed,
                placement.shared_memory_placement
-                   ? "the capacity fitter ran and its answer was set aside: every device here reads this "
-                     "host's own memory, so 'what fits where' has one pool and no answer. Everything is on "
-                     "the host, which is what it already was"
+                   ? "the capacity fitter ran and its answer was set aside: the device it placed layers on "
+                     "reads this host's own memory, so 'what fits where' has one pool and no answer. "
+                     "Everything is on the host, which is what it already was"
                    : "the capacity fitter was not run, so no layer is placed on a device: everything is on "
                      "the host");
         return;
@@ -852,7 +864,12 @@ bool own_pool(const ComputeDevice * dev) {
 void charge_prefill(const Planning & s, const ComputeDevice * dev, AllocationInputs & in, int slots, bool on_demand) {
     if (own_pool(dev)) return;
     const uint64_t experts = (uint64_t) slots * s.model.largest_expert_layer_bytes;
-    const uint64_t rest = 2 * s.model.largest_layer_dense_bytes + s.placement.device_compute_bytes;
+    // The compute buffer is the one the fitter projected for THIS device. A device it never places
+    // layers on has none in the projection, and charging it the others' - a GPU's 467 MiB charged to
+    // an NPU beside it on a phone - is memory the expert cache never gets. One the profile does not
+    // know is charged the whole sum, the reading that cannot overcommit.
+    const uint64_t compute = dev ? s.placement.device_compute_of(dev->name) : s.placement.device_compute_bytes;
+    const uint64_t rest = 2 * s.model.largest_layer_dense_bytes + compute;
     in.device_bytes = on_demand ? rest : rest + experts;
     in.device_turn_bytes = on_demand ? experts : 0;
     in.device_locked = !dev || dev->charges_lockable();

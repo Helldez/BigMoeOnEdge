@@ -272,11 +272,12 @@ bool DenseWeights::read_anonymous() {
         }
         void * buf = nullptr;
         pio::PinnedAlloc pa;
+        const size_t held = (size_t) d.size + pio::tensor_tail_slack(); // readable past the last block
         // A tensor larger than one buffer may be was never going to fit and says nothing about
         // the store's total: it takes an ordinary buffer alone, and the tensors after it still pin.
-        const bool too_big = pinned && d.size > pio::pinned_max_bytes();
+        const bool too_big = pinned && held > pio::pinned_max_bytes();
         bool pin_this = pinned && !too_big;
-        if (pin_this && !pio::pinned_alloc((size_t) d.size, &pa)) {
+        if (pin_this && !pio::pinned_alloc(held, &pa)) {
             log_printf(LogLevel::Warn,
                        "pinned dense buffer %llu MiB refused after %llu MiB (per-buffer ceiling %llu MiB); "
                        "the rest of the dense set is ordinary memory",
@@ -292,7 +293,7 @@ bool DenseWeights::read_anonymous() {
             if (mode_ == DenseWeightsMode::Pinned) pin_refused_bytes_ += d.size;
             // Aligned for the reader that fills it, and to a page for the sensor and the drop that
             // later clip this buffer to pages.
-            buf = pio::alloc_aligned(readers_[(size_t) d.file_idx]->buffer_align(), (size_t) d.size);
+            buf = pio::alloc_aligned(readers_[(size_t) d.file_idx]->buffer_align(), held);
             if (!buf) {
                 log_printf(LogLevel::Error, "dense buffer alloc %llu failed", (unsigned long long) d.size);
                 return false;
