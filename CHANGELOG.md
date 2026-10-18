@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The iOS app, on the shared framework.** `examples/ios/app` is the five screens (chat, models,
+  plan, settings, metrics, `docs/screens.md`) in SwiftUI, in the pixel language of
+  `docs/design.md`, light and dark. An app on iOS may not start a process, so it links
+  `bmoe_server` and runs `run()` on a thread of its own, then speaks the same HTTP API on loopback
+  as the web UI and the Android app, with a random key per launch; Serve on the network restarts
+  it on all addresses with a key kept in the keychain. The app keeps the conversations, downloads
+  the catalog's files with the system's background transfers (resumed after a break or a
+  relaunch), imports a `.gguf` from Files, adds a model from Hugging Face through the server's
+  find, check and add, and writes a metrics CSV per loaded model. Its client side is
+  `examples/ios/BmoeKit`, a Swift package with no UI, tested with `swift test` on the Mac (26
+  tests: the event stream, the chat protocol, decide, the parameter table, models, the plan,
+  conversations, metrics files, downloads); CI runs them and compiles both apps for the
+  simulator. Built and run in the simulator only: a device run is still owed (#235).
+- **`server::Embedding`, for a server inside an app** (`server/server.h`). `run()` takes the
+  network a repository is read through (the iOS app hands it `URLSession`, where the desktop runs
+  `curl`) and hands back the way to stop the server, so a change of address restarts it in the
+  same process. Without one, the server does what the executable does. The server library now
+  builds for iOS: opening a browser is a no-op there.
+
+### Changed
+- `examples/ios` holds the app and the harness side by side: the harness moved to
+  `examples/ios/harness`, the memory entitlements to `examples/ios/memory.entitlements`, shared by
+  both. `scripts/build-ios.sh` builds both (`BMOE_IOS_TARGETS` picks one; `BMOE_IOS_APP_BUNDLE_ID`
+  names the app on a device).
+
 ## [0.31.0] - 2026-10-18
 
 ### Added

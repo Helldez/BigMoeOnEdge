@@ -25,18 +25,18 @@ The machines are described generically on purpose.
 | | Android (arm64) | macOS (arm64) | Linux (x86_64, aarch64) | Windows (x86_64) | iOS |
 |---|---|---|---|---|---|
 | **Engine and `bmoe-cli`** | Shipped, in the APK | Shipped | Shipped | Shipped | Built, compiled into the harness app |
-| **`bmoe-server` and the web UI** | Shipped, in the APK as a child process of the app | Shipped, desktop archive | Shipped, desktop archive | Shipped, desktop archive | Not built: an app may not start a process, and the in-process mode is owed |
-| **Native app** | Measured: the Compose app, a client of the server | - (web UI in the browser) | - (web UI in the browser) | - (web UI in the browser) | Owed: a measuring harness only, not a chat app |
+| **`bmoe-server` and the web UI** | Shipped, in the APK as a child process of the app | Shipped, desktop archive | Shipped, desktop archive | Shipped, desktop archive | Built into the app, run on a thread of its own (no web UI: the app is the UI) |
+| **Native app** | Measured: the Compose app, a client of the server | - (web UI in the browser) | - (web UI in the browser) | - (web UI in the browser) | Built: the SwiftUI app, a client of the server in its own process; run in the simulator only |
 | **Planner (`--auto`)** | Measured, in the app's load path | Measured on one laptop | Built, not run on Linux hardware | Owed: one documented run | Built, run in the simulator only |
 | **Device probes in a process of their own** | Yes | Yes | Yes | Yes, built; owed a run | - (no second process) |
-| **CI** | Engine cross-compiled and the APK packaged, on PRs and tags | Compiled and smoke-tested, on PRs and tags | Built, byte-identity gates and UI tests, on every push | Compiled only, on PRs and tags | Compiled for the simulator, on PRs and tags; packaged by the release workflow |
+| **CI** | Engine cross-compiled and the APK packaged, on PRs and tags | Compiled and smoke-tested, on PRs and tags | Built, byte-identity gates and UI tests, on every push | Compiled only, on PRs and tags | App and harness compiled for the simulator and the app's client package tested, on PRs and tags; the harness packaged by the release workflow |
 | **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends as modules | CLI and desktop archives, with Metal | CLI and desktop archives, both architectures, with Vulkan | CLI and desktop archives, with Vulkan | Harness app for the simulator, unsigned, built by CI |
 | **Run on hardware** | Measured: a 12 GB phone, Snapdragon class, UFS 4.x | Measured: a 16 GB Apple-silicon laptop | Owed: the gates only, no throughput run | Measured: an x86 laptop, 8 cores, 16 GB, NVMe | Owed: the simulator only |
 
 Sources: [application-framework.md](application-framework.md) for the server on each platform,
 [hardware-planning.md](hardware-planning.md) for the planner and the isolated probes,
 [community-benchmarks.md](community-benchmarks.md) for the measured machines, and
-[`examples/ios`](../examples/ios/README.md) for the harness.
+[`examples/ios`](../examples/ios/README.md) for the app and the harness.
 
 ## Compute backends by platform
 
@@ -80,9 +80,9 @@ platform: the device is measured, and the streamer's own memory is not yet hande
   a GPU; the cache lock, the residency sample, the byte-identity gates in its CI job, one
   documented planner run, and a signed installer. Tracked in
   [#234](https://github.com/Helldez/BigMoeOnEdge/issues/234).
-- **iOS.** The release carries the harness for the simulator; a device, an Apple development
-  team and the memory entitlements, none of which this
-  project has, then an app on the shared framework running the server in-process. Tracked in
+- **iOS.** The app on the shared framework builds and runs in the simulator, and the release
+  carries the harness for it; a device, an Apple development team and the memory entitlements,
+  none of which this project has, are what a run on an iPhone or iPad needs. Tracked in
   [#235](https://github.com/Helldez/BigMoeOnEdge/issues/235) as a call for a contributor.
 - **Every platform.** The planner's owed measurements and the loop that compares its prediction
   with what each run measured, tracked in [#237](https://github.com/Helldez/BigMoeOnEdge/issues/237).

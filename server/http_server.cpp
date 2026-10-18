@@ -283,10 +283,11 @@ struct App {
         std::string models_dir,
         std::string catalog,
         std::string added,
-        std::string scratch)
+        std::string scratch,
+        const std::function<std::unique_ptr<HttpFetch>(const std::string &)> & fetch)
         : opt(std::move(o)), store(server_defaults(), std::move(settings_path)), host(bus),
           lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), std::move(added), bus),
-          net(curl_fetch(scratch)), scratch_dir(std::move(scratch)) {}
+          net(fetch ? fetch(scratch) : curl_fetch(scratch)), scratch_dir(std::move(scratch)) {}
 
     json config_object(const json * rejected = nullptr) {
         const RunConfig cfg = store.config();
@@ -884,6 +885,10 @@ void register_guards(httplib::Server & svr, const Options & o) {
 namespace bmoe::server {
 
 int run(int argc, char ** argv) {
+    return run(argc, argv, Embedding{});
+}
+
+int run(int argc, char ** argv, const Embedding & embedding) {
     Options o;
     const int rc = parse_args(argc, argv, o);
     if (rc >= 0) return rc;
@@ -928,7 +933,7 @@ int run(int argc, char ** argv) {
     const std::string added = (fs::u8path(data_dir) / "added-models.json").u8string();
     const std::string scratch = (fs::u8path(data_dir) / "tmp").u8string();
 
-    App app(o, settings, models_dir, catalog, added, scratch);
+    App app(o, settings, models_dir, catalog, added, scratch, embedding.fetch);
     for (const std::string & w : app.store.load())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     for (const std::string & w : app.lib.warnings())
@@ -984,7 +989,16 @@ int run(int argc, char ** argv) {
     }
     if (o.open_browser || (argc == 1 && platform::started_by_double_click())) platform::open_url(url);
 
+    // A stop ends what keeps a worker busy first (a generation, every event stream), since the
+    // server's stop waits for its workers.
+    if (embedding.listening)
+        embedding.listening([&svr, &app] {
+            app.host.cancel();
+            app.bus.close_all();
+            svr.stop();
+        });
     svr.listen_after_bind();
+    if (embedding.listening) embedding.listening(nullptr);
     app.bus.close_all();
     return 0;
 }

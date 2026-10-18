@@ -217,14 +217,17 @@ jobs:
         run: cd build && ctest --output-on-failure
 
   ios-harness:
-    # Compile-check the iOS paths: the engine and bmoe-cli inside the harness app, for the
-    # simulator, unsigned. Nothing is run; the simulator's kernel and memory are the runner's.
+    # Compile-check the iOS paths: the app (the server library and the SwiftUI screens) and the
+    # harness (bmoe-cli inside an app), for the simulator, unsigned, plus the app's client package
+    # tested on the runner. Nothing is run in a simulator; its kernel and memory are the runner's.
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+      - name: BmoeKit tests (the app's client side, on the host)
+        run: swift test --package-path examples/ios/BmoeKit
       - name: Configure & build (examples/ios, simulator)
         run: scripts/build-ios.sh sim
 

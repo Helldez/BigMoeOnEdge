@@ -55,9 +55,10 @@ from options back to every UI.
 archive. In the engine, what Windows lacks: the device probes in a process of their own, the cache
 lock, the byte-identity gates in its CI job, and one documented planner run.
 
-**iOS, with the community.** The harness proves the engine builds and runs there; the app on the
-framework needs a device, an Apple team and the memory entitlements, none of which this project
-has. An issue states what exists, what is needed and what a contributor needs to bring.
+**iOS, with the community.** The app is on the framework: `bmoe_server` runs on a thread inside it
+and the five SwiftUI screens speak to it on loopback, as the other UIs do (`examples/ios`); it
+builds and runs in the simulator. What it owes is a device: a run on an iPhone or iPad, signed by
+an Apple team granted the memory entitlements, none of which this project has (#235).
 
 **One experience, three native UIs.** One written specification for the five screens - chat,
 models, plan, settings, metrics - that each UI follows in its own toolkit: [screens.md](screens.md).

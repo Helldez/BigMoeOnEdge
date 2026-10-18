@@ -241,8 +241,8 @@ Android: `scripts/build-android.ps1` builds the engine and the server for arm64,
 real filesystem (`/data/local/tmp/...`, not `/sdcard`).
 Tests: `cd build && ctest --output-on-failure` (needs `python3` with the `gguf` package).
 
-Android, macOS, Linux and Windows have release builds; iOS builds as a measuring harness
-([`examples/ios`](examples/ios)). On Windows, build with CMake: the script is bash. What each
+Android, macOS, Linux and Windows have release builds; iOS builds as an app on the same server,
+run in the simulator so far, and as a measuring harness ([`examples/ios`](examples/ios)). On Windows, build with CMake: the script is bash. What each
 platform runs, what CI checks on it and what was measured there:
 [docs/platforms.md](docs/platforms.md).
 

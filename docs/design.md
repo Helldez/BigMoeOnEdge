@@ -65,7 +65,10 @@ outline. The launcher icon is the chip on `bg`.
   Pixelify Sans for the title and label styles, and `Shapes` with every corner at 0 dp; the top
   bar carries the mark. Material's ripple and elevation stay, because a phone's touch feedback is
   what the toolkit is for.
-- **iOS**, when it comes: the same hex values as a colour set, the same font, `cornerRadius` 0.
+- **iOS**: the same hex values as colours that follow the system's appearance, the same font
+  (registered from `docs/assets/fonts`), square boxes with the hard shadow as a SwiftUI modifier,
+  the logo drawn from `docs/assets/logo/icon.svg` itself (`examples/ios/app/Sources/Design`). The
+  system's bars and sheets stay, tinted: they are what the toolkit is for.
 
 What is not in the language: gradients, blur, rounded avatars, animated backgrounds, and any
 colour that is not in the table. A screen that needs a sixth colour has a layout problem.
