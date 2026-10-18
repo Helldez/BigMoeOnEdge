@@ -230,6 +230,13 @@ Semantic Versioning.
   without streaming from a dense model.
 
 ### Fixed
+- **The planner counted every block of a hybrid model as a MoE layer on the host.** The fitter's
+  list of layers left on the host speaks in llama.cpp's block indices, and on an architecture
+  where most blocks carry no experts (Nemotron-H, Qwen3.8-Flash-Next, the leading-dense families)
+  the plan read "52 of 23 MoE layers keep their experts on the host" and prorated the expert set
+  by that ratio: 2.3 times the bytes on the host, in the regime line and the cache arithmetic. The
+  model profile now names the blocks that carry experts (`moe_layers`), the placement probe keeps
+  only those in its host list, and the planner counts the list against them either way.
 - **The page two experts' slices share is released with the last of the two.** A slice is
   committed through the slack after it, which is the head page of the next slice; eviction
   released only the pages between the two boundaries, so once an expert had been resident the

@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace bmoe {
 
@@ -73,6 +74,10 @@ struct ModelProfile {
     // silently wrong on exactly the architectures that motivated the distinction.
     uint32_t n_layer = 0;     // blocks in the file: llama.cpp's own layer indices
     uint32_t n_moe_layer = 0; // of those, the ones carrying expert tensors — the ones that stream
+    // Which blocks those are, ascending, in llama.cpp's indices: what a placement expressed in
+    // blocks (n_gpu_layers, an override pattern) is read against, so a count of "layers on the
+    // host" is a count of expert-carrying ones. Empty when the file was not read.
+    std::vector<uint32_t> moe_layers;
 
     uint32_t n_expert = 0;      // experts per MoE layer
     uint32_t n_expert_used = 0; // routed per token (top-k)
