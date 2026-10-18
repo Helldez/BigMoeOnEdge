@@ -7,6 +7,12 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **A model's name is enough: the Hugging Face field searches.** Text that is not a repository id
+  or URL (`POST /api/hf/models` answers `400` with the code `not_a_repo`) is searched for on the
+  site (`POST /api/hf/search`: repositories with gguf files whose name matches, the most
+  downloaded first, a gated one marked), and the repositories found are offered to pick from, in
+  the web UI and in the app alike. The query is percent-encoded by the server and goes to the one
+  endpoint the server was started with, as every other request does.
 - **A model from any Hugging Face repository, with its header read before the download.** The
   Models screen of the web UI and of the Android app takes a repository id or URL and the server
   does three things in turn (`POST /api/hf/models`, `/inspect`, `/add`, `docs/server-api.md`):

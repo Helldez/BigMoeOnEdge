@@ -103,6 +103,34 @@ data class HfFacts(
     }
 }
 
+/** One repository a search found (`POST /api/hf/search`). */
+data class HfRepoHit(val id: String, val downloads: Long, val likes: Long, val modified: String, val gated: Boolean) {
+    companion object {
+        fun of(o: JSONObject): HfRepoHit = HfRepoHit(
+            id = o.getString("id"),
+            downloads = o.optLong("downloads", 0),
+            likes = o.optLong("likes", 0),
+            modified = o.optString("modified", ""),
+            gated = o.optBoolean("gated", false),
+        )
+    }
+}
+
+data class HfSearch(val query: String, val repos: List<HfRepoHit>) {
+    companion object {
+        fun of(o: JSONObject): HfSearch = HfSearch(
+            query = o.optString("query", ""),
+            repos = o.optJSONArray("repos")?.let { a -> (0 until a.length()).map { i -> HfRepoHit.of(a.getJSONObject(i)) } }.orEmpty(),
+        )
+    }
+}
+
+/** The body of a search: the text as typed, a token where given. */
+fun hfSearchBody(query: String, token: String? = null): JSONObject = JSONObject().apply {
+    put("query", query.trim())
+    if (!token.isNullOrBlank()) put("token", token.trim())
+}
+
 /** The body of the three requests: the repository as typed, the model's name where one is meant, a token where given. */
 fun hfRequestBody(repo: String, name: String? = null, token: String? = null): JSONObject = JSONObject().apply {
     put("repo", repo.trim())

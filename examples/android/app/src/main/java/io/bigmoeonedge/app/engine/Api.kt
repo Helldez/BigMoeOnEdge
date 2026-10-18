@@ -19,6 +19,9 @@ class ApiException(val status: Int, message: String, val code: String = "") : IO
 
         /** The code a turn is refused with when no model is loaded: the fix is on Models. */
         const val CODE_NO_MODEL = "no_model"
+
+        /** The text was not a repository id or URL: the screen searches for it instead. */
+        const val CODE_NOT_A_REPO = "not_a_repo"
     }
 }
 
@@ -67,6 +70,7 @@ class Api(private val baseUrl: String, private val apiKey: String) {
     fun models(): JSONObject = getJson("/api/models", QUICK_MS)
 
     // ── a model from a Hugging Face repository (the server lists, inspects and adds; the app downloads) ──
+    fun hfSearch(body: JSONObject): JSONObject = send("POST", "/api/hf/search", body, SLOW_MS)
     fun hfModels(body: JSONObject): JSONObject = send("POST", "/api/hf/models", body, SLOW_MS)
     fun hfInspect(body: JSONObject): JSONObject = send("POST", "/api/hf/inspect", body, SLOW_MS)
     fun hfAdd(body: JSONObject): JSONObject = send("POST", "/api/hf/add", body, SLOW_MS)

@@ -243,6 +243,57 @@ bool parse_hf_tree(const json & tree, std::vector<HfModel> & out, std::string & 
     return true;
 }
 
+namespace {
+
+// RFC 3986: the unreserved characters as they are, every other byte as %XX.
+std::string percent_encode(const std::string & text) {
+    static const char * hex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : text) {
+        if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
+            out += (char) c;
+        } else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+std::string hf_search_url(const std::string & endpoint, const std::string & query, int limit) {
+    return endpoint + "/api/models?search=" + percent_encode(query) +
+           "&filter=gguf&sort=downloads&direction=-1&limit=" + std::to_string(limit);
+}
+
+bool parse_hf_search(const json & hits, std::vector<HfRepoHit> & out, std::string & error) {
+    out.clear();
+    if (!hits.is_array()) {
+        error = hits.is_object() && hits.contains("error") && hits["error"].is_string()
+                    ? hits["error"].get<std::string>()
+                    : "the search answer is not a list";
+        return false;
+    }
+    for (const json & h : hits) {
+        if (!h.is_object() || !h.contains("id") || !h["id"].is_string()) continue;
+        HfRepoHit r;
+        r.id = h["id"].get<std::string>();
+        if (!valid_repo(r.id)) continue; // a name this server could not list anyway
+        if (h.contains("downloads") && h["downloads"].is_number_unsigned())
+            r.downloads = h["downloads"].get<uint64_t>();
+        if (h.contains("likes") && h["likes"].is_number_unsigned()) r.likes = h["likes"].get<uint64_t>();
+        if (h.contains("lastModified") && h["lastModified"].is_string())
+            r.modified = h["lastModified"].get<std::string>();
+        // The site says "auto", "manual" or false; anything that is not false or absent gates.
+        if (h.contains("gated"))
+            r.gated = !(h["gated"].is_boolean() && !h["gated"].get<bool>()) && !h["gated"].is_null();
+        out.push_back(std::move(r));
+    }
+    return true;
+}
+
 std::string hf_tree_url(const std::string & endpoint, const HfRef & ref) {
     return endpoint + "/api/models/" + ref.repo + "/tree/" + ref.revision + "?recursive=true";
 }

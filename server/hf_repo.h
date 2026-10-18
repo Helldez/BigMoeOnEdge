@@ -65,6 +65,23 @@ CatalogEntry hf_catalog_entry(const std::string & endpoint, const HfRef & ref, c
 // Whether a catalog id names an entry made here.
 bool is_hf_catalog_id(const std::string & id);
 
+// One repository a search found.
+struct HfRepoHit {
+    std::string id; // "owner/name"
+    uint64_t downloads = 0;
+    uint64_t likes = 0;
+    std::string modified; // the site's lastModified, as given
+    bool gated = false;   // a token is needed to read it
+};
+
+// The search URL on `endpoint`: repositories with gguf files whose name matches `query`
+// (percent-encoded here), the most downloaded first, at most `limit`.
+std::string hf_search_url(const std::string & endpoint, const std::string & query, int limit);
+
+// The repositories a search listing holds (the JSON array `/api/models?search=` answers). An
+// entry without an id is skipped. False with the reason when the JSON is not a listing.
+bool parse_hf_search(const json & hits, std::vector<HfRepoHit> & out, std::string & error);
+
 // What the numbers mean on this machine, in one sentence each, from facts alone: no platform,
 // no name. `budget` is what this process may hold resident (0 when unknown).
 struct FitInputs {
