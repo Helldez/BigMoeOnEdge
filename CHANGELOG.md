@@ -130,6 +130,9 @@ Semantic Versioning.
   measuring, and measurements kept between loads if the recorded durations show it pays.
 
 ### Changed
+- `docs/roadmap.md`: how the server will keep a hybrid model's conversation through a tool loop
+  (replay the assistant's own tokens, then a recurrent checkpoint per turn), after issue #240 showed
+  Qwen3.8-Flash-Next recomputing the whole history on every tool call.
 - **llama.cpp moves to upstream master of 2026-10-18** (523 commits past the 2026-09-26 base): the
   fork branch `bmoe/expert-ready-hook-1810-dl` carries the same single expert-ready-hook commit,
   in the variant that also answers the CPU registry, so the backend-module builds reach it too.
@@ -695,9 +698,6 @@ Semantic Versioning.
   Hexagon, Metal); the rest are listed as unknown, with what each use of a device asks of a backend.
 
 ### Changed
-- `docs/roadmap.md`: how the server will keep a hybrid model's conversation through a tool loop
-  (replay the assistant's own tokens, then a recurrent checkpoint per turn), after issue #240 showed
-  Qwen3.8-Flash-Next recomputing the whole history on every tool call.
 - **The README says what `--auto` is and how it decides.** A paragraph in Features, a quickstart
   line, and two schemas under "How it works": what happens on each token, and how a plan is
   derived from the model and the machine. The roadmap no longer lists the choice of the prefill
