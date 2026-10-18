@@ -123,18 +123,21 @@ the UI's own.
 - **From the table** (`GET /api/params`): the groups in the table's order, each row with its
   label, its help text, its control by type (a switch for `bool`, a menu for `choice`, a field
   with its unit for `int` and `float`, `auto` accepted where the row says so, the model's name for
-  the one `path` a client may set), and the bounds the server validates. The basic rows of each
-  group make the recommended configuration; the advanced, experimental and debug rows live in one
-  section of their own, folded by default, grouped the same way and each marked with its level,
-  with the caveat that they were measured once or on one device and can slow a run down or change
-  the reply.
+  the one `path` a client may set). Under a number: its unit, the name of a special value when the
+  field holds one ("= off"), and the typical range ("usually 2 to 8"), never the type's
+  limit; the limits appear only when a value is refused. The help's first sentence is always shown,
+  the rest and the special values on demand. With a plan in force, a row whose plan value differs
+  offers it. The basic rows of each group make the recommended configuration; the advanced,
+  experimental and debug rows live in one section of their own, folded by default, grouped the
+  same way and each marked with its level, with the caveat that they were measured once or on one
+  device and can slow a run down or change the reply. Each row appears once.
 - **Where a value came from.** A value the person set is marked ("set by you") and can be reset
   to the server's default; a value a plan set is marked as the plan's. A row whose value changes
   the reply is marked as such. A row fixed while a model is loaded says "applies on reload", and a
   change to one raises a banner with Reload.
 - **A configuration that does not validate** is kept (a form mid-edit is often briefly invalid),
   shown with the server's reason, and a load is refused until it does.
-- **The UI's own**: on the phone, Serve on the network with the key shown and copyable, Metrics
+- **The UI's own**: on the phone, Serve on the network with the address on the local network and the key shown and copyable, Metrics
   CSV, Stop/Start engine; on the desktop, nothing yet (the key and the address are launch
   options). Never an engine parameter.
 
