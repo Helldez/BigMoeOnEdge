@@ -141,8 +141,8 @@ jobs:
 
             $EXE -m path/to/model.gguf --moe-stream --overlap --dense-weights anon --cache-mb 2000 --io-threads 4 -t 8 -n 64 --chatml --no-think -p "Explain MoE routing."
 
-          -m is the only required flag; $EXE --help lists the rest and $EXE --list-archs the
-          supported MoE architectures. Portable build: x86_64 assumes AVX2, aarch64 assumes
+          -m is the only required flag; $EXE --help lists the rest. Any MoE model llama.cpp
+          loads streams (docs/which-models-stream.md in the repository). Portable build: x86_64 assumes AVX2, aarch64 assumes
           armv8.2-a+dotprod+fp16. If it fails to start on your CPU, build from source with
           scripts/build-host.sh in the repository, one command.
 
