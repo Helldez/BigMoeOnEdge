@@ -109,6 +109,8 @@ struct RunSummary {
     // the run was capable of and not only what it did: a MoE arch that ran without streaming is the
     // baseline, not a measurement of this engine (see the CLI's mode line).
     std::string arch;
+    // The file's routed expert count, 0 for a dense model: with arch, what the run could have streamed.
+    int n_expert = 0;
 
     int n_generated = 0;
     // The answer's budget this turn: the request's n_predict, or less when the context had less

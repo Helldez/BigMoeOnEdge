@@ -41,28 +41,19 @@ int main() {
         check(tn::block_layer("blk.12x.attn_q.weight") == -1, "block_layer: rejects an index with a tail");
     }
 
-    // ── expert tensors, by the recipe ────────────────────────────────────────────────
+    // ── block weights, by suffix ─────────────────────────────────────────────────────
     {
-        const MoeRecipe * split = find_moe_recipe("qwen3moe");
-        const MoeRecipe * fused = find_moe_recipe("gemma4");
-        check(split && fused, "recipes for a split and a fused layout exist");
-        if (split && fused) {
-            int il = -1;
-            check(tn::expert_slot("blk.3.ffn_up_exps.weight", *split, il) == 1 && il == 3,
-                  "expert_slot: a split projection's slot and layer");
-            il = -1;
-            check(tn::expert_slot("blk.0.ffn_gate_up_exps.weight", *fused, il) == 0 && il == 0,
-                  "expert_slot: a fused projection");
-            check(tn::expert_slot("blk.3.ffn_down_exps.scale", *split, il) == -1,
-                  "expert_slot: a companion scale stays resident");
-            check(tn::expert_slot("blk.3.ffn_up_exps.weightx", *split, il) == -1,
-                  "expert_slot: the .weight tail is exact");
-            check(tn::expert_slot("blk.3.ffn_up_shexp.weight", *split, il) == -1,
-                  "expert_slot: a shared expert is not a routed one");
-            check(tn::expert_slot("blk.3.ffn_gate_up_exps.weight", *split, il) == -1,
-                  "expert_slot: a suffix the recipe does not name");
-            check(tn::expert_slot("ffn_up_exps.weight", *split, il) == -1, "expert_slot: outside a block");
-        }
+        int il = -1;
+        check(tn::weight_suffix("blk.3.ffn_up_exps.weight", il) == "ffn_up_exps" && il == 3,
+              "weight_suffix: a block weight's suffix and layer");
+        il = -1;
+        check(tn::weight_suffix("blk.0.ffn_gate_up_exps.weight", il) == "ffn_gate_up_exps" && il == 0,
+              "weight_suffix: a fused projection");
+        check(tn::weight_suffix("blk.3.ffn_down_exps.scale", il).empty(),
+              "weight_suffix: a companion scale is not a weight");
+        check(tn::weight_suffix("blk.3.ffn_up_exps.weightx", il).empty(), "weight_suffix: the .weight tail is exact");
+        check(tn::weight_suffix("blk.3.weight", il).empty(), "weight_suffix: a bare tail names no tensor");
+        check(tn::weight_suffix("ffn_up_exps.weight", il).empty(), "weight_suffix: outside a block");
     }
 
     // ── graph nodes ──────────────────────────────────────────────────────────────────

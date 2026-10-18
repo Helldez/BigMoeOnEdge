@@ -128,6 +128,22 @@ Semantic Versioning.
   counts the tokens the turn read, which with the conversation reused from the KV cache is the new
   message. `docs/screens.md` gives the line.
 
+### Changed
+- **No table of architectures: which tensors are the routed experts is read from the file.** A
+  routed expert weight is a block's `.weight` with three dimensions whose third is the expert count
+  the file declares, which is how llama.cpp lays out every weight it hands to the expert matmul; the
+  shared expert, the router, a per-expert scale and the router's bias all have another rank and fall
+  out by shape (`bmoe/expert_layout.h`, unit-tested). The registry of ten architecture rows
+  (`arch_registry.cpp`, `recipe.h`) is gone, and `--list-archs` with it: of the 57 model builders
+  the pinned llama.cpp routes through `build_moe_ffn`, the engine named 10, and 8 of the rows spelt
+  the same three names. The refusal stays and names its reason: a dense model, a file whose MoE
+  layers disagree on their expert tensors, or one with more than three per layer is refused on the
+  CLI, in the plan and in the server's `streamable` fact, which now comes from the same reading of
+  the file. The three layouts (split, fused, gate-less) keep their byte-identity gates, and a new
+  layout gets a gate, not a row (`docs/which-models-stream.md` replaces `adding-a-model.md`). The
+  CLI's `mode:` line reads the file's expert count (`RunSummary::n_expert`) to tell a MoE run
+  without streaming from a dense model.
+
 ### Fixed
 - **A turn sent the moment a load is announced waits for the load.** `EngineHost::load()` reads
   "loading" before its thread has taken the generation lock, and a request in that gap took the lock

@@ -146,12 +146,18 @@ Every setting, with its values and measurements: [docs/settings.md](docs/setting
 
 ## Supported models
 
+Any MoE model llama.cpp loads: which tensors are the routed experts is read from the file, from
+their shapes and the expert count it declares, so a new architecture upstream needs no change here
+([docs/which-models-stream.md](docs/which-models-stream.md)). The engine refuses to stream a file it
+cannot read that way - a dense model, or a layout the gates have not proved - and says why. The
+table lists the architectures with a byte-identity gate or a measured run behind them.
+
 | Architecture | Reference models | Notes |
 |---|---|---|
 | `qwen3moe` | Qwen3-30B-A3B and siblings | Shipped default, validated below |
 | `qwen35moe` | Qwen3.6-35B-A3B and siblings, Ornith-1.5-35B-A3B | Hybrid attention/SSM stack; routed experts stream unchanged |
 | `qwen2moe` | Qwen2 MoE family | Same layout as qwen3moe |
-| `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | Fused expert layout, handled by its registry row |
+| `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | Fused expert layout |
 | `gpt-oss` | OpenAI gpt-oss-20b / 120b | Purely routed; MXFP4 weights stream unchanged |
 | `nemotron_h_moe` | NVIDIA Nemotron 3 / 3.5 MoE (e.g. Nemotron-3.5-Lightning-30B-A3B) | Gate-less experts (up/down only); hybrid Mamba2/attention stack, optional latent projections and a shared expert stay resident |
 | `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
@@ -160,9 +166,7 @@ Every setting, with its values and measurements: [docs/settings.md](docs/setting
 | `qwen4exp` | Qwen3.8-Flash-Next (125B-A6B), the Qwen4 architecture preview | 512 routed experts + shared; a 51B n-gram embedding table stays mmap'd (see limitations). Runs on the 12 GB test phone with pinned dense weights: ~2 tok/s at UD-IQ3_XXS, 3.5 tok/s at the Q2_K build; upstream support merged in `b10666` |
 
 
-Expert counts and layouts are read from the model file at runtime.
-`bmoe-cli --list-archs` prints the compiled-in set; adding one:
-[docs/adding-a-model.md](docs/adding-a-model.md).
+Expert counts, strides, offsets and the layout itself are read from the model file at load.
 
 ## Benchmarks
 
@@ -276,7 +280,7 @@ management and compute, and `--csv` adds the memory picture. The apps show the s
   [server-api.md](docs/server-api.md): the server every UI talks to, and its HTTP API.
 - [screens.md](docs/screens.md): the five screens every UI shows, specified once.
 - [design.md](docs/design.md): the visual language, pixel, from the logo: palette, type, geometry.
-- [adding-a-model.md](docs/adding-a-model.md): supporting a new MoE architecture.
+- [which-models-stream.md](docs/which-models-stream.md): which models stream, read from the file, and what is refused.
 - [benchmarks.md](docs/benchmarks.md) and [benchmark-method.md](docs/benchmark-method.md):
   results and how they were produced.
 - [community-benchmarks.md](docs/community-benchmarks.md): results on hardware we do not own.

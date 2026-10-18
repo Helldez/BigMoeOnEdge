@@ -27,7 +27,7 @@
 // is wired into the loading path. See bmoe/predict_stats.h.
 #pragma once
 
-#include "bmoe/recipe.h"
+#include "bmoe/expert_layout.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/predict_stats.h"
@@ -56,7 +56,7 @@ namespace bmoe {
 
 class RouterHook {
 public:
-    RouterHook(const MoeRecipe & recipe, int n_layer);
+    RouterHook(const ExpertLayout & layout, int n_layer);
     ~RouterHook(); // joins the prediction worker, if one was started
 
     // Install as ctx_params.cb_eval / cb_eval_user_data before context creation.
@@ -330,11 +330,10 @@ private:
     void close_drop_layer();
     void ctrace_close_segment(int interval_layer, const char * tail_name);
 
-    // Stored by value, not by reference: the caller often constructs us from a temporary
-    // (a `cond ? *ptr : MoeRecipe{}` ternary yields a prvalue even when ptr is non-null),
-    // which would leave a reference member dangling. The struct is just a handful of string
-    // literal pointers, so copying is cheap and keeps the suffixes valid for our lifetime.
-    MoeRecipe recipe_;
+    // Which tensors are the routed experts, and in which slot: read from the file before the load
+    // (bmoe/expert_layout.h). By value, so it outlives whatever the caller read it into; a layout
+    // that is not ok (streaming off, or a file refused) matches no tensor and nothing binds.
+    ExpertLayout layout_;
     int n_layer_ = 0;
     bool capturing_ = false;
     IExpertSource * source_ = nullptr;  // non-null → stream mode

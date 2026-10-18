@@ -18,9 +18,10 @@ updated.
 We use both phases:
 
 **Capture phase** (one warm-up decode). `ask` is called for every node, so we scan each
-node's `src[]` for expert weight tensors (`blk.<il>.<suffix>.weight`, where the suffixes
-come from the arch's recipe — `ffn_{gate,up,down}_exps` for the split layout, a fused
-`ffn_gate_up_exps` for others) and record the live `ggml_tensor*`. We return false
+node's `src[]` for expert weight tensors (`blk.<il>.<suffix>.weight`, where the suffixes are
+the file's own: its 3-D block weights indexed by its expert count, read before the load —
+`ffn_{gate,up,down}_exps` in the split layout, a fused `ffn_gate_up_exps` in others) and record
+the live `ggml_tensor*`. We return false
 throughout — capture observes, it does not isolate. `ggml_tensor` is a public struct, so
 reading `->name`, `->ne`, `->nb` and writing `->data` is public API surface.
 
@@ -257,9 +258,9 @@ Either way the gates are the enforcement. The fragility is not the public
 API but the *internal naming conventions* the seam attaches to — the tensor suffixes and
 the `ffn_moe_topk` node name are how llama.cpp happens to build MoE graphs today, not a
 guaranteed contract, so upstream can rename or restructure them (Gemma 4's fused
-`ffn_gate_up_exps` is one such evolution we absorbed with a recipe row). The gates are the
-enforcement: a rename breaks byte-identity before merge instead of silently corrupting
-output. Each supported architecture adds one more gate to keep green across a bump.
+`ffn_gate_up_exps` is one such evolution, absorbed with no change since the layout is read off
+the file's shapes). The gates are the enforcement: a rename breaks byte-identity before merge
+instead of silently corrupting output. Each expert layout has a gate to keep green across a bump.
 
 If a future release moves the two hooks (a stable expert-residency API, say) upstream,
 this seam shrinks further or disappears — `core/` does not change.

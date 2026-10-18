@@ -17,7 +17,7 @@ namespace bmoe {
 
 namespace tn = tensor_names;
 
-RouterHook::RouterHook(const MoeRecipe & recipe, int n_layer) : recipe_(recipe), n_layer_(n_layer) {
+RouterHook::RouterHook(const ExpertLayout & layout, int n_layer) : layout_(layout), n_layer_(n_layer) {
     const int n = n_layer_ > 0 ? n_layer_ : 0;
     captured_.assign(n, LayerExperts{});
     prev_ids_.assign(n, std::vector<int32_t>{});
@@ -1298,7 +1298,7 @@ void RouterHook::capture_sources(ggml_tensor * t) {
             if (leaf->op == GGML_OP_NONE && !as_matrix) non_matrix_weights_.insert(leaf);
         }
         int il = -1;
-        const int p = tn::expert_slot(src->name, recipe_, il);
+        const int p = layout_.slot_of(src->name, il);
         if (p >= 0) {
             // An expert-named tensor: streamed, never a dense-rebind candidate - and only if
             // it is somewhere we can serve. The streamer works by pointing `data` at bytes it

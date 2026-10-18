@@ -22,7 +22,7 @@ for the idea the project is built on.
 | [application-framework.md](application-framework.md) | Why `bmoe-server` is the application framework every UI is a client of, and what a client may and may not do. |
 | [screens.md](screens.md) | The five screens every UI shows, specified once. |
 | [design.md](design.md) | The one visual language every UI uses. |
-| [adding-a-model.md](adding-a-model.md) | How to support a new MoE architecture (a recipe row plus a gate). |
+| [which-models-stream.md](which-models-stream.md) | Which models stream: the rule read from the file, what is refused and why, what stays resident. |
 | [telemetry.md](telemetry.md) | The `BMOE_*` line protocol and CSV schema — the integration contract. |
 | [server-api.md](server-api.md) | The desktop server's HTTP API: settings from the parameter table, OpenAI-compatible chat, live events, models and the plan. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
