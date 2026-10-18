@@ -690,6 +690,23 @@ static void hf_tests() {
 
     check(hf_tree_url("https://huggingface.co", r) == "https://huggingface.co/api/models/a/b/tree/v2?recursive=true",
           "hf: the listing URL");
+    check(hf_search_url("https://huggingface.co", "gemma 4 26B/it", 20) ==
+              "https://huggingface.co/api/"
+              "models?search=gemma%204%2026B%2Fit&filter=gguf&sort=downloads&direction=-1&limit=20",
+          "hf: the search URL, the query percent-encoded");
+    std::vector<HfRepoHit> hits;
+    check(parse_hf_search(json::parse(R"([
+            {"id":"unsloth/gemma-4-26B-A4B-it-GGUF","downloads":886490,"likes":1224,"lastModified":"2026-10-01T00:00:00.000Z","gated":false},
+            {"id":"google/gemma-4-26B-A4B-it-qat-q4_0-gguf","downloads":229421,"likes":194,"gated":"auto"},
+            {"id":"bad id with spaces","downloads":1},
+            {"downloads":5}
+          ])"),
+                          hits, err) &&
+              hits.size() == 2 && hits[0].id == "unsloth/gemma-4-26B-A4B-it-GGUF" && hits[0].downloads == 886490 &&
+              hits[0].likes == 1224 && !hits[0].gated && hits[1].gated && hits[0].modified.rfind("2026-10-01", 0) == 0,
+          "hf: a search answer's repositories, a gated one marked, an invalid id and a nameless entry dropped");
+    check(!parse_hf_search(json{{"error", "Bad request"}}, hits, err) && err == "Bad request",
+          "hf: the site's search error");
     HfRef g;
     parse_hf_ref("ggml-org/gemma-4-26B-A4B-it-GGUF", g, err);
     const CatalogEntry e = hf_catalog_entry("https://huggingface.co", g, models[1]);

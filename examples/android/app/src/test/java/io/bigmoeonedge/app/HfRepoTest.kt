@@ -2,6 +2,8 @@ package io.bigmoeonedge.app
 
 import io.bigmoeonedge.app.data.HfFacts
 import io.bigmoeonedge.app.data.HfModels
+import io.bigmoeonedge.app.data.HfSearch
+import io.bigmoeonedge.app.data.hfSearchBody
 import io.bigmoeonedge.app.data.hfRequestBody
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -52,6 +54,18 @@ class HfRepoTest {
         val f = HfFacts.of(JSONObject("""{"name":"x.gguf","bytes":1,"model":{"readable":false},"verdict":{"downloadable":true,"mode":"not readable","disk":"","memory":""}}"""))
         assertFalse(f.readable)
         assertEquals("not readable", f.mode)
+    }
+
+    @Test
+    fun aSearchReadsItsRepositories() {
+        val s = HfSearch.of(JSONObject("""{"query":"gemma","repos":[{"id":"unsloth/gemma-4-26B-A4B-it-GGUF","downloads":886490,"likes":1224,"modified":"2026-10-01","gated":false},{"id":"google/x","gated":true}]}"""))
+        assertEquals("gemma", s.query)
+        assertEquals(2, s.repos.size)
+        assertEquals(886490L, s.repos[0].downloads)
+        assertFalse(s.repos[0].gated)
+        assertTrue(s.repos[1].gated)
+        assertEquals("gemma 4", hfSearchBody(" gemma 4 ").getString("query"))
+        assertFalse(hfSearchBody("x", " ").has("token"))
     }
 
     @Test

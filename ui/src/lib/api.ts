@@ -3,7 +3,18 @@ import { SseParser, isDoneSentinel } from './sse';
 import type { SseEvent } from './sse';
 import { auth } from './auth';
 import { parseChunk } from './chatStream';
-import { isConfig, isDecideResult, isHfAdded, isHfFacts, isHfModelsResponse, isInfo, isModelsResponse, isParamSpecList, isPlan } from './guards';
+import {
+  isConfig,
+  isDecideResult,
+  isHfAdded,
+  isHfFacts,
+  isHfModelsResponse,
+  isHfSearchResponse,
+  isInfo,
+  isModelsResponse,
+  isParamSpecList,
+  isPlan,
+} from './guards';
 import type {
   ChatChunk,
   ChatMessage,
@@ -13,6 +24,7 @@ import type {
   HfAdded,
   HfFacts,
   HfModelsResponse,
+  HfSearchResponse,
   Info,
   ModelsResponse,
   ParamSpec,
@@ -25,6 +37,8 @@ export const CODE_CONTEXT_FULL = 'context_full';
 export const CODE_NO_MODEL = 'no_model';
 /** This client's own code for an answer that is not the documented shape (never sent by a server). */
 export const CODE_BAD_RESPONSE = 'bad_response';
+/** The text was not a repository id or URL: the UI searches for it instead. */
+export const CODE_NOT_A_REPO = 'not_a_repo';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -106,6 +120,9 @@ export const api = {
   models: () => request<ModelsResponse>('GET', 'api/models', undefined, isModelsResponse),
   download: (id: string) => request<unknown>('POST', 'api/models/download', { id }),
   cancelDownload: (id: string) => request<unknown>('DELETE', `api/models/download/${encodeURIComponent(id)}`),
+  /** Repositories with gguf files whose name matches, the most downloaded first. */
+  hfSearch: (query: string, token?: string) =>
+    request<HfSearchResponse>('POST', 'api/hf/search', token ? { query, token } : { query }, isHfSearchResponse),
   /** A Hugging Face repository's gguf files, by the server (docs/server-api.md, "Models"). */
   hfModels: (repo: string, token?: string) =>
     request<HfModelsResponse>('POST', 'api/hf/models', token ? { repo, token } : { repo }, isHfModelsResponse),

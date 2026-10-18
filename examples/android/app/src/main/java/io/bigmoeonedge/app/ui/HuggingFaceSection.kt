@@ -15,6 +15,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.bigmoeonedge.app.data.HfFacts
 import io.bigmoeonedge.app.data.HfModel
+import io.bigmoeonedge.app.data.HfRepoHit
+import io.bigmoeonedge.app.engine.ApiException
 import io.bigmoeonedge.app.data.gbLabel
 import io.bigmoeonedge.app.engine.Engine
 import kotlinx.coroutines.launch
@@ -33,6 +35,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
     var askToken by rememberSaveable { mutableStateOf(false) }
     var listed by remember { mutableStateOf("") }
     var models by remember { mutableStateOf<List<HfModel>?>(null) }
+    var hits by remember { mutableStateOf<List<HfRepoHit>?>(null) } // a search's repositories, when the text was not one
     var selected by remember { mutableStateOf("") }
     var facts by remember { mutableStateOf<HfFacts?>(null) }
     var busy by remember { mutableStateOf("") }
@@ -58,7 +61,14 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
     fun list() = run("list") {
         facts = null
         added = ""
-        val r = Engine.hfModels(repo, token).getOrThrow()
+        hits = null
+        val r = Engine.hfModels(repo, token).getOrElse { e ->
+            // Not a repository: a name to search for, and the repositories found are offered instead.
+            if (e !is ApiException || e.code != ApiException.CODE_NOT_A_REPO) throw e
+            models = null
+            hits = Engine.hfSearch(repo, token).getOrThrow().repos
+            return@run
+        }
         models = r.models
         listed = r.repo
         // A URL that named a file preselects it; a repository with one model needs no choice.
@@ -79,19 +89,19 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
-            "Any gguf on Hugging Face: the server lists the repository, reads a model's header before any download, and says what it is and whether it fits here.",
+            "Any gguf on Hugging Face: a name to search for, or a repository. The server lists the repository, reads a model's header before any download, and says what it is and whether it fits here.",
             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
             value = repo, onValueChange = { repo = it },
-            label = { Text("Repository (owner/name, or a huggingface.co link)") },
+            label = { Text("Search, or owner/name, or a huggingface.co link") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 shape = RectangleShape, onClick = { list() },
                 enabled = repo.isNotBlank() && busy.isEmpty(), modifier = Modifier.weight(1f),
-            ) { Text(if (busy == "list") "Listing…" else "List") }
+            ) { Text(if (busy == "list") "Looking…" else "Find") }
             OutlinedButton(shape = RectangleShape, onClick = { askToken = !askToken }, modifier = Modifier.weight(1f)) {
                 Text(if (askToken) "Hide token" else "Token")
             }
@@ -105,6 +115,27 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
             )
         }
         if (error.isNotEmpty()) Text(error, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+
+        hits?.let { found ->
+            if (found.isEmpty()) {
+                Text("No repository with gguf files matches \"$repo\".", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                found.forEach { h ->
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .selectable(selected = false, onClick = { repo = h.id; list() })
+                            .padding(vertical = 4.dp),
+                    ) {
+                        Text(h.id, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            listOfNotNull("${h.downloads} downloads", "${h.likes} likes", if (h.gated) "gated: needs a token" else null).joinToString(" · "),
+                            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
 
         models?.let { list ->
             if (list.isEmpty()) {

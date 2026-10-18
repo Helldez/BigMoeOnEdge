@@ -386,6 +386,13 @@ the models directory. `202`; progress arrives as `download` events.
 
 Cancels a running download. The partial file is kept so a later download resumes it.
 
+### `POST /api/hf/search`
+
+Body `{"query": "<a model's name>", "token": "<optional>"}`. The repositories on the site with gguf
+files whose name matches, the most downloaded first, twenty at most: `{"query", "repos": [{"id",
+"downloads", "likes", "modified", "gated"}]}`. `gated` is a repository that needs a token. A UI
+calls it when `POST /api/hf/models` refused the text with the code `not_a_repo`.
+
 ### `POST /api/hf/models`
 
 Body `{"repo": "<owner/name, or a huggingface.co URL>", "token": "<optional>"}`. The gguf files
@@ -399,7 +406,8 @@ preselect it.
              "count": 1, "complete": true, "files": [{"path": "gemma-4-26B-A4B-it-Q4_0.gguf", "bytes": 14618145824}]}]}
 ```
 
-`400` for text that is not a repository id or a URL on the site; `502` when the listing could
+`400` with the code `not_a_repo` for text that is not a repository id or a URL on the site (a
+name to search for, `POST /api/hf/search`); `502` when the listing could
 not be fetched (the server runs the system `curl`, as for downloads; a repository that does not
 exist or needs a token answers through it as `401`); `404` when the site answers with an error.
 

@@ -7,6 +7,8 @@ import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.data.CatalogEntry
 import io.bigmoeonedge.app.data.HfFacts
 import io.bigmoeonedge.app.data.HfModels
+import io.bigmoeonedge.app.data.HfSearch
+import io.bigmoeonedge.app.data.hfSearchBody
 import io.bigmoeonedge.app.data.hfRequestBody
 import io.bigmoeonedge.app.data.MetricsRecorder
 import io.bigmoeonedge.app.data.Telemetry
@@ -496,6 +498,10 @@ object Engine {
     }
 
     // ── a model from a Hugging Face repository (data/HfRepo.kt) ──
+    suspend fun hfSearch(query: String, token: String): Result<HfSearch> = withContext(Dispatchers.IO) {
+        catching { HfSearch.of(api.hfSearch(hfSearchBody(query, token))) }
+    }
+
     suspend fun hfModels(repo: String, token: String): Result<HfModels> = withContext(Dispatchers.IO) {
         catching { HfModels.of(api.hfModels(hfRequestBody(repo, token = token))) }
     }

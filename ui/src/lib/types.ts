@@ -215,6 +215,20 @@ export interface HfFacts {
   };
 }
 
+/** One repository a search found (`POST /api/hf/search`). */
+export interface HfRepoHit {
+  id: string;
+  downloads: number;
+  likes: number;
+  modified: string;
+  gated: boolean;
+}
+
+export interface HfSearchResponse {
+  query: string;
+  repos: HfRepoHit[];
+}
+
 /** The catalog entry a model became (`POST /api/hf/add`). */
 export interface HfAdded {
   id: string;
