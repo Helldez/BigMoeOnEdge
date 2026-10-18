@@ -85,7 +85,7 @@ static std::string render(const common_chat_templates * tmpls, bool think, bool 
     inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
     if (prefill) bmoe::detail::add_no_think_prefill(inputs);
 
-    return common_chat_templates_apply(const_cast<common_chat_templates *>(tmpls), inputs).prompt;
+    return common_chat_templates_apply(const_cast<common_chat_templates *>(tmpls), inputs).prompt.str();
 }
 
 // The check that the rejected logit-level attempt could not make: is the reasoning span CLOSED?

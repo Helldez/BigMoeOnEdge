@@ -54,14 +54,15 @@ int main() {
     detail::build_turn_inputs(inputs, detail::to_common_messages(convo), /*think*/ false, ThinkControl::Template);
     detail::add_tools(inputs, tools, ToolChoice::Auto);
     common_chat_params cp = common_chat_templates_apply(tmpls.get(), inputs);
-    check(has(cp.prompt, "read_file") && has(cp.prompt, "Read a file from disk") && has(cp.prompt, "You fix code."),
+    const std::string p1 = cp.prompt.str();
+    check(has(p1, "read_file") && has(p1, "Read a file from disk") && has(p1, "You fix code."),
           "the template describes the tool and keeps the system message");
 
     // No tools on offer: the same conversation renders without them.
     common_chat_templates_inputs bare;
     detail::build_turn_inputs(bare, detail::to_common_messages(convo), false, ThinkControl::Template);
     detail::add_tools(bare, {}, ToolChoice::Auto);
-    check(!has(common_chat_templates_apply(tmpls.get(), bare).prompt, "read_file"),
+    check(!has(common_chat_templates_apply(tmpls.get(), bare).prompt.str(), "read_file"),
           "a request with no tools mentions none");
 
     // ── the model's call, read back ──
@@ -76,12 +77,13 @@ int main() {
     // test's to know, so it takes the one the parser accepts.
     for (const std::string & candidate : {raw, raw_json}) {
         try {
-            const common_chat_msg msg = common_chat_parse(candidate, /*is_partial*/ false, pp);
+            const common_chat_msg msg = common_chat_parse(common_chat_input(candidate), /*is_partial*/ false, pp);
             if (msg.tool_calls.empty()) continue;
             calls = detail::from_common_tool_calls(msg.tool_calls);
             content = msg.content;
             // Mid-call, the streaming view must not show the call's text as the answer.
-            const common_chat_msg part = common_chat_parse(candidate.substr(0, candidate.size() / 2), true, pp);
+            const common_chat_msg part =
+                common_chat_parse(common_chat_input(candidate.substr(0, candidate.size() / 2)), true, pp);
             check(!has(part.content, "read_file") && !has(part.content, "tool_call"),
                   "a call in progress does not leak into the answer");
             break;
@@ -107,13 +109,12 @@ int main() {
     common_chat_templates_inputs next;
     detail::build_turn_inputs(next, detail::to_common_messages(convo), false, ThinkControl::Template);
     detail::add_tools(next, tools, ToolChoice::Auto);
-    const std::string p2 = common_chat_templates_apply(tmpls.get(), next).prompt;
+    const std::string p2 = common_chat_templates_apply(tmpls.get(), next).prompt.str();
     check(has(p2, "def median(values): ...") && has(p2, "calc.py"),
           "the earlier call and the tool's answer are rendered into the next prompt");
     // What makes the KV reusable across an agent's steps: the next prompt begins with everything
     // the previous one held, up to where its answer started.
-    check(p2.compare(0, cp.prompt.size() - cp.generation_prompt.size(), cp.prompt, 0,
-                     cp.prompt.size() - cp.generation_prompt.size()) == 0,
+    check(p2.compare(0, p1.size() - cp.generation_prompt.size(), p1, 0, p1.size() - cp.generation_prompt.size()) == 0,
           "the next prompt extends the previous one, so its prefix is reusable");
 
     if (failures) {

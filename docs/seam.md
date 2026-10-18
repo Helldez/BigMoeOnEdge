@@ -116,8 +116,8 @@ library for two things: rendering the model's own chat template and parsing reas
 gguf ships (so Gemma's channel format, Qwen ChatML, etc. all format correctly, driven by the
 model rather than hardcoded), and `common_chat_parse` extracts a reasoning model's thinking so
 it can be reported apart from the answer. The parser-params wiring lives in its own translation
-unit, `chat_parse.cpp` — the PEG parser arena has to be loaded explicitly or `common_chat_parse`
-throws on the first token, which is how issue #49 stayed invisible; keeping it separate makes
+unit, `chat_parse.cpp` — the PEG parser arena has to be copied across explicitly, or `common_chat_parse`
+falls back to a content-only parser (it threw on the first token before the 2026-10-18 base), which is how issue #49 stayed invisible; keeping it separate makes
 that seam unit-testable without a model.
 
 A second translation unit, `thinking_control.cpp`, crosses the same boundary for "thinking off".
@@ -148,6 +148,9 @@ and no native backend (`tests/ngram_test.cpp`). See [ngram.md](ngram.md).
 includes only `llama.h` and `common.h`. The draft/verify orchestration — running the trained MTP
 head, moving hidden states from the target to it, seeding the next draft from the accepted position
 — is entirely upstream's; the engine supplies the loop around it and the two contexts it works on.
+The driver reads its own mirror of a batch's entries (`common_batch`), not the `llama_batch` the
+engine decodes, so the engine copies each batch it hands to `common_speculative_process` into one
+(`to_common_batch` in `session.cpp`): the decode itself stays on the public API.
 Worth stating explicitly because the internals it needs (`llama_set_embeddings_nextn` and the
 `nextn` hidden-state getters) live in `src/llama-ext.h`, a *staging* header: they are used **inside**
 `speculative.cpp`, which is already compiled into the `llama-common` the engine links, so nothing in
@@ -280,9 +283,10 @@ If a future release moves the two hooks (a stable expert-residency API, say) ups
 this seam shrinks further or disappears — `core/` does not change.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-2609-dl`: the single expert-ready-hook commit (section 3, with the
-setter in the CPU registry's `get_proc_address` table) on top of upstream `ggml-org/llama.cpp`
-master `965f897` of 2026-09-26 (530 commits past `b10666`). On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
+`bmoe/expert-ready-hook-1810-dl`, commit `efaae99`: the single expert-ready-hook commit
+(section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
+loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` master
+`5aeac37` of 2026-10-18 (523 commits past the previous base, `965f897` of 2026-09-26). On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
 before the classic loop does, so the hook fires ahead of it; G4 is what proves it still gates
 every read. Each bump gets its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /

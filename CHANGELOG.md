@@ -118,6 +118,17 @@ Semantic Versioning.
   measuring, and measurements kept between loads if the recorded durations show it pays.
 
 ### Changed
+- **llama.cpp moves to upstream master of 2026-10-18** (523 commits past the 2026-09-26 base): the
+  fork branch `bmoe/expert-ready-hook-1810-dl` carries the same single expert-ready-hook commit,
+  in the variant that also answers the CPU registry, so the backend-module builds reach it too.
+  The new base loads architectures the old one did not (Kolibri-1, `kolibri1`, among them); their
+  expert layout is read off the file like any other, but none of them has been run here yet.
+  Upstream reworked `common`'s chat and speculative APIs, and the engine follows with the smallest
+  change that keeps its behaviour: the rendered prompt is joined back into one string (`.str()`,
+  as upstream's own server does), the parser arena is copied instead of reloaded from a
+  serialization upstream removed, and the batch handed to the MTP driver is mirrored into the
+  `common_batch` it now reads. Same backends and build options, so `docs/backends.md` holds;
+  greedy output on a real model is unchanged.
 - **The catalog is the two reference models.** `catalog/models.json` offers Qwen3.6-35B-A3B
   (Q4_K_M) and Gemma 4 26B-A4B-it (Q4_0), both from ggml-org, the models the engine is measured
   on and a first run starts from; every other model comes from its own repository through the

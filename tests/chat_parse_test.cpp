@@ -3,8 +3,8 @@
 // The bug: session.cpp built parse params with `common_chat_parser_params(cp)`, whose
 // convenience constructor copies only format/generation_prompt and leaves the PEG grammar
 // arena empty. `common_chat_parse` then throws on the first token, a catch swallows it, and
-// the raw stream — reasoning markers and all — is shown verbatim. The fix loads the grammar
-// (`parser.load(cp.parser)`), extracted into bmoe::detail::build_parse_params.
+// the raw stream — reasoning markers and all — is shown verbatim. The fix copies the grammar
+// arena across (`pp.parser = cp.parser`), extracted into bmoe::detail::build_parse_params.
 //
 // This exercises that exact function against a Qwen3-style template, with no model: the whole
 // point is that the wiring is testable without a gguf. Assertions are explicit (not <cassert>)
@@ -107,12 +107,12 @@ int main() {
     // The template must be detected as a tag-based reasoning format, or the test proves nothing.
     expect_true("template yields a non-empty parser grammar", !cp.parser.empty());
 
-    // Positive: the production wiring loads the grammar and strips the reasoning block.
+    // Positive: the production wiring copies the grammar and strips the reasoning block.
     common_chat_parser_params good = bmoe::detail::build_parse_params(cp);
     common_chat_msg parsed;
     bool threw = false;
     try {
-        parsed = common_chat_parse(raw, /*is_partial=*/false, good);
+        parsed = common_chat_parse(common_chat_input(raw), /*is_partial=*/false, good);
     } catch (const std::exception & e) {
         threw = true;
         std::printf("  build_parse_params path threw: %s\n", e.what());
@@ -123,14 +123,14 @@ int main() {
     // survive); the answer being clean is the contract, so compare the reasoning trimmed.
     expect_eq("build_parse_params: reasoning captured", rstrip(parsed.reasoning_content), want_reasoning);
 
-    // Negative control: the pre-fix wiring (convenience ctor, no parser.load) must NOT correctly
+    // Negative control: the pre-fix wiring (convenience ctor, no arena copied) must NOT correctly
     // strip — whether it throws or returns the raw stream, it must not yield the clean answer.
     // This pins bug #49 so a future submodule bump that silently changes the behaviour is noticed.
     common_chat_parser_params unloaded(cp);
-    unloaded.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
     bool unloaded_stripped = false;
     try {
-        unloaded_stripped = common_chat_parse(raw, /*is_partial=*/false, unloaded).content == want_content;
+        unloaded_stripped =
+            common_chat_parse(common_chat_input(raw), /*is_partial=*/false, unloaded).content == want_content;
     } catch (const std::exception &) {
         unloaded_stripped = false;
     }
@@ -143,7 +143,7 @@ int main() {
     bool partial_threw = false;
     common_chat_msg partial;
     try {
-        partial = common_chat_parse("I'm\nthink", /*is_partial=*/true, good);
+        partial = common_chat_parse(common_chat_input("I'm\nthink"), /*is_partial=*/true, good);
     } catch (const std::exception &) {
         partial_threw = true;
     }
