@@ -1,6 +1,7 @@
 // Plan helpers: map decisions to parameter keys for the settings source badges, and turn the plan
-// into what the Plan page draws. Nothing here names a device, a system or a knob: every word comes
-// from the plan, and the shapes (pools, rows, devices, stages) are lists of whatever it holds.
+// into what the Plan page draws. Nothing here names a device, a system or a knob, and nothing here
+// words a code: every word comes from the server (server/plan_view.h), and a code (`status`,
+// `uses`, `step`) only picks a colour. A server that sends no word gets the code shown as it is.
 import type { Config, PlanDecision, PlanDevice, PlanMeasured, PlanMemoryPool } from './types';
 
 /**
@@ -40,13 +41,8 @@ export function decisionLabel(d: PlanDecision): string {
   return d.label || d.knob;
 }
 
-/** "expert cache" -> "Expert cache": the plan's own words, sentence case. */
-export function sentenceCase(s: string): string {
-  return s ? s[0].toUpperCase() + s.slice(1) : s;
-}
-
 export interface MemorySegment {
-  name: string;
+  label: string;
   bytes: number;
   /** Share of the bar, 0..1. */
   frac: number;
@@ -65,51 +61,21 @@ export function memorySegments(pool: PlanMemoryPool): MemorySegment[] {
   const sum = held.reduce((a, r) => a + r.bytes, 0);
   const whole = Math.max(pool.cap_bytes, sum);
   if (whole <= 0) return [];
-  const out: MemorySegment[] = held.map((r, i) => ({ name: r.name, bytes: r.bytes, frac: r.bytes / whole, locked: r.locked, slot: i }));
+  const out: MemorySegment[] = held.map((r, i) => ({ label: r.label ?? r.name, bytes: r.bytes, frac: r.bytes / whole, locked: r.locked, slot: i }));
   const free = whole - sum;
-  if (free > 0) out.push({ name: 'free', bytes: free, frac: free / whole, locked: false, slot: -1 });
+  if (free > 0) out.push({ label: 'Free', bytes: free, frac: free / whole, locked: false, slot: -1 });
   return out;
 }
 
-export interface DeviceBadge {
-  text: string;
-  tone: 'ok' | 'err' | '';
-}
-
-const USE_WORDS: Record<string, string> = { prompt: 'prompt', tokens: 'tokens', layers: 'layers' };
-
-/** The badge a device row carries, from its role alone: what it does, or why it does nothing. */
-export function deviceBadge(d: PlanDevice): DeviceBadge {
-  if (d.status === 'refused') return { text: 'Wrong results', tone: 'err' };
-  if (d.status === 'unusable') return { text: 'Unusable', tone: 'err' };
-  if (d.status !== 'used' || d.uses.length === 0) return { text: 'Not used', tone: '' };
-  const words = d.uses.map((u) => USE_WORDS[u] ?? u);
-  const text = words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}` : words[0];
-  return { text: sentenceCase(text), tone: 'ok' };
+/** A badge's colour, from a device's role alone: green when it works here, red when it was refused. */
+export function deviceTone(d: PlanDevice): 'ok' | 'err' | '' {
+  if (d.status === 'refused' || d.status === 'unusable') return 'err';
+  return d.status === 'used' ? 'ok' : '';
 }
 
 /** Bars are scaled to the fastest device measured, so 1x on one machine and 40x on another read alike. */
 export function rateScale(devices: readonly PlanDevice[]): number {
   return devices.reduce((m, d) => Math.max(m, d.prompt_ratio), 1);
-}
-
-export function ratioText(r: number): string {
-  if (!(r > 0)) return 'not measured';
-  return r >= 10 ? `${r.toFixed(0)}x` : `${r.toFixed(1)}x`;
-}
-
-/** Why the list holds no device beyond the host: three answers that must not read as one. */
-export function devicesNoneText(code: string | undefined): string {
-  switch (code) {
-    case 'build':
-      return 'No other device: this build carries no backend for one.';
-    case 'machine':
-      return 'No other device: none of the backends this build carries found one here.';
-    case 'not_probed':
-      return 'No other device was looked for.';
-    default:
-      return '';
-  }
 }
 
 export interface SpeedCheck {
@@ -131,19 +97,4 @@ export function speedCheck(predicted: { s_per_token?: number; cache_hit_pct?: nu
     predictedHitPct: predicted?.cache_hit_pct ?? null,
     measuredHitPct: measured && measured.cache_hit_pct >= 0 ? measured.cache_hit_pct : null,
   };
-}
-
-/** The measurement's stages in words; a stage this UI does not know is shown as the server names it. */
-const STEP_WORDS: Record<string, string> = {
-  devices: 'Devices',
-  model: 'Model',
-  compute: 'Compute',
-  storage: 'Storage',
-  memory: 'Memory',
-  placement: 'Placement',
-  rules: 'Decisions',
-};
-
-export function stepLabel(step: string): string {
-  return STEP_WORDS[step] ?? sentenceCase(step);
 }

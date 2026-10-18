@@ -310,8 +310,9 @@ struct App {
     PlanOutcome measure_plan() {
         PlanOutcome p =
             make_plan(store.planning_config(), store.operator_keys(), opt.isolated_probes,
-                      [this](const char * step, int index, int count) {
-                          bus.publish("plan_progress", json{{"step", step}, {"index", index}, {"count", count}});
+                      [this](const std::string & step, const std::string & label, int index, int count) {
+                          bus.publish("plan_progress",
+                                      json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
                       });
         bus.publish("plan_progress", json{{"step", "done"}});
         return p;

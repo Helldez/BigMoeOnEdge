@@ -34,8 +34,9 @@ bool planner_available();
 // own (this executable again, with --probe-device), so a driver that ends the process it is used
 // from marks the device unusable instead of ending the server; where a second process cannot be
 // started the probes run here. `on_step` (nullable) hears each stage of the measurement as it
-// starts: its key, its position and how many there are (bmoe/auto_plan.h, k_plan_steps).
-using PlanStepFn = std::function<void(const char * step, int index, int count)>;
+// starts: its key (bmoe/auto_plan.h, k_plan_steps), its words for a person, its position and how
+// many there are.
+using PlanStepFn = std::function<void(const std::string & step, const std::string & label, int index, int count)>;
 PlanOutcome make_plan(const RunConfig & cfg,
                       const std::vector<std::string> & pinned,
                       bool isolated_probes = true,

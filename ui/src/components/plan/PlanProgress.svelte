@@ -1,19 +1,20 @@
 <script lang="ts">
   // A measurement in progress: the stage running now and the ones already done, from the server's
-  // `plan_progress` events. Before the first event arrives it says only that it is measuring.
-  import { stepLabel } from '../../lib/plan';
+  // `plan_progress` events, in the server's words. Before the first event arrives it says only that
+  // it is measuring.
   import type { PlanProgress } from '../../lib/types';
 
   let { progress }: { progress: PlanProgress | null } = $props();
 
+  const words = (p: PlanProgress) => p.label ?? p.step;
   let done = $state<string[]>([]);
   let last = '';
   $effect(() => {
     const p = progress;
     if (!p) return;
     if (p.index === 0) done = [];
-    if (last && last !== p.step && !done.includes(last)) done = [...done, last];
-    last = p.step;
+    if (last && last !== words(p) && !done.includes(last)) done = [...done, last];
+    last = words(p);
   });
   const left = $derived(progress?.count && progress.index !== undefined ? progress.count - progress.index - 1 : 0);
 </script>
@@ -23,10 +24,10 @@
   <progress max={progress?.count ?? 1} value={progress?.index ?? 0}></progress>
   <ul>
     {#each done as s (s)}
-      <li><span class="badge ok">done</span> {stepLabel(s)}</li>
+      <li><span class="badge ok">done</span> {s}</li>
     {/each}
     {#if progress}
-      <li><span class="badge info">running</span> {stepLabel(progress.step)}</li>
+      <li><span class="badge info">running</span> {words(progress)}</li>
       {#if left > 0}<li class="muted"><span class="badge">next</span> {left} more</li>{/if}
     {/if}
   </ul>

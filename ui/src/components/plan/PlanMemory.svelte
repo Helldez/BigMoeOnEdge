@@ -1,15 +1,14 @@
 <script lang="ts">
-  // One bar per memory pool: what the run holds, against what it may hold. The rows and their names
+  // One bar per memory pool: what the run holds, against what it may hold. The rows and their words
   // are the plan's ledger; the colour follows a row's position, never its name.
   import { formatBytes } from '../../lib/format';
-  import { memorySegments, sentenceCase } from '../../lib/plan';
+  import { memorySegments } from '../../lib/plan';
   import type { PlanMemoryPool } from '../../lib/types';
 
   let { pools }: { pools: PlanMemoryPool[] } = $props();
 
   const COLOURS = ['var(--accent-2)', 'var(--accent)', 'var(--muted)', 'var(--ok)', 'var(--warn)'];
   const colour = (slot: number) => (slot < 0 ? 'var(--surface-2)' : COLOURS[slot % COLOURS.length]);
-  const poolName = (p: PlanMemoryPool) => (p.name === 'host' ? 'This process' : p.name);
 </script>
 
 {#each pools as pool, pi (pi)}
@@ -17,10 +16,10 @@
   {@const turn = pool.rows.filter((r) => r.in_turn)}
   <div class="pool">
     <div class="head">
-      <span>{poolName(pool)}</span>
+      <span>{pool.label ?? pool.name}{#if pool.estimated}<span class="muted"> (an even share of the devices' sum)</span>{/if}</span>
       {#if pool.cap_bytes > 0}<span class="muted"><span class="figure cap">{formatBytes(pool.cap_bytes)}</span> it may hold</span>{/if}
     </div>
-    <div class="bar" role="img" aria-label={segs.map((s) => `${s.name} ${formatBytes(s.bytes)}`).join(', ')}>
+    <div class="bar" role="img" aria-label={segs.map((s) => `${s.label} ${formatBytes(s.bytes)}`).join(', ')}>
       {#each segs as s, i (i)}
         <span style="width: {(s.frac * 100).toFixed(2)}%; background: {colour(s.slot)}"></span>
       {/each}
@@ -30,15 +29,15 @@
         <li>
           <span class="swatch" style="background: {colour(s.slot)}"></span>
           <span class="figure">{formatBytes(s.bytes)}</span>
-          <span class="muted">{sentenceCase(s.name)}</span>
+          <span class="muted">{s.label}</span>
           {#if s.locked}<span class="badge">locked</span>{/if}
         </li>
       {/each}
     </ul>
     {#each turn as t, i (i)}
-      <p class="muted note">{sentenceCase(t.name)}: {formatBytes(t.bytes)} borrowed from the expert cache while a prompt runs, given back after.</p>
+      <p class="muted note">{t.label ?? t.name}: {formatBytes(t.bytes)} borrowed from the expert cache while a prompt runs, given back after.</p>
     {/each}
-    {#if pool.name === 'host' && pool.locked_bytes === 0}
+    {#if pi === 0 && pool.locked_bytes === 0}
       <p class="muted note">Nothing is locked in memory for this run: the system may take any of it back under pressure.</p>
     {/if}
   </div>

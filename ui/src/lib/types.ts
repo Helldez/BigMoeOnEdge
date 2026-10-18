@@ -82,6 +82,8 @@ export interface PlanDecision {
 /** One line of the memory ledger: something the run holds, and how. */
 export interface PlanMemoryRow {
   name: string;
+  /** The row in words; every word on the Plan screen comes from the server. */
+  label?: string;
   bytes: number;
   locked: boolean;
   /** Held in turn with the expert cache (during a prompt), not beside it. */
@@ -91,6 +93,9 @@ export interface PlanMemoryRow {
 /** One memory pool: the host's, or a device's that is its own. */
 export interface PlanMemoryPool {
   name: string;
+  label?: string;
+  /** The figures are an even share of a sum the placement reports over several devices. */
+  estimated?: boolean;
   cap_bytes: number;
   lockable_cap_bytes: number;
   held_bytes: number;
@@ -109,13 +114,19 @@ export interface PlanDevice {
   /** Rate against the host at prompt width, 0 when unmeasured. */
   prompt_ratio: number;
   token_ratio: number;
+  /** The rate in words ("40x the host on a prompt"). */
+  rate_text?: string;
+  /** Codes: they pick a colour, never a word. */
   uses: (PlanDeviceUse | (string & {}))[];
   status: 'used' | 'unused' | 'refused' | 'unusable' | (string & {});
+  /** What the device does, or why it does nothing, in words. */
+  badge?: string;
   why: string;
 }
 
 export interface PlanLane {
   phase: 'prompt' | 'tokens' | (string & {});
+  label?: string;
   on: string[];
 }
 
@@ -129,6 +140,7 @@ export interface PlanMeasured {
 /** A `plan_progress` event: a stage of the measurement starting, or `done`. */
 export interface PlanProgress {
   step: string;
+  label?: string;
   index?: number;
   count?: number;
 }
@@ -181,6 +193,8 @@ export interface PlanAvailable {
   devices?: PlanDevice[];
   /** Why there is no device beyond the host: '' when there is one. */
   devices_none?: 'build' | 'machine' | 'not_probed' | '' | (string & {});
+  /** The same, in words; empty when there is a device. */
+  devices_none_text?: string;
   /** Set instead of the fields above when there is nothing to plan (no model selected). */
   error?: string;
 }

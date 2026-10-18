@@ -164,7 +164,7 @@
           <div class="tile">
             <span class="muted k">Where it runs</span>
             {#each avail.summary.lanes as lane (lane.phase)}
-              <div class="lane"><span>{lane.phase === 'prompt' ? 'Prompt' : lane.phase === 'tokens' ? 'Tokens' : lane.phase}</span><span class="figure">{lane.on.join(' + ')}</span></div>
+              <div class="lane"><span>{lane.label ?? lane.phase}</span><span class="figure">{lane.on.join(' + ')}</span></div>
             {/each}
           </div>
         {/if}
@@ -187,7 +187,7 @@
 
     {#if avail.devices?.length}
       <h2>Devices</h2>
-      <section class="card"><PlanDevices devices={avail.devices} none={avail.devices_none} /></section>
+      <section class="card"><PlanDevices devices={avail.devices} none={avail.devices_none_text ?? ''} /></section>
     {/if}
 
     <h2>Decisions</h2>

@@ -107,7 +107,9 @@ One layout for every machine. A phone with an NPU, a laptop with an integrated G
 a discrete card and a server with only cores show the same blocks in the same order; what changes is
 what the lists hold. Device names are shown as the plan reports them, and no block has a case for
 a device, a system or a vendor: a badge's colour follows a device's role, a bar's colour a row's
-position.
+position. Every word on the screen, down to a badge and a stage of the measurement, comes from the
+server beside a code; a UI reads the code for a colour and shows the word, so the three UIs say
+the same thing and a stage or role added later reaches them all unchanged.
 
 - **Auto-plan.** A switch: plan before every load. Off, a load uses the settings as they are.
 - **Summary, first.** The plan's sentence (`summary.sentence`: "Experts stream from flash, with a

@@ -150,7 +150,7 @@ private fun PlanBody(p: PlanResult) {
                 Modifier.fillMaxWidth().border(2.dp, MaterialTheme.colorScheme.outline).padding(horizontal = 10.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(lanePhase(lane.phase), fontSize = 14.sp)
+                Text(lane.label, fontSize = 14.sp)
                 Text(lane.on.joinToString(" + "), fontFamily = PixelFont, color = MaterialTheme.colorScheme.primary)
             }
         }
@@ -166,7 +166,7 @@ private fun PlanBody(p: PlanResult) {
         Section("Devices") {
             val scale = p.devices.maxOf { it.promptRatio }.coerceAtLeast(1.0)
             p.devices.forEach { DeviceRow(it, scale) }
-            devicesNoneText(p.devicesNone)?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (p.devicesNoneText.isNotEmpty()) Text(p.devicesNoneText, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
     Text("Decisions", style = MaterialTheme.typography.titleMedium)
@@ -231,7 +231,7 @@ private fun MemoryPool(pool: PlanPool) {
     val colours = listOf(MaterialTheme.colorScheme.secondary, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurfaceVariant, okColor(), MaterialTheme.colorScheme.tertiary)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(if (pool.name == "host") "This process" else pool.name, fontSize = 14.sp)
+            Text(pool.label + if (pool.estimated) " (an even share of the devices' sum)" else "", fontSize = 14.sp)
             if (pool.capBytes > 0) Text("of " + bytesLabel(pool.capBytes), fontFamily = PixelFont, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Row(Modifier.fillMaxWidth().height(28.dp).border(2.dp, MaterialTheme.colorScheme.outline).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
@@ -244,7 +244,7 @@ private fun MemoryPool(pool: PlanPool) {
         held.forEachIndexed { i, r ->
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(Modifier.size(12.dp).background(colours[i % colours.size]))
-                Text(sentenceCase(r.name), fontSize = 14.sp, modifier = Modifier.weight(1f))
+                Text(r.label, fontSize = 14.sp, modifier = Modifier.weight(1f))
                 if (r.locked) StatusBadge("locked", MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(bytesLabel(r.bytes), fontFamily = PixelFont, fontSize = 14.sp)
             }
@@ -257,25 +257,25 @@ private fun MemoryPool(pool: PlanPool) {
             }
         }
         pool.rows.filter { it.inTurn }.forEach {
-            Text("${sentenceCase(it.name)}: ${bytesLabel(it.bytes)} borrowed from the expert cache while a prompt runs, given back after.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${it.label}: ${bytesLabel(it.bytes)} borrowed from the expert cache while a prompt runs, given back after.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
 @Composable
 private fun DeviceRow(d: PlanDevice, scale: Double) {
-    val (text, colour) = deviceBadge(d)
+    val colour = deviceColour(d)
     Column(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Column(Modifier.weight(1f)) {
                 Text(d.name, fontFamily = PixelFont, fontSize = 16.sp)
                 if (d.description.isNotEmpty() && d.description != d.name) Text(d.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            StatusBadge(text, colour)
+            StatusBadge(d.badge, colour)
         }
         val used = d.status == "used"
         Meter(if (d.promptRatio > 0) maxOf(0.02f, (d.promptRatio / scale).toFloat()) else 0f, if (used) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-        if (!d.cpu) Text(if (d.promptRatio > 0) ratioLabel(d.promptRatio) + " the host on a prompt" else "Not measured on a prompt", fontFamily = PixelFont, fontSize = 12.sp)
+        if (d.rateText.isNotEmpty()) Text(d.rateText, fontFamily = PixelFont, fontSize = 12.sp)
         Text(d.why, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -311,15 +311,15 @@ private fun ProgressCard(p: PlanProgress?) {
     LaunchedEffect(p) {
         if (p == null) return@LaunchedEffect
         if (p.index == 0) done = emptyList()
-        if (last.isNotEmpty() && last != p.step && last !in done) done = done + last
-        last = p.step
+        if (last.isNotEmpty() && last != p.label && last !in done) done = done + last
+        last = p.label
     }
     Tile {
         Text("Measuring this phone", fontFamily = PixelFont, fontSize = 18.sp)
         Meter(if (p != null && p.count > 0) p.index.toFloat() / p.count else 0f, MaterialTheme.colorScheme.primary)
-        done.forEach { StepLine("done", okColor(), stepLabel(it)) }
+        done.forEach { StepLine("done", okColor(), it) }
         if (p != null) {
-            StepLine("running", MaterialTheme.colorScheme.primary, stepLabel(p.step))
+            StepLine("running", MaterialTheme.colorScheme.primary, p.label)
             val left = p.count - p.index - 1
             if (left > 0) StepLine("next", MaterialTheme.colorScheme.onSurfaceVariant, "$left more")
         }
@@ -419,48 +419,15 @@ fun SourceBadge(source: String) {
 @Composable
 private fun okColor(): Color = if (isSystemInDarkTheme()) Palette.Ok else Palette.LightOk
 
-/** The badge a device carries, from its role alone. */
+/** A badge's colour, from a device's role alone; its words come from the server. */
 @Composable
-private fun deviceBadge(d: PlanDevice): Pair<String, Color> = when {
-    d.status == "refused" -> "Wrong results" to MaterialTheme.colorScheme.error
-    d.status == "unusable" -> "Unusable" to MaterialTheme.colorScheme.error
-    d.status != "used" || d.uses.isEmpty() -> "Not used" to MaterialTheme.colorScheme.onSurfaceVariant
-    else -> {
-        val w = d.uses
-        sentenceCase(if (w.size > 1) w.dropLast(1).joinToString(", ") + " and " + w.last() else w.first()) to okColor()
-    }
+private fun deviceColour(d: PlanDevice): Color = when (d.status) {
+    "used" -> okColor()
+    "refused", "unusable" -> MaterialTheme.colorScheme.error
+    else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
-
-private fun devicesNoneText(code: String): String? = when (code) {
-    "build" -> "No other device: this build carries no backend for one."
-    "machine" -> "No other device: none of the backends this build carries found one here."
-    "not_probed" -> "No other device was looked for."
-    else -> null
-}
-
-private fun lanePhase(phase: String) = when (phase) {
-    "prompt" -> "Prompt"
-    "tokens" -> "Tokens"
-    else -> sentenceCase(phase)
-}
-
-/** The measurement's stages in words; a stage this app does not know is shown as the server names it. */
-private fun stepLabel(step: String) = when (step) {
-    "devices" -> "Devices"
-    "model" -> "Model"
-    "compute" -> "Compute"
-    "storage" -> "Storage"
-    "memory" -> "Memory"
-    "placement" -> "Placement"
-    "rules" -> "Decisions"
-    else -> sentenceCase(step)
-}
-
-private fun sentenceCase(s: String) = s.replaceFirstChar { it.uppercase() }
 
 private fun fmt(v: Double) = String.format(Locale.US, "%.1f", v)
-
-private fun ratioLabel(r: Double) = if (r >= 10) String.format(Locale.US, "%.0fx", r) else String.format(Locale.US, "%.1fx", r)
 
 /** Binary units, as the web UI shows them, so a figure reads the same on both. */
 private fun bytesLabel(bytes: Long): String {

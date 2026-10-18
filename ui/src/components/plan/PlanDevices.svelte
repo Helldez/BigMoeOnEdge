@@ -1,7 +1,8 @@
 <script lang="ts">
   // Every device the plan saw, one row each: its rate against the host, what it does in this run,
-  // and why. A row is drawn the same for any device; the badge follows its role.
-  import { deviceBadge, devicesNoneText, rateScale, ratioText } from '../../lib/plan';
+  // and why. A row is drawn the same for any device; the words are the server's, the colour follows
+  // the role.
+  import { deviceTone, rateScale } from '../../lib/plan';
   import type { PlanDevice } from '../../lib/types';
 
   let { devices, none = '' }: { devices: PlanDevice[]; none?: string } = $props();
@@ -11,7 +12,7 @@
 
 <ul class="devices">
   {#each devices as d, i (i)}
-    {@const badge = deviceBadge(d)}
+    {@const tone = deviceTone(d)}
     <li>
       <div class="name">
         <span class="figure dev">{d.name}</span>
@@ -19,19 +20,19 @@
       </div>
       <div class="rate">
         <div class="track">
-          <span class:used={badge.tone === 'ok'} style="width: {d.prompt_ratio > 0 ? Math.max(2, (100 * d.prompt_ratio) / scale) : 0}%"></span>
+          <span class:used={tone === 'ok'} style="width: {d.prompt_ratio > 0 ? Math.max(2, (100 * d.prompt_ratio) / scale) : 0}%"></span>
         </div>
-        <span class="muted figure small">{d.cpu ? 'the reference' : `${ratioText(d.prompt_ratio)} the host on a prompt`}</span>
+        {#if d.rate_text}<span class="muted figure small">{d.rate_text}</span>{/if}
       </div>
       <div class="role">
-        <span class="badge {badge.tone}">{badge.text}</span>
+        <span class="badge {tone}">{d.badge ?? d.status}</span>
         <span class="muted small">{d.why}</span>
       </div>
     </li>
   {/each}
 </ul>
-{#if devicesNoneText(none)}
-  <p class="muted none">{devicesNoneText(none)}</p>
+{#if none}
+  <p class="muted none">{none}</p>
 {/if}
 
 <style>

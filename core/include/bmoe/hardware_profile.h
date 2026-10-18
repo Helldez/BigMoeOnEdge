@@ -353,6 +353,12 @@ struct HardwareProfile {
     uint32_t backends_linked = 0;
     uint32_t backends_loaded = 0; // found at run time as separate shared libraries
     bool backends_looked = false; // false: nothing was even enumerated
+    // The registered backends that could offer a LOCAL device work is placed on: not the host's
+    // own, not a library the host calls into, not one whose devices live on another machine. Zero
+    // with `devices` empty beyond the host means the build carries no accelerator backend at all;
+    // above zero, the build carries one and this machine gave it no device. The two counts above
+    // cannot tell those apart, since a remote or helper backend registers like any other.
+    uint32_t backends_placeable = 0;
 
     // ── storage ─────────────────────────────────────────────────────────────────────
     StorageFacts storage;

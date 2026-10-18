@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deviceBadge, devicesNoneText, groupDecisions, memorySegments, rateScale, speedCheck } from './plan';
+import { deviceTone, groupDecisions, memorySegments, rateScale, speedCheck } from './plan';
 import type { PlanDecision, PlanDevice, PlanMemoryPool } from './types';
 
 const dec = (knob: string, source: string, group?: string): PlanDecision => ({ knob, value: '1', source, reason: 'r', group });
@@ -40,15 +40,15 @@ describe('memorySegments', () => {
     locked_bytes: 0,
     rows,
   });
-  it('draws every held row, then the free part, as shares of the cap', () => {
+  it('draws every held row in the server words, then the free part, as shares of the cap', () => {
     const s = memorySegments(pool(10, [
-      { name: 'dense', bytes: 2, locked: true, in_turn: false },
+      { name: 'dense', label: 'Dense', bytes: 2, locked: true, in_turn: false },
       { name: 'expert cache', bytes: 6, locked: false, in_turn: false },
     ]));
-    expect(s.map((x) => [x.name, x.frac, x.slot])).toEqual([
-      ['dense', 0.2, 0],
+    expect(s.map((x) => [x.label, x.frac, x.slot])).toEqual([
+      ['Dense', 0.2, 0],
       ['expert cache', 0.6, 1],
-      ['free', 0.2, -1],
+      ['Free', 0.2, -1],
     ]);
     expect(s[0].locked).toBe(true);
   });
@@ -57,7 +57,7 @@ describe('memorySegments', () => {
       { name: 'expert cache', bytes: 4, locked: false, in_turn: false },
       { name: 'device slots', bytes: 1, locked: false, in_turn: true },
     ]));
-    expect(s.map((x) => x.name)).toEqual(['expert cache']);
+    expect(s.map((x) => x.label)).toEqual(['expert cache']);
   });
   it('still draws a ledger that does not close', () => {
     const s = memorySegments(pool(4, [{ name: 'dense', bytes: 8, locked: false, in_turn: false }]));
@@ -66,15 +66,13 @@ describe('memorySegments', () => {
   });
 });
 
-describe('deviceBadge', () => {
-  it('names what a used device does', () => {
-    expect(deviceBadge(dev({ cpu: true, status: 'used', uses: ['prompt', 'tokens'] }))).toEqual({ text: 'Prompt and tokens', tone: 'ok' });
-    expect(deviceBadge(dev({ status: 'used', uses: ['layers', 'prompt'] })).text).toBe('Layers and prompt');
-  });
-  it('says why the others do nothing', () => {
-    expect(deviceBadge(dev({ status: 'refused' })).tone).toBe('err');
-    expect(deviceBadge(dev({ status: 'unusable' })).text).toBe('Unusable');
-    expect(deviceBadge(dev({ status: 'unused' }))).toEqual({ text: 'Not used', tone: '' });
+describe('deviceTone', () => {
+  it('colours by role alone', () => {
+    expect(deviceTone(dev({ status: 'used', uses: ['prompt'] }))).toBe('ok');
+    expect(deviceTone(dev({ status: 'refused' }))).toBe('err');
+    expect(deviceTone(dev({ status: 'unusable' }))).toBe('err');
+    expect(deviceTone(dev({ status: 'unused' }))).toBe('');
+    expect(deviceTone(dev({ status: 'a role added later' }))).toBe('');
   });
 });
 
@@ -82,14 +80,6 @@ describe('rateScale', () => {
   it('is the fastest device, never below the host', () => {
     expect(rateScale([dev({ prompt_ratio: 1 }), dev({ prompt_ratio: 40 })])).toBe(40);
     expect(rateScale([dev({ prompt_ratio: 0.5 })])).toBe(1);
-  });
-});
-
-describe('devicesNoneText', () => {
-  it('keeps the three answers apart', () => {
-    const t = ['build', 'machine', 'not_probed'].map(devicesNoneText);
-    expect(new Set(t).size).toBe(3);
-    expect(devicesNoneText('')).toBe('');
   });
 });
 

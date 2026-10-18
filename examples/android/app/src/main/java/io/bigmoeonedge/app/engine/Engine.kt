@@ -231,8 +231,8 @@ data class PlanResult(
     val measured: PlanMeasured? = null,
     val pools: List<PlanPool> = emptyList(),
     val devices: List<PlanDevice> = emptyList(),
-    /** Why there is no device beyond the host: build, machine, not_probed; empty when there is one. */
-    val devicesNone: String = "",
+    /** Why there is no device beyond the host, in words; empty when there is one. */
+    val devicesNoneText: String = "",
 ) {
     companion object {
         private fun strings(a: JSONArray?): List<String> = a?.let { (0 until it.length()).map { i -> it.getString(i) } }.orEmpty()
@@ -240,7 +240,9 @@ data class PlanResult(
 
         fun of(o: JSONObject): PlanResult = base(o).copy(
             sentence = o.optJSONObject("summary")?.optString("sentence").orEmpty(),
-            lanes = objects(o.optJSONObject("summary")?.optJSONArray("lanes")).map { PlanLane(it.optString("phase"), strings(it.optJSONArray("on"))) },
+            lanes = objects(o.optJSONObject("summary")?.optJSONArray("lanes")).map {
+                PlanLane(it.optString("label").ifEmpty { it.optString("phase") }, strings(it.optJSONArray("on")))
+            },
             predictedSPerToken = o.optJSONObject("predicted")?.optDouble("s_per_token", 0.0) ?: 0.0,
             predictedHitPct = o.optJSONObject("predicted")?.optDouble("cache_hit_pct", -1.0) ?: -1.0,
             measured = o.optJSONObject("measured")?.let {
@@ -248,11 +250,12 @@ data class PlanResult(
             },
             pools = objects(o.optJSONObject("memory")?.optJSONArray("pools")).map { p ->
                 PlanPool(
-                    name = p.optString("name"),
+                    label = p.optString("label").ifEmpty { p.optString("name") },
+                    estimated = p.optBoolean("estimated"),
                     capBytes = p.optLong("cap_bytes"),
                     lockedBytes = p.optLong("locked_bytes"),
                     rows = objects(p.optJSONArray("rows")).map {
-                        PlanRow(it.optString("name"), it.optLong("bytes"), it.optBoolean("locked"), it.optBoolean("in_turn"))
+                        PlanRow(it.optString("label").ifEmpty { it.optString("name") }, it.optLong("bytes"), it.optBoolean("locked"), it.optBoolean("in_turn"))
                     },
                 )
             },
@@ -262,12 +265,13 @@ data class PlanResult(
                     description = it.optString("description"),
                     cpu = it.optBoolean("cpu"),
                     promptRatio = it.optDouble("prompt_ratio", 0.0),
-                    uses = strings(it.optJSONArray("uses")),
+                    rateText = it.optString("rate_text"),
                     status = it.optString("status"),
+                    badge = it.optString("badge").ifEmpty { it.optString("status") },
                     why = it.optString("why"),
                 )
             },
-            devicesNone = o.optString("devices_none"),
+            devicesNoneText = o.optString("devices_none_text"),
         )
 
         private fun base(o: JSONObject): PlanResult = PlanResult(
@@ -288,30 +292,34 @@ data class PlanResult(
     }
 }
 
-/** Which phase runs where: `prompt` or `tokens`, on these devices by name. */
-data class PlanLane(val phase: String, val on: List<String>)
+// The plan as the Plan screen draws it (server/plan_view.h). Every word arrives from the server;
+// a code (`status`) is kept only to pick a colour.
+
+/** Which phase runs where, in words, on these devices by name. */
+data class PlanLane(val label: String, val on: List<String>)
 
 data class PlanMeasured(val sPerToken: Double, val cacheHitPct: Double, val tokens: Int)
 
 /** One line of the memory ledger. `inTurn`: lent by the expert cache while a prompt runs. */
-data class PlanRow(val name: String, val bytes: Long, val locked: Boolean, val inTurn: Boolean)
+data class PlanRow(val label: String, val bytes: Long, val locked: Boolean, val inTurn: Boolean)
 
-/** One memory pool: the host's (`host`), or a device's that is its own. */
-data class PlanPool(val name: String, val capBytes: Long, val lockedBytes: Long, val rows: List<PlanRow>)
+/** One memory pool: the host's, or a device's that is its own. `estimated`: an even share of a sum. */
+data class PlanPool(val label: String, val estimated: Boolean, val capBytes: Long, val lockedBytes: Long, val rows: List<PlanRow>)
 
-/** A device the plan saw: what it does in this run (`uses`, `status`) and why. */
+/** A device the plan saw: its rate and badge in words, its role as a code, and why. */
 data class PlanDevice(
     val name: String,
     val description: String,
     val cpu: Boolean,
     val promptRatio: Double,
-    val uses: List<String>,
+    val rateText: String,
     val status: String,
+    val badge: String,
     val why: String,
 )
 
-/** A `plan_progress` event: a stage of the measurement starting. */
-data class PlanProgress(val step: String, val index: Int, val count: Int)
+/** A `plan_progress` event: a stage of the measurement starting, with its words. */
+data class PlanProgress(val step: String, val label: String, val index: Int, val count: Int)
 
 /** Everything the screens observe about the engine. Immutable snapshots on one StateFlow. */
 data class EngineUi(
@@ -555,7 +563,8 @@ object Engine {
             }
             "plan_progress" -> {
                 val step = o.optString("step")
-                val p = if (step.isEmpty() || step == "done") null else PlanProgress(step, o.optInt("index"), o.optInt("count"))
+                val p = if (step.isEmpty() || step == "done") null
+                else PlanProgress(step, o.optString("label").ifEmpty { step }, o.optInt("index"), o.optInt("count"))
                 _state.update { it.copy(planProgress = p) }
             }
             else -> {} // downloads are the app's own, not the server's

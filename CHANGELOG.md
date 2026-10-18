@@ -37,10 +37,17 @@ Semantic Versioning.
   `summary` (the sentence and the lanes), `predicted` (decode as the plan priced it), `measured`
   (the loaded model's last turn, on a plan from the last load), `memory.pools` (the ledger, a
   pool per memory that is separate), `devices` (rates, `uses`, `status`, `why`) and
-  `devices_none`; each decision carries its settings `label` and its `group`. A measurement now
-  publishes `plan_progress` events, one per stage, from a progress callback on
-  `probe_and_plan()` (`AutoPlanOptions::on_step`). `docs/server-api.md` and `docs/screens.md`
-  describe both.
+  `devices_none`; each decision carries its settings `label` and its `group`. Every word the
+  screen shows comes with them (`label`, `badge`, `rate_text`, `devices_none_text`), beside a
+  code a UI reads only for a colour, so the words live once, in `server/plan_view.cpp`, pure and
+  unit-tested on an NPU phone, a discrete card and a machine with only cores, and no UI keeps a
+  table of its own. A measurement now publishes `plan_progress` events, one per stage with its
+  words, from a progress callback on `probe_and_plan()` (`AutoPlanOptions::on_step`).
+  `docs/server-api.md` and `docs/screens.md` describe both.
+- **The hardware probe tells "this build carries no accelerator backend" from "it carries one and
+  found nothing".** `HardwareProfile::backends_placeable` counts the backends that could offer a
+  local device, read from what each offers: a remote one (RPC) and a library the host calls into
+  (BLAS) do not count, so a build with only those no longer reads as a machine without devices.
 
 ## [0.31.0] - 2026-10-18
 
