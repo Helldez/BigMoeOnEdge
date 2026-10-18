@@ -8,7 +8,10 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <malloc.h>
+#include <chrono>
 #include <cstring>
+#include <string>
+#include <vector>
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -593,11 +596,132 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
 // ── A second process, for work that can end one ─────────────────────────────────────────
 #if defined(_WIN32)
 
-bool can_run_self() {
-    return false; // not implemented here: a caller does the work in its own process
+std::string self_path() {
+    char buf[4096];
+    const DWORD n = GetModuleFileNameA(nullptr, buf, (DWORD) sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) return "";
+    return std::string(buf, n);
 }
-ChildResult run_self(const std::vector<std::string> &, double, std::string *) {
-    return ChildResult{};
+
+bool can_run_self() {
+    return !self_path().empty();
+}
+
+namespace {
+// One argument, quoted the way the C runtime of the child reads it back: a quote is escaped, and
+// backslashes are literal except the run that precedes a quote or the end, which is doubled.
+void append_quoted(std::string & cmd, const std::string & a) {
+    cmd += ' ';
+    cmd += '"';
+    size_t bs = 0;
+    for (char c : a) {
+        if (c == '\\') {
+            ++bs;
+            continue;
+        }
+        if (c == '"') {
+            cmd.append(bs * 2 + 1, '\\');
+        } else {
+            cmd.append(bs, '\\');
+        }
+        bs = 0;
+        cmd += c;
+    }
+    cmd.append(bs * 2, '\\');
+    cmd += '"';
+}
+
+// Whatever the pipe holds right now, appended to the tail kept for the caller.
+bool drain_pipe(HANDLE rd, std::string * out, size_t keep) {
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)) return false; // the child closed its end
+        if (avail == 0) return true;
+        char buf[8192];
+        DWORD want = avail < (DWORD) sizeof(buf) ? avail : (DWORD) sizeof(buf);
+        DWORD n = 0;
+        if (!ReadFile(rd, buf, want, &n, nullptr) || n == 0) return false;
+        if (out) {
+            out->append(buf, (size_t) n);
+            if (out->size() > 2 * keep) out->erase(0, out->size() - keep);
+        }
+    }
+}
+} // namespace
+
+ChildResult run_self(const std::vector<std::string> & args, double timeout_seconds, std::string * out) {
+    ChildResult r;
+    const std::string path = self_path();
+    if (path.empty()) return r;
+
+    // One pipe carries the child's stdout and stderr; only the parent's end stays uninherited.
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) return r;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+    std::string cmd;
+    append_quoted(cmd, path);
+    for (const std::string & a : args)
+        append_quoted(cmd, a);
+    std::vector<char> cmdline(cmd.begin() + 1, cmd.end()); // without the leading space
+    cmdline.push_back(0);
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi{};
+    const BOOL started = CreateProcessA(path.c_str(), cmdline.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+                                        nullptr, &si, &pi);
+    CloseHandle(wr);
+    if (!started) {
+        CloseHandle(rd);
+        return r;
+    }
+
+    // Read until the child closes its end or its time is up. The pipe is polled rather than read
+    // blocking, because a blocking read has no deadline and a child that never answers is the
+    // case this exists for.
+    const size_t keep = 1u << 20;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_seconds);
+    bool timed_out = false;
+    for (;;) {
+        if (!drain_pipe(rd, out, keep)) break;
+        const double left = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
+        if (left <= 0.0) {
+            timed_out = true;
+            break;
+        }
+        const DWORD slice = left * 1000.0 < 100.0 ? (DWORD) (left * 1000.0) + 1 : 100;
+        if (WaitForSingleObject(pi.hProcess, slice) == WAIT_OBJECT_0) {
+            drain_pipe(rd, out, keep); // what it wrote last
+            break;
+        }
+    }
+    CloseHandle(rd);
+    if (timed_out) TerminateProcess(pi.hProcess, 1);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    if (timed_out) {
+        r.outcome = ChildOutcome::TimedOut;
+    } else if (code >= 0xC0000000u) {
+        // An NTSTATUS: the child died of an exception (an access violation is 0xC0000005), which is
+        // this platform's way of saying what a signal says elsewhere.
+        r.outcome = ChildOutcome::Signalled;
+        r.code = (int) code;
+    } else {
+        r.outcome = ChildOutcome::Exited;
+        r.code = (int) code;
+    }
+    return r;
 }
 
 #else
@@ -606,8 +730,6 @@ ChildResult run_self(const std::vector<std::string> &, double, std::string *) {
 extern char ** environ;
 namespace bmoe::pio {
 
-namespace {
-// The path the kernel started this process from. Not argv[0], which is whatever the caller typed.
 std::string self_path() {
 #if defined(__APPLE__)
     char buf[4096];
@@ -622,7 +744,6 @@ std::string self_path() {
     return buf;
 #endif
 }
-} // namespace
 
 bool can_run_self() {
 #if defined(__APPLE__) && TARGET_OS_IPHONE

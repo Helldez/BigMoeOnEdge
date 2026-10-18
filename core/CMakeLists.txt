@@ -78,32 +78,9 @@ if(BMOE_HAVE_LLAMA)
         target_link_libraries(bmoe_core PUBLIC android)
     endif()
 
-    # Intra-layer I/O–compute overlap needs the fork's expert-ready hook in ggml-cpu.h. Detect
-    # it by inspecting the submodule header rather than the git remote, so any tree carrying the
-    # hook (a rebase, a different fork) enables the feature. PUBLIC so cli/ and tests/ see it.
-    #
-    # It also needs the CPU backend to be LINKED. Under GGML_BACKEND_DL that backend is a module
-    # loaded at runtime and its symbols are not available to link against, so the hook is present in
-    # the header and unresolvable at link time - which is a build that fails rather than a feature
-    # that degrades. A dynamic-backend build therefore ships without overlap, and says so here.
-    # Reaching it in that build would mean exposing the hook through
-    # `ggml_backend_reg_get_proc_address`, the way ggml exposes every other backend-specific
-    # function; that is a change to the fork commit, not to this file.
-    #
-    # Relative to this file, not CMAKE_SOURCE_DIR: as a subproject the top-level source dir is the
-    # parent project, and the header would silently not be found.
-    set(_ggml_cpu_h "${CMAKE_CURRENT_LIST_DIR}/../third_party/llama.cpp/ggml/include/ggml-cpu.h")
-    if(GGML_BACKEND_DL)
-        message(STATUS "bmoe: dynamic backends - overlap unavailable (the CPU backend is not linked)")
-    elseif(EXISTS "${_ggml_cpu_h}")
-        file(READ "${_ggml_cpu_h}" _ggml_cpu_src)
-        if(_ggml_cpu_src MATCHES "ggml_cpu_set_expert_ready_hook")
-            target_compile_definitions(bmoe_core PUBLIC BMOE_HAVE_EXPERT_READY_HOOK=1)
-            message(STATUS "bmoe: expert-ready hook present (I/O–compute overlap available)")
-        else()
-            message(STATUS "bmoe: expert-ready hook absent (overlap unavailable)")
-        endif()
-    else()
-        message(STATUS "bmoe: expert-ready hook absent (overlap unavailable)")
-    endif()
+    # Intra-layer I/O–compute overlap needs the fork's expert-ready hook in the CPU backend. It is
+    # not detected here: the engine asks the CPU backend's registry for it at run time
+    # (`ggml_backend_reg_get_proc_address`), which is what lets the backend be a module loaded
+    # from beside the executable, and lets a build on stock upstream run with overlap refused
+    # rather than fail to link. See bmoe/probe.h (expert_ready_hook_available) and docs/seam.md.
 endif()

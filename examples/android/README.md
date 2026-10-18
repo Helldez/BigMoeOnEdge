@@ -23,8 +23,9 @@ Nothing about a prompt or an answer leaves the phone unless **Serve on the netwo
    This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-server.so`, `libbmoe-cli.so` and
    the `libllama`/`libggml` shared libraries.
 
-   For the NPU prefill the engine needs the Hexagon backend, which builds inside upstream's
-   Snapdragon toolchain container instead (it carries the Hexagon SDK), then stages the same way:
+   The release build adds the Hexagon, Vulkan and OpenCL backends. It runs inside upstream's
+   Snapdragon toolchain container (it carries the Hexagon SDK; `scripts/android-gpu-deps.sh`
+   fetches what Vulkan and OpenCL need), then stages the same way:
 
    ```bash
    docker run --rm -v <repo>:/workspace ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
@@ -33,8 +34,9 @@ Nothing about a prompt or an answer leaves the phone unless **Serve on the netwo
    ```
 
    The release APK is built this way by CI, with a skel for every NPU generation the backend
-   supports (v73 to v81). A local APK built with `build-android.ps1` has no Hexagon backend, and
-   Settings says so.
+   supports (v73 to v81) and with both GPU backends, so one APK fits every phone and the planner
+   measures whichever devices the phone has. A local APK built with `build-android.ps1` has the
+   CPU alone.
 
 2. Build and install the APK. Open this folder in Android Studio, or use the committed Gradle
    wrapper directly. The app has two distribution flavors (see below); build the one you want:
@@ -153,10 +155,10 @@ for two pings is reconnected.
 - **Metrics CSV**: one per-token file per loaded model, for the Metrics screen and for sharing.
 
 The prefill device (`prefill-device`) is a row like any other, and the planner chooses it: it
-measures every compute device the build carries (a GPU, a Snapdragon's NPU through the Hexagon
-backend of the release APK) on the prefill's wide matmul and arms the fastest, for the prefill
-only; decode stays on the cores. The Plan screen says which it chose and why. Nothing in the app
-names a device. See `../../docs/npu-prefill.md`.
+measures every compute device the build carries (the GPU through Vulkan or OpenCL, a Snapdragon's
+NPU through Hexagon, all three in the release APK) on the prefill's wide matmul and arms the
+fastest, for the prefill only; decode stays on the cores. The Plan screen says which it chose and
+why. Nothing in the app names a device. See `../../docs/npu-prefill.md`.
 
 ## Metrics
 

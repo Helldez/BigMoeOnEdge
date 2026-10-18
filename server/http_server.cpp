@@ -23,6 +23,7 @@
 
 #include "bmoe/config.h"
 #include "bmoe/params.h"
+#include "bmoe/probe.h"
 #include "bmoe/version.h"
 
 #include <cpp-httplib/httplib.h>
@@ -77,9 +78,9 @@ RunConfig server_defaults() {
     c.n_ctx = kChatContextTokens;
     c.n_predict = kChatAnswerTokens;
     c.decide.enabled = true; // POST /api/decide; costs nothing until a decision is asked for
-#if defined(BMOE_HAVE_EXPERT_READY_HOOK)
-    c.moe.overlap = true; // byte-identical and the measured best on every device; needs the hook
-#endif
+    // Byte-identical and the measured best on every device; needs the fork's hook in the CPU
+    // backend, which is a fact about the backend loaded, asked of it rather than assumed.
+    c.moe.overlap = expert_ready_hook_available();
     return c;
 }
 
@@ -846,10 +847,14 @@ void register_guards(httplib::Server & svr, const Options & o) {
 namespace bmoe::server {
 
 int run(int argc, char ** argv) {
-    platform::prepare_compute_backends();
     Options o;
     const int rc = parse_args(argc, argv, o);
     if (rc >= 0) return rc;
+    const std::string data_dir = o.data_dir.empty() ? platform::default_data_dir() : o.data_dir;
+    // What a backend reads from its environment, set before any backend is loaded.
+    platform::prepare_compute_backends(data_dir);
+    // Every backend beside the executable, before anything asks ggml about devices or defaults.
+    register_backends();
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
     if (!o.probe_device.empty()) {
@@ -867,7 +872,6 @@ int run(int argc, char ** argv) {
     }
 
     const fs::path exe = fs::u8path(platform::executable_dir());
-    const std::string data_dir = o.data_dir.empty() ? platform::default_data_dir() : o.data_dir;
     // Absolute from here on: the library lists models by these paths and the confinement resolves a
     // relative request against the first, so a relative one typed at launch would count twice.
     const auto absolute = [](const std::string & p) {

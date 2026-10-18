@@ -103,9 +103,11 @@ public:
     Stats stats() const override;
 
     // Register the process-global expert-ready hook so the CPU matmul blocks per expert
-    // until its slice is resident. Only meaningful in overlap mode; a no-op if the fork
-    // hook was not compiled in. Paired with shutdown(), which unregisters it.
-    void enable_overlap_hook();
+    // until its slice is resident. Only meaningful in overlap mode. The hook is the fork's and
+    // lives in the CPU backend, reached through the backend registry at run time (the CPU
+    // backend may be a module loaded at start-up); false when the backend registered here does
+    // not expose it. Paired with shutdown(), which unregisters it.
+    bool enable_overlap_hook();
 
     // True once an async read has failed or the source is shutting down. Wired to
     // llama_set_abort_callback so a mid-decode I/O failure aborts the graph cleanly
@@ -391,6 +393,8 @@ private:
     std::vector<std::pair<const void *, uint32_t>> texp_;
     std::vector<int> staged_; // per-load sorted unique expert scratch
     bool hook_registered_ = false;
+    // The fork's setter, resolved from the CPU backend's registry when the hook is enabled.
+    void (*set_hook_)(void (*)(const ggml_tensor *, int, void *), void *) = nullptr;
 };
 
 } // namespace bmoe
