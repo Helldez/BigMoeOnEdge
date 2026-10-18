@@ -5,6 +5,7 @@ import {
   isHfAdded,
   isHfFacts,
   isHfModelsResponse,
+  isHfSearchResponse,
   isInfo,
   isModelsResponse,
   isParamSpecList,
@@ -34,6 +35,7 @@ describe('guards', () => {
       }),
     ).toBe(true);
     expect(isHfAdded({ id: 'hf:a/b/x.gguf' })).toBe(true);
+    expect(isHfSearchResponse({ query: 'gemma', repos: [{ id: 'a/b' }] })).toBe(true);
   });
 
   it('refuse what is not one: a page of HTML, a list for an object, a missing field', () => {
@@ -51,5 +53,6 @@ describe('guards', () => {
     expect(isHfModelsResponse({ repo: 'a/b', models: [{ name: 'x.gguf' }] })).toBe(false);
     expect(isHfFacts({ name: 'x.gguf', bytes: 1, model: {}, verdict: { downloadable: true } })).toBe(false);
     expect(isHfAdded({})).toBe(false);
+    expect(isHfSearchResponse({ query: 'gemma', repos: [{}] })).toBe(false);
   });
 });

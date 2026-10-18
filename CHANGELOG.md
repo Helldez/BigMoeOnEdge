@@ -13,6 +13,12 @@ Semantic Versioning.
   commands, the licence) to the release, or keeps it as an artifact on a dry run. The one build of
   this engine for the platform anyone can run without an Apple team; a device build stays signed by
   whoever has the device (#235). `docs/platforms.md` and the harness README say so.
+- **A model's name is enough: the Hugging Face field searches.** Text that is not a repository id
+  or URL (`POST /api/hf/models` answers `400` with the code `not_a_repo`) is searched for on the
+  site (`POST /api/hf/search`: repositories with gguf files whose name matches, the most
+  downloaded first, a gated one marked), and the repositories found are offered to pick from, in
+  the web UI and in the app alike. The query is percent-encoded by the server and goes to the one
+  endpoint the server was started with, as every other request does.
 - **A model from any Hugging Face repository, with its header read before the download.** The
   Models screen of the web UI and of the Android app takes a repository id or URL and the server
   does three things in turn (`POST /api/hf/models`, `/inspect`, `/add`, `docs/server-api.md`):
@@ -689,6 +695,9 @@ Semantic Versioning.
   Hexagon, Metal); the rest are listed as unknown, with what each use of a device asks of a backend.
 
 ### Changed
+- `docs/roadmap.md`: how the server will keep a hybrid model's conversation through a tool loop
+  (replay the assistant's own tokens, then a recurrent checkpoint per turn), after issue #240 showed
+  Qwen3.8-Flash-Next recomputing the whole history on every tool call.
 - **The README says what `--auto` is and how it decides.** A paragraph in Features, a quickstart
   line, and two schemas under "How it works": what happens on each token, and how a plan is
   derived from the model and the machine. The roadmap no longer lists the choice of the prefill

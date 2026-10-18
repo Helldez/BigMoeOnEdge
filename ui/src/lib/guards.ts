@@ -10,6 +10,7 @@ import type {
   HfAdded,
   HfFacts,
   HfModelsResponse,
+  HfSearchResponse,
   Info,
   ModelsResponse,
   ParamSpec,
@@ -59,6 +60,10 @@ export function isHfModelsResponse(v: unknown): v is HfModelsResponse {
     Array.isArray(v.models) &&
     v.models.every((m) => isObject(m) && isStr(m.name) && isNum(m.bytes) && isBool(m.complete) && Array.isArray(m.files))
   );
+}
+
+export function isHfSearchResponse(v: unknown): v is HfSearchResponse {
+  return isObject(v) && isStr(v.query) && Array.isArray(v.repos) && v.repos.every((r) => isObject(r) && isStr(r.id));
 }
 
 export function isHfFacts(v: unknown): v is HfFacts {

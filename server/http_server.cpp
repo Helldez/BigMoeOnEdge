@@ -29,6 +29,7 @@
 #include <cpp-httplib/httplib.h>
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -49,6 +50,7 @@ namespace {
 constexpr int kPortMax = 65535;
 
 constexpr const char * kDefaultHfEndpoint = "https://huggingface.co";
+constexpr int kHfSearchLimit = 20; // repositories a search answers with: a screen's worth
 
 struct Options {
     std::string host = kDefaultHost;
@@ -396,7 +398,8 @@ bool read_hf_request(const httplib::Request & req, httplib::Response & res, HfRe
     }
     std::string err;
     if (!parse_hf_ref(body["repo"].get<std::string>(), out.ref, err)) {
-        send_error(res, 400, err, "invalid_request");
+        // Its own code: a UI falls back to a search on it, and on nothing else.
+        send_error(res, 400, err, "not_a_repo");
         return false;
     }
     if (body.contains("token")) {
@@ -697,6 +700,40 @@ void register_routes(httplib::Server & svr, App & app) {
     });
 
     // ── a model from a Hugging Face repository (hf_repo.h, the helpers above register_routes) ──
+    svr.Post("/api/hf/search", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        if (!body.contains("query") || !body["query"].is_string())
+            return send_error(res, 400, "query must be a string", "invalid_request");
+        std::string query = body["query"].get<std::string>();
+        while (!query.empty() && std::isspace((unsigned char) query.back()))
+            query.pop_back();
+        while (!query.empty() && std::isspace((unsigned char) query.front()))
+            query.erase(query.begin());
+        if (query.empty()) return send_error(res, 400, "query is empty", "invalid_request");
+        std::string token;
+        if (body.contains("token") && body["token"].is_string()) token = body["token"].get<std::string>();
+        std::string text, err;
+        if (!app.net->get(hf_search_url(app.opt.hf_endpoint, query, kHfSearchLimit), 0, 0, token, text, err))
+            return send_error(res, 502, "could not search: " + err, "upstream");
+        json hits;
+        try {
+            hits = json::parse(text);
+        } catch (const std::exception &) {
+            return send_error(res, 502, "the search answer is not JSON", "upstream");
+        }
+        std::vector<HfRepoHit> repos;
+        if (!parse_hf_search(hits, repos, err)) return send_error(res, 502, err, "upstream");
+        json out = json::array();
+        for (const HfRepoHit & r : repos)
+            out.push_back({{"id", r.id},
+                           {"downloads", r.downloads},
+                           {"likes", r.likes},
+                           {"modified", r.modified},
+                           {"gated", r.gated}});
+        send_json(res, json{{"query", query}, {"repos", out}});
+    });
+
     svr.Post("/api/hf/models", [&](const httplib::Request & req, httplib::Response & res) {
         HfRequest r;
         std::vector<HfModel> models;
