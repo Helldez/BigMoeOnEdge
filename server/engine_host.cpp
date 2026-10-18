@@ -212,7 +212,20 @@ json EngineHost::info() const {
 }
 
 void EngineHost::publish_state() const {
+    state_cv_.notify_all();
     bus_.publish("state", info());
+}
+
+std::unique_lock<std::mutex> EngineHost::take_turn() {
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> lk(m_);
+            state_cv_.wait(lk, [&] { return state_ != State::Loading; });
+        }
+        std::unique_lock<std::mutex> g(gen_m_);
+        std::lock_guard<std::mutex> lk(m_);
+        if (state_ != State::Loading) return g;
+    }
 }
 
 ChatOutcome EngineHost::chat(const ChatRequest & req,
@@ -237,7 +250,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
         TurnQueue & q;
         ~Leave() { q.leave(); }
     } leave{turns_};
-    std::lock_guard<std::mutex> g(gen_m_);
+    std::unique_lock<std::mutex> g = take_turn();
 
     std::shared_ptr<HostedSession> s;
     {
@@ -315,7 +328,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
         TurnQueue & q;
         ~Leave() { q.leave(); }
     } leave{turns_};
-    std::lock_guard<std::mutex> g(gen_m_);
+    std::unique_lock<std::mutex> g = take_turn();
 
     std::shared_ptr<HostedSession> s;
     {

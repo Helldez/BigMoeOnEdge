@@ -18,6 +18,7 @@
 #include "bmoe/session.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -106,6 +107,13 @@ private:
 
     void publish_state() const;
 
+    // Take gen_m_ for a turn, after any load that has been announced. load() reads Loading before
+    // its thread takes the lock, and a turn arriving in that gap would take it first, find no
+    // session and answer 503 for a model that is seconds from ready: so a turn that holds the lock
+    // while the state still reads Loading has overtaken the loader, and gives the lock back until
+    // the load has ended one way or the other.
+    std::unique_lock<std::mutex> take_turn();
+
     static void log_to_bus(LogLevel level, const char * message, void * self);
 
     EventBus & bus_;
@@ -120,7 +128,8 @@ private:
     // it, so waiting for a load under it cannot deadlock.
     std::mutex life_m_;
 
-    mutable std::mutex m_; // guards everything below except loader_ (see life_m_)
+    mutable std::mutex m_;                     // guards everything below except loader_ (see life_m_)
+    mutable std::condition_variable state_cv_; // signalled by publish_state(), after any change
     State state_ = State::Empty;
     std::string error_;
     std::shared_ptr<HostedSession> session_;

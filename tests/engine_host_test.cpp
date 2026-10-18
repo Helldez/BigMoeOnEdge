@@ -37,6 +37,7 @@ static int failures = 0;
 
 static void check(bool ok, const std::string & what) {
     std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", what.c_str());
+    std::fflush(stdout); // a check that hangs the next one is still on record
     if (!ok) ++failures;
 }
 

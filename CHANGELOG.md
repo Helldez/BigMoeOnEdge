@@ -129,6 +129,11 @@ Semantic Versioning.
   message. `docs/screens.md` gives the line.
 
 ### Fixed
+- **A turn sent the moment a load is announced waits for the load.** `EngineHost::load()` reads
+  "loading" before its thread has taken the generation lock, and a request in that gap took the lock
+  first, found no session and answered 503 for a model seconds from ready. A turn now gives the lock
+  back while the state reads loading and takes it once the load has ended either way; the engine
+  host test that caught it on Windows runs stable (30 runs under `ctest`).
 - **The prefill device's dense layer slots are one table, indexed as they were sized**, in place
   of a conditional between two member arrays. The two spell the same selection, so this changes no
   behaviour: it was made while gate G17 (nemotron_h_moe) aborted under AddressSanitizer and
