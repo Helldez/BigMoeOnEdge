@@ -73,6 +73,64 @@ export interface PlanDecision {
   value: string;
   source: PlanSource | (string & {});
   reason: string;
+  /** The knob's settings label, empty when the knob is not a parameter. */
+  label?: string;
+  /** A setting the plan decided, one it left (the person's, or unmeasured), or a note that is no setting. */
+  group?: 'set' | 'kept' | 'notes' | (string & {});
+}
+
+/** One line of the memory ledger: something the run holds, and how. */
+export interface PlanMemoryRow {
+  name: string;
+  bytes: number;
+  locked: boolean;
+  /** Held in turn with the expert cache (during a prompt), not beside it. */
+  in_turn: boolean;
+}
+
+/** One memory pool: the host's, or a device's that is its own. */
+export interface PlanMemoryPool {
+  name: string;
+  cap_bytes: number;
+  lockable_cap_bytes: number;
+  held_bytes: number;
+  locked_bytes: number;
+  rows: PlanMemoryRow[];
+}
+
+export type PlanDeviceUse = 'prompt' | 'tokens' | 'layers';
+
+export interface PlanDevice {
+  name: string;
+  description: string;
+  cpu: boolean;
+  own_memory: boolean;
+  memory_total: number;
+  /** Rate against the host at prompt width, 0 when unmeasured. */
+  prompt_ratio: number;
+  token_ratio: number;
+  uses: (PlanDeviceUse | (string & {}))[];
+  status: 'used' | 'unused' | 'refused' | 'unusable' | (string & {});
+  why: string;
+}
+
+export interface PlanLane {
+  phase: 'prompt' | 'tokens' | (string & {});
+  on: string[];
+}
+
+/** What the last turn of the loaded model measured, beside what the plan predicted. */
+export interface PlanMeasured {
+  s_per_token: number;
+  cache_hit_pct: number;
+  tokens: number;
+}
+
+/** A `plan_progress` event: a stage of the measurement starting, or `done`. */
+export interface PlanProgress {
+  step: string;
+  index?: number;
+  count?: number;
 }
 
 export interface Config {
@@ -116,6 +174,13 @@ export interface PlanAvailable {
   warning?: string;
   /** The plan applied at the last load, served without measuring again. */
   from_last_load?: boolean;
+  summary?: { sentence: string; lanes: PlanLane[] };
+  predicted?: { s_per_token?: number; cache_hit_pct?: number };
+  measured?: PlanMeasured;
+  memory?: { pools: PlanMemoryPool[] };
+  devices?: PlanDevice[];
+  /** Why there is no device beyond the host: '' when there is one. */
+  devices_none?: 'build' | 'machine' | 'not_probed' | '' | (string & {});
   /** Set instead of the fields above when there is nothing to plan (no model selected). */
   error?: string;
 }

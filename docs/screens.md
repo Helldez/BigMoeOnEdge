@@ -103,17 +103,40 @@ What it is: what is on this device, how to get a model onto it, and which one is
 What it is: what the hardware planner measured on this machine and what it decided for the
 chosen model, with the fact behind each knob.
 
+One layout for every machine. A phone with an NPU, a laptop with an integrated GPU, a desktop with
+a discrete card and a server with only cores show the same blocks in the same order; what changes is
+what the lists hold. Device names are shown as the plan reports them, and no block has a case for
+a device, a system or a vendor: a badge's colour follows a device's role, a bar's colour a row's
+position.
+
 - **Auto-plan.** A switch: plan before every load. Off, a load uses the settings as they are.
-- **The plan.** One line for the machine (cores, memory available and total, this model's matmul
-  rate), the regime, whether streaming was declined and why, then one row per decision: the knob,
-  its value, where it came from (`measured`, `derived`, `policy`, `operator` for a value the
-  person set and the planner left alone, `unprobed`), and the reason in a sentence. A plan
-  measured with a model loaded carries the server's warning: it is sized for a smaller machine.
-- **Actions.** Measure (the probes run again: storage reads, a matmul on every device; on a phone
-  it takes a while and never starts on its own), Apply (the plan's values go to the settings
-  without becoming the person's), and the reproduce line, copyable, for a bug report.
+- **Summary, first.** The plan's sentence (`summary.sentence`: "Experts stream from flash, with a
+  7.1 GiB cache"), the machine line, and three tiles: decode speed, expected from `predicted` and,
+  once the loaded model has answered, measured from `measured` with the difference (`+26%`); the
+  cache hit rate, measured with a mark at what the plan credited; and the lanes, which device
+  computes the prompt and which the tokens. Apply sits here. A plan measured with a model loaded
+  carries the server's warning: it is sized for a smaller machine.
+- **Memory.** One bar per pool (`memory.pools`): every row the ledger holds, then what is free,
+  against what the process may hold; each row named, sized and marked when locked. A row held in
+  turn with the cache is a sentence under the bar, not a segment.
+- **Devices.** One row per device the plan saw, the host first among equals: its rate on a prompt
+  as a bar scaled to the fastest device measured, a badge for what it does (`Prompt`, `Tokens`,
+  `Layers`, combined) or why it does nothing (`Not used`, `Wrong results`, `Unusable`), and the
+  reason in a sentence. With no device beyond the host, one line says which of the three it is: the
+  build carries no backend for one, the backends it carries found none here, or nobody looked.
+- **Decisions, grouped.** The settings the plan decided (open), the ones it left (the person's
+  own, or unmeasured), and the notes that are no setting: regime, placement, ledger, costs
+  (folded), each with a count. A row shows the knob's settings label, its value and where it came
+  from (`measured`, `derived`, `policy`, `operator` for a value the person set and the planner left
+  alone, `unprobed`); opening it shows the reason in a sentence and the way to the setting.
+- **Measuring.** While the probes run (Measure, or an auto load), the stages from `plan_progress`:
+  done, running, how many to go. Never a blind wait.
+- **Actions.** Measure again (the probes run again: storage reads, a matmul on every device; on a
+  phone it takes a while and never starts on its own), Apply (the plan's values go to the settings
+  without becoming the person's), and the command line, copyable, for a bug report; the planner's
+  full explanation folded beneath it.
 - **With nothing loaded**, the decisions the configuration carries from the last applied plan are
-  shown, so the screen is never empty after a plan has been made.
+  shown, grouped the same way, so the screen is never empty after a plan has been made.
 
 ## Settings
 

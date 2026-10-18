@@ -339,6 +339,7 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 | `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` |
 | `config` | the `GET /api/config` object, after any change |
+| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), `index` from 0 and `count`; then `{"step": "done"}` when it ends. The keys are a protocol: a UI words them, and shows a key it does not know as it is |
 | `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
 
 `flash_wait_ms` (per token) and `flash_wait_s_tok` (the run's average) are the flash term that is a
@@ -467,19 +468,57 @@ unusable instead of ending the server; `--no-isolated-probes` runs them in-proce
 {"available": true, "model": "C:/models/Qwen3.6-35B-A3B-Q4_K_M.gguf",
  "machine": "16 cores, 3388 MiB available of 15182 MiB, 33 GiB/s on this model's matmul",
  "regime": "experts-stream", "streaming_declined": false, "decline_reason": "",
- "decisions": [{"knob": "cache-mb", "value": "703", "source": "derived", "reason": "..."}],
+ "decisions": [{"knob": "cache-mb", "label": "Expert cache", "group": "set", "value": "703",
+                "source": "derived", "reason": "..."}],
  "values": {"cache-mb": 703, "threads": 8}, "args": ["--moe-stream", "--cache-mb", "703"],
- "not_applicable": [], "explain": "..."}
+ "not_applicable": [],
+ "summary": {"sentence": "Experts stream from flash, with a 0.7 GiB cache.",
+             "lanes": [{"phase": "prompt", "on": ["CPU"]}, {"phase": "tokens", "on": ["CPU"]}]},
+ "predicted": {"s_per_token": 0.302, "cache_hit_pct": 38.0},
+ "memory": {"pools": [{"name": "host", "cap_bytes": 3552575488, "lockable_cap_bytes": 0,
+                       "held_bytes": 3322400768, "locked_bytes": 0,
+                       "rows": [{"name": "dense", "bytes": 1932735283, "locked": false, "in_turn": false}]}]},
+ "devices": [{"name": "CPU", "description": "...", "cpu": true, "own_memory": false, "memory_total": 0,
+              "prompt_ratio": 1.0, "token_ratio": 1.0, "uses": ["prompt", "tokens"], "status": "used",
+              "why": "The host: every rate is measured against it."}],
+ "devices_none": "", "explain": "..."}
 ```
 
 `source` is `measured | derived | policy | operator | unprobed`. Keys in `user_keys` come back as
-`operator`: the planner never touches them. `values` are the parameters the plan changes, read
+`operator`: the planner never touches them. A decision's `label` is its knob's settings label from
+the parameter table (empty for a knob that is not a parameter), and `group` is how a UI reads it:
+`set` (a parameter the plan decided from a fact, whether or not the value changed), `kept` (a
+parameter it left: the caller's own, or one nothing measured), `notes` (what is not a parameter:
+the regime, the placement, the ledger, a `cost`).
+
+The rest describes the plan for a person, so a UI shows it without knowing any device, system or
+knob. Every list is as long as the machine makes it:
+
+- `summary.sentence` is what the plan decided, in a sentence; `summary.lanes` which device names
+  compute the prompt and the tokens (a device holding layers in memory of its own is on the
+  tokens lane beside the host).
+- `predicted` is decode as the plan priced it, the figures `bmoe-cli --auto` prints after a run:
+  `s_per_token`, and `cache_hit_pct` where there is a cache. Either is absent when not predicted.
+- `memory.pools` is the ledger the plan charged: the host's pool (`name` `host`; `cap_bytes`
+  what the process may hold, `lockable_cap_bytes` what it may hold locked) with one row per thing
+  held for the whole run, and one pool for each device with memory of its own that holds layers.
+  A row with `in_turn` is not held beside the expert cache but in its place while a prompt runs.
+- `devices` is every device the plan saw, the host included: its rate against the host on a
+  prompt-wide matmul (`prompt_ratio`) and on one token (`token_ratio`), 0 when unmeasured; `uses`,
+  which of `prompt`, `tokens`, `layers` it does in this run; `status`, `used`, `unused`, `refused`
+  (its results did not match the host's) or `unusable` (its probe did not come back); `why` in a
+  sentence. `devices_none` says why there is no device beyond the host, when there is none:
+  `build` (this build carries no backend for one), `machine` (the backends it carries found none
+  here; a backend with no local device, such as RPC, counts) or `not_probed`; empty otherwise.
+ `values` are the parameters the plan changes, read
 through the parameter table; `args` are the arguments that reproduce the plan, one per element
 and unquoted, and empty when the plan declines streaming; `not_applicable` names anything the plan
 decided that the table cannot hold (a tensor-placement pattern, say), so it is shown rather than
 silently dropped.
 With a model loaded that an auto load planned, `GET /api/plan` answers at once with that plan and
-`"from_last_load": true`, without measuring. `GET /api/plan?measure=1` measures again regardless;
+`"from_last_load": true`, without measuring, and once the model has answered, `measured`: what
+its last turn measured for decode (`s_per_token`, `cache_hit_pct`, -1 without a cache, and
+`tokens`), to set beside `predicted`. `GET /api/plan?measure=1` measures again regardless;
 a plan computed while a model is loaded carries a `warning`, because that model's memory reads as
 taken and the plan is sized for a smaller machine. Auto mode avoids this by planning with nothing
 loaded.

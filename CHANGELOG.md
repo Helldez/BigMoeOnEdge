@@ -19,6 +19,28 @@ Semantic Versioning.
   hold them (`docs/settings.md`, `docs/which-models-stream.md`, `docs/benchmarks.md`), and the
   three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
   with their own dark card so they read on either GitHub theme.
+- **The Plan screen leads with the outcome, and reads the same on every machine.** The web UI and
+  the Android app open the plan with what it decided in one sentence ("Experts stream from flash,
+  with a 4.8 GiB cache") and three tiles: decode speed expected and, once the loaded model has
+  answered, measured beside it with the difference; the cache hit rate measured against what the
+  plan credited; which device computes the prompt and which the tokens. Then the memory as one bar
+  per pool (every ledger row, what is free, what is locked), every device with its rate against
+  the host, what it does in this run and why, and the decisions in three groups: the settings the
+  plan decided (under their settings labels), the ones it left, and the notes that are no
+  setting (regime, placement, ledger, costs), folded. A measurement shows the stage that is
+  running instead of a blind wait. One layout for a phone with an NPU, a laptop with an
+  integrated GPU, a discrete card or a machine with only cores: every block is a list of what the
+  plan holds, device names are the plan's own, and nothing in either UI names a device or a
+  system (#288). On a laptop: 0.307 s/token predicted, 0.212 measured on the first answer;
+  hits credited 28%, measured 64%.
+- **`GET /api/plan` describes the plan for a person.** New fields beside the old ones:
+  `summary` (the sentence and the lanes), `predicted` (decode as the plan priced it), `measured`
+  (the loaded model's last turn, on a plan from the last load), `memory.pools` (the ledger, a
+  pool per memory that is separate), `devices` (rates, `uses`, `status`, `why`) and
+  `devices_none`; each decision carries its settings `label` and its `group`. A measurement now
+  publishes `plan_progress` events, one per stage, from a progress callback on
+  `probe_and_plan()` (`AutoPlanOptions::on_step`). `docs/server-api.md` and `docs/screens.md`
+  describe both.
 
 ## [0.31.0] - 2026-10-18
 

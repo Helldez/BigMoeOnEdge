@@ -15,6 +15,7 @@ import type {
   ModelsResponse,
   ParamSpec,
   Plan,
+  PlanProgress,
   TokenEvent,
 } from './types';
 
@@ -105,4 +106,8 @@ export function isDoneSummary(v: unknown): v is DoneSummary {
 
 export function isDownloadEvent(v: unknown): v is DownloadEvent {
   return isObject(v) && isStr(v.id) && isStr(v.state);
+}
+
+export function isPlanProgress(v: unknown): v is PlanProgress {
+  return isObject(v) && isStr(v.step);
 }
