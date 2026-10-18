@@ -245,6 +245,12 @@ Semantic Versioning.
   without streaming from a dense model.
 
 ### Fixed
+- **A host-only run hands llama.cpp no device instead of naming the CPU as one.** Since `--devices
+  auto` (0.29.0) a run with no layer on a device passed the CPU in llama.cpp's device list, which
+  names the devices it offloads to; the context then built a second CPU backend beside its own and
+  scheduled the graph on it, with the other idle. An empty list is what a build without a GPU
+  backend gets from llama.cpp's own selection: one CPU backend, and still no GPU in the scheduler.
+  Same output and the same memory; one backend fewer.
 - **The planner counted every block of a hybrid model as a MoE layer on the host.** The fitter's
   list of layers left on the host speaks in llama.cpp's block indices, and on an architecture
   where most blocks carry no experts (Nemotron-H, Qwen3.8-Flash-Next, the leading-dense families)
