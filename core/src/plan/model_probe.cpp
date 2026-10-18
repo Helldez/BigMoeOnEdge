@@ -190,6 +190,8 @@ ModelProfile probe_model(const char * model_path) {
     m.is_moe = m.expert_bytes > 0 && m.n_expert > 0 && m.n_expert_used > 0;
     m.n_layer = (uint32_t) blocks.size();                   // llama.cpp's own layer indices
     m.n_moe_layer = (uint32_t) per_layer_one_expert.size(); // the ones that stream
+    for (const auto & kv : per_layer_one_expert)
+        m.moe_layers.push_back((uint32_t) kv.first);
 
     uint32_t projections_seen = 0;
     for (const auto & kv : projections_per_layer)

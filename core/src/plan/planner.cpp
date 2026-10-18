@@ -324,7 +324,14 @@ void share_of_host(Planning & s) {
     const Placement & placement = s.placement;
     s.host_bandwidth_win = s.hw.host_bandwidth_gibs * (1.0 + (double) s.pol.min_backend_win);
     s.n_moe_layer = s.model.n_moe_layer;
-    s.host_layers = placement.fitted ? (uint32_t) placement.host_expert_layers.size() : s.n_moe_layer;
+    // Count the host list against the blocks that carry experts: a placement is expressed in every
+    // block of the file, and on a hybrid architecture most blocks carry none.
+    uint32_t host_moe = 0;
+    for (uint32_t il : placement.host_expert_layers)
+        if (s.model.moe_layers.empty() ||
+            std::find(s.model.moe_layers.begin(), s.model.moe_layers.end(), il) != s.model.moe_layers.end())
+            ++host_moe;
+    s.host_layers = placement.fitted ? std::min(host_moe, s.n_moe_layer) : s.n_moe_layer;
     s.host_expert_bytes = (placement.fitted && s.n_moe_layer)
                               ? (uint64_t) ((double) s.model.expert_bytes * s.host_layers / s.n_moe_layer)
                               : s.model.expert_bytes;

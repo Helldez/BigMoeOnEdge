@@ -463,6 +463,29 @@ int main() {
               std::to_string((unsigned long long) (p.cache_budget_bytes >> 20)) + " MiB");
     }
 
+    // A hybrid model: 52 blocks, 23 with experts. The fitter's host list speaks in blocks, and a
+    // count of 52 "MoE layers" out of 23 would prorate the expert set past itself.
+    {
+        ModelProfile hybrid = model;
+        hybrid.arch = "nemotron_h_moe";
+        hybrid.n_layer = 52;
+        hybrid.n_moe_layer = 23;
+        hybrid.moe_layers.clear();
+        for (uint32_t il = 3; il < 52; il += 2)
+            if (hybrid.moe_layers.size() < 23) hybrid.moe_layers.push_back(il);
+        Placement pl;
+        pl.fitted = true;
+        pl.n_ctx = 2048;
+        for (uint32_t il = 0; il < 52; ++il)
+            pl.host_expert_layers.push_back(il);
+        pl.host_resident_bytes = 1 * GiB;
+        const Plan p = plan_run(base_cfg(), desktop(), hybrid, pl, PlanRequest{});
+        const Decision * d = find(p, "placement");
+        check(d && d->reason.find("23 of 23 MoE layers") != std::string::npos,
+              "hybrid: the host's share counts the blocks that carry experts",
+              d ? d->reason.substr(0, 120) : "no line");
+    }
+
     // A device with memory of its own is not charged: the two pools really are separate.
     {
         HardwareProfile disc = desktop();
