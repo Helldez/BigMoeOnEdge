@@ -43,6 +43,9 @@ Semantic Versioning.
   the documented shape fails where it is read, with `code: "bad_response"`, instead of as an
   undefined inside a component. A reconnection now asks for the config again, beside the schema: a
   change made while the page was cut off arrived as no event.
+- `docs/roadmap.md` gains a step that makes measuring and loading readable in every UI: each
+  measurement step with its result and duration, the load's progress with a cancel, a notice before
+  measuring, and measurements kept between loads if the recorded durations show it pays.
 
 ### Changed
 - **`Session::open()` and `Session::generate()` read as their steps.** The two functions were 690
@@ -118,6 +121,12 @@ Semantic Versioning.
   a chat error is acted on by its `code` (`no_model` links to Models), a closed port is told apart
   by `ConnectException`, not by the text of a message, and a failed message can be sent again, as
   on the web; a failed decision leaves no question behind to be sent as history.
+- **The line under an answer names each rate by its phase, and gives the prefill a rate.** It read
+  `1.7 tok/s · 9 tok · prefill 4.0s (13 tok)`: a bare rate that was the decode's, and a prefill
+  given only as time. It now reads `decode 1.7 tok/s (9 tok) · prefill 3.3 tok/s (13 tok, 4.0 s)`,
+  in the web UI and in the app alike, from the `prefill_tps` the server already sends. The prefill
+  counts the tokens the turn read, which with the conversation reused from the KV cache is the new
+  message. `docs/screens.md` gives the line.
 
 ### Fixed
 - **The prefill device's dense layer slots are one table, indexed as they were sized**, in place
@@ -200,6 +209,12 @@ Semantic Versioning.
   widest cache line of any target, instead of 64. The swap probe finds a zram device under any number
   rather than only `zram0`, and the spin-wait's pause and the decide probe's 64-bit file reads moved
   behind `core/src/io/`, so no operating-system branch is left in `core/src/moe/`.
+- **The plan names every compute device it did not weigh for the prefill, and why.** A device
+  with no measurement at prefill width dropped out of the `prefill-device` line without a word, so
+  a plan read the same whether the machine had no such device or had one that could not run this
+  model. On a phone with an NPU, a Q2_K model planned as if the NPU were absent; the line now ends
+  with "HTP0 was not weighed: it does not run this model's expert matmul in the model's own
+  format", or "it gave no measurement at that width" where the reason is not known.
 
 ## [0.30.0] - 2026-10-16
 
@@ -995,7 +1010,6 @@ Semantic Versioning.
   release archive's README.txt opens with the same fact and a complete Windows command, and no
   longer points a Windows user at a bash script as the only instruction. The Windows build also
   links the MSVC runtime statically, so the exe no longer needs the VC++ Redistributable to start.
-
 
 ### Added
 - **Prefill-phase attribution in `BMOE_DONE` and the CSV `# summary`.** `prefill_cpu_s` /

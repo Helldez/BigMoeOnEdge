@@ -406,7 +406,9 @@ shown on the same machine and model - a 1473-token prompt in 3.4 s against 25.4 
 A device is armed when four things hold, each a fact and none a name:
 
 1. **It was measured at prefill width.** An unmeasured device is not armed; a device that will not
-   run the wide graph keeps its zero, and zero is "unmeasured", never "slow".
+   run the wide graph keeps its zero, and zero is "unmeasured", never "slow". The plan names it
+   with the reason, so a device that cannot run this model's format (an NPU and a 2-bit file) does
+   not read as a device that is not there.
 2. **It gave the host's answer at that width.** Asked separately from the one-token check, because
    a backend's batched kernel is not the kernel its one-token path runs.
 3. **It wins by the margin** every other device decision uses (`min_backend_win`).
