@@ -36,6 +36,17 @@ bool is_embedding_table(const std::string & name) {
 
 } // namespace
 
+GgufHeaderFacts probe_gguf_header(const char * model_path) {
+    GgufHeaderFacts h;
+    if (!model_path || !*model_path) return h;
+    const GgufModelInfo info = read_gguf_model_info(model_path);
+    h.ok = info.ok;
+    h.arch = info.arch;
+    h.n_expert = info.n_expert;
+    h.n_expert_used = info.n_expert_used;
+    return h;
+}
+
 ModelProfile probe_model(const char * model_path) {
     ModelProfile m;
     if (!model_path || !*model_path) {

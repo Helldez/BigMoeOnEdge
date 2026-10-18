@@ -36,7 +36,13 @@ public:
     // `models_dir` is where downloads land. `scan_dirs` are other directories whose models are
     // listed beside it and loaded in place, never written (a phone's adb-pushed and shared-storage
     // folders): the host app knows where they are, the server says what they hold.
-    ModelLibrary(std::string models_dir, std::vector<std::string> scan_dirs, std::string catalog_path, EventBus & bus);
+    // `added_path` is where entries added at run time (a model picked from a repository,
+    // hf_repo.h) are kept between runs, beside the settings; "" keeps none.
+    ModelLibrary(std::string models_dir,
+                 std::vector<std::string> scan_dirs,
+                 std::string catalog_path,
+                 std::string added_path,
+                 EventBus & bus);
     ~ModelLibrary();
 
     // Problems found reading the catalog, for the start-up log. Empty when it loaded cleanly.
@@ -60,6 +66,14 @@ public:
         bool streamable = false;
     };
     ModelFacts probe(const std::string & path);
+
+    // Add (or replace, by id) an entry the server built, and keep it. "" when kept; otherwise
+    // why it was not.
+    std::string add_entry(const CatalogEntry & e);
+    // Forget an added entry. Files on disk stay. False when there is no such added entry.
+    bool remove_entry(const std::string & id);
+    // The entry, when the catalog or the added ones have it.
+    bool entry(const std::string & id, CatalogEntry & out) const;
 
     std::string start_download(const std::string & id); // "" once started
     bool cancel_download(const std::string & id);
@@ -86,13 +100,16 @@ private:
     // One directory's models as /api/models `local` entries, appended to `out`.
     void list_dir(const std::string & dir, json & out);
 
+    void save_added();
     std::string dir_;
     std::vector<std::string> scan_dirs_;
+    std::string added_path_;
+    std::vector<CatalogEntry> added_;
     EventBus & bus_;
     std::vector<CatalogEntry> catalog_;
     std::vector<std::string> warnings_;
 
-    std::mutex m_;
+    mutable std::mutex m_;
     std::map<std::string, std::unique_ptr<Job>> jobs_;
     struct FactsCacheEntry {
         uint64_t size = 0;

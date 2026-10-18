@@ -5,6 +5,9 @@ import android.content.Intent
 import androidx.core.content.ContextCompat
 import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.data.CatalogEntry
+import io.bigmoeonedge.app.data.HfFacts
+import io.bigmoeonedge.app.data.HfModels
+import io.bigmoeonedge.app.data.hfRequestBody
 import io.bigmoeonedge.app.data.MetricsRecorder
 import io.bigmoeonedge.app.data.Telemetry
 import io.bigmoeonedge.app.data.Thermal
@@ -490,6 +493,24 @@ object Engine {
 
     suspend fun applyPlan(): Result<ConfigState> = withContext(Dispatchers.IO) {
         catching { ConfigState.of(api.applyPlan()).also { c -> _state.update { it.copy(config = c) } } }
+    }
+
+    // ── a model from a Hugging Face repository (data/HfRepo.kt) ──
+    suspend fun hfModels(repo: String, token: String): Result<HfModels> = withContext(Dispatchers.IO) {
+        catching { HfModels.of(api.hfModels(hfRequestBody(repo, token = token))) }
+    }
+
+    suspend fun hfInspect(repo: String, name: String, token: String): Result<HfFacts> = withContext(Dispatchers.IO) {
+        catching { HfFacts.of(api.hfInspect(hfRequestBody(repo, name, token))) }
+    }
+
+    /** Adds the model to the catalog and answers its id; the models list is refreshed so the entry shows. */
+    suspend fun hfAdd(repo: String, name: String, token: String): Result<String> = withContext(Dispatchers.IO) {
+        catching { api.hfAdd(hfRequestBody(repo, name, token)).getString("id") }.also { refreshModels() }
+    }
+
+    suspend fun removeAdded(id: String): Result<Unit> = withContext(Dispatchers.IO) {
+        catching { api.removeAdded(id); Unit }.also { refreshModels() }
     }
 
     /** The client for a chat stream: the chat runs it on its own thread and owns the connection. */

@@ -20,6 +20,8 @@ data class CatalogEntry(
     /** The server's view of its own models directory: `on_disk`, `downloading`, `available`. */
     val serverStatus: String,
     val files: List<CatalogFile>,
+    /** Added at run time from a repository (`POST /api/hf/add`): it can be removed; its files stay. */
+    val added: Boolean = false,
 ) {
     /** The file handed to the engine: the first (and for a split set, the first shard). */
     val fileName: String get() = files.first().name
@@ -42,6 +44,7 @@ data class CatalogEntry(
                 bytes = o.optLong("bytes", files.sumOf { it.bytes }),
                 serverStatus = o.optString("status", "available"),
                 files = files,
+                added = o.optBoolean("added", false),
             )
         }
     }

@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { isConfig, isDecideResult, isInfo, isModelsResponse, isParamSpecList, isPlan, isTokenEvent } from './guards';
+import {
+  isConfig,
+  isDecideResult,
+  isHfAdded,
+  isHfFacts,
+  isHfModelsResponse,
+  isInfo,
+  isModelsResponse,
+  isParamSpecList,
+  isPlan,
+  isTokenEvent,
+} from './guards';
 
 describe('guards', () => {
   it('accept the shapes the server documents', () => {
@@ -13,6 +24,16 @@ describe('guards', () => {
     expect(isPlan({ available: true, decisions: [] })).toBe(true);
     expect(isDecideResult({ cancelled: false, best: 0, choice_logp: [-1, null] })).toBe(true);
     expect(isTokenEvent({ step: 1, wall_ms: 3 })).toBe(true);
+    expect(isHfModelsResponse({ repo: 'a/b', models: [{ name: 'x.gguf', bytes: 1, complete: true, files: [] }] })).toBe(true);
+    expect(
+      isHfFacts({
+        name: 'x.gguf',
+        bytes: 1,
+        model: { readable: true },
+        verdict: { downloadable: true, mode: 'streams', disk: 'd', memory: 'm' },
+      }),
+    ).toBe(true);
+    expect(isHfAdded({ id: 'hf:a/b/x.gguf' })).toBe(true);
   });
 
   it('refuse what is not one: a page of HTML, a list for an object, a missing field', () => {
@@ -27,5 +48,8 @@ describe('guards', () => {
     expect(isPlan({ available: true })).toBe(false);
     expect(isDecideResult({ cancelled: false, best: '0', choice_logp: [] })).toBe(false);
     expect(isTokenEvent({ step: 1 })).toBe(false);
+    expect(isHfModelsResponse({ repo: 'a/b', models: [{ name: 'x.gguf' }] })).toBe(false);
+    expect(isHfFacts({ name: 'x.gguf', bytes: 1, model: {}, verdict: { downloadable: true } })).toBe(false);
+    expect(isHfAdded({})).toBe(false);
   });
 });
