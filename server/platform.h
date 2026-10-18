@@ -18,6 +18,12 @@ std::string executable_dir();
 // or $XDG_DATA_HOME/bigmoeonedge (~/.local/share/bigmoeonedge).
 std::string default_data_dir();
 
+// What this platform's compute backends are told before any of them is loaded, each only where
+// the environment has not said otherwise. On Android: the Hexagon NPU backend waits for the DSP by
+// polling and offers its host buffer type, which the prefill device moves the KV cache into. Called
+// first thing, so a device-probe child inherits it.
+void prepare_compute_backends(const std::string & data_dir);
+
 // Open `url` in the default browser. Best effort.
 void open_url(const std::string & url);
 

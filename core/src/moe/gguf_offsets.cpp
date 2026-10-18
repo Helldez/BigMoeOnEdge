@@ -1,4 +1,5 @@
 #include "gguf_offsets.h"
+#include "bmoe/log.h"
 
 #include "gguf.h"
 
@@ -60,6 +61,9 @@ void fill_offsets(const gguf_context * gctx, int file_idx, GgufOffsets & out) {
         // caller must not be made to pay for twice.
         const int64_t * ne = gguf_get_tensor_ne(gctx, i);
         out.rows_by_name[name] = ne ? (uint64_t) (ne[1] > 0 ? ne[1] : 0) : 0;
+        // Exactly three dimensions: gguf pads ne to GGML_MAX_DIMS with ones, so a 3-D tensor is one
+        // whose fourth extent is 1 and whose third is not.
+        out.extents.push_back({name, ne && ne[3] == 1 && ne[2] > 1 ? (uint64_t) ne[2] : 0});
     }
 }
 
@@ -102,8 +106,8 @@ int split_count_from_path(const std::string & path, std::string & prefix) {
     const int count = std::stoi(path.substr(tail + 9, 5));
     if (count <= 1) return 0; // a -00001-of-00001 file is just a single file
     if (no != 1) {
-        std::fprintf(stderr, "bmoe: %s is shard %d of a split model — pass the first shard (-00001-of-)\n",
-                     path.c_str(), no);
+        log_printf(LogLevel::Error, "%s is shard %d of a split model — pass the first shard (-00001-of-)", path.c_str(),
+                   no);
         return -1;
     }
     prefix = path.substr(0, tail - 1);
@@ -131,7 +135,7 @@ bool fill_all_offsets(const char * path, GgufOffsets & out, gguf_context * first
         const std::string sp = make_shard_path(prefix, no, count);
         gguf_context * gctx = open_meta(sp.c_str());
         if (!gctx) {
-            std::fprintf(stderr, "bmoe: split model is missing shard %s\n", sp.c_str());
+            log_printf(LogLevel::Error, "split model is missing shard %s", sp.c_str());
             out = GgufOffsets{};
             return false;
         }

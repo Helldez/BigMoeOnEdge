@@ -50,7 +50,12 @@ zero.
 
 Three of the fitter's answers are read rather than trusted. Left at 0 it picks the model's full
 training context, so our context is always the pin. On a machine with no GPU it leaves
-`n_gpu_layers` at its default, which means "all", so devices are counted instead. And its host
+`n_gpu_layers` at its default, which means "all", so devices are counted instead: the placement is
+applied only when every device the fitter gave bytes to was measured to have memory of its own and
+states its size. Where one reads the host's memory, the fitter has counted one pool twice, and the
+placement is quoted under `placement-declined` and not applied. Asking the machine instead of those
+devices let an NPU on a phone vouch for the GPU beside it, and 2106 MiB went "on devices" that the
+plan's ledger never held. And its host
 `model` term is neither the file nor the dense set, so dense bytes come from the gguf profile and
 only the context and compute reservations come from the fitter — the one thing it knows that the
 profile does not, and 605 MiB the earlier budget had overcommitted on the desktop.
@@ -142,13 +147,15 @@ The planner enumerates what ggml registers. A backend the build did not compile 
 beside the executable, is a device no rule can consider — so the plan reports "no accelerator" on any
 hardware, forever, and that is a property of the build printed as a property of the room.
 
-`register_backends()` calls `ggml_backend_load_all()` before enumeration, which finds backends
-shipped as separate shared libraries. Those are looked for **next to the executable**, which is why
-`CMAKE_RUNTIME_OUTPUT_DIRECTORY` is set at the root — a lone binary copied without its libraries
-silently reports a machine with no accelerator. `scripts/build-portable.sh` builds them that way
-(`GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS`) and enables the backends whose toolchain is present;
-it costs `--overlap`, whose expert-ready hook symbol lives in the CPU backend and cannot be linked
-against when that backend is loaded at runtime.
+Every release is built with the backends as modules (`BMOE_BACKEND_MODULES`, the top-level
+CMakeLists): `register_backends()` loads them from the executable's own directory before
+enumeration, and from there only - a lone binary copied without its libraries reports a machine
+with no accelerator, and a module left in the working directory is not picked up. Which modules a
+release carries is decided by the build host's toolchain, not by a list per OS: Vulkan, OpenCL and
+Hexagon in the APK, Vulkan in the Linux and Windows archives, Metal in the macOS one; a module a
+user builds with another toolchain and drops beside the binary is loaded like the shipped ones.
+`--overlap` survives the move because the fork's hook is reached through the CPU backend's registry
+rather than linked ([seam.md](seam.md)).
 
 The profile records how many backends came linked, how many were loaded at run time, and whether
 anyone looked at all, so the plan keeps three answers apart: *this machine has no accelerator*,
@@ -197,6 +204,25 @@ and `BMOE_*` env overrides both count as the caller speaking.
    its ledger keeps only the context and compute buffers. Before, it printed the cost of the
    allocation it had just refused: 0.23 s/token predicted where the run took 1.46 and the bound
    said 1.69.
+
+## One sequence, every front-end
+
+Steps 1 to 7 are one call, `probe_and_plan` (`core/include/bmoe/auto_plan.h`), and every front-end
+that plans makes it: `bmoe-cli --auto` and the server's `/api/plan` alike. Its order is a
+measurement, not a preference - backends registered before anything looks at a device, each device
+asked in its own process before this one uses any, the bandwidth and device-cost probes before the
+storage probe reads gigabytes, the headroom probe last because its active mode leaves the kernel
+busy - and an order written out once per front-end is an order that can drift until one of them
+measures the other's recovery. What a front-end decides is in its options: whether the storage is
+read (`--no-probe-io`), whether memory is measured by holding it (`--probe-mem`, never from the
+server), and how it starts itself again to probe a device. The composition lives with the adapters,
+because it starts llama.cpp's backends; it decides nothing, and the rules it ends in stay pure.
+
+Inside, `plan_run` is a list of named stages over one planning state - the widest graph, the regime,
+the placement, the accelerator axis, the dense policy, the ledger and the prefill device, the cache
+floor, the I/O knobs, the devices the run lists - and `allocate` a list of named steps, in the order
+this page describes them. A reason that tells a person what to type spells the flag through the
+parameter table, so a renamed flag cannot leave the rationale advising one that no longer parses.
 
 ## The facts, and which knob each one decides
 
@@ -306,7 +332,7 @@ alone is how a plan comes to ask for locks the machine stops granting part way.
 | row | from | charged to |
 |---|---|---|
 | context and compute buffers | llama.cpp's own projection for this model and context | holdable |
-| a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for it | holdable; lockable too where its buffers are |
+| a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for that device (none for one it never places layers on, such as an NPU) | holdable; lockable too where its buffers are |
 | dense set | the gguf | holdable; lockable if it is pinned |
 | expert cache | what is left | holdable; lockable for the part that can be locked in place |
 
@@ -387,7 +413,9 @@ shown on the same machine and model - a 1473-token prompt in 3.4 s against 25.4 
 A device is armed when four things hold, each a fact and none a name:
 
 1. **It was measured at prefill width.** An unmeasured device is not armed; a device that will not
-   run the wide graph keeps its zero, and zero is "unmeasured", never "slow".
+   run the wide graph keeps its zero, and zero is "unmeasured", never "slow". The plan names it
+   with the reason, so a device that cannot run this model's format (an NPU and a 2-bit file) does
+   not read as a device that is not there.
 2. **It gave the host's answer at that width.** Asked separately from the one-token check, because
    a backend's batched kernel is not the kernel its one-token path runs.
 3. **It wins by the margin** every other device decision uses (`min_backend_win`).
@@ -480,13 +508,35 @@ prefill matched the text after the host prefill for the first 369 of 541 generat
 then chose a different word; two device runs matched each other exactly. A caller who needs the
 host's answer byte for byte passes an empty `--prefill-device`, which the plan leaves alone.
 
-On agreement. The check is a relative tolerance, not bit equality, and the bound sits between two
-populations that are far apart. Correct kernels disagree with the host by what their arithmetic
-differs in - the host multiplies a quantized weight by an activation it has itself quantized, a
-device typically by the float - measured at 4e-5 on a 4-bit type, 1.9e-4 on a 2-bit one and
-3e-4 to 4e-4 at prefill width. A wrong kernel is off by the size of the answer. The bound was 1e-4,
-which reported the 2-bit type and every wide result as wrong; it is a hundredth now, still two
-orders below "wrong".
+On agreement. The check is not bit equality, and it is not ours: it is the normalized mean
+squared error llama.cpp's `test-backend-ops` applies to a matmul, `sum((a-b)^2) / sum(a^2)` under
+5e-4. What precision a backend's kernels should have is upstream's call, made for every backend it
+ships; a stricter private bound only refuses devices its tests accept. Ours was stricter, and did:
+a laptop iGPU's Vulkan prefill accumulates in half precision and differs from the host by 4.4e-4
+(2.1% of the answer), the bound was then 1e-4 in this unit, and the device was reported as wrong -
+while the model's perplexity over a 1070-token text with its prefill on that device was 32.58
+against the host's 32.46. Correct kernels on full-precision paths sit far below, at 1.6e-9 to
+1.6e-7; a wrong kernel is off by the size of the answer, an NMSE near 1.
+
+Passing the check means a device computes what llama.cpp considers the same matmul, not the same
+bytes, and a greedy decode can choose a different word after a near tie, as the run above shows.
+It does not mean the device computes the model: a synthetic matmul cannot see a fault that only the
+model's own activations trigger. A phone GPU's Vulkan prefill, half precision too, took the same
+text's perplexity from 32.4 to 711 445 - no next token right in 1070.
+
+So the session confirms the device on the model before keeping it (`--prefill-verify`, on by
+default). After the load it prefills a fixed text on the host and on the device - 64 tokens, or the
+device's narrowest graph (`--prefill-min-tokens`) where that is wider - and keeps the device only
+if the top next token agrees in at least 90% of the positions; otherwise the device is handed back
+exactly as one that failed to open, and with `--prefill-best-effort`, which a plan that armed the
+device sets, the prefill stays on the CPU. A check that cannot run - a text the vocabulary does not
+tokenize, no graph as wide as the device's narrowest within what one graph may return - leaves the
+device as set and says so: not confirming is no evidence against it. Measured: the laptop iGPU agrees in 98%
+(logit NMSE 1.3e-3). The check costs three short prefills at load. It judges correctness only:
+it times both passes and prints the times, but at 64 tokens cold expert reads dominate, and that
+iGPU, faster there (6.5 s against 7.5), prefilled a real 1015-token prompt 8% slower than the host.
+Whether a device is faster stays the plan's estimate, which does not yet charge the expert arena's
+reads: it put the same iGPU at 1.5x.
 
 ## The widest graph
 
@@ -551,8 +601,10 @@ itself what the machine has - which only works if finding out cannot end the pro
 It could. On a phone from 2020, a build carrying the Vulkan backend loaded it, listed the GPU, and
 died at the first allocation: the backend calls a function that driver does not have, without
 checking, and there is no error to catch. The OpenCL backend could not be linked for the same phone
-at all, for two functions its driver lacks. Neither is a property the profile could have carried in
-advance; both are the driver's.
+at all, for two functions its driver lacks - which is why the APK ships the Khronos ICD loader as
+the library the backend imports, so the binary starts on any phone, while the app links the
+vendor's own where there is one ([npu-prefill.md](npu-prefill.md)). Neither is a property the
+profile could have carried in advance; both are the driver's.
 
 So each device beyond the host is asked in a second process first: this same executable, started
 again with the device's name, which runs everything that touches that device and prints its facts
@@ -568,11 +620,13 @@ the run decodes at 1.87 and 2.02 tok/s on the cores with the backend's library s
 executable. On the laptop, where the device works, the plan is the same as before and the second
 process costs about 3.5 s, most of it the child measuring the host again as its own reference.
 
-Starting a second process is the front-end's business, so the probe takes a runner; `bmoe-cli` and
-`bmoe-server` each give it one (`--probe-device` is the child's mode in both, `--no-isolated-probes`
-turns it off). Where a platform has no way to start one the runner is empty and the probes run
-here, as they always did: that is the case on Windows today. The time limit is two minutes, and it
-has not been seen to fire.
+Starting a second process is the front-end's business, so the probe takes a runner, built from the
+arguments each front-end hands `probe_and_plan` to start itself again (`AutoPlanOptions`); `bmoe-cli`
+and `bmoe-server` each give them (`--probe-device` is the child's mode in both, and the child's whole
+side is one call, `probe_device_child`; `--no-isolated-probes` turns it off). Where a platform has no way to start one the runner is empty and the probes run
+here, as they always did: that is the case on iOS. Windows has its own implementation of the child,
+built and not yet run on a machine with a GPU. The time limit is two minutes, and it has not been
+seen to fire.
 
 What this does not do: it measures a matmul, not a prefill. The loaders that fill the device's
 slots from flash, and the storage under them, are not in the probe, so on a machine whose storage
@@ -600,6 +654,14 @@ scattered reads, one lane — because that is what a group left mapped costs onc
 its pages, and it is not a fraction of the sequential rate but a different order of magnitude: 24
 MiB/s against 2800 on this desktop, **116x**. Without that term, leaving a group mapped looks nearly
 free and the plan under-spends on residency by two orders of magnitude.
+
+Both are read the way the engine reads, at granules the machine states rather than at 4096. The
+reader asks the file it opened for its direct-read alignment (`pio::direct_alignment`: the kernel's
+`statx` answer on Linux and Android where there is one, the filesystem's block size otherwise, the
+volume's sector sizes on Windows) and cuts its windows to that; the probe reports it as
+`storage.align`, or `0` where the platform did not say and the reader fell back to 4096. A refault
+is read one VM page at a time, because that is what the kernel faults in: 16 KiB on Apple silicon,
+4 KiB on most Linux and Android kernels.
 
 ### The decisive sample is sized in bytes, not in requests
 
@@ -903,8 +965,9 @@ names the device that would qualify, and arms nothing.
 wrap memory we own". It is not that answer, and reading it as one produced a wrong fact about the
 backends that matter most here.
 
-In the pinned submodule, **Vulkan, OpenCL and SYCL each report the capability `false` while wiring a
-complete implementation into their device interface.** Vulkan's is not a stub: it imports host memory
+In the pinned submodule, **Vulkan and SYCL each report the capability `false` while wiring a
+complete implementation into their device interface, and OpenCL wires one that declines.** Vulkan's
+is not a stub: it imports host memory
 through `VK_EXT_external_memory_host`, refusing only when the extension is absent or when the pointer
 and size are not multiples of the device's `minImportedHostPointerAlignment`. That is precisely why
 the capability is false — it is a blanket promise, and a backend whose support is conditional per

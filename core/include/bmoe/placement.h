@@ -57,6 +57,14 @@ struct Placement {
     uint64_t device_compute_bytes = 0;
     uint64_t device_context_bytes = 0; // the context the fitter put on the devices, summed
 
+    // Which devices those compute buffers were projected for, and each one's part, at the width
+    // they were projected at. A device the fitter did not project for (one it never places layers
+    // on) has no part: the sum above describes other devices' graphs, not its own.
+    std::vector<std::string> projected_devices;
+    std::vector<uint64_t> projected_compute_bytes;
+    // The part of `device_compute_bytes` that is the named device's, at this placement's width.
+    uint64_t device_compute_of(const std::string & device) const;
+
     // The compute buffers above are those of one graph width - the widest graph the run computes at
     // once (RunConfig::n_ubatch) - and they grow with it: an activation is a row per token. The
     // width they were projected at, and what each further token of width costs, so the second stage

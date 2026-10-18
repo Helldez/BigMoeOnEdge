@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work as the docs say it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems go through private vulnerability reporting instead (see SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release, or the commit for a build from source (`bmoe-cli --version`).
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and hardware as a class (e.g. "Android 16, 12 GB phone", "Windows 11, x86 laptop, 16 GB").
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: The GGUF file (name and quantisation), or the catalog entry.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The command line or the steps in the app, and the settings that differ from the defaults.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: The relevant stderr or server log lines. Remove local paths you do not want to publish.
+      render: text

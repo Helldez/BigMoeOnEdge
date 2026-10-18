@@ -24,8 +24,8 @@
       <dd>{formatNum(m.readMibS, 0)} <small>MiB/s</small></dd>
     </div>
     <div>
-      <dt>Stall share</dt>
-      <dd>{m.stall === null ? '-' : formatPct(m.stall)}</dd>
+      <dt>Flash wait</dt>
+      <dd>{m.flashWait === null ? '-' : formatPct(m.flashWait)}</dd>
     </div>
     <div>
       <dt>Cache hit</dt>

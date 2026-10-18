@@ -65,6 +65,15 @@ if(TARGET bmoe_server_core)
     add_test(NAME server_logic COMMAND bmoe_server_test)
 endif()
 
+# bmoe-server's engine host: loads, turns, cancel and unload across threads, and which failures
+# close the session, over a scripted session behind the host's seam (server/hosted_session.h).
+# No model.
+if(TARGET bmoe_server)
+    add_executable(bmoe_engine_host_test engine_host_test.cpp)
+    target_link_libraries(bmoe_engine_host_test PRIVATE bmoe_server)
+    add_test(NAME engine_host COMMAND bmoe_engine_host_test)
+endif()
+
 # release_file_mappings: on Windows it must find and drop this process's own view + section of a
 # file and leave the placeholders in place; on POSIX it must report unsupported and touch nothing.
 add_executable(bmoe_mapping_release_test mapping_release_test.cpp)
@@ -85,6 +94,20 @@ target_link_libraries(bmoe_stall_union_test PRIVATE bmoe_core)
 target_include_directories(bmoe_stall_union_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 add_test(NAME stall_union COMMAND bmoe_stall_union_test)
 
+# How llama.cpp's tensor and graph-node names are read, and the fitter's expert-override patterns.
+# Pure string rules over the conventions every reader shares, so they run without a model.
+add_executable(bmoe_tensor_names_test tensor_names_test.cpp)
+target_link_libraries(bmoe_tensor_names_test PRIVATE bmoe_core)
+target_include_directories(bmoe_tensor_names_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
+add_test(NAME tensor_names COMMAND bmoe_tensor_names_test)
+
+# Which tensors of a file are its routed experts, from their shapes and the declared expert count:
+# every layout the gates run, the companions that share a name but not a rank, and the refusals.
+# Pure, so it runs without a model; the gates then prove each layout streams byte-identical.
+add_executable(bmoe_expert_layout_test expert_layout_test.cpp)
+target_link_libraries(bmoe_expert_layout_test PRIVATE bmoe_core)
+add_test(NAME expert_layout COMMAND bmoe_expert_layout_test)
+
 # The CSV `# summary` trailer serialization. Drives the sink directly with a filled RunSummary —
 # no model, no llama.cpp — so the emitted key names and units are pinned by a test rather than by
 # whatever script last read them. The prefill keys must match BMOE_DONE's, token for token.
@@ -102,6 +125,16 @@ add_test(NAME decide_policy COMMAND bmoe_decide_test)
 
 find_program(PYTHON3 NAMES python3 python)
 
+# The overlap gates (G4, G5b, S2) need the fork's expert-ready hook, which a module build only finds
+# at run time, in the CPU backend it loaded. By default they skip themselves where it is absent, so a
+# build on stock upstream still passes its gates; the build whose job is to prove --overlap turns
+# this on, and a missing hook is then a failure (CI's host-linux job).
+option(BMOE_GATES_REQUIRE_HOOK "The byte-identity gates fail, instead of skipping, where the expert-ready hook is absent" OFF)
+set(_gate_args)
+if(BMOE_GATES_REQUIRE_HOOK)
+    set(_gate_args --require-hook)
+endif()
+
 if(PYTHON3)
     # arch → (fixture id, gguf filename). Each gets a generate fixture + a gate run.
     foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe")
@@ -114,7 +147,7 @@ if(PYTHON3)
         )
         set_tests_properties(moe_make_tiny_model_${spec} PROPERTIES FIXTURES_SETUP ${_fixture})
 
-        add_test(NAME moe_gates_${spec} COMMAND bmoe_moe_gates ${_model})
+        add_test(NAME moe_gates_${spec} COMMAND bmoe_moe_gates ${_model} ${_gate_args})
         set_tests_properties(moe_gates_${spec} PROPERTIES FIXTURES_REQUIRED ${_fixture})
     endforeach()
 
@@ -131,7 +164,7 @@ if(PYTHON3)
     set_tests_properties(moe_make_tiny_model_split PROPERTIES FIXTURES_SETUP TINY_MOE_MODEL_split)
 
     add_test(NAME moe_gates_split
-             COMMAND bmoe_moe_gates "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-split-00001-of-00004.gguf")
+             COMMAND bmoe_moe_gates "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-split-00001-of-00004.gguf" ${_gate_args})
     set_tests_properties(moe_gates_split PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_split)
 else()
     message(WARNING "python3 not found: MoE gates will not run (models cannot be generated)")

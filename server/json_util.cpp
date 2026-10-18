@@ -86,6 +86,7 @@ json token_json(const TokenMetrics & m) {
                 {"compute_ms", m.compute_ms},
                 {"mgmt_ms", m.mgmt_ms},
                 {"stall_ms", m.stall_ms},
+                {"flash_wait_ms", m.flash_wait_ms},
                 {"read_mib", mib(m.read_bytes)},
                 {"cache_hit_pct", m.cache_hit_pct},
                 {"cache_budget_mib", m.cache_budget_mib},
@@ -98,7 +99,8 @@ json token_json(const TokenMetrics & m) {
 }
 
 // The keys are the CLI's BMOE_DONE keys (docs/telemetry.md), so a metrics view reads the two
-// front-ends alike.
+// front-ends alike, plus the facts a UI would otherwise derive from the configuration: the flash
+// term that is a share of the wall (flash_wait_*), already chosen for the run's mode.
 json summary_json(const RunSummary & s, bool cancelled) {
     return json{{"cancelled", cancelled},
                 {"tokens", s.n_generated},
@@ -115,6 +117,7 @@ json summary_json(const RunSummary & s, bool cancelled) {
                 {"io_s_tok", s.moe_io_s_per_token},
                 {"compute_s_tok", s.moe_compute_s_per_token},
                 {"stall_s_tok", s.moe_stall_s_per_token},
+                {"flash_wait_s_tok", s.moe_flash_wait_s_per_token},
                 {"mgmt_s_tok", s.moe_mgmt_s_per_token},
                 {"majflt_tok", s.majflt_per_token},
                 {"cpu_s_tok", s.cpu_s_per_token},

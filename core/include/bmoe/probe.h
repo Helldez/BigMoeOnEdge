@@ -33,6 +33,18 @@ HardwareProfile probe_hardware(const char * model_path);
 // declines on.
 ModelProfile probe_model(const char * model_path);
 
+// The file's header alone: its architecture and expert counts, with ok=false when it is not a
+// gguf that parses. A MoE whose expert layout probe_model refuses to plan still reads here, so a
+// caller can tell "not a gguf" from "a gguf this engine does not stream" without reading an
+// error's words. Only the first shard is read.
+struct GgufHeaderFacts {
+    std::string arch;
+    int n_expert = 0;
+    int n_expert_used = 0;
+    bool ok = false;
+};
+GgufHeaderFacts probe_gguf_header(const char * model_path);
+
 // Ask every registered device whether it can execute THIS model's expert matmul on THIS model's
 // quantized layout, and whether placing such a weight there would need a repack. Asking the backend
 // about the real operation is what keeps the answer vendor-neutral and current: a backend that
@@ -43,13 +55,23 @@ ModelProfile probe_model(const char * model_path);
 // asked (no devices registered yet, or an unknown expert type) — which every rule declines on.
 void probe_device_support(HardwareProfile & hw, const ModelProfile & model);
 
-// Make every backend this machine has available for enumeration, including any that ship as
-// separate shared libraries rather than linked in. llama.cpp's own tools do this before they look
-// at devices, and the reason to do it here is the same: a device nobody enumerated is a device no
-// rule can consider, and "there is no accelerator" and "nobody went to look" are different answers.
+// Make every backend this machine has available for enumeration: the ones linked in, and the ones
+// that ship as modules beside the executable, which is how every release of this project is built
+// (docs/backends.md). llama.cpp's own tools do this before they look at devices, and the reason to
+// do it here is the same: a device nobody enumerated is a device no rule can consider, and "there
+// is no accelerator" and "nobody went to look" are different answers.
 //
-// A statically linked build finds nothing and loses nothing. Call it before llama_backend_init().
+// Modules are looked for beside the executable and nowhere else - not in the working directory,
+// which llama.cpp's own loader would also search. Idempotent; a front-end calls it once, before
+// anything asks ggml about devices, and before llama_backend_init() (which would otherwise load
+// from both places). A statically linked build finds nothing and loses nothing.
 void register_backends();
+
+// Whether the CPU backend registered here exposes the fork's expert-ready hook, which `--overlap`
+// needs (docs/seam.md). Asked of the backend at run time rather than decided at compile time, so a
+// front-end's default and its reported capability follow the backend actually loaded. Only
+// meaningful after register_backends().
+bool expert_ready_hook_available();
 
 // What this binary can even see. A backend the build did not compile in, and did not find beside
 // the executable, is a device no probe will ever enumerate — so a plan made on this machine would

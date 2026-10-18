@@ -20,6 +20,8 @@ add_library(bmoe_server_core STATIC
     turn_queue.cpp
     event_bus.cpp
     json_util.cpp
+    model_files.cpp
+    hf_repo.cpp
     settings_store.cpp
 )
 target_link_libraries(bmoe_server_core PUBLIC bmoe_core)
@@ -34,6 +36,8 @@ add_library(bmoe_server STATIC
     http_server.cpp
     engine_host.cpp
     model_library.cpp
+    model_inspect.cpp
+    curl_fetch.cpp
     planner_adapter.cpp
     platform.cpp
 )

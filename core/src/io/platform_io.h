@@ -18,7 +18,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <vector>
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <intrin.h> // _mm_pause, for cpu_relax
+#endif
 
 namespace bmoe::pio {
 
@@ -51,6 +56,57 @@ uint64_t file_size(fd_t fd);
 // "alignment-constrained" (a property of the I/O mode, what this reports) are the same thing on
 // every platform except Apple, where they come apart.
 bool direct_needs_alignment();
+
+// The granule a cache-bypassing read on `fd` must be aligned to - its file offset, its length and
+// its buffer, taken as one value - as the platform states it for the filesystem this file is on.
+// It is a fact about the file, not the platform: one phone formats its data partition with 4 KiB
+// blocks and the next with 16 KiB ones, and O_DIRECT on the second rejects a 4 KiB window. Asked of
+// the descriptor the reads will use, so it answers for the path they actually take:
+//
+//   * Linux/Android: statx(STATX_DIOALIGN), which is the kernel stating exactly this, where the
+//     kernel, the headers and (on Android) the app sandbox all have it; otherwise the filesystem's
+//     fundamental block size. Neither goes below `direct_align_fallback`: a smaller legal granule
+//     is a read-size change that has not been measured, not a correctness gain.
+//   * Apple: the filesystem's fundamental block size. F_NOCACHE imposes no alignment at all (see
+//     direct_needs_alignment), so this is a safe granule to report, not a requirement.
+//   * Windows: the volume's logical sector size and the filesystem's effective physical sector size,
+//     the larger of the two - NO_BUFFERING requires the first and recommends the second for buffers.
+//
+// A power of two, or 0 where the platform does not say; the caller then uses `direct_align_fallback`,
+// and must not report that substitute as a measurement.
+size_t direct_alignment(fd_t fd);
+// What an unprobed file is read at: the block size of every flash and disk this engine has met, and
+// the value every direct read used before the alignment was asked for. A multiple of the 512-byte
+// sector, so it stays correct on storage that wants less.
+constexpr size_t direct_align_fallback = 4096;
+
+// The span two independently written atomics must keep apart so they never share a cache line:
+// 128 bytes on Apple's cores, 64 on x86 and the other arm64 cores this engine has run on. It
+// sizes the padding of the hottest poll in the engine, one flag per expert and projection, so it
+// follows the target rather than taking the widest value everywhere: doubling that array's
+// footprint on a phone is a cost that was not measured. A compile-time value because it sizes
+// `alignas`.
+#if defined(__APPLE__) && defined(__aarch64__)
+constexpr size_t false_sharing_span = 128;
+#else
+constexpr size_t false_sharing_span = 64;
+#endif
+
+// One idle beat of a spin-wait: keep the core out of its siblings' way without entering the
+// scheduler. A pause hint where the ISA has one (single instructions, no syscall); yield elsewhere.
+inline void cpu_relax() {
+#if defined(__aarch64__)
+    __asm__ __volatile__("isb" ::: "memory");
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#if defined(_MSC_VER)
+    _mm_pause();
+#else
+    __builtin_ia32_pause();
+#endif
+#else
+    std::this_thread::yield();
+#endif
+}
 
 // Aligned heap allocation for O_DIRECT bounce buffers and shared slots.
 void * alloc_aligned(size_t align, size_t sz);
@@ -109,9 +165,22 @@ struct ChildResult {
 };
 bool can_run_self();
 ChildResult run_self(const std::vector<std::string> & args, double timeout_seconds, std::string * out);
+// The path the kernel started this process from (not argv[0], which is whatever the caller
+// typed), or "" where the platform does not say. Its directory is where a release's backend
+// modules are looked for.
+std::string self_path();
 
 // Reserved (address-only) region; physical pages appear on commit, vanish on evict.
 size_t vm_page();
+// Readable bytes every buffer we allocate to hold tensor data keeps past the tensor's last byte.
+// ggml's CPU kernels may load a vector that reaches beyond the last block (one Q6_K path reads 32
+// bytes from a 16-byte field at the block's end), which llama.cpp's own buffers absorb because
+// something always follows the last tensor in them. A buffer sized to its tensor exactly can end
+// on a page boundary with a guard page after it, and that load faults - seen on a phone, at random,
+// as the next mapping varied. One page, the OS's own, covers any vector a CPU loads at once.
+inline size_t tensor_tail_slack() {
+    return vm_page();
+}
 void * vm_reserve(size_t sz);
 bool vm_commit(void * p, size_t sz);
 // Ask the kernel to keep a committed span in RAM: not swapped, not compressed. False where the

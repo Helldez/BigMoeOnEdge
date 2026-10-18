@@ -18,9 +18,10 @@ updated.
 We use both phases:
 
 **Capture phase** (one warm-up decode). `ask` is called for every node, so we scan each
-node's `src[]` for expert weight tensors (`blk.<il>.<suffix>.weight`, where the suffixes
-come from the arch's recipe — `ffn_{gate,up,down}_exps` for the split layout, a fused
-`ffn_gate_up_exps` for others) and record the live `ggml_tensor*`. We return false
+node's `src[]` for expert weight tensors (`blk.<il>.<suffix>.weight`, where the suffixes are
+the file's own: its 3-D block weights indexed by its expert count, read before the load —
+`ffn_{gate,up,down}_exps` in the split layout, a fused `ffn_gate_up_exps` in others) and record
+the live `ggml_tensor*`. We return false
 throughout — capture observes, it does not isolate. `ggml_tensor` is a public struct, so
 reading `->name`, `->ne`, `->nb` and writing `->data` is public API surface.
 
@@ -64,8 +65,22 @@ CPU MoE kernel invokes.
 
 ```c
 // ggml-cpu.h
-void ggml_cpu_set_expert_ready_hook(ggml_expert_ready_hook_t hook, void * user_data);
+void ggml_cpu_set_expert_ready_hook(ggml_cpu_expert_ready_hook_t hook, void * user_data);
+// and the same setter from the CPU backend's registry, by name:
+ggml_backend_reg_get_proc_address(cpu_reg,
+                                  "ggml_cpu_set_expert_ready_hook");
 ```
+
+The engine never links the symbol: it asks the CPU backend's registry for it at run time, the
+way ggml exposes every other backend-specific function (threads, NUMA, the abort callback). That
+is what lets the CPU backend be a module loaded from beside the executable, which is how every
+release is built (`BMOE_BACKEND_MODULES`), and what lets a build on stock upstream run: the
+registry answers null, `expert_ready_hook_available()` says so, and `--overlap` is refused with
+the reason instead of failing to link. The gates that prove `--overlap` byte-identical (G4, G5b,
+S2) skip themselves on such a build, and the build whose job is to prove it passes
+`-DBMOE_GATES_REQUIRE_HOOK=ON`, under which a missing hook is a failure: whether the CPU module a
+build loads carries the hook is decided at run time now, and a bump or a stripped module must not
+be able to retire those gates quietly.
 
 `ggml_compute_forward_mul_mat_id` calls the hook at the top of its per-expert loop, right
 after the "expert not routed this token" skip, before it consumes that expert's weight
@@ -81,11 +96,11 @@ and it can only fire *before* the expert matmuls of a layer run — it cannot pa
 through them. Overlapping expert reads with expert compute requires a per-expert wait point
 *inside* the kernel, which the public API does not provide. Hence the extension.
 
-**Graceful degradation.** CMake probes `ggml-cpu.h` for the hook symbol and, when present,
-defines `BMOE_HAVE_EXPERT_READY_HOOK`. Built against stock upstream (symbol absent) the
-whole project still compiles and runs — the serial streaming path is unchanged; only
-`--overlap` is affected, and it fails with a clear runtime error instead of silently
-falling back.
+**Graceful degradation.** Nothing is detected at configure time. Built against stock upstream
+the whole project compiles and runs - the serial streaming path is unchanged; only `--overlap`
+is affected, and it fails with a clear runtime error instead of silently falling back. The
+server's default for overlap and the `overlap_available` it reports are read from the backend
+that loaded, not from a build flag.
 
 **Sunset condition.** This fork exists *solely* for this one hook. The moment upstream
 ships an equivalent per-expert readiness/residency callback, the branch is dropped and the
@@ -101,8 +116,8 @@ library for two things: rendering the model's own chat template and parsing reas
 gguf ships (so Gemma's channel format, Qwen ChatML, etc. all format correctly, driven by the
 model rather than hardcoded), and `common_chat_parse` extracts a reasoning model's thinking so
 it can be reported apart from the answer. The parser-params wiring lives in its own translation
-unit, `chat_parse.cpp` — the PEG parser arena has to be loaded explicitly or `common_chat_parse`
-throws on the first token, which is how issue #49 stayed invisible; keeping it separate makes
+unit, `chat_parse.cpp` — the PEG parser arena has to be copied across explicitly, or `common_chat_parse`
+falls back to a content-only parser (it threw on the first token before the 2026-10-18 base), which is how issue #49 stayed invisible; keeping it separate makes
 that seam unit-testable without a model.
 
 A second translation unit, `thinking_control.cpp`, crosses the same boundary for "thinking off".
@@ -133,6 +148,9 @@ and no native backend (`tests/ngram_test.cpp`). See [ngram.md](ngram.md).
 includes only `llama.h` and `common.h`. The draft/verify orchestration — running the trained MTP
 head, moving hidden states from the target to it, seeding the next draft from the accepted position
 — is entirely upstream's; the engine supplies the loop around it and the two contexts it works on.
+The driver reads its own mirror of a batch's entries (`common_batch`), not the `llama_batch` the
+engine decodes, so the engine copies each batch it hands to `common_speculative_process` into one
+(`to_common_batch` in `session.cpp`): the decode itself stays on the public API.
 Worth stating explicitly because the internals it needs (`llama_set_embeddings_nextn` and the
 `nextn` hidden-state getters) live in `src/llama-ext.h`, a *staging* header: they are used **inside**
 `speculative.cpp`, which is already compiled into the `llama-common` the engine links, so nothing in
@@ -257,17 +275,18 @@ Either way the gates are the enforcement. The fragility is not the public
 API but the *internal naming conventions* the seam attaches to — the tensor suffixes and
 the `ffn_moe_topk` node name are how llama.cpp happens to build MoE graphs today, not a
 guaranteed contract, so upstream can rename or restructure them (Gemma 4's fused
-`ffn_gate_up_exps` is one such evolution we absorbed with a recipe row). The gates are the
-enforcement: a rename breaks byte-identity before merge instead of silently corrupting
-output. Each supported architecture adds one more gate to keep green across a bump.
+`ffn_gate_up_exps` is one such evolution, absorbed with no change since the layout is read off
+the file's shapes). The gates are the enforcement: a rename breaks byte-identity before merge
+instead of silently corrupting output. Each expert layout has a gate to keep green across a bump.
 
 If a future release moves the two hooks (a stable expert-residency API, say) upstream,
 this seam shrinks further or disappears — `core/` does not change.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-2609`, commit `dce9698`: the single expert-ready-hook commit
-(section 3) on top of upstream `ggml-org/llama.cpp` master `965f897` of 2026-09-26 (530 commits
-past `b10666`). On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
+`bmoe/expert-ready-hook-1810-dl`, commit `efaae99`: the single expert-ready-hook commit
+(section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
+loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` master
+`5aeac37` of 2026-10-18 (523 commits past the previous base, `965f897` of 2026-09-26). On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
 before the classic loop does, so the hook fires ahead of it; G4 is what proves it still gates
 every read. Each bump gets its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /

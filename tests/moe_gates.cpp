@@ -18,7 +18,7 @@
 //
 // If G3 passes, the streamer provably never gathers an unrouted (garbage) slice. If G4
 // passes, the async path gates each expert correctly — compute never races ahead of its read.
-// G4 is compiled only when the fork's expert-ready hook is present (BMOE_HAVE_EXPERT_READY_HOOK).
+// G4, G5b and S2 run only when the CPU backend loaded here exposes the fork's expert-ready hook.
 //
 //   S1  two sequential Session generates (warm cache) == one-shot resident, per prompt
 //   S3  same, with an explicit budget shrink between the two generates (full eviction pass)
@@ -74,12 +74,14 @@
 // and the G9b control still run and must pass.
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
+#include "bmoe/probe.h"
 #include "bmoe/session.h"
 #include "gguf_offsets.h"
 
 #include "ggml-backend.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -104,7 +106,41 @@ using namespace bmoe;
 // kernels the local CPU uses, placement is the ONLY thing that differs: the output must be
 // byte-identical. Hexagon's own numerics (fp16 on HMX) are a device question, not this gate's.
 
-static const char * const kRpcEndpoint = "127.0.0.1:50599";
+// A port the kernel picks per process: two gate runs on one machine (two build trees, two CI jobs on
+// one runner) must not meet on a fixed port, where the second would register the first's server.
+// The probe socket is closed before the server binds, so another process could take the port in
+// between: the server then fails to bind and, if the taker answers on it, the gate would register a
+// stranger's endpoint. The window is the few milliseconds between the two binds on a loopback port
+// the kernel just handed out, which is small enough to accept for a test fixture, not zero.
+static int free_loopback_port() {
+#if defined(_WIN32)
+    static bool wsa = [] {
+        WSADATA d;
+        return WSAStartup(MAKEWORD(2, 2), &d) == 0;
+    }();
+    if (!wsa) return 0;
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return 0;
+    int len = sizeof(sockaddr_in);
+#else
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) return 0;
+    socklen_t len = sizeof(sockaddr_in);
+#endif
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = 0;
+    inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    int port = 0;
+    if (bind(s, (sockaddr *) &a, sizeof(a)) == 0 && getsockname(s, (sockaddr *) &a, &len) == 0)
+        port = ntohs(a.sin_port);
+#if defined(_WIN32)
+    closesocket(s);
+#else
+    close(s);
+#endif
+    return port;
+}
 
 // True once something accepts on the endpoint. The RPC client aborts the process when it cannot
 // connect, so the server has to be seen listening before it is registered.
@@ -145,15 +181,19 @@ static std::string loopback_rpc_device() {
     auto start = (start_fn) ggml_backend_reg_get_proc_address(rpc, "ggml_backend_rpc_start_server");
     auto add = (add_fn) ggml_backend_reg_get_proc_address(rpc, "ggml_backend_rpc_add_server");
     if (!start || !add) return "";
+    // One port per process: a second call meets the server the first one started, as it always has.
+    static const int port = free_loopback_port();
+    if (port == 0) return "";
+    static const std::string endpoint = "127.0.0.1:" + std::to_string(port);
     // Serves until the process exits; the gates are one process.
     std::thread([start, cpu] {
         ggml_backend_dev_t devs[1] = {cpu};
-        start(kRpcEndpoint, nullptr, 2, 1, devs);
+        start(endpoint.c_str(), nullptr, 2, 1, devs);
     }).detach();
-    for (int i = 0; i < 200 && !port_accepts(50599); ++i)
+    for (int i = 0; i < 200 && !port_accepts(port); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
-    if (!port_accepts(50599)) return "";
-    ggml_backend_reg_t srv = add(kRpcEndpoint);
+    if (!port_accepts(port)) return "";
+    ggml_backend_reg_t srv = add(endpoint.c_str());
     if (!srv || ggml_backend_reg_dev_count(srv) == 0) return "";
     ggml_backend_register(srv);
     return ggml_backend_dev_name(ggml_backend_reg_dev_get(srv, 0));
@@ -278,6 +318,34 @@ static int check(const char * name, const std::string & a, const std::string & b
     return 1;
 }
 
+// Equal to within `rel`, element by element, where two paths put the same tokens through
+// different batch shapes. The streamed-versus-resident gates stay bit-exact: this is only for a
+// comparison upstream never promised to be bitwise, a wide prefill against one row at a time,
+// whose kernels may accumulate in another order (seen on the ARM CPU backend from the 2026-10
+// base: the three choices' log-probabilities differing by the same 1e-12 relative, the
+// log-softmax normaliser one ulp apart). The bound is nine orders of magnitude below a wrong answer.
+static int check_close(const char * name, const std::vector<double> & a, const std::vector<double> & b, double rel) {
+    bool ok = a.size() == b.size();
+    for (size_t i = 0; ok && i < a.size(); ++i)
+        ok = std::fabs(a[i] - b[i]) <= rel * (std::fabs(a[i]) > std::fabs(b[i]) ? std::fabs(a[i]) : std::fabs(b[i]));
+    if (ok) {
+        std::printf("[PASS] %s\n", name);
+        return 0;
+    }
+    std::string sa, sb;
+    char buf[64];
+    for (double v : a) {
+        std::snprintf(buf, sizeof buf, "%a ", v);
+        sa += buf;
+    }
+    for (double v : b) {
+        std::snprintf(buf, sizeof buf, "%a ", v);
+        sb += buf;
+    }
+    std::printf("[FAIL] %s\n  A: %s\n  B: %s\n", name, sa.c_str(), sb.c_str());
+    return 1;
+}
+
 int main(int argc, char ** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0); // a crash must not swallow the verdicts printed before it
     if (argc < 2) {
@@ -285,6 +353,25 @@ int main(int argc, char ** argv) {
         return 2;
     }
     const std::string model = argv[1];
+    // --require-hook: this build is expected to carry the fork's expert-ready hook, so the overlap
+    // gates must run and their absence is a failure, not a skip. A module build only learns at run
+    // time which CPU backend it loaded; without this, a bump or a stripped module would retire G4,
+    // G5b and S2 without a word and the suite would stay green. CI passes it on the job whose
+    // purpose is to prove --overlap byte-identical (BMOE_GATES_REQUIRE_HOOK).
+    bool require_hook = false;
+    for (int i = 2; i < argc; ++i)
+        if (std::string(argv[i]) == "--require-hook") require_hook = true;
+    // The backends come from beside this executable, loaded the way the engine loads them, and the
+    // hook is judged on what loaded: asked before any backend is registered, the registry has no
+    // CPU device and the answer would be "absent" on every build.
+    register_backends();
+    const bool have_hook = expert_ready_hook_available();
+    int hook_missing = 0;
+    if (require_hook && !have_hook) {
+        std::printf("[FAIL] the CPU backend loaded here has no expert-ready hook, and --require-hook says this build "
+                    "must: G4, G5b and S2 cannot run\n");
+        hook_missing = 1;
+    }
     const bool adjacent_moe = has_adjacent_moe_layers(model);
 
     // resident reference
@@ -373,7 +460,7 @@ int main(int argc, char ** argv) {
         return 2;
     }
 
-    int fails = 0;
+    int fails = hook_missing; // --require-hook with the hook absent: one failure before any gate
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);
     fails += check("G2 streaming(cache off) == streaming(LRU cache)", s_s0, s_sc);
     fails += check("G3 streaming(selective) == streaming(load-all)", s_s0, s_all);
@@ -386,64 +473,64 @@ int main(int argc, char ** argv) {
     fails += check("G15a row-stream(row-gathered tables from flash) == resident", s_res, s_rows);
     fails += check("G15b row-stream(one-slab window, evicting) == resident", s_res, s_rows_tight);
 
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-    // overlap, cache off
-    RunConfig ov0 = base(model);
-    ov0.moe.enabled = true;
-    ov0.moe.cache_mb = 0;
-    ov0.moe.io_threads = 4;
-    ov0.moe.overlap = true;
+    if (!have_hook) {
+        std::printf("[SKIP] G4 (the CPU backend here has no expert-ready hook)\n");
+    } else {
+        // overlap, cache off
+        RunConfig ov0 = base(model);
+        ov0.moe.enabled = true;
+        ov0.moe.cache_mb = 0;
+        ov0.moe.io_threads = 4;
+        ov0.moe.overlap = true;
 
-    // overlap, small forced cache (same cache config as G2's streamc)
-    RunConfig ovc = base(model);
-    ovc.moe.enabled = true;
-    ovc.moe.cache_mb = 2;
-    ovc.moe.force_cache = true;
-    ovc.moe.io_threads = 4;
-    ovc.moe.overlap = true;
+        // overlap, small forced cache (same cache config as G2's streamc)
+        RunConfig ovc = base(model);
+        ovc.moe.enabled = true;
+        ovc.moe.cache_mb = 2;
+        ovc.moe.force_cache = true;
+        ovc.moe.io_threads = 4;
+        ovc.moe.overlap = true;
 
-    // overlap, cache off, single I/O lane (stress: the compute threads stall on every expert)
-    RunConfig ov1 = base(model);
-    ov1.moe.enabled = true;
-    ov1.moe.cache_mb = 0;
-    ov1.moe.io_threads = 1;
-    ov1.moe.overlap = true;
+        // overlap, cache off, single I/O lane (stress: the compute threads stall on every expert)
+        RunConfig ov1 = base(model);
+        ov1.moe.enabled = true;
+        ov1.moe.cache_mb = 0;
+        ov1.moe.io_threads = 1;
+        ov1.moe.overlap = true;
 
-    // overlap, cache, two-wave publish: the lanes wake on the first projection's jobs and the
-    // batch grows mid-generation. Exercises the grown-batch worker predicate and the split
-    // commit; the wait-per-expert hook must still gate every projection to the same bytes.
-    RunConfig ov2w = base(model);
-    ov2w.moe.enabled = true;
-    ov2w.moe.cache_mb = 2;
-    ov2w.moe.force_cache = true;
-    ov2w.moe.io_threads = 4;
-    ov2w.moe.overlap = true;
-    ov2w.moe.io_two_wave = true;
+        // overlap, cache, two-wave publish: the lanes wake on the first projection's jobs and the
+        // batch grows mid-generation. Exercises the grown-batch worker predicate and the split
+        // commit; the wait-per-expert hook must still gate every projection to the same bytes.
+        RunConfig ov2w = base(model);
+        ov2w.moe.enabled = true;
+        ov2w.moe.cache_mb = 2;
+        ov2w.moe.force_cache = true;
+        ov2w.moe.io_threads = 4;
+        ov2w.moe.overlap = true;
+        ov2w.moe.io_two_wave = true;
 
-    std::string s_ov0, s_ovc, s_ov1, s_ov2w;
-    if (!gen(ov0, s_ov0, err)) {
-        std::fprintf(stderr, "overlap(cache off) run failed: %s\n", err.c_str());
-        return 2;
+        std::string s_ov0, s_ovc, s_ov1, s_ov2w;
+        if (!gen(ov0, s_ov0, err)) {
+            std::fprintf(stderr, "overlap(cache off) run failed: %s\n", err.c_str());
+            return 2;
+        }
+        if (!gen(ovc, s_ovc, err)) {
+            std::fprintf(stderr, "overlap(cache) run failed: %s\n", err.c_str());
+            return 2;
+        }
+        if (!gen(ov1, s_ov1, err)) {
+            std::fprintf(stderr, "overlap(io_threads=1) run failed: %s\n", err.c_str());
+            return 2;
+        }
+        if (!gen(ov2w, s_ov2w, err)) {
+            std::fprintf(stderr, "overlap(two-wave) run failed: %s\n", err.c_str());
+            return 2;
+        }
+        fails += check("G4a overlap(cache off) == streaming(cache off)", s_s0, s_ov0);
+        fails += check("G4b overlap(LRU cache) == streaming(cache off)", s_s0, s_ovc);
+        fails += check("G4c overlap(io_threads=1) == streaming(cache off)", s_s0, s_ov1);
+        fails += check("G4d overlap(two-wave publish) == streaming(cache off)", s_s0, s_ov2w);
     }
-    if (!gen(ovc, s_ovc, err)) {
-        std::fprintf(stderr, "overlap(cache) run failed: %s\n", err.c_str());
-        return 2;
-    }
-    if (!gen(ov1, s_ov1, err)) {
-        std::fprintf(stderr, "overlap(io_threads=1) run failed: %s\n", err.c_str());
-        return 2;
-    }
-    if (!gen(ov2w, s_ov2w, err)) {
-        std::fprintf(stderr, "overlap(two-wave) run failed: %s\n", err.c_str());
-        return 2;
-    }
-    fails += check("G4a overlap(cache off) == streaming(cache off)", s_s0, s_ov0);
-    fails += check("G4b overlap(LRU cache) == streaming(cache off)", s_s0, s_ovc);
-    fails += check("G4c overlap(io_threads=1) == streaming(cache off)", s_s0, s_ov1);
-    fails += check("G4d overlap(two-wave publish) == streaming(cache off)", s_s0, s_ov2w);
-#else
-    std::printf("[SKIP] G4 (expert-ready hook not built)\n");
-#endif
 
     // ── S1/S2: warm cache across Session generates must not change bytes ──
     // A forced small LRU cache so the first generate leaves state (resident + evicted entries)
@@ -490,18 +577,18 @@ int main(int argc, char ** argv) {
     }
     fails += check("G5a streaming(prefetch) == streaming(cache off)", s_s0, s_pf);
 
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-    RunConfig pf_ov = pf;
-    pf_ov.moe.overlap = true;
-    std::string s_pf_ov;
-    if (!gen(pf_ov, s_pf_ov, err)) {
-        std::fprintf(stderr, "prefetch overlap run failed: %s\n", err.c_str());
-        return 2;
+    if (!have_hook) {
+        std::printf("[SKIP] G5b (the CPU backend here has no expert-ready hook)\n");
+    } else {
+        RunConfig pf_ov = pf;
+        pf_ov.moe.overlap = true;
+        std::string s_pf_ov;
+        if (!gen(pf_ov, s_pf_ov, err)) {
+            std::fprintf(stderr, "prefetch overlap run failed: %s\n", err.c_str());
+            return 2;
+        }
+        fails += check("G5b overlap(prefetch) == streaming(cache off)", s_s0, s_pf_ov);
     }
-    fails += check("G5b overlap(prefetch) == streaming(cache off)", s_s0, s_pf_ov);
-#else
-    std::printf("[SKIP] G5b (expert-ready hook not built)\n");
-#endif
 
     // G5c forces speculative reads to complete synchronously, so the integrate-then-hit path (a
     // prefetched expert becoming resident and a later routing hitting it) is deterministically
@@ -515,19 +602,19 @@ int main(int argc, char ** argv) {
     }
     fails += check("G5c prefetch(sync integrate+hit) == streaming(cache off)", s_s0, s_pf_sync);
 
-#ifdef BMOE_HAVE_EXPERT_READY_HOOK
-    RunConfig sess_ov = sess;
-    sess_ov.moe.overlap = true;
-    std::string s_og1, s_og2;
-    if (!session_two_gens(sess_ov, s_og1, s_og2, err)) {
-        std::fprintf(stderr, "session overlap run failed: %s\n", err.c_str());
-        return 2;
+    if (!have_hook) {
+        std::printf("[SKIP] S2 (the CPU backend here has no expert-ready hook)\n");
+    } else {
+        RunConfig sess_ov = sess;
+        sess_ov.moe.overlap = true;
+        std::string s_og1, s_og2;
+        if (!session_two_gens(sess_ov, s_og1, s_og2, err)) {
+            std::fprintf(stderr, "session overlap run failed: %s\n", err.c_str());
+            return 2;
+        }
+        fails += check("S2a session+overlap generate #1 == resident", s_res, s_og1);
+        fails += check("S2b session+overlap generate #2 (warm cache) == resident", s_res, s_og2);
     }
-    fails += check("S2a session+overlap generate #1 == resident", s_res, s_og1);
-    fails += check("S2b session+overlap generate #2 (warm cache) == resident", s_res, s_og2);
-#else
-    std::printf("[SKIP] S2 (expert-ready hook not built)\n");
-#endif
 
     // G8 — cache-aware expert dropping, plumbing vs policy.
     //
@@ -1190,9 +1277,10 @@ int main(int argc, char ** argv) {
                 std::fprintf(stderr, "perplexity run failed: %s\n", pr.error.c_str());
                 return 2;
             }
-            DecideResult as_decide;
-            as_decide.choice_logp = pr.choice_logp;
-            fails += check("G18c decide(whole prefill) == perplexity(choices)", logps(as_decide), logps(whole[0]));
+            // The choices go through a wide prefill here and one row at a time there (G18 c): the
+            // same distribution, to within the kernels' batch-shape rounding.
+            fails += check_close("G18c decide(whole prefill) == perplexity(choices)", pr.choice_logp,
+                                 whole[0].choice_logp, 1e-9);
 
             // f) off by default: the same session (decide not enabled) refuses, without harm.
             const DecideResult off = s->decide(q1);

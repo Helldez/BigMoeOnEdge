@@ -15,8 +15,8 @@
 // The probe is bounded in bytes, not in time, and it is not small. The decisive point - the model's
 // own slice - moves 512 MiB per sample, three repeats at each of three lane counts: 4.5 GiB. The
 // rest is counted in requests: the curve's two neighbouring sizes and both arms of the mapping
-// question come to about 2150 slices' worth, and the refault price to 2 MiB. At a 512 KiB slice
-// that is roughly 5.5 GiB read from the file in all. It runs only when asked.
+// question come to about 2150 slices' worth, and the refault price to 480 pages (2 MiB at 4 KiB). At
+// a 512 KiB slice that is roughly 5.5 GiB read from the file in all. It runs only when asked.
 
 #include "bmoe/probe.h"
 
@@ -42,6 +42,18 @@ namespace bmoe {
 namespace {
 
 using clock_t_ = std::chrono::steady_clock;
+
+// The lane counts the curve is drawn at: one, and doublings up to four. Where lanes stop paying is
+// the thing being looked for, and doubling brackets that knee between two points instead of paying
+// for every count on the way; the storage this was measured on had stopped gaining by four. The
+// mapping question is asked at the largest, where concurrent uncached reads have the most to
+// serialise.
+constexpr int k_lane_counts[] = {1, 2, 4};
+constexpr int k_lanes_max = k_lane_counts[sizeof(k_lane_counts) / sizeof(k_lane_counts[0]) - 1];
+
+// Samples per point that decides something, and per side of the mapping question: the fewest whose
+// median a single outlier cannot move.
+constexpr int k_repeats = 3;
 
 // A live mapping of the model file, held only for as long as the probe needs to read against it.
 // This is the one thing the probe cannot ask the OS about and has to reproduce.
@@ -118,7 +130,8 @@ void ScopedMapping::warm(uint64_t bytes) {
     const uint64_t want = std::min<uint64_t>(bytes, len);
     volatile const char * p = (volatile const char *) view_;
     volatile char sink = 0;
-    for (uint64_t off = 0; off < want; off += 4096)
+    const uint64_t page = (uint64_t) pio::vm_page(); // one touch per page faults the whole span in
+    for (uint64_t off = 0; off < want; off += page)
         sink = p[off];
     (void) sink;
 }
@@ -154,7 +167,8 @@ void ScopedMapping::warm(uint64_t bytes) {
     const uint64_t want = std::min<uint64_t>(bytes, (uint64_t) len_);
     volatile const char * p = (volatile const char *) addr_;
     volatile char sink = 0;
-    for (uint64_t off = 0; off < want; off += 4096)
+    const uint64_t page = (uint64_t) pio::vm_page(); // one touch per page faults the whole span in
+    for (uint64_t off = 0; off < want; off += page)
         sink = p[off];
     (void) sink;
 }
@@ -179,6 +193,7 @@ timed_read(FileReader & rd, uint64_t block, int lanes, int per_lane, uint64_t se
     const uint64_t fsize = rd.file_size();
     if (fsize <= block * 4) return 0.0;
     const uint64_t span = fsize - block;
+    const uint64_t granule = (uint64_t) rd.align();
 
     std::vector<std::vector<char>> bufs((size_t) lanes);
     for (auto & b : bufs)
@@ -206,7 +221,7 @@ timed_read(FileReader & rd, uint64_t block, int lanes, int per_lane, uint64_t se
                     const uint64_t base = (span / (uint64_t) per_lane) * (uint64_t) i;
                     off = (base + draw % window) % span;
                 }
-                off &= ~(uint64_t) 4095;
+                off -= off % granule; // whole read granules, so no request pays a partial-block over-read
                 const long long n = rd.read(l, bufs[(size_t) l].data(), off, block);
                 if (n > 0) total += n;
             }
@@ -267,19 +282,15 @@ int requests_per_lane(uint64_t block, int lanes, uint64_t target_bytes, int floo
 void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice_bytes) {
     if (!model_path || !*model_path) return;
 
-    // The sizes worth knowing are the ones around the read this engine issues. Below the model's
-    // own slice is where a storage class shows whether it punishes small requests; above it is
-    // where lanes stop paying.
     const uint64_t slice = slice_bytes ? slice_bytes : (512u << 10);
-    const uint64_t sizes[3] = {std::max<uint64_t>(4096, slice / 4), slice, slice * 4};
-    const int lane_counts[3] = {1, 2, 4};
     const int per_lane = 40; // per point on the curve's shape: one short sample says enough
 
     // Bytes ONE sample must move at the point that decides something. Sized for duration rather
     // than for a request count, so the measurement does not get shorter as the storage gets faster.
     const uint64_t decisive_bytes = 512ull << 20;
 
-    const size_t bounce = (size_t) sizes[2] + 65536;
+    // The largest read the curve issues: one point above the model's slice, where lanes stop paying.
+    const uint64_t largest = slice * 4;
 
     // Measure with a live mapping first, then release it and reopen the lanes. The order is the one
     // that matters on the storage where this bites: a handle opened while a section was alive keeps
@@ -290,27 +301,34 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
         ScopedMapping map(model_path);
         if (map.ok()) {
             FileReader rd;
-            if (rd.open(model_path, 4, /*direct=*/true, 4096, bounce)) {
+            if (rd.open(model_path, k_lanes_max, /*direct=*/true, (size_t) slice)) {
                 map.warm(slice * 64); // a loaded model's mapping is resident where it has been read
-                mapped_rate = median_rate(rd, slice, 4, per_lane, 0xC0FFEEull, 3, Pattern::Clustered);
+                mapped_rate = median_rate(rd, slice, k_lanes_max, per_lane, 0xC0FFEEull, k_repeats, Pattern::Clustered);
             }
         }
     }
 
     FileReader rd;
-    if (!rd.open(model_path, 4, /*direct=*/true, 4096, bounce)) return;
-    hw.storage.align = 4096;
+    if (!rd.open(model_path, k_lanes_max, /*direct=*/true, (size_t) largest)) return;
+    // What the file's filesystem states, or nothing: the reader's fallback granule is a substitute
+    // it reads with, not a fact about this storage.
+    hw.storage.align = rd.align_reported() ? (uint32_t) rd.align() : 0;
     hw.storage.direct_ok = rd.direct() ? Tri::Yes : Tri::No;
+
+    // The sizes worth knowing are the ones around the read this engine issues. Below the model's
+    // own slice is where a storage class shows whether it punishes small requests; above it is
+    // where lanes stop paying. Never below one read granule, the smallest request the storage serves.
+    const uint64_t sizes[3] = {std::max<uint64_t>((uint64_t) rd.align(), slice / 4), slice, largest};
 
     uint64_t seed = 0x1234567ull;
     for (uint64_t sz : sizes) {
-        for (int lanes : lane_counts) {
+        for (int lanes : k_lane_counts) {
             // Only the model's own slice size decides anything - it is where the lane count is read
             // off and where the expert lane is priced - so it is the only size worth paying repeats
             // AND a long sample for. The neighbours are there to show the shape of the curve, and
             // one short sample says enough about a shape.
             const bool decisive = sz == slice;
-            const int repeats = decisive ? 3 : 1;
+            const int repeats = decisive ? k_repeats : 1;
             const int reqs = decisive ? requests_per_lane(sz, lanes, decisive_bytes, per_lane) : per_lane;
             double spread = 0.0;
             const double r = median_rate(rd, sz, lanes, reqs, seed, repeats, Pattern::Spread, &spread);
@@ -321,17 +339,19 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
         }
     }
 
-    // The price of a REFAULT, measured as the kernel pays it: one page at a time, scattered, one
-    // lane. This is what a group left to the file mapping costs per byte once pressure has dropped
-    // its pages, and it is the term that decides whether residency is worth buying at all. It is
-    // deliberately not derived as a fraction of the sequential rate: on the test host it is 23
-    // MiB/s against 2609 sequential, 116x, and a plan that assumed a fraction would under-spend on
-    // residency by two orders of magnitude.
-    hw.storage.refault_mibs = median_rate(rd, 4096, 1, per_lane * 4, 0x5EEDFA11ull, 3, Pattern::Spread);
+    // The price of a REFAULT, measured as the kernel pays it: one page at a time - this machine's
+    // page, which is 16 KiB on some and 4 KiB on others - scattered, one lane. This is what a group left to the file
+    // mapping costs per byte once pressure has dropped its pages, and it is the term that decides whether residency is
+    // worth buying at all. It is deliberately not derived as a fraction of the sequential rate: on the test host it is
+    // 23 MiB/s against 2609 sequential, 116x, and a plan that assumed a fraction would under-spend on residency by two
+    // orders of magnitude.
+    hw.storage.refault_mibs =
+        median_rate(rd, (uint64_t) pio::vm_page(), 1, per_lane * 4, 0x5EEDFA11ull, k_repeats, Pattern::Spread);
 
     // The comparable point for the mapping question, read the way the engine reads rather than the
     // way the curve is drawn: same size, same lanes, same pattern as the mapped arm above.
-    const double unmapped_rate = median_rate(rd, slice, 4, per_lane, 0xC0FFEEull, 3, Pattern::Clustered);
+    const double unmapped_rate =
+        median_rate(rd, slice, k_lanes_max, per_lane, 0xC0FFEEull, k_repeats, Pattern::Clustered);
 
     // The verdict, from the two comparable points. The threshold is deliberately loose: what is
     // being detected is a collapse to roughly one lane's throughput, not a few percent of noise.

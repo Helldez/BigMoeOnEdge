@@ -12,7 +12,10 @@
 #include "engine_host.h"
 #include "openai_chat.h"
 #include "event_bus.h"
+#include "hf_repo.h"
+#include "http_fetch.h"
 #include "json_util.h"
+#include "model_inspect.h"
 #include "model_library.h"
 #include "planner_adapter.h"
 #include "platform.h"
@@ -20,7 +23,7 @@
 
 #include "bmoe/config.h"
 #include "bmoe/params.h"
-#include "bmoe/recipe.h"
+#include "bmoe/probe.h"
 #include "bmoe/version.h"
 
 #include <cpp-httplib/httplib.h>
@@ -43,17 +46,25 @@ using namespace bmoe::server;
 
 namespace {
 
+constexpr int kPortMax = 65535;
+
+constexpr const char * kDefaultHfEndpoint = "https://huggingface.co";
+
 struct Options {
-    std::string host = "127.0.0.1";
-    int port = 8765;
+    std::string host = kDefaultHost;
+    int port = kDefaultPort;
     std::string ui_dir, models_dir, data_dir, catalog;
+    std::vector<std::string> scan_dirs; // more directories whose models are listed, never written
     std::vector<std::string> allow_origins;
     std::string api_key;
-    bool no_api_key = false; // listen beyond loopback with no key, on purpose
+    std::string api_key_file; // --api-key-file: the key, read at start, never on the command line
+    bool no_api_key = false;  // listen beyond loopback with no key, on purpose
+    bool models_only = false; // every client, local ones too, names models in the models folder only
     bool open_browser = false;
-    bool isolated_probes = true;               // the planner asks each device in a child process first
-    std::string probe_device;                  // internal: this process IS such a child; probe this device and exit
-    std::map<std::string, std::string> launch; // engine parameters given on the command line
+    bool isolated_probes = true;                  // the planner asks each device in a child process first
+    std::string hf_endpoint = kDefaultHfEndpoint; // where repositories are listed and fetched from
+    std::string probe_device;                     // internal: this process IS such a child; probe this device and exit
+    std::map<std::string, std::string> launch;    // engine parameters given on the command line
 };
 
 // What a chat front-end wants when nobody has said otherwise. These are the server's defaults, not
@@ -64,36 +75,42 @@ RunConfig server_defaults() {
     c.chatml = true;         // a chat UI always renders the model's own chat template
     c.moe.enabled = true;    // this is the engine the UI exists for; a dense model turns it off at load
     c.moe.cache_auto = true; // with streaming on, no cache re-reads every expert every token (#186)
-    c.n_ctx = 4096;
-    c.n_predict = 1024;
+    c.n_ctx = kChatContextTokens;
+    c.n_predict = kChatAnswerTokens;
     c.decide.enabled = true; // POST /api/decide; costs nothing until a decision is asked for
-#if defined(BMOE_HAVE_EXPERT_READY_HOOK)
-    c.moe.overlap = true; // byte-identical and the measured best on every device; needs the hook
-#endif
+    // Byte-identical and the measured best on every device; needs the fork's hook in the CPU
+    // backend, which is a fact about the backend loaded, asked of it rather than assumed.
+    c.moe.overlap = expert_ready_hook_available();
     return c;
 }
 
 void print_usage(const char * argv0) {
     std::printf("usage: %s [options] [engine parameters]\n"
                 "\n"
-                "  --host ADDR          address to bind (default 127.0.0.1; anything else exposes the engine)\n"
-                "  --port N             port (default 8765)\n"
+                "  --host ADDR          address to bind (default %s; anything else exposes the engine)\n"
+                "  --port N             port (default %d)\n"
                 "  --open               open the UI in the default browser once listening\n"
                 "  --models-dir PATH    where models are listed and downloaded (default: <data dir>/models)\n"
+                "  --scan-dir PATH      also list the models in PATH, loaded in place (repeatable)\n"
                 "  --data-dir PATH      settings and models (default: the per-user application data folder)\n"
                 "  --ui-dir PATH        the built web UI (default: ui/ beside this binary)\n"
                 "  --catalog PATH       the model catalog (default: catalog/models.json beside this binary)\n"
                 "  --allow-origin URL   also accept requests from this browser origin (a UI dev server)\n"
                 "  --api-key KEY        require this key on the API (Authorization: Bearer KEY); needed\n"
-                "                       with a --host beyond loopback\n"
+                "                       with a --host beyond loopback. Other local users can read a\n"
+                "                       command line: prefer --api-key-file\n"
+                "  --api-key-file PATH  the same, with the key read from PATH (trailing newline ignored)\n"
                 "  --no-api-key         listen beyond loopback with no key, on a network you trust\n"
+                "  --models-only        local clients too may only open models from the folders models\n"
+                "                       are listed from (clients on the network always are)\n"
                 "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
+                "  --hf-endpoint URL    where Hugging Face repositories are read from (default %s; a mirror)\n"
                 "  -h, --help           this text\n"
                 "      --version        print the engine version\n"
                 "\n"
                 "Engine parameters are the bmoe-cli flags (bmoe-cli --help lists them). Given here, they\n"
                 "hold for this run and outrank saved settings; -m loads that model at start.\n",
-                argv0);
+                argv0, kDefaultHost, kDefaultPort, kDefaultHfEndpoint);
 }
 
 // -1: continue; otherwise the exit code.
@@ -110,12 +127,20 @@ int parse_args(int argc, char ** argv, Options & o) {
         };
         if (a == "--host")
             o.host = next();
-        else if (a == "--port")
-            o.port = std::atoi(next().c_str());
-        else if (a == "--open")
+        else if (a == "--port") {
+            long long port = 0;
+            std::string err;
+            if (!parse_int_strict(next(), 1, kPortMax, port, err)) {
+                std::fprintf(stderr, "bmoe-server: --port %s\n", err.c_str());
+                return 2;
+            }
+            o.port = (int) port;
+        } else if (a == "--open")
             o.open_browser = true;
         else if (a == "--models-dir")
             o.models_dir = next();
+        else if (a == "--scan-dir")
+            o.scan_dirs.push_back(next());
         else if (a == "--data-dir")
             o.data_dir = next();
         else if (a == "--ui-dir")
@@ -126,13 +151,25 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.allow_origins.push_back(next());
         else if (a == "--api-key")
             o.api_key = next();
+        else if (a == "--api-key-file")
+            o.api_key_file = next();
         else if (a == "--no-api-key")
             o.no_api_key = true;
+        else if (a == "--models-only")
+            o.models_only = true;
         else if (a == "--no-isolated-probes")
             o.isolated_probes = false;
         else if (a == "--probe-device")
             o.probe_device = next();
-        else if (a == "-h" || a == "--help") {
+        else if (a == "--hf-endpoint") {
+            o.hf_endpoint = next();
+            while (!o.hf_endpoint.empty() && o.hf_endpoint.back() == '/')
+                o.hf_endpoint.pop_back();
+            if (o.hf_endpoint.compare(0, 8, "https://") != 0 && o.hf_endpoint.compare(0, 7, "http://") != 0) {
+                std::fprintf(stderr, "bmoe-server: --hf-endpoint must be an http(s) URL\n");
+                return 2;
+            }
+        } else if (a == "-h" || a == "--help") {
             print_usage(argv[0]);
             return 0;
         } else if (a == "--version") {
@@ -153,9 +190,16 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.launch[r.param->key] = r.param->get(scratch);
         }
     }
-    if (o.port <= 0 || o.port > 65535) {
-        std::fprintf(stderr, "bmoe-server: --port must be in 1..65535\n");
-        return 2;
+    if (!o.api_key_file.empty()) {
+        if (!o.api_key.empty()) {
+            std::fprintf(stderr, "bmoe-server: --api-key and --api-key-file are alternatives; choose one\n");
+            return 2;
+        }
+        std::string err;
+        if (!read_api_key_file(o.api_key_file, o.api_key, err)) {
+            std::fprintf(stderr, "bmoe-server: %s\n", err.c_str());
+            return 2;
+        }
     }
     return -1;
 }
@@ -180,6 +224,8 @@ void send_error(httplib::Response & res, int status, const std::string & msg, co
     send_json(res, body, status);
 }
 
+// Every body this API reads is an object; anything else is refused here, so no handler reads a
+// field out of an array or a number.
 bool parse_body(const httplib::Request & req, httplib::Response & res, json & out) {
     if (req.body.empty()) {
         out = json::object();
@@ -187,11 +233,15 @@ bool parse_body(const httplib::Request & req, httplib::Response & res, json & ou
     }
     try {
         out = json::parse(req.body);
-        return true;
     } catch (const std::exception & e) {
-        send_error(res, 400, std::string("invalid JSON body: ") + e.what());
+        send_error(res, 400, std::string("invalid JSON body: ") + e.what(), "invalid_request");
         return false;
     }
+    if (!out.is_object()) {
+        send_error(res, 400, "the request body must be a JSON object", "invalid_request");
+        return false;
+    }
+    return true;
 }
 
 bool starts_with(const std::string & s, const std::string & prefix) {
@@ -222,9 +272,19 @@ struct App {
     // measurement and must not replace it.
     PlanOutcome load_plan;
 
-    App(Options o, std::string settings_path, std::string models_dir, std::string catalog)
+    // The network, for reading a repository (http_fetch.h), and where its bytes in flight go.
+    std::unique_ptr<HttpFetch> net;
+    std::string scratch_dir;
+
+    App(Options o,
+        std::string settings_path,
+        std::string models_dir,
+        std::string catalog,
+        std::string added,
+        std::string scratch)
         : opt(std::move(o)), store(server_defaults(), std::move(settings_path)), host(bus),
-          lib(std::move(models_dir), std::move(catalog), bus) {}
+          lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), std::move(added), bus),
+          net(curl_fetch(scratch)), scratch_dir(std::move(scratch)) {}
 
     json config_object(const json * rejected = nullptr) {
         const RunConfig cfg = store.config();
@@ -242,6 +302,19 @@ struct App {
     }
 
     void publish_config() { bus.publish("config", config_object()); }
+
+    // A client on the network names a model in a folder this server lists models from (the models
+    // folder, the --scan-dir ones) and nowhere else: it may not have the server open any file its
+    // user can read. A local client is the person at this machine, as
+    // the access rules have it, unless --models-only confines it too.
+    bool model_path_for(const httplib::Request & req, const json & v, json & out, std::string & err) const {
+        out = v;
+        if (!v.is_string() || (!opt.models_only && is_loopback_peer(req.remote_addr))) return true;
+        std::string path;
+        if (!confine_model_path(v.get<std::string>(), lib.model_roots(), path, err)) return false;
+        out = path;
+        return true;
+    }
 
     // On by default wherever there is a planner to ask: the point of measuring the machine is that
     // nobody has to tune it by hand. A person can turn it off and it stays off.
@@ -282,9 +355,10 @@ struct App {
         RunConfig effective = requested;
         const std::vector<std::string> ops = store.operator_keys();
         const bool pinned = std::find(ops.begin(), ops.end(), "moe-stream") != ops.end();
-        const std::string arch = lib.probe_arch(requested.model_path);
-        if (effective.moe.enabled && !pinned && !arch.empty() && !find_moe_recipe(arch.c_str()))
-            effective.moe.enabled = false;
+        // A readable file with no routed experts this engine streams runs as plain mmap, unless the
+        // operator pinned streaming on, in which case the engine refuses the load with its reason.
+        const ModelLibrary::ModelFacts facts = lib.probe(requested.model_path);
+        if (effective.moe.enabled && !pinned && !facts.arch.empty() && !facts.streamable) effective.moe.enabled = false;
         if (!effective.moe.enabled) drop_streaming_only(effective);
         return host.load(effective, requested);
     }
@@ -301,6 +375,84 @@ struct App {
         c.moe.row_stream = false;
     }
 };
+
+// ── a model from a Hugging Face repository (hf_repo.h) ──
+// Three steps, each a request the UI makes in turn: list what a repository holds, inspect one
+// model's header against this machine, add it to the catalog. The download is then the catalog's,
+// by id, as for every other entry. The server fetches only from its endpoint, with a repository
+// id and paths it validated; a token a person pastes is used for the request and kept nowhere.
+struct HfRequest {
+    HfRef ref;
+    std::string name, token;
+};
+
+// The request's repository, model name and token; false with the response already sent.
+bool read_hf_request(const httplib::Request & req, httplib::Response & res, HfRequest & out, bool need_name) {
+    json body;
+    if (!parse_body(req, res, body)) return false;
+    if (!body.contains("repo") || !body["repo"].is_string()) {
+        send_error(res, 400, "repo must be a repository id or URL string", "invalid_request");
+        return false;
+    }
+    std::string err;
+    if (!parse_hf_ref(body["repo"].get<std::string>(), out.ref, err)) {
+        send_error(res, 400, err, "invalid_request");
+        return false;
+    }
+    if (body.contains("token")) {
+        if (!body["token"].is_string()) {
+            send_error(res, 400, "token must be a string", "invalid_request");
+            return false;
+        }
+        out.token = body["token"].get<std::string>();
+    }
+    if (body.contains("name") && body["name"].is_string()) out.name = body["name"].get<std::string>();
+    if (out.name.empty()) out.name = out.ref.file;
+    if (need_name && out.name.empty()) {
+        send_error(res, 400, "name must be the model's first file in the repository", "invalid_request");
+        return false;
+    }
+    return true;
+}
+
+// The repository's models, fetched and parsed; false with the response already sent.
+bool list_hf_models(App & app, httplib::Response & res, const HfRequest & r, std::vector<HfModel> & models) {
+    std::string body, err;
+    if (!app.net->get(hf_tree_url(app.opt.hf_endpoint, r.ref), 0, 0, r.token, body, err)) {
+        send_error(res, 502, "could not read " + r.ref.repo + ": " + err, "upstream");
+        return false;
+    }
+    json tree;
+    try {
+        tree = json::parse(body);
+    } catch (const std::exception &) {
+        send_error(res, 502, "the listing of " + r.ref.repo + " is not JSON", "upstream");
+        return false;
+    }
+    if (!parse_hf_tree(tree, models, err)) {
+        send_error(res, 404, r.ref.repo + ": " + err, "not_found");
+        return false;
+    }
+    return true;
+}
+
+bool find_hf_model(httplib::Response & res, const HfRequest & r, const std::vector<HfModel> & models, HfModel & out) {
+    for (const HfModel & m : models)
+        if (m.name == r.name) {
+            out = m;
+            return true;
+        }
+    send_error(res, 404, r.ref.repo + " has no model named " + r.name, "not_found");
+    return false;
+}
+
+json hf_model_json(const HfModel & m) {
+    json files = json::array();
+    for (const HfFile & f : m.files)
+        files.push_back({{"path", f.path}, {"bytes", f.bytes}});
+    return json{{"name", m.name},   {"quant", m.quant},         {"bytes", m.bytes},
+                {"count", m.count}, {"complete", m.complete()}, {"files", files}};
+}
 
 void register_routes(httplib::Server & svr, App & app) {
     svr.Get("/api/info", [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.host.info()); });
@@ -333,10 +485,14 @@ void register_routes(httplib::Server & svr, App & app) {
         json refused = json::object();
         for (auto it = values.begin(); it != values.end(); ++it) {
             const ParamDesc * d = find_param(it.key());
+            std::string why;
+            json model;
             if (d && d->type == ParamType::Path && it.key() != "model")
                 refused[it.key()] = "a file path other than the model is set at launch, not over the API";
+            else if (it.key() == "model" && !app.model_path_for(req, it.value(), model, why))
+                refused[it.key()] = why;
             else
-                accepted[it.key()] = it.value();
+                accepted[it.key()] = it.key() == "model" ? model : it.value();
         }
         json rejected = app.store.apply(accepted, reset_keys);
         rejected.update(refused);
@@ -349,7 +505,11 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!parse_body(req, res, body)) return;
         if (body.contains("model")) {
             if (!body["model"].is_string()) return send_error(res, 400, "model must be a path string");
-            app.store.apply(json{{"model", body["model"]}}, {});
+            json model;
+            std::string why;
+            if (!app.model_path_for(req, body["model"], model, why))
+                return send_error(res, 403, why, "outside_models_dir");
+            app.store.apply(json{{"model", model}}, {});
             app.publish_config();
         }
         const std::string err = app.load_current();
@@ -381,7 +541,8 @@ void register_routes(httplib::Server & svr, App & app) {
         OpenAiChatRequest cr;
         std::string err;
         if (!parse_chat_request(body, app.store.config(), cr, err)) return send_error(res, 400, err);
-        if (!app.host.ready()) return send_error(res, 503, "no model is loaded: load one from the Models page");
+        if (!app.host.ready())
+            return send_error(res, 503, "no model is loaded: load one from the Models page", error_code::no_model);
 
         ChatResponseMeta meta;
         meta.id = "chatcmpl-" + std::to_string(++app.chat_seq);
@@ -492,7 +653,8 @@ void register_routes(httplib::Server & svr, App & app) {
         DecideRequest dr;
         std::string err;
         if (!parse_decide_request(body, dr, err)) return send_error(res, 400, err);
-        if (!app.host.ready()) return send_error(res, 503, "no model is loaded: load one from the Models page");
+        if (!app.host.ready())
+            return send_error(res, 503, "no model is loaded: load one from the Models page", error_code::no_model);
         DecideOutcome out = app.host.decide(dr, [&req] { return !req.is_connection_closed(); });
         if (out.status != 200) return send_error(res, out.status, out.error, out.code);
         send_json(res, decide_json(out.result));
@@ -522,7 +684,9 @@ void register_routes(httplib::Server & svr, App & app) {
     svr.Post("/api/models/download", [&](const httplib::Request & req, httplib::Response & res) {
         json body;
         if (!parse_body(req, res, body)) return;
-        const std::string err = app.lib.start_download(body.value("id", ""));
+        if (!body.contains("id") || !body["id"].is_string())
+            return send_error(res, 400, "id must be a catalog id string", "invalid_request");
+        const std::string err = app.lib.start_download(body["id"].get<std::string>());
         if (!err.empty()) return send_error(res, 404, err);
         send_json(res, json{{"ok", true}}, 202);
     });
@@ -530,6 +694,55 @@ void register_routes(httplib::Server & svr, App & app) {
     svr.Delete(R"(/api/models/download/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
         const bool cancelled = app.lib.cancel_download(req.matches[1].str());
         send_json(res, json{{"ok", cancelled}}, cancelled ? 200 : 404);
+    });
+
+    // ── a model from a Hugging Face repository (hf_repo.h, the helpers above register_routes) ──
+    svr.Post("/api/hf/models", [&](const httplib::Request & req, httplib::Response & res) {
+        HfRequest r;
+        std::vector<HfModel> models;
+        if (!read_hf_request(req, res, r, false) || !list_hf_models(app, res, r, models)) return;
+        json out = json::array();
+        for (const HfModel & m : models)
+            out.push_back(hf_model_json(m));
+        send_json(res, json{{"repo", r.ref.repo}, {"revision", r.ref.revision}, {"file", r.ref.file}, {"models", out}});
+    });
+
+    svr.Post("/api/hf/inspect", [&](const httplib::Request & req, httplib::Response & res) {
+        HfRequest r;
+        std::vector<HfModel> models;
+        HfModel m;
+        if (!read_hf_request(req, res, r, true) || !list_hf_models(app, res, r, models) ||
+            !find_hf_model(res, r, models, m))
+            return;
+        json facts;
+        std::string err;
+        if (!inspect_remote_model(*app.net, app.opt.hf_endpoint, r.ref, m, r.token, app.scratch_dir,
+                                  app.lib.models_dir(), facts, err))
+            return send_error(res, 502, "could not read the header of " + m.name + ": " + err, "upstream");
+        send_json(res, facts);
+    });
+
+    svr.Post("/api/hf/add", [&](const httplib::Request & req, httplib::Response & res) {
+        HfRequest r;
+        std::vector<HfModel> models;
+        HfModel m;
+        if (!read_hf_request(req, res, r, true) || !list_hf_models(app, res, r, models) ||
+            !find_hf_model(res, r, models, m))
+            return;
+        if (!m.complete())
+            return send_error(res, 409, r.ref.repo + ": " + m.name + " is a split set with shards missing",
+                              "incomplete");
+        const CatalogEntry e = hf_catalog_entry(app.opt.hf_endpoint, r.ref, m);
+        const std::string err = app.lib.add_entry(e);
+        if (!err.empty()) return send_error(res, 409, err);
+        send_json(res, json{{"id", e.id}, {"title", e.title}, {"quant", e.quant}, {"bytes", m.bytes}}, 201);
+    });
+
+    svr.Delete(R"(/api/hf/entry/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
+        const std::string id = req.matches[1].str();
+        if (!is_hf_catalog_id(id)) return send_error(res, 404, "not an added entry", "not_found");
+        const bool removed = app.lib.remove_entry(id);
+        send_json(res, json{{"ok", removed}}, removed ? 200 : 404);
     });
 
     svr.Get("/api/plan", [&](const httplib::Request & req, httplib::Response & res) {
@@ -609,6 +822,24 @@ void register_guards(httplib::Server & svr, const Options & o) {
         send_error(res, d.status, d.error);
         return httplib::Server::HandlerResponse::Handled;
     });
+    // On every response, the refusals above and the UI's files alike.
+    svr.set_post_routing_handler([](const httplib::Request &, httplib::Response & res) {
+        for (const auto & h : security_headers())
+            if (!res.has_header(h.first)) res.set_header(h.first, h.second);
+    });
+    // A handler that reads a field of the wrong type out of a request throws; that is the client's
+    // mistake (400), not the server's (500). Anything else is a fault here, said as one.
+    svr.set_exception_handler([](const httplib::Request &, httplib::Response & res, std::exception_ptr ep) {
+        try {
+            std::rethrow_exception(ep);
+        } catch (const json::exception & e) {
+            send_error(res, 400, std::string("malformed request: ") + e.what(), "invalid_request");
+        } catch (const std::exception & e) {
+            send_error(res, 500, std::string("internal error: ") + e.what(), "failed");
+        } catch (...) {
+            send_error(res, 500, "internal error", "failed");
+        }
+    });
 }
 
 } // namespace
@@ -619,6 +850,11 @@ int run(int argc, char ** argv) {
     Options o;
     const int rc = parse_args(argc, argv, o);
     if (rc >= 0) return rc;
+    const std::string data_dir = o.data_dir.empty() ? platform::default_data_dir() : o.data_dir;
+    // What a backend reads from its environment, set before any backend is loaded.
+    platform::prepare_compute_backends(data_dir);
+    // Every backend beside the executable, before anything asks ggml about devices or defaults.
+    register_backends();
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
     if (!o.probe_device.empty()) {
@@ -636,15 +872,26 @@ int run(int argc, char ** argv) {
     }
 
     const fs::path exe = fs::u8path(platform::executable_dir());
-    const std::string data_dir = o.data_dir.empty() ? platform::default_data_dir() : o.data_dir;
-    const std::string models_dir = o.models_dir.empty() ? (fs::u8path(data_dir) / "models").u8string() : o.models_dir;
+    // Absolute from here on: the library lists models by these paths and the confinement resolves a
+    // relative request against the first, so a relative one typed at launch would count twice.
+    const auto absolute = [](const std::string & p) {
+        std::error_code ec;
+        const fs::path a = fs::absolute(fs::u8path(p), ec);
+        return ec ? p : a.lexically_normal().u8string();
+    };
+    const std::string models_dir =
+        absolute(o.models_dir.empty() ? (fs::u8path(data_dir) / "models").u8string() : o.models_dir);
+    for (std::string & d : o.scan_dirs)
+        d = absolute(d);
     const std::string ui_dir = o.ui_dir.empty()
                                    ? first_existing({exe / "ui" / "index.html"}).empty() ? "" : (exe / "ui").u8string()
                                    : o.ui_dir;
     const std::string catalog = o.catalog.empty() ? (exe / "catalog" / "models.json").u8string() : o.catalog;
     const std::string settings = (fs::u8path(data_dir) / "settings.json").u8string();
+    const std::string added = (fs::u8path(data_dir) / "added-models.json").u8string();
+    const std::string scratch = (fs::u8path(data_dir) / "tmp").u8string();
 
-    App app(o, settings, models_dir, catalog);
+    App app(o, settings, models_dir, catalog, added, scratch);
     for (const std::string & w : app.store.load())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     for (const std::string & w : app.lib.warnings())

@@ -11,13 +11,14 @@
 #include "bmoe/config.h"
 #include "bmoe/probe.h"
 
+#include "../moe/tensor_names.h"
+
 #include "fit.h"
 #include "ggml-backend.h"
 #include "llama.h"
 
-#include <cstring>
 #include <algorithm>
-#include <regex>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,16 @@ namespace {
 // Below this a graph is not a prefill graph any more, and halving it measures the constant part of
 // the buffer rather than the slope.
 constexpr uint32_t min_projection_width = 64;
+
+// What the fitter leaves free on each device. Upstream's own default (`--fit-target`) rather than a
+// policy of ours: the second stage applies its own margin to the host budget separately, from what
+// a reclaim costs there, and a device margin of our choosing would be a number nothing measured.
+constexpr size_t fitter_device_margin_bytes = (size_t) 1 << 30;
+
+// The shortest context the fitter may shrink to before it moves weights instead. Upstream's default
+// too (`--fit-ctx`). It binds only when the context is left to the fitter, which this adapter never
+// does - the context is pinned below - so it is passed for the call's contract, not as a choice.
+constexpr uint32_t fitter_n_ctx_min = 4096;
 } // namespace
 
 Placement probe_placement(const char * model_path,
@@ -74,14 +85,11 @@ Placement probe_placement(const char * model_path,
         o.pattern = nullptr;
         o.buft = nullptr;
     }
-    // Per-device margins, in bytes: leave a little on each device. The value is upstream's own
-    // default (1 GiB) rather than a policy of ours; the second stage applies its own margin to the
-    // host budget separately, from what a reclaim costs there.
-    std::vector<size_t> margins(llama_max_devices() + 1, (size_t) 1024 * 1024 * 1024);
+    std::vector<size_t> margins(llama_max_devices() + 1, fitter_device_margin_bytes);
 
     const common_params_fit_status st =
         common_fit_params(model_path, &mparams, &cparams, tensor_split.data(), overrides.data(), margins.data(),
-                          /*n_ctx_min=*/4096, /*extra=*/nullptr, GGML_LOG_LEVEL_WARN);
+                          fitter_n_ctx_min, /*extra=*/nullptr, GGML_LOG_LEVEL_WARN);
     if (st == COMMON_PARAMS_FIT_STATUS_ERROR) {
         pl.outcome = "the capacity fitter hit an error; planning as if there were no devices";
         return pl;
@@ -117,9 +125,35 @@ Placement probe_placement(const char * model_path,
     // credits a shared pool as separate capacity. `has_own_memory()` is true only where the probe
     // established it by allocating on the device and watching what the host lost - and an unsettled
     // device reads as shared, which is the safe direction.
+    //
+    // And it is asked of the devices the fitter PUT BYTES ON, not of the machine. A device with
+    // memory of its own somewhere else in the room says nothing about the one that was given the
+    // layers: on a phone an NPU measured as not drawing on the host (its buffers come from a kernel
+    // allocator this process cannot see) let the fitter put 41 layers on the GPU beside it, whose
+    // memory is the host's, and the plan applied 2106 MiB "on devices" that its ledger never held.
+    // "Its own" also needs a size, for the reason the prefill rule gives: a pool with no stated
+    // size is not one the fitter can have budgeted against.
+    std::vector<ggml_backend_dev_t> devs;
+    uint32_t hp_ngl = 0, hp_nct = 0, hp_nex = 0;
+    const common_device_memory_data_vec dm = common_get_device_memory_data(model_path, &mparams, &cparams, devs, hp_ngl,
+                                                                           hp_nct, hp_nex, GGML_LOG_LEVEL_WARN);
     size_t n_dev_local = 0;
     for (const ComputeDevice & d : hw.devices)
-        if (d.has_own_memory()) ++n_dev_local;
+        if (d.has_own_memory() && d.memory_total > 0) ++n_dev_local;
+    const ComputeDevice * placed_on_shared = nullptr;
+    bool placed_unknown = false;
+    for (size_t i = 0; i + 1 < dm.size() && i < devs.size(); ++i) {
+        if (dm[i].model + dm[i].context + dm[i].compute == 0) continue;
+        const char * name = ggml_backend_dev_name(devs[i]);
+        const ComputeDevice * facts = nullptr;
+        for (const ComputeDevice & d : hw.devices)
+            if (!d.is_cpu && name && d.name == name) facts = &d;
+        if (!facts)
+            placed_unknown = true; // not in the profile: nothing says its memory is its own
+        else if (!(facts->has_own_memory() && facts->memory_total > 0) && !placed_on_shared)
+            placed_on_shared = facts;
+    }
+    if (placed_on_shared || placed_unknown) n_dev_local = 0;
     pl.n_gpu_layers = n_dev_local ? mparams.n_gpu_layers : 0;
 
     // Where no device has memory of its own, the whole first stage has nothing to say. A capacity
@@ -149,26 +183,27 @@ Placement probe_placement(const char * model_path,
     for (uint32_t il = 0; il < first_device_layer; ++il)
         host[il] = true;
 
-    const std::regex exps_re(R"(blk\\\.(\d+)\\\.ffn_\(up\|down\|gate_up\|gate\)_\(ch\|\)exps)");
     for (const auto & o : overrides) {
         if (!o.pattern) break;
         pl.override_patterns.push_back(o.pattern);
-        std::cmatch m;
-        if (o.buft == cpu_buft && std::regex_search(o.pattern, m, exps_re)) {
-            const uint32_t il = (uint32_t) std::stoul(m[1].str());
-            if (il < n_layer) host[il] = true;
-        }
+        if (o.buft != cpu_buft) continue;
+        const int il = tensor_names::expert_override_layer(o.pattern);
+        if (il >= 0 && (uint32_t) il < n_layer) host[(size_t) il] = true;
     }
-    for (uint32_t il = 0; il < n_layer; ++il)
-        if (host[il]) pl.host_expert_layers.push_back(il);
+    // A block that carries no experts has none to leave on the host: on a hybrid or a leading-dense
+    // architecture the list would otherwise count every block, and a count of 52 "MoE layers" out of
+    // 23 prorates the expert set past itself. Where the profile does not say, every block counts.
+    for (uint32_t il = 0; il < n_layer; ++il) {
+        if (!host[il]) continue;
+        if (!model.moe_layers.empty() &&
+            std::find(model.moe_layers.begin(), model.moe_layers.end(), il) == model.moe_layers.end())
+            continue;
+        pl.host_expert_layers.push_back(il);
+    }
 
     // The host memory the placed model is projected to take. The breakdown's last entry is the
     // CPU; its `model` term still counts the experts that stayed on the host, which the streamer
     // takes off the books — so those are subtracted, pro rata by layer.
-    std::vector<ggml_backend_dev_t> devs;
-    uint32_t hp_ngl = 0, hp_nct = 0, hp_nex = 0;
-    const common_device_memory_data_vec dm = common_get_device_memory_data(model_path, &mparams, &cparams, devs, hp_ngl,
-                                                                           hp_nct, hp_nex, GGML_LOG_LEVEL_WARN);
     if (!dm.empty()) {
         const common_device_memory_data & cpu = dm.back();
         pl.raw_host_model_bytes = (uint64_t) cpu.model;
@@ -189,6 +224,10 @@ Placement probe_placement(const char * model_path,
             pl.device_bytes += (uint64_t) dm[i].model + (uint64_t) dm[i].context + (uint64_t) dm[i].compute;
             pl.device_compute_bytes += (uint64_t) dm[i].compute;
             pl.device_context_bytes += (uint64_t) dm[i].context;
+            if (dm[i].compute && i < devs.size() && ggml_backend_dev_name(devs[i])) {
+                pl.projected_devices.push_back(ggml_backend_dev_name(devs[i]));
+                pl.projected_compute_bytes.push_back((uint64_t) dm[i].compute);
+            }
         }
         pl.compute_width = cparams.n_ubatch;
 
@@ -222,7 +261,9 @@ Placement probe_placement(const char * model_path,
     if (shared_memory_only) {
         pl.shared_memory_placement = true;
         pl.fitted = false;
-        pl.outcome = "the capacity fitter ran, and had only devices whose memory is this host's own";
+        pl.outcome = placed_on_shared ? "the capacity fitter ran, and placed layers on " + placed_on_shared->name +
+                                            ", whose memory is this host's own"
+                                      : "the capacity fitter ran, and had only devices whose memory is this host's own";
     }
     return pl;
 }

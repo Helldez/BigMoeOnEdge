@@ -8,7 +8,10 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <malloc.h>
+#include <chrono>
 #include <cstring>
+#include <string>
+#include <vector>
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -23,6 +26,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <chrono>
 #include <ctime>
@@ -35,7 +39,11 @@
 #ifndef MAP_NORESERVE
 #define MAP_NORESERVE 0 // absent on some BSDs; the mapping is simply charged as usual there
 #endif
+#if defined(__linux__)
+#include <sys/syscall.h> // statx by number; see direct_alignment
+#endif
 #if defined(__ANDROID__)
+#include <android/api-level.h>       // whether the sandbox admits statx; see direct_alignment
 #include <android/hardware_buffer.h> // reclaim-exempt allocation; see pinned_alloc
 #endif
 #if defined(__APPLE__)
@@ -242,8 +250,11 @@ void aligned_free(void * p) {
 }
 
 size_t vm_page() {
+    // sysconf does not fail for this name in practice; if it ever did, the smallest page any target
+    // has is the one value that cannot make a page-clipped range spill outside its allocation.
+    constexpr size_t smallest_page = 4096;
     long ps = sysconf(_SC_PAGESIZE);
-    return ps > 0 ? (size_t) ps : 4096;
+    return ps > 0 ? (size_t) ps : smallest_page;
 }
 void * vm_reserve(size_t sz) {
     // MAP_NORESERVE makes the "address-only" contract true rather than merely true-by-default: these
@@ -585,11 +596,132 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
 // ── A second process, for work that can end one ─────────────────────────────────────────
 #if defined(_WIN32)
 
-bool can_run_self() {
-    return false; // not implemented here: a caller does the work in its own process
+std::string self_path() {
+    char buf[4096];
+    const DWORD n = GetModuleFileNameA(nullptr, buf, (DWORD) sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) return "";
+    return std::string(buf, n);
 }
-ChildResult run_self(const std::vector<std::string> &, double, std::string *) {
-    return ChildResult{};
+
+bool can_run_self() {
+    return !self_path().empty();
+}
+
+namespace {
+// One argument, quoted the way the C runtime of the child reads it back: a quote is escaped, and
+// backslashes are literal except the run that precedes a quote or the end, which is doubled.
+void append_quoted(std::string & cmd, const std::string & a) {
+    cmd += ' ';
+    cmd += '"';
+    size_t bs = 0;
+    for (char c : a) {
+        if (c == '\\') {
+            ++bs;
+            continue;
+        }
+        if (c == '"') {
+            cmd.append(bs * 2 + 1, '\\');
+        } else {
+            cmd.append(bs, '\\');
+        }
+        bs = 0;
+        cmd += c;
+    }
+    cmd.append(bs * 2, '\\');
+    cmd += '"';
+}
+
+// Whatever the pipe holds right now, appended to the tail kept for the caller.
+bool drain_pipe(HANDLE rd, std::string * out, size_t keep) {
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)) return false; // the child closed its end
+        if (avail == 0) return true;
+        char buf[8192];
+        DWORD want = avail < (DWORD) sizeof(buf) ? avail : (DWORD) sizeof(buf);
+        DWORD n = 0;
+        if (!ReadFile(rd, buf, want, &n, nullptr) || n == 0) return false;
+        if (out) {
+            out->append(buf, (size_t) n);
+            if (out->size() > 2 * keep) out->erase(0, out->size() - keep);
+        }
+    }
+}
+} // namespace
+
+ChildResult run_self(const std::vector<std::string> & args, double timeout_seconds, std::string * out) {
+    ChildResult r;
+    const std::string path = self_path();
+    if (path.empty()) return r;
+
+    // One pipe carries the child's stdout and stderr; only the parent's end stays uninherited.
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) return r;
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+    std::string cmd;
+    append_quoted(cmd, path);
+    for (const std::string & a : args)
+        append_quoted(cmd, a);
+    std::vector<char> cmdline(cmd.begin() + 1, cmd.end()); // without the leading space
+    cmdline.push_back(0);
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi{};
+    const BOOL started = CreateProcessA(path.c_str(), cmdline.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
+                                        nullptr, &si, &pi);
+    CloseHandle(wr);
+    if (!started) {
+        CloseHandle(rd);
+        return r;
+    }
+
+    // Read until the child closes its end or its time is up. The pipe is polled rather than read
+    // blocking, because a blocking read has no deadline and a child that never answers is the
+    // case this exists for.
+    const size_t keep = 1u << 20;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_seconds);
+    bool timed_out = false;
+    for (;;) {
+        if (!drain_pipe(rd, out, keep)) break;
+        const double left = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
+        if (left <= 0.0) {
+            timed_out = true;
+            break;
+        }
+        const DWORD slice = left * 1000.0 < 100.0 ? (DWORD) (left * 1000.0) + 1 : 100;
+        if (WaitForSingleObject(pi.hProcess, slice) == WAIT_OBJECT_0) {
+            drain_pipe(rd, out, keep); // what it wrote last
+            break;
+        }
+    }
+    CloseHandle(rd);
+    if (timed_out) TerminateProcess(pi.hProcess, 1);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    if (timed_out) {
+        r.outcome = ChildOutcome::TimedOut;
+    } else if (code >= 0xC0000000u) {
+        // An NTSTATUS: the child died of an exception (an access violation is 0xC0000005), which is
+        // this platform's way of saying what a signal says elsewhere.
+        r.outcome = ChildOutcome::Signalled;
+        r.code = (int) code;
+    } else {
+        r.outcome = ChildOutcome::Exited;
+        r.code = (int) code;
+    }
+    return r;
 }
 
 #else
@@ -598,8 +730,6 @@ ChildResult run_self(const std::vector<std::string> &, double, std::string *) {
 extern char ** environ;
 namespace bmoe::pio {
 
-namespace {
-// The path the kernel started this process from. Not argv[0], which is whatever the caller typed.
 std::string self_path() {
 #if defined(__APPLE__)
     char buf[4096];
@@ -614,7 +744,6 @@ std::string self_path() {
     return buf;
 #endif
 }
-} // namespace
 
 bool can_run_self() {
 #if defined(__APPLE__) && TARGET_OS_IPHONE
@@ -705,6 +834,106 @@ bool direct_needs_alignment() {
     return true; // O_DIRECT / FILE_FLAG_NO_BUFFERING reject unaligned windows
 #endif
 }
+
+namespace {
+
+// The smallest granule a direct read is cut to. No storage has a sector below 512 bytes, and an
+// aligned allocation smaller than a pointer is not one posix_memalign accepts.
+constexpr uint64_t direct_align_min = 512;
+
+// A stated alignment as a granule the readers can mask with: a power of two, raised to the floor;
+// 0 when the value is not one.
+[[maybe_unused]] size_t as_granule(uint64_t a) {
+    if (a == 0 || (a & (a - 1)) != 0) return 0;
+    return (size_t) (a < direct_align_min ? direct_align_min : a);
+}
+
+} // namespace
+
+#if defined(_WIN32)
+size_t direct_alignment(fd_t fd) {
+#if defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0602 // FileStorageInfo: Windows 8 and later
+    FILE_STORAGE_INFO si;
+    memset(&si, 0, sizeof(si));
+    if (!fd_ok(fd) || !GetFileInformationByHandleEx((HANDLE) fd, FileStorageInfo, &si, sizeof(si))) return 0;
+    // NO_BUFFERING wants offsets and lengths in whole logical sectors and buffers on the physical
+    // sector the filesystem works in; one granule must satisfy both, so it is the larger.
+    uint64_t a = (uint64_t) si.LogicalBytesPerSector;
+    if ((uint64_t) si.FileSystemEffectivePhysicalBytesPerSectorForAtomicity > a)
+        a = (uint64_t) si.FileSystemEffectivePhysicalBytesPerSectorForAtomicity;
+    return as_granule(a);
+#else
+    (void) fd;
+    return 0;
+#endif
+}
+#else
+namespace {
+
+// What the kernel states as this file's direct-I/O alignment, or 0 where it cannot be asked. Issued
+// by syscall number: bionic declares the wrapper only from API 30 and glibc only from 2.28, and
+// the number is what both of them call.
+size_t statx_dio_align(int fd) {
+#if defined(__linux__) && defined(__NR_statx) && defined(STATX_DIOALIGN) && defined(AT_EMPTY_PATH)
+#if defined(__ANDROID__)
+    // An app's sandbox admits the syscalls bionic itself issues, and bionic issues statx from API
+    // 30. Below that the call is not refused but trapped, and the trap ends the process.
+    if (android_get_device_api_level() < 30) return 0;
+#endif
+    struct statx stx;
+    memset(&stx, 0, sizeof(stx));
+    if (syscall(__NR_statx, fd, "", AT_EMPTY_PATH, STATX_DIOALIGN, &stx) != 0) return 0;
+    // A kernel older than the field leaves the mask bit clear; an offset alignment of 0 is the
+    // kernel saying this file takes no direct I/O at all. Either way, it did not answer.
+    if (!(stx.stx_mask & STATX_DIOALIGN) || stx.stx_dio_offset_align == 0) return 0;
+    uint64_t a = (uint64_t) stx.stx_dio_offset_align;
+    if ((uint64_t) stx.stx_dio_mem_align > a) a = (uint64_t) stx.stx_dio_mem_align;
+    return as_granule(a);
+#else
+    (void) fd;
+    return 0;
+#endif
+}
+
+// The largest block size a local filesystem formats with (ext4, XFS and btrfs stop at 64 KiB; f2fs
+// uses 4 or 16 KiB). A larger "block size" is a transfer-size hint - network and FUSE filesystems report
+// their read size in that field - and taking it as a granule would only inflate every window.
+constexpr uint64_t direct_align_block_max = 64 * 1024;
+
+// A filesystem's block size taken as a direct-read granule, or 0 when the field is not one.
+size_t block_granule(uint64_t bsize) {
+    return bsize > direct_align_block_max ? 0 : as_granule(bsize);
+}
+
+} // namespace
+
+size_t direct_alignment(fd_t fd) {
+    if (!fd_ok(fd)) return 0;
+    // The kernel's answer is the legality floor: a window aligned to a multiple of it is legal too.
+    // Reading at exactly 512 bytes where it allows that (ext4 on a 512-byte-sector NVMe) is a
+    // throughput change on the very SSDs this project has measured punishing small reads, and it
+    // has not been measured, so the granule stays at least the value every direct read used before
+    // the alignment was asked for. A measured win is what moves this line, not the probe.
+    if (const size_t a = statx_dio_align(fd)) return a < direct_align_fallback ? direct_align_fallback : a;
+    // The filesystem's fundamental block (f_frsize; f_bsize is the preferred transfer size on some
+    // systems, Apple's among them). Not what O_DIRECT is specified against - that is the device's
+    // logical block, or the filesystem's own where it is stricter (f2fs) - but a filesystem block
+    // is a whole number of device blocks, so it is the stricter of the two.
+    struct statvfs sv;
+    memset(&sv, 0, sizeof(sv));
+    if (fstatvfs(fd, &sv) != 0) return 0;
+    const size_t b = block_granule((uint64_t) (sv.f_frsize ? sv.f_frsize : sv.f_bsize));
+    if (b == 0) return 0;
+#if defined(__APPLE__)
+    return b; // no alignment contract to fall short of: the block is reported as it is
+#else
+    // Never under the fallback on a block size alone: a granule too large costs a little over-read,
+    // one too small fails every read, and the block size is weaker evidence than the 4096 every
+    // direct read has used so far. Only the kernel's own answer above may go under it.
+    return b < direct_align_fallback ? direct_align_fallback : b;
+#endif
+}
+#endif
 
 // ── Reclaim-exempt allocation ────────────────────────────────────────────────────────────
 // One section for every platform: Android and Darwin have such a store, everywhere else this

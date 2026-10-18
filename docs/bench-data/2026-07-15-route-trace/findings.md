@@ -17,7 +17,7 @@ caveat.
 
 | | |
 |---|---|
-| Device | OnePlus 15R, 11.1 GB RAM, Android 15 |
+| Device | 12 GB Android phone, 11.1 GB usable RAM, Android 15 |
 | Engine | `feat/route-trace` rebased on `main` @ `e7d2e8c` — includes prompt-tail retention (PR #22) and the compute decomposition (PR #20) |
 | Build | arm64, NDK r26, `armv8.2-a+dotprod+fp16`, `-t 4`, O_DIRECT, `--overlap` |
 | Models | `/data/local/tmp/shardllm/` (real `/data`; O_DIRECT silently degrades on FUSE `/sdcard`) |

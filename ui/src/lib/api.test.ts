@@ -6,10 +6,16 @@ import type { SseEvent } from './sse';
 // The server refuses a write that does not declare JSON, so the client must on every one.
 describe('api', () => {
   const calls: { path: string; init: RequestInit }[] = [];
+  // Each read answers the least of its documented shape, which the client checks before it returns.
+  const shapes: Record<string, string> = {
+    'api/info': '{"version":"1","state":"empty","generating":false,"model":null}',
+    'api/config': '{"values":{},"user_keys":[],"valid":true}',
+    'api/plan/apply': '{"values":{},"user_keys":[],"valid":true}',
+  };
   const stub = () =>
     vi.stubGlobal('fetch', async (path: string, init: RequestInit) => {
       calls.push({ path, init });
-      return new Response('{}', { status: 200 });
+      return new Response(shapes[path] ?? '{}', { status: 200 });
     });
   const contentType = (init: RequestInit) => new Headers(init.headers).get('Content-Type');
 
@@ -89,6 +95,16 @@ describe('api', () => {
     await expect(api.info()).rejects.toMatchObject({ status: 400, message: 'any wording', code: 'context_full' });
     vi.stubGlobal('fetch', async () => new Response('{"error":"no code"}', { status: 400 }));
     await expect(api.info()).rejects.toMatchObject({ code: '' });
+  });
+
+  it('refuses an answer that is not the documented shape, with a code of its own', async () => {
+    vi.stubGlobal('fetch', async () => new Response('{"something":"else"}', { status: 200 }));
+    await expect(api.info()).rejects.toMatchObject({ code: 'bad_response' });
+    await expect(api.config()).rejects.toMatchObject({ code: 'bad_response' });
+    vi.stubGlobal('fetch', async () => new Response('<html>a proxy</html>', { status: 200 }));
+    await expect(api.models()).rejects.toMatchObject({ code: 'bad_response' });
+    vi.stubGlobal('fetch', async () => new Response('', { status: 200 }));
+    await expect(api.unload()).resolves.toBeNull();
   });
 
   it('delivers the events of the stream by name until it ends', async () => {

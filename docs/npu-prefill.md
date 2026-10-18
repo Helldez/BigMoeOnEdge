@@ -77,6 +77,31 @@ With the cache left unpinned (`--no-cache-pin`) the CPU prefill of the same prom
 and the GPU's was unchanged at 3.3 to 3.4 s: the kernel was compressing the cache underneath the
 CPU path ([cache-sizing.md](cache-sizing.md)), and the arena does not go through the cache.
 
+### On the phone's GPU (Vulkan, OpenCL)
+
+The release APK carries the Vulkan and OpenCL backends beside Hexagon, so on a phone the planner
+measures the GPU too, through whichever of the two its driver offers, and weighs it by the same
+rule. Measured on a Snapdragon-class phone with an Adreno GPU (12 GB class, Hexagon v81), Nemotron
+3.5 30B-A3B Q4_0, the probe's matmul against the cores' 36 GiB/s:
+
+| device | one token wide | 128 tokens wide | the host's result at 128 |
+|---|---:|---:|---|
+| OpenCL (Adreno kernels) | 29 GiB/s | 344 GiB/s | no |
+| Vulkan, fp16 (the default) | 44 GiB/s | 37 GiB/s | no |
+| Vulkan, fp32 (`GGML_VK_DISABLE_F16=1`) | 44 GiB/s | 36 GiB/s | yes |
+| Hexagon NPU | - | 57.9x the cores | yes |
+
+So the plan refuses OpenCL on correctness whatever its speed, finds Vulkan no faster than the
+cores, and arms the NPU where the ledger has room: it did at a 4096 context with 4.3 GB
+available, and refused it on memory at a 20000 context. Forced by hand, a 1727-token prompt
+prefilled in 85 s on Vulkan in fp32 against 65 s on four cores, and the fp16 Vulkan prefill
+produced text that was not text. OpenCL named by hand is refused by the arena: the backend pads
+every quantized tensor's allocation, so one expert does not fit its share of the slot. What the
+GPU buys on this phone is nothing yet; what the run bought is that the rule said so before a user
+did. The load with the NPU armed then ended in the allocator, twice, before the first token: the
+NPU figure above is the probe's, and the run is tracked in
+[#264](https://github.com/Helldez/BigMoeOnEdge/issues/264).
+
 **Memory is the limit on a model with a large KV cache.** The device path holds the two expert slots
 (1.1 GB on this model), the device's compute buffers (0.8 GB at ubatch 2048) and the model state in
 the device's host buffer. On a 12 GB phone Gemma 4 at an 8192-token context and a 2000 MiB expert
@@ -208,6 +233,18 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
   one DSP-side skel per NPU generation (v73 to v81) inside upstream's Snapdragon toolchain container,
   and `scripts/stage-hexagon-jnilibs.ps1` stages them into the app. The release APK is built the same
   way by CI, so it carries all of them.
+- The GPU backends ride in the same APK, as modules ([backends.md](backends.md)). Vulkan needs
+  nothing set. The OpenCL module imports `libOpenCL.so`, the phone's own, and the Hexagon backend
+  opens `libcdsprpc.so`; both live in `/vendor/lib64`. A process the app starts links in the
+  linker's default namespace, which opens a vendor library only from a directory named on
+  `LD_LIBRARY_PATH` (a symlink to it from elsewhere is refused, and the module then fails to load
+  without a word), so the app's path is `<native lib dir>:/system/lib64:/vendor/lib64`: vendor
+  last, where it shadows no system library. A phone without the library simply does not load the
+  module. (It must be the phone's library and not a loader in the APK: opened through the Khronos
+  loader, the vendor library binds its own `cl*` calls to the loader's exports and the two
+  deadlock at the first platform query, measured on a Snapdragon phone.) The app also sets the
+  two Hexagon variables this section describes, `GGML_HEXAGON_HOSTBUF=1` and
+  `GGML_HEXAGON_OPPOLL=1`; only that backend reads them.
 - `--prefill-loaders N` (default 8) sets the threads that fill the slots, apart from `--io-threads`,
   which stays the decode's read lanes. Each loader reads and repacks, and a K-quant repack is
   CPU-heavy: on a Q4_K_M, 4 loaders left the NPU waiting 10.3 s of a 15.1 s prefill, 8 left it 5.0 of

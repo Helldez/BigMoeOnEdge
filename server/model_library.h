@@ -33,18 +33,47 @@ struct CatalogEntry {
 
 class ModelLibrary {
 public:
-    ModelLibrary(std::string models_dir, std::string catalog_path, EventBus & bus);
+    // `models_dir` is where downloads land. `scan_dirs` are other directories whose models are
+    // listed beside it and loaded in place, never written (a phone's adb-pushed and shared-storage
+    // folders): the host app knows where they are, the server says what they hold.
+    // `added_path` is where entries added at run time (a model picked from a repository,
+    // hf_repo.h) are kept between runs, beside the settings; "" keeps none.
+    ModelLibrary(std::string models_dir,
+                 std::vector<std::string> scan_dirs,
+                 std::string catalog_path,
+                 std::string added_path,
+                 EventBus & bus);
     ~ModelLibrary();
 
     // Problems found reading the catalog, for the start-up log. Empty when it loaded cleanly.
     const std::vector<std::string> & warnings() const { return warnings_; }
     const std::string & models_dir() const { return dir_; }
+    // Every folder this library lists models from: the models folder first, then the scan dirs.
+    std::vector<std::string> model_roots() const {
+        std::vector<std::string> r{dir_};
+        r.insert(r.end(), scan_dirs_.begin(), scan_dirs_.end());
+        return r;
+    }
 
     // The /api/models object: local files and the catalog with each entry's status.
     json list();
 
-    // general.architecture of a gguf, read from its metadata only; "" when unreadable.
-    std::string probe_arch(const std::string & path);
+    // What a gguf is, from its headers alone (no tensor bytes): its architecture, and whether it
+    // carries routed experts in a layout this engine streams (docs/which-models-stream.md). "" and
+    // false when unreadable.
+    struct ModelFacts {
+        std::string arch;
+        bool streamable = false;
+    };
+    ModelFacts probe(const std::string & path);
+
+    // Add (or replace, by id) an entry the server built, and keep it. "" when kept; otherwise
+    // why it was not.
+    std::string add_entry(const CatalogEntry & e);
+    // Forget an added entry. Files on disk stay. False when there is no such added entry.
+    bool remove_entry(const std::string & id);
+    // The entry, when the catalog or the added ones have it.
+    bool entry(const std::string & id, CatalogEntry & out) const;
 
     std::string start_download(const std::string & id); // "" once started
     bool cancel_download(const std::string & id);
@@ -68,19 +97,26 @@ private:
     const CatalogEntry * find(const std::string & id) const;
     bool entry_on_disk(const CatalogEntry & e) const;
 
+    // One directory's models as /api/models `local` entries, appended to `out`.
+    void list_dir(const std::string & dir, json & out);
+
+    void save_added();
     std::string dir_;
+    std::vector<std::string> scan_dirs_;
+    std::string added_path_;
+    std::vector<CatalogEntry> added_;
     EventBus & bus_;
     std::vector<CatalogEntry> catalog_;
     std::vector<std::string> warnings_;
 
-    std::mutex m_;
+    mutable std::mutex m_;
     std::map<std::string, std::unique_ptr<Job>> jobs_;
-    struct ArchCacheEntry {
+    struct FactsCacheEntry {
         uint64_t size = 0;
         long long mtime = 0;
-        std::string arch;
+        ModelFacts facts;
     };
-    std::map<std::string, ArchCacheEntry> arch_cache_;
+    std::map<std::string, FactsCacheEntry> facts_cache_;
 };
 
 } // namespace bmoe::server

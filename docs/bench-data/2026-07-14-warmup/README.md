@@ -1,6 +1,6 @@
 # Dense warm-up — on-device results (2026-07-14)
 
-Measured on the OnePlus 15R (Snapdragon, 11.4 GB RAM), UFS4 storage, models pushed to
+Measured on the 12 GB test phone (Snapdragon class, 11.4 GB usable RAM), UFS4 storage, models pushed to
 `/data/local/tmp`. Each CSV is one row per generated token
 (`step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms`) plus a `#
 summary` trailer. Reproduced with `scripts/bench-warmonly.sh`.

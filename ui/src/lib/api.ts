@@ -3,12 +3,16 @@ import { SseParser, isDoneSentinel } from './sse';
 import type { SseEvent } from './sse';
 import { auth } from './auth';
 import { parseChunk } from './chatStream';
+import { isConfig, isDecideResult, isHfAdded, isHfFacts, isHfModelsResponse, isInfo, isModelsResponse, isParamSpecList, isPlan } from './guards';
 import type {
   ChatChunk,
   ChatMessage,
   Config,
   ConfigUpdate,
   DecideResult,
+  HfAdded,
+  HfFacts,
+  HfModelsResponse,
   Info,
   ModelsResponse,
   ParamSpec,
@@ -17,6 +21,10 @@ import type {
 
 /** The code a full context is reported with: the fix is a new chat, and the screen says so. */
 export const CODE_CONTEXT_FULL = 'context_full';
+/** The code a turn is refused with when no model is loaded: the fix is on Models. */
+export const CODE_NO_MODEL = 'no_model';
+/** This client's own code for an answer that is not the documented shape (never sent by a server). */
+export const CODE_BAD_RESPONSE = 'bad_response';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -61,7 +69,9 @@ async function failed(res: Response): Promise<ApiError> {
   return errorFrom(res);
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+// `guard` checks the parts of the answer the UI reads; an answer that fails it is an error here,
+// not an undefined later. Writes whose answer nobody reads have none.
+async function request<T>(method: string, path: string, body?: unknown, guard?: (v: unknown) => v is T): Promise<T> {
   const headers: Record<string, string> = auth.headers();
   // Every write says it is JSON, with or without a body: the server refuses one that does not,
   // which is what keeps an HTML form (it cannot send this type) from calling the API.
@@ -71,26 +81,47 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const res = await fetch(path, init);
   if (!res.ok) throw await failed(res);
   const text = await res.text();
-  return (text ? JSON.parse(text) : null) as T;
+  let data: unknown = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    throw new ApiError(res.status, `the server's answer to ${path} is not JSON`, { code: CODE_BAD_RESPONSE });
+  }
+  if (guard && !guard(data)) {
+    throw new ApiError(res.status, `the server's answer to ${path} is not what this UI expects`, {
+      code: CODE_BAD_RESPONSE,
+    });
+  }
+  return data as T;
 }
 
 export const api = {
-  info: () => request<Info>('GET', 'api/info'),
-  params: () => request<ParamSpec[]>('GET', 'api/params'),
-  config: () => request<Config>('GET', 'api/config'),
-  updateConfig: (update: ConfigUpdate) => request<Config>('PUT', 'api/config', update),
+  info: () => request<Info>('GET', 'api/info', undefined, isInfo),
+  params: () => request<ParamSpec[]>('GET', 'api/params', undefined, isParamSpecList),
+  config: () => request<Config>('GET', 'api/config', undefined, isConfig),
+  updateConfig: (update: ConfigUpdate) => request<Config>('PUT', 'api/config', update, isConfig),
   load: (model?: string) => request<unknown>('POST', 'api/session/load', model ? { model } : {}),
   unload: () => request<unknown>('POST', 'api/session/unload'),
   cancel: () => request<unknown>('POST', 'api/cancel'),
-  models: () => request<ModelsResponse>('GET', 'api/models'),
+  models: () => request<ModelsResponse>('GET', 'api/models', undefined, isModelsResponse),
   download: (id: string) => request<unknown>('POST', 'api/models/download', { id }),
   cancelDownload: (id: string) => request<unknown>('DELETE', `api/models/download/${encodeURIComponent(id)}`),
+  /** A Hugging Face repository's gguf files, by the server (docs/server-api.md, "Models"). */
+  hfModels: (repo: string, token?: string) =>
+    request<HfModelsResponse>('POST', 'api/hf/models', token ? { repo, token } : { repo }, isHfModelsResponse),
+  /** One model's header against this machine, before any download. */
+  hfInspect: (repo: string, name: string, token?: string) =>
+    request<HfFacts>('POST', 'api/hf/inspect', token ? { repo, name, token } : { repo, name }, isHfFacts),
+  /** The model as a catalog entry; the download is then `download(id)`. */
+  hfAdd: (repo: string, name: string, token?: string) =>
+    request<HfAdded>('POST', 'api/hf/add', token ? { repo, name, token } : { repo, name }, isHfAdded),
+  removeAdded: (id: string) => request<unknown>('DELETE', `api/hf/entry/${encodeURIComponent(id)}`),
   /** The plan in force; `measure` runs the planner's probes again instead. */
-  plan: (measure = false) => request<Plan>('GET', measure ? 'api/plan?measure=1' : 'api/plan'),
-  applyPlan: () => request<Config>('POST', 'api/plan/apply'),
+  plan: (measure = false) => request<Plan>('GET', measure ? 'api/plan?measure=1' : 'api/plan', undefined, isPlan),
+  applyPlan: () => request<Config>('POST', 'api/plan/apply', undefined, isConfig),
   /** A decision: the model picks one of `choices` from a single prefill (docs/decide.md). */
   decide: (body: { prefix: string; suffix: string; choices: string[]; reuse_prefix?: boolean }) =>
-    request<DecideResult>('POST', 'api/decide', body),
+    request<DecideResult>('POST', 'api/decide', body, isDecideResult),
 };
 
 export const EVENTS_URL = 'api/events';

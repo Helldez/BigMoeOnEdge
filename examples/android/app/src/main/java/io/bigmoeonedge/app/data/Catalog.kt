@@ -20,6 +20,8 @@ data class CatalogEntry(
     /** The server's view of its own models directory: `on_disk`, `downloading`, `available`. */
     val serverStatus: String,
     val files: List<CatalogFile>,
+    /** Added at run time from a repository (`POST /api/hf/add`): it can be removed; its files stay. */
+    val added: Boolean = false,
 ) {
     /** The file handed to the engine: the first (and for a split set, the first shard). */
     val fileName: String get() = files.first().name
@@ -42,6 +44,7 @@ data class CatalogEntry(
                 bytes = o.optLong("bytes", files.sumOf { it.bytes }),
                 serverStatus = o.optString("status", "available"),
                 files = files,
+                added = o.optBoolean("added", false),
             )
         }
     }
@@ -50,10 +53,10 @@ data class CatalogEntry(
 enum class CatalogStatus { ON_DEVICE, DOWNLOADING, AVAILABLE }
 
 /**
- * The on-device rule for a catalog entry. The server answers for its own models directory; the
- * app adds what it knows and the server cannot: the transfers it has in flight, and (on the dev
- * flavor) copies in the shared-storage directories it scans. A set is on the device only when
- * every file is: the first shard alone lands seconds into a multi-hour download.
+ * The on-device rule for a catalog entry. The server answers for its own models directory, and
+ * [present] is every model file it lists anywhere (the other places included); the app adds what
+ * only it knows: the transfers it has in flight. A set is on the device only when every file is:
+ * the first shard alone lands seconds into a multi-hour download.
  */
 fun catalogStatus(e: CatalogEntry, present: Set<String>, downloading: Set<String>): CatalogStatus = when {
     e.files.any { it.name in downloading } -> CatalogStatus.DOWNLOADING

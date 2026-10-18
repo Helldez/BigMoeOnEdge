@@ -44,16 +44,21 @@ visible and every answer's cost visible.
 - **Messages.** The person's text verbatim; the assistant's as rendered Markdown, with no scripts,
   forms or styles from the model. A reasoning model's thinking span sits folded above its answer
   ("Thinking", open while it streams, closed once committed). Under a finished answer, one line of
-  figures from the turn's own summary: rate and length, the prompt it cost, the context used, the
-  cache hit rate, and under speculation the real rate and the share of guesses kept.
+  figures from the turn's own summary, each rate named by its phase:
+  `decode 1.7 tok/s (9 tok) · prefill 3.3 tok/s (13 tok, 4.0 s) · ctx 22/4096 · cache 54%`. The
+  prefill counts the tokens this turn read, which with the conversation reused from the KV cache is
+  the new message, not the history. Under speculation the real rate and the share of guesses kept
+  follow.
 - **Streaming.** The answer appears as it is generated. Before the first token: "Reading the
   prompt…". A chunk marked `reset` replaces the text shown so far instead of appending.
 - **Actions.** Send (disabled with no model loaded, which the status line explains), Stop (the
   answer so far is kept), Copy an answer, Regenerate the last answer (the prompt is already in the
   KV, so only the answer is paid), New chat.
-- **Errors.** Shown in the transcript, under the turn they belong to. A full context (the error's
-  `code` is `context_full`) says so and offers New chat; a server without a model offers Models; anything else
-  is dismissable. The person's message stays, so it can be sent again after the fix.
+- **Errors.** Shown in the transcript, under the turn they belong to, and decided on by the error's
+  `code`, never its wording. A full context (`context_full`) says so and offers New chat; a server
+  without a model (`no_model`) offers Models; anything else is dismissable. The person's message
+  stays, saved with the conversation, and Send again sends it as it is after the fix. A decision
+  that fails leaves no question behind: it is not a conversation turn.
 - **The live line.** While an answer streams and after: the rate, the compute and flash shares,
   the cache hit rate, the temperature where the device reports one. The full card is in Metrics.
 - **Choose.** Where the server offers `POST /api/decide`: a mode in which the prompt is a question
@@ -65,15 +70,27 @@ visible and every answer's cost visible.
 
 What it is: what is on this device, how to get a model onto it, and which one is loaded.
 
-- **On this device.** The server's own directory (`GET /api/models`, `local`): each model with
-  its size, architecture, whether this build streams it, whether a split set is complete. Load,
-  Unload, Delete (never while loaded; a split set deletes as a unit). The phone adds the other
-  places a model can sit (adb-pushed, shared storage), loadable by path.
-- **The catalog.** The entries of `catalog/models.json`, as the server lists them: title,
-  quantisation, size, one line on why you would pick it, and one action for its state:
-  Download, Cancel (with one progress bar over the whole entry, shards included), On device
-  (with Delete). The desktop server downloads for itself; the phone's app does the transfers,
-  resumable, surviving the app being killed.
+- **On this device.** What the server lists (`GET /api/models`, `local`): each model with its
+  size, architecture, whether this build streams it, whether a split set is complete, and the
+  directory when it is not the server's own. Load, Unload, Delete (never while loaded; a split set
+  deletes as a unit, every file the server listed for it). The other places a model can sit on the
+  phone (adb-pushed, shared storage) are directories the app hands the server at launch
+  (`--scan-dir`), so they are listed the same way and loaded in place.
+- **From Hugging Face.** A repository id or its URL, and three steps the server does
+  (`docs/server-api.md`, "Models"): List (every gguf the repository holds, split sets as one
+  model, with quantisation, size and whether every shard is there), Check (the model's header
+  read through a range request before any download: architecture, experts and top-k, layers,
+  what stays resident and what streams, and the verdict on this machine: streams, plain mmap or
+  not readable, needs so much disk against what is free, the resident floor against what this
+  process may hold), Add (the model becomes a catalog entry and its download starts). A token
+  field for a gated or private repository, used for the requests and kept nowhere. The UI shows
+  what the server answered and reads no gguf.
+- **The catalog.** The two reference models of `catalog/models.json` and the entries added from
+  a repository, as the server lists them: title, quantisation, size, one line on why you would
+  pick it, and one action for its state: Download, Cancel (with one progress bar over the whole
+  entry, shards included), On device (with Delete). An added entry can be removed; its files stay.
+  The desktop server downloads for itself; the phone's app does the transfers, resumable,
+  surviving the app being killed.
 - **Any other model.** A direct gguf URL, or a file picked from the device and imported.
 - **Loading.** With auto-plan on (the default where the planner is built in), Load unloads the
   previous model, measures the machine, applies the plan, then loads; the status line follows.

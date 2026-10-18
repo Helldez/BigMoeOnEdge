@@ -38,15 +38,18 @@ class MetricsRecorder(private val ctx: Context) {
         turn = 0
         headerWritten = false
         val model = info.model
-        // The preamble keys follow the engine's sink: underscores, the model by name, then every
-        // configuration value the server reports, so a file can state what it was run with.
+        // The first line is what the server said about the session (PreambleFacts); the second is
+        // every configuration value it reports, under the parameter's key with `_` for `-`, so a
+        // file can state what it was run with and the parameter table can explain it.
         val head = StringBuilder("# bmoe_metrics v=app engine=").append(info.version)
         if (model != null) {
-            head.append(" model=").append(model.name.replace(' ', '_'))
+            head.append(" ${PreambleFacts.MODEL}=").append(model.name.replace(' ', '_'))
                 .append(" arch=").append(model.arch)
                 .append(" n_ctx=").append(model.nCtx)
                 .append(" n_expert_used=").append(model.nExpertUsed)
-                .append(" moe_stream=").append(if (model.streaming) 1 else 0)
+                .append(" ${PreambleFacts.STREAMING}=").append(if (model.streaming) 1 else 0)
+                .append(" compute_threads=").append(model.computeThreads)
+                .append(" busy_threads=").append(model.busyThreads)
         }
         write(head.toString() + "\n")
         if (config != null) {
@@ -57,7 +60,7 @@ class MetricsRecorder(private val ctx: Context) {
                     is Boolean -> if (v) "1" else "0"
                     else -> v.toString().replace(' ', '_')
                 }
-                line.append(' ').append(k.replace('-', '_')).append('=').append(value)
+                line.append(' ').append(ConfigGlossary.preambleKey(k)).append('=').append(value)
             }
             write(line.toString() + "\n")
         }
@@ -117,7 +120,7 @@ class MetricsRecorder(private val ctx: Context) {
     companion object {
         /** The token event's columns, in the engine sink's order where the two share a name. */
         val COLUMNS = listOf(
-            "step", "steps", "wall_ms", "io_ms", "compute_ms", "mgmt_ms", "stall_ms", "read_mib",
+            "step", "steps", "wall_ms", "io_ms", "compute_ms", "mgmt_ms", "stall_ms", "flash_wait_ms", "read_mib",
             "cache_hit_pct", "cache_budget_mib", "rss_mib", "mem_available_mib", "majflt", "cpu_ms",
             "dense_resident_frac", "mtp_batch",
         )

@@ -11,7 +11,7 @@ the code, and you do not pick any settings: the protocol fixes them so rows comp
 
 ## Start here
 
-**Which model?** Any MoE the engine supports (`bmoe-cli --list-archs`), any quantization. No model
+**Which model?** Any MoE llama.cpp loads ([which-models-stream.md](which-models-stream.md)), any quantization. No model
 yet? The [catalog table](#models-that-line-up-with-the-readme) lists what the app ships. Larger
 than your RAM is the interesting case; one that fits is still a valid row (it measures what
 streaming costs against running resident). The report asks which of the two you are in.
@@ -29,8 +29,10 @@ engine actually issues, runs the protocol, prints two markdown tables. Paste bot
 
 - **No toolchain?** Every release attaches a prebuilt `bmoe-cli` (Linux x86_64 / aarch64, macOS
   arm64, Windows x86_64). Point the script at it: `BMOE_CLI=/path/to/bmoe-cli scripts/bench-report.sh model.gguf`.
-- **Binary will not start?** The x86_64 builds assume AVX2, the aarch64 one armv8.2-a with dotprod.
-  Drop `BMOE_CLI=` and it builds from source.
+- **Binary will not start?** The archives carry one CPU module per instruction-set tier and pick the
+  best one this machine runs, so no particular CPU is assumed. The Linux aarch64 archive needs
+  glibc 2.38 or newer (Ubuntu 24.04); the x86_64 one runs from Ubuntu 22.04. Drop `BMOE_CLI=` and
+  it builds from source.
 - **Windows:** use the prebuilt binary with the command under [On a phone](#on-a-phone), minus the
   `adb shell`. The script itself is Linux and macOS only.
 

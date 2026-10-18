@@ -7,14 +7,6 @@
   let text = $state('');
   let options = $state('');
 
-  // A message the server refused goes back into the box.
-  $effect(() => {
-    if (chat.restore) {
-      if (!text) text = chat.restore;
-      chat.restore = '';
-    }
-  });
-
   let canSend = $derived(server.ready && !chat.busy && text.trim() !== '' && (!chat.choose || options.trim() !== ''));
 
   function send() {

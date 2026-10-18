@@ -6,22 +6,19 @@ import io.bigmoeonedge.app.BuildConfig
 import java.io.File
 
 /**
- * Finds MoE gguf models on device. Models are read in place by the bmoe-server process (a gguf
- * can be tens of GB), so every source is a real filesystem directory that process can open. The
- * server lists its own models directory itself; this scan is for the other places a model can
- * sit, which the server loads by path when asked.
+ * Where models live on this phone. Models are read in place by the bmoe-server process (a gguf can
+ * be tens of GB), so every place is a real filesystem directory that process can open. The app
+ * knows the places; the server says what they hold: it is started with the app's models directory
+ * and each other place as a `--scan-dir`, and `GET /api/models` lists them all, split sets grouped,
+ * architecture read, whether this build streams it (docs/server-api.md). Nothing here reads a gguf
+ * or knows how a split set is named.
  *
- * Which directories are scanned depends on the distribution flavor (BuildConfig.SHARED_STORAGE):
+ * Which other places there are depends on the distribution flavor (BuildConfig.SHARED_STORAGE):
  *
- *   always      the app-internal models dir (filesDir) — no permission needed, on a real
- *               filesystem where O_DIRECT works. The in-app URL downloader and the file picker
- *               both land models here. The app-specific external files dir is also scanned so
- *               models downloaded by older builds keep working.
- *   dev only    the public Downloads folder and /data/local/tmp/bmoe, for models adb-pushed
- *               to the device. These need all-files access, which only the dev flavor requests.
- *
- * Only MoE models are listed: this engine streams experts, so dense models are filtered out by
- * reading the gguf header (see [GgufHeader]).
+ *   always      the app-specific external files dir, so models downloaded by older builds keep
+ *               working.
+ *   dev only    /data/local/tmp/bmoe and the public Downloads folder, for models adb-pushed to the
+ *               device. These need all-files access, which only the dev flavor requests.
  */
 object ModelManager {
     // A gguf larger than the free space on shared storage cannot be copied there, but it can
@@ -31,104 +28,48 @@ object ModelManager {
     private val TMP_MODEL_DIR = File("/data/local/tmp/bmoe")
 
     /**
-     * The app-specific external files dir — still scanned so models downloaded by older builds
-     * (which wrote here, on FUSE) keep working, but no longer a download target: O_DIRECT is
-     * silently unusable on this emulated storage, forcing the engine onto buffered I/O.
-     */
-    fun appModelsDir(ctx: Context): File? = ctx.getExternalFilesDir(null)
-
-    /**
      * App-internal models dir — lives on /data (a real f2fs/ext4 volume), NOT the emulated/FUSE
      * external storage. That matters because O_DIRECT returns correct data here, so streamed
      * expert reads stay fast; on the emulated external dir O_DIRECT silently corrupts reads and
-     * the engine has to fall back to slower buffered I/O. Imports land here for that reason.
+     * the engine has to fall back to slower buffered I/O. Downloads and imports land here, and it
+     * is the server's `--models-dir`.
      */
     fun internalModelsDir(ctx: Context): File = File(ctx.filesDir, "models").apply { mkdirs() }
 
-    // Order is precedence, not taste: allGguf keeps the first file of a given name, and the same
-    // gguf really does sit in two places at once (adb-pushed to /data/local/tmp *and* downloaded
-    // to /sdcard/Download). Real filesystems come first, because O_DIRECT works there and the
-    // emulated dirs force the engine back onto buffered I/O. Reading the slow copy of a model
-    // that is also present on the fast one is a silent, unexplained loss of throughput.
-    private fun scanDirs(ctx: Context): List<File> = buildList {
-        add(internalModelsDir(ctx))
-        if (BuildConfig.SHARED_STORAGE && TMP_MODEL_DIR.isDirectory) add(TMP_MODEL_DIR)
-        appModelsDir(ctx)?.let { add(it) }
+    /**
+     * The other places a model can sit, in the order the server lists them. Order is precedence,
+     * not taste: real filesystems come first, because O_DIRECT works there and the emulated dirs
+     * force the engine back onto buffered I/O, and the same gguf really does sit in two places at
+     * once (adb-pushed to /data/local/tmp *and* downloaded to /sdcard/Download).
+     */
+    fun scanDirs(ctx: Context): List<File> = buildList {
+        if (BuildConfig.SHARED_STORAGE) add(TMP_MODEL_DIR)
+        // The app-specific external files dir: no longer a download target (O_DIRECT is silently
+        // unusable on this emulated storage), still listed so an older build's models keep working.
+        ctx.getExternalFilesDir(null)?.let { add(it) }
         if (BuildConfig.SHARED_STORAGE) {
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)?.let { add(it) }
         }
     }
 
-    // Deduped by filename, not by path: the same gguf often exists in two scanned dirs (imported
-    // and adb-pushed). The first hit wins — see scanDirs for the precedence. It also lets the
-    // model catalog recognize its own entries by name, wherever they landed.
-    private fun allGguf(ctx: Context): List<File> =
-        scanDirs(ctx)
-            .flatMap { it.listFiles { f -> f.isFile && f.name.endsWith(".gguf") }?.toList() ?: emptyList() }
-            .distinctBy { it.name }
-            .sortedBy { it.name }
-
-    // Shards 2..N of a split gguf (`-00002-of-00003.gguf`) carry tensor data but no model
-    // metadata — llama.cpp and the engine read everything from the FIRST shard, which is the only
-    // selectable file of the set. Their header also fails GgufHeader.isMoe, but that would be
-    // filtering by accident; this is the designed rule.
-    private val SHARD_SUFFIX = Regex("-(\\d{5})-of-\\d{5}\\.gguf$")
-
-    private fun isNonFirstShard(name: String): Boolean =
-        SHARD_SUFFIX.find(name)?.let { it.groupValues[1] != "00001" } == true
-
-    /** List MoE models only (first shard represents a split set). Blocking header reads — call off the main thread. */
-    fun listMoeModels(ctx: Context): List<File> =
-        allGguf(ctx).filter { !isNonFirstShard(it.name) && GgufHeader.isMoe(it) }
-
     /**
-     * MoE models outside the server's own directory (adb-pushed on the dev flavor, or left by an
-     * older build in the external files dir): the server does not list them, but loads them by path.
+     * Can the app delete these files? Unlinking needs write access to the directory: an adb-pushed
+     * model sits in a shell-owned one the app can read but not change.
      */
-    fun listModelsElsewhere(ctx: Context): List<File> {
-        val own = internalModelsDir(ctx).absolutePath
-        return listMoeModels(ctx).filter { it.parentFile?.absolutePath != own }
-    }
-
-    /**
-     * Names of every gguf on the device, non-first shards included. The catalog's presence check
-     * needs this raw view: a sharded entry is ON_DEVICE only when every shard is, and shards 2..N
-     * are exactly what [listMoeModels] hides.
-     */
-    fun allGgufNames(ctx: Context): Set<String> = allGguf(ctx).map { it.name }.toSet()
-
-    /**
-     * Every on-disk copy of [fileName] across the scanned dirs. listMoeModels dedups by name and
-     * shows only the first, but the same gguf can sit in two places at once (adb-pushed to
-     * /data/local/tmp AND downloaded to the app dir); a delete has to see them all, or it silently
-     * orphans the copy it is not using. Blocking stat — call off the main thread.
-     */
-    fun copiesOf(ctx: Context, fileName: String): List<File> =
-        scanDirs(ctx).map { File(it, fileName) }.filter { it.isFile }
-
-    /**
-     * Can the app delete this file? /data/local/tmp/bmoe is shell-owned (adb-pushed models): the
-     * app can read it but its untrusted_app domain cannot unlink it. Everything else the app itself
-     * wrote (download / import) and can remove.
-     */
-    fun isAppDeletable(f: File): Boolean = !f.absolutePath.startsWith(TMP_MODEL_DIR.absolutePath)
+    fun canDelete(files: List<File>): Boolean = files.isNotEmpty() && files.all { it.parentFile?.canWrite() == true }
 
     /** Absolute path of libbmoe-server.so inside the app's nativeLibraryDir: the engine, as a process. */
     fun serverPath(ctx: Context): String =
         File(ctx.applicationInfo.nativeLibraryDir, "libbmoe-server.so").absolutePath
 
-    /** Whether this APK carries the Hexagon backend (release builds do; a plain local build does not). */
-    fun hasHexagonBackend(ctx: Context): Boolean =
-        File(ctx.applicationInfo.nativeLibraryDir, "libggml-hexagon.so").exists()
-
     /** Empty-state guidance, phrased for the current flavor's model-acquisition paths. */
     fun pushHint(): String =
         if (BuildConfig.SHARED_STORAGE) {
-            "No MoE .gguf found. Download one below, or adb-push a model to shared storage:\n" +
+            "No .gguf found. Download one below, or adb-push a model to shared storage:\n" +
                 "adb push model.gguf /sdcard/Download/\n" +
                 "adb push model.gguf /data/local/tmp/bmoe/   (no duplicate, O_DIRECT works)"
         } else {
-            "No MoE .gguf found. Download one below, or pick a .gguf you already have on the\n" +
+            "No .gguf found. Download one below, or pick a .gguf you already have on the\n" +
                 "device."
         }
 }

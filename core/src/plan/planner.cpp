@@ -4,8 +4,15 @@
 // and what happens when that fact is missing. Nothing here reads a platform, an architecture or a
 // tensor name — the inputs carry no such thing — so the only way to add hardware is to teach an
 // adapter to measure one more fact.
+//
+// Each block is a stage: a function over the Planning state below, and plan_run() at the bottom is
+// the order they run in, readable on one screen. A reason that tells a person what to type spells
+// the flag through the parameter table (flag_spelling), so a renamed flag cannot leave the rationale
+// advising one that no longer parses.
 
 #include "bmoe/planner.h"
+
+#include "bmoe/params.h"
 
 #include <algorithm>
 #include <cmath>
@@ -182,6 +189,18 @@ Placement Placement::at_width(uint32_t width) const {
     return q;
 }
 
+uint64_t Placement::device_compute_of(const std::string & device) const {
+    // Each device's part is taken at the projected width and kept in proportion as the sum moves
+    // along its slope: the slope was measured for the sum, not per device.
+    uint64_t part = 0, projected = 0;
+    for (size_t i = 0; i < projected_devices.size() && i < projected_compute_bytes.size(); ++i) {
+        projected += projected_compute_bytes[i];
+        if (projected_devices[i] == device) part += projected_compute_bytes[i];
+    }
+    if (part == 0 || projected == 0) return 0;
+    return (uint64_t) ((double) device_compute_bytes * (double) part / (double) projected);
+}
+
 bool PlanRequest::is_pinned(const char * knob) const {
     for (const std::string & p : pinned)
         if (p == knob) return true;
@@ -200,150 +219,223 @@ Plan plan_run(const RunConfig & base,
     return plan_run(base, hw, model, placement, req, PlannerPolicy::defaults());
 }
 
-Plan plan_run(const RunConfig & base,
-              const HardwareProfile & hw,
-              const ModelProfile & model,
-              const Placement & projected,
-              const PlanRequest & req,
-              const PlannerPolicy & pol) {
-    Plan p;
-    p.config = base;
-    // The first stage's answer at the graph width it was projected at. The width is this stage's to
-    // choose (see "the widest graph" below), and the compute figures move with it.
-    Placement placement = projected;
-    p.placement = placement;
+namespace {
+
+// The shortest context the rationale will suggest: llama.cpp's own physical batch. A context
+// narrower than one graph is not a run anyone would shorten theirs to, whatever cache it bought.
+constexpr uint64_t k_min_suggested_ctx = 512;
+
+// Whether every device here reads this host's own memory: none has memory of its own. False with
+// no devices at all, where the question does not arise.
+bool devices_share_host_memory(const HardwareProfile & hw) {
+    bool shared = !hw.devices.empty();
+    for (const ComputeDevice & d : hw.devices)
+        if (d.has_own_memory()) shared = false;
+    return shared;
+}
+
+// One plan_run() call, carried through its stages: the inputs, the plan being written, and the
+// figures a stage derives for a later one to read. Each stage below is one block of the table this
+// file is meant to be read as - a knob or two, the fact that decides it, and what happens when that
+// fact is missing - and runs in the order plan_run() lists them, because a later stage reads what
+// an earlier one settled: the width moves the compute buffers, the regime gates everything after
+// it, the ledger sizes the cache the I/O policy then reads.
+struct Planning {
+    Planning(const RunConfig & base,
+             const HardwareProfile & hw_,
+             const ModelProfile & model_,
+             const Placement & projected,
+             const PlanRequest & req_,
+             const PlannerPolicy & pol_,
+             Plan & plan)
+        : hw(hw_), model(model_), req(req_), pol(pol_), p(plan), placement(projected) {
+        p.config = base;
+        p.placement = placement;
+    }
+
+    const HardwareProfile & hw;
+    const ModelProfile & model;
+    const PlanRequest & req;
+    const PlannerPolicy & pol;
+    Plan & p;
+
+    // The first stage's answer at the graph width this stage chose (choose_graph_width). The
+    // width is this stage's to choose, and the compute figures move with it.
+    Placement placement;
 
     // The rate a device has to beat before it is said to read this model's weights faster than the
     // host: the policy's margin over the host's own figure, computed once so the lines quoting it
     // cannot drift apart.
-    const double host_bandwidth_win = hw.host_bandwidth_gibs * (1.0 + (double) pol.min_backend_win);
+    double host_bandwidth_win = 0.0;
 
-    // What the first stage left for the second. Without a placement every layer's experts are on
-    // the host and nothing of the model sits on a device; with one, only the host share of the
-    // experts is the streamer's to serve, and the dense set the fitter kept on the host is what it
-    // costs the residency budget.
-    // Expert bytes prorate over the layers that CARRY experts, not over every block in the file.
-    // On an architecture with leading dense blocks the two counts differ, and dividing the expert
-    // set by the larger of them understates what the host still has to stream.
-    const uint32_t n_moe_layer = model.n_moe_layer;
-    const uint32_t host_layers = placement.fitted ? (uint32_t) placement.host_expert_layers.size() : n_moe_layer;
-    const uint64_t host_expert_bytes = (placement.fitted && n_moe_layer)
-                                           ? (uint64_t) ((double) model.expert_bytes * host_layers / n_moe_layer)
-                                           : model.expert_bytes;
+    // What the first stage left for the second (share_of_host).
+    uint32_t n_moe_layer = 0;
+    uint32_t host_layers = 0;
+    uint64_t host_expert_bytes = 0;
 
-    auto note = [&](const char * knob, std::string value, Source src, std::string reason) {
+    // What this process may hold, the margin left for everything that is not us, and the rest.
+    uint64_t holdable = 0;
+    uint64_t margin = 0;
+    uint64_t usable = 0;
+
+    // The host set and the regime it puts the run in (classify_regime).
+    bool devices_share_host_memory = false;
+    uint64_t device_on_host = 0;
+    uint64_t host_fixed = 0;
+    uint64_t host_all = 0;
+    uint64_t host_dense = 0;
+    uint64_t air = 0;
+    bool air_short = false;
+
+    // The model as the allocator sees it: only the host's share of the experts (host_model).
+    ModelProfile host_model;
+
+    void note(const char * knob, std::string value, Source src, std::string reason) {
         Decision d;
         d.knob = knob;
         d.value = std::move(value);
         d.source = src;
         d.reason = std::move(reason);
         p.decisions.push_back(std::move(d));
-    };
+    }
 
     // A knob the caller set is a knob we do not own. Records it and reports that it is off-limits.
-    auto pinned = [&](const char * knob, std::string value) {
+    bool pinned(const char * knob, std::string value) {
         if (!req.is_pinned(knob)) return false;
         note(knob, std::move(value), Source::Operator, "set by the caller; the planner leaves it alone");
         return true;
-    };
+    }
 
-    auto decline = [&](std::string why) {
+    void decline(std::string why) {
         p.streaming_declined = true;
         p.decline_reason = std::move(why);
         p.config.moe.enabled = false;
+    }
+};
+
+// ── what the first stage left for the second ─────────────────────────────────────
+// Without a placement every layer's experts are on the host and nothing of the model sits on a
+// device; with one, only the host share of the experts is the streamer's to serve, and the dense
+// set the fitter kept on the host is what it costs the residency budget.
+// Expert bytes prorate over the layers that CARRY experts, not over every block in the file. On an
+// architecture with leading dense blocks the two counts differ, and dividing the expert set by the
+// larger of them understates what the host still has to stream.
+void share_of_host(Planning & s) {
+    const Placement & placement = s.placement;
+    s.host_bandwidth_win = s.hw.host_bandwidth_gibs * (1.0 + (double) s.pol.min_backend_win);
+    s.n_moe_layer = s.model.n_moe_layer;
+    // Count the host list against the blocks that carry experts: a placement is expressed in every
+    // block of the file, and on a hybrid architecture most blocks carry none.
+    uint32_t host_moe = 0;
+    for (uint32_t il : placement.host_expert_layers)
+        if (s.model.moe_layers.empty() ||
+            std::find(s.model.moe_layers.begin(), s.model.moe_layers.end(), il) != s.model.moe_layers.end())
+            ++host_moe;
+    s.host_layers = placement.fitted ? std::min(host_moe, s.n_moe_layer) : s.n_moe_layer;
+    s.host_expert_bytes = (placement.fitted && s.n_moe_layer)
+                              ? (uint64_t) ((double) s.model.expert_bytes * s.host_layers / s.n_moe_layer)
+                              : s.model.expert_bytes;
+}
+
+// ── the regime: a ratio of the two profiles, never a property of either ─────────
+// The three inputs no plan can be made from. True when the plan has declined and is complete.
+bool declines_unplannable(Planning & s) {
+    if (!s.model.ok) {
+        s.p.regime = Regime::Unknown;
+        s.decline("the model file could not be read, so nothing about it could be planned");
+        s.note("moe-stream", "off", Source::Unprobed, "model profile unavailable");
+        return true;
+    }
+    if (!s.model.is_moe) {
+        s.p.regime = Regime::NotMoe;
+        s.decline("this model has no routed experts: there is nothing for the expert streamer to do");
+        s.note("moe-stream", "off", Source::Derived, "the file carries no expert tensors");
+        return true;
+    }
+    if (s.hw.residency_budget == 0) {
+        s.p.regime = Regime::Unknown;
+        s.decline("this machine reported no residency budget, so no size could be derived from it");
+        s.note("moe-stream", "off", Source::Unprobed, "machine not profiled");
+        return true;
+    }
+    return false;
+}
+
+void size_budget(Planning & s) {
+    s.margin = margin_bytes(s.hw, s.pol);
+    s.holdable = budget_bytes(s.hw);
+    s.usable = s.holdable > s.margin ? s.holdable - s.margin : 0;
+}
+
+// ── the widest graph ────────────────────────────────────────────────────────────
+// A prompt is computed in graphs `n_ubatch` tokens wide, and the compute buffers are reserved for
+// the widest of them. Left to follow the context that is one graph per context, which is the
+// fastest prefill there is and costs nothing at a small context; at a large one it is several GiB
+// taken from the cache for a pass that happens once per prompt. So the width is the widest whose
+// buffers stay inside their share of what the process may hold, found by halving from the context.
+// A width the caller set is the caller's; a slope that was not measured decides nothing, and the
+// knob keeps its default.
+//
+// A device's buffers are counted only where they come out of this pool. A device with memory of its
+// own pays for its width there, which is the first stage's arithmetic and not this one.
+void choose_graph_width(Planning & s) {
+    Plan & p = s.p;
+    const bool device_in_pool = devices_share_host_memory(s.hw);
+    auto buffers = [&](uint32_t w) {
+        const Placement q = s.placement.at_width(w);
+        return q.raw_host_compute_bytes + (device_in_pool ? q.device_compute_bytes : 0);
     };
-
-    // ── the regime: a ratio of the two profiles, never a property of either ─────────
-    if (!model.ok) {
-        p.regime = Regime::Unknown;
-        decline("the model file could not be read, so nothing about it could be planned");
-        note("moe-stream", "off", Source::Unprobed, "model profile unavailable");
-        return p;
+    const uint32_t full = s.placement.compute_width;
+    if (s.req.is_pinned("ubatch")) {
+        s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Operator,
+               "set by the caller; the planner leaves it alone" +
+                   (full ? ", and the compute buffers are counted at that width: " + u64s(mib(buffers(full))) + " MiB"
+                         : std::string()));
+        return;
     }
-    if (!model.is_moe) {
-        p.regime = Regime::NotMoe;
-        decline("this model has no routed experts: there is nothing for the expert streamer to do");
-        note("moe-stream", "off", Source::Derived, "the file carries no expert tensors");
-        return p;
+    if (full == 0 || s.placement.host_compute_per_token == 0) {
+        s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
+               "what a token of graph width costs in compute buffers was not measured here, so the "
+               "width is not this plan's to choose; keeping the default");
+        return;
     }
-    if (hw.residency_budget == 0) {
-        p.regime = Regime::Unknown;
-        decline("this machine reported no residency budget, so no size could be derived from it");
-        note("moe-stream", "off", Source::Unprobed, "machine not profiled");
-        return p;
+    const uint64_t cap = (uint64_t) ((double) s.holdable * s.pol.compute_share_max);
+    uint32_t w = full;
+    while (w / 2 >= s.pol.ubatch_min && buffers(w) > cap)
+        w /= 2;
+    const std::string share = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "% of the " +
+                              u64s(mib(s.holdable)) + " MiB this process may hold";
+    if (w == full) {
+        s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
+               "a graph as wide as the context reserves " + u64s(mib(buffers(full))) +
+                   " MiB of compute buffers, inside " + share + ": a prompt is computed in one pass");
+        return;
     }
+    const uint64_t before = buffers(full);
+    s.placement = s.placement.at_width(w);
+    p.placement = s.placement;
+    p.config.n_ubatch = (int) w;
+    s.note("ubatch", u64s(w), Source::Policy,
+           "a graph as wide as the context would reserve " + u64s(mib(before)) + " MiB of compute buffers, more than " +
+               share + "; at " + u64s(w) + " tokens it is " + u64s(mib(buffers(w))) +
+               " MiB. A prompt is computed in more passes and the expert cache keeps the rest, because a prompt is "
+               "paid once and a token every time. " +
+               flag_spelling("ubatch") + " sets it by hand");
+}
 
-    const uint64_t margin = margin_bytes(hw, pol);
-    const uint64_t holdable = budget_bytes(hw);
-    const uint64_t usable = holdable > margin ? holdable - margin : 0;
-
-    // ── the widest graph ────────────────────────────────────────────────────────────
-    // A prompt is computed in graphs `n_ubatch` tokens wide, and the compute buffers are reserved
-    // for the widest of them. Left to follow the context that is one graph per context, which is
-    // the fastest prefill there is and costs nothing at a small context; at a large one it is
-    // several GiB taken from the cache for a pass that happens once per prompt. So the width is
-    // the widest whose buffers stay inside their share of what the process may hold, found by
-    // halving from the context. A width the caller set is the caller's; a slope that was not
-    // measured decides nothing, and the knob keeps its default.
-    //
-    // A device's buffers are counted only where they come out of this pool. A device with memory
-    // of its own pays for its width there, which is the first stage's arithmetic and not this one.
-    {
-        bool device_in_pool = !hw.devices.empty();
-        for (const ComputeDevice & d : hw.devices)
-            if (d.has_own_memory()) device_in_pool = false;
-        auto buffers = [&](uint32_t w) {
-            const Placement q = placement.at_width(w);
-            return q.raw_host_compute_bytes + (device_in_pool ? q.device_compute_bytes : 0);
-        };
-        const uint32_t full = placement.compute_width;
-        if (req.is_pinned("ubatch")) {
-            note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Operator,
-                 "set by the caller; the planner leaves it alone" +
-                     (full ? ", and the compute buffers are counted at that width: " + u64s(mib(buffers(full))) + " MiB"
-                           : std::string()));
-        } else if (full == 0 || placement.host_compute_per_token == 0) {
-            note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
-                 "what a token of graph width costs in compute buffers was not measured here, so the "
-                 "width is not this plan's to choose; keeping the default");
-        } else {
-            const uint64_t cap = (uint64_t) ((double) holdable * pol.compute_share_max);
-            uint32_t w = full;
-            while (w / 2 >= pol.ubatch_min && buffers(w) > cap)
-                w /= 2;
-            const std::string share = u64s((uint64_t) (pol.compute_share_max * 100.0f + 0.5f)) + "% of the " +
-                                      u64s(mib(holdable)) + " MiB this process may hold";
-            if (w == full) {
-                note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
-                     "a graph as wide as the context reserves " + u64s(mib(buffers(full))) +
-                         " MiB of compute buffers, inside " + share + ": a prompt is computed in one pass");
-            } else {
-                const uint64_t before = buffers(full);
-                placement = placement.at_width(w);
-                p.placement = placement;
-                p.config.n_ubatch = (int) w;
-                note("ubatch", u64s(w), Source::Policy,
-                     "a graph as wide as the context would reserve " + u64s(mib(before)) +
-                         " MiB of compute buffers, more than " + share + "; at " + u64s(w) + " tokens it is " +
-                         u64s(mib(buffers(w))) +
-                         " MiB. A prompt is computed in more passes and the expert cache keeps the rest, "
-                         "because a prompt is paid once and a token every time. --ubatch sets it by hand");
-            }
-        }
-    }
-
-    // The bytes that would have to be resident on the host if nothing were streamed: with a
-    // placement, what the fitter left here; without one, the whole file.
+// The bytes that would have to be resident on the host if nothing were streamed, and the regime
+// they put the run in.
+void classify_regime(Planning & s) {
+    const Placement & placement = s.placement;
+    // With a placement, what the fitter left here; without one, the whole file.
     //
     // On a machine where every device's memory IS the host's, what the fitter put "on a device" is
     // in this same pool and has to be charged to it. The fitter's own arithmetic treats the two as
     // separate - it was told an integrated accelerator had 15 GB free on an 11 GB machine - and a
     // budget that inherits that mistake will size a cache for memory that is already spoken for.
     // Where devices have memory of their own the term is zero and nothing changes.
-    bool devices_share_host_memory = !hw.devices.empty();
-    for (const ComputeDevice & d : hw.devices)
-        if (d.has_own_memory()) devices_share_host_memory = false;
-    const uint64_t device_on_host = devices_share_host_memory ? placement.device_bytes : 0;
+    s.devices_share_host_memory = devices_share_host_memory(s.hw);
+    s.device_on_host = s.devices_share_host_memory ? placement.device_bytes : 0;
 
     // The context and the compute buffers, as their own line. A fitted placement already carries
     // them inside its host figure; an unfitted one never charged them at all, which on a machine
@@ -355,18 +447,19 @@ Plan plan_run(const RunConfig & base,
     uint64_t host_fixed = placement.raw_host_context_bytes + placement.raw_host_compute_bytes;
     if (placement.shared_memory_placement) host_fixed += placement.device_context_bytes;
     if (placement.fitted) host_fixed = std::min(host_fixed, placement.host_resident_bytes);
+    s.host_fixed = host_fixed;
     const uint64_t unfitted_fixed = placement.fitted ? 0 : host_fixed;
 
-    const uint64_t host_all = placement.fitted ? placement.host_resident_bytes + host_expert_bytes + device_on_host
-                                               : model.file_bytes + unfitted_fixed;
-    const uint64_t host_dense =
-        placement.fitted ? placement.host_resident_bytes + device_on_host : model.dense_bytes + unfitted_fixed;
-    if (host_all <= usable) {
-        p.regime = Regime::Fits;
-    } else if (host_dense <= usable) {
-        p.regime = Regime::ExpertsStream;
+    s.host_all = placement.fitted ? placement.host_resident_bytes + s.host_expert_bytes + s.device_on_host
+                                  : s.model.file_bytes + unfitted_fixed;
+    s.host_dense =
+        placement.fitted ? placement.host_resident_bytes + s.device_on_host : s.model.dense_bytes + unfitted_fixed;
+    if (s.host_all <= s.usable) {
+        s.p.regime = Regime::Fits;
+    } else if (s.host_dense <= s.usable) {
+        s.p.regime = Regime::ExpertsStream;
     } else {
-        p.regime = Regime::DenseOversized;
+        s.p.regime = Regime::DenseOversized;
     }
 
     // Fitting is not the same as being left alone. Where the machine can take pages back, residency
@@ -376,684 +469,786 @@ Plan plan_run(const RunConfig & base,
     // by two orders of magnitude: streaming a model that would have fitted costs some reads, while
     // residency on a model that does not is 0.1 tok/s against 5.0. Until the headroom probe exists,
     // the cheap side of that asymmetry is the right default, and a caller who disagrees drops --auto.
-    const uint64_t air = usable > host_all ? usable - host_all : 0;
-    const uint64_t air_needed = (uint64_t) ((double) host_all * (double) pol.fits_air_ratio);
-    const bool air_short = p.regime == Regime::Fits && reclaim_is_cheap(hw.anon_overflow) && air < air_needed;
-    if (air_short) p.regime = host_dense <= usable ? Regime::ExpertsStream : Regime::DenseOversized;
+    s.air = s.usable > s.host_all ? s.usable - s.host_all : 0;
+    const uint64_t air_needed = (uint64_t) ((double) s.host_all * (double) s.pol.fits_air_ratio);
+    s.air_short = s.p.regime == Regime::Fits && reclaim_is_cheap(s.hw.anon_overflow) && s.air < air_needed;
+    if (s.air_short) s.p.regime = s.host_dense <= s.usable ? Regime::ExpertsStream : Regime::DenseOversized;
+}
 
-    if (placement.fitted) {
-        note("placement", u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers on devices", Source::Measured,
-             placement.outcome + "; " + u64s(host_layers) + " of " + u64s(n_moe_layer) +
-                 " MoE layers keep their experts on the host, host-resident " +
-                 u64s(mib(placement.host_resident_bytes)) + " MiB, on devices " + u64s(mib(placement.device_bytes)) +
-                 " MiB, context " + u64s(placement.n_ctx) + " (fitter's host breakdown: model " +
-                 u64s(mib(placement.raw_host_model_bytes)) + ", context " +
-                 u64s(mib(placement.raw_host_context_bytes)) + ", compute " +
-                 u64s(mib(placement.raw_host_compute_bytes)) + " MiB; file " + u64s(mib(model.file_bytes)) +
-                 ", experts " + u64s(mib(model.expert_bytes)) + ")");
-        // The context is NOT the fitter's decision, and this line used to claim it was. Upstream
-        // modifies the context if and ONLY if it is handed a zero, and the placement adapter always
-        // pins it to the caller's - so what comes back is the number that went in. Reporting that as
-        // `[measured]` credited a measurement nobody made, on the one knob whose default has been
-        // observed to decide whether a model streams at all: a 26B model was refused for a cache
-        // 184 MiB short while its context reserved 440 MiB, and halving it was the difference
-        // between declining and running. Nothing has priced this number - not the fitter, which
-        // cannot, and not this planner, which believed the fitter had.
-        if (placement.n_ctx && !req.is_pinned("ctx-size")) {
-            p.config.n_ctx = (int) placement.n_ctx;
-            note("ctx-size", u64s(placement.n_ctx), Source::Policy,
-                 "the value this run was given, not a choice: the capacity fitter only picks a context when it "
-                 "is handed a zero and this planner always pins it, so nothing has weighed this number against "
-                 "what the memory it reserves would buy as expert cache");
-        }
-        p.config.n_gpu_layers = placement.n_gpu_layers;
-        p.config.buft_overrides = placement.override_patterns;
-
-        // The two stages answer different questions, and where they disagree the disagreement is
-        // the finding. The fitter solves CAPACITY - what fits where - and its answer is applied
-        // because it is the only route to a device this engine has, and because a model that only
-        // fits with layers on a device must keep them there. This planner owns the tier below and
-        // would not have chosen the move: dense and expert halves alternate per layer, so the
-        // placement crosses the host/device boundary twice per layer, and what a crossing costs is
-        // unmeasured. Saying so is what stops a slow run from being read as the engine being slow.
-        bool any_split_priced = false;
-        for (const ComputeDevice & d : hw.devices)
-            if (!d.is_cpu && d.split_seconds > 0.0) any_split_priced = true;
-        if (placement.n_gpu_layers != 0 && !any_split_priced)
-            note("placement-cost", "unpriced", Source::Unprobed,
-                 "the capacity fitter placed layers on a device and that placement is applied, but this "
-                 "plan's cost model did not choose it and could not have: the move crosses the "
-                 "host/device boundary twice per layer and the price of a crossing is unmeasured here. "
-                 "On the one machine where it was measured, a bandwidth ratio of 20 against 12 GiB/s "
-                 "still ran at 0.53x. If this run is slower than the same model with the device left "
-                 "out, that is the reason to check first");
-    } else {
-        note("placement", "none", placement.shared_memory_placement ? Source::Derived : Source::Unprobed,
-             placement.shared_memory_placement
-                 ? "the capacity fitter ran and its answer was set aside: every device here reads this "
-                   "host's own memory, so 'what fits where' has one pool and no answer. Everything is on "
-                   "the host, which is what it already was"
-                 : "the capacity fitter was not run, so no layer is placed on a device: everything is on "
-                   "the host");
+// What the first stage placed, applied, and said - or why nothing was.
+void apply_placement(Planning & s) {
+    Plan & p = s.p;
+    const Placement & placement = s.placement;
+    if (!placement.fitted) {
+        s.note("placement", "none", placement.shared_memory_placement ? Source::Derived : Source::Unprobed,
+               placement.shared_memory_placement
+                   ? "the capacity fitter ran and its answer was set aside: the device it placed layers on "
+                     "reads this host's own memory, so 'what fits where' has one pool and no answer. "
+                     "Everything is on the host, which is what it already was"
+                   : "the capacity fitter was not run, so no layer is placed on a device: everything is on "
+                     "the host");
+        return;
     }
-
-    note("regime", regime_name(p.regime), Source::Derived,
-         "on the host " + u64s(mib(host_all)) + " MiB (dense " + u64s(mib(host_dense)) + ") against " +
-             u64s(mib(usable)) + " MiB usable, which is the " + u64s(mib(holdable)) + " MiB this process may hold (" +
-             headroom_name(hw.holdable_from) + ") less a " + u64s(mib(margin)) + " MiB margin (" +
-             overflow_name(hw.anon_overflow) + ")");
-
-    if (air_short)
-        note("residency", "not verified", Source::Derived,
-             "the host set fits with " + u64s(mib(air)) + " MiB to spare against the " + u64s(mib(host_all)) +
-                 " MiB it would hold, and a reclaim is cheap here (" + overflow_name(hw.anon_overflow) +
-                 "): a model that fits only just is reclaimed from underneath and refaults its weights one page at "
-                 "a time, so the experts stream instead. Run without --auto to keep plain residency");
-
-    if (placement.fitted && host_layers == 0) {
-        p.regime = Regime::Fits;
-        decline("the capacity fitter placed every layer's experts on a device; nothing is left on the host for "
-                "the streamer to serve");
-        note("moe-stream", "off", Source::Measured, "no expert tensor remains on the host");
-        return p;
+    s.note("placement", u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers on devices", Source::Measured,
+           placement.outcome + "; " + u64s(s.host_layers) + " of " + u64s(s.n_moe_layer) +
+               " MoE layers keep their experts on the host, host-resident " + u64s(mib(placement.host_resident_bytes)) +
+               " MiB, on devices " + u64s(mib(placement.device_bytes)) + " MiB, context " + u64s(placement.n_ctx) +
+               " (fitter's host breakdown: model " + u64s(mib(placement.raw_host_model_bytes)) + ", context " +
+               u64s(mib(placement.raw_host_context_bytes)) + ", compute " +
+               u64s(mib(placement.raw_host_compute_bytes)) + " MiB; file " + u64s(mib(s.model.file_bytes)) +
+               ", experts " + u64s(mib(s.model.expert_bytes)) + ")");
+    // The context is NOT the fitter's decision, and this line used to claim it was. Upstream
+    // modifies the context if and ONLY if it is handed a zero, and the placement adapter always
+    // pins it to the caller's - so what comes back is the number that went in. Reporting that as
+    // `[measured]` credited a measurement nobody made, on the one knob whose default has been
+    // observed to decide whether a model streams at all: a 26B model was refused for a cache
+    // 184 MiB short while its context reserved 440 MiB, and halving it was the difference
+    // between declining and running. Nothing has priced this number - not the fitter, which
+    // cannot, and not this planner, which believed the fitter had.
+    if (placement.n_ctx && !s.req.is_pinned("ctx-size")) {
+        p.config.n_ctx = (int) placement.n_ctx;
+        s.note("ctx-size", u64s(placement.n_ctx), Source::Policy,
+               "the value this run was given, not a choice: the capacity fitter only picks a context when it "
+               "is handed a zero and this planner always pins it, so nothing has weighed this number against "
+               "what the memory it reserves would buy as expert cache");
     }
-    if (p.regime == Regime::Fits) {
-        decline("what is left on the host fits in this machine's residency budget; streaming it from flash "
-                "would only add reads that resident weights do not need");
-        note("moe-stream", "off", Source::Derived,
-             placement.fitted ? "the host residual fits: llama.cpp's placement is the whole plan"
-                              : "the model fits: hand the placement to llama.cpp instead");
-        return p;
+    p.config.n_gpu_layers = placement.n_gpu_layers;
+    p.config.buft_overrides = placement.override_patterns;
+
+    // The two stages answer different questions, and where they disagree the disagreement is the
+    // finding. The fitter solves CAPACITY - what fits where - and its answer is applied because it
+    // is the only route to a device this engine has, and because a model that only fits with
+    // layers on a device must keep them there. This planner owns the tier below and would not have
+    // chosen the move: dense and expert halves alternate per layer, so the placement crosses the
+    // host/device boundary twice per layer, and what a crossing costs is unmeasured. Saying so is
+    // what stops a slow run from being read as the engine being slow.
+    bool any_split_priced = false;
+    for (const ComputeDevice & d : s.hw.devices)
+        if (!d.is_cpu && d.split_seconds > 0.0) any_split_priced = true;
+    if (placement.n_gpu_layers != 0 && !any_split_priced)
+        s.note("placement-cost", "unpriced", Source::Unprobed,
+               "the capacity fitter placed layers on a device and that placement is applied, but this "
+               "plan's cost model did not choose it and could not have: the move crosses the "
+               "host/device boundary twice per layer and the price of a crossing is unmeasured here. "
+               "On the one machine where it was measured, a bandwidth ratio of 20 against 12 GiB/s "
+               "still ran at 0.53x. If this run is slower than the same model with the device left "
+               "out, that is the reason to check first");
+}
+
+void note_regime(Planning & s) {
+    s.note("regime", regime_name(s.p.regime), Source::Derived,
+           "on the host " + u64s(mib(s.host_all)) + " MiB (dense " + u64s(mib(s.host_dense)) + ") against " +
+               u64s(mib(s.usable)) + " MiB usable, which is the " + u64s(mib(s.holdable)) +
+               " MiB this process may hold (" + headroom_name(s.hw.holdable_from) + ") less a " + u64s(mib(s.margin)) +
+               " MiB margin (" + overflow_name(s.hw.anon_overflow) + ")");
+
+    if (s.air_short)
+        s.note("residency", "not verified", Source::Derived,
+               "the host set fits with " + u64s(mib(s.air)) + " MiB to spare against the " + u64s(mib(s.host_all)) +
+                   " MiB it would hold, and a reclaim is cheap here (" + overflow_name(s.hw.anon_overflow) +
+                   "): a model that fits only just is reclaimed from underneath and refaults its weights one page "
+                   "at a time, so the experts stream instead. Run without the planner to keep plain residency");
+}
+
+// The two outcomes of the first stage that leave the streamer nothing to do. True when the plan
+// has declined and is complete.
+bool declines_residency(Planning & s) {
+    if (s.placement.fitted && s.host_layers == 0) {
+        s.p.regime = Regime::Fits;
+        s.decline("the capacity fitter placed every layer's experts on a device; nothing is left on the host for "
+                  "the streamer to serve");
+        s.note("moe-stream", "off", Source::Measured, "no expert tensor remains on the host");
+        return true;
     }
+    if (s.p.regime == Regime::Fits) {
+        s.decline("what is left on the host fits in this machine's residency budget; streaming it from flash "
+                  "would only add reads that resident weights do not need");
+        s.note("moe-stream", "off", Source::Derived,
+               s.placement.fitted ? "the host residual fits: llama.cpp's placement is the whole plan"
+                                  : "the model fits: hand the placement to llama.cpp instead");
+        return true;
+    }
+    return false;
+}
 
-    // ── the accelerator axis: what may leave the host BEYOND the fitter's placement ─
-    // Read the `placement` decision above first: layers the fitter put on a device are already
-    // there, computed there, and none of this touches them. What follows is only about the residue
-    // the fitter left on the host - the experts this engine streams - and whether anything more can
-    // be done with them than running them on the CPU cores.
-    // Two facts settle this, and neither is a vendor name. A device whose memory IS the host's has
-    // no bandwidth of its own to win, and batch-1 decode is a chain of GEMVs that reads every weight
-    // once for a single multiply-accumulate: it is bandwidth-bound, so on such a device an offload
-    // moves the work without moving the bottleneck. A device with memory of its own wins in
-    // proportion to that memory's bandwidth, which is a number this profile does not yet carry.
-    //
-    // The streamed experts are separately constrained, and absolutely: the streamer serves a tensor
-    // by rebinding `data` onto the file's native layout, so a weight it serves must live in a host
-    // buffer that is not repacked. A device that only executes a repacked layout is excluded here
-    // by that property rather than by name, which is how an NPU with two native quant formats ends
-    // up excluded without a single line written for it.
-    {
-        uint64_t device_local = 0;
-        const ComputeDevice * candidate = nullptr;
-        uint32_t n_accelerators = 0; // devices that are not the CPU: the only ones an offload means
-        for (const ComputeDevice & d : hw.devices) {
-            if (!d.is_cpu) ++n_accelerators;
-            if (!d.has_own_memory()) continue;
-            device_local += d.memory_total;
-            if (!candidate) candidate = &d;
-        }
+// ── the accelerator axis: what may leave the host BEYOND the fitter's placement ─
+// Read the `placement` decision first: layers the fitter put on a device are already there,
+// computed there, and none of this touches them. What follows is only about the residue the fitter
+// left on the host - the experts this engine streams - and whether anything more can be done with
+// them than running them on the CPU cores.
+//
+// Two facts settle this, and neither is a vendor name. A device whose memory IS the host's has no
+// bandwidth of its own to win, and batch-1 decode is a chain of GEMVs that reads every weight once
+// for a single multiply-accumulate: it is bandwidth-bound, so on such a device an offload moves the
+// work without moving the bottleneck. A device with memory of its own wins in proportion to that
+// memory's bandwidth, which is a number this profile does not yet carry.
+//
+// The streamed experts are separately constrained, and absolutely: the streamer serves a tensor by
+// rebinding `data` onto the file's native layout, so a weight it serves must live in a host buffer
+// that is not repacked. A device that only executes a repacked layout is excluded here by that
+// property rather than by name, which is how an NPU with two native quant formats ends up excluded
+// without a single line written for it.
+struct DeviceSurvey {
+    uint64_t own_memory = 0;                   // total memory of the devices that have their own
+    const ComputeDevice * candidate = nullptr; // the first of them
+    uint32_t n_accelerators = 0;               // devices that are not the CPU: the only ones an offload means
+};
 
-        if (n_accelerators == 0) {
-            // Three different answers, and only the first is about this machine. A build that
-            // compiled no accelerator backend and found none beside itself will report a machine
-            // with no accelerator on ANY hardware, which is a fact about the build being read as a
-            // fact about the room.
-            if (!hw.backends_looked)
-                note("extra-offload", "none", Source::Unprobed,
-                     "nothing was enumerated because nobody went to look: the backend registry was never "
-                     "asked, so this says nothing about what this machine has");
-            else if (hw.backends_linked <= 1 && hw.backends_loaded == 0)
-                note("extra-offload", "none", Source::Unprobed,
-                     "this build carries no accelerator backend and found none beside the executable, so it "
-                     "would report a machine with no accelerator on any hardware. That is a property of the "
-                     "build, not of this machine: configure the backends whose SDK is present, or ship them "
-                     "as loadable libraries next to the binary");
-            else
-                note("extra-offload", "none", Source::Measured,
-                     u64s(hw.backends_linked + hw.backends_loaded) +
-                         " backends were registered and none of them offered a compute device beyond the "
-                         "host CPU, so there was nothing to consider past what the fitter placed");
-        } else if (device_local == 0) {
-            // Two claims used to be made here and only one of them was provable. That moving a
-            // weight onto a device whose memory IS the host's frees nothing is arithmetic. That it
-            // "wins no bandwidth" was an assumption, and a wrong one: on shared memory an
-            // accelerator can still reach more of the bus than the cores do - which is measured
-            // elsewhere at roughly twice - because a CPU core count is not a memory controller. So
-            // the capacity half is stated and the bandwidth half is compared, or admitted unknown.
-            const ComputeDevice * fastest = nullptr;
-            for (const ComputeDevice & d : hw.devices) {
-                if (d.is_cpu || d.memory_bandwidth_gibs <= 0.0) continue;
-                if (!fastest || d.memory_bandwidth_gibs > fastest->memory_bandwidth_gibs) fastest = &d;
-            }
-            const std::string capacity = "every device here reads the host's own memory, so moving a weight onto "
-                                         "one frees nothing: the capacity tier is inert. ";
-            // "More" only past the policy's margin: see PlannerPolicy::min_backend_win for why a
-            // difference inside the probe's own repeatability is not reported as a win.
-            if (fastest && hw.host_bandwidth_gibs > 0.0 && fastest->memory_bandwidth_gibs > host_bandwidth_win)
-                note("extra-offload", "none", Source::Measured,
-                     capacity + "What is left is bandwidth, and here the device has more of it (" +
-                         u64s((uint64_t) fastest->memory_bandwidth_gibs) + " against " +
-                         u64s((uint64_t) hw.host_bandwidth_gibs) +
-                         " GiB/s): what the fitter placed is worth having there, and the streamed experts "
-                         "would be too if they could be handed over");
-            else if (fastest && hw.host_bandwidth_gibs > 0.0)
-                note("extra-offload", "none", Source::Measured,
-                     capacity + "What is left is bandwidth, and here the device has no more of it (" +
-                         u64s((uint64_t) fastest->memory_bandwidth_gibs) + " against " +
-                         u64s((uint64_t) hw.host_bandwidth_gibs) + " GiB/s), so there is nothing to win");
-            else
-                note("extra-offload", "none", Source::Unprobed,
-                     capacity + "What is left is bandwidth, and no device's own figure was measured here - "
-                                "which is the number that would say whether an offload pays at all");
-        } else if (candidate && candidate->memory_bandwidth_gibs <= 0.0) {
-            note("extra-offload", "none", Source::Unprobed,
-                 "a device with " + u64s(mib(device_local)) +
-                     " MiB of its own is present and the fitter has already used it; moving anything FURTHER "
-                     "would turn on its memory bandwidth, which is unmeasured here");
-        } else {
-            note("extra-offload", "none", Source::Policy,
-                 "the fitter has already placed what fits on the devices - see the placement line above - and "
-                 "placing weights across devices is a capacity problem it solves exactly; this planner owns "
-                 "the tier below it and does not second-guess it");
-        }
+DeviceSurvey survey_devices(const HardwareProfile & hw) {
+    DeviceSurvey v;
+    for (const ComputeDevice & d : hw.devices) {
+        if (!d.is_cpu) ++v.n_accelerators;
+        if (!d.has_own_memory()) continue;
+        v.own_memory += d.memory_total;
+        if (!v.candidate) v.candidate = &d;
+    }
+    return v;
+}
 
-        // Where the streamed experts are COMPUTED, which is a different question from where they
-        // live. They must live in a host buffer - that is absolute, since serving one means rebinding
-        // its pointer onto the file's native layout, and a repack replaces exactly that layout. But a
-        // device that offers a host buffer reads that same memory directly, so it can execute over
-        // the bytes we read from flash without a copy and without a repack, and the pair of
-        // properties is one device's answer rather than a class of hardware.
-        //
-        // Whether it is worth doing is a second question, and the honest gate is not "is there a
-        // device" but "is compute even on the critical path". Reading an expert costs far more than
-        // multiplying by it, so where the stall dominates the engine that computes is irrelevant and
-        // moving the work buys nothing. Where the cache is large enough that most tokens hit, the
-        // compute emerges and the faster engine is worth having. Both halves of that comparison need
-        // a bandwidth figure for the device, and until one is measured this stays a stated unknown
-        // rather than a decision - which on the machines where it matters most, the ones whose memory
-        // is unified, is the whole of the difference between an idle accelerator and a used one.
-        const ComputeDevice * host_capable = nullptr;
-        for (const ComputeDevice & d : hw.devices) {
-            if (d.is_cpu) continue; // the CPU is where they already are
-            if (!is_yes(d.host_buffer) || d.runs_expert_op != Tri::Yes || d.needs_repack == Tri::Yes) continue;
-            host_capable = &d;
-            break;
-        }
-        const bool repack_blocks = candidate && candidate->needs_repack == Tri::Yes;
-        if (host_capable && !pol.streamer_serves_device_memory)
-            note("experts", "host", Source::Derived,
-                 std::string("this device could compute them on paper - it offers a host buffer and runs the "
-                             "model's own layout - and it still cannot. The streamer rebinds every expert onto "
-                             "memory it reserved itself, which no device was given access to; and a host buffer "
-                             "type would not survive the load anyway, since a mapped model has one substituted "
-                             "for the CPU's. ") +
-                     (is_yes(host_capable->host_ptr_buffers)
-                          ? "This device can wrap memory a caller already owns, which is the one opening: the "
-                            "streamer's own reservations would have to be handed over that way"
-                      : host_capable->host_ptr_buffers == Tri::No
-                          ? "This device cannot wrap memory a caller already owns, so there is no opening here "
-                            "at all"
-                          : "Whether this device can wrap memory a caller already owns - the one opening left - "
-                            "is unprobed. What it advertises is a blanket promise, and a backend whose support "
-                            "is conditional declines to make one while implementing the call anyway, so the "
-                            "absence of a yes decides nothing here"));
-        else if (host_capable && host_capable->memory_bandwidth_gibs <= 0.0)
-            note("experts", "host", Source::Unprobed,
-                 "this device offers a host buffer and executes this model's expert matmul on the file's own "
-                 "layout, so streamed experts could be computed on it - but what that is worth is the ratio of "
-                 "its bandwidth to the host's, and its own is unmeasured here");
-        else if (host_capable && hw.host_bandwidth_gibs > 0.0 &&
-                 host_capable->memory_bandwidth_gibs > hw.host_bandwidth_gibs)
-            note("experts", "device", Source::Measured,
-                 "this device offers a host buffer, executes the model's own layout, and reaches " +
-                     u64s((uint64_t) host_capable->memory_bandwidth_gibs) + " GiB/s against the host's " +
-                     u64s((uint64_t) hw.host_bandwidth_gibs) +
-                     ": once the streamer can hand it their memory, "
-                     "this is where they belong");
+void note_extra_offload(Planning & s, const DeviceSurvey & v) {
+    const HardwareProfile & hw = s.hw;
+    if (v.n_accelerators == 0) {
+        // Three different answers, and only the first is about this machine. A build that compiled
+        // no accelerator backend and found none beside itself will report a machine with no
+        // accelerator on ANY hardware, which is a fact about the build being read as a fact about
+        // the room.
+        if (!hw.backends_looked)
+            s.note("extra-offload", "none", Source::Unprobed,
+                   "nothing was enumerated because nobody went to look: the backend registry was never "
+                   "asked, so this says nothing about what this machine has");
+        else if (hw.backends_linked <= 1 && hw.backends_loaded == 0)
+            s.note("extra-offload", "none", Source::Unprobed,
+                   "this build carries no accelerator backend and found none beside the executable, so it "
+                   "would report a machine with no accelerator on any hardware. That is a property of the "
+                   "build, not of this machine: configure the backends whose SDK is present, or ship them "
+                   "as loadable libraries next to the binary");
         else
-            note("experts", "host", Source::Derived,
-                 repack_blocks ? "a streamed expert must keep the file's native layout so its pointer can be "
-                                 "rebound, and the device here executes only a repacked layout"
-                               : "a streamed expert must live in a host buffer whose pointer we may rebind onto "
-                                 "the file's native layout");
-    }
-
-    // ── the dense policy: decided by what a reclaim COSTS here, nothing else ────────
-    // One branch is only a candidate at this point. That a reclaim-exempt store exists says the
-    // dense set MAY be pinned; whether it is depends on what else is charged to the same total,
-    // which is the ledger's to say. So that branch is settled after the allocation, below.
-    bool pin_candidate = false;
-    const bool dense_by_caller = req.is_pinned("dense-weights");
-    if (!pinned("dense-weights", dense_mode_name(p.config.moe.dense_weights))) {
-        if (hw.anon_overflow == Overflow::Kill && hw.file_pages_counted == Tri::No) {
-            // Where the process is killed for holding too much and clean file pages are outside
-            // that accounting, leaving a weight mapped costs nothing against the limit that can
-            // actually end the run. This inverts the policy that is right everywhere else.
-            p.config.moe.dense_weights = DenseWeightsMode::Mmap;
-            note("dense-weights", "mmap", Source::Derived,
-                 "holding too much is fatal here and mapped file pages are not counted against the limit, "
-                 "so the dense set is cheapest left where it is");
-        } else if (hw.reclaim_exempt_max > 0 && hw.anon_overflow == Overflow::Compress) {
-            // Anonymous memory keeps the dense set off flash but not out of a compressed swap,
-            // where every touch costs a decompression that no I/O counter shows. A store the
-            // kernel may not reclaim is the only thing that closes that gap.
-            p.config.moe.dense_weights = DenseWeightsMode::Pinned;
-            pin_candidate = true;
-        } else if (hw.anon_overflow == Overflow::Unknown) {
-            p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
-            note("dense-weights", "anon", Source::Policy,
-                 "what a reclaim costs here was not probed; anonymous buffers are the default that at "
-                 "least keeps the dense set off a flash refault");
-        } else {
-            p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
-            note("dense-weights", "anon", Source::Derived,
-                 "no reclaim-exempt store here, so anonymous buffers are what keeps the dense set off a "
-                 "flash refault (a reclaim then means: " +
-                     std::string(overflow_name(hw.anon_overflow)) + ")");
+            s.note("extra-offload", "none", Source::Measured,
+                   u64s(hw.backends_linked + hw.backends_loaded) +
+                       " backends were registered and none of them offered a compute device beyond the "
+                       "host CPU, so there was nothing to consider past what the fitter placed");
+    } else if (v.own_memory == 0) {
+        // Two claims used to be made here and only one of them was provable. That moving a weight
+        // onto a device whose memory IS the host's frees nothing is arithmetic. That it "wins no
+        // bandwidth" was an assumption, and a wrong one: on shared memory an accelerator can still
+        // reach more of the bus than the cores do - which is measured elsewhere at roughly twice -
+        // because a CPU core count is not a memory controller. So the capacity half is stated and
+        // the bandwidth half is compared, or admitted unknown.
+        const ComputeDevice * fastest = nullptr;
+        for (const ComputeDevice & d : hw.devices) {
+            if (d.is_cpu || d.memory_bandwidth_gibs <= 0.0) continue;
+            if (!fastest || d.memory_bandwidth_gibs > fastest->memory_bandwidth_gibs) fastest = &d;
         }
+        const std::string capacity = "every device here reads the host's own memory, so moving a weight onto "
+                                     "one frees nothing: the capacity tier is inert. ";
+        // "More" only past the policy's margin: see PlannerPolicy::min_backend_win for why a
+        // difference inside the probe's own repeatability is not reported as a win.
+        if (fastest && hw.host_bandwidth_gibs > 0.0 && fastest->memory_bandwidth_gibs > s.host_bandwidth_win)
+            s.note("extra-offload", "none", Source::Measured,
+                   capacity + "What is left is bandwidth, and here the device has more of it (" +
+                       u64s((uint64_t) fastest->memory_bandwidth_gibs) + " against " +
+                       u64s((uint64_t) hw.host_bandwidth_gibs) +
+                       " GiB/s): what the fitter placed is worth having there, and the streamed experts "
+                       "would be too if they could be handed over");
+        else if (fastest && hw.host_bandwidth_gibs > 0.0)
+            s.note("extra-offload", "none", Source::Measured,
+                   capacity + "What is left is bandwidth, and here the device has no more of it (" +
+                       u64s((uint64_t) fastest->memory_bandwidth_gibs) + " against " +
+                       u64s((uint64_t) hw.host_bandwidth_gibs) + " GiB/s), so there is nothing to win");
+        else
+            s.note("extra-offload", "none", Source::Unprobed,
+                   capacity + "What is left is bandwidth, and no device's own figure was measured here - "
+                              "which is the number that would say whether an offload pays at all");
+    } else if (v.candidate && v.candidate->memory_bandwidth_gibs <= 0.0) {
+        s.note("extra-offload", "none", Source::Unprobed,
+               "a device with " + u64s(mib(v.own_memory)) +
+                   " MiB of its own is present and the fitter has already used it; moving anything FURTHER "
+                   "would turn on its memory bandwidth, which is unmeasured here");
+    } else {
+        s.note("extra-offload", "none", Source::Policy,
+               "the fitter has already placed what fits on the devices - see the placement line above - and "
+               "placing weights across devices is a capacity problem it solves exactly; this planner owns "
+               "the tier below it and does not second-guess it");
     }
+}
 
-    // Bytes the dense policy is about to take out of reclaimable page cache. Mirrors the runtime's
-    // own rule: a tensor bigger than what this process may hold is never converted, it stays mapped.
-    // The comparison stays on the REPORTED figure rather than the measured headroom, because it is
-    // mirroring a decision the runtime makes from the reported one - a plan that predicted a
-    // conversion the engine will then refuse would be worse than one that is merely conservative.
-    const bool converts_dense = p.config.moe.dense_weights == DenseWeightsMode::Anonymous ||
-                                p.config.moe.dense_weights == DenseWeightsMode::Pinned;
-    uint64_t dense_pending = converts_dense ? host_dense - host_fixed : 0;
-    if (converts_dense && model.largest_dense_tensor > hw.residency_budget)
-        dense_pending = dense_pending > model.largest_dense_tensor ? dense_pending - model.largest_dense_tensor : 0;
-    p.dense_pending_bytes = dense_pending;
-
-    // ── the allocation: what each group is WORTH, not what is left over ─────────────
-    //
-    // This is where the residual sizing used to be - cache gets `usable` minus whatever the dense
-    // policy took - and the residual is the shape that cannot express the two cases that matter. On
-    // a machine with room it hands the cache more than a hit is worth; on a pressured one it hands
-    // the dense set memory that would have bought more hits. Both halves now compete in one unit,
-    // seconds per byte of weights, and the cache is a fractional candidate above its own floor
-    // rather than the remainder.
-    //
-    // The allocator sees the HOST's share: where the first stage put some layers' experts on a
-    // device, those bytes are not the streamer's to hold and must not be planned for.
-    ModelProfile host_model = model;
-    host_model.group(WeightGroup::Experts).bytes = host_expert_bytes;
-    if (n_moe_layer && host_layers < n_moe_layer) {
-        const double share = (double) host_layers / (double) n_moe_layer;
-        host_model.token_cycle_bytes = (uint64_t) ((double) model.token_cycle_bytes * share);
-        host_model.group(WeightGroup::Experts).bytes_per_token = host_model.token_cycle_bytes;
+// Where the streamed experts are COMPUTED, which is a different question from where they live. They
+// must live in a host buffer - that is absolute, since serving one means rebinding its pointer onto
+// the file's native layout, and a repack replaces exactly that layout. But a device that offers a
+// host buffer reads that same memory directly, so it can execute over the bytes we read from flash
+// without a copy and without a repack, and the pair of properties is one device's answer rather
+// than a class of hardware.
+//
+// Whether it is worth doing is a second question, and the honest gate is not "is there a device"
+// but "is compute even on the critical path". Reading an expert costs far more than multiplying by
+// it, so where the stall dominates the engine that computes is irrelevant and moving the work buys
+// nothing. Where the cache is large enough that most tokens hit, the compute emerges and the faster
+// engine is worth having. Both halves of that comparison need a bandwidth figure for the device, and
+// until one is measured this stays a stated unknown rather than a decision - which on the machines
+// where it matters most, the ones whose memory is unified, is the whole of the difference between an
+// idle accelerator and a used one.
+void note_expert_compute(Planning & s, const DeviceSurvey & v) {
+    const HardwareProfile & hw = s.hw;
+    const ComputeDevice * host_capable = nullptr;
+    for (const ComputeDevice & d : hw.devices) {
+        if (d.is_cpu) continue; // the CPU is where they already are
+        if (!is_yes(d.host_buffer) || d.runs_expert_op != Tri::Yes || d.needs_repack == Tri::Yes) continue;
+        host_capable = &d;
+        break;
     }
+    const bool repack_blocks = v.candidate && v.candidate->needs_repack == Tri::Yes;
+    if (host_capable && !s.pol.streamer_serves_device_memory)
+        s.note("experts", "host", Source::Derived,
+               std::string("this device could compute them on paper - it offers a host buffer and runs the "
+                           "model's own layout - and it still cannot. The streamer rebinds every expert onto "
+                           "memory it reserved itself, which no device was given access to; and a host buffer "
+                           "type would not survive the load anyway, since a mapped model has one substituted "
+                           "for the CPU's. ") +
+                   (is_yes(host_capable->host_ptr_buffers)
+                        ? "This device can wrap memory a caller already owns, which is the one opening: the "
+                          "streamer's own reservations would have to be handed over that way"
+                    : host_capable->host_ptr_buffers == Tri::No
+                        ? "This device cannot wrap memory a caller already owns, so there is no opening here "
+                          "at all"
+                        : "Whether this device can wrap memory a caller already owns - the one opening left - "
+                          "is unprobed. What it advertises is a blanket promise, and a backend whose support "
+                          "is conditional declines to make one while implementing the call anyway, so the "
+                          "absence of a yes decides nothing here"));
+    else if (host_capable && host_capable->memory_bandwidth_gibs <= 0.0)
+        s.note("experts", "host", Source::Unprobed,
+               "this device offers a host buffer and executes this model's expert matmul on the file's own "
+               "layout, so streamed experts could be computed on it - but what that is worth is the ratio of "
+               "its bandwidth to the host's, and its own is unmeasured here");
+    else if (host_capable && hw.host_bandwidth_gibs > 0.0 &&
+             host_capable->memory_bandwidth_gibs > hw.host_bandwidth_gibs)
+        s.note("experts", "device", Source::Measured,
+               "this device offers a host buffer, executes the model's own layout, and reaches " +
+                   u64s((uint64_t) host_capable->memory_bandwidth_gibs) + " GiB/s against the host's " +
+                   u64s((uint64_t) hw.host_bandwidth_gibs) +
+                   ": once the streamer can hand it their memory, "
+                   "this is where they belong");
+    else
+        s.note("experts", "host", Source::Derived,
+               repack_blocks ? "a streamed expert must keep the file's native layout so its pointer can be "
+                               "rebound, and the device here executes only a repacked layout"
+                             : "a streamed expert must live in a host buffer whose pointer we may rebind onto "
+                               "the file's native layout");
+}
 
+// ── the dense policy: decided by what a reclaim COSTS here, nothing else ────────
+// One branch is only a candidate at this point. That a reclaim-exempt store exists says the dense
+// set MAY be pinned; whether it is depends on what else is charged to the same total, which is the
+// ledger's to say. So that branch is settled after the allocation (settle_dense_pin), and this
+// returns whether it was taken.
+bool choose_dense_policy(Planning & s) {
+    Plan & p = s.p;
+    const HardwareProfile & hw = s.hw;
+    if (s.pinned("dense-weights", dense_mode_name(p.config.moe.dense_weights))) return false;
+    if (hw.anon_overflow == Overflow::Kill && hw.file_pages_counted == Tri::No) {
+        // Where the process is killed for holding too much and clean file pages are outside that
+        // accounting, leaving a weight mapped costs nothing against the limit that can actually end
+        // the run. This inverts the policy that is right everywhere else.
+        p.config.moe.dense_weights = DenseWeightsMode::Mmap;
+        s.note("dense-weights", "mmap", Source::Derived,
+               "holding too much is fatal here and mapped file pages are not counted against the limit, "
+               "so the dense set is cheapest left where it is");
+    } else if (hw.reclaim_exempt_max > 0 && hw.anon_overflow == Overflow::Compress) {
+        // Anonymous memory keeps the dense set off flash but not out of a compressed swap, where
+        // every touch costs a decompression that no I/O counter shows. A store the kernel may not
+        // reclaim is the only thing that closes that gap.
+        p.config.moe.dense_weights = DenseWeightsMode::Pinned;
+        return true;
+    } else if (hw.anon_overflow == Overflow::Unknown) {
+        p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
+        s.note("dense-weights", "anon", Source::Policy,
+               "what a reclaim costs here was not probed; anonymous buffers are the default that at "
+               "least keeps the dense set off a flash refault");
+    } else {
+        p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
+        s.note("dense-weights", "anon", Source::Derived,
+               "no reclaim-exempt store here, so anonymous buffers are what keeps the dense set off a "
+               "flash refault (a reclaim then means: " +
+                   std::string(overflow_name(hw.anon_overflow)) + ")");
+    }
+    return false;
+}
+
+// Bytes the dense policy is about to take out of reclaimable page cache. Mirrors the runtime's own
+// rule: a tensor bigger than what this process may hold is never converted, it stays mapped. The
+// comparison stays on the REPORTED figure rather than the measured headroom, because it is
+// mirroring a decision the runtime makes from the reported one - a plan that predicted a conversion
+// the engine will then refuse would be worse than one that is merely conservative.
+uint64_t dense_pending_bytes(const Planning & s) {
+    const DenseWeightsMode mode = s.p.config.moe.dense_weights;
+    const bool converts_dense = mode == DenseWeightsMode::Anonymous || mode == DenseWeightsMode::Pinned;
+    uint64_t dense_pending = converts_dense ? s.host_dense - s.host_fixed : 0;
+    if (converts_dense && s.model.largest_dense_tensor > s.hw.residency_budget)
+        dense_pending = dense_pending > s.model.largest_dense_tensor ? dense_pending - s.model.largest_dense_tensor : 0;
+    return dense_pending;
+}
+
+// ── the allocation: what each group is WORTH, not what is left over ─────────────
+//
+// This is where the residual sizing used to be - cache gets `usable` minus whatever the dense
+// policy took - and the residual is the shape that cannot express the two cases that matter. On a
+// machine with room it hands the cache more than a hit is worth; on a pressured one it hands the
+// dense set memory that would have bought more hits. Both halves now compete in one unit, seconds
+// per byte of weights, and the cache is a fractional candidate above its own floor rather than the
+// remainder.
+//
+// The allocator sees the HOST's share: where the first stage put some layers' experts on a device,
+// those bytes are not the streamer's to hold and must not be planned for.
+ModelProfile host_model(const Planning & s) {
+    ModelProfile m = s.model;
+    m.group(WeightGroup::Experts).bytes = s.host_expert_bytes;
+    if (s.n_moe_layer && s.host_layers < s.n_moe_layer) {
+        const double share = (double) s.host_layers / (double) s.n_moe_layer;
+        m.token_cycle_bytes = (uint64_t) ((double) s.model.token_cycle_bytes * share);
+        m.group(WeightGroup::Experts).bytes_per_token = m.token_cycle_bytes;
+    }
+    return m;
+}
+
+AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
+    const RunConfig & c = s.p.config;
     AllocationInputs ai;
-    ai.budget_bytes = usable;
+    ai.budget_bytes = s.usable;
     ai.engine_cache_min = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
-    ai.can_pin = p.config.moe.dense_weights == DenseWeightsMode::Pinned;
-    ai.pin_forced = ai.can_pin && dense_by_caller;
+    ai.can_pin = c.moe.dense_weights == DenseWeightsMode::Pinned;
+    ai.pin_forced = ai.can_pin && s.req.is_pinned("dense-weights");
     ai.reserved_bytes = dense_pending;
-    ai.cacheable_bytes = host_expert_bytes;
-    ai.fixed_bytes = host_fixed;
-    ai.cache_lock = p.config.moe.cache_pin;
-    ai.holdable_bytes = holdable;
-    ai.margin_frac = margin_frac(hw, pol);
-    ai.margin_min_bytes = pol.margin_min_bytes;
+    ai.cacheable_bytes = s.host_expert_bytes;
+    ai.fixed_bytes = s.host_fixed;
+    ai.cache_lock = c.moe.cache_pin;
+    ai.holdable_bytes = s.holdable;
+    ai.margin_frac = margin_frac(s.hw, s.pol);
+    ai.margin_min_bytes = s.pol.margin_min_bytes;
 
     // The second ceiling, with its own margin. A store that publishes no total is bounded by what
     // the process may hold, which is the only bound there is on it.
     auto lock_cap = [&](uint64_t reported) {
-        const uint64_t bounded = std::min(reported, holdable);
-        const uint64_t m = std::max((uint64_t) ((double) bounded * (double) pol.lock_margin), pol.margin_min_bytes);
+        const uint64_t bounded = std::min(reported, s.holdable);
+        const uint64_t m = std::max((uint64_t) ((double) bounded * (double) s.pol.lock_margin), s.pol.margin_min_bytes);
         return bounded > m ? bounded - m : 0;
     };
-    ai.lockable_bytes = lock_cap(hw.lockable_bytes);
-    ai.lock_in_place_bytes = lock_cap(hw.lock_in_place_bytes);
+    ai.lockable_bytes = lock_cap(s.hw.lockable_bytes);
+    ai.lock_in_place_bytes = lock_cap(s.hw.lock_in_place_bytes);
+    return ai;
+}
 
-    // ── the prefill plan: a separate placement, decided on its own axis ─────────────
-    // Prefill and decode want opposite hardware, so this is not the device question above asked
-    // again. A decode graph is one token wide and bound by reading weights; a prefill graph is
-    // hundreds wide and bound by computing on them, and the same device can lose one and win the
-    // other several times over. What decides it is therefore the WIDE measurement, never the
-    // one-token bandwidth - and three more things, each a fact rather than a name: the device
-    // reproduced the host's answer at that width, the run's other settings can coexist with it,
-    // and what it costs in memory still leaves the ledger closed.
-    //
-    // What a device costs is the model's own arithmetic: under streaming it carries a layer's
-    // experts and a layer's other weights through two slots each - the layer being computed and
-    // the one being loaded behind it - plus the compute buffer llama.cpp projects for it. It is
-    // charged to this pool only where the device's memory IS this pool.
-    //
-    // The expert slots are the part with a choice in it: two read a layer while the one before it
-    // computes, one waits for each layer and costs a layer less. Same result, so it is a trade of
-    // prefill time for memory and the ledger decides it - two where they fit, one where only one does.
-    auto prefill_need = [&](int slots) {
-        return (uint64_t) slots * model.largest_expert_layer_bytes + 2 * model.largest_layer_dense_bytes;
-    };
-    //
-    // "Its own memory" is believed only where it comes with a size. A device measured as not
-    // drawing on the host and reporting no memory of its own is one whose buffers this process
-    // cannot see being taken - an accelerator fed through a kernel allocator answers exactly so -
-    // and a pool with no stated size cannot be budgeted against. It is charged here, which is the
-    // reading that cannot overcommit: seen on a phone whose NPU was armed at a cost of 0 MiB.
-    auto own_pool = [](const ComputeDevice * dev) { return dev && dev->has_own_memory() && dev->memory_total > 0; };
-    // Slots held only during a prefill take turns with the cache instead of standing beside it:
-    // they are charged as such, and what stays for the session is the rest.
-    auto prefill_cost = [&](const ComputeDevice * dev, AllocationInputs & in, int slots, bool on_demand) {
-        if (own_pool(dev)) return;
-        const uint64_t experts = (uint64_t) slots * model.largest_expert_layer_bytes;
-        const uint64_t rest = 2 * model.largest_layer_dense_bytes + placement.device_compute_bytes;
-        in.device_bytes = on_demand ? rest : rest + experts;
-        in.device_turn_bytes = on_demand ? experts : 0;
-        in.device_locked = !dev || dev->charges_lockable();
-    };
+// ── the prefill plan: a separate placement, decided on its own axis ─────────────
+// Prefill and decode want opposite hardware, so this is not the device question above asked again.
+// A decode graph is one token wide and bound by reading weights; a prefill graph is hundreds wide
+// and bound by computing on them, and the same device can lose one and win the other several times
+// over. What decides it is therefore the WIDE measurement, never the one-token bandwidth - and three
+// more things, each a fact rather than a name: the device reproduced the host's answer at that
+// width, the run's other settings can coexist with it, and what it costs in memory still leaves the
+// ledger closed.
+//
+// What a device costs is the model's own arithmetic: under streaming it carries a layer's experts
+// and a layer's other weights through two slots each - the layer being computed and the one being
+// loaded behind it - plus the compute buffer llama.cpp projects for it. It is charged to this pool
+// only where the device's memory IS this pool.
+//
+// The expert slots are the part with a choice in it: two read a layer while the one before it
+// computes, one waits for each layer and costs a layer less. Same result, so it is a trade of
+// prefill time for memory and the ledger decides it - two where they fit, one where only one does.
+uint64_t prefill_need(const ModelProfile & model, int slots) {
+    return (uint64_t) slots * model.largest_expert_layer_bytes + 2 * model.largest_layer_dense_bytes;
+}
 
-    Allocation alloc;
+// "Its own memory" is believed only where it comes with a size. A device measured as not drawing on
+// the host and reporting no memory of its own is one whose buffers this process cannot see being
+// taken - an accelerator fed through a kernel allocator answers exactly so - and a pool with no
+// stated size cannot be budgeted against. It is charged here, which is the reading that cannot
+// overcommit: seen on a phone whose NPU was armed at a cost of 0 MiB.
+bool own_pool(const ComputeDevice * dev) {
+    return dev && dev->has_own_memory() && dev->memory_total > 0;
+}
+
+// The device as a ledger row. Slots held only during a prefill take turns with the cache instead of
+// standing beside it: they are charged as such, and what stays for the session is the rest.
+void charge_prefill(const Planning & s, const ComputeDevice * dev, AllocationInputs & in, int slots, bool on_demand) {
+    if (own_pool(dev)) return;
+    const uint64_t experts = (uint64_t) slots * s.model.largest_expert_layer_bytes;
+    // The compute buffer is the one the fitter projected for THIS device. A device it never places
+    // layers on has none in the projection, and charging it the others' - a GPU's 467 MiB charged to
+    // an NPU beside it on a phone - is memory the expert cache never gets. One the profile does not
+    // know is charged the whole sum, the reading that cannot overcommit.
+    const uint64_t compute = dev ? s.placement.device_compute_of(dev->name) : s.placement.device_compute_bytes;
+    const uint64_t rest = 2 * s.model.largest_layer_dense_bytes + compute;
+    in.device_bytes = on_demand ? rest : rest + experts;
+    in.device_turn_bytes = on_demand ? experts : 0;
+    in.device_locked = !dev || dev->charges_lockable();
+}
+
+// What the profile says about prefill-width devices: the fastest that is both measured and
+// verified, one that answered wrong, and the counts the refusals quote.
+struct PrefillSurvey {
+    const ComputeDevice * best = nullptr;
+    const ComputeDevice * wrong = nullptr;
+    uint32_t n_accel = 0;
+    uint32_t n_measured = 0;
+    uint32_t n_broken = 0;
+    // Each accelerator the rule did not weigh, and why, appended to whatever the rule concludes: a
+    // device that drops out without a word reads as a device the planner never saw, which is the
+    // wrong lesson when it is the fastest one on the machine for another model.
+    std::string unweighed;
+};
+
+PrefillSurvey survey_prefill(const HardwareProfile & hw) {
+    PrefillSurvey v;
+    for (const ComputeDevice & d : hw.devices) {
+        if (d.is_cpu || d.is_host_helper) continue;
+        ++v.n_accel;
+        if (d.usable == Tri::No) { // it did not survive being probed: nothing to weigh
+            ++v.n_broken;
+            continue;
+        }
+        if (d.wide_matmul_gibs <= 0.0) {
+            v.unweighed +=
+                "; " + d.name + " was not weighed: " +
+                (d.runs_expert_op == Tri::No ? "it does not run this model's expert matmul in the model's own format"
+                                             : "it gave no measurement at that width");
+            continue;
+        }
+        ++v.n_measured;
+        if (d.wide_identity_ok != Tri::Yes) {
+            v.wrong = &d;
+            continue;
+        }
+        if (!v.best || d.wide_matmul_gibs > v.best->wide_matmul_gibs) v.best = &d;
+    }
+    return v;
+}
+
+// What else in this run a device prefill cannot share a session with. The same conditions
+// validate() refuses, read here so the plan declines them with a reason instead of producing a
+// config that does not start. Empty when nothing conflicts.
+std::string prefill_conflict(const RunConfig & c) {
+    if (c.moe.row_stream)
+        return "row-streamed tables are gathered on the host, inside a graph that would run on the device";
+    if (c.spec.enabled())
+        return "speculative decoding widens host graphs past the width that keeps the two placements apart";
+    if (c.decide.enabled && c.decide.prefix_cache == PrefixCacheMode::On)
+        return "a kept prefix state would be saved from where the model state was before it moved";
+    if (c.n_ubatch > 0 && c.n_ubatch < c.prefill.min_tokens)
+        return "the ubatch is narrower than the narrowest graph a device is handed";
+    if (c.prefill.min_tokens > c.n_ctx) return "the context is shorter than the narrowest graph a device is handed";
+    return "";
+}
+
+// A device that pays for itself, and whether it FITS - which is the ledger's to say, with the device
+// as a row: the run must still stream - a cache of at least one token cycle - and the dense set must
+// not lose a protection it had, since both of those are paid on every decoded token and a prefill
+// is paid once. Two slots first, then one: the wider scheme where it fits, the narrower where only
+// it does. A caller who set the count has chosen, and only that count is tried. Returns the
+// allocation the run gets, armed or not.
+Allocation fit_prefill_device(Planning & s,
+                              const ComputeDevice & best,
+                              const std::string & ratio,
+                              const std::string & width,
+                              AllocationInputs & ai,
+                              const Allocation & alloc,
+                              const std::string & unweighed) {
+    Plan & p = s.p;
+    const bool slots_by_caller = s.req.is_pinned("prefill-slots");
+    // Slots that take turns with the cache are the scheme a plan arms: the cache is idle exactly
+    // when they are busy, so standing them beside it charges decode, on every token, for memory only
+    // a prefill uses. A caller who set it either way has chosen.
+    const bool turns = s.req.is_pinned("prefill-slots-on-demand") ? p.config.prefill.slots_on_demand : true;
+    AllocationInputs with = ai;
+    Allocation armed;
+    int slots = 0;
+    bool streams = false, keeps_dense = false, own_short = false;
+    for (int n = slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_max;
+         n >= PrefillDeviceConfig::slots_min; --n) {
+        with = ai;
+        charge_prefill(s, &best, with, n, turns);
+        own_short = own_pool(&best) && best.memory_free > 0 && best.memory_free < prefill_need(s.model, n);
+        armed = allocate(s.hw, s.host_model, with, s.pol);
+        streams = armed.cache_bytes >= s.host_model.token_cycle_bytes && armed.cache_bytes > 0;
+        // "Protection" is the dense set's pin and the cache's lock alike: a device that leaves the
+        // cache as ordinary memory where it was locked has taken from decode the very thing the
+        // ledger exists to keep.
+        keeps_dense = armed.dense_pinned == alloc.dense_pinned &&
+                      (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0);
+        if (!own_short && streams && keeps_dense && armed.turn_fits) {
+            slots = n;
+            break;
+        }
+        if (slots_by_caller) break;
+    }
+    const uint64_t least =
+        prefill_need(s.model, slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_min);
+    if (slots == 0 && own_short) {
+        s.note("prefill-device", "off", Source::Measured,
+               best.name + " computes a wide prefill at " + ratio + " the host's rate and has " +
+                   u64s(mib(best.memory_free)) + " MiB free of the " + u64s(mib(least)) +
+                   " MiB even one layer of this model takes there: refused on memory" + unweighed);
+        return alloc;
+    }
+    if (slots == 0) {
+        s.note("prefill-device", "off", Source::Derived,
+               best.name + " computes a wide prefill at " + ratio +
+                   " the host's rate and is refused on memory: with a single expert slot it would still hold " +
+                   u64s(mib(with.device_bytes + with.device_turn_bytes)) +
+                   " MiB of this pool (a layer of this model and its compute buffer), which leaves " +
+                   (streams ? "the dense set or the cache without the protection it has"
+                            : "the expert cache " + u64s(mib(armed.cache_bytes)) + " MiB against a token cycle of " +
+                                  u64s(mib(s.host_model.token_cycle_bytes))) +
+                   ". That is paid on every decoded token, and a prefill is paid once" + unweighed);
+        return alloc;
+    }
+    ai = with;
+    p.config.prefill.device = best.name;
+    p.config.prefill.best_effort = true;
+    p.config.prefill.slots = slots;
+    p.config.prefill.slots_on_demand = turns;
+    s.note("prefill-device", best.name, Source::Measured,
+           "computes this model's matmul " + width + " at " + ratio +
+               " the host's rate with the same result, and its " + u64s(mib(with.device_bytes)) + " MiB" +
+               (with.device_turn_bytes ? ", plus " + u64s(mib(with.device_turn_bytes)) +
+                                             " MiB of expert slots that take turns with the cache,"
+                                       : "") +
+               " fit the ledger with " +
+               (slots == PrefillDeviceConfig::slots_max
+                    ? "two expert slots, so a layer is read while the one before it computes"
+                    : "one expert slot - two did not fit - so the device waits for each layer's read") +
+               ": the expert cache gives up " +
+               u64s(mib(alloc.cache_bytes > armed.cache_bytes ? alloc.cache_bytes - armed.cache_bytes : 0)) +
+               " MiB for it. Decode stays on the host. If the device cannot be set up at load the prefill runs on the "
+               "host instead. A device's arithmetic is not the host's to the last bit, so the text that follows can "
+               "differ from a host prefill's: pass an empty " +
+               flag_spelling("prefill-device") + " to keep the prefill on the host" + unweighed);
+    return armed;
+}
+
+// The allocation, with the prefill device in it where one is armed - by the caller, or here.
+// `ai` is updated to the inputs the returned allocation was made from.
+Allocation plan_prefill(Planning & s, AllocationInputs & ai) {
+    Plan & p = s.p;
+    const HardwareProfile & hw = s.hw;
     if (p.config.prefill.enabled()) {
-        // Armed by the caller: charged as asked, and reported. The name is the caller's, matched
-        // to find that device's facts and for nothing else; one the profile does not know is
-        // charged as if it shared the pool, which is the safe reading.
+        // Armed by the caller: charged as asked, and reported. The name is the caller's, matched to
+        // find that device's facts and for nothing else; one the profile does not know is charged
+        // as if it shared the pool, which is the safe reading.
         const ComputeDevice * dev = nullptr;
         for (const ComputeDevice & d : hw.devices)
             if (!d.is_cpu && d.name == p.config.prefill.device) dev = &d;
-        prefill_cost(dev, ai, p.config.prefill.slots, p.config.prefill.slots_on_demand);
-        alloc = allocate(hw, host_model, ai, pol);
-        note("prefill-device", p.config.prefill.device, Source::Operator,
-             "set by the caller; the planner leaves it alone and charges it " +
-                 u64s(mib(ai.device_bytes + ai.device_turn_bytes)) + " MiB in the ledger");
-    } else if (req.is_pinned("prefill-device")) {
-        alloc = allocate(hw, host_model, ai, pol);
-        note("prefill-device", "off", Source::Operator, "set by the caller; the planner leaves it alone");
+        charge_prefill(s, dev, ai, p.config.prefill.slots, p.config.prefill.slots_on_demand);
+        Allocation alloc = allocate(hw, s.host_model, ai, s.pol);
+        s.note("prefill-device", p.config.prefill.device, Source::Operator,
+               "set by the caller; the planner leaves it alone and charges it " +
+                   u64s(mib(ai.device_bytes + ai.device_turn_bytes)) + " MiB in the ledger");
+        return alloc;
+    }
+    const Allocation alloc = allocate(hw, s.host_model, ai, s.pol);
+    if (s.req.is_pinned("prefill-device")) {
+        s.note("prefill-device", "off", Source::Operator, "set by the caller; the planner leaves it alone");
+        return alloc;
+    }
+
+    const PrefillSurvey v = survey_prefill(hw);
+    const auto prefill_note = [&](std::string value, Source src, std::string reason) {
+        s.note("prefill-device", std::move(value), src, std::move(reason) + v.unweighed);
+    };
+    const double host_wide = hw.host_wide_matmul_gibs;
+    auto ratio = [&](const ComputeDevice & d) {
+        char b[32];
+        std::snprintf(b, sizeof(b), "%.1fx", d.wide_matmul_gibs / host_wide);
+        return std::string(b);
+    };
+    const std::string width = u64s(hw.wide_batch) + " tokens wide";
+    const std::string conflict = prefill_conflict(p.config);
+
+    if (v.n_accel == 0) {
+        // The same three answers as the offload line: only one of them is about this machine.
+        const bool build_blind = hw.backends_looked && hw.backends_linked <= 1 && hw.backends_loaded == 0;
+        prefill_note("off", hw.backends_looked && !build_blind ? Source::Measured : Source::Unprobed,
+                     build_blind ? "this build carries no accelerator backend, so there was no device to consider: a "
+                                   "property of the build, not of this machine"
+                                 : "no compute device beyond the host CPU was enumerated, so the prefill runs where "
+                                   "the decode does");
+    } else if (v.n_broken == v.n_accel) {
+        prefill_note("off", Source::Measured,
+                     "every device here failed its own probe, so the prefill runs where the decode does; see the "
+                     "devices line for what each one did");
+    } else if (host_wide <= 0.0 || v.n_measured == 0) {
+        prefill_note("off", Source::Unprobed,
+                     "a prefill is many tokens wide and bound by compute, not by the bandwidth a one-token graph "
+                     "measures, and no device here was measured at that width: an unmeasured device is not armed");
+    } else if (!v.best) {
+        prefill_note("off", Source::Measured,
+                     v.wrong->name + " ran this model's matmul " + width +
+                         " and did not reproduce the host's result: refused on correctness, whatever its speed");
+    } else if (v.best->wide_matmul_gibs <= host_wide * (1.0 + (double) s.pol.min_backend_win)) {
+        prefill_note("off", Source::Measured,
+                     v.best->name + " computes this model's matmul " + width + " at " + ratio(*v.best) +
+                         " the host's rate, which is not a win worth a second placement");
+    } else if (!conflict.empty()) {
+        prefill_note("off", Source::Derived,
+                     v.best->name + " computes a wide prefill at " + ratio(*v.best) +
+                         " the host's rate and is not armed, because " + conflict);
     } else {
-        alloc = allocate(hw, host_model, ai, pol);
-
-        // The fastest device that is both measured and verified at prefill width.
-        const ComputeDevice * best = nullptr;
-        const ComputeDevice * wrong = nullptr;
-        uint32_t n_accel = 0, n_measured = 0;
-        uint32_t n_broken = 0;
-        for (const ComputeDevice & d : hw.devices) {
-            if (d.is_cpu || d.is_host_helper) continue;
-            ++n_accel;
-            if (d.usable == Tri::No) { // it did not survive being probed: nothing to weigh
-                ++n_broken;
-                continue;
-            }
-            if (d.wide_matmul_gibs <= 0.0) continue;
-            ++n_measured;
-            if (d.wide_identity_ok != Tri::Yes) {
-                wrong = &d;
-                continue;
-            }
-            if (!best || d.wide_matmul_gibs > best->wide_matmul_gibs) best = &d;
-        }
-        const double host_wide = hw.host_wide_matmul_gibs;
-        auto ratio = [&](const ComputeDevice & d) {
-            char b[32];
-            std::snprintf(b, sizeof(b), "%.1fx", d.wide_matmul_gibs / host_wide);
-            return std::string(b);
-        };
-        const std::string width = u64s(hw.wide_batch) + " tokens wide";
-
-        // What else in this run a device prefill cannot share a session with. The same conditions
-        // validate() refuses, read here so the plan declines them with a reason instead of
-        // producing a config that does not start.
-        std::string conflict;
-        if (p.config.moe.row_stream)
-            conflict = "row-streamed tables are gathered on the host, inside a graph that would run on the device";
-        else if (p.config.spec.enabled())
-            conflict = "speculative decoding widens host graphs past the width that keeps the two placements apart";
-        else if (p.config.decide.enabled && p.config.decide.prefix_cache == PrefixCacheMode::On)
-            conflict = "a kept prefix state would be saved from where the model state was before it moved";
-        else if (p.config.n_ubatch > 0 && p.config.n_ubatch < p.config.prefill.min_tokens)
-            conflict = "the ubatch is narrower than the narrowest graph a device is handed";
-        else if (p.config.prefill.min_tokens > p.config.n_ctx)
-            conflict = "the context is shorter than the narrowest graph a device is handed";
-
-        if (n_accel == 0) {
-            // The same three answers as the offload line: only one of them is about this machine.
-            const bool build_blind = hw.backends_looked && hw.backends_linked <= 1 && hw.backends_loaded == 0;
-            note("prefill-device", "off", hw.backends_looked && !build_blind ? Source::Measured : Source::Unprobed,
-                 build_blind ? "this build carries no accelerator backend, so there was no device to consider: a "
-                               "property of the build, not of this machine"
-                             : "no compute device beyond the host CPU was enumerated, so the prefill runs where "
-                               "the decode does");
-        } else if (n_broken == n_accel) {
-            note("prefill-device", "off", Source::Measured,
-                 "every device here failed its own probe, so the prefill runs where the decode does; see the "
-                 "devices line for what each one did");
-        } else if (host_wide <= 0.0 || n_measured == 0) {
-            note("prefill-device", "off", Source::Unprobed,
-                 "a prefill is many tokens wide and bound by compute, not by the bandwidth a one-token graph "
-                 "measures, and no device here was measured at that width: an unmeasured device is not armed");
-        } else if (!best) {
-            note("prefill-device", "off", Source::Measured,
-                 wrong->name + " ran this model's matmul " + width +
-                     " and did not reproduce the host's result: refused on correctness, whatever its speed");
-        } else if (best->wide_matmul_gibs <= host_wide * (1.0 + (double) pol.min_backend_win)) {
-            note("prefill-device", "off", Source::Measured,
-                 best->name + " computes this model's matmul " + width + " at " + ratio(*best) +
-                     " the host's rate, which is not a win worth a second placement");
-        } else if (!conflict.empty()) {
-            note("prefill-device", "off", Source::Derived,
-                 best->name + " computes a wide prefill at " + ratio(*best) +
-                     " the host's rate and is not armed, because " + conflict);
-        } else {
-            // It pays. Whether it FITS is the ledger's to say, with the device as a row: the run
-            // must still stream - a cache of at least one token cycle - and the dense set must not
-            // lose a protection it had, since both of those are paid on every decoded token and a
-            // prefill is paid once.
-            // Two slots first, then one: the wider scheme where it fits, the narrower where only it
-            // does. A caller who set the count has chosen, and only that count is tried.
-            const bool slots_by_caller = req.is_pinned("prefill-slots");
-            // Slots that take turns with the cache are the scheme a plan arms: the cache is idle
-            // exactly when they are busy, so standing them beside it charges decode, on every
-            // token, for memory only a prefill uses. A caller who set it either way has chosen.
-            const bool turns = req.is_pinned("prefill-slots-on-demand") ? p.config.prefill.slots_on_demand : true;
-            AllocationInputs with = ai;
-            Allocation armed;
-            int slots = 0;
-            bool streams = false, keeps_dense = false, own_short = false;
-            for (int n = slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_max;
-                 n >= PrefillDeviceConfig::slots_min; --n) {
-                with = ai;
-                prefill_cost(best, with, n, turns);
-                own_short = own_pool(best) && best->memory_free > 0 && best->memory_free < prefill_need(n);
-                armed = allocate(hw, host_model, with, pol);
-                streams = armed.cache_bytes >= host_model.token_cycle_bytes && armed.cache_bytes > 0;
-                // "Protection" is the dense set's pin and the cache's lock alike: a device that
-                // leaves the cache as ordinary memory where it was locked has taken from decode the
-                // very thing the ledger exists to keep.
-                keeps_dense = armed.dense_pinned == alloc.dense_pinned &&
-                              (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0);
-                if (!own_short && streams && keeps_dense && armed.turn_fits) {
-                    slots = n;
-                    break;
-                }
-                if (slots_by_caller) break;
-            }
-            const uint64_t least =
-                prefill_need(slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_min);
-            if (slots == 0 && own_short) {
-                note("prefill-device", "off", Source::Measured,
-                     best->name + " computes a wide prefill at " + ratio(*best) + " the host's rate and has " +
-                         u64s(mib(best->memory_free)) + " MiB free of the " + u64s(mib(least)) +
-                         " MiB even one layer of this model takes there: refused on memory");
-            } else if (slots == 0) {
-                note("prefill-device", "off", Source::Derived,
-                     best->name + " computes a wide prefill at " + ratio(*best) +
-                         " the host's rate and is refused on memory: with a single expert slot it would still "
-                         "hold " +
-                         u64s(mib(with.device_bytes + with.device_turn_bytes)) +
-                         " MiB of this pool (a layer of this model and its compute buffer), which leaves " +
-                         (streams ? "the dense set or the cache without the protection it has"
-                                  : "the expert cache " + u64s(mib(armed.cache_bytes)) +
-                                        " MiB against a token cycle of " + u64s(mib(host_model.token_cycle_bytes))) +
-                         ". That is paid on every decoded token, and a prefill is paid once");
-            } else {
-                ai = with;
-                p.config.prefill.device = best->name;
-                p.config.prefill.best_effort = true;
-                p.config.prefill.slots = slots;
-                p.config.prefill.slots_on_demand = turns;
-                note("prefill-device", best->name, Source::Measured,
-                     "computes this model's matmul " + width + " at " + ratio(*best) +
-                         " the host's rate with the same result, and its " + u64s(mib(with.device_bytes)) + " MiB" +
-                         (with.device_turn_bytes ? ", plus " + u64s(mib(with.device_turn_bytes)) +
-                                                       " MiB of expert slots that take turns with the cache,"
-                                                 : "") +
-                         " fit the ledger with " +
-                         (slots == PrefillDeviceConfig::slots_max
-                              ? "two expert slots, so a layer is read while the one before it computes"
-                              : "one expert slot - two did not fit - so the device waits for each layer's read") +
-                         ": the expert cache gives up " +
-                         u64s(mib(alloc.cache_bytes > armed.cache_bytes ? alloc.cache_bytes - armed.cache_bytes : 0)) +
-                         " MiB for it. Decode stays on the host. If the device cannot be set up at load the "
-                         "prefill runs on the host instead. A device's arithmetic is not the host's to the "
-                         "last bit, so the text that follows can differ from a host prefill's: pass an empty "
-                         "--prefill-device to keep the prefill on the host");
-                alloc = armed;
-            }
-        }
+        return fit_prefill_device(s, *v.best, ratio(*v.best), width, ai, alloc, v.unweighed);
     }
-    p.allocation = alloc;
+    return alloc;
+}
 
-    // The dense candidate, settled by the ledger.
-    if (pin_candidate && alloc.dense_pinned) {
-        note("dense-weights", "ahwb", Source::Derived,
-             "anonymous memory here is " + std::string(overflow_name(hw.anon_overflow)) + ", and the " +
-                 u64s(mib(dense_pending)) + " MiB dense set fits whole in the " + u64s(mib(ai.lockable_bytes)) +
-                 " MiB this process may hold reclaim-exempt (up to " + u64s(mib(hw.reclaim_exempt_max)) +
-                 " MiB per buffer)");
-    } else if (pin_candidate) {
-        p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
-        note("dense-weights", "anon", Source::Derived,
-             "anonymous memory here is " + std::string(overflow_name(hw.anon_overflow)) +
-                 " and a reclaim-exempt store exists, but the " + u64s(mib(dense_pending)) + " MiB dense set is " +
-                 u64s(mib(alloc.pinned_shortfall_bytes)) +
-                 " MiB more than can still be held that way: pinned part way it would be reclaimed from the "
-                 "part that was refused, so it is held whole as ordinary memory");
+// The dense candidate, settled by the ledger.
+void settle_dense_pin(Planning & s, bool pin_candidate, const Allocation & alloc, const AllocationInputs & ai) {
+    if (!pin_candidate) return;
+    const uint64_t dense_pending = s.p.dense_pending_bytes;
+    if (alloc.dense_pinned) {
+        s.note("dense-weights", "ahwb", Source::Derived,
+               "anonymous memory here is " + std::string(overflow_name(s.hw.anon_overflow)) + ", and the " +
+                   u64s(mib(dense_pending)) + " MiB dense set fits whole in the " + u64s(mib(ai.lockable_bytes)) +
+                   " MiB this process may hold reclaim-exempt (up to " + u64s(mib(s.hw.reclaim_exempt_max)) +
+                   " MiB per buffer)");
+        return;
     }
+    s.p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
+    s.note("dense-weights", "anon", Source::Derived,
+           "anonymous memory here is " + std::string(overflow_name(s.hw.anon_overflow)) +
+               " and a reclaim-exempt store exists, but the " + u64s(mib(dense_pending)) + " MiB dense set is " +
+               u64s(mib(alloc.pinned_shortfall_bytes)) +
+               " MiB more than can still be held that way: pinned part way it would be reclaimed from the "
+               "part that was refused, so it is held whole as ordinary memory");
+}
 
-    // The plan and the run must agree about the cache's lock. Where the ledger sized it to what
-    // can be locked, the run is told to keep it there if the platform stops short; where it could
-    // not be locked at all, the run is told not to try - a lock that is granted for part of an
-    // ordinary cache protects nothing, and takes from the total the dense set was sized against.
-    // Neither is touched when the caller set it.
-    const bool cache_by_caller = req.is_pinned("cache-mb");
-    if (!req.is_pinned("cache-pin-fit") && !cache_by_caller) p.config.moe.cache_pin_fit = alloc.cache_locked_bytes > 0;
-    if (!req.is_pinned("cache-pin") && p.config.moe.cache_pin && alloc.cache_locked_bytes == 0 && !cache_by_caller) {
-        p.config.moe.cache_pin = false;
-        note("cache-pin", "off", Source::Derived,
-             "not even one token cycle of the cache can be locked in place here after what is ahead of it, so "
-             "the cache is ordinary memory and no lock is asked for");
+// The plan and the run must agree about the cache's lock. Where the ledger sized it to what can be
+// locked, the run is told to keep it there if the platform stops short; where it could not be
+// locked at all, the run is told not to try - a lock that is granted for part of an ordinary cache
+// protects nothing, and takes from the total the dense set was sized against. Neither is touched
+// when the caller set it.
+void settle_cache_lock(Planning & s, const Allocation & alloc) {
+    RunConfig & c = s.p.config;
+    const bool cache_by_caller = s.req.is_pinned("cache-mb");
+    if (!s.req.is_pinned("cache-pin-fit") && !cache_by_caller) c.moe.cache_pin_fit = alloc.cache_locked_bytes > 0;
+    if (!s.req.is_pinned("cache-pin") && c.moe.cache_pin && alloc.cache_locked_bytes == 0 && !cache_by_caller) {
+        c.moe.cache_pin = false;
+        s.note("cache-pin", "off", Source::Derived,
+               "not even one token cycle of the cache can be locked in place here after what is ahead of it, so "
+               "the cache is ordinary memory and no lock is asked for");
     }
+}
 
-    // A cache the caller sized is the row, whatever the ledger would have chosen: the account is
-    // of what the run will hold, and a figure the run does not use would make it close on paper only.
-    if (cache_by_caller) {
-        Ledger & l = p.allocation.ledger;
-        const uint64_t asked = (uint64_t) std::max(0, p.config.moe.cache_mb) << 20;
-        l.rows.erase(
-            std::remove_if(l.rows.begin(), l.rows.end(), [](const LedgerRow & r) { return r.name == "expert cache"; }),
-            l.rows.end());
-        if (asked) l.rows.push_back({"expert cache", asked, false});
-        l.held = l.locked = 0;
-        for (const LedgerRow & r : l.rows) {
-            l.held += r.bytes;
-            if (r.locked) l.locked += r.bytes;
-        }
-        if (l.held > l.holdable_cap)
-            note("memory-ledger", "over", Source::Operator,
-                 "the cache the caller set takes what is held to " + u64s(mib(l.held)) + " MiB, over the " +
-                     u64s(mib(l.holdable_cap)) + " MiB this process may hold: charged as asked");
+// A cache the caller sized is the row, whatever the ledger would have chosen: the account is of what
+// the run will hold, and a figure the run does not use would make it close on paper only.
+void charge_caller_cache(Planning & s) {
+    if (!s.req.is_pinned("cache-mb")) return;
+    Ledger & l = s.p.allocation.ledger;
+    const uint64_t asked = (uint64_t) std::max(0, s.p.config.moe.cache_mb) << 20;
+    l.rows.erase(
+        std::remove_if(l.rows.begin(), l.rows.end(), [](const LedgerRow & r) { return r.name == "expert cache"; }),
+        l.rows.end());
+    if (asked) l.rows.push_back({"expert cache", asked, false});
+    l.held = l.locked = 0;
+    for (const LedgerRow & r : l.rows) {
+        l.held += r.bytes;
+        if (r.locked) l.locked += r.bytes;
     }
+    if (l.held > l.holdable_cap)
+        s.note("memory-ledger", "over", Source::Operator,
+               "the cache the caller set takes what is held to " + u64s(mib(l.held)) + " MiB, over the " +
+                   u64s(mib(l.holdable_cap)) + " MiB this process may hold: charged as asked");
+}
 
-    {
-        const Ledger & ledger = p.allocation.ledger;
-        std::string lines;
-        for (const LedgerRow & r : ledger.rows)
-            lines += (lines.empty() ? "" : ", ") + r.name + " " + u64s(mib(r.bytes)) + (r.locked ? " locked" : "");
-        note("memory-ledger", u64s(mib(ledger.held)) + " MiB", Source::Derived,
-             "held " + u64s(mib(ledger.held)) + " of " + u64s(mib(ledger.holdable_cap)) +
-                 " MiB holdable, of which locked " + u64s(mib(ledger.locked)) + " of " +
-                 u64s(mib(ledger.lockable_cap)) + " MiB lockable: " + lines);
-    }
+// The ledger as charged, a row at a time, and the cost model's own notes.
+void note_ledger(Planning & s, const Allocation & alloc) {
+    const Ledger & ledger = s.p.allocation.ledger;
+    std::string lines;
+    for (const LedgerRow & r : ledger.rows)
+        lines += (lines.empty() ? "" : ", ") + r.name + " " + u64s(mib(r.bytes)) + (r.locked ? " locked" : "");
+    s.note("memory-ledger", u64s(mib(ledger.held)) + " MiB", Source::Derived,
+           "held " + u64s(mib(ledger.held)) + " of " + u64s(mib(ledger.holdable_cap)) +
+               " MiB holdable, of which locked " + u64s(mib(ledger.locked)) + " of " + u64s(mib(ledger.lockable_cap)) +
+               " MiB lockable: " + lines);
 
     for (const std::string & n : alloc.notes)
-        note("cost", "-", Source::Derived, n);
+        s.note("cost", "-", Source::Derived, n);
+}
 
-    // ── the cache budget, and the floor that is the model's own arithmetic ──────────
-    const uint64_t cycle = host_model.token_cycle_bytes;
+// Name the one lever that closes the gap, and do not pull it. The KV reservation is the cheapest
+// memory on this machine to give back, and the first stage shrinks the context only until the model
+// FITS - which can stop well short of where streaming becomes possible. Measured: a 26B model with a
+// 901 MiB token cycle was left 717 MiB at the context the fitter settled on, and 939 MiB at half of
+// it, which is the difference between declining and running. But a context length is a capability
+// the caller chose, not a speed knob, so a planner that quietly halved it would be changing what the
+// run can DO - the same reason nothing lossy arms itself here. It gets named instead: a sentence to
+// append to the reason, or nothing where a shorter context would not close the gap.
+std::string context_suggestion(const Placement & placement, uint64_t cycle, uint64_t available) {
+    const uint64_t kv = placement.raw_host_context_bytes;
+    // From what was available BEFORE the floor zeroed it, or the shortfall is the whole floor.
+    const uint64_t shortfall = cycle > available ? cycle - available : 0;
+    if (kv == 0 || placement.n_ctx == 0 || shortfall == 0 || shortfall >= kv) return "";
+    const double keep = 1.0 - (double) shortfall / (double) kv;
+    const uint64_t suggest = (uint64_t) ((double) placement.n_ctx * keep);
+    // Down to the next power of two: a context is a number a person types, and one that clears the
+    // floor by arithmetic but not in practice would be worse than no suggestion.
+    uint64_t pow2 = k_min_suggested_ctx;
+    while (pow2 * 2 <= suggest)
+        pow2 *= 2;
+    if (pow2 < k_min_suggested_ctx || pow2 >= (uint64_t) placement.n_ctx) return "";
+    return ". The context reserves " + u64s(mib(kv)) + " MiB here and the cache is " + u64s(mib(shortfall)) +
+           " MiB short, so " + flag_spelling("ctx-size", u64s(pow2)) +
+           " would clear the floor and keep a cache: the first stage shrinks the context only until the model fits, "
+           "which is not the same as until it runs well";
+}
+
+// ── the cache budget, and the floor that is the model's own arithmetic ──────────
+// Turns streaming on with the cache the ledger sized, or with none where no cache clears the floor.
+// False when the plan has declined instead and is complete.
+bool size_cache(Planning & s, const Allocation & alloc) {
+    Plan & p = s.p;
+    const uint64_t cycle = s.host_model.token_cycle_bytes;
     p.token_cycle_bytes = cycle;
 
     const uint64_t budget = alloc.cache_bytes;
     p.cache_budget_bytes = budget;
 
     if (cycle == 0) {
-        decline("the model's expert shapes could not be read, so the cache floor could not be derived");
+        s.decline("the model's expert shapes could not be read, so the cache floor could not be derived");
         price_unstreamed(p.allocation);
-        note("moe-stream", "off", Source::Unprobed, "expert slice size unknown");
-        return p;
+        s.note("moe-stream", "off", Source::Unprobed, "expert slice size unknown");
+        return false;
     }
-    // A budget under the floor takes the CACHE away, not the stream. The two were one decision
-    // here, and the plan fell back to the mapped file whenever the cache could not be afforded -
-    // which is the machine where the mapped file is at its worst, since the memory a cache lacks is
-    // the memory the page cache lacks too. Measured on a 16 GB machine with a 22 GB model whose
-    // cycle is 581 MiB and 536 MiB left for it: declined and mapped, 0.26 tok/s; streamed with no
-    // cache, 7.4 tok/s. The same model with that 536 MiB cache forced on returned 0.0% hits at 6.3
-    // tok/s against 8.6 with none, so the floor stands and it is the cache alone that it turns off.
-    // Whether the uncached stream is worth running is the ledger's own price for it against the
-    // mapping, not a rule of this file: where the read rate was never measured there is no such
-    // price, and the plan declines as before.
+    // A budget under the floor takes the CACHE away, not the stream. The two were one decision here,
+    // and the plan fell back to the mapped file whenever the cache could not be afforded - which is
+    // the machine where the mapped file is at its worst, since the memory a cache lacks is the
+    // memory the page cache lacks too. Measured on a 16 GB machine with a 22 GB model whose cycle is
+    // 581 MiB and 536 MiB left for it: declined and mapped, 0.26 tok/s; streamed with no cache, 7.4
+    // tok/s. The same model with that 536 MiB cache forced on returned 0.0% hits at 6.3 tok/s against
+    // 8.6 with none, so the floor stands and it is the cache alone that it turns off. Whether the
+    // uncached stream is worth running is the ledger's own price for it against the mapping, not a
+    // rule of this file: where the read rate was never measured there is no such price, and the plan
+    // declines as before.
     const GroupPlacement & experts = alloc.at(WeightGroup::Experts);
     const bool stream_priced = experts.lane == Lane::ExpertStream && experts.seconds_per_token > 0.0 &&
                                experts.seconds_per_token < experts.seconds_worst_case;
     bool cache_off = false;
     std::string cache_off_why;
 
-    if (budget < cycle && req.is_pinned("cache-mb")) {
-        note("cache-floor", u64s(mib(cycle)) + " MiB", Source::Derived,
-             "the derived budget (" + u64s(mib(budget)) +
-                 " MiB) is under this model's token cycle, but the caller "
-                 "pinned cache-mb and a pin is the caller's authority: proceeding with the pinned value");
+    if (budget < cycle && s.req.is_pinned("cache-mb")) {
+        s.note("cache-floor", u64s(mib(cycle)) + " MiB", Source::Derived,
+               "the derived budget (" + u64s(mib(budget)) +
+                   " MiB) is under this model's token cycle, but the caller "
+                   "pinned cache-mb and a pin is the caller's authority: proceeding with the pinned value");
     } else if (budget < cycle) {
         std::string why = "the " + u64s(mib(alloc.cache_available_bytes)) +
                           " MiB left for the expert cache is below this model's worst-case token cycle of " +
                           u64s(mib(cycle)) +
                           " MiB: under that floor the cache evicts what the same token still needs, "
                           "so it costs its memory and returns no hits at all";
-
-        // Name the one lever that closes the gap, and do not pull it. The KV reservation is the
-        // cheapest memory on this machine to give back, and the first stage shrinks the context only
-        // until the model FITS - which can stop well short of where streaming becomes possible.
-        // Measured: a 26B model with a 901 MiB token cycle was left 717 MiB at the context the fitter
-        // settled on, and 939 MiB at half of it, which is the difference between declining and
-        // running. But a context length is a capability the caller chose, not a speed knob, so a
-        // planner that quietly halved it would be changing what the run can DO - the same reason
-        // nothing lossy arms itself here. It gets named instead.
-        const uint64_t kv = placement.raw_host_context_bytes;
-        // From what was available BEFORE the floor zeroed it, or the shortfall is the whole floor.
-        const uint64_t had = alloc.cache_available_bytes;
-        const uint64_t shortfall = cycle > had ? cycle - had : 0;
-        if (kv > 0 && placement.n_ctx > 0 && shortfall > 0 && shortfall < kv) {
-            const double keep = 1.0 - (double) shortfall / (double) kv;
-            uint64_t suggest = (uint64_t) ((double) placement.n_ctx * keep);
-            // Down to the next power of two: a context is a number a person types, and one that
-            // clears the floor by arithmetic but not in practice would be worse than no suggestion.
-            uint64_t pow2 = 512;
-            while (pow2 * 2 <= suggest)
-                pow2 *= 2;
-            if (pow2 >= 512 && pow2 < (uint64_t) placement.n_ctx)
-                why += ". The context reserves " + u64s(mib(kv)) + " MiB here and the cache is " +
-                       u64s(mib(shortfall)) + " MiB short, so --ctx-size " + u64s(pow2) +
-                       " would clear the floor and keep a cache: the first stage shrinks the context only until the "
-                       "model fits, which is not the same as until it runs well";
-        }
+        why += context_suggestion(s.placement, cycle, alloc.cache_available_bytes);
         if (!stream_priced) {
-            decline(why + ". This storage's read rate was not measured, so a stream with no cache has no price "
-                          "to set against the mapping and is not chosen on faith");
+            s.decline(why + ". This storage's read rate was not measured, so a stream with no cache has no price "
+                            "to set against the mapping and is not chosen on faith");
             price_unstreamed(p.allocation);
-            note("moe-stream", "off", Source::Derived,
-                 "budget below the derived cache floor, and no price to stream by");
-            return p;
+            s.note("moe-stream", "off", Source::Derived,
+                   "budget below the derived cache floor, and no price to stream by");
+            return false;
         }
         cache_off = true;
         cache_off_why = std::move(why);
@@ -1064,310 +1259,384 @@ Plan plan_run(const RunConfig & base,
         char b[160];
         std::snprintf(b, sizeof(b), "%.0f ms/token read as slices against %.0f ms/token left mapped",
                       1e3 * experts.seconds_per_token, 1e3 * experts.seconds_worst_case);
-        note("moe-stream", "on", Source::Derived,
-             "the experts do not fit and no cache clears the floor, so every routed slice is read on every token: " +
-                 std::string(std::isfinite(experts.seconds_worst_case)
-                                 ? b
-                                 : "priced from this storage's measured rate, where the mapping's refault was not "
-                                   "measured at all") +
-                 ". The cache is what is given up, not the stream");
+        s.note("moe-stream", "on", Source::Derived,
+               "the experts do not fit and no cache clears the floor, so every routed slice is read on every token: " +
+                   std::string(std::isfinite(experts.seconds_worst_case)
+                                   ? b
+                                   : "priced from this storage's measured rate, where the mapping's refault was not "
+                                     "measured at all") +
+                   ". The cache is what is given up, not the stream");
     } else {
-        note("moe-stream", "on", Source::Derived,
-             p.regime == Regime::ExpertsStream
-                 ? "the experts do not fit but the dense set does"
-                 : "neither set fits, so the experts stream and the dense policy degrades with them "
-                   "(a tensor larger than this budget is left mapped rather than made resident)");
+        s.note("moe-stream", "on", Source::Derived,
+               p.regime == Regime::ExpertsStream
+                   ? "the experts do not fit but the dense set does"
+                   : "neither set fits, so the experts stream and the dense policy degrades with them "
+                     "(a tensor larger than this budget is left mapped rather than made resident)");
     }
 
     if (cache_off) {
-        // Off outright, never left to size itself at load: an automatic budget would land in the
-        // band the floor has just refused.
+        // Off outright, never left to size itself at load: an automatic budget would land in the band
+        // the floor has just refused.
         p.config.moe.cache_auto = false;
         p.config.moe.cache_mb = 0;
-        note("cache-mb", "0", Source::Derived, cache_off_why);
-    } else if (!pinned("cache-mb", u64s((uint64_t) std::max(0, p.config.moe.cache_mb)))) {
+        s.note("cache-mb", "0", Source::Derived, cache_off_why);
+    } else if (!s.pinned("cache-mb", u64s((uint64_t) std::max(0, p.config.moe.cache_mb)))) {
         p.config.moe.cache_auto = false;
         p.config.moe.cache_mb = (int) mib(budget);
-        note("cache-mb", u64s(mib(budget)), Source::Derived,
-             "what the cache is worth out of " + u64s(mib(usable)) +
-                 " MiB usable, ranked against the resident groups by seconds saved per byte of RAM rather "
-                 "than handed the remainder: " +
-                 u64s(mib(alloc.resident_bytes)) + " MiB committed in total, of which " + u64s(mib(budget)) +
-                 " MiB is cache, over a floor of " + u64s(mib(cycle)) + " MiB");
+        s.note("cache-mb", u64s(mib(budget)), Source::Derived,
+               "what the cache is worth out of " + u64s(mib(s.usable)) +
+                   " MiB usable, ranked against the resident groups by seconds saved per byte of RAM rather "
+                   "than handed the remainder: " +
+                   u64s(mib(alloc.resident_bytes)) + " MiB committed in total, of which " + u64s(mib(budget)) +
+                   " MiB is cache, over a floor of " + u64s(mib(cycle)) + " MiB");
 
         // The generic 1500 MiB guard predates the per-model floor and is the weaker of the two: a
         // budget above this model's own token cycle is not pathological however small it looks.
         if (p.config.moe.cache_mb > 0 && p.config.moe.cache_mb < MoeStreamConfig::cache_min_mb) {
             p.config.moe.force_cache = true;
-            note("force-cache", "on", Source::Derived,
-                 "the budget clears this model's token cycle of " + u64s(mib(cycle)) +
-                     " MiB but sits under the generic " + u64s(MoeStreamConfig::cache_min_mb) +
-                     " MiB guard, so the derived floor is used as the authority");
+            s.note("force-cache", "on", Source::Derived,
+                   "the budget clears this model's token cycle of " + u64s(mib(cycle)) +
+                       " MiB but sits under the generic " + u64s(MoeStreamConfig::cache_min_mb) +
+                       " MiB guard, so the derived floor is used as the authority");
         }
     }
+    return true;
+}
 
-    // ── the KV, as a budget line rather than a silent subtraction ───────────────────
-    // Context memory competes with the expert cache for the same bytes, and until now it only
-    // appeared inside the placement's rationale. On a long context it is the larger of the two, and
-    // a reader deciding whether to shorten the prompt deserves to see the trade rather than infer
-    // it. Nothing is DECIDED here: llama.cpp's own defaults already pick flash attention when the
-    // build supports it, which costs no quality, and the one lever that would free real memory -
-    // quantizing the K and V caches - changes the output. That makes it lossy by this planner's
-    // definition, and lossy levers are the caller's to arm, never a plan's.
-    if (placement.fitted && placement.raw_host_context_bytes > 0) {
-        const uint64_t kv = placement.raw_host_context_bytes;
-        const uint64_t compute = placement.raw_host_compute_bytes;
-        note("kv-budget", u64s(mib(kv)) + " MiB", Source::Measured,
-             "the context reserves " + u64s(mib(kv)) + " MiB on the host and its compute buffers another " +
-                 u64s(mib(compute)) + ", against " + u64s(mib(budget)) +
-                 " MiB left for the expert cache: the two come out of the same memory, and a shorter context "
-                 "is the caller's cheapest way to buy cache. Quantizing the K/V caches would buy more and "
-                 "changes the output, so it stays a lever this plan will not pull");
-    }
+// ── the KV, as a budget line rather than a silent subtraction ───────────────────
+// Context memory competes with the expert cache for the same bytes, and until now it only appeared
+// inside the placement's rationale. On a long context it is the larger of the two, and a reader
+// deciding whether to shorten the prompt deserves to see the trade rather than infer it. Nothing is
+// DECIDED here: llama.cpp's own defaults already pick flash attention when the build supports it,
+// which costs no quality, and the one lever that would free real memory - quantizing the K and V
+// caches - changes the output. That makes it lossy by this planner's definition, and lossy levers
+// are the caller's to arm, never a plan's.
+void note_kv_budget(Planning & s) {
+    const Placement & placement = s.placement;
+    if (!placement.fitted || placement.raw_host_context_bytes == 0) return;
+    const uint64_t kv = placement.raw_host_context_bytes;
+    const uint64_t compute = placement.raw_host_compute_bytes;
+    s.note("kv-budget", u64s(mib(kv)) + " MiB", Source::Measured,
+           "the context reserves " + u64s(mib(kv)) + " MiB on the host and its compute buffers another " +
+               u64s(mib(compute)) + ", against " + u64s(mib(s.p.cache_budget_bytes)) +
+               " MiB left for the expert cache: the two come out of the same memory, and a shorter context "
+               "is the caller's cheapest way to buy cache. Quantizing the K/V caches would buy more and "
+               "changes the output, so it stays a lever this plan will not pull");
+}
 
-    // ── the I/O policy: from the machine's own rate curve, never from a class name ──
-    if (!pinned("io-threads", u64s((uint64_t) p.config.moe.io_threads))) {
-        const uint32_t want = hw.storage.best_lanes((uint32_t) model.expert_slice_bytes);
-        if (want > 0) {
-            const int lanes = std::min<int>((int) want, MoeStreamConfig::io_threads_max);
-            p.config.moe.io_threads = std::max(1, lanes);
-            note("io-threads", u64s((uint64_t) p.config.moe.io_threads), Source::Measured,
-                 "the highest measured rate for this model's " + u64s(model.expert_slice_bytes >> 10) +
-                     " KiB expert slice on this storage");
-        } else {
-            note("io-threads", u64s((uint64_t) p.config.moe.io_threads), Source::Unprobed,
-                 "no read-rate curve for this machine; keeping the default lane count");
-        }
-    }
-
-    if (!pinned("o-direct", p.config.moe.o_direct ? "on" : "off")) {
-        if (hw.storage.direct_ok == Tri::Yes) {
-            p.config.moe.o_direct = true;
-            note("o-direct", "on", Source::Measured, "uncached reads return correct bytes on this path");
-        } else if (hw.storage.direct_ok == Tri::No) {
-            p.config.moe.o_direct = false;
-            note("o-direct", "off", Source::Measured,
-                 "uncached reads do not return correct bytes on this path, so they are not used");
-        } else {
-            note("o-direct", p.config.moe.o_direct ? "on" : "off", Source::Unprobed,
-                 "unverified here; the reader checks at open and falls back to buffered reads by itself");
-        }
-    }
-
-    if (!pinned("release-mmap", p.config.moe.release_mmap ? "on" : "off")) {
-        // Carrying a multi-token-prediction block is not the same as using one: llama.cpp does not
-        // load that block unless the run asks for it, and an unloaded block holds no pointer into
-        // the mapping. Testing the file instead of the run would silently disable this on every
-        // model that merely ships an MTP head, which is most of them.
-        const bool mtp_in_use = model.has_mtp && p.config.spec.is_mtp();
-        const bool safe_shape =
-            !model.tied_output_head && !mtp_in_use && p.config.moe.dense_weights != DenseWeightsMode::Mmap;
-        // Safety is reported before the probe, because it is the stronger constraint: on a shape
-        // that keeps a live pointer into the mapping, measuring the storage would change nothing.
-        if (!safe_shape) {
-            note("release-mmap", "off", Source::Derived,
-                 "this run keeps a live pointer into the mapping (a tied head, a draft block, or a dense "
-                 "policy that stays mapped), so the mapping cannot be released whatever the storage does");
-        } else if (hw.storage.mapping_serialises_reads == Tri::Yes) {
-            p.config.moe.release_mmap = true;
-            note("release-mmap", "on", Source::Measured,
-                 "a live mapping of the model serialises this storage's concurrent uncached reads (" +
-                     u64s((uint64_t) hw.storage.rate_mapped_mibs) + " vs " +
-                     u64s((uint64_t) hw.storage.rate_unmapped_mibs) +
-                     " MiB/s), and this model's shape keeps no pointer that would survive the release "
-                     "(the session checks again before doing it)");
-        } else {
-            note("release-mmap", p.config.moe.release_mmap ? "on" : "off", Source::Unprobed,
-                 hw.storage.rate_unmapped_mibs > 0.0
-                     ? "the storage probe did not see a live mapping slow its reads here (" +
-                           u64s((uint64_t) hw.storage.rate_mapped_mibs) + " vs " +
-                           u64s((uint64_t) hw.storage.rate_unmapped_mibs) +
-                           " MiB/s), but it is an instrument validated only in the positive direction, so "
-                           "that is not evidence there is nothing to gain: try --release-mmap and measure"
-                     : "whether a live mapping serialises reads was not measured on this machine");
-        }
-    }
-
-    // ── everything lossy: the caller's authority, never ours ────────────────────────
-    const bool lossy_pinned =
-        req.is_pinned("drop-cold-experts") || req.is_pinned("expert-substitute") || req.is_pinned("route-ahead");
-    if (lossy_pinned) {
-        note("lossy", "as set", Source::Operator, "the caller armed a lossy policy explicitly");
-    } else if (req.quality_budget <= 0.0f) {
-        p.config.moe.drop_cold_frac = 0.0f;
-        p.config.moe.substitute_lambda = 0.0f;
-        p.config.moe.route_ahead = 0;
-        note("lossy", "off", Source::Policy,
-             "no quality budget was given, and a policy that changes the output must never arm itself");
+// ── the I/O policy: from the machine's own rate curve, never from a class name ──
+void choose_io_lanes(Planning & s) {
+    MoeStreamConfig & moe = s.p.config.moe;
+    if (s.pinned("io-threads", u64s((uint64_t) moe.io_threads))) return;
+    const uint32_t want = s.hw.storage.best_lanes((uint32_t) s.model.expert_slice_bytes);
+    if (want > 0) {
+        const int lanes = std::min<int>((int) want, MoeStreamConfig::io_threads_max);
+        moe.io_threads = std::max(1, lanes);
+        s.note("io-threads", u64s((uint64_t) moe.io_threads), Source::Measured,
+               "the highest measured rate for this model's " + u64s(s.model.expert_slice_bytes >> 10) +
+                   " KiB expert slice on this storage");
     } else {
-        p.config.moe.drop_cold_frac = 0.0f;
-        p.config.moe.substitute_lambda = 0.0f;
-        p.config.moe.route_ahead = 0;
-        note("lossy", "off", Source::Unprobed,
-             "a quality budget was given, but no measured mapping from a perplexity cost to a lever value "
-             "exists yet, so spending it would be a guess");
+        s.note("io-threads", u64s((uint64_t) moe.io_threads), Source::Unprobed,
+               "no read-rate curve for this machine; keeping the default lane count");
     }
+}
 
-    // A placement the fitter made and this planner did not apply, because on shared memory its
-    // capacity arithmetic counts the same pool twice. Said out loud: "no layers on devices" on a
-    // machine that has one is a sentence a reader would otherwise take as "there is no device".
-    // Nothing is going on a device, so no device should be in the graph. It is not enough to decline
-    // a placement: a registered backend collects work on its own, and every piece it collects is a
-    // crossing. Measured with zero layers placed - 61 splits a token, and a build carrying the
-    // backend losing to one without it. A caller who wants the device anyway pins the knob.
-    // A device that did not survive its probe stays out of the run, whatever else is decided. This
-    // is not a preference: what ended the probe - a driver without a function the backend calls, a
-    // device that never answers - would end the run the same way, at load. The host carries it,
-    // unless a different device was armed for the prefill, which is then the only one listed.
-    bool any_broken = false;
-    {
-        std::string broken;
-        for (const ComputeDevice & d : hw.devices)
-            if (!d.is_cpu && d.usable == Tri::No)
-                broken += (broken.empty() ? "" : "; ") + d.name + ": " + d.unusable_reason;
-        any_broken = !broken.empty();
-        if (!broken.empty()) {
-            if (req.is_pinned("devices")) {
-                note("devices", "as set", Source::Operator,
-                     "set by the caller, and left alone - but a device here failed its probe (" + broken +
-                         "), and a run that lists it may end the same way");
-            } else {
-                if (!p.config.prefill.enabled()) p.config.device_use = DeviceUse::CpuOnly;
-                p.config.n_gpu_layers = 0;
-                note("devices", p.config.prefill.enabled() ? "prefill device only" : "cpu only", Source::Measured,
-                     "a device was probed in a process of its own and did not survive it (" + broken +
-                         "): it is kept out of the run, which is the only way the run starts");
-            }
+void choose_direct_io(Planning & s) {
+    MoeStreamConfig & moe = s.p.config.moe;
+    if (s.pinned("o-direct", moe.o_direct ? "on" : "off")) return;
+    if (s.hw.storage.direct_ok == Tri::Yes) {
+        moe.o_direct = true;
+        s.note("o-direct", "on", Source::Measured, "uncached reads return correct bytes on this path");
+    } else if (s.hw.storage.direct_ok == Tri::No) {
+        moe.o_direct = false;
+        s.note("o-direct", "off", Source::Measured,
+               "uncached reads do not return correct bytes on this path, so they are not used");
+    } else {
+        s.note("o-direct", moe.o_direct ? "on" : "off", Source::Unprobed,
+               "unverified here; the reader checks at open and falls back to buffered reads by itself");
+    }
+}
+
+void choose_release_mmap(Planning & s) {
+    MoeStreamConfig & moe = s.p.config.moe;
+    const StorageFacts & storage = s.hw.storage;
+    if (s.pinned("release-mmap", moe.release_mmap ? "on" : "off")) return;
+    // Carrying a multi-token-prediction block is not the same as using one: llama.cpp does not load
+    // that block unless the run asks for it, and an unloaded block holds no pointer into the
+    // mapping. Testing the file instead of the run would silently disable this on every model that
+    // merely ships an MTP head, which is most of them.
+    const bool mtp_in_use = s.model.has_mtp && s.p.config.spec.is_mtp();
+    const bool safe_shape = !s.model.tied_output_head && !mtp_in_use && moe.dense_weights != DenseWeightsMode::Mmap;
+    // Safety is reported before the probe, because it is the stronger constraint: on a shape that
+    // keeps a live pointer into the mapping, measuring the storage would change nothing.
+    if (!safe_shape) {
+        s.note("release-mmap", "off", Source::Derived,
+               "this run keeps a live pointer into the mapping (a tied head, a draft block, or a dense "
+               "policy that stays mapped), so the mapping cannot be released whatever the storage does");
+    } else if (storage.mapping_serialises_reads == Tri::Yes) {
+        moe.release_mmap = true;
+        s.note("release-mmap", "on", Source::Measured,
+               "a live mapping of the model serialises this storage's concurrent uncached reads (" +
+                   u64s((uint64_t) storage.rate_mapped_mibs) + " vs " + u64s((uint64_t) storage.rate_unmapped_mibs) +
+                   " MiB/s), and this model's shape keeps no pointer that would survive the release "
+                   "(the session checks again before doing it)");
+    } else {
+        s.note("release-mmap", moe.release_mmap ? "on" : "off", Source::Unprobed,
+               storage.rate_unmapped_mibs > 0.0
+                   ? "the storage probe did not see a live mapping slow its reads here (" +
+                         u64s((uint64_t) storage.rate_mapped_mibs) + " vs " +
+                         u64s((uint64_t) storage.rate_unmapped_mibs) +
+                         " MiB/s), but it is an instrument validated only in the positive direction, so "
+                         "that is not evidence there is nothing to gain: try " +
+                         flag_spelling("release-mmap", "true") + " and measure"
+                   : "whether a live mapping serialises reads was not measured on this machine");
+    }
+}
+
+// ── everything lossy: the caller's authority, never ours ────────────────────────
+void disarm_lossy(Planning & s) {
+    MoeStreamConfig & moe = s.p.config.moe;
+    const bool lossy_pinned =
+        s.req.is_pinned("drop-cold-experts") || s.req.is_pinned("expert-substitute") || s.req.is_pinned("route-ahead");
+    if (lossy_pinned) {
+        s.note("lossy", "as set", Source::Operator, "the caller armed a lossy policy explicitly");
+        return;
+    }
+    moe.drop_cold_frac = 0.0f;
+    moe.substitute_lambda = 0.0f;
+    moe.route_ahead = 0;
+    if (s.req.quality_budget <= 0.0f)
+        s.note("lossy", "off", Source::Policy,
+               "no quality budget was given, and a policy that changes the output must never arm itself");
+    else
+        s.note("lossy", "off", Source::Unprobed,
+               "a quality budget was given, but no measured mapping from a perplexity cost to a lever value "
+               "exists yet, so spending it would be a guess");
+}
+
+// ── which devices the run lists ─────────────────────────────────────────────────
+// A device that did not survive its probe stays out of the run, whatever else is decided. This is
+// not a preference: what ended the probe - a driver without a function the backend calls, a device
+// that never answers - would end the run the same way, at load. The host carries it, unless a
+// different device was armed for the prefill, which is then the only one listed.
+//
+// And where nothing is going on a device, no device should be in the graph. It is not enough to
+// decline a placement: a registered backend collects work on its own, and every piece it collects
+// is a crossing. Measured with zero layers placed - 61 splits a token, and a build carrying the
+// backend losing to one without it. A caller who wants the device anyway pins the knob.
+void choose_devices(Planning & s) {
+    RunConfig & c = s.p.config;
+    std::string broken;
+    for (const ComputeDevice & d : s.hw.devices)
+        if (!d.is_cpu && d.usable == Tri::No)
+            broken += (broken.empty() ? "" : "; ") + d.name + ": " + d.unusable_reason;
+    if (!broken.empty()) {
+        if (s.req.is_pinned("devices")) {
+            s.note("devices", "as set", Source::Operator,
+                   "set by the caller, and left alone - but a device here failed its probe (" + broken +
+                       "), and a run that lists it may end the same way");
+        } else {
+            if (!c.prefill.enabled()) c.device_use = DeviceUse::CpuOnly;
+            c.n_gpu_layers = 0;
+            s.note("devices", c.prefill.enabled() ? "prefill device only" : "cpu only", Source::Measured,
+                   "a device was probed in a process of its own and did not survive it (" + broken +
+                       "): it is kept out of the run, which is the only way the run starts");
         }
+        return;
     }
 
-    if (!any_broken && !req.is_pinned("devices") && p.config.n_gpu_layers == 0 && !p.config.dense_on_device &&
-        !p.config.prefill.enabled()) {
-        size_t non_cpu = 0;
-        for (const ComputeDevice & d : hw.devices)
-            if (!d.is_cpu) ++non_cpu;
-        if (non_cpu > 0) {
-            p.config.device_use = DeviceUse::CpuOnly;
-            note("devices", "cpu only", Source::Derived,
-                 u64s(non_cpu) +
-                     " device(s) registered and no weight going to any of them: a backend left in the graph "
-                     "takes the nodes it can execute simply for being there, and each is a boundary crossed "
-                     "twice. Measured at 61 splits a token with nothing placed");
-        }
-    }
+    if (s.req.is_pinned("devices") || c.n_gpu_layers != 0 || c.dense_on_device || c.prefill.enabled()) return;
+    size_t non_cpu = 0;
+    for (const ComputeDevice & d : s.hw.devices)
+        if (!d.is_cpu) ++non_cpu;
+    if (non_cpu == 0) return;
+    c.device_use = DeviceUse::CpuOnly;
+    s.note("devices", "cpu only", Source::Derived,
+           u64s(non_cpu) + " device(s) registered and no weight going to any of them: a backend left in the graph "
+                           "takes the nodes it can execute simply for being there, and each is a boundary crossed "
+                           "twice. Measured at 61 splits a token with nothing placed");
+}
 
-    if (device_on_host > 0)
-        note("shared-pool", u64s(mib(device_on_host)) + " MiB", Source::Derived,
-             "every device here reads this host's own memory, so what the fitter placed on one is in the "
-             "same pool as what it left here and is charged to it: " +
-                 u64s(mib(device_on_host)) + " MiB added to the " + u64s(mib(placement.host_resident_bytes)) +
-                 " MiB host set before anything was sized. The fitter treats the two as separate, which is "
-                 "how it came to report 15 GB free on an 11 GB machine");
+// A placement the fitter made and this planner did not apply, because on shared memory its capacity
+// arithmetic counts the same pool twice. Said out loud: "no layers on devices" on a machine that has
+// one is a sentence a reader would otherwise take as "there is no device".
+void note_shared_pool(Planning & s) {
+    const Placement & placement = s.placement;
+    if (s.device_on_host > 0)
+        s.note("shared-pool", u64s(mib(s.device_on_host)) + " MiB", Source::Derived,
+               "every device here reads this host's own memory, so what the fitter placed on one is in the "
+               "same pool as what it left here and is charged to it: " +
+                   u64s(mib(s.device_on_host)) + " MiB added to the " + u64s(mib(placement.host_resident_bytes)) +
+                   " MiB host set before anything was sized. The fitter treats the two as separate, which is "
+                   "how it came to report 15 GB free on an 11 GB machine");
 
     if (placement.shared_memory_placement)
-        note("placement-declined", u64s(mib(placement.device_bytes)) + " MiB", Source::Derived,
-             "the capacity fitter would have placed " + u64s(mib(placement.device_bytes)) +
-                 " MiB on a device whose memory is this host's own, counting it as separate from the " +
-                 u64s(mib(placement.host_resident_bytes)) +
-                 " MiB it left here - the same pool, twice. Acting on that took a phone down; charging it "
-                 "instead reads as a model twice its real size and declines a run that works. The number is "
-                 "not wrong by an amount, it is about a distinction this machine does not have, so the "
-                 "placement is quoted and not applied. Using such a device is a bandwidth decision, not a "
-                 "capacity one");
+        s.note("placement-declined", u64s(mib(placement.device_bytes)) + " MiB", Source::Derived,
+               "the capacity fitter would have placed " + u64s(mib(placement.device_bytes)) +
+                   " MiB on a device whose memory is this host's own, counting it as separate from the " +
+                   u64s(mib(placement.host_resident_bytes)) +
+                   " MiB it left here - the same pool, twice. Acting on that took a phone down; charging it "
+                   "instead reads as a model twice its real size and declines a run that works. The number is "
+                   "not wrong by an amount, it is about a distinction this machine does not have, so the "
+                   "placement is quoted and not applied. Using such a device is a bandwidth decision, not a "
+                   "capacity one");
+}
 
-    // ── the dense set on a device that shares this memory ──────────────────────────
-    // The capacity tier said nothing here, so this is the bandwidth decision it left behind. The
-    // dense set is small - a fraction of the file - and the device reads this model's weights
-    // faster than the cores do, so computing it there is the whole of what an integrated
-    // accelerator can offer. It costs no capacity, because the memory is the same memory.
-    //
-    // Armed by the caller, not by this plan. What is missing is the device's own compute buffer as
-    // a budget line: on one phone it reserved 906 MiB against the CPU's 22, and a plan that sizes a
-    // cache without knowing that is a plan that takes the machine down - which it did, once.
-    if (devices_share_host_memory && !p.config.dense_on_device) {
+// ── the dense set on a device that shares this memory ──────────────────────────
+// The capacity tier said nothing here, so this is the bandwidth decision it left behind. The dense
+// set is small - a fraction of the file - and the device reads this model's weights faster than the
+// cores do, so computing it there is the whole of what an integrated accelerator can offer. It costs
+// no capacity, because the memory is the same memory.
+//
+// Armed by the caller, not by this plan. What is missing is the device's own compute buffer as a
+// budget line: on one phone it reserved 906 MiB against the CPU's 22, and a plan that sizes a cache
+// without knowing that is a plan that takes the machine down - which it did, once.
+void dense_on_shared_device(Planning & s) {
+    RunConfig & c = s.p.config;
+    const HardwareProfile & hw = s.hw;
+    if (!s.devices_share_host_memory) return;
+    if (!c.dense_on_device) {
         const ComputeDevice * fast = nullptr;
         for (const ComputeDevice & d : hw.devices) {
             if (d.is_cpu || d.runs_expert_op != Tri::Yes || d.needs_repack == Tri::Yes) continue;
-            if (hw.host_bandwidth_gibs <= 0.0 || d.memory_bandwidth_gibs <= host_bandwidth_win) continue;
+            if (hw.host_bandwidth_gibs <= 0.0 || d.memory_bandwidth_gibs <= s.host_bandwidth_win) continue;
             fast = &d;
             break;
         }
         if (fast)
-            note("dense-on-device", "off", Source::Unprobed,
-                 "this device reads the model's own weights at " + u64s((uint64_t) fast->memory_bandwidth_gibs) +
-                     " GiB/s against the host's " + u64s((uint64_t) hw.host_bandwidth_gibs) +
-                     ", and the dense set is " + u64s(mib(model.dense_bytes)) +
-                     " MiB - small enough that computing it there costs no memory on a shared pool. Arm it with "
-                     "--dense-on-device; this plan will not, until the device's compute buffer is a budget line");
+            s.note("dense-on-device", "off", Source::Unprobed,
+                   "this device reads the model's own weights at " + u64s((uint64_t) fast->memory_bandwidth_gibs) +
+                       " GiB/s against the host's " + u64s((uint64_t) hw.host_bandwidth_gibs) +
+                       ", and the dense set is " + u64s(mib(s.model.dense_bytes)) +
+                       " MiB - small enough that computing it there costs no memory on a shared pool. Arm it with " +
+                       flag_spelling("dense-on-device", "true") +
+                       "; this plan will not, until the device's compute buffer is a budget line");
+        return;
     }
-    if (p.config.dense_on_device && devices_share_host_memory) {
-        // Refused, and the refusal is the finding. Placing the dense set on a shared-memory device
-        // and routing the experts back with an `exps` override loads, reserves, starts the streamer
-        // - and then segmentation-faults, three times out of three on the phone it was tried on,
-        // while the same run without it is fine. Standing the dense policy down (it would rebind a
-        // pointer it does not own) moved the fault later rather than removing it, so something else
-        // in the streamed path is still handed a device address. Until that is found this arms
-        // nothing: a lever that takes the machine down is worse than one that does not exist.
-        p.config.dense_on_device = false;
-        note("dense-on-device", "refused", Source::Derived,
-             "refused, and twice over. This path faults once the expert streamer starts, reproducibly - the "
-             "expert override here is a literal pattern where the earlier `--gpu` built one from the "
-             "architecture recipe, which is a bug and a small one. The larger reason is that the same "
-             "placement was measured three times on a device of this class and LOST: full offload -27% on a "
-             "Q4_0 run, because the dense and expert halves interleave, so a two-device split crosses the "
-             "boundary twice per layer - 96 splits against 1 - and the boundary tax eats the CPU time the "
-             "device frees. The untested shape that could change it is contiguous layer BLOCKS, experts "
-             "included and resident, which puts the boundary in one place");
-    }
-    // ── overlap: named, not armed ──────────────────────────────────────────────────
-    // Hiding compute behind the reads is not a quality choice - the output is byte-identical - and
-    // it is worth about 5% on the phone this was measured on, where a plan without it lost to a
-    // hand-written recipe that had it. It is still not armed, and the reason is the same one that
-    // withdrew the thread rule two blocks down: one machine's evidence is not a rule. What the plan
-    // can do honestly is say the knob exists and that the caller is the one who knows.
-    if (!req.is_pinned("overlap") && !p.config.moe.overlap)
-        note("overlap", "off", Source::Unprobed,
-             "hiding compute behind the reads changes no output and measured +5% on one phone, but one "
-             "machine is not a rule and nothing here predicts where it stops paying: pass --overlap");
+    // Refused, and the refusal is the finding. Placing the dense set on a shared-memory device and
+    // routing the experts back with an `exps` override loads, reserves, starts the streamer - and
+    // then segmentation-faults, three times out of three on the phone it was tried on, while the
+    // same run without it is fine. Standing the dense policy down (it would rebind a pointer it does
+    // not own) moved the fault later rather than removing it, so something else in the streamed path
+    // is still handed a device address. Until that is found this arms nothing: a lever that takes
+    // the machine down is worse than one that does not exist.
+    c.dense_on_device = false;
+    s.note("dense-on-device", "refused", Source::Derived,
+           "refused, and twice over. This path faults once the expert streamer starts, reproducibly - the "
+           "expert override here is a literal pattern where the retired GPU-offload flag built one from the "
+           "architecture recipe, which is a bug and a small one. The larger reason is that the same "
+           "placement was measured three times on a device of this class and LOST: full offload -27% on a "
+           "Q4_0 run, because the dense and expert halves interleave, so a two-device split crosses the "
+           "boundary twice per layer - 96 splits against 1 - and the boundary tax eats the CPU time the "
+           "device frees. The untested shape that could change it is contiguous layer BLOCKS, experts "
+           "included and resident, which puts the boundary in one place");
+}
 
-    // ── threads: the classes are a fact, the rule that read them was wrong ─────────
-    // The rule here used to set the count to the fast class, reasoning that every thread meets the
-    // same barrier so a thread on a slower core sets the pace rather than adding to it. Sound, and
-    // refuted by the first heterogeneous machine it met: a phone with two prime cores and six others
-    // got two threads instead of four, and decode compute went from 0.127 to 0.195 s/token - 4.24
-    // tok/s down to 2.68. Losing half the threads costs more than the barrier's imbalance does,
-    // and nothing here knows where that trade turns over.
-    //
-    // So the classes stay as a measured fact, printed because they are worth knowing, and the knob
-    // keeps its default. Deriving a count from them would need a thread sweep on the machine itself,
-    // which is a probe this does not have. The same applies to prefill: it is compute-bound and
-    // plausibly wants every core, and "plausibly" is exactly what this planner does not ship.
-    if (!req.is_pinned("threads")) {
-        if (hw.best_threads > 0) {
-            p.config.n_threads = (int) hw.best_threads;
-            note("threads", u64s(hw.best_threads), Source::Measured,
-                 "swept over the thread counts this machine has, on a matmul in this model's own "
-                 "quantized format - which is the material that matters: measured in F32 instead, the same "
-                 "sweep answered 2 on a phone whose engine is 58% faster at 4");
-        } else if (hw.core_classes.size() > 1) {
-            std::string shape;
-            for (size_t k = 0; k < hw.core_classes.size(); ++k)
-                shape += (k ? " + " : "") + u64s(hw.core_classes[k]);
-            note("threads", u64s((uint64_t) p.config.n_threads), Source::Unprobed,
-                 "this machine's cores are not alike (" + shape +
-                     " by reported maximum frequency), which is measured - but the rule that turned that "
-                     "into a count was refuted on a machine of exactly this shape, so the default stands "
-                     "until a thread sweep says otherwise");
-        } else if (hw.core_classes.size() == 1) {
-            note("threads", u64s((uint64_t) p.config.n_threads), Source::Derived,
-                 "every core here is alike, so there is no slower class to spill onto and the count is not "
-                 "the planner's to improve");
-        } else {
-            note("threads", u64s((uint64_t) p.config.n_threads), Source::Unprobed,
-                 "this machine does not report per-core maximum frequencies, so its core classes are unknown");
-        }
-    }
+// ── overlap: named, not armed ──────────────────────────────────────────────────
+// Hiding compute behind the reads is not a quality choice - the output is byte-identical - and it is
+// worth about 5% on the phone this was measured on, where a plan without it lost to a hand-written
+// recipe that had it. It is still not armed, and the reason is the same one that withdrew the thread
+// rule below: one machine's evidence is not a rule. What the plan can do honestly is say the knob
+// exists and that the caller is the one who knows.
+void note_overlap(Planning & s) {
+    if (s.req.is_pinned("overlap") || s.p.config.moe.overlap) return;
+    s.note("overlap", "off", Source::Unprobed,
+           "hiding compute behind the reads changes no output and measured +5% on one phone, but one "
+           "machine is not a rule and nothing here predicts where it stops paying: pass " +
+               flag_spelling("overlap", "true"));
+}
 
+// ── threads: the classes are a fact, the rule that read them was wrong ─────────
+// The rule here used to set the count to the fast class, reasoning that every thread meets the same
+// barrier so a thread on a slower core sets the pace rather than adding to it. Sound, and refuted by
+// the first heterogeneous machine it met: a phone with two prime cores and six others got two
+// threads instead of four, and decode compute went from 0.127 to 0.195 s/token - 4.24 tok/s down to
+// 2.68. Losing half the threads costs more than the barrier's imbalance does, and nothing here knows
+// where that trade turns over.
+//
+// So the classes stay as a measured fact, printed because they are worth knowing, and the knob keeps
+// its default. Deriving a count from them would need a thread sweep on the machine itself, which is
+// a probe this does not have. The same applies to prefill: it is compute-bound and plausibly wants
+// every core, and "plausibly" is exactly what this planner does not ship.
+void choose_threads(Planning & s) {
+    const HardwareProfile & hw = s.hw;
+    RunConfig & c = s.p.config;
+    if (s.req.is_pinned("threads")) return;
+    if (hw.best_threads > 0) {
+        c.n_threads = (int) hw.best_threads;
+        s.note("threads", u64s(hw.best_threads), Source::Measured,
+               "swept over the thread counts this machine has, on a matmul in this model's own "
+               "quantized format - which is the material that matters: measured in F32 instead, the same "
+               "sweep answered 2 on a phone whose engine is 58% faster at 4");
+    } else if (hw.core_classes.size() > 1) {
+        std::string shape;
+        for (size_t k = 0; k < hw.core_classes.size(); ++k)
+            shape += (k ? " + " : "") + u64s(hw.core_classes[k]);
+        s.note("threads", u64s((uint64_t) c.n_threads), Source::Unprobed,
+               "this machine's cores are not alike (" + shape +
+                   " by reported maximum frequency), which is measured - but the rule that turned that "
+                   "into a count was refuted on a machine of exactly this shape, so the default stands "
+                   "until a thread sweep says otherwise");
+    } else if (hw.core_classes.size() == 1) {
+        s.note("threads", u64s((uint64_t) c.n_threads), Source::Derived,
+               "every core here is alike, so there is no slower class to spill onto and the count is not "
+               "the planner's to improve");
+    } else {
+        s.note("threads", u64s((uint64_t) c.n_threads), Source::Unprobed,
+               "this machine does not report per-core maximum frequencies, so its core classes are unknown");
+    }
+}
+
+} // namespace
+
+Plan plan_run(const RunConfig & base,
+              const HardwareProfile & hw,
+              const ModelProfile & model,
+              const Placement & projected,
+              const PlanRequest & req,
+              const PlannerPolicy & pol) {
+    Plan p;
+    Planning s(base, hw, model, projected, req, pol, p);
+
+    // The machine and the model, against each other.
+    share_of_host(s);
+    if (declines_unplannable(s)) return p;
+    size_budget(s);
+    choose_graph_width(s);
+    classify_regime(s);
+    apply_placement(s);
+    note_regime(s);
+    if (declines_residency(s)) return p;
+
+    // What could leave the host beyond the first stage's placement, and why it does not.
+    const DeviceSurvey devices = survey_devices(hw);
+    note_extra_offload(s, devices);
+    note_expert_compute(s, devices);
+
+    // The memory ledger: the dense policy, then every row priced against the others.
+    const bool pin_candidate = choose_dense_policy(s);
+    p.dense_pending_bytes = dense_pending_bytes(s);
+    s.host_model = host_model(s);
+    AllocationInputs ai = ledger_inputs(s, p.dense_pending_bytes);
+    const Allocation alloc = plan_prefill(s, ai);
+    p.allocation = alloc;
+    settle_dense_pin(s, pin_candidate, alloc, ai);
+    settle_cache_lock(s, alloc);
+    charge_caller_cache(s);
+    note_ledger(s, alloc);
+    if (!size_cache(s, alloc)) return p;
+    note_kv_budget(s);
+
+    // The knobs each settled by one fact.
+    choose_io_lanes(s);
+    choose_direct_io(s);
+    choose_release_mmap(s);
+    disarm_lossy(s);
+    choose_devices(s);
+    note_shared_pool(s);
+    dense_on_shared_device(s);
+    note_overlap(s);
+    choose_threads(s);
     return p;
 }
 

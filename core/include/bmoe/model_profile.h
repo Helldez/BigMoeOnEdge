@@ -12,8 +12,8 @@
 // "dense weights" prices things that differ by three orders of magnitude identically. So the file
 // is decomposed into groups by ACCESS SHAPE, and each carries its own per-token demand.
 //
-// On not hardcoding: the tensor names that identify EXPERT weights come from the architecture
-// recipe (bmoe/recipe.h), so a new MoE family stays one table row. The remaining names —
+// On not hardcoding: which tensors are EXPERT weights is read from the file's shapes
+// (bmoe/expert_layout.h), so a new MoE family needs nothing here. The remaining names —
 // `token_embd`, `output`, `blk.N.attn_*`, `blk.N.ffn_*` — are the gguf naming convention itself,
 // which every architecture llama.cpp converts shares; they are a property of the FORMAT, not of
 // any model, and a name that matches nothing lands in Other and is priced as read-whole, which is
@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace bmoe {
 
@@ -73,6 +74,10 @@ struct ModelProfile {
     // silently wrong on exactly the architectures that motivated the distinction.
     uint32_t n_layer = 0;     // blocks in the file: llama.cpp's own layer indices
     uint32_t n_moe_layer = 0; // of those, the ones carrying expert tensors — the ones that stream
+    // Which blocks those are, ascending, in llama.cpp's indices: what a placement expressed in
+    // blocks (n_gpu_layers, an override pattern) is read against, so a count of "layers on the
+    // host" is a count of expert-carrying ones. Empty when the file was not read.
+    std::vector<uint32_t> moe_layers;
 
     uint32_t n_expert = 0;      // experts per MoE layer
     uint32_t n_expert_used = 0; // routed per token (top-k)

@@ -463,6 +463,29 @@ int main() {
               std::to_string((unsigned long long) (p.cache_budget_bytes >> 20)) + " MiB");
     }
 
+    // A hybrid model: 52 blocks, 23 with experts. The fitter's host list speaks in blocks, and a
+    // count of 52 "MoE layers" out of 23 would prorate the expert set past itself.
+    {
+        ModelProfile hybrid = model;
+        hybrid.arch = "nemotron_h_moe";
+        hybrid.n_layer = 52;
+        hybrid.n_moe_layer = 23;
+        hybrid.moe_layers.clear();
+        for (uint32_t il = 3; il < 52; il += 2)
+            if (hybrid.moe_layers.size() < 23) hybrid.moe_layers.push_back(il);
+        Placement pl;
+        pl.fitted = true;
+        pl.n_ctx = 2048;
+        for (uint32_t il = 0; il < 52; ++il)
+            pl.host_expert_layers.push_back(il);
+        pl.host_resident_bytes = 1 * GiB;
+        const Plan p = plan_run(base_cfg(), desktop(), hybrid, pl, PlanRequest{});
+        const Decision * d = find(p, "placement");
+        check(d && d->reason.find("23 of 23 MoE layers") != std::string::npos,
+              "hybrid: the host's share counts the blocks that carry experts",
+              d ? d->reason.substr(0, 120) : "no line");
+    }
+
     // A device with memory of its own is not charged: the two pools really are separate.
     {
         HardwareProfile disc = desktop();
@@ -1209,6 +1232,24 @@ int main() {
         check(!slow.config.prefill.enabled() && reason(slow).find("not a win") != std::string::npos,
               "prefill: a device inside the margin is not a second placement");
 
+        // A device that could not be measured at that width is named with the reason, not dropped:
+        // the plan reads the same whether the second device is absent or cannot run this model.
+        HardwareProfile pair = machine(205.0, Tri::Yes);
+        ComputeDevice other = pair.devices[1];
+        other.name = "other";
+        other.wide_matmul_gibs = 0.0;
+        other.runs_expert_op = Tri::No;
+        pair.devices.push_back(other);
+        const Plan named = plan_run(base_cfg(), pair, mm, PlanRequest{});
+        check(!named.config.prefill.enabled() && reason(named).find("not a win") != std::string::npos &&
+                  reason(named).find("other was not weighed") != std::string::npos &&
+                  reason(named).find("expert matmul") != std::string::npos,
+              "prefill: a device that cannot run the model's matmul is named with the reason", reason(named));
+        pair.devices.back().runs_expert_op = Tri::Unknown;
+        const Plan unmeasured = plan_run(base_cfg(), pair, mm, PlanRequest{});
+        check(reason(unmeasured).find("other was not weighed: it gave no measurement") != std::string::npos,
+              "prefill: and one that gave no figure says so", reason(unmeasured));
+
         // Two slots do not fit and one does: the device is armed with one, and the plan says so.
         // The layer is sized so that the difference between the two is exactly what decides it.
         ModelProfile mid = mm;
@@ -1287,6 +1328,23 @@ int main() {
         const LedgerRow * szr = ledger_row(sz, "device");
         check(sz.config.prefill.device == "accel" && szr && szr->bytes == stays && ledger_row(sz, "device slots"),
               "prefill: a device that claims its own memory and states no size is charged to the host");
+
+        // The fitter's compute buffers are per device: the prefill device pays its own part, and
+        // none of one projected for a device beside it (a GPU's charged to an NPU, on a phone).
+        Placement projected;
+        projected.device_compute_bytes = 256 * MiB;
+        projected.projected_devices = {"gpu"};
+        projected.projected_compute_bytes = {256 * MiB};
+        const Plan beside = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, projected, PlanRequest{});
+        const LedgerRow * orow = ledger_row(beside, "device");
+        check(beside.config.prefill.device == "accel" && orow && orow->bytes == stays,
+              "prefill: a compute buffer projected for another device is not charged to this one",
+              orow ? std::to_string((unsigned long long) (orow->bytes >> 20)) + " MiB" : "no row");
+        projected.projected_devices = {"accel"};
+        const Plan mine = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, projected, PlanRequest{});
+        const LedgerRow * mrow = ledger_row(mine, "device");
+        check(mrow && mrow->bytes == stays + 256 * MiB, "prefill: and the one projected for it is",
+              mrow ? std::to_string((unsigned long long) (mrow->bytes >> 20)) + " MiB" : "no row");
 
         disc.devices[1].memory_free = 256 * MiB;
         check(!plan_run(base_cfg(), disc, mm, PlanRequest{}).config.prefill.enabled(),

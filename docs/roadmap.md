@@ -75,9 +75,11 @@ most phones and PCs is reached through neither of the two GPU ones measured (Met
 Vulkan reaches any GPU with a driver - discrete and integrated on Windows and Linux, and Android -
 and OpenCL is llama.cpp's Adreno path. Both name the expert op, and both implement wrapping host
 memory without advertising it, which is the capability streamed experts computed on a device would
-need. The work, in order: carry each backend in a build (a desktop archive with Vulkan, an APK
-with OpenCL beside Hexagon), so the planner sees the device with no code here; one measured run of
-the prefill device on each, against the CPU and, on the phone, against the NPU; then the
+need. The work, in order: carry each backend in every build, so the planner sees the device with
+no code here - done, as modules beside the engine on every OS ([backends.md](backends.md)): the
+APK carries Vulkan and OpenCL beside Hexagon, the Linux and Windows archives Vulkan; one measured
+run of the prefill device on each, against the CPU and, on the phone, against the NPU - done on
+one phone ([npu-prefill.md](npu-prefill.md)), owed on a desktop GPU; then the
 `buffer_from_host_ptr` route for the streamed experts where the measurement says the device wins.
 The OpenCL entry in [backends.md](backends.md) carries the one negative so far: the dense set on a
 phone's integrated GPU lost 27%. That measured the dense weights, not the prefill.
@@ -93,6 +95,29 @@ the probes measure, the rules that read them, the ledger that keeps memory hones
 that comes out with its reasons, for prefill and decode apart. It goes in
 [hardware-planning.md](hardware-planning.md) and, in a short form, in the README, so a reader
 sees in one picture why the same rules give a different plan on a phone, a laptop and a desktop.
+
+**Measuring and loading, made readable.** A load in auto mode already measures the chosen model
+on a quiet machine: the model in use is unloaded first, then the machine is measured, then the
+model loads. What the person sees is one fixed line, "measuring the machine, then loading", for
+tens of seconds on a phone, then "loading the model", with no progress for either: the probes
+report nothing while they run and the load does not use llama.cpp's progress callback. Owed, in
+every UI and from server events rather than from each UI, in this order:
+
+- **Each step of the measurement, with its result and its duration.** The probes report through a
+  callback the core takes, the CLI prints it, the server publishes it, and a UI lists whatever
+  arrives (the drive's read rate, the memory the run may hold, each compute device with its figure
+  or the reason it was left out), naming no probe, device or platform. The durations are also the
+  first record of what measuring costs, which nothing keeps today.
+- **The load's own progress, and a way to cancel it.** llama.cpp's progress callback for its part,
+  and the engine's own for the dense loader and the prefill device's slots, where the time goes
+  when the file is mapped.
+- **A notice before measuring.** What is measured and why, how long it took last time on this
+  machine, that the device is busy meanwhile and that other heavy apps skew the result.
+- **Measurements kept, if the durations say it pays.** The machine's facts and each device's
+  figure for a given quantization, kept by the server and used again until the build, the
+  backends, the devices or the drive change, with the date shown and a button to measure again.
+  The memory headroom and the placement are read at every load. Most of the measuring time may be
+  the per-device matmuls, which depend on the model, so this waits for the first step's numbers.
 
 Not now: a cache that resizes itself at run time. It is the agnostic answer to the available-memory
 problem and it stays behind the static readings until those have been measured.
@@ -113,7 +138,7 @@ useful cache, but throughput on the ones that do now depends on compute.
 
 This section used to open by asserting that effective O_DIRECT bandwidth sits well below the
 drive's ceiling *because the routed slices are scattered*. That premise was measured on
-2026-07-20 with `tools/bmoe-iobench` and **does not hold on the reference device**
+2026-07-20 with `bmoe-iobench` (`tools/iobench.cpp`) and **does not hold on the reference device**
 ([bench-data/2026-07-20-cache-replay/iobench-ceiling.md](bench-data/2026-07-20-cache-replay/iobench-ceiling.md)):
 
 - Random O_DIRECT reads **saturate at 2 lanes** (~2460 MiB/s cold); 8, 16 and 32 lanes are
@@ -231,12 +256,12 @@ byte-correct, it just cannot hit. See [cache-sizing.md](cache-sizing.md).
 
 ## More architectures
 
-`qwen3moe`, `qwen2moe`, `qwen35moe` (the hybrid attention/SSM family, e.g. Qwen3.6-35B-A3B),
-`gemma4` (merged `ffn_gate_up_exps` plus shared experts), OpenAI `gpt-oss` (MXFP4, purely
-routed) and `nemotron_h_moe` (gate-less `ffn_up_exps`/`ffn_down_exps`) are supported; other
-`build_moe_ffn` models are one recipe row each. The remaining frontier is architectures whose
-routing node is not the shared `ffn_moe_topk` — custom gating, which the capture/stream hook
-would need to learn. See [adding-a-model.md](adding-a-model.md).
+Any MoE llama.cpp loads whose experts come in one of the three layouts it builds (split, fused
+`ffn_gate_up_exps`, gate-less) streams with no change here, since which tensors are the routed
+experts is read from the file rather than from a table
+([which-models-stream.md](which-models-stream.md)); each layout has a byte-identity gate. The
+remaining frontier is architectures whose routing node is not the shared `ffn_moe_topk` — custom
+gating, which the capture/stream hook would need to learn.
 
 ## Steering the routing toward what is resident — built, measured on the desktop
 
@@ -334,6 +359,41 @@ What is still owed is measurement rather than design, and every knob the plan ca
   its one policy figure were sized on a single laptop; a phone with an NPU, a machine with no
   accelerator, a discrete GPU and a system that commits what it reserves each owe a run before the
   rule is believed there ([hardware-planning.md](hardware-planning.md#the-widest-graph)).
+
+## Conversation reuse on hybrid models (the server, tool calls)
+
+`bmoe-server` keeps no conversation: every request carries the whole history, the engine tokenizes
+it and keeps the leading tokens that already match its KV cache, so a turn costs only its new
+message. That rests on dropping the divergent tail with `llama_memory_seq_rm`, and a hybrid model
+cannot do that: on Qwen3.8-Flash-Next (36 gated-delta layers, 12 attention) the recurrent state
+exists only at its last position, llama.cpp refuses any partial removal, and the engine falls back
+to clearing the cache and recomputing the conversation from its first token. A tool loop triggers
+it every time, because the client sends the assistant's call back in structured form and the chat
+template renders it differently from the tokens the model generated. On a 125B model with the
+history in the tens of thousands of tokens that is a turn of minutes, or a failed one (issue #240).
+
+Every server that runs hybrid models has met this, and the answers are all a form of the same
+thing: a snapshot of the recurrent state to fall back on. llama-server keeps up to 32 per slot in
+host RAM (fp32, 60 to 215 MiB each) and restores the last one before the divergence; vLLM
+snapshots only at block boundaries, so short prompts never hit; SGLang keeps one per node of its
+radix tree. None of them can avoid the divergence, because they serve conversations they did not
+produce. This engine can, and that order is the plan:
+
+1. **Replay the assistant's own tokens.** Keep the raw tokens generated for each assistant turn.
+   When the client sends that turn back and it parses to the same content and tool calls, match it
+   against those tokens instead of the template's rendering. The prefix then stays exact through a
+   tool loop at no memory cost, on every architecture, and the recurrent state is never asked to
+   roll back.
+2. **A recurrent checkpoint at each turn boundary**, through the public state API
+   (`llama_state_seq_get_data_ext` with the recurrent-only flag; no fork), the last two or three
+   kept, stored in half precision. This covers the histories a client does rewrite (compaction,
+   superseded tool results) by restarting from the previous turn instead of from zero. Its cost is
+   RAM a phone does not have to spare, so it ships as a toggle behind a device measurement, like
+   every other lever on this page.
+
+Not planned: approximate state reconstruction in the style of LinearKV (arXiv:2608.11231), where
+one cached state initialises every linear layer at 0.46x the time to first token. It is the
+interesting lever for long prompts, and it gives up the byte identity the gates guarantee.
 
 ## Not on this list
 
