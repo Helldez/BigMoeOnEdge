@@ -81,6 +81,7 @@
 #include "ggml-backend.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -314,6 +315,34 @@ static int check(const char * name, const std::string & a, const std::string & b
         return 0;
     }
     std::printf("[FAIL] %s\n  A: %s\n  B: %s\n", name, a.c_str(), b.c_str());
+    return 1;
+}
+
+// Equal to within `rel`, element by element, where two paths put the same tokens through
+// different batch shapes. The streamed-versus-resident gates stay bit-exact: this is only for a
+// comparison upstream never promised to be bitwise, a wide prefill against one row at a time,
+// whose kernels may accumulate in another order (seen on the ARM CPU backend from the 2026-10
+// base: the three choices' log-probabilities differing by the same 1e-12 relative, the
+// log-softmax normaliser one ulp apart). The bound is nine orders of magnitude below a wrong answer.
+static int check_close(const char * name, const std::vector<double> & a, const std::vector<double> & b, double rel) {
+    bool ok = a.size() == b.size();
+    for (size_t i = 0; ok && i < a.size(); ++i)
+        ok = std::fabs(a[i] - b[i]) <= rel * (std::fabs(a[i]) > std::fabs(b[i]) ? std::fabs(a[i]) : std::fabs(b[i]));
+    if (ok) {
+        std::printf("[PASS] %s\n", name);
+        return 0;
+    }
+    std::string sa, sb;
+    char buf[64];
+    for (double v : a) {
+        std::snprintf(buf, sizeof buf, "%a ", v);
+        sa += buf;
+    }
+    for (double v : b) {
+        std::snprintf(buf, sizeof buf, "%a ", v);
+        sb += buf;
+    }
+    std::printf("[FAIL] %s\n  A: %s\n  B: %s\n", name, sa.c_str(), sb.c_str());
     return 1;
 }
 
@@ -1248,9 +1277,10 @@ int main(int argc, char ** argv) {
                 std::fprintf(stderr, "perplexity run failed: %s\n", pr.error.c_str());
                 return 2;
             }
-            DecideResult as_decide;
-            as_decide.choice_logp = pr.choice_logp;
-            fails += check("G18c decide(whole prefill) == perplexity(choices)", logps(as_decide), logps(whole[0]));
+            // The choices go through a wide prefill here and one row at a time there (G18 c): the
+            // same distribution, to within the kernels' batch-shape rounding.
+            fails += check_close("G18c decide(whole prefill) == perplexity(choices)", pr.choice_logp,
+                                 whole[0].choice_logp, 1e-9);
 
             // f) off by default: the same session (decide not enabled) refuses, without harm.
             const DecideResult off = s->decide(q1);
