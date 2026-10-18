@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **The plan names every compute device it did not weigh for the prefill, and why.** A device
+  with no measurement at prefill width dropped out of the `prefill-device` line without a word, so
+  a plan read the same whether the machine had no such device or had one that could not run this
+  model. On a phone with an NPU, a Q2_K model planned as if the NPU were absent; the line now ends
+  with "HTP0 was not weighed: it does not run this model's expert matmul in the model's own
+  format", or "it gave no measurement at that width" where the reason is not known.
+
 ## [0.30.0] - 2026-10-16
 
 ### Added
