@@ -698,19 +698,22 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     llama_model_params mparams = llama_model_default_params();
     // A device we are not using should not be in the room. Left registered, the scheduler hands it
     // every node it can execute - the weightless ones especially - purely because it is there, and
-    // each one is a boundary the graph crosses twice. Handing llama.cpp the CPU alone is the only
-    // way to say "not this run" that the scheduler cannot talk itself out of.
+    // each one is a boundary the graph crosses twice. Handing llama.cpp an empty device list is the
+    // only way to say "not this run" that the scheduler cannot talk itself out of.
+    //
+    // Empty, not the CPU: the list names the devices llama.cpp offloads to, and the context adds its
+    // own CPU backend after them whatever the list holds. A CPU named here becomes a second CPU
+    // backend that the scheduler places the graph on, and a "first device" whose host buffer type
+    // the context would take for the CPU's intermediate state. Empty is what a build without a GPU
+    // backend gets from llama.cpp's own selection.
     //
     // Unless told otherwise that is decided by what was placed: a layer on a device means the
     // devices are wanted, none means they are not. So a build that carries a GPU backend runs a
     // host-only plan exactly as a build without it does, instead of slower and rounded differently.
     const bool cpu_only =
         cfg.device_use == DeviceUse::CpuOnly || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers == 0);
-    ggml_backend_dev_t only_cpu[2] = {nullptr, nullptr};
-    if (cpu_only) {
-        only_cpu[0] = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-        if (only_cpu[0]) mparams.devices = only_cpu;
-    }
+    ggml_backend_dev_t no_devices[1] = {nullptr};
+    if (cpu_only) mparams.devices = no_devices;
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
     mparams.use_extra_bufts = false;
     mparams.n_gpu_layers = cfg.n_gpu_layers;

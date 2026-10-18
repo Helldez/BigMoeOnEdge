@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A host-only run hands llama.cpp no device instead of naming the CPU as one.** Since `--devices
+  auto` (0.29.0) a run with no layer on a device passed the CPU in llama.cpp's device list, which
+  names the devices it offloads to; the context then built a second CPU backend beside its own and
+  scheduled the graph on it, with the other idle. An empty list is what a build without a GPU
+  backend gets from llama.cpp's own selection: one CPU backend, and still no GPU in the scheduler.
+  Same output and the same memory; one backend fewer.
+
 ## [0.30.0] - 2026-10-16
 
 ### Added
