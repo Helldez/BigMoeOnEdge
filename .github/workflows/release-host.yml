@@ -199,14 +199,15 @@ jobs:
 
             $EXE -m path/to/model.gguf --moe-stream --overlap --dense-weights anon --cache-mb 2000 --io-threads 4 -t 8 -n 64 --chatml --no-think -p "Explain MoE routing."
 
-          -m is the only required flag; $EXE --help lists the rest and $EXE --list-archs the
-          supported MoE architectures. Keep this folder together: the libraries beside the program
-          are its compute backends, loaded at start-up. The CPU one comes in several instruction-set
-          tiers and the best for this machine is picked; a GPU backend loads only where its driver
-          is installed, and the plan (--auto --plan-explain) says which devices were found. The
-          Linux x86_64 archive runs on Ubuntu 22.04 and newer distributions; the aarch64 one needs
-          glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39). On an older distribution
-          build from source with scripts/build-host.sh, one command.
+          -m is the only required flag; $EXE --help lists the rest. Any MoE model llama.cpp loads
+          streams (docs/which-models-stream.md in the repository). Keep this folder together: the
+          libraries beside the program are its compute backends, loaded at start-up. The CPU one
+          comes in several instruction-set tiers and the best for this machine is picked; a GPU
+          backend loads only where its driver is installed, and the plan (--auto --plan-explain)
+          says which devices were found. The Linux x86_64 archive runs on Ubuntu 22.04 and newer
+          distributions; the aarch64 one needs glibc 2.38 or newer (Ubuntu 24.04, Debian 13,
+          Fedora 39). On an older distribution build from source with scripts/build-host.sh, one
+          command.
 
           Benchmark on this machine, printing the tables for a benchmark-report issue (Linux and
           macOS; on Windows run the protocol command from docs/community-benchmarks.md by hand):

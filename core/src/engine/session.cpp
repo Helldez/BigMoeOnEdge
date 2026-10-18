@@ -809,7 +809,7 @@ bool Session::Impl::load_model(Opening & o) {
     // through llama.cpp's public kv_overrides on the arch-prefixed expert_used_count key: the
     // graph then routes to fewer experts and the whole streaming path adapts automatically
     // (the router hook reads the top-k width from the graph). The array must outlive the load
-    // call below. See docs/adding-a-model.md — no llama.cpp patch, no per-arch constants.
+    // call below. No llama.cpp patch, no per-arch constants.
     llama_model_kv_override kv_overrides[2];
     std::memset(kv_overrides, 0, sizeof(kv_overrides)); // second entry stays the key[0]==0 terminator
     if (cfg.n_expert_used > 0) {
