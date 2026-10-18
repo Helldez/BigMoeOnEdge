@@ -66,8 +66,8 @@ ThinkControl probe_think_control(const common_chat_templates * tmpls) {
     if (tmpls == nullptr) return ThinkControl::Template;
     try {
         const common_chat_params off_p = apply_probe(tmpls, /*enable_thinking=*/false, /*prefill=*/false);
-        const std::string & off = off_p.prompt;
-        const std::string on = apply_probe(tmpls, /*enable_thinking=*/true, /*prefill=*/false).prompt;
+        const std::string off = off_p.prompt.str();
+        const std::string on = apply_probe(tmpls, /*enable_thinking=*/true, /*prefill=*/false).prompt.str();
         if (on != off) return ThinkControl::Template;
 
         // Does the model own a reasoning span — a `<think>`-style pair it opens and closes itself?
@@ -80,7 +80,7 @@ ThinkControl probe_think_control(const common_chat_templates * tmpls) {
         const bool owns_span =
             !off_p.thinking_start_tag.empty() && src.find(off_p.thinking_start_tag) != std::string::npos;
 
-        const std::string prefilled = apply_probe(tmpls, /*enable_thinking=*/false, /*prefill=*/true).prompt;
+        const std::string prefilled = apply_probe(tmpls, /*enable_thinking=*/false, /*prefill=*/true).prompt.str();
 
         // It does, and the flag is inert. Whether the request can still be honoured depends on WHO
         // closes the span. If the prefilled render moves past the closed span into further structure

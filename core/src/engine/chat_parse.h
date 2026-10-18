@@ -16,8 +16,8 @@ namespace bmoe::detail {
 //
 // The `common_chat_parser_params(const common_chat_params &)` convenience constructor copies
 // only `format` and `generation_prompt` (chat.h) — it leaves the PEG `parser` arena empty, so
-// `common_chat_parse` throws on the first token and reasoning markers leak into the answer.
-// The serialized grammar has to be loaded explicitly (this is what the upstream server does).
+// `common_chat_parse` falls back to a content-only parser and reasoning markers leak into the answer.
+// The arena has to be copied across explicitly (this is what upstream's chat session does).
 common_chat_parser_params build_parse_params(const common_chat_params & cp);
 
 // Warn exactly once that reasoning parsing failed and the raw stream is being shown instead.

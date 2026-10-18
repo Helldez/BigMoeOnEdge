@@ -48,6 +48,17 @@ Semantic Versioning.
   measuring, and measurements kept between loads if the recorded durations show it pays.
 
 ### Changed
+- **llama.cpp moves to upstream master of 2026-10-18** (523 commits past the 2026-09-26 base): the
+  fork branch `bmoe/expert-ready-hook-1810-dl` carries the same single expert-ready-hook commit,
+  in the variant that also answers the CPU registry, so the backend-module builds reach it too.
+  The new base loads architectures the old one did not (Kolibri-1, `kolibri1`, among them); their
+  expert layout is read off the file like any other, but none of them has been run here yet.
+  Upstream reworked `common`'s chat and speculative APIs, and the engine follows with the smallest
+  change that keeps its behaviour: the rendered prompt is joined back into one string (`.str()`,
+  as upstream's own server does), the parser arena is copied instead of reloaded from a
+  serialization upstream removed, and the batch handed to the MTP driver is mirrored into the
+  `common_batch` it now reads. Same backends and build options, so `docs/backends.md` holds;
+  greedy output on a real model is unchanged.
 - **`Session::open()` and `Session::generate()` read as their steps.** The two functions were 690
   and 770 lines; each is now a short sequence of named steps on the session's `Impl` (`load_model`,
   `read_model`, `build_hook`, `create_contexts`, ..., `bind_streaming`, `describe_run`; a `Turn` with

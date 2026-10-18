@@ -38,7 +38,7 @@ bool LlamaDecideBackend::render(const std::string & content, std::vector<Token> 
         msg.content = content;
         common_chat_templates_inputs inputs;
         build_turn_inputs(inputs, {msg}, /*think*/ false, d_.think_ctl);
-        out = tokenize(common_chat_templates_apply(d_.tmpls, inputs).prompt, true);
+        out = tokenize(common_chat_templates_apply(d_.tmpls, inputs).prompt.str(), true);
         return true;
     } catch (const std::exception & e) {
         error = std::string("chat template apply failed: ") + e.what();
