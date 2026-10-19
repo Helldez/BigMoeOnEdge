@@ -6,6 +6,15 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **Android: an app denied the network says so, and where to give it back** (#298). Android ties
+  every IP socket to the network permission, loopback included, so on GrapheneOS with the app's
+  Network toggle off, or behind a firewall app, the app cannot reach its own engine even offline.
+  The status line said "Engine not reachable: socket failed: EPERM"; it now says the app has no
+  network access, which the engine needs even offline, with a button that opens the app's system
+  settings, and polls slowly until it is back. A download denied the same way fails at once with
+  that reason, instead of retrying, and points to importing the file.
+
 ### Changed
 - **The README, rewritten around what the engine is: an adaptive streaming optimizer for big local
   AI agents on any device.** It opens with a silent 30-second loop (an animated WebP, so it shows

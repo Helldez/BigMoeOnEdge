@@ -226,6 +226,8 @@ data class EngineUi(
     val serverError: String? = null,
     /** How the running server was started: on the network with the key, or on loopback. */
     val shared: Boolean = false,
+    /** The system refuses this app any socket, loopback included: only the person can fix it (#298). */
+    val networkDenied: Boolean = false,
     val info: ServerInfo? = null,
     val params: List<ParamSpec>? = null,
     val config: ConfigState? = null,
@@ -376,7 +378,7 @@ object Engine {
                     onEvent = { ev ->
                         if (current()) {
                             if (!_state.value.serverUp) {
-                                _state.update { it.copy(serverUp = true, serverError = null) }
+                                _state.update { it.copy(serverUp = true, serverError = null, networkDenied = false) }
                                 backoffMs = 500L
                                 scope.launch { refreshStatic() }
                             }
@@ -393,9 +395,16 @@ object Engine {
                 // The watchdog: two pings missed, the stream died without closing. Reconnect now.
                 backoffMs = 500L
             } catch (t: Throwable) {
-                // Anything else (a key, a policy, a broken stream) is what a person needs to read.
-                val why = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
-                _state.update { it.copy(serverError = "Engine not reachable: $why") }
+                if (isNetworkDenied(t)) {
+                    // The raw "socket failed: EPERM" says nothing a person can act on, and a retry
+                    // cannot succeed until the switch is turned back on: keep polling, slowly.
+                    _state.update { it.copy(serverError = NETWORK_DENIED, networkDenied = true) }
+                    backoffMs = 5_000L
+                } else {
+                    // Anything else (a key, a policy, a broken stream) is what a person needs to read.
+                    val why = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+                    _state.update { it.copy(serverError = "Engine not reachable: $why", networkDenied = false) }
+                }
             }
             if (_state.value.serverUp) _state.update { it.copy(serverUp = false) }
             delay(backoffMs)
