@@ -21,7 +21,7 @@
 <p align="center"><img src="docs/assets/demo.webp" width="900" alt="A 35B model chatting in real time on a 16 GB laptop and a 12 GB phone, a 125B model streaming on the phone, the planner measuring the machine and laying out its plan, and opencode fixing a bug through the local server."></p>
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/b389bb14-baec-4970-b164-c770c185198a"><b>▶ Watch the full two-minute demo, with sound</b></a><br>
+  <a href="https://github.com/user-attachments/assets/b389bb14-baec-4970-b164-c770c185198a"><b>▶ Watch the full two-minute demo</b></a><br>
   <sub>Real recordings on a 16 GB laptop and a 12 GB Android phone. Sped-up parts are marked.</sub>
 </p>
 
