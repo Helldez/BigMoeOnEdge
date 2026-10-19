@@ -31,6 +31,18 @@ Semantic Versioning.
   `examples/ios/harness`, the memory entitlements to `examples/ios/memory.entitlements`, shared by
   both. `scripts/build-ios.sh` builds both (`BMOE_IOS_TARGETS` picks one; `BMOE_IOS_APP_BUNDLE_ID`
   names the app on a device).
+- **The README, rewritten around what the engine is: an adaptive streaming optimizer for big local
+  AI agents on any device.** It opens with a silent 30-second loop (an animated WebP, so it shows
+  inline everywhere, the GitHub app included) linking to the full promo video recorded on a 16 GB
+  laptop and a 12 GB phone (real time, sped-up parts marked), then the four things it does (adaptive streaming, any
+  hardware and OS, any model and quantization, a local OpenAI-compatible server), ten measured runs
+  presented as examples rather than limits, getting started on the phone, the desktop and the
+  command line, an OpenAI client example, and three diagrams drawn for it: how one token runs, how
+  the planner adapts to the machine, and where the memory goes. The settings tables, the
+  architecture table and the long benchmark tables leave the README for the pages that already
+  hold them (`docs/settings.md`, `docs/which-models-stream.md`, `docs/benchmarks.md`), and the
+  three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
+  with their own dark card so they read on either GitHub theme.
 
 ## [0.31.0] - 2026-10-18
 
