@@ -125,9 +125,11 @@ catalog's Q2_K build has a 2.4 GB dense side instead, which is ~2 GB the expert 
 **Load** on the Models screen opens the model. With **Plan before every load** on (the Plan
 screen; on by default), the engine first measures the phone (storage read rate, what memory it can
 hold and lock, each compute device in a process of its own) and chooses the streaming settings for
-that model, then loads. The Plan screen shows each decision with the fact behind it, lets you
-measure again by hand and apply the result; a value you set yourself in Settings is never
-overridden. A model is unloaded after ten idle minutes to give the phone its memory back; the next
+that model, then loads. The Plan screen leads with what the plan decided in one sentence and,
+after the first answer, the measured speed beside the expected one; then where the memory goes,
+what each compute device does and why, and the decisions grouped, each with the fact behind it. It
+shows which stage of the measurement is running, lets you measure again by hand and apply the
+result; a value you set yourself in Settings is never overridden. A model is unloaded after ten idle minutes to give the phone its memory back; the next
 message reloads it.
 
 ## Settings

@@ -53,6 +53,47 @@ Semantic Versioning.
   hold them (`docs/settings.md`, `docs/which-models-stream.md`, `docs/benchmarks.md`), and the
   three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
   with their own dark card so they read on either GitHub theme.
+- **The Plan screen leads with the outcome, and reads the same on every machine.** The web UI and
+  the Android app open the plan with what it decided in one sentence ("Experts stream from flash,
+  with a 4.8 GiB cache") and three tiles: decode speed expected and, once the loaded model has
+  answered, measured beside it with the difference; the cache hit rate measured against what the
+  plan credited; which device computes the prompt and which the tokens. Then the memory as one bar
+  per pool (every ledger row, what is free, what is locked), every device with its rate against
+  the host, what it does in this run and why, and the decisions in three groups: the settings the
+  plan decided (under their settings labels), the ones it left, and the notes that are no
+  setting (regime, placement, ledger, costs), folded. A measurement shows the stage that is
+  running instead of a blind wait. One layout for a phone with an NPU, a laptop with an
+  integrated GPU, a discrete card or a machine with only cores: every block is a list of what the
+  plan holds, device names are the plan's own, and nothing in either UI names a device or a
+  system (#288). On a laptop: 0.307 s/token predicted, 0.212 measured on the first answer;
+  hits credited 28%, measured 64%.
+- **`GET /api/plan` describes the plan for a person.** New fields beside the old ones:
+  `summary` (the sentence and the lanes), `predicted` (decode as the plan priced it), `measured`
+  (the loaded model's last complete turn, on a plan from the last load; a cancelled turn is no measurement), `memory.pools` (the ledger, a
+  pool per memory that is separate), `devices` (rates, `uses`, `status`, `why`) and
+  `devices_none`; each decision carries its settings `label` and its `group`. Every word the
+  screen shows comes with them (`label`, `badge`, `rate_text`, `devices_none_text`), beside a
+  code a UI reads only for a colour, so the words live once, in `server/plan_view.cpp`, pure and
+  unit-tested on an NPU phone, a discrete card and a machine with only cores, and no UI keeps a
+  table of its own. A measurement now publishes `plan_progress` events, one per stage with its
+  words, from a progress callback on `probe_and_plan()` (`AutoPlanOptions::on_step`).
+- **Every plan decision says itself in one line, and each cost note has its own name.** A
+  `Decision` carries a `brief` beside its `reason`: one plain sentence for a person, at most 120
+  characters, with the number that decided it and no flag names ("Prompts run on MTL0, 8.1x faster
+  than the CPU, same results"), which the Plan screen leads with while the reason stays the full
+  account `--plan` prints. The cost model's notes, which all came out as `cost = -` and could not
+  be told apart, are now structured (`AllocationNote`: a topic, a value, a brief, a detail) and each
+  is its own decision under its topic (`storage-rate = 6.3 GB/s`, `cache-floor = 581 MiB`,
+  `shared-memory`, ...); `/api/plan` adds `brief` and gives every note a `label` to be read under.
+  The reasons stop citing one machine's story on every other (#290). Each decision also comes with
+  `value_text`, its value as a person reads it ("4.6 GiB", "pinned in memory", "experts stream"),
+  and every size on the screen is in GiB or MiB, the briefs included. The dense-weights choices
+  read "mapped from the file", "mapped and read ahead", "copied into memory" and "pinned in
+  memory" in Settings too. `docs/server-api.md` and `docs/screens.md` describe both.
+- **The hardware probe tells "this build carries no accelerator backend" from "it carries one and
+  found nothing".** `HardwareProfile::backends_placeable` counts the backends that could offer a
+  local device, read from what each offers: a remote one (RPC) and a library the host calls into
+  (BLAS) do not count, so a build with only those no longer reads as a machine without devices.
 
 ### Fixed
 - **The tag build no longer publishes the release.** Its APK job attached the debug APK with an

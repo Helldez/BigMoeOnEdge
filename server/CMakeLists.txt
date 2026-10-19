@@ -11,8 +11,8 @@ if(NOT TARGET cpp-httplib)
 endif()
 
 # The server's own policy, with no HTTP, no session and no platform code, so tests/ can drive it:
-# the chat protocol, the line turns wait in, the layered settings, the event fan-out and the JSON
-# edges.
+# the chat protocol, the line turns wait in, the layered settings, the event fan-out, the JSON
+# edges and the plan as a person reads it (plan_view).
 add_library(bmoe_server_core STATIC
     access.cpp
     decide_protocol.cpp
@@ -23,6 +23,7 @@ add_library(bmoe_server_core STATIC
     model_files.cpp
     hf_repo.cpp
     settings_store.cpp
+    plan_view.cpp
 )
 target_link_libraries(bmoe_server_core PUBLIC bmoe_core)
 target_include_directories(bmoe_server_core PUBLIC

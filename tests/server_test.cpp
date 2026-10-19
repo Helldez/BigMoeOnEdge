@@ -9,7 +9,9 @@
 //   * access: which host names, origins, keys and content types reach the API, and when the server
 //     may not start at all;
 //   * decide: the request fields a decision is read from, and its answer on the wire;
-//   * model files: which names make a split set, and how a directory's files group into models.
+//   * model files: which names make a split set, and how a directory's files group into models;
+//   * the plan view: one shape for every machine (an NPU phone, a discrete card, the cores alone),
+//     the device roles and their words, the memory pools, the decision groups.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
@@ -19,8 +21,11 @@
 #include "json_util.h"
 #include "model_files.h"
 #include "openai_chat.h"
+#include "plan_view.h"
 #include "settings_store.h"
 #include "turn_queue.h"
+
+#include "bmoe/planner.h"
 
 #include <atomic>
 #include <chrono>
@@ -756,6 +761,203 @@ static void hf_tests() {
     check(fit_verdict(in).mode == "not readable", "hf: an unreadable header is a fact, not a guess");
 }
 
+// A synthetic machine and plan: the view is pure, so it is driven with the facts alone.
+static ComputeDevice device(const char * name, bool cpu = false) {
+    ComputeDevice d;
+    d.name = name;
+    d.is_cpu = cpu;
+    return d;
+}
+
+static const json * device_named(const json & view, const std::string & name) {
+    for (const json & d : view["devices"])
+        if (d.value("name", "") == name) return &d;
+    return nullptr;
+}
+
+static void plan_view_tests() {
+    // A phone: the NPU is armed for the prompt, a GPU is slower, another gave the wrong results,
+    // one did not survive its probe, and the device slots take turns with the cache.
+    HardwareProfile hw;
+    hw.backends_looked = true;
+    hw.backends_placeable = 3;
+    hw.host_wide_matmul_gibs = 30;
+    hw.host_bandwidth_gibs = 30;
+    hw.devices.push_back(device("CPU", true));
+    ComputeDevice npu = device("NPU0");
+    npu.wide_matmul_gibs = 1200;
+    npu.wide_identity_ok = Tri::Yes;
+    hw.devices.push_back(npu);
+    ComputeDevice gpu = device("GPU0");
+    gpu.wide_matmul_gibs = 180;
+    gpu.wide_identity_ok = Tri::Yes;
+    hw.devices.push_back(gpu);
+    ComputeDevice wrong = device("GPU1");
+    wrong.wide_matmul_gibs = 300;
+    wrong.wide_identity_ok = Tri::No;
+    hw.devices.push_back(wrong);
+    ComputeDevice dead = device("GPU2");
+    dead.usable = Tri::No;
+    dead.unusable_reason = "the probe ended without an answer";
+    hw.devices.push_back(dead);
+    ModelProfile model;
+    model.expert_bytes = 10ull << 30;
+    Plan plan;
+    plan.regime = Regime::ExpertsStream;
+    plan.config.prefill.device = "NPU0";
+    plan.allocation.cache_bytes = 2ull << 30;
+    plan.allocation.seconds_per_token = 0.3;
+    plan.allocation.ledger.holdable_cap = 5ull << 30;
+    plan.allocation.ledger.rows = {{"dense", 1ull << 30, true, false},
+                                   {"expert cache", 2ull << 30, true, false},
+                                   {"device slots", 1ull << 29, true, true}};
+    json v = plan_view(hw, model, plan);
+    check(v["summary"]["sentence"] == "Experts stream from flash, with a 2.0 GiB cache.", "plan view: the sentence");
+    check(v["summary"]["lanes"][0]["on"] == json::array({"NPU0"}) && v["summary"]["lanes"][0]["label"] == "Prompt",
+          "plan view: the prompt lane names the armed device");
+    check(v["summary"]["lanes"][1]["on"] == json::array({"CPU"}), "plan view: tokens stay on the host");
+    check(v["predicted"]["s_per_token"] == 0.3 && v["predicted"]["cache_hit_pct"] == 20.0,
+          "plan view: the prediction the CLI prints");
+    const json * c = device_named(v, "CPU");
+    check(c && (*c)["uses"] == json::array({"tokens"}) && (*c)["badge"] == "Tokens" &&
+              (*c)["rate_text"] == "The reference",
+          "plan view: the host decodes, the prompt went to a device");
+    const json * n = device_named(v, "NPU0");
+    check(n && (*n)["status"] == "used" && (*n)["badge"] == "Prompt" && (*n)["rate_text"] == "40x the host on a prompt",
+          "plan view: the armed device, with its rate");
+    const json * g = device_named(v, "GPU0");
+    check(g && (*g)["status"] == "unused" && (*g)["badge"] == "Not used" &&
+              (*g)["why"].get<std::string>().find("NPU0") != std::string::npos,
+          "plan view: a slower device says which one was armed");
+    const json * w = device_named(v, "GPU1");
+    check(w && (*w)["status"] == "refused" && (*w)["badge"] == "Wrong results", "plan view: wrong results refuse");
+    const json * d = device_named(v, "GPU2");
+    check(d && (*d)["status"] == "unusable" && (*d)["why"] == "the probe ended without an answer",
+          "plan view: a device that died says why");
+    check(v["devices_none"] == "" && v["devices_none_text"] == "", "plan view: devices, so no none line");
+    const json & pools = v["memory"]["pools"];
+    check(pools.size() == 1 && pools[0]["label"] == "This process" && pools[0]["rows"].size() == 3 &&
+              pools[0]["rows"][1]["label"] == "Expert cache" && pools[0]["rows"][2]["in_turn"] == true,
+          "plan view: one pool, the ledger rows worded, the slots in turn");
+
+    // The same view on a desktop whose card holds layers in memory of its own: a second pool, and
+    // the card on the tokens lane beside the host.
+    HardwareProfile desk;
+    desk.backends_looked = true;
+    desk.devices.push_back(device("CPU", true));
+    ComputeDevice card = device("CUDA0");
+    card.shares_host_memory = Tri::No;
+    card.memory_total = 12ull << 30;
+    desk.devices.push_back(card);
+    Plan dp;
+    dp.regime = Regime::ExpertsStream;
+    dp.placement.fitted = true;
+    dp.placement.device_bytes = 9ull << 30;
+    dp.placement.device_compute_bytes = 1ull << 30;
+    dp.placement.projected_devices = {"CUDA0"};
+    dp.placement.projected_compute_bytes = {1ull << 30};
+    v = plan_view(desk, model, dp);
+    check(v["memory"]["pools"].size() == 2 && v["memory"]["pools"][1]["name"] == "CUDA0" &&
+              v["memory"]["pools"][1]["rows"][0]["bytes"] == (8ull << 30) &&
+              v["memory"]["pools"][1]["estimated"] == false,
+          "plan view: a device's own memory is its own pool");
+    check(v["summary"]["lanes"][1]["on"] == json::array({"CPU", "CUDA0"}), "plan view: layers put the card on tokens");
+    check((*device_named(v, "CUDA0"))["badge"] == "Layers", "plan view: the card's badge");
+    dp.placement.shared_memory_placement = true;
+    v = plan_view(desk, model, dp);
+    check(v["memory"]["pools"].size() == 1, "plan view: a declined placement holds nothing on the device");
+
+    // The cores alone: three answers to "no device", kept apart.
+    HardwareProfile cpu;
+    cpu.devices.push_back(device("CPU", true));
+    check(plan_view(cpu, model, Plan{})["devices_none"] == "not_probed", "plan view: nobody looked");
+    cpu.backends_looked = true;
+    check(plan_view(cpu, model, Plan{})["devices_none"] == "build", "plan view: the build carries no backend");
+    cpu.backends_placeable = 1;
+    json cv = plan_view(cpu, model, Plan{});
+    check(cv["devices_none"] == "machine" && !cv["devices_none_text"].get<std::string>().empty(),
+          "plan view: a backend found nothing here");
+    ComputeDevice helper = device("BLAS");
+    helper.is_host_helper = true;
+    cpu.devices.push_back(helper);
+    check(plan_view(cpu, model, Plan{})["devices_none"] == "machine", "plan view: a host helper is not a device");
+    check(plan_view(cpu, model, Plan{})["summary"]["sentence"] == "The model could not be read.",
+          "plan view: an unread model says so");
+
+    // Decisions: who decided, and what.
+    Decision dec{"cache-mb", "2048", Source::Measured, "r"};
+    json dj = decision_json(dec);
+    check(dj["group"] == "set" && !dj["label"].get<std::string>().empty(), "plan view: a decided setting, labelled");
+    dec.source = Source::Operator;
+    check(decision_json(dec)["group"] == "kept", "plan view: the person's value is kept");
+    dec.source = Source::Unprobed;
+    check(decision_json(dec)["group"] == "kept", "plan view: an unmeasured value is kept");
+    check(value_text(Decision{"cache-mb", "4737", Source::Derived, "r", "b"}) == "4.6 GiB" &&
+              value_text(Decision{"dense-weights", "ahwb", Source::Derived, "r", "b"}) == "pinned in memory" &&
+              value_text(Decision{"o-direct", "true", Source::Measured, "r", "b"}) == "on" &&
+              value_text(Decision{"memory-ledger", "7265 MiB", Source::Derived, "r", "b"}) == "7.1 GiB" &&
+              value_text(Decision{"regime", "experts-stream", Source::Derived, "r", "b"}) == "experts stream" &&
+              value_text(Decision{"shared-memory", "-", Source::Derived, "r", "b"}).empty(),
+          "plan view: a value as a person reads it");
+    check(decision_json(Decision{"storage-rate", "6.3 GiB/s", Source::Derived, "r", "b"})["group"] == "notes",
+          "plan view: a cost model's note is a note");
+    check(decision_json(Decision{"regime", "experts-stream", Source::Derived, "r"})["label"] == "Streaming mode",
+          "plan view: a note is titled by its topic");
+    check(decision_json(Decision{"some-new-topic", "-", Source::Derived, "r"})["label"] == "Some new topic",
+          "plan view: a topic it does not know is titled from its key");
+    check(decision_json(Decision{"regime", "-", Source::Derived, "the reason"})["brief"] == "the reason",
+          "plan view: a decision without a brief shows its reason");
+
+    // A real plan, through the wire form: every line says itself in one sentence, and every note has a
+    // name to be read under.
+    {
+        ModelProfile m;
+        m.arch = "qwen3moe";
+        m.is_moe = m.ok = true;
+        m.n_layer = m.n_moe_layer = 48;
+        m.n_expert = 256;
+        m.n_expert_used = 8;
+        m.n_expert_projections = 3;
+        m.expert_slice_bytes = 530432;
+        m.token_cycle_bytes = 48ull * 8 * 3 * 530432;
+        m.file_bytes = 21ull << 30;
+        m.expert_bytes = 18ull << 30;
+        m.dense_bytes = 3ull << 30;
+        m.largest_dense_tensor = 243ull << 20;
+        m.group(WeightGroup::Attention) = {1400ull << 20, 1400ull << 20, false, false};
+        m.group(WeightGroup::Output) = {700ull << 20, 700ull << 20, false, false};
+        m.group(WeightGroup::Experts) = {18ull << 30, m.token_cycle_bytes, false, true};
+        HardwareProfile h;
+        h.residency_budget = 12ull << 30;
+        h.memory_total = 16ull << 30;
+        h.anon_overflow = Overflow::Compress;
+        h.host_bandwidth_gibs = 60;
+        h.storage.direct_ok = Tri::Yes;
+        h.storage.refault_mibs = 40;
+        h.storage.rate_curve = {{576u << 10, 1, 1600.0}, {576u << 10, 4, 6400.0}};
+        h.devices.push_back(device("CPU", true));
+        ComputeDevice gpu = device("GPU0");
+        gpu.shares_host_memory = Tri::Yes;
+        h.devices.push_back(gpu);
+        const Plan p = plan_run(RunConfig{}, h, m, PlanRequest{});
+        bool briefs = !p.decisions.empty(), labels = true, any_note = false;
+        std::string bad;
+        for (const Decision & d : p.decisions) {
+            const json j = decision_json(d);
+            const std::string brief = j["brief"];
+            if (d.brief.empty() || brief.size() > 120) briefs = false, bad += d.knob + " ";
+            if (j["group"] == "notes") {
+                any_note = true;
+                if (j["label"].get<std::string>().empty()) labels = false, bad += d.knob + " ";
+            }
+        }
+        check(briefs, "plan view: every decision of a plan has a brief of one line" + (bad.empty() ? "" : ": " + bad));
+        check(any_note && labels, "plan view: every note of a plan has a label" + (bad.empty() ? "" : ": " + bad));
+    }
+    check(plan_step_label("rules") == "Decisions" && plan_step_label("future") == "Future",
+          "plan view: stage words, and a stage it does not know");
+}
+
 int main() {
     protocol_tests();
     queue_tests();
@@ -767,6 +969,7 @@ int main() {
     decide_tests();
     model_files_tests();
     hf_tests();
+    plan_view_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;
