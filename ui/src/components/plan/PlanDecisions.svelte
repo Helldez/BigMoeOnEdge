@@ -31,7 +31,7 @@
         <details class="row">
           <summary>
             <span class="label">{decisionLabel(d)}</span>
-            <span class="figure value">{d.value && d.value !== '-' ? d.value : ''}</span>
+            <span class="figure value">{d.value_text ?? (d.value && d.value !== '-' ? d.value : '')}</span>
             <SourceBadge source={d.source} reason={d.reason} />
           </summary>
           <div class="reason">

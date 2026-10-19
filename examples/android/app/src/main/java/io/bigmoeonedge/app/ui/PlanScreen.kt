@@ -321,7 +321,8 @@ private fun DecisionRow(d: PlanDecision, onOpenSettings: () -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(if (open) "v" else ">", fontFamily = PixelFont, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(d.label.ifEmpty { d.knob }, fontSize = 14.sp, modifier = Modifier.weight(1f))
-            if (d.value.isNotEmpty() && d.value != "-") Text(d.value, fontFamily = PixelFont, fontSize = 14.sp)
+            val shown = d.valueText.ifEmpty { d.value.takeIf { it != "-" }.orEmpty() }
+            if (shown.isNotEmpty()) Text(shown, fontFamily = PixelFont, fontSize = 14.sp)
             SourceBadge(d.source)
         }
         if (open) {

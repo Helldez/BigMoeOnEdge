@@ -28,7 +28,7 @@ namespace bmoe {
 std::string size_brief(uint64_t bytes) {
     char b[32];
     if (bytes >= (1ull << 30))
-        std::snprintf(b, sizeof(b), "%.1f GB", (double) bytes / (double) (1ull << 30));
+        std::snprintf(b, sizeof(b), "%.1f GiB", (double) bytes / (double) (1ull << 30));
     else
         std::snprintf(b, sizeof(b), "%llu MiB", (unsigned long long) (bytes >> 20));
     return b;
@@ -75,7 +75,7 @@ void note(Allocation & a, const char * topic, std::string value, std::string bri
 std::string rate_brief(double mib_per_s) {
     char b[32];
     if (mib_per_s >= 1024.0)
-        std::snprintf(b, sizeof(b), "%.1f GB/s", mib_per_s / 1024.0);
+        std::snprintf(b, sizeof(b), "%.1f GiB/s", mib_per_s / 1024.0);
     else
         std::snprintf(b, sizeof(b), "%.0f MiB/s", mib_per_s);
     return b;

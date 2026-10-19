@@ -493,6 +493,8 @@ unusable instead of ending the server; `--no-isolated-probes` runs them in-proce
 `operator`: the planner never touches them. A decision's `brief` is one plain sentence for a
 person (at most 120 characters, the number that decided it, no flag names; the `reason` where a
 decision has none), and `reason` the full account `explain` prints, for a "why" a UI folds away.
+`value_text` is `value` as a person reads it: a choice by its settings label ("pinned in memory"),
+a size in GiB or MiB, a number with its unit, a planner word as words; `value` stays the raw one.
 Its `label` is its knob's settings label from the parameter table, or, for a knob that is not a
 parameter, the name of the note (`regime` is "Streaming mode", `storage-rate` "Storage speed",
 `memory-ledger` "Memory use"; a topic the server does not know is titled from its key), so a UI

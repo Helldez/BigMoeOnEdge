@@ -75,6 +75,8 @@ export interface PlanDecision {
   reason: string;
   /** The decision in one short line for a person; `reason` is the full account. */
   brief?: string;
+  /** `value` as a person reads it ("4.6 GiB", "pinned in memory"); `value` stays the raw one. */
+  value_text?: string;
   /** The knob's settings label, empty when the knob is not a parameter. */
   label?: string;
   /** A setting the plan decided, one it left (the person's, or unmeasured), or a note that is no setting. */

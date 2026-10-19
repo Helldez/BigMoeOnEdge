@@ -400,10 +400,10 @@ std::vector<ParamDesc> build() {
         d.value_hint = "mmap|warm|anon|ahwb";
         d.switches = {{"--no-warm-dense", "mmap", true}, {"--dense-odirect", "anon", true}};
         bind_choice<DenseWeightsMode>(d, [](RunConfig & c) -> DenseWeightsMode & { return c.moe.dense_weights; },
-                                      {{DenseWeightsMode::Mmap, {"mmap", "mmap"}},
-                                       {DenseWeightsMode::Warmed, {"warm", "warm"}},
-                                       {DenseWeightsMode::Anonymous, {"anon", "anon"}},
-                                       {DenseWeightsMode::Pinned, {"ahwb", "ahwb (pinned)"}}});
+                                      {{DenseWeightsMode::Mmap, {"mmap", "mapped from the file"}},
+                                       {DenseWeightsMode::Warmed, {"warm", "mapped and read ahead"}},
+                                       {DenseWeightsMode::Anonymous, {"anon", "copied into memory"}},
+                                       {DenseWeightsMode::Pinned, {"ahwb", "pinned in memory"}}});
         t.push_back(d);
     }
     {

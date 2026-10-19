@@ -51,8 +51,11 @@ Semantic Versioning.
   be told apart, are now structured (`AllocationNote`: a topic, a value, a brief, a detail) and each
   is its own decision under its topic (`storage-rate = 6.3 GB/s`, `cache-floor = 581 MiB`,
   `shared-memory`, ...); `/api/plan` adds `brief` and gives every note a `label` to be read under.
-  The reasons stop citing one machine's story on every other (#290).
-  `docs/server-api.md` and `docs/screens.md` describe both.
+  The reasons stop citing one machine's story on every other (#290). Each decision also comes with
+  `value_text`, its value as a person reads it ("4.6 GiB", "pinned in memory", "experts stream"),
+  and every size on the screen is in GiB or MiB, the briefs included. The dense-weights choices
+  read "mapped from the file", "mapped and read ahead", "copied into memory" and "pinned in
+  memory" in Settings too. `docs/server-api.md` and `docs/screens.md` describe both.
 - **The hardware probe tells "this build carries no accelerator backend" from "it carries one and
   found nothing".** `HardwareProfile::backends_placeable` counts the backends that could offer a
   local device, read from what each offers: a remote one (RPC) and a library the host calls into

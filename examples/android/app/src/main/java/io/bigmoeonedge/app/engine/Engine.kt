@@ -101,6 +101,8 @@ data class PlanDecision(
     val group: String = "",
     /** The decision in one short line; [reason] is the full account. Empty from an older server. */
     val brief: String = "",
+    /** [value] as a person reads it ("4.6 GiB", "pinned in memory"). */
+    val valueText: String = "",
 ) {
 
     companion object {
@@ -109,7 +111,7 @@ data class PlanDecision(
                 val d = a.getJSONObject(i)
                 PlanDecision(
                     d.optString("knob"), d.optString("value"), d.optString("source"), d.optString("reason"),
-                    d.optString("label"), d.optString("group"), d.optString("brief"),
+                    d.optString("label"), d.optString("group"), d.optString("brief"), d.optString("value_text"),
                 )
             }
         }.orEmpty()

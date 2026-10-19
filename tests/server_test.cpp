@@ -892,7 +892,14 @@ static void plan_view_tests() {
     check(decision_json(dec)["group"] == "kept", "plan view: the person's value is kept");
     dec.source = Source::Unprobed;
     check(decision_json(dec)["group"] == "kept", "plan view: an unmeasured value is kept");
-    check(decision_json(Decision{"storage-rate", "6.3 GB/s", Source::Derived, "r", "b"})["group"] == "notes",
+    check(value_text(Decision{"cache-mb", "4737", Source::Derived, "r", "b"}) == "4.6 GiB" &&
+              value_text(Decision{"dense-weights", "ahwb", Source::Derived, "r", "b"}) == "pinned in memory" &&
+              value_text(Decision{"o-direct", "true", Source::Measured, "r", "b"}) == "on" &&
+              value_text(Decision{"memory-ledger", "7265 MiB", Source::Derived, "r", "b"}) == "7.1 GiB" &&
+              value_text(Decision{"regime", "experts-stream", Source::Derived, "r", "b"}) == "experts stream" &&
+              value_text(Decision{"shared-memory", "-", Source::Derived, "r", "b"}).empty(),
+          "plan view: a value as a person reads it");
+    check(decision_json(Decision{"storage-rate", "6.3 GiB/s", Source::Derived, "r", "b"})["group"] == "notes",
           "plan view: a cost model's note is a note");
     check(decision_json(Decision{"regime", "experts-stream", Source::Derived, "r"})["label"] == "Streaming mode",
           "plan view: a note is titled by its topic");

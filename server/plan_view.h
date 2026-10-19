@@ -21,6 +21,10 @@ namespace bmoe::server {
 // into the /api/plan body.
 json plan_view(const HardwareProfile & hw, const ModelProfile & model, const Plan & plan);
 
+// A decision's value as a person reads it: a choice by its settings label, a size in GiB or MiB,
+// a number with its unit, a planner word ("experts-stream") as words. `value` stays the raw one.
+std::string value_text(const Decision & d);
+
 // One decision on the wire: the planner's fields (`brief` falls back to the reason where a decision
 // has none), a label - its knob's settings label, or for a note the name of its topic - and the
 // group it is read in (`set`, `kept`, `notes`).

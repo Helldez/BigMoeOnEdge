@@ -1,9 +1,12 @@
 #include "plan_view.h"
 
+#include "bmoe/allocate.h"
 #include "bmoe/params.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace bmoe::server {
@@ -12,12 +15,6 @@ namespace {
 std::string sentence_case(std::string s) {
     if (!s.empty() && s[0] >= 'a' && s[0] <= 'z') s[0] = (char) (s[0] - 'a' + 'A');
     return s;
-}
-
-std::string gib(uint64_t bytes) {
-    char b[32];
-    std::snprintf(b, sizeof b, "%.1f GiB", (double) bytes / (double) (1ull << 30));
-    return b;
 }
 
 // What a plan says at a glance. Built from the regime and the allocation alone, so it reads the
@@ -29,7 +26,7 @@ std::string summary_sentence(const Plan & plan) {
     case Regime::ExpertsStream:
         return plan.allocation.cache_bytes == 0
                    ? "Experts stream from flash, without a cache."
-                   : "Experts stream from flash, with a " + gib(plan.allocation.cache_bytes) + " cache.";
+                   : "Experts stream from flash, with a " + size_brief(plan.allocation.cache_bytes) + " cache.";
     case Regime::Fits:
         return "The whole model fits in memory: nothing streams.";
     case Regime::DenseOversized:
@@ -283,12 +280,40 @@ json plan_view(const HardwareProfile & hw, const ModelProfile & model, const Pla
                 {"devices_none_text", devices_none_text(none)}};
 }
 
+std::string value_text(const Decision & d) {
+    const std::string & v = d.value;
+    if (v.empty() || v == "-") return "";
+    char * end = nullptr;
+    const double n = std::strtod(v.c_str(), &end);
+    const bool numeric = end != v.c_str();
+    const std::string rest = numeric ? std::string(end) : v;
+    if (const ParamDesc * p = find_param(d.knob)) {
+        for (const ParamChoice & c : p->choices)
+            if (c.value == v) return c.label;
+        if (v == "true") return "on";
+        if (v == "false") return "off";
+        if (numeric && rest.empty() && p->unit == "MiB") return size_brief((uint64_t) (n * 1048576.0));
+        if (numeric && rest.empty() && !p->unit.empty()) return v + " " + p->unit;
+        return v;
+    }
+    if (numeric && rest == " MiB") return size_brief((uint64_t) (n * 1048576.0));
+    // A note's value that is a word of the planner's ("experts-stream") reads as words.
+    if (!numeric &&
+        std::all_of(v.begin(), v.end(), [](char c) { return std::isalpha((unsigned char) c) || c == '-'; })) {
+        std::string w = v;
+        std::replace(w.begin(), w.end(), '-', ' ');
+        return w;
+    }
+    return v;
+}
+
 json decision_json(const Decision & d) {
     const ParamDesc * p = find_param(d.knob);
     return {{"knob", d.knob},
             {"label", p ? p->label : note_label(d.knob)},
             {"group", decision_group(d, p != nullptr)},
             {"value", d.value},
+            {"value_text", value_text(d)},
             {"source", source_name(d.source)},
             {"brief", d.brief.empty() ? d.reason : d.brief},
             {"reason", d.reason}};
