@@ -8,8 +8,9 @@ Semantic Versioning.
 
 ### Changed
 - **The README, rewritten around what the engine is: an adaptive streaming optimizer for big local
-  AI agents on any device.** It opens with a promo video recorded on a 16 GB laptop and a 12 GB
-  phone (real time, sped-up parts marked), then the four things it does (adaptive streaming, any
+  AI agents on any device.** It opens with a silent 30-second loop (an animated WebP, so it shows
+  inline everywhere, the GitHub app included) linking to the full promo video recorded on a 16 GB
+  laptop and a 12 GB phone (real time, sped-up parts marked), then the four things it does (adaptive streaming, any
   hardware and OS, any model and quantization, a local OpenAI-compatible server), ten measured runs
   presented as examples rather than limits, getting started on the phone, the desktop and the
   command line, an OpenAI client example, and three diagrams drawn for it: how one token runs, how
