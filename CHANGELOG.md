@@ -28,6 +28,8 @@ Semantic Versioning.
 - **`scripts/ios-runs.sh` sweeps the expert cache.** A `c<MiB>` run (`RUNS="c1000 c1500 c2000"`)
   is the plan's run with only the cache fixed at that size, so one command shows where a larger
   cache stops paying and where the device starts taking memory back (`examples/ios/README.md`).
+  Its `summary.txt` also carries the prefill line, the plan's `prefill-device` and any
+  `cache brake:` line.
 
 ### Fixed
 - **A layer's experts are never split between a device and the host** (#304). On a 12 GB phone
