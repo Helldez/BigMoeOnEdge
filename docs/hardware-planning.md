@@ -355,7 +355,8 @@ nobody here owns (`tests/planner_test.cpp`), and it is why the same rule that pi
 buffers on a desktop picks a pinned allocation on a phone: one rule, different facts, no branch.
 
 What happens to anonymous memory under pressure is read, not assumed: whether this process has a
-share of its own that it is ended for exceeding (Kill), whether the kernel compresses anonymous
+share of its own that it is ended for exceeding (Kill: an app's share where the platform keeps one,
+or a memory control group with a finite limit, as a container sets), whether the kernel compresses anonymous
 memory first (Compress), whether a swap exists (Swap) - a syscall or a counter each
 (`pio::reclaim_facts`), microseconds in all. A fatal limit widens the margin; it does not leave the
 dense set mapped. That used to be a branch of its own (clean file pages are not charged to the
@@ -718,8 +719,9 @@ and is the price of a figure that cannot overcommit.
 
 What it does not do: the capacity fitter still places weights on a device with memory of its own at
 the full width, so on such a machine a narrower graph leaves device memory the fitter thought was
-spoken for. And a session without a prefill device still reserves the logit rows the projection
-leaves out - untouched, so not held, but committed on a system that counts reservations.
+spoken for. The logit rows are capped at the projection's 128 on every session, with a prefill
+device or without one, so the run reserves what the plan charged: a CPU-only run of a 35B-A3B at
+2048 tokens reserved 2028 MiB of compute buffer against 436 projected, and reserves 312 now.
 
 ## A device is probed in a process of its own
 
@@ -896,11 +898,13 @@ on a compressing machine, which is why the two were one piece of work rather tha
   its experts through a slower store and the holdable figure is a quarter of the laptop's, so the
   rule will choose a narrower graph than the one a prefill was measured at there; a machine with no
   accelerator at all, where the prefill is the cores' and its cost per piece is not the device's; a
-  discrete GPU, whose buffers are not this pool's and are left out of the share; and a system where
-  reserved memory is committed whether or not it is touched, where the logit rows this projection
-  leaves out are charged all the same.
+  discrete GPU, whose buffers are not this pool's and are left out of the share.
 
-The residency budget is `MemAvailable` on every platform that reports it, and on a machine whose
+The residency budget is `MemAvailable` on every platform that reports it, capped by what this
+process's memory control group still lets it take (`pio::cgroup_memory_left`: the tightest limit of
+its group and every ancestor it can see, less what each holds, crediting its inactive file pages).
+A rented GPU box reported 103 GB available inside an 85 GiB group; a plan sized from the first
+figure would be ended by the second. On a machine whose
 reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set
 plus cache with 3.6 GB "available", because the kernel compressed other processes' idle memory to
 make room, and reported 5.6 GB available afterwards. The honest budget there is the compressible
