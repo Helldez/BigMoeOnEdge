@@ -15,6 +15,7 @@ import type {
   ModelsResponse,
   ParamSpec,
   Plan,
+  PlanProgress,
   TokenEvent,
 } from './types';
 
@@ -87,8 +88,9 @@ export function isHfAdded(v: unknown): v is HfAdded {
 
 export function isPlan(v: unknown): v is Plan {
   if (!isObject(v) || !isBool(v.available)) return false;
-  // Available but with nothing to plan carries only `error`; a real plan carries its decisions.
-  return !v.available || isStr(v.error) || Array.isArray(v.decisions);
+  // Available but with nothing to plan carries only `error`, nothing held yet only `none`; a real
+  // plan carries its decisions.
+  return !v.available || isStr(v.error) || v.none === true || Array.isArray(v.decisions);
 }
 
 export function isDecideResult(v: unknown): v is DecideResult {
@@ -105,4 +107,8 @@ export function isDoneSummary(v: unknown): v is DoneSummary {
 
 export function isDownloadEvent(v: unknown): v is DownloadEvent {
   return isObject(v) && isStr(v.id) && isStr(v.state);
+}
+
+export function isPlanProgress(v: unknown): v is PlanProgress {
+  return isObject(v) && isStr(v.step);
 }

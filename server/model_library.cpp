@@ -1,5 +1,6 @@
 #include "model_library.h"
 
+#include "download_policy.h"
 #include "model_files.h"
 
 #include "bmoe/probe.h"
@@ -213,6 +214,45 @@ bool ModelLibrary::entry_on_disk(const CatalogEntry & e) const {
     return true;
 }
 
+ModelLibrary::OnDisk ModelLibrary::on_disk(const CatalogEntry & e) const {
+    OnDisk d;
+    for (const CatalogFile & f : e.files) {
+        const fs::path final_path = fs::u8path(dir_) / fs::u8path(f.name);
+        if (has_exact_size(final_path, f.bytes)) {
+            d.received += f.bytes ? f.bytes : file_size_or_zero(final_path);
+            continue;
+        }
+        std::string part;
+        if (!partial_file_path(dir_, f.name, part)) {
+            d.still_needed += f.bytes;
+            continue;
+        }
+        std::error_code ec;
+        const fs::path p = fs::u8path(part);
+        if (fs::is_regular_file(p, ec)) d.partial = true;
+        const uint64_t have = file_size_or_zero(p);
+        d.received += have;
+        d.still_needed += bytes_still_needed(f.bytes, have);
+    }
+    return d;
+}
+
+bool ModelLibrary::running_locked(const std::string & id) const {
+    auto job = jobs_.find(id);
+    return job != jobs_.end() && !job->second->finished;
+}
+
+bool ModelLibrary::wait_unless_cancelled(Job & job, std::chrono::seconds d) {
+    // Short naps, so a cancel during the wait between attempts is answered at once, not a minute on.
+    constexpr auto kCancelPoll = std::chrono::milliseconds(200);
+    const auto until = std::chrono::steady_clock::now() + d;
+    while (std::chrono::steady_clock::now() < until) {
+        if (job.cancel) return false;
+        std::this_thread::sleep_for(kCancelPoll);
+    }
+    return !job.cancel;
+}
+
 void ModelLibrary::list_dir(const std::string & dir, json & out) {
     const fs::path root = fs::u8path(dir);
     for (const ModelFiles & m : scan_model_files(dir)) {
@@ -261,9 +301,11 @@ json ModelLibrary::list() {
         uint64_t bytes = 0;
         for (const CatalogFile & f : e.files)
             bytes += f.bytes;
-        auto job = jobs_.find(e.id);
-        const bool running = job != jobs_.end() && !job->second->finished;
+        const bool running = running_locked(e.id);
         const char * status = running ? "downloading" : entry_on_disk(e) ? "on_disk" : "available";
+        // What is already here, so a download stopped by a failure, a cancel or a restart of the
+        // server (jobs live in memory; the `.part` files do not) still shows as one to resume.
+        const OnDisk have = on_disk(e);
         // Every file with its URL: a host that has no curl (a phone) downloads for itself, and the
         // catalog is still the one place the URLs are written.
         json files = json::array();
@@ -277,6 +319,8 @@ json ModelLibrary::list() {
                            {"files", files},
                            {"blurb", e.blurb},
                            {"status", status},
+                           {"received", have.received},
+                           {"partial", have.partial && std::string(status) == "available"},
                            {"added", added},
                            {"note", e.files.size() > 1 ? std::to_string(e.files.size()) + " shards" : ""}});
     }
@@ -300,16 +344,22 @@ void ModelLibrary::publish(const std::string & id,
         json{{"id", id}, {"file", file}, {"received", received}, {"total", total}, {"state", state}, {"error", error}});
 }
 
-std::string ModelLibrary::start_download(const std::string & id) {
+ModelLibrary::DownloadRefusal ModelLibrary::start_download(const std::string & id) {
     std::lock_guard<std::mutex> lk(m_);
     const CatalogEntry * e = find(id);
-    if (!e) return "no catalog entry '" + id + "'";
+    if (!e) return {404, "no catalog entry '" + id + "'"};
     auto it = jobs_.find(id);
     if (it != jobs_.end()) {
-        if (!it->second->finished) return "";
+        if (!it->second->finished) return {};
         if (it->second->thread.joinable()) it->second->thread.join();
         jobs_.erase(it);
     }
+    // Before a byte moves, against what is left: a resume needs only the bytes its `.part` files
+    // lack, and a full disk found halfway through a 47 GB transfer is hours lost to a curl write error.
+    std::error_code ec;
+    const fs::space_info space = fs::space(fs::u8path(dir_), ec);
+    const std::string refusal = free_space_refusal(on_disk(*e).still_needed, ec ? 0 : (uint64_t) space.available);
+    if (!refusal.empty()) return {507, refusal};
     auto job = std::make_unique<Job>();
     Job * j = job.get();
     const CatalogEntry entry = *e;
@@ -318,7 +368,23 @@ std::string ModelLibrary::start_download(const std::string & id) {
         j->finished = true;
     });
     jobs_[id] = std::move(job);
-    return "";
+    return {};
+}
+
+ModelLibrary::DownloadRefusal ModelLibrary::delete_partial(const std::string & id, uint64_t & freed) {
+    freed = 0;
+    std::lock_guard<std::mutex> lk(m_);
+    const CatalogEntry * e = find(id);
+    if (!e) return {404, "no catalog entry '" + id + "'"};
+    if (running_locked(id)) return {409, "the download is running: cancel it first"};
+    // The names come from the entry, never from the request, and each resolves inside the models
+    // folder (partial_file_path): a client can name an entry, not a file.
+    std::vector<std::string> names;
+    for (const CatalogFile & f : e->files)
+        names.push_back(f.name);
+    std::string err;
+    if (!delete_partial_files(dir_, names, freed, err)) return {500, err};
+    return {};
 }
 
 bool ModelLibrary::cancel_download(const std::string & id) {
@@ -338,8 +404,14 @@ void ModelLibrary::run_download(const CatalogEntry & e, Job & job) {
     uint64_t done = 0;
 
     for (const CatalogFile & f : e.files) {
+        std::string part_u8;
+        if (!partial_file_path(dir_, f.name, part_u8)) {
+            publish(e.id, f.name, done, total, "error",
+                    "the catalog names '" + f.name + "', which is not a plain file name");
+            return;
+        }
         const fs::path final_path = fs::u8path(dir_) / fs::u8path(f.name);
-        const fs::path part = fs::u8path(final_path.u8string() + ".part");
+        const fs::path part = fs::u8path(part_u8);
         std::error_code ec;
         if (has_exact_size(final_path, f.bytes)) {
             done += f.bytes;
@@ -354,47 +426,64 @@ void ModelLibrary::run_download(const CatalogEntry & e, Job & job) {
         }
 
         const std::string part_s = part.string();
-        const char * cmd[] = {"curl", "-L", "--fail", "--retry",      "3",           "-sS",
-                              "-C",   "-",  "-o",     part_s.c_str(), f.url.c_str(), nullptr};
-        subprocess_s proc;
-        const int opts = subprocess_option_search_user_path | subprocess_option_inherit_environment |
-                         subprocess_option_no_window | subprocess_option_combined_stdout_stderr;
-        if (subprocess_create(cmd, opts, &proc) != 0) {
-            publish(e.id, f.name, done, total, "error", "could not start curl: is it installed and on PATH?");
-            return;
-        }
-        {
-            std::lock_guard<std::mutex> lk(job.proc_m);
-            job.proc = &proc;
-        }
-        while (subprocess_alive(&proc)) {
-            publish(e.id, f.name, done + file_size_or_zero(part), total, "running", "");
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        }
-        int rc = 0;
-        subprocess_join(&proc, &rc);
-        std::string output;
-        if (FILE * out = subprocess_stdout(&proc)) {
-            char buf[256];
-            while (std::fgets(buf, sizeof(buf), out))
-                output += buf;
-        }
-        {
-            std::lock_guard<std::mutex> lk(job.proc_m);
-            job.proc = nullptr;
-        }
-        subprocess_destroy(&proc);
+        // A dropped line is retried here, each attempt resuming from the `.part` (-C -), so a long
+        // download over flaky Wi-Fi finishes on its own instead of waiting for the user to press
+        // Download again (download_policy.h says which failures and how long between them).
+        for (int attempt = 1;; ++attempt) {
+            const char * cmd[] = {"curl", "-L", "--fail", "--retry",      "3",           "-sS",
+                                  "-C",   "-",  "-o",     part_s.c_str(), f.url.c_str(), nullptr};
+            subprocess_s proc;
+            const int opts = subprocess_option_search_user_path | subprocess_option_inherit_environment |
+                             subprocess_option_no_window | subprocess_option_combined_stdout_stderr;
+            if (subprocess_create(cmd, opts, &proc) != 0) {
+                publish(e.id, f.name, done, total, "error", "could not start curl: is it installed and on PATH?");
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lk(job.proc_m);
+                job.proc = &proc;
+            }
+            while (subprocess_alive(&proc)) {
+                publish(e.id, f.name, done + file_size_or_zero(part), total, "running", "");
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            int rc = 0;
+            subprocess_join(&proc, &rc);
+            std::string output;
+            if (FILE * out = subprocess_stdout(&proc)) {
+                char buf[256];
+                while (std::fgets(buf, sizeof(buf), out))
+                    output += buf;
+            }
+            {
+                std::lock_guard<std::mutex> lk(job.proc_m);
+                job.proc = nullptr;
+            }
+            subprocess_destroy(&proc);
 
-        if (job.cancel) {
-            publish(e.id, f.name, done + file_size_or_zero(part), total, "cancelled", "");
-            return;
-        }
-        while (!output.empty() && (output.back() == '\n' || output.back() == '\r'))
-            output.pop_back();
-        if (rc != 0) {
-            publish(e.id, f.name, done + file_size_or_zero(part), total, "error",
-                    "curl exited with " + std::to_string(rc) + (output.empty() ? "" : ": " + output));
-            return;
+            if (job.cancel) {
+                publish(e.id, f.name, done + file_size_or_zero(part), total, "cancelled", "");
+                return;
+            }
+            if (rc == 0) break;
+            while (!output.empty() && (output.back() == '\n' || output.back() == '\r'))
+                output.pop_back();
+            const std::string why = "curl exited with " + std::to_string(rc) + (output.empty() ? "" : ": " + output);
+            if (!is_transient_curl_exit(rc) || attempt >= kDownloadMaxAttempts) {
+                publish(e.id, f.name, done + file_size_or_zero(part), total, "error",
+                        why + (attempt > 1 ? " (after " + std::to_string(attempt) + " attempts)" : "") +
+                            "; the partial file is kept");
+                return;
+            }
+            // Still `running`: the job has not given up, and `error` says why it is waiting.
+            const std::chrono::seconds wait = download_retry_delay(attempt);
+            publish(e.id, f.name, done + file_size_or_zero(part), total, "running",
+                    why + "; resuming in " + std::to_string(wait.count()) + " s (attempt " +
+                        std::to_string(attempt + 1) + " of " + std::to_string(kDownloadMaxAttempts) + ")");
+            if (!wait_unless_cancelled(job, wait)) {
+                publish(e.id, f.name, done + file_size_or_zero(part), total, "cancelled", "");
+                return;
+            }
         }
         if (f.bytes > 0 && file_size_or_zero(part) != f.bytes) {
             publish(e.id, f.name, done + file_size_or_zero(part), total, "error",

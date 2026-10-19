@@ -49,3 +49,44 @@ export function sameValue(a: ParamValue | undefined, b: ParamValue | undefined):
 export function isDefault(spec: ParamSpec, value: ParamValue | undefined): boolean {
   return value === undefined || sameValue(spec.default, value);
 }
+
+/**
+ * The rows behind the Advanced fold: everything but basic, grouped like the form above it. A basic
+ * row is shown once, in its group, never again under Advanced.
+ */
+export function advancedGroups(params: readonly ParamSpec[]): ParamGroup[] {
+  // Grouped over the whole table first, so the groups keep the order of the form above.
+  return groupParams(params, new Set(OPTIONAL_LEVELS))
+    .map((g) => ({ ...g, params: g.params.filter((p) => p.level !== 'basic') }))
+    .filter((g) => g.params.length > 0);
+}
+
+/** The name of a value that means something other than its number ("off" for 0), or undefined. */
+export function specialLabel(spec: ParamSpec, value: ParamValue | undefined): string | undefined {
+  return spec.special?.find((s) => sameValue(s.value, value))?.label;
+}
+
+/** What a person usually sets, in words: "usually 2 to 8". The unit sits by the field already. */
+export function typicalText(spec: ParamSpec): string {
+  if (!spec.typical) return '';
+  const { min, max } = spec.typical;
+  return `usually ${min === max ? `${min}` : `${min} to ${max}`}`;
+}
+
+/**
+ * The help split into its first sentence, always shown, and the rest, shown on demand. A sentence
+ * ends at a full stop followed by a space and a capital or a digit, outside parentheses (where
+ * "e.g. HTP0" lives), once the lead is long enough to stand alone.
+ */
+export function helpParts(help: string): { lead: string; rest: string } {
+  const text = help.trim();
+  const re = /[.!?]\s+(?=[A-Z0-9])/g;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const before = text.slice(0, m.index);
+    const depth = (before.match(/\(/g)?.length ?? 0) - (before.match(/\)/g)?.length ?? 0);
+    const end = m.index + 1;
+    if (depth <= 0 && end >= 24) return { lead: text.slice(0, end), rest: text.slice(m.index + m[0].length) };
+  }
+  return { lead: text, rest: '' };
+}
+

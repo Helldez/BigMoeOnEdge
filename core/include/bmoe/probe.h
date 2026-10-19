@@ -91,6 +91,7 @@ struct BackendInventory {
     uint32_t linked = 0;            // compiled into this binary
     uint32_t loaded_at_runtime = 0; // found as separate shared libraries beside the executable
     bool looked = false;            // register_backends() ran; false means nobody went to look
+    uint32_t placeable = 0; // of those, the ones that could offer a local device (HardwareProfile::backends_placeable)
     std::vector<std::string> names; // every registered backend, for the rationale and the CSV header
 
     uint32_t total() const { return linked + loaded_at_runtime; }

@@ -120,6 +120,8 @@ export const api = {
   models: () => request<ModelsResponse>('GET', 'api/models', undefined, isModelsResponse),
   download: (id: string) => request<unknown>('POST', 'api/models/download', { id }),
   cancelDownload: (id: string) => request<unknown>('DELETE', `api/models/download/${encodeURIComponent(id)}`),
+  /** Delete the partial files a stopped download left; by catalog id, never by path. */
+  deletePartial: (id: string) => request<unknown>('DELETE', `api/models/partial/${encodeURIComponent(id)}`),
   /** Repositories with gguf files whose name matches, the most downloaded first. */
   hfSearch: (query: string, token?: string) =>
     request<HfSearchResponse>('POST', 'api/hf/search', token ? { query, token } : { query }, isHfSearchResponse),
@@ -133,8 +135,10 @@ export const api = {
   hfAdd: (repo: string, name: string, token?: string) =>
     request<HfAdded>('POST', 'api/hf/add', token ? { repo, name, token } : { repo, name }, isHfAdded),
   removeAdded: (id: string) => request<unknown>('DELETE', `api/hf/entry/${encodeURIComponent(id)}`),
-  /** The plan in force; `measure` runs the planner's probes again instead. */
-  plan: (measure = false) => request<Plan>('GET', measure ? 'api/plan?measure=1' : 'api/plan', undefined, isPlan),
+  /** The plan in force, or the last one held (`cached`, never a measurement); `measure` runs the
+   *  planner's probes again instead. */
+  plan: (mode: 'cached' | 'measure' = 'cached') =>
+    request<Plan>('GET', mode === 'measure' ? 'api/plan?measure=1' : 'api/plan?cached=1', undefined, isPlan),
   applyPlan: () => request<Config>('POST', 'api/plan/apply', undefined, isConfig),
   /** A decision: the model picks one of `choices` from a single prefill (docs/decide.md). */
   decide: (body: { prefix: string; suffix: string; choices: string[]; reuse_prefix?: boolean }) =>

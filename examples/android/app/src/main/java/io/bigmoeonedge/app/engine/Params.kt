@@ -3,6 +3,11 @@ package io.bigmoeonedge.app.engine
 import org.json.JSONArray
 import org.json.JSONObject
 
+private inline fun String.indexOfFirst(from: Int, predicate: (Char) -> Boolean): Int {
+    for (i in from until length) if (predicate(this[i])) return i
+    return -1
+}
+
 /**
  * One row of the engine's parameter table, as `GET /api/params` describes it. The settings screen
  * is rendered from these and nothing else: it knows no parameter by name, so a knob added to the
@@ -25,7 +30,46 @@ data class ParamSpec(
     val lossy: Boolean,
     val choices: List<Pair<String, String>>, // value to label
     val default: Any?,
+    /** What a person usually sets: guidance, not a limit. */
+    val typical: ClosedFloatingPointRange<Double>? = null,
+    /** Values that mean something other than their number, as the value's text to its name (0 to off). */
+    val special: List<Pair<String, String>> = emptyList(),
 ) {
+    /** The name of [value] when it is a special one ("off" for 0), or null. */
+    fun specialLabel(value: Any?): String? {
+        val text = paramValueText(value)
+        return special.firstOrNull { it.first == text }?.second
+    }
+
+    /** The typical range in words, "usually 2 to 8" (the unit is the field's suffix), or null for a row with none. */
+    fun typicalText(): String? = typical?.let { r ->
+        val lo = paramValueText(r.start)
+        val hi = paramValueText(r.endInclusive)
+        "usually " + if (lo == hi) lo else "$lo to $hi"
+    }
+
+    /** The help's first sentence, always shown, and the rest, shown on demand. Same rule as the web UI. */
+    fun helpParts(): Pair<String, String> {
+        val text = help.trim()
+        var depth = 0
+        for (i in text.indices) {
+            when (text[i]) {
+                '(' -> depth++
+                ')' -> depth--
+                '.', '!', '?' -> {
+                    val next = i + 1
+                    if (depth <= 0 && next >= 24 && next < text.length && text[next].isWhitespace()) {
+                        val start = text.indexOfFirst(next) { !it.isWhitespace() }
+                        if (start > 0 && (text[start].isUpperCase() || text[start].isDigit())) {
+                            return text.substring(0, next) to text.substring(start)
+                        }
+                    }
+                }
+            }
+        }
+        return text to ""
+    }
+
     companion object {
         val LEVELS = listOf("basic", "advanced", "experimental", "debug")
 
@@ -36,6 +80,15 @@ data class ParamSpec(
                 (0 until c.length()).map { i ->
                     val x = c.getJSONObject(i)
                     x.optString("value") to x.optString("label").ifEmpty { x.optString("value") }
+                }
+            }.orEmpty()
+            val typical = o.optJSONObject("typical")?.let { r ->
+                if (r.has("min") && r.has("max")) r.getDouble("min")..r.getDouble("max") else null
+            }
+            val special = o.optJSONArray("special")?.let { s ->
+                (0 until s.length()).map { i ->
+                    val x = s.getJSONObject(i)
+                    paramValueText(x.opt("value")) to x.optString("label")
                 }
             }.orEmpty()
             return ParamSpec(
@@ -55,6 +108,8 @@ data class ParamSpec(
                 lossy = o.optBoolean("lossy", false),
                 choices = choices,
                 default = if (o.has("default") && !o.isNull("default")) o.get("default") else null,
+                typical = typical,
+                special = special,
             )
         }
 
@@ -71,6 +126,10 @@ data class ParamSpec(
             }
             return order.map { g -> (by.getValue(g).first().groupLabel) to by.getValue(g) }
         }
+
+        /** The rows behind the Advanced fold: all but the basic ones, which the groups above already show. */
+        fun advanced(specs: List<ParamSpec>): List<Pair<String, List<ParamSpec>>> =
+            grouped(specs).map { (label, rows) -> label to rows.filter { it.level != "basic" } }.filter { it.second.isNotEmpty() }
 
         /** Whether a row at [level] is shown when the filter admits up to [shown]. */
         fun visible(level: String, shown: String): Boolean =

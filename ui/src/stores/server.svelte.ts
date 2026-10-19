@@ -2,9 +2,9 @@
 import { api, openEvents } from '../lib/api';
 import { auth } from '../lib/auth';
 import type { SseEvent } from '../lib/sse';
-import { isConfig, isDoneSummary, isDownloadEvent, isInfo, isTokenEvent } from '../lib/guards';
+import { isConfig, isDoneSummary, isDownloadEvent, isInfo, isPlanProgress, isTokenEvent } from '../lib/guards';
 import { ema, mibPerSec, pushSample, tokPerSec, wallShare } from '../lib/metrics';
-import type { Config, DoneSummary, DownloadEvent, Info, ParamSpec, TokenEvent } from '../lib/types';
+import type { Config, DoneSummary, DownloadEvent, Info, ParamSpec, PlanProgress, TokenEvent } from '../lib/types';
 
 const HISTORY = 120;
 const RECONNECT_MIN_MS = 1000;
@@ -32,6 +32,8 @@ class ServerStore {
   connected = $state(false);
   metrics = $state<LiveMetrics>(emptyMetrics());
   lastDone = $state<DoneSummary | null>(null);
+  /** The stage a measurement is in, null when none runs (a `done` stage clears it). */
+  planProgress = $state<PlanProgress | null>(null);
   downloads = $state<Record<string, DownloadEvent>>({});
   /** Bumped when a download ends, so the Models page knows to refresh its list. */
   downloadsFinished = $state(0);
@@ -143,6 +145,9 @@ class ServerStore {
       case 'download':
         this.onJson<DownloadEvent>(ev, isDownloadEvent, (d) => this.onDownload(d));
         break;
+      case 'plan_progress':
+        this.onJson<PlanProgress>(ev, isPlanProgress, (d) => (this.planProgress = d.step === 'done' ? null : d));
+        break;
       default:
         break; // a ping, or an event this UI does not know
     }
@@ -179,6 +184,12 @@ class ServerStore {
       tokHistory: pushSample(m.tokHistory, tok, HISTORY),
       readHistory: pushSample(m.readHistory, read, HISTORY),
     };
+  }
+
+  /** Drop a download's last event: its partial files were deleted, so nothing is left to resume. */
+  forgetDownload(id: string): void {
+    const { [id]: _gone, ...rest } = this.downloads;
+    this.downloads = rest;
   }
 
   private onDownload(d: DownloadEvent): void {

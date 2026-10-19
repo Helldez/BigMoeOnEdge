@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { commandLine, formatBytes, progress, quoteArg } from './format';
+import { commandLine, formatBytes, formatGb, progress, quoteArg, resumeLabel } from './format';
 import { parseHash } from './route';
 import { planDecisions } from './plan';
 
@@ -18,6 +18,11 @@ describe('format', () => {
 
   it('builds the bmoe-cli command line', () => {
     expect(commandLine(['--model', 'a b.gguf', '--threads', '8'])).toBe('bmoe-cli --model "a b.gguf" --threads 8');
+  });
+
+  it('a resumable download names what is on disk and the whole, in decimal GB', () => {
+    expect(formatGb(47_000_000_000)).toBe('47.0 GB');
+    expect(resumeLabel(14_230_000_000, 47_000_000_000)).toBe('Resume (14.2 of 47.0 GB)');
   });
 
   it('progress is null without a total', () => {

@@ -103,6 +103,7 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
         error_.clear();
         model_ = nullptr;
         requested_ = requested;
+        last_turn_ = nullptr;
     }
     if (loader_.joinable()) loader_.join(); // the previous load finished: its state was not Loading
     publish_state();
@@ -115,6 +116,9 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
         {
             std::lock_guard<std::mutex> lk(m_);
             session_.reset();
+            // Again here, under gen_m_: a turn still running when load() cleared it records its
+            // figure on its way out, and that figure is the old model's.
+            last_turn_ = nullptr;
         }
         std::string error;
         std::shared_ptr<HostedSession> s = open_(session_config_from(effective), error);
@@ -159,8 +163,14 @@ void EngineHost::unload() {
         state_ = State::Empty;
         error_.clear();
         model_ = nullptr;
+        last_turn_ = nullptr;
     }
     publish_state();
+}
+
+json EngineHost::last_turn() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return last_turn_;
 }
 
 void EngineHost::cancel() {
@@ -305,6 +315,13 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
 
     out.n_predict = gr.n_predict;
     out.result = std::move(r);
+    const RunSummary & sum = out.result.summary;
+    // A cancelled turn is no measurement: it stopped at a moment the person chose, often mid-load.
+    if (!out.result.cancelled && sum.n_generated > 0 && sum.s_per_token > 0) {
+        std::lock_guard<std::mutex> lk(m_);
+        last_turn_ =
+            json{{"s_per_token", sum.s_per_token}, {"cache_hit_pct", sum.cache_hit_pct}, {"tokens", sum.n_generated}};
+    }
     bus_.publish("done", summary_json(out.result.summary, out.result.cancelled));
     publish_state();
     return out;
