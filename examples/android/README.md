@@ -12,6 +12,14 @@ of its own is the crash boundary: a driver that ends the engine does not end the
 
 Nothing about a prompt or an answer leaves the phone unless **Serve on the network** is on.
 
+The app still needs the network permission, offline too: Android ties every IP socket to it,
+loopback included, so the app cannot reach its own engine without it. Being offline is fine (the
+loopback interface is always there, airplane mode included); being *denied* the network is not.
+Stock Android grants it at install and nobody can revoke it, but GrapheneOS's per-app **Network**
+toggle and firewall apps can. The app then says so in the status line, with a button to its system
+settings, and a download fails with the same reason instead of retrying; a model can still be
+imported from a file.
+
 ## Build
 
 1. Cross-compile and stage the engine binaries (needs the Android NDK):
@@ -137,10 +145,12 @@ default; one that is fixed while a model is loaded asks for a reload.
 
 The app's own settings close the page:
 
-- **Serve on the network**: the engine listens on every interface with a key the page shows. Any
-  OpenAI-compatible client then uses the phone at `http://<phone IP>:8765/v1` with
-  `Authorization: Bearer <key>`: a laptop's coding agent, Open WebUI, a script. Prompts and answers
-  cross the network in clear; use it on a network you trust. Changing it restarts the engine.
+- **Serve on the network**: the engine listens on every interface with a key the page shows, and
+  the page shows the phone's address on its Wi-Fi or Ethernet network, `http://<phone IP>:8765/v1`,
+  ready to copy and kept current when the network changes. Any OpenAI-compatible client then uses
+  it with `Authorization: Bearer <key>`: a laptop's coding agent, Open WebUI, a script. Prompts and answers
+  cross the network in clear; use it on a network you trust. Changing it restarts the engine, and a
+  model that was loaded is loaded again once the engine is back.
 
 The engine requires a key even when it is not shared: on a phone, loopback is reachable by every
 installed app, and an open server would let any of them read a conversation off the event stream.

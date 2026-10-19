@@ -188,12 +188,17 @@ template). Each element:
 ```json
 {"key": "cache-mb", "label": "Expert cache", "type": "int", "group": "cache",
  "group_label": "Expert cache", "level": "basic", "scope": "session", "help": "...",
- "flag": "--cache-mb", "min": 0, "max": 2147483647, "unit": "MiB", "accepts_auto": true,
- "default": "auto"}
+ "flag": "--cache-mb", "min": 0, "unit": "MiB", "typical": {"min": 1500, "max": 8192},
+ "special": [{"value": 0, "label": "off"}], "accepts_auto": true, "default": "auto"}
 ```
 
 Optional fields: `short`, `switches` (`[{flag, value, deprecated?}]`), `choices`
-(`[{value, label}]`), `min`/`max` (present together), `unit`, `lossy`, `accepts_auto`.
+(`[{value, label}]`), `min` and `max`, `unit`, `typical`, `special`, `lossy`, `accepts_auto`.
+`min` and `max` are limits: `max` is absent where the only upper limit is the type's, which is no
+range to show a person. `typical` is guidance, not a limit: what a person usually sets, which a form
+shows as the range. `special` names the values that mean something other than their number (`0` is
+`off`, `4294967295` is `random per run`), with `value` in the row's own JSON type; a form shows the
+label in place of the number.
 `level` is `basic | advanced | experimental | debug`; `group` order in the array is form order.
 
 ### `GET /api/config`

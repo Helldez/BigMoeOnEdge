@@ -34,8 +34,17 @@ export interface ParamSpec {
   min?: number;
   max?: number;
   unit?: string;
+  /** What a person usually sets: guidance, not a limit. */
+  typical?: { min: number; max: number };
+  /** Values that mean something other than their number (0 = off). */
+  special?: ParamSpecial[];
   lossy?: boolean;
   accepts_auto?: boolean;
+}
+
+export interface ParamSpecial {
+  value: ParamValue;
+  label: string;
 }
 
 export type ServerState = 'empty' | 'planning' | 'loading' | 'ready' | 'error';

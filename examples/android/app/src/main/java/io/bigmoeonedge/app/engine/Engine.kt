@@ -329,6 +329,8 @@ data class EngineUi(
     val serverError: String? = null,
     /** How the running server was started: on the network with the key, or on loopback. */
     val shared: Boolean = false,
+    /** The system refuses this app any socket, loopback included: only the person can fix it (#298). */
+    val networkDenied: Boolean = false,
     val info: ServerInfo? = null,
     val params: List<ParamSpec>? = null,
     val config: ConfigState? = null,
@@ -376,6 +378,9 @@ object Engine {
     // Whether a server this app started should be up: between a stop and the next start the
     // connector waits, rather than reconnect to the process that is still on its way out.
     @Volatile private var serving = false
+    // The model a restart found loaded, to load again once the next server is up: changing the
+    // address or the key is not a person asking to unload. Cleared once used, or by a plain stop.
+    @Volatile private var reloadAfterRestart: String? = null
 
     val current: EngineUi get() = _state.value
 
@@ -398,6 +403,7 @@ object Engine {
 
     /** Stop the server (and free the model). The next [start] brings it back. */
     fun stop(ctx: Context) {
+        reloadAfterRestart = null
         val app = ctx.applicationContext
         app.startService(Intent(app, EngineService::class.java).setAction(EngineService.ACTION_STOP))
     }
@@ -408,6 +414,7 @@ object Engine {
      * never race for the port.
      */
     fun restart(ctx: Context) {
+        reloadAfterRestart = _state.value.info?.takeIf { it.ready }?.model?.path ?: reloadAfterRestart
         val app = attach(ctx)
         ContextCompat.startForegroundService(app, Intent(app, EngineService::class.java).setAction(EngineService.ACTION_RESTART))
     }
@@ -481,9 +488,15 @@ object Engine {
                     onEvent = { ev ->
                         if (current()) {
                             if (!_state.value.serverUp) {
-                                _state.update { it.copy(serverUp = true, serverError = null) }
+                                _state.update { it.copy(serverUp = true, serverError = null, networkDenied = false) }
                                 backoffMs = 500L
-                                scope.launch { refreshStatic() }
+                                scope.launch {
+                                    refreshStatic()
+                                    reloadAfterRestart?.let { path ->
+                                        reloadAfterRestart = null
+                                        if (_state.value.info?.state == "empty") load(path)
+                                    }
+                                }
                             }
                             onEvent(ev)
                         }
@@ -498,9 +511,16 @@ object Engine {
                 // The watchdog: two pings missed, the stream died without closing. Reconnect now.
                 backoffMs = 500L
             } catch (t: Throwable) {
-                // Anything else (a key, a policy, a broken stream) is what a person needs to read.
-                val why = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
-                _state.update { it.copy(serverError = "Engine not reachable: $why") }
+                if (isNetworkDenied(t)) {
+                    // The raw "socket failed: EPERM" says nothing a person can act on, and a retry
+                    // cannot succeed until the switch is turned back on: keep polling, slowly.
+                    _state.update { it.copy(serverError = NETWORK_DENIED, networkDenied = true) }
+                    backoffMs = 5_000L
+                } else {
+                    // Anything else (a key, a policy, a broken stream) is what a person needs to read.
+                    val why = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+                    _state.update { it.copy(serverError = "Engine not reachable: $why", networkDenied = false) }
+                }
             }
             if (_state.value.serverUp) _state.update { it.copy(serverUp = false) }
             delay(backoffMs)

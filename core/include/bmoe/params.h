@@ -75,6 +75,13 @@ struct ParamSwitch {
     bool deprecated = false;
 };
 
+// A value of a numeric parameter that means something other than its number: 0 = off, 0 = the
+// model's own, 4294967295 = random. A form shows the label in place of the number.
+struct ParamSpecial {
+    std::string value; // as get() renders it
+    std::string label; // "off", "as wide as the context"
+};
+
 struct ParamDesc {
     std::string key;   // stable identifier: the long flag without dashes
     std::string label; // short name for a form
@@ -91,10 +98,21 @@ struct ParamDesc {
     std::vector<ParamChoice> choices; // Choice only
 
     // What a form offers; validate() decides what a run accepts. Unbounded when bounded is false.
+    // bounded_below: only `min` is a limit, because the only upper one is the type's, which is no
+    // range to show a person.
     bool bounded = false;
+    bool bounded_below = false;
     double min = 0.0;
     double max = 0.0;
     std::string unit; // "MiB", "tokens", "" ...
+
+    // What a person usually sets, for a form to show as the guide. Not a limit: a value outside it
+    // is accepted, it is just unusual. Absent where the right value depends on the model or the
+    // machine, and the plan is the guide instead.
+    bool has_typical = false;
+    double typical_min = 0.0;
+    double typical_max = 0.0;
+    std::vector<ParamSpecial> specials;
 
     bool lossy = false;              // changes the output: a quality trade, not an optimisation
     bool accepts_auto = false;       // an Int that also takes the literal "auto"
