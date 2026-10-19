@@ -50,6 +50,10 @@ struct ExpertTensorRef {
 // empty (tensor == nullptr). Unbound layers (dense, or non-MoE) stay false.
 struct LayerExperts {
     bool bound = false;
+    // Some of this layer's experts are on a device. A capacity fitter can split a layer's experts
+    // across the boundary (its partial layer overflows one projection to the host), and the half
+    // left here is not a layer the streamer can serve: the whole layer stays where it was placed.
+    bool on_device = false;
     ExpertTensorRef proj[ExpertLayout::max_slots];
 };
 

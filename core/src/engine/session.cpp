@@ -1105,9 +1105,17 @@ bool Session::Impl::bind_expert_offsets(Opening & o,
                                         const GgufOffsets & offs,
                                         std::vector<LayerExperts> & layers,
                                         int & n_expert) {
-    int n_bound = 0;
+    int n_bound = 0, n_split = 0;
     for (LayerExperts & L : layers) {
         if (!L.bound) continue;
+        // Half a layer on a device: what the host holds of it is not a set of experts the streamer
+        // can load, since the projections it would need are elsewhere. Leaving the layer where the
+        // placement put it is a run with one fewer streamed layer; binding it was an abort.
+        if (L.on_device) {
+            L.bound = false;
+            ++n_split;
+            continue;
+        }
         ++n_bound;
         for (int p = 0; p < o.layout.n_slots; ++p) {
             ggml_tensor * t = L.proj[p].tensor;
@@ -1124,6 +1132,10 @@ bool Session::Impl::bind_expert_offsets(Opening & o,
                               std::to_string(ne2) + ", expected " + std::to_string(n_expert));
         }
     }
+    if (n_split)
+        log_printf(LogLevel::Warn,
+                   "%d MoE layer(s) have experts split between a device and the host: left as placed, not streamed",
+                   n_split);
     if (n_bound == 0) return o.fail("no MoE expert tensors captured — is this a MoE model?");
     return true;
 }
@@ -1154,6 +1166,11 @@ void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
     std::unordered_map<uint64_t, size_t> dense_at; // (shard, file offset) -> index in `dense`
     for (ggml_tensor * t : hook->captured_weight_objects()) {
         if (!t) continue;
+        // A weight a device owns is not ours to move, for the reason the capture gives for experts:
+        // the device computes from its own buffer, so a tensor pointed at host bytes it cannot see
+        // reads nothing (Metal said "buffer is nil" and the run decoded '!'). Left out, it is also
+        // unowned below, which keeps release-mmap from dropping a mapping a device may still read.
+        if (t->buffer && !ggml_backend_buffer_is_host(t->buffer)) continue;
         const std::string name = t->name;
         if (expert_names.count(name)) continue;
         auto off = offs.off_by_name.find(name);

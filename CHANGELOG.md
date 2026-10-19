@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **`--auto` no longer aborts when a placement splits a layer's experts across a device and the
+  host** (#304). On a 12 GB phone `--auto` stopped before generating with `captured MoE layer is
+  missing expert tensor 'ffn_gate_exps'`: the planner had read the phone's GPU as having memory of
+  its own, the capacity fitter put 41 of 42 layers on it, and its partial layer left `ffn_down_exps`
+  on the host and the other two projections on the device. The streamer bound the host half and
+  then found the rest missing. Two causes, both fixed:
+  - *The GPU's memory is read from the device, not inferred from an allocation.* The Apple probe
+    adapter reads `hasUnifiedMemory` from Metal's default device and applies it to the ggml device
+    whose description matches it; a known shared pool cannot then be turned into separate memory by
+    a flat allocation delta (allocator reuse or reclaim can hide the allocation there). Contributed
+    by @gjjkbssg. Where no native fact exists, the allocation probe now counts what is charged to
+    the process (resident plus compressed or swapped), not what is resident, so a kernel making
+    room by compressing our own pages no longer reads as separate memory.
+  - *A split layer is left where it was placed, and the run goes on.* Any fitter can split its
+    partial layer this way, on any device with memory of its own. Such a layer is not streamed
+    (the streamer needs all of a layer's projections in host memory), a warning says how many, and
+    the remaining layers stream as before. Reproduced on a Mac with `--gpu-layers 99` and a
+    `--tensor-overrides` pattern that leaves one layer's `ffn_down` on the host.
+  - *A dense weight a device owns stays on the device.* With layers placed on a device,
+    `--dense-weights anon` moved their dense weights into host memory as well, where the device
+    cannot read them: Metal reported a nil buffer and the run decoded `!`. Only weights in host
+    buffers are converted now, and the ones left on a device keep `--release-mmap` from dropping a
+    mapping the device may still read.
+
 ## [0.32.0] - 2026-10-19
 
 ### Added

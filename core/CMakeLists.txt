@@ -73,6 +73,13 @@ if(BMOE_HAVE_LLAMA)
     find_package(Threads REQUIRED)
     target_link_libraries(bmoe_core PUBLIC Threads::Threads)
 
+    if(APPLE AND GGML_METAL)
+        target_sources(bmoe_core PRIVATE src/plan/metal_memory_probe.mm)
+        set_source_files_properties(src/plan/metal_memory_probe.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_compile_definitions(bmoe_core PRIVATE BMOE_HAVE_METAL_MEMORY_PROBE=1)
+        target_link_libraries(bmoe_core PUBLIC "-framework Metal" "-framework Foundation")
+    endif()
+
     if(ANDROID)
         # libandroid carries AHardwareBuffer_*, the reclaim-exempt allocation behind
         # `--dense-weights ahwb` (pio::pinned_alloc). No other platform has an equivalent.
