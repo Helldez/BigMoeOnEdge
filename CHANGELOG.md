@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **One readable face for the whole UI: Oxanium, on the desktop and in the Android app.** The pixel
+  face was set on buttons, badges, the navigation and every figure, and at those sizes it was hard
+  to read; it now marks only the wordmark beside the logo. Oxanium (SIL OFL 1.1, bundled) keeps the
+  squared look and takes every other word, the model's answers included; figures keep tabular
+  digits. Sizes are unchanged.
+
 ## [0.32.0] - 2026-10-19
 
 ### Added

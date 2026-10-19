@@ -124,7 +124,6 @@
   .meta {
     font-size: 0.85rem;
     margin: 0.4rem 0 0;
-    font-family: var(--pixel);
   }
   .actions {
     margin: 0.3rem 0 0;

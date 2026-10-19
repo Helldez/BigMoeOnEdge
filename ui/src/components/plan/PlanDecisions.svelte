@@ -68,7 +68,6 @@
   }
   .title {
     flex: 1;
-    font-family: var(--pixel);
     font-size: 1.05rem;
   }
   .row {
