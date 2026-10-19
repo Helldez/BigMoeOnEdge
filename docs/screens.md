@@ -130,8 +130,9 @@ the same thing and a stage or role added later reaches them all unchanged.
   reason in a sentence. With no device beyond the host, one line says which of the three it is: the
   build carries no backend for one, the backends it carries found none here, or nobody looked.
 - **Decisions, grouped.** The settings the plan decided (open), the ones it left (the person's
-  own, or unmeasured), and the notes that are no setting: regime, placement, ledger, costs
-  (folded), each with a count. A row shows the knob's settings label, its value and where it came
+  own, or unmeasured), and the notes that are no setting: regime, placement, memory use and each
+  of the cost model's notes under its own name, from the server's `label` (folded), each with a
+  count. A row shows the knob's settings label, its value and where it came
   from (`measured`, `derived`, `policy`, `operator` for a value the person set and the planner left
   alone, `unprobed`); opening it shows the decision in one short line (`brief`), the full account
   behind Why, and the way to the setting. The two folded groups say in a line what they hold. Each

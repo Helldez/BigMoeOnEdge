@@ -469,7 +469,8 @@ unusable instead of ending the server; `--no-isolated-probes` runs them in-proce
  "machine": "16 cores, 3388 MiB available of 15182 MiB, 33 GiB/s on this model's matmul",
  "regime": "experts-stream", "streaming_declined": false, "decline_reason": "",
  "decisions": [{"knob": "cache-mb", "label": "Expert cache", "group": "set", "value": "703",
-                "source": "derived", "reason": "..."}],
+                "source": "derived", "brief": "703 MiB: what the cache earns most with, after the dense weights.",
+                "reason": "..."}],
  "values": {"cache-mb": 703, "threads": 8}, "args": ["--moe-stream", "--cache-mb", "703"],
  "not_applicable": [],
  "summary": {"sentence": "Experts stream from flash, with a 0.7 GiB cache.",
@@ -489,11 +490,17 @@ unusable instead of ending the server; `--no-isolated-probes` runs them in-proce
 ```
 
 `source` is `measured | derived | policy | operator | unprobed`. Keys in `user_keys` come back as
-`operator`: the planner never touches them. A decision's `label` is its knob's settings label from
-the parameter table (empty for a knob that is not a parameter), and `group` is how a UI reads it:
-`set` (a parameter the plan decided from a fact, whether or not the value changed), `kept` (a
-parameter it left: the caller's own, or one nothing measured), `notes` (what is not a parameter:
-the regime, the placement, the ledger, a `cost`).
+`operator`: the planner never touches them. A decision's `brief` is one plain sentence for a
+person (at most 120 characters, the number that decided it, no flag names; the `reason` where a
+decision has none), and `reason` the full account `explain` prints, for a "why" a UI folds away.
+Its `label` is its knob's settings label from the parameter table, or, for a knob that is not a
+parameter, the name of the note (`regime` is "Streaming mode", `storage-rate` "Storage speed",
+`memory-ledger` "Memory use"; a topic the server does not know is titled from its key), so a UI
+shows "label: brief". `group` is how a UI reads it: `set` (a parameter the plan decided from a
+fact, whether or not the value changed), `kept` (a parameter it left: the caller's own, or one
+nothing measured), `notes` (what is not a parameter: the regime, the placement, the ledger, and
+each of the cost model's notes under its own topic - `storage-rate`, `cache-floor`,
+`shared-memory`, ... - with its key number as `value`, or `-`; there is no `cost` knob any more).
 
 The rest describes the plan for a person (`server/plan_view.h`), so a UI shows it without knowing
 any device, system or knob. Every list is as long as the machine makes it, and every word a UI

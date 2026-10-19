@@ -156,6 +156,20 @@ struct Ledger {
     uint64_t locked = 0;       // the rows held reclaim-exempt
 };
 
+// One thing the cost model has to say that is not a setting: a fact it priced by, or a reason it
+// declined. The topic is the note's name, so a front-end can title it and a reader can tell two notes
+// apart without parsing prose; the brief is what a person reads, the detail what --explain prints.
+struct AllocationNote {
+    std::string topic;  // stable kebab-case key; notes of the same family share one
+    std::string value;  // the number the note turns on, rendered; "-" when there is none
+    std::string brief;  // one plain sentence
+    std::string detail; // the full account
+};
+
+// A size as a person reads it: GB with one decimal from 1 GiB up, whole MiB below. The planner's
+// one-line briefs use it so every size on a screen is spelled the same way.
+std::string size_brief(uint64_t bytes);
+
 struct Allocation {
     GroupPlacement groups[(int) WeightGroup::count];
 
@@ -202,7 +216,7 @@ struct Allocation {
     // the probe found.
     bool device_applicable = true;
 
-    std::vector<std::string> notes;
+    std::vector<AllocationNote> notes;
 
     const GroupPlacement & at(WeightGroup g) const { return groups[(int) g]; }
     GroupPlacement & at(WeightGroup g) { return groups[(int) g]; }

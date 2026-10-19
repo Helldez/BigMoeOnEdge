@@ -21,8 +21,9 @@ namespace bmoe::server {
 // into the /api/plan body.
 json plan_view(const HardwareProfile & hw, const ModelProfile & model, const Plan & plan);
 
-// One decision on the wire: the planner's fields, its knob's settings label (empty for a knob that
-// is no parameter) and the group it is read in (`set`, `kept`, `notes`).
+// One decision on the wire: the planner's fields (`brief` falls back to the reason where a decision
+// has none), a label - its knob's settings label, or for a note the name of its topic - and the
+// group it is read in (`set`, `kept`, `notes`).
 json decision_json(const Decision & d);
 
 // The words for a stage of the measurement (bmoe/auto_plan.h, k_plan_steps); a stage this does

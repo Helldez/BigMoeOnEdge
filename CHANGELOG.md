@@ -43,6 +43,15 @@ Semantic Versioning.
   unit-tested on an NPU phone, a discrete card and a machine with only cores, and no UI keeps a
   table of its own. A measurement now publishes `plan_progress` events, one per stage with its
   words, from a progress callback on `probe_and_plan()` (`AutoPlanOptions::on_step`).
+- **Every plan decision says itself in one line, and each cost note has its own name.** A
+  `Decision` carries a `brief` beside its `reason`: one plain sentence for a person, at most 120
+  characters, with the number that decided it and no flag names ("Prompts run on MTL0, 8.1x faster
+  than the CPU, same results"), which the Plan screen leads with while the reason stays the full
+  account `--plan` prints. The cost model's notes, which all came out as `cost = -` and could not
+  be told apart, are now structured (`AllocationNote`: a topic, a value, a brief, a detail) and each
+  is its own decision under its topic (`storage-rate = 6.3 GB/s`, `cache-floor = 581 MiB`,
+  `shared-memory`, ...); `/api/plan` adds `brief` and gives every note a `label` to be read under.
+  The reasons stop citing one machine's story on every other (#290).
   `docs/server-api.md` and `docs/screens.md` describe both.
 - **The hardware probe tells "this build carries no accelerator backend" from "it carries one and
   found nothing".** `HardwareProfile::backends_placeable` counts the backends that could offer a
