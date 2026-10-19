@@ -20,6 +20,17 @@ Semantic Versioning.
   three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
   with their own dark card so they read on either GitHub theme.
 
+### Fixed
+- **A run reserves the logit rows its plan charged, with a prefill device or without one.** The
+  context capped the rows a graph may return at 128 only when a device ran the prefill, while the
+  planner projected every run at that cap. Without one, llama.cpp reserved a vocabulary-wide row
+  for every token of the ubatch: on a CPU-only run of a 35B-A3B at 2048 tokens, 2028 MiB of
+  compute buffer against the 436 MiB planned, as a contributor's phone reported (#304). The cap now
+  holds on every session (312 MiB on the same run), and a perplexity pass is fed in pieces no wider
+  than it. The rows were reserved and never touched, so the peak footprint measured on macOS is the
+  same before and after (3.85 GB): what changes is that the ledger and the run agree, which matters
+  wherever a reservation is charged whether or not it is touched.
+
 ## [0.31.0] - 2026-10-18
 
 ### Added

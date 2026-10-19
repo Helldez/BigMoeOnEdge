@@ -1205,8 +1205,9 @@ int main(int argc, char ** argv) {
 
         // Open a session on `c` and run `qs` in order. False (with err) if any call fails.
         auto decide_seq = [&](const RunConfig & c, const std::vector<DecideRequest> & qs,
-                              std::vector<DecideResult> & out) {
+                              std::vector<DecideResult> & out, int n_batch = 0) {
             SessionConfig sc = session_config_from(c);
+            if (n_batch > 0) sc.n_batch = n_batch;
             sc.decide.enabled = true;
             sc.decide.prefix_cache = PrefixCacheMode::On;
             std::unique_ptr<Session> s = Session::open(sc, err);
@@ -1255,15 +1256,21 @@ int main(int argc, char ** argv) {
         fails += check("G18b decide(grown prefix restored) == decide(grown prefix as computed)", logps(grown[1]),
                        logps(grown[2]));
 
+        // A perplexity pass wants every row's logits, so it is fed in pieces no wider than the rows a
+        // context reserves (PrefillDeviceConfig::max_outputs), and this text is wider than that. Both
+        // sides are opened at that batch so they compute the same pieces: across different piece
+        // boundaries llama.cpp rounds differently (see G18b), and that is not what (c) is about.
+        const int g18c_batch = PrefillDeviceConfig::max_outputs;
         std::vector<DecideResult> whole;
         DecideRequest q_whole = q1;
         q_whole.reuse_prefix = false;
-        if (!decide_seq(stream0, {q_whole}, whole)) {
+        if (!decide_seq(stream0, {q_whole}, whole, g18c_batch)) {
             std::fprintf(stderr, "decide(whole) run failed: %s\n", err.c_str());
             return 2;
         }
         {
             SessionConfig sc = session_config_from(stream0);
+            sc.n_batch = g18c_batch;
             std::unique_ptr<Session> s = Session::open(sc, err);
             if (!s) {
                 std::fprintf(stderr, "perplexity session failed: %s\n", err.c_str());
