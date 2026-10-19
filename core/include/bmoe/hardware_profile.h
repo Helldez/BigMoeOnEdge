@@ -277,7 +277,7 @@ struct HardwareProfile {
     uint64_t residency_budget = 0;
     uint64_t memory_total = 0; // for the rationale, and for margins expressed as a fraction
 
-    // What happens to our anonymous buffers under pressure. Decides the dense policy on its own.
+    // What happens to our anonymous buffers under pressure. Decides how the dense set is held, and the margin.
     Overflow anon_overflow = Overflow::Unknown;
 
     // How many bytes this process can hold and expect to KEEP. It is a different question from
@@ -309,11 +309,6 @@ struct HardwareProfile {
     // the dense set can be protected and the cache cannot. Where they are one pool the two
     // figures are equal, and the ledger charges both against the smaller.
     uint64_t lock_in_place_bytes = 0;
-
-    // Whether clean file-backed pages count against `residency_budget`. Where they do not, leaving
-    // a weight mmap'd is free of the budget entirely — which inverts the dense policy on a platform
-    // that kills on resident size.
-    Tri file_pages_counted = Tri::Unknown;
 
     // ── compute ─────────────────────────────────────────────────────────────────────
     uint32_t n_cores = 0; // 0 when unknown

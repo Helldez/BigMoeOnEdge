@@ -313,4 +313,16 @@ struct DeviceMemory {
 };
 bool device_memory(DeviceMemory * out);
 
+// What the kernel does with anonymous memory it wants back, as the facts that decide it. Each is
+// read from the kernel's own accounting - a syscall or a counter, never a benchmark - so asking
+// costs microseconds. False when nothing could be read at all.
+struct ReclaimFacts {
+    // What is left of this process's OWN share of memory, where the kernel keeps one and ends the
+    // process for exceeding it; 0 where no such share is published (the limit is the machine's).
+    uint64_t own_share_left = 0;
+    bool compresses = false; // anonymous memory is compressed in RAM before anything else happens to it
+    bool swaps = false;      // a backing store on disk exists for anonymous memory
+};
+bool reclaim_facts(ReclaimFacts * out);
+
 } // namespace bmoe::pio

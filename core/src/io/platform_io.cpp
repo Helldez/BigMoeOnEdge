@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/wait.h>
+#include <dirent.h>
 #include <chrono>
 #include <ctime>
 #ifndef O_DIRECT
@@ -198,6 +199,16 @@ bool device_memory(DeviceMemory * out) {
     out->available_bytes = (uint64_t) ms.ullAvailPhys;
     out->free_bytes = (uint64_t) ms.ullAvailPhys; // no separate "free vs reclaimable" here
     out->swap_free_bytes = (uint64_t) ms.ullAvailPageFile;
+    return true;
+}
+
+// The commit limit is RAM plus the pagefiles, so a limit above RAM is a pagefile that exists. What
+// the memory manager compresses first is not published to a process, so it is not claimed.
+bool reclaim_facts(ReclaimFacts * out) {
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) return false;
+    out->swaps = ms.ullTotalPageFile > ms.ullTotalPhys;
     return true;
 }
 
@@ -494,6 +505,26 @@ bool device_memory(DeviceMemory * out) {
     out->compressed_held_bytes = (uint64_t) vm.compressor_page_count * (uint64_t) vm_page();
     return true;
 }
+
+bool reclaim_facts(ReclaimFacts * out) {
+#if TARGET_OS_IPHONE
+    // The share's remainder is published only where there is a share: 0 on the simulator, which
+    // runs on the host's kernel and is answered by the host's facts below.
+    out->own_share_left = (uint64_t) os_proc_available_memory();
+#endif
+    vm_statistics64_data_t vm;
+    if (!host_vm(&vm)) return out->own_share_left > 0;
+    // Compressions since boot: a kernel that compresses has done so within seconds of starting.
+    out->compresses = vm.compressions > 0;
+    // Swap files are created on demand, so an empty total says nothing; the switch does.
+    int enabled = 0;
+    size_t len = sizeof(enabled);
+    struct xsw_usage sw;
+    size_t swlen = sizeof(sw);
+    out->swaps = (sysctlbyname("vm.swap_enabled", &enabled, &len, nullptr, 0) == 0 && enabled != 0) ||
+                 (sysctlbyname("vm.swapusage", &sw, &swlen, nullptr, 0) == 0 && sw.xsu_total > 0);
+    return true;
+}
 #else
 bool process_memory(ProcessMemory * out) {
     static const char * const keys[] = {"VmRSS", "RssAnon", "RssFile", "VmSwap"};
@@ -524,6 +555,38 @@ bool device_memory(DeviceMemory * out) {
         }
         std::fclose(f);
     }
+    return true;
+}
+
+// What the machine reclaims INTO. /proc/swaps would say directly, but an unprivileged process on
+// Android may not read it (nor a zram device's own files). Two things it CAN see suffice: whether a
+// zram block device EXISTS (the directory entry is visible even where its files are not) and
+// whether /proc/meminfo reports any swap at all. A zram device that is swapped to means anonymous
+// memory is compressed in RAM; swap without zram means it is written out.
+//
+// Any zram device, not the first: devices are numbered as they are added, and a machine that
+// removed zram0 or configures several swaps on zram1.. compresses just the same. Where the listing
+// is refused, the device the kernel creates first is still asked for by name.
+bool reclaim_facts(ReclaimFacts * out) {
+    static const char * const keys[] = {"SwapTotal"};
+    uint64_t swap_total = 0;
+    if (!scan_kb_file("/proc/meminfo", keys, &swap_total, 1)) return false;
+    bool has_zram = false;
+    if (DIR * d = ::opendir("/sys/block")) {
+        while (const dirent * e = ::readdir(d)) {
+            if (std::strncmp(e->d_name, "zram", 4) == 0) {
+                has_zram = true;
+                break;
+            }
+        }
+        ::closedir(d);
+    }
+    if (!has_zram) {
+        struct stat st {};
+        has_zram = ::stat("/sys/block/zram0", &st) == 0;
+    }
+    out->swaps = swap_total > 0;
+    out->compresses = has_zram && out->swaps;
     return true;
 }
 #endif
