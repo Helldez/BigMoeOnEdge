@@ -1,7 +1,9 @@
 #include "model_files.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <filesystem>
 #include <map>
 
 namespace bmoe::server {
@@ -86,6 +88,89 @@ std::vector<ModelFiles> group_model_files(const std::vector<std::string> & names
         out.push_back(std::move(m));
     }
     return out;
+}
+
+std::vector<ModelFiles> scan_model_files(const std::string & dir) {
+    namespace fs = std::filesystem;
+    std::vector<ModelFiles> out;
+    const auto add_folder = [&out](const fs::path & where, const std::string & folder) {
+        std::vector<std::string> names;
+        std::error_code ec;
+        for (const auto & ent : fs::directory_iterator(where, ec))
+            if (ent.is_regular_file(ec)) names.push_back(ent.path().filename().u8string());
+        for (ModelFiles & m : group_model_files(names)) {
+            m.folder = folder;
+            out.push_back(std::move(m));
+        }
+    };
+    const fs::path base = fs::u8path(dir);
+    add_folder(base, "");
+    std::vector<std::string> subs;
+    std::error_code ec;
+    for (const auto & ent : fs::directory_iterator(base, ec)) {
+        // is_symlink first: is_directory follows a link, and a link is how a scan loops or leaves.
+        std::error_code e;
+        if (ent.is_symlink(e) || !ent.is_directory(e)) continue;
+        subs.push_back(ent.path().filename().u8string());
+    }
+    std::sort(subs.begin(), subs.end());
+    for (const std::string & sub : subs)
+        add_folder(base / fs::u8path(sub), sub);
+    return out;
+}
+
+const char * file_role_name(FileRole r) {
+    switch (r) {
+    case FileRole::Model:
+        return "model";
+    case FileRole::Projector:
+        return "projector";
+    case FileRole::Draft:
+        return "draft";
+    case FileRole::Other:
+        return "other";
+    case FileRole::Unknown:
+        break;
+    }
+    return "";
+}
+
+namespace {
+
+// llama.cpp's multimodal projector files: `general.type` "mmproj" in every recent conversion, and
+// the "clip" architecture, which is the projector format itself (older files carry no type).
+constexpr const char * k_projector_type = "mmproj";
+constexpr const char * k_projector_arch = "clip";
+constexpr const char * k_model_type = "model";
+
+// Name conventions for companion files, for ordering only (file_role_hint).
+constexpr const char * k_projector_name_mark = "mmproj";
+constexpr const char * k_draft_name_prefixes[] = {"mtp-", "dflash-", "draft-"};
+
+std::string lower(std::string s) {
+    for (char & c : s)
+        c = (char) std::tolower((unsigned char) c);
+    return s;
+}
+
+} // namespace
+
+FileRole file_role(const GgufHeaderFacts & h) {
+    if (!h.ok) return FileRole::Unknown;
+    if (h.type == k_projector_type || h.arch == k_projector_arch) return FileRole::Projector;
+    if (!h.type.empty() && h.type != k_model_type) return FileRole::Other;
+    if (h.n_block <= 0) return FileRole::Other;
+    if (h.reads_target || h.n_nextn >= h.n_block) return FileRole::Draft;
+    return FileRole::Model;
+}
+
+FileRole file_role_hint(const std::string & name) {
+    const size_t slash = name.find_last_of('/');
+    const std::string base = lower(slash == std::string::npos ? name : name.substr(slash + 1));
+    if (base.find(k_projector_name_mark) != std::string::npos) return FileRole::Projector;
+    for (const char * p : k_draft_name_prefixes)
+        if (base.compare(0, std::char_traits<char>::length(p), p) == 0) return FileRole::Draft;
+    return FileRole::Model;
 }
 
 } // namespace bmoe::server

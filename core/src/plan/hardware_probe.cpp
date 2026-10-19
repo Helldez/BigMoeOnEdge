@@ -284,7 +284,20 @@ BackendInventory backend_inventory() {
     inv.looked = g_backends_looked;
     for (size_t i = 0; i < ggml_backend_reg_count(); ++i) {
         ggml_backend_reg_t reg = ggml_backend_reg_get(i);
-        if (reg) inv.names.push_back(ggml_backend_reg_name(reg));
+        if (!reg) continue;
+        inv.names.push_back(ggml_backend_reg_name(reg));
+        // Read from what a backend offers, not from its name. A backend whose devices are added by
+        // naming a server is remote: it offers nothing local whatever this machine has. The host's
+        // own backend and a library the host calls into have devices of their own kind. Anything
+        // else could offer a device here, and offering none on this machine is then the answer.
+        if (ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_add_server")) continue;
+        const size_t n = ggml_backend_reg_dev_count(reg);
+        bool host_side = n > 0;
+        for (size_t j = 0; j < n; ++j) {
+            const enum ggml_backend_dev_type t = ggml_backend_dev_type(ggml_backend_reg_dev_get(reg, j));
+            if (t != GGML_BACKEND_DEVICE_TYPE_CPU && t != GGML_BACKEND_DEVICE_TYPE_ACCEL) host_side = false;
+        }
+        if (!host_side) ++inv.placeable;
     }
     return inv;
 }
@@ -309,6 +322,7 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.backends_linked = inv.linked;
     h.backends_loaded = inv.loaded_at_runtime;
     h.backends_looked = inv.looked;
+    h.backends_placeable = inv.placeable;
 
     probe_devices(h);
 

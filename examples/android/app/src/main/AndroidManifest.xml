@@ -11,6 +11,9 @@
          unless "Serve on the network" is turned on, which then binds the engine's API to every
          interface, with a key. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- With "Serve on the network" on, Settings shows the phone's address on its Wi-Fi or Ethernet
+         network and follows it when the network changes. A normal permission: no prompt. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- No broad storage permission here: models arrive through the in-app URL downloader or
          the system file picker, both writing to the app-internal models dir (filesDir, a real
          filesystem where O_DIRECT works). The dev flavor overlay (src/dev/AndroidManifest.xml)

@@ -22,6 +22,7 @@ describe('guards', () => {
     expect(isModelsResponse({ models_dir: '/m', local: [{ name: 'a', path: '/m/a' }], catalog: [] })).toBe(true);
     expect(isPlan({ available: false, reason: 'no planner' })).toBe(true);
     expect(isPlan({ available: true, error: 'no model' })).toBe(true);
+    expect(isPlan({ available: true, none: true })).toBe(true);
     expect(isPlan({ available: true, decisions: [] })).toBe(true);
     expect(isDecideResult({ cancelled: false, best: 0, choice_logp: [-1, null] })).toBe(true);
     expect(isTokenEvent({ step: 1, wall_ms: 3 })).toBe(true);

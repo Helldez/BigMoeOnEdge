@@ -18,7 +18,13 @@ namespace bmoe {
 AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const AutoPlanOptions & opt) {
     AutoPlan r;
     const char * path = cfg.model_path.c_str();
+    int step = 0;
+    const auto starting = [&] {
+        if (opt.on_step && step < k_plan_step_count) opt.on_step(k_plan_steps[step], step, k_plan_step_count);
+        ++step;
+    };
 
+    starting(); // devices
     register_backends();
     // The probes load the model too; asked for, their DEBUG lines are wanted as much as the run's.
     detail::set_llama_log_debug(cfg.llama_debug_log);
@@ -31,20 +37,26 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     // here.
     if (opt.isolated_probe_args)
         probe_devices_isolated(r.hw, self_process_runner(opt.isolated_probe_args, opt.isolated_probe_seconds));
+    starting(); // model
     r.model = probe_model(path);
     probe_device_support(r.hw, r.model);
     llama_backend_init();
+    starting(); // compute
     probe_bandwidth(r.hw, r.model);
     probe_device_costs(r.hw, r.model);
+    starting(); // storage
     // Where the expert reads land, which on a split model is not the file the caller named.
     if (opt.probe_io)
         probe_storage(r.hw, r.model.expert_file.empty() ? path : r.model.expert_file.c_str(),
                       r.model.expert_slice_bytes);
     // What the run must at least hold: the dense set and the cache FLOOR the engine will enforce,
     // which is the larger of one token cycle and the generic guard - not one token cycle alone.
+    starting(); // memory
     const uint64_t guard = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
     probe_headroom(r.hw, opt.probe_mem, r.model.dense_bytes + (std::max)(r.model.token_cycle_bytes, guard));
+    starting(); // placement
     const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch);
+    starting(); // rules
     r.plan = plan_run(cfg, r.hw, r.model, placement, req);
     return r;
 }

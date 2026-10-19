@@ -15,6 +15,7 @@
 
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <string>
@@ -121,9 +122,35 @@ int main() {
         const std::string v = d.get(defaults);
         check(d.set(c, v, err) && d.get(c) == v, d.key + ": default '" + v + "' round-trips");
 
-        if (d.bounded && (d.type == ParamType::Int || d.type == ParamType::Float) && v != "auto") {
+        const bool numeric = d.type == ParamType::Int || d.type == ParamType::Float;
+        if (d.bounded && numeric && v != "auto") {
             const double x = std::stod(v);
             check(x >= d.min && x <= d.max, d.key + ": default inside [min, max]");
+        }
+        if (d.bounded_below && numeric && v != "auto") check(std::stod(v) >= d.min, d.key + ": default >= min");
+        // A form shows the bounds as a range, so the type's own limit is not one (#268).
+        if (d.bounded)
+            check(d.max < (double) std::numeric_limits<int>::max(), d.key + ": max is a limit, not the type's");
+
+        // The typical range is guidance inside the limits, and the default is either in it or one
+        // of the row's named values: a form must never present its own default as unusual.
+        bool default_special = false;
+        for (const ParamSpecial & s : d.specials) {
+            RunConfig cs;
+            check(numeric, d.key + ": special values belong to numeric rows");
+            check(d.set(cs, s.value, err) && d.get(cs) == s.value, d.key + ": special '" + s.value + "' round-trips");
+            check(!s.label.empty(), d.key + ": special '" + s.value + "' has a label");
+            default_special |= s.value == v;
+        }
+        if (d.has_typical) {
+            check(numeric, d.key + ": a typical range belongs to a numeric row");
+            check(d.typical_min <= d.typical_max, d.key + ": typical min <= max");
+            if (d.bounded || d.bounded_below) check(d.typical_min >= d.min, d.key + ": typical inside the limits");
+            if (d.bounded) check(d.typical_max <= d.max, d.key + ": typical inside the limits");
+            if (v != "auto" && !default_special) {
+                const double x = std::stod(v);
+                check(x >= d.typical_min && x <= d.typical_max, d.key + ": default inside its typical range");
+            }
         }
         if (d.type == ParamType::Choice) {
             bool listed = false;

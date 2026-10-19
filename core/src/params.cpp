@@ -162,6 +162,56 @@ ParamDesc & bounds(ParamDesc & d, double lo, double hi, const char * unit = "") 
     return d;
 }
 
+// A lower limit only: the upper one is the type's, which a form must not present as a range.
+ParamDesc & at_least(ParamDesc & d, double lo, const char * unit = "") {
+    d.bounded_below = true;
+    d.min = lo;
+    d.unit = unit;
+    return d;
+}
+
+ParamDesc & typical(ParamDesc & d, double lo, double hi) {
+    d.has_typical = true;
+    d.typical_min = lo;
+    d.typical_max = hi;
+    return d;
+}
+
+ParamDesc & special(ParamDesc & d, std::string value, const char * label) {
+    d.specials.push_back({std::move(value), label});
+    return d;
+}
+
+// What a form shows as the usual range of a row. Guidance, not limits: every default sits inside
+// (or is one of the row's special values, which the tests check), and where a value was measured
+// the range brackets it - read lanes (2 saturate a phone's flash, 4 a PC's), the batch width (512
+// to 2048, what the planner picks), route-ahead (2 layers, all speculated experts useful). Rows
+// whose right value depends on the model or the machine (the top of the cache ceiling, layers on
+// a device, active experts) have none: the plan is their guide.
+namespace usual {
+constexpr int n_predict_lo = 128, n_predict_hi = 2048;
+constexpr int ctx_lo = 2048, ctx_hi = 32768;
+constexpr int threads_lo = 4, threads_hi = 8;
+constexpr int threads_batch_lo = 4, threads_batch_hi = 16;
+constexpr double temp_lo = 0.6, temp_hi = 1.0;
+constexpr int top_k_lo = 20, top_k_hi = 100;
+constexpr double top_p_lo = 0.8, top_p_hi = 0.95;
+constexpr int io_threads_lo = 2, io_threads_hi = 8;
+constexpr int cache_hi_mb = 8192;
+constexpr int cache_floor_lo_mb = 1024, cache_floor_hi_mb = 3072;
+constexpr int ubatch_lo = 512, ubatch_hi = 2048;
+constexpr int row_stream_lo_mb = 32, row_stream_hi_mb = 256;
+constexpr int prefill_min_tokens_hi = 128;
+constexpr int prefill_loaders_lo = 4, prefill_loaders_hi = 8;
+constexpr double routed_full_lo = 0.7, routed_full_hi = 0.9;
+constexpr int prefetch_lo = 1, prefetch_hi = 2;
+constexpr int predict_spec_lo = 1, predict_spec_hi = 4;
+constexpr int draft_lo = 2, draft_hi = 4;
+constexpr int ngram_min_lo = 2, ngram_min_hi = 4;
+constexpr int ngram_max_lo = 8, ngram_max_hi = 16;
+constexpr int route_ahead_lo = 1, route_ahead_hi = 2;
+} // namespace usual
+
 std::vector<ParamDesc> build() {
     using G = ParamGroup;
     using L = ParamLevel;
@@ -185,6 +235,7 @@ std::vector<ParamDesc> build() {
         d.value_hint = "N";
         d.scope = ParamScope::Request;
         bounds(d, 1, RunConfig::tokens_max, "tokens");
+        typical(d, usual::n_predict_lo, usual::n_predict_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.n_predict; });
         t.push_back(d);
     }
@@ -206,6 +257,7 @@ std::vector<ParamDesc> build() {
         d.short_flag = "-c";
         d.value_hint = "N";
         bounds(d, 1, RunConfig::tokens_max, "tokens");
+        typical(d, usual::ctx_lo, usual::ctx_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ctx; });
         t.push_back(d);
     }
@@ -213,7 +265,8 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("threads", "Compute threads", G::Generation, L::Basic, "Compute threads.");
         d.short_flag = "-t";
         d.value_hint = "N";
-        bounds(d, 1, RunConfig::threads_max);
+        bounds(d, 1, RunConfig::threads_max, "threads");
+        typical(d, usual::threads_lo, usual::threads_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.n_threads; });
         t.push_back(d);
     }
@@ -222,12 +275,14 @@ std::vector<ParamDesc> build() {
                           "Threads for prefill, which is compute-bound and scales with cores, while a streamed "
                           "decode mostly waits on flash. 0 = the same as the compute threads.");
         d.value_hint = "N";
-        bounds(d, 0, RunConfig::threads_max);
+        bounds(d, 0, RunConfig::threads_max, "threads");
+        typical(d, usual::threads_batch_lo, usual::threads_batch_hi);
+        special(d, "0", "same as the compute threads");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_threads_batch; });
         t.push_back(d);
     }
     {
-        ParamDesc d = row("chatml", "Chat template", G::Generation, L::Advanced,
+        ParamDesc d = row("chatml", "Wrap in chat turns", G::Generation, L::Advanced,
                           "Wrap the prompt in the model family's own chat turn. A chat front-end always "
                           "sets it; off sends the prompt as raw text.");
         d.type = ParamType::Bool;
@@ -245,6 +300,8 @@ std::vector<ParamDesc> build() {
         d.type = ParamType::Float;
         d.value_hint = "F";
         bounds(d, 0.0, SamplingConfig::temp_max);
+        typical(d, usual::temp_lo, usual::temp_hi);
+        special(d, "0", "greedy");
         bind_float(d, [](RunConfig & c) -> float & { return c.sampling.temp; });
         t.push_back(d);
     }
@@ -252,7 +309,9 @@ std::vector<ParamDesc> build() {
         ParamDesc d =
             row("top-k", "Top-k", G::Sampling, L::Advanced, "Top-k cutoff when sampling (0 disables the stage).");
         d.value_hint = "N";
-        bounds(d, 0, SamplingConfig::top_k_max);
+        bounds(d, 0, SamplingConfig::top_k_max, "candidates");
+        typical(d, usual::top_k_lo, usual::top_k_hi);
+        special(d, "0", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.sampling.top_k; });
         t.push_back(d);
     }
@@ -261,6 +320,8 @@ std::vector<ParamDesc> build() {
         d.type = ParamType::Float;
         d.value_hint = "F";
         bounds(d, 0.0, SamplingConfig::top_p_max);
+        typical(d, usual::top_p_lo, usual::top_p_hi);
+        special(d, "1", "off");
         bind_float(d, [](RunConfig & c) -> float & { return c.sampling.top_p; });
         t.push_back(d);
     }
@@ -269,7 +330,8 @@ std::vector<ParamDesc> build() {
                           "RNG seed for sampling. " + std::to_string(SamplingConfig::seed_random) +
                               " draws a random seed per run.");
         d.value_hint = "N";
-        bounds(d, 0, std::numeric_limits<uint32_t>::max());
+        at_least(d, 0);
+        special(d, std::to_string(SamplingConfig::seed_random), "random per run");
         d.get = [](const RunConfig & c) { return std::to_string(c.sampling.seed); };
         d.set = [](RunConfig & c, const std::string & s, std::string & err) {
             long long v = 0;
@@ -295,7 +357,8 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("io-threads", "Read lanes", G::Streaming, L::Advanced,
                           "Parallel expert-read lanes, including the calling thread. 1 is the serial baseline.");
         d.value_hint = "N";
-        bounds(d, 1, MoeStreamConfig::io_threads_max);
+        bounds(d, 1, MoeStreamConfig::io_threads_max, "lanes");
+        typical(d, usual::io_threads_lo, usual::io_threads_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.io_threads; });
         t.push_back(d);
     }
@@ -319,7 +382,7 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("io-two-wave", "Two-wave publish", G::Streaming, L::Experimental,
+        ParamDesc d = row("io-two-wave", "Start reads in two waves", G::Streaming, L::Experimental,
                           "Publish a layer's first-projection reads before committing the rest, so the lanes "
                           "start sooner. Needs overlap and the cache; pending the on-device A/B.");
         d.type = ParamType::Bool;
@@ -329,7 +392,7 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("release-mmap", "Release mapping", G::Streaming, L::Advanced,
+        ParamDesc d = row("release-mmap", "Unmap the file after load", G::Streaming, L::Advanced,
                           "Unmap the model file after load once nothing reads through it. On Windows a live "
                           "mapping serialises the streamer's concurrent reads. Needs dense weights anon or "
                           "ahwb.");
@@ -349,7 +412,9 @@ std::vector<ParamDesc> build() {
                               " MiB is smaller than one token's working set and thrashes.");
         d.value_hint = "N|auto";
         d.accepts_auto = true;
-        bounds(d, 0, std::numeric_limits<int>::max(), "MiB");
+        at_least(d, 0, "MiB");
+        typical(d, MoeStreamConfig::cache_min_mb, usual::cache_hi_mb);
+        special(d, "0", "off");
         d.get = [](const RunConfig & c) {
             return c.moe.cache_auto ? std::string("auto") : std::to_string(c.moe.cache_mb);
         };
@@ -376,7 +441,8 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("cache-floor-mb", "Cache: RAM to leave", G::Cache, L::Advanced,
                           "With the cache on auto: RAM to leave free for the rest of the system.");
         d.value_hint = "N";
-        bounds(d, 0, std::numeric_limits<int>::max(), "MiB");
+        at_least(d, 0, "MiB");
+        typical(d, usual::cache_floor_lo_mb, usual::cache_floor_hi_mb);
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.cache_floor_mb; });
         t.push_back(d);
     }
@@ -384,7 +450,8 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("cache-ceil-mb", "Cache: ceiling", G::Cache, L::Advanced,
                           "With the cache on auto: upper bound on the budget (0 = no cap).");
         d.value_hint = "N";
-        bounds(d, 0, std::numeric_limits<int>::max(), "MiB");
+        at_least(d, 0, "MiB");
+        special(d, "0", "no cap");
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.cache_ceil_mb; });
         t.push_back(d);
     }
@@ -400,10 +467,10 @@ std::vector<ParamDesc> build() {
         d.value_hint = "mmap|warm|anon|ahwb";
         d.switches = {{"--no-warm-dense", "mmap", true}, {"--dense-odirect", "anon", true}};
         bind_choice<DenseWeightsMode>(d, [](RunConfig & c) -> DenseWeightsMode & { return c.moe.dense_weights; },
-                                      {{DenseWeightsMode::Mmap, {"mmap", "mmap"}},
-                                       {DenseWeightsMode::Warmed, {"warm", "warm"}},
-                                       {DenseWeightsMode::Anonymous, {"anon", "anon"}},
-                                       {DenseWeightsMode::Pinned, {"ahwb", "ahwb (pinned)"}}});
+                                      {{DenseWeightsMode::Mmap, {"mmap", "mapped from the file"}},
+                                       {DenseWeightsMode::Warmed, {"warm", "mapped and read ahead"}},
+                                       {DenseWeightsMode::Anonymous, {"anon", "copied into memory"}},
+                                       {DenseWeightsMode::Pinned, {"ahwb", "pinned in memory"}}});
         t.push_back(d);
     }
     {
@@ -413,6 +480,8 @@ std::vector<ParamDesc> build() {
                           "of prefill speed; decode is unaffected.");
         d.value_hint = "N";
         bounds(d, 0, RunConfig::tokens_max, "tokens");
+        typical(d, usual::ubatch_lo, usual::ubatch_hi);
+        special(d, "0", "as wide as the context");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ubatch; });
         t.push_back(d);
     }
@@ -430,7 +499,8 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("row-stream-mb", "Row-stream window", G::Memory, L::Advanced,
                           "Resident window for row-streamed tables.");
         d.value_hint = "N";
-        bounds(d, 0, std::numeric_limits<int>::max(), "MiB");
+        at_least(d, 0, "MiB");
+        typical(d, usual::row_stream_lo_mb, usual::row_stream_hi_mb);
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.row_stream_mb; });
         t.push_back(d);
     }
@@ -441,6 +511,7 @@ std::vector<ParamDesc> build() {
                           "hardware planner sets it from llama.cpp's own capacity fitter.");
         d.value_hint = "N";
         bounds(d, 0, RunConfig::n_gpu_layers_max, "layers");
+        special(d, "0", "all on the host");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_gpu_layers; });
         t.push_back(d);
     }
@@ -531,7 +602,8 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("prefill-min-tokens", "Prefill device width", G::Streaming, L::Experimental,
                           "Narrowest prefill piece sent to the prefill device; a shorter tail runs on the CPU.");
         d.value_hint = "N";
-        bounds(d, PrefillDeviceConfig::min_tokens_floor, std::numeric_limits<int>::max(), "tokens");
+        at_least(d, PrefillDeviceConfig::min_tokens_floor, "tokens");
+        typical(d, PrefillDeviceConfig::min_tokens_floor, usual::prefill_min_tokens_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.prefill.min_tokens; });
         t.push_back(d);
     }
@@ -540,7 +612,7 @@ std::vector<ParamDesc> build() {
                           "Layers of streamed experts the prefill device holds at once. 2 reads a layer while the "
                           "previous one computes; 1 waits for each layer and needs a layer less of memory.");
         d.value_hint = "N";
-        bounds(d, PrefillDeviceConfig::slots_min, PrefillDeviceConfig::slots_max);
+        bounds(d, PrefillDeviceConfig::slots_min, PrefillDeviceConfig::slots_max, "layers");
         bind_int(d, [](RunConfig & c) -> int & { return c.prefill.slots; });
         t.push_back(d);
     }
@@ -560,7 +632,8 @@ std::vector<ParamDesc> build() {
                           "Threads that fill the prefill device's layer slots from flash, with streaming. "
                           "Decode read lanes stay on the read-lane setting.");
         d.value_hint = "N";
-        bounds(d, 1, PrefillDeviceConfig::load_threads_max);
+        bounds(d, 1, PrefillDeviceConfig::load_threads_max, "threads");
+        typical(d, usual::prefill_loaders_lo, usual::prefill_loaders_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.prefill.load_threads; });
         t.push_back(d);
     }
@@ -576,12 +649,13 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("prefill-routed-full", "Routed prefill fallback", G::Streaming, L::Experimental,
+        ParamDesc d = row("prefill-routed-full", "Read a busy layer whole", G::Streaming, L::Experimental,
                           "A layer routing more than this fraction of its experts gets the next layer read "
                           "whole. In (0, 1].");
         d.type = ParamType::Float;
         d.value_hint = "F";
         bounds(d, PrefillDeviceConfig::routed_full_frac_min, PrefillDeviceConfig::routed_full_frac_max);
+        typical(d, usual::routed_full_lo, usual::routed_full_hi);
         bind_float(d, [](RunConfig & c) -> float & { return c.prefill.routed_full_frac; });
         t.push_back(d);
     }
@@ -626,6 +700,8 @@ std::vector<ParamDesc> build() {
                           "Needs the cache. 0 is off.");
         d.value_hint = "K";
         bounds(d, 0, MoeStreamConfig::prefetch_layers_max, "layers");
+        typical(d, usual::prefetch_lo, usual::prefetch_hi);
+        special(d, "0", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.prefetch_layers; });
         t.push_back(d);
     }
@@ -643,7 +719,9 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("predict-spec-max", "Predicted misses read", G::Prefetch, L::Experimental,
                           "Predicted misses per layer the predictive prefetch may read (0 = retention only).");
         d.value_hint = "N";
-        bounds(d, 0, MoeStreamConfig::predict_spec_max_limit);
+        bounds(d, 0, MoeStreamConfig::predict_spec_max_limit, "reads");
+        typical(d, usual::predict_spec_lo, usual::predict_spec_hi);
+        special(d, "0", "retention only");
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.predict_spec_max; });
         t.push_back(d);
     }
@@ -669,6 +747,7 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("draft", "Draft width", G::Speculation, L::Advanced, "Tokens drafted per verify batch.");
         d.value_hint = "N";
         bounds(d, 1, SpecConfig::draft_max_limit, "tokens");
+        typical(d, usual::draft_lo, usual::draft_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.spec.draft_max; });
         t.push_back(d);
     }
@@ -679,6 +758,7 @@ std::vector<ParamDesc> build() {
         d.type = ParamType::Float;
         d.value_hint = "F";
         bounds(d, 0.0, SpecConfig::draft_p_min_max);
+        special(d, "0", "always the full width");
         bind_float(d, [](RunConfig & c) -> float & { return c.spec.draft_p_min; });
         t.push_back(d);
     }
@@ -687,6 +767,7 @@ std::vector<ParamDesc> build() {
                           "N-gram only: shortest run of matching tokens allowed to draft.");
         d.value_hint = "N";
         bounds(d, 1, SpecConfig::ngram_match_limit, "tokens");
+        typical(d, usual::ngram_min_lo, usual::ngram_min_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.spec.ngram_min_match; });
         t.push_back(d);
     }
@@ -695,6 +776,7 @@ std::vector<ParamDesc> build() {
                           "N-gram only: longest suffix considered when looking for a match.");
         d.value_hint = "N";
         bounds(d, 1, SpecConfig::ngram_match_limit, "tokens");
+        typical(d, usual::ngram_max_lo, usual::ngram_max_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.spec.ngram_max_match; });
         t.push_back(d);
     }
@@ -706,7 +788,8 @@ std::vector<ParamDesc> build() {
                           "output. 0 = the model's own value.");
         d.value_hint = "N";
         d.lossy = true;
-        bounds(d, 0, RunConfig::n_expert_used_max);
+        bounds(d, 0, RunConfig::n_expert_used_max, "experts");
+        special(d, "0", "the model's own");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_expert_used; });
         t.push_back(d);
     }
@@ -719,6 +802,7 @@ std::vector<ParamDesc> build() {
         d.value_hint = "F";
         d.lossy = true;
         bounds(d, 0.0, MoeStreamConfig::drop_cold_frac_max);
+        special(d, "0", "off");
         bind_float(d, [](RunConfig & c) -> float & { return c.moe.drop_cold_frac; });
         t.push_back(d);
     }
@@ -749,17 +833,20 @@ std::vector<ParamDesc> build() {
         d.value_hint = "L";
         d.lossy = true;
         bounds(d, 0.0, MoeStreamConfig::substitute_lambda_max);
+        special(d, "0", "off");
         bind_float(d, [](RunConfig & c) -> float & { return c.moe.substitute_lambda; });
         t.push_back(d);
     }
     {
-        ParamDesc d = row("route-ahead", "Route ahead", G::Lossy, L::Experimental,
+        ParamDesc d = row("route-ahead", "Route experts early", G::Lossy, L::Experimental,
                           "Commit decode routing to the prediction made N layers earlier in the same forward "
                           "pass, so a prefetch can never miss. Changes the output. Excludes the prefetchers "
                           "and speculation. 0 is off.");
         d.value_hint = "N";
         d.lossy = true;
         bounds(d, 0, MoeStreamConfig::route_ahead_max, "layers");
+        typical(d, usual::route_ahead_lo, usual::route_ahead_hi);
+        special(d, "0", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.route_ahead; });
         t.push_back(d);
     }
@@ -1121,11 +1208,32 @@ std::string params_json(const RunConfig & defaults) {
             }
             o += ']';
         }
-        if (d.bounded) {
+        if (d.bounded || d.bounded_below) {
             o += ",\"min\":";
             json_num(o, d.min);
+        }
+        if (d.bounded) {
             o += ",\"max\":";
             json_num(o, d.max);
+        }
+        if (d.has_typical) {
+            o += ",\"typical\":{\"min\":";
+            json_num(o, d.typical_min);
+            o += ",\"max\":";
+            json_num(o, d.typical_max);
+            o += '}';
+        }
+        if (!d.specials.empty()) {
+            o += ",\"special\":[";
+            for (size_t i = 0; i < d.specials.size(); ++i) {
+                if (i) o += ',';
+                o += "{\"value\":";
+                json_value(o, d, d.specials[i].value);
+                o += ",\"label\":";
+                json_str(o, d.specials[i].label);
+                o += '}';
+            }
+            o += ']';
         }
         if (!d.unit.empty()) {
             o += ",\"unit\":";

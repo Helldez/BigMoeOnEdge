@@ -40,6 +40,36 @@ class ParamsAndConversationsTest {
     }
 
     @Test
+    fun specialValuesTypicalRangeAndAdvancedRows() {
+        val row = ParamSpec.of(
+            org.json.JSONObject(
+                """{"key":"io-threads","label":"Read lanes","type":"int","group":"streaming","group_label":"Streaming",
+                    "level":"advanced","scope":"session","help":"Parallel expert-read lanes, including the calling thread. 1 is the serial baseline.",
+                    "flag":"--io-threads","min":1,"max":16,"unit":"lanes","typical":{"min":2,"max":8},
+                    "special":[{"value":0,"label":"off"}],"default":4}""",
+            ),
+        )
+        assertEquals(2.0..8.0, row.typical)
+        assertEquals("usually 2 to 8", row.typicalText())
+        assertEquals("off", row.specialLabel(0L))
+        assertEquals("off", row.specialLabel(0.0))
+        assertNull(row.specialLabel(4L))
+        assertEquals("Parallel expert-read lanes, including the calling thread." to "1 is the serial baseline.", row.helpParts())
+        val specs = ParamSpec.parse(table)
+        assertNull(specs[0].typicalText())
+        // Advanced holds only what the basic groups do not: no row twice.
+        assertEquals(listOf("overlap"), ParamSpec.advanced(specs).flatMap { g -> g.second.map { it.key } })
+    }
+
+    @Test
+    fun lanAddressIsIpv4AndReachable() {
+        val a = listOf("127.0.0.1", "169.254.3.4", "192.168.1.23", "fe80::1", "192.168.1.23", "10.0.0.5")
+            .map { java.net.InetAddress.getByName(it) }
+        assertEquals(listOf("192.168.1.23", "10.0.0.5"), io.bigmoeonedge.app.engine.LanAddress.pick(a))
+        assertEquals("http://192.168.1.23:8765/v1", io.bigmoeonedge.app.engine.LanAddress.url("192.168.1.23"))
+    }
+
+    @Test
     fun fieldTextBecomesTheWireValueOfTheRowsType() {
         val specs = ParamSpec.parse(table)
         assertEquals(2000L, paramValueFromText(specs[0], " 2000 "))

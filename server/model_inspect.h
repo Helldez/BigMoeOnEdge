@@ -11,9 +11,18 @@
 
 namespace bmoe::server {
 
+// The model loaded now, as the engine host knows it: its file name and what its plan's memory
+// ledger holds (0 when it was loaded without a plan). Loading the inspected model unloads it, so
+// the verdict gives that back (hf_repo.h: FitInputs). An empty name is no model loaded.
+struct LoadedSession {
+    std::string model;
+    uint64_t held_bytes = 0;
+};
+
 // The /api/hf/inspect object for `model` of `ref`: the model's facts (architecture, experts,
-// bytes by group, whether it streams), the machine's (what this process may hold, free disk in
-// `models_dir`, what is already there) and the verdict (hf_repo.h: fit_verdict). The headers are
+// bytes by group, whether it streams, what the file is for), the machine's (what this process may
+// hold, free disk in `models_dir`, what is already there) and the verdict (hf_repo.h: fit_verdict),
+// with `loaded` given back. The headers are
 // fetched into `scratch_dir` and removed before this returns. False with the reason when the
 // listing's files could not be fetched at all; a header that fetched and did not parse is a fact
 // in the answer, not an error.
@@ -24,6 +33,7 @@ bool inspect_remote_model(HttpFetch & net,
                           const std::string & token,
                           const std::string & scratch_dir,
                           const std::string & models_dir,
+                          const LoadedSession & loaded,
                           json & out,
                           std::string & error);
 
