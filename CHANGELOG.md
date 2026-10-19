@@ -29,6 +29,14 @@ Semantic Versioning.
   three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
   with their own dark card so they read on either GitHub theme.
 
+### Fixed
+- **The tag build no longer publishes the release.** Its APK job attached the debug APK with an
+  action that creates the release when none exists yet, as the workflow's own token; a release made
+  that way fires no `release: published`, so `release-apk` and `release-host` never ran and 0.31.0
+  went out with one debug APK and no archives (#284). The step is gone, and with it the job's write
+  permission: `release-apk` already uploads the debug APK beside the signed one. The agent guide
+  says who publishes a release.
+
 ## [0.31.0] - 2026-10-18
 
 ### Added

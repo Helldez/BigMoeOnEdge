@@ -119,6 +119,9 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
 - **Release APKs come from CI, never from a local build.** The `release-apk` workflow runs
   when a release is published: clean checkout of the tag, NDK build, signed with the stable
   key from repository secrets, assets attached to the release. Do not hand-upload an APK.
+- **A person publishes the release; no workflow creates one.** A release made with a workflow's
+  `GITHUB_TOKEN` fires no `release: published`, so `release-apk` and `release-host` never run and
+  the release goes out with whatever one job attached. The tag build only builds.
 - **Every released feature bumps the app version**: `versionCode` + `versionName` in the
   Android app's Gradle config, in the same PR as the change being released, matching the tag.
   The engine's own version (`project(... VERSION ...)` in the top-level `CMakeLists.txt`) moves
