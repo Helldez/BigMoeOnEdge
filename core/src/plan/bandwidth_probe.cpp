@@ -386,7 +386,7 @@ void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model) {
             break;
         }
         for (ComputeDevice & d : hw.devices) {
-            if (d.is_cpu || d.is_host_helper || !d.probe_here() || wide_ref.empty()) continue;
+            if (d.is_cpu || !d.probe_here() || wide_ref.empty()) continue;
             ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
             if (!dev) continue;
             if (d.has_own_memory() && d.memory_free && d.memory_free < (uint64_t) wide.weight.size() * 4) continue;

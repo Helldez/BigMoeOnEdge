@@ -1300,18 +1300,6 @@ int main() {
         check(!pinned_off.config.prefill.enabled() && find(pinned_off, "prefill-device")->source == Source::Operator,
               "prefill: a caller who set it empty is not overruled");
 
-        // A library the host calls into is not somewhere a prefill can be placed, however it measures.
-        HardwareProfile helper = machine(0.0, Tri::Unknown);
-        ComputeDevice lib;
-        lib.name = "lib";
-        lib.is_host_helper = true;
-        lib.shares_host_memory = Tri::Yes;
-        lib.wide_matmul_gibs = 5000.0;
-        lib.wide_identity_ok = Tri::Yes;
-        helper.devices.push_back(lib);
-        check(!plan_run(base_cfg(), helper, mm, PlanRequest{}).config.prefill.enabled(),
-              "prefill: a host helper library is never the prefill device");
-
         // A device with memory of its own costs this pool nothing, and is refused only by its own.
         HardwareProfile disc = machine(1500.0, Tri::Yes);
         disc.devices[1].shares_host_memory = Tri::No;

@@ -776,6 +776,16 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("llama-debug", "llama.cpp debug log", G::Diagnostics, L::Debug,
+                          "Let llama.cpp's own DEBUG log lines through to stderr. Off, they are dropped: about "
+                          "1200 lines per model load. For debugging llama.cpp, not the engine.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--llama-debug", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.llama_debug_log; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("load-all", "Load all experts", G::Diagnostics, L::Debug,
                           "Read ALL experts each token: the full-sweep A/B baseline.");
         d.type = ParamType::Bool;
