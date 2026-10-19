@@ -172,9 +172,8 @@ Placement probe_placement(const char * model_path,
 
     // Which layers keep their routed experts on the host. Two sources, and both are read rather
     // than reconstructed: a layer beyond what the fitter placed on devices is entirely host; a
-    // placed layer whose override routes its `exps` tensors to the CPU buffer type is host for the
-    // experts only. Anything else went to a device and is not the streamer's to serve.
-    const ggml_backend_buffer_type_t cpu_buft = ggml_backend_cpu_buffer_type();
+    // placed layer an override moves any of the FFN of is host for all of its experts (below).
+    // Anything else went to a device and is not the streamer's to serve.
     const uint32_t n_layer = model.n_layer;
     const uint32_t on_devices = pl.n_gpu_layers < 0 ? n_layer : std::min<uint32_t>((uint32_t) pl.n_gpu_layers, n_layer);
     const uint32_t first_device_layer = n_layer - on_devices; // llama.cpp fills devices from the top
@@ -183,12 +182,21 @@ Placement probe_placement(const char * model_path,
     for (uint32_t il = 0; il < first_device_layer; ++il)
         host[il] = true;
 
+    // A layer's experts never straddle the boundary. The fitter's partial layer can overflow a SHARE
+    // of its FFN ("blk\.11\.ffn_down.*": down here, gate and up on the device), and the session routes
+    // every pattern to the host whatever device it named. That leaves one projection of a layer's
+    // experts in host memory and the others on a device: the streamer can serve neither half, and on
+    // a phone it aborted the run at capture. So any pattern that moves part of a layer's FFN brings
+    // all of that layer's experts with it. They are then streamed, which the host pays for through
+    // the cache rather than by holding them, and the device holds less than the fitter projected.
     for (const auto & o : overrides) {
         if (!o.pattern) break;
         pl.override_patterns.push_back(o.pattern);
-        if (o.buft != cpu_buft) continue;
-        const int il = tensor_names::expert_override_layer(o.pattern);
-        if (il >= 0 && (uint32_t) il < n_layer) host[(size_t) il] = true;
+        const int il = tensor_names::ffn_override_layer(o.pattern);
+        if (il < 0 || (uint32_t) il >= n_layer) continue;
+        if (tensor_names::expert_override_layer(o.pattern) != il)
+            pl.override_patterns.push_back(tensor_names::expert_override_pattern(il));
+        host[(size_t) il] = true;
     }
     // A block that carries no experts has none to leave on the host: on a hybrid or a leading-dense
     // architecture the list would otherwise count every block, and a count of 52 "MoE layers" out of

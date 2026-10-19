@@ -81,10 +81,11 @@ Two outcomes of the first stage end the plan early, and both are stated: if the 
 fits in RAM the experts stay resident and nothing streams (the classic `-ot exps=CPU` offload);
 if every layer's experts land on a device, nothing is left for the streamer.
 
-A layer the fitter splits is the case in between. Its partial layer can overflow one projection to
-the host (`ffn_down` here, `ffn_gate` and `ffn_up` on the device), and that host half is not
-something the streamer can serve: it loads a layer's experts as a set. So the session leaves such a
-layer where it was placed, says how many there were, and streams the rest.
+A layer's experts are never split between the two. The fitter's partial layer can overflow a share
+of its FFN to the host (`ffn_down` here, `ffn_gate` and `ffn_up` on the device), and the streamer
+cannot serve half a layer: it loads a layer's experts as a set. So any pattern that moves part of a
+layer's FFN brings all of that layer's experts to the host with it, where they are streamed. A split
+given by hand is refused at load, by name.
 
 ## The unit everything is priced in
 

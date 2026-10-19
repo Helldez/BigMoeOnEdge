@@ -719,6 +719,32 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
         evict_tail();
 }
 
+double ExpertStreamSource::cache_lost_frac(int n) {
+    if (cache_max_ == 0 || chead_ == -1 || n <= 0) return -1.0;
+    // Spread over the whole list, hot to cold: what a system takes first is the cold end, and a
+    // sample of only the hot end would answer "nothing yet" until the damage reached the head.
+    size_t entries = 0;
+    for (int32_t id = chead_; id != -1; id = cnext_[id])
+        ++entries;
+    const size_t stride = std::max<size_t>(1, entries / (size_t) n);
+    size_t sampled = 0, resident = 0, i = 0;
+    for (int32_t id = chead_; id != -1; id = cnext_[id], ++i) {
+        if (i % stride != 0 || !cvalid_[id]) continue;
+        const int il = id / n_expert_, e = id % n_expert_;
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
+            const uint64_t slice = layers_[il].proj[p].nb2;
+            if (slice < 2 * page_) continue; // no page of its own to ask about
+            // A page wholly inside the slice: the boundary pages are shared with the neighbours.
+            const uintptr_t s = (uintptr_t) lbuf_[p][il] + (uint64_t) e * slice;
+            const uintptr_t pg = (s + page_ - 1) & ~(uintptr_t) (page_ - 1);
+            pio::vm_resident_sample((void *) pg, page_, &sampled, &resident);
+            break; // one page per entry: the entry was written whole, so it is lost whole or not at all
+        }
+    }
+    if (sampled == 0) return -1.0;
+    return 1.0 - (double) resident / (double) sampled;
+}
+
 size_t ExpertStreamSource::worst_cycle_bytes(int top_k) const {
     // entry_bytes prices a layer's experts uniformly (one entry = every projection of one expert
     // of that layer), so the worst token demands top_k entries from every bound layer. Clamped
