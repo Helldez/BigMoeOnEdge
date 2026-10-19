@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import HuggingFace from '../components/models/HuggingFace.svelte';
+  import PlanProgress from '../components/plan/PlanProgress.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
   import { api } from '../lib/api';
   import { formatBytes } from '../lib/format';
@@ -15,6 +16,18 @@
   let loadedPath = $derived(server.info?.model?.path ?? null);
   let planning = $derived(server.info?.state === 'planning');
   let loading = $derived(server.info?.state === 'loading' || planning);
+
+  // Seconds since the load began, so a long load reads as progress rather than as a hang.
+  let elapsed = $state(0);
+  $effect(() => {
+    if (!loading) {
+      elapsed = 0;
+      return;
+    }
+    const t0 = Date.now();
+    const id = setInterval(() => (elapsed = Math.round((Date.now() - t0) / 1000)), 1000);
+    return () => clearInterval(id);
+  });
 
   async function refresh() {
     try {
@@ -98,7 +111,8 @@
     <button type="button" onclick={() => act('unload', api.unload)} disabled={pending.unload}>Unload</button>
   </div>
 {:else if loading}
-  <p class="banner warn">{planning ? 'Measuring the machine (storage, memory, each compute device), then loading...' : 'Loading a model...'}</p>
+  <p class="banner warn" role="status">{planning ? 'Measuring this machine, then loading' : 'Loading the model'} · {elapsed} s</p>
+  {#if planning}<PlanProgress progress={server.planProgress} />{/if}
 {/if}
 
 {#if data}

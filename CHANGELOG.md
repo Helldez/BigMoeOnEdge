@@ -61,6 +61,14 @@ Semantic Versioning.
   local device, read from what each offers: a remote one (RPC) and a library the host calls into
   (BLAS) do not count, so a build with only those no longer reads as a machine without devices.
 
+### Fixed
+- **Small things from the 0.31.0 smoke tests (#290).** The chat list ellipsizes a long title before
+  its Delete link instead of running under it. Loading a model shows the seconds since it began
+  and, while the plan measures, the same stages the Plan screen shows, in the web UI and the app,
+  instead of a blind wait of half a minute or more. The macOS archives' README says how to open a
+  program a browser download quarantined (`xattr -dr com.apple.quarantine`, or right-click and
+  Open) until a signed installer ships (#234).
+
 ## [0.31.0] - 2026-10-18
 
 ### Added
