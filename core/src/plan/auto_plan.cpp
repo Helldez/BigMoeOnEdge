@@ -7,6 +7,8 @@
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
 
+#include "../engine/llama_log.h"
+
 #include "llama.h"
 
 #include <algorithm>
@@ -24,6 +26,8 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
 
     starting(); // devices
     register_backends();
+    // The probes load the model too; asked for, their DEBUG lines are wanted as much as the run's.
+    detail::set_llama_log_debug(cfg.llama_debug_log);
     r.hw = probe_hardware(path);
     // Every device beyond the host is asked in a process of its own first. A device is only as sound
     // as its driver, and a driver that ends the process it is used from would otherwise end this plan

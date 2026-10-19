@@ -216,6 +216,7 @@ int main() {
     expect_flag({"--dense-weights", "mmap", "--dense-odirect"},
                 [](const RunConfig & c) { return c.moe.dense_weights == DenseWeightsMode::Anonymous; });
     expect_flag({"--load-all"}, [](const RunConfig & c) { return c.moe.load_all; });
+    expect_flag({"--llama-debug"}, [](const RunConfig & c) { return c.llama_debug_log; });
     expect_flag({"--force-cache"}, [](const RunConfig & c) { return c.moe.force_cache; });
     expect_flag({"--overlap"}, [](const RunConfig & c) { return c.moe.overlap; });
     expect_flag({"--io-two-wave"}, [](const RunConfig & c) { return c.moe.io_two_wave; });

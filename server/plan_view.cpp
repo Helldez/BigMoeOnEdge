@@ -99,8 +99,6 @@ json devices_json(const HardwareProfile & hw, const Plan & plan) {
         } else if (d.usable == Tri::No) {
             status = "unusable";
             why = d.unusable_reason.empty() ? "Its probe did not come back, so nothing uses it." : d.unusable_reason;
-        } else if (d.is_host_helper) {
-            why = "A library the host calls into: nothing is placed on it.";
         } else {
             if (has_layers(plan, d)) uses.push_back("layers");
             if (d.name == armed) uses.push_back("prompt");
@@ -138,7 +136,7 @@ json devices_json(const HardwareProfile & hw, const Plan & plan) {
 // as one (HardwareProfile::backends_placeable).
 std::string devices_none(const HardwareProfile & hw) {
     for (const ComputeDevice & d : hw.devices)
-        if (!d.is_cpu && !d.is_host_helper) return "";
+        if (!d.is_cpu) return "";
     if (!hw.backends_looked) return "not_probed";
     return hw.backends_placeable > 0 ? "machine" : "build";
 }

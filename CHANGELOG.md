@@ -159,6 +159,35 @@ Semantic Versioning.
   was already added is a `201` that replaces the entry; `409` is for an id of the shipped catalog,
   and for a split set with shards missing.
 
+### Fixed
+- **llama.cpp's debug log no longer buries the engine's output.** llama.cpp and ggml wrote every
+  line they log to stderr, DEBUG included: about 1200 lines of graph-input bookkeeping per model
+  load, ~9700 for a CLI run with `--auto` (one load per probe child) and 12k in a server log after
+  three loads. A log bridge (`core/src/engine/llama_log.cpp`, through the public `llama_log_get` /
+  `llama_log_set`) is installed before the first backend loads, in the CLI, the server, every
+  probe child and any session opened without the planner. It forwards everything else unchanged to
+  the callback it replaced and drops DEBUG, together with the continuation lines of a dropped
+  message, unless `--llama-debug` (the `llama-debug` parameter) asks for them (#287).
+- **A cancel is no longer logged as a decode failure.** Stopping a generation aborts the graph
+  through the engine's own abort callback, which llama.cpp reports as three errors
+  (`graph_compute: ... failed with error 1`, `process_ubatch: failed to compute graph`,
+  `llama_decode: failed to decode`). While an abort the engine requested for a cancel is in flight,
+  until the cancelled `generate()` or `decide()` returns, llama.cpp's ERROR lines are demoted to
+  DEBUG, and the engine says `cancelled: the decode in progress was stopped on request` instead. An
+  abort for a fatal streaming error opens no such window, so a real failure still reads as one
+  (#287).
+- **No `UnmapViewOfFile failed` warning on Windows with `--release-mmap`.** The released view's
+  range was held by a plain reservation, so llama.cpp's own unmap of it at teardown failed and
+  warned on every released run, the default `--auto` path included. The range is now held by a view
+  of an empty, uncommitted pagefile section, which llama.cpp's unmap releases successfully, as its
+  `munmap` already did on POSIX; a plain reservation remains the fallback (#287).
+- **The planner no longer lists BLAS as a device.** `plan: device BLAS: one token 0 GiB/s` appeared
+  on every macOS plan. A device ggml registers as an accelerator (BLAS, AMX, ...) is a library the
+  host's graphs call into, never a place for a layer, so the device probe leaves it out of the
+  profile by its device type rather than its name; GPU, integrated GPU and NPU devices (Hexagon
+  registers as a GPU) are kept. A new `device_probe` test checks this against the build's real
+  registry (#290).
+
 ## [0.31.0] - 2026-10-18
 
 ### Added

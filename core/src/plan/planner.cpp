@@ -949,7 +949,7 @@ struct PrefillSurvey {
 PrefillSurvey survey_prefill(const HardwareProfile & hw) {
     PrefillSurvey v;
     for (const ComputeDevice & d : hw.devices) {
-        if (d.is_cpu || d.is_host_helper) continue;
+        if (d.is_cpu) continue;
         ++v.n_accel;
         if (d.usable == Tri::No) { // it did not survive being probed: nothing to weigh
             ++v.n_broken;

@@ -96,16 +96,18 @@ int main() {
     CHECK(r.plugs_missed == 0);
     CHECK(!ph.empty());
 
-    // The view's range is now a reservation, not free and not mapped: nothing can be allocated
-    // there, so the model's late UnmapViewOfFile on this base finds no live allocation.
+    // The view's range is now held by a placeholder view whose pages are reserved, not committed:
+    // nothing can be allocated there, and nothing of the file is mapped there any more.
     CHECK(state_at(m.view) == MEM_RESERVE);
 
     // The section's handle value is now an inert event: waiting on it times out instead of failing
     // as it would on a section, and the model's late CloseHandle will close this plug, nothing else.
     CHECK(WaitForSingleObject(m.section, 0) == WAIT_TIMEOUT);
 
-    // What llama_mmap's destructor does, in its order: both must be harmless.
-    CHECK(UnmapViewOfFile(m.view) == FALSE);
+    // What llama_mmap's destructor does, in its order: both must succeed, so it warns about neither
+    // (issue #287: a failed unmap here printed "UnmapViewOfFile failed" on every released run).
+    CHECK(UnmapViewOfFile(m.view) == TRUE);
+    CHECK(state_at(m.view) == MEM_FREE);
     CHECK(CloseHandle(m.section) == TRUE);
 
     // Idempotent: nothing of this file is left to find.
@@ -116,7 +118,7 @@ int main() {
     CHECK(r.sections_closed == 0);
     CHECK(ph2.empty());
 
-    // Releasing the placeholders frees the range.
+    // Releasing the placeholders leaves the range alone: the model's unmap above already freed it.
     ph.release();
     CHECK(ph.empty());
     CHECK(state_at(m.view) == MEM_FREE);

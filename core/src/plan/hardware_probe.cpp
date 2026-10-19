@@ -4,6 +4,7 @@
 #include "bmoe/probe.h"
 
 #include "../io/platform_io.h"
+#include "../engine/llama_log.h"
 
 #include "ggml-backend.h"
 #include "ggml.h"
@@ -171,6 +172,14 @@ void probe_devices(HardwareProfile & h) {
             if (!dev) continue;
             ggml_backend_dev_props props{};
             ggml_backend_dev_get_props(dev, &props);
+            // An accelerator in ggml's sense (BLAS, AMX, ...) is not somewhere work can be placed:
+            // it is a library the host's own graphs call into for some operations, registered as a
+            // device because that is how a backend is made known. It computes on the host's memory
+            // with the host's cores, holds no weights of its own, and llama.cpp never places a layer
+            // on it. The device type says so, whatever the library is called; listed, it was probed
+            // as if it were a device and reported at 0 GiB/s on every plan (#290). A GPU or NPU
+            // backend (Hexagon among them) reports GPU or IGPU and is kept.
+            if (props.type == GGML_BACKEND_DEVICE_TYPE_ACCEL) continue;
 
             ComputeDevice d;
             d.name = props.name ? props.name : "";
@@ -178,7 +187,6 @@ void probe_devices(HardwareProfile & h) {
             d.memory_free = props.memory_free;
             d.memory_total = props.memory_total;
             d.is_cpu = props.type == GGML_BACKEND_DEVICE_TYPE_CPU;
-            d.is_host_helper = props.type == GGML_BACKEND_DEVICE_TYPE_ACCEL;
             // The device TYPE may only ever narrow this to "shared", never to "its own". The CPU's
             // memory is the host's by definition, and a device that calls itself integrated is
             // claiming shared memory - a claim worth believing, because believing it errs safe.
@@ -247,6 +255,9 @@ void register_backends() {
     // Once: llama_backend_init() loads nothing when the registry is already filled, and a second
     // pass here would count the modules the first one loaded as linked in.
     if (g_backends_looked) return;
+    // The first thing every front-end and every probe child does with llama.cpp, so the log bridge
+    // goes in here: loading the backends already logs, and so does every model load after it.
+    detail::install_llama_log();
     // What the registry holds before anything is loaded is what came linked in (the CPU backend
     // in a build that links it, nothing in one that loads it). Then the modules: ggml looks for
     // libraries named after each backend, and left to itself it looks in the working directory

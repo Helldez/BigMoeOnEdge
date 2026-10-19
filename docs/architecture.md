@@ -80,6 +80,8 @@ core/
                 prefill_device - moves layer weights and model state onto a device per graph
                 prefill_path - the prefill device for one session: setup, placement, device decode
                 runtime — the one-shot run() wrapper over a Session
+                llama_log — what of llama.cpp's own log reaches stderr: DEBUG dropped unless
+                  asked for, a requested cancel's decode errors demoted while it is in flight
                 chat_messages — bmoe/chat.h to and from llama.cpp's chat types, in one place
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 ngram_draft — the prompt-lookup draft source (see ngram_draft.h)

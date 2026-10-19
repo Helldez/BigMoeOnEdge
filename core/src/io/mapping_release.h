@@ -16,10 +16,11 @@
 //
 // What it does NOT do: touch llama.cpp. The model still believes it owns the mapping and will
 // UnmapViewOfFile/CloseHandle it at free time. Both are made harmless here rather than left to
-// luck: the view's address range is re-reserved as a placeholder (so no later allocation can land
-// there and be unmapped by mistake), and the closed handle's slot is re-occupied by an inert event
-// (so a handle allocated later cannot inherit the value and be closed by mistake). The placeholders
-// are returned to the caller, who releases them AFTER the model is freed.
+// luck: the view's address range is re-occupied by a view of an empty, uncommitted pagefile section
+// (so no later allocation can land there, and the model's unmap succeeds by releasing that
+// placeholder instead of failing with a warning), and the closed handle's slot is re-occupied by
+// an inert event (so a handle allocated later cannot inherit the value and be closed by mistake).
+// The placeholders are returned to the caller, who releases them AFTER the model is freed.
 //
 // On POSIX the same release is done with munmap over the file's VMAs from /proc/self/maps, with
 // anonymous placeholders in their place. Android (f2fs) was measured not to serialise direct reads
@@ -53,11 +54,12 @@ public:
     MappingPlaceholders & operator=(const MappingPlaceholders &) = delete;
 
     void release();
-    bool empty() const { return reserved_.empty() && plugs_.empty(); }
+    bool empty() const { return reserved_.empty() && viewed_.empty() && plugs_.empty(); }
 
 private:
     friend MappingReleaseReport release_file_mappings(const std::vector<std::string> &, MappingPlaceholders *);
     std::vector<std::pair<void *, size_t>> reserved_; // address ranges held in place of the views
+    std::vector<std::pair<void *, size_t>> viewed_;   // Windows: placeholder views the model unmaps
     std::vector<void *> plugs_;                       // inert handles occupying closed sections' slots
 };
 

@@ -79,12 +79,6 @@ struct ComputeDevice {
     bool probed_out_of_process = false;
     bool probe_here() const { return !probed_out_of_process; }
 
-    // True for a device that is not somewhere work can be PLACED: a library the host's own graphs
-    // call into for some operations, registered as a device because that is how a backend is made
-    // known. It computes on the host's memory with the host's cores and holds no weights of its
-    // own, so "put the prefill on it" is not a sentence that means anything.
-    bool is_host_helper = false;
-
     // Whether this device's memory IS the host's — one physical pool, so moving a tensor onto it
     // frees nothing and the capacity tier is inert, leaving only bandwidth to win.
     //
