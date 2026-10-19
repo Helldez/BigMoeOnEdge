@@ -77,6 +77,11 @@ if(BMOE_HAVE_LLAMA)
         # `--dense-weights ahwb` (pio::pinned_alloc). No other platform has an equivalent.
         target_link_libraries(bmoe_core PUBLIC android)
     endif()
+    if(WIN32)
+        # QueryWorkingSetEx, behind the dense residency sensor (pio::vm_resident_sample). Newer SDKs
+        # resolve it from kernel32; the import library covers the ones that do not.
+        target_link_libraries(bmoe_core PUBLIC psapi)
+    endif()
 
     # Intra-layer I/O–compute overlap needs the fork's expert-ready hook in the CPU backend. It is
     # not detected here: the engine asks the CPU backend's registry for it at run time

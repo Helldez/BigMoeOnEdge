@@ -7,7 +7,9 @@
 // ::abs is not visible (GCC hard-errors; MSVC happened to tolerate it).
 #if defined(_WIN32)
 #include <windows.h>
+#include <psapi.h> // QueryWorkingSetEx: kernel32's K32 export on every supported Windows
 #include <malloc.h>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -151,11 +153,26 @@ void vm_advise_random(void * /*p*/, size_t /*sz*/) {
     // No readahead to tame on a host build that never streams; the gates do not measure I/O.
 }
 
-// Unmeasured on the host build, like the fault counters below and for the same reason: the gates
-// prove byte-identity, they do not size a cache against a phone's reclaim. QueryWorkingSetEx could
-// answer this, but nothing here consumes it.
-bool vm_resident_sample(const void * /*p*/, size_t /*sz*/, size_t * /*sampled*/, size_t * /*resident*/) {
-    return false;
+// The same question mincore answers elsewhere, asked of this process's working set: a page whose
+// entry is Valid is resident. Clipped to whole pages exactly as the POSIX version is, so the two
+// fractions mean the same thing.
+bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * resident) {
+    const size_t page = vm_page();
+    uintptr_t a0 = ((uintptr_t) p + page - 1) & ~(uintptr_t) (page - 1);
+    uintptr_t a1 = ((uintptr_t) p + sz) & ~(uintptr_t) (page - 1);
+    if (a1 <= a0) return true;
+    PSAPI_WORKING_SET_EX_INFORMATION info[256];
+    for (uintptr_t a = a0; a < a1;) {
+        const size_t want = std::min<size_t>((size_t) (a1 - a) / page, sizeof(info) / sizeof(info[0]));
+        for (size_t i = 0; i < want; ++i)
+            info[i].VirtualAddress = (PVOID) (a + i * page);
+        if (!QueryWorkingSetEx(GetCurrentProcess(), info, (DWORD) (want * sizeof(info[0])))) return false;
+        for (size_t i = 0; i < want; ++i)
+            *resident += (size_t) info[i].VirtualAttributes.Valid;
+        *sampled += want;
+        a += want * page;
+    }
+    return true;
 }
 
 bool file_mapped_regions(const char * /*basename*/, std::vector<MappedRegion> & /*out*/) {
@@ -174,14 +191,22 @@ uint64_t mem_total_bytes() {
     return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullTotalPhys : 0;
 }
 
-// The host build exists for the byte-identity gates, not perf measurement, so these stay
-// unmeasured (0) rather than pulling in the imperfect Windows equivalents (PageFaultCount counts
-// soft faults too; GetProcessTimes would work but there is no consumer for it here).
+// No per-process count of HARD faults is published here: PageFaultCount adds the soft ones, which
+// would read a cheap remap as a flash stall. So this stays unmeasured (0), and the dense residency
+// sensor above is the instrument that sees a refaulting dense set on this platform.
 uint64_t major_faults() {
     return 0;
 }
+bool major_faults_counted() {
+    return false;
+}
 double process_cpu_seconds() {
-    return 0.0;
+    FILETIME created, exited, kernel, user;
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) return 0.0;
+    auto secs = [](const FILETIME & f) {
+        return (double) (((uint64_t) f.dwHighDateTime << 32) | f.dwLowDateTime) * 1e-7; // 100 ns ticks
+    };
+    return secs(kernel) + secs(user);
 }
 
 size_t fault_bytes() {
@@ -431,6 +456,9 @@ uint64_t major_faults() {
     // RUSAGE_SELF aggregates every thread of the process, matching the multi-threaded decode.
     struct rusage ru;
     return getrusage(RUSAGE_SELF, &ru) == 0 ? (uint64_t) ru.ru_majflt : 0;
+}
+bool major_faults_counted() {
+    return true;
 }
 
 double process_cpu_seconds() {

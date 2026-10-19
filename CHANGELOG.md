@@ -6,6 +6,17 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **The runs a device report needs, in one command: `scripts/ios-runs.sh`.** It runs the plan, a
+  run of it and the same run with the dense set left mapped, each in a fresh process of the iOS
+  harness, and brings back the console output and per-token CSV of each with a `summary.txt`
+  (tok/s, the decode split, major faults, dense residency); `t2`/`t4` add the run at 2 and 4
+  threads. `device` drives a signed harness through `devicectl`, `sim` the booted simulator.
+- **The iOS memory entitlements, one at a time.** `BMOE_IOS_MEMORY_ENTITLEMENTS=ON` now asks for the
+  increased memory limit alone, which a free Personal Team is granted and which was enough for a
+  streamed 35B on a 12 GB phone (#235); `BMOE_IOS_EXTENDED_ADDRESSING=ON` adds the extended
+  address space, which a Personal Team is refused and which made the build unsignable for one.
+
 ### Changed
 - **The README, rewritten around what the engine is: an adaptive streaming optimizer for big local
   AI agents on any device.** It opens with a silent 30-second loop (an animated WebP, so it shows
@@ -33,6 +44,16 @@ Semantic Versioning.
   `HardwareProfile::file_pages_counted` is removed. The Apple-only "device buffers are locked"
   constant goes too: unknown is charged the same way. Plans on macOS, Linux, Android and Windows
   with a pagefile are unchanged; `docs/hardware-planning.md` describes the facts.
+
+### Fixed
+- **The dense residency sensor reads the same on every platform.** Under `mmap`/`warm` it found the
+  mapping through the process's region list, which an iOS app is not given and Windows does not
+  have, so `dense_resident_frac` was `-1` exactly where the dense set was being refaulted. It now
+  reads each tensor's own address in llama.cpp's mapping, and the same lookup serves dropping the
+  mapped copies after an `anon` read and the random-access advice on held-back tables. On Windows
+  the sample is `QueryWorkingSetEx` and the CPU time is `GetProcessTimes`, so the `compute:` line
+  is printed there; with no per-process count of hard faults published, it says so rather than
+  print a 0, and the summary's `majflt_tok` is `-1`.
 
 ## [0.31.0] - 2026-10-18
 
