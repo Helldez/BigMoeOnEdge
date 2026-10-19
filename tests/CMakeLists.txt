@@ -167,6 +167,14 @@ target_link_libraries(bmoe_csv_memory_test PRIVATE bmoe_core)
 target_include_directories(bmoe_csv_memory_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/metrics)
 add_test(NAME csv_memory COMMAND bmoe_csv_memory_test)
 
+# The control-group remainder over fake hierarchies; plain files, so it runs on every POSIX host.
+if(NOT WIN32)
+    add_executable(bmoe_cgroup_memory_test cgroup_memory_test.cpp)
+    target_link_libraries(bmoe_cgroup_memory_test PRIVATE bmoe_core)
+    target_include_directories(bmoe_cgroup_memory_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
+    add_test(NAME cgroup_memory COMMAND bmoe_cgroup_memory_test)
+endif()
+
 if(APPLE AND NOT IOS)
     add_executable(bmoe_process_memory_test process_memory_test.cpp ../core/src/io/platform_io.cpp)
     target_include_directories(bmoe_process_memory_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)

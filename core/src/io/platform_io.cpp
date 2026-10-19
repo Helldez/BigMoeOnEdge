@@ -32,6 +32,7 @@
 #include <sys/wait.h>
 #include <dirent.h>
 #include <chrono>
+#include <string>
 #include <ctime>
 #ifndef O_DIRECT
 #define O_DIRECT 0
@@ -237,6 +238,10 @@ bool reclaim_facts(ReclaimFacts * out) {
     return true;
 }
 
+uint64_t cgroup_memory_left(const char *, const char *) {
+    return 0; // job objects, not control groups, cap a process here; none is read yet
+}
+
 #else
 
 const fd_t fd_invalid = -1;
@@ -429,14 +434,19 @@ uint64_t mem_available_bytes() {
     if (host_vm(&vm)) return host_available_pages(vm) * (uint64_t) vm_page();
 #endif
     // Linux/Android: MemAvailable is the kernel's own estimate of what can be allocated without
-    // swapping (it accounts for reclaimable page cache), which is exactly the sizing signal we want.
+    // swapping (it accounts for reclaimable page cache), which is exactly the sizing signal we want,
+    // capped by what this process's control group still lets it take: in a container the machine's
+    // free memory is not this process's to use (a rented box reported 103 GB available inside an
+    // 85 GiB group).
     if (FILE * f = std::fopen("/proc/meminfo", "re")) {
         char line[256];
         while (std::fgets(line, sizeof(line), f)) {
             unsigned long long kb = 0;
             if (std::sscanf(line, "MemAvailable: %llu kB", &kb) == 1) {
                 std::fclose(f);
-                return (uint64_t) kb * 1024ull;
+                const uint64_t available = (uint64_t) kb * 1024ull;
+                const uint64_t group = cgroup_memory_left();
+                return group ? std::min(available, group) : available;
             }
         }
         std::fclose(f);
@@ -503,6 +513,102 @@ namespace {
     return found > 0;
 }
 } // namespace
+
+namespace {
+// One number from a cgroup file: a decimal, or "max" (no limit, reported as 0). False if unreadable.
+bool read_cgroup_number(const std::string & path, uint64_t * out) {
+    FILE * f = std::fopen(path.c_str(), "re");
+    if (!f) return false;
+    char buf[64] = {0};
+    const bool got = std::fgets(buf, sizeof(buf), f) != nullptr;
+    std::fclose(f);
+    if (!got) return false;
+    if (std::strncmp(buf, "max", 3) == 0) {
+        *out = 0;
+        return true;
+    }
+    char * end = nullptr;
+    const unsigned long long v = std::strtoull(buf, &end, 10);
+    if (end == buf) return false;
+    *out = (uint64_t) v;
+    return true;
+}
+
+// A key's value in a cgroup memory.stat ("inactive_file 12345"), 0 when absent.
+uint64_t read_cgroup_stat(const std::string & path, const char * key) {
+    FILE * f = std::fopen(path.c_str(), "re");
+    if (!f) return 0;
+    char line[256];
+    const size_t klen = std::strlen(key);
+    uint64_t v = 0;
+    while (std::fgets(line, sizeof(line), f)) {
+        if (std::strncmp(line, key, klen) == 0 && line[klen] == ' ') {
+            v = (uint64_t) std::strtoull(line + klen + 1, nullptr, 10);
+            break;
+        }
+    }
+    std::fclose(f);
+    return v;
+}
+
+// A v1 limit at or above this is the kernel's "unlimited" (PAGE_COUNTER_MAX rounded to a page),
+// not a cap anyone set.
+constexpr uint64_t k_cgroup_v1_unlimited = 1ull << 62;
+} // namespace
+
+uint64_t cgroup_memory_left(const char * fs_root, const char * self) {
+    // Where this process sits: "0::<path>" for the unified hierarchy, "<n>:memory:<path>" for v1.
+    std::string v2_path, v1_path;
+    bool v2 = false, v1 = false;
+    if (FILE * f = std::fopen(self, "re")) {
+        char line[1024];
+        while (std::fgets(line, sizeof(line), f)) {
+            std::string l(line);
+            while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
+                l.pop_back();
+            if (l.rfind("0::", 0) == 0) {
+                v2 = true;
+                v2_path = l.substr(3);
+            } else {
+                const size_t a = l.find(':'), b = a == std::string::npos ? a : l.find(':', a + 1);
+                if (b == std::string::npos) continue;
+                const std::string controllers = l.substr(a + 1, b - a - 1);
+                if (("," + controllers + ",").find(",memory,") != std::string::npos) {
+                    v1 = true;
+                    v1_path = l.substr(b + 1);
+                }
+            }
+        }
+        std::fclose(f);
+    }
+    const std::string root = fs_root;
+    uint64_t best = 0; // the tightest finite remainder found
+    auto consider = [&](uint64_t limit, uint64_t used, uint64_t reclaimable) {
+        if (limit == 0) return;
+        const uint64_t held = used > reclaimable ? used - reclaimable : 0;
+        const uint64_t left = limit > held ? limit - held : 1; // over the cap: nothing left, but known
+        if (best == 0 || left < best) best = left;
+    };
+    // From the group up to the root of what this namespace shows: a limit anywhere above applies too.
+    auto walk = [&](const std::string & base, std::string path, const char * max_f, const char * cur_f,
+                    const char * stat_key, bool v1_units) {
+        for (;;) {
+            const std::string dir = base + (path == "/" ? "" : path);
+            uint64_t limit = 0, used = 0;
+            if (read_cgroup_number(dir + "/" + max_f, &limit) && read_cgroup_number(dir + "/" + cur_f, &used)) {
+                if (v1_units && limit >= k_cgroup_v1_unlimited) limit = 0;
+                consider(limit, used, read_cgroup_stat(dir + "/memory.stat", stat_key));
+            }
+            if (path.empty() || path == "/") break;
+            const size_t slash = path.find_last_of('/');
+            path = slash == 0 || slash == std::string::npos ? "/" : path.substr(0, slash);
+        }
+    };
+    if (v2) walk(root, v2_path, "memory.max", "memory.current", "inactive_file", false);
+    if (v1)
+        walk(root + "/memory", v1_path, "memory.limit_in_bytes", "memory.usage_in_bytes", "total_inactive_file", true);
+    return best;
+}
 
 #if defined(__APPLE__)
 // The task's own ledger carries the same split /proc/self/status does: internal pages are the
@@ -579,6 +685,12 @@ bool process_memory(ProcessMemory * out) {
     sample.rss_anon_bytes = v[1];
     sample.rss_file_bytes = v[2];
     sample.swap_bytes = v[3];
+    // A control group's limit is the bytes left before the kernel ends this process, the same
+    // fact an app's own share is where the platform keeps one.
+    if (const uint64_t left = cgroup_memory_left()) {
+        sample.process_headroom_known = true;
+        sample.process_headroom_bytes = left;
+    }
     *out = sample;
     return true;
 }
@@ -633,6 +745,9 @@ bool reclaim_facts(ReclaimFacts * out) {
     }
     out->swaps = swap_total > 0;
     out->compresses = has_zram && out->swaps;
+    // A control group with a finite limit ends the process past it, whatever the machine could
+    // still compress or swap: the group's remainder is this process's share.
+    out->own_share_left = cgroup_memory_left();
     return true;
 }
 #endif
