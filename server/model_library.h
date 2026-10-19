@@ -58,12 +58,13 @@ public:
     // The /api/models object: local files and the catalog with each entry's status.
     json list();
 
-    // What a gguf is, from its headers alone (no tensor bytes): its architecture, and whether it
-    // carries routed experts in a layout this engine streams (docs/which-models-stream.md). "" and
-    // false when unreadable.
+    // What a gguf is, from its headers alone (no tensor bytes): its architecture, whether it
+    // carries routed experts in a layout this engine streams (docs/which-models-stream.md), and
+    // what it is for (model_files.h: file_role_name). "" and false when unreadable.
     struct ModelFacts {
         std::string arch;
         bool streamable = false;
+        std::string role;
     };
     ModelFacts probe(const std::string & path);
 
@@ -97,7 +98,8 @@ private:
     const CatalogEntry * find(const std::string & id) const;
     bool entry_on_disk(const CatalogEntry & e) const;
 
-    // One directory's models as /api/models `local` entries, appended to `out`.
+    // One directory's models, and those of the folders directly inside it (model_files.h:
+    // scan_model_files), as /api/models `local` entries, appended to `out`.
     void list_dir(const std::string & dir, json & out);
 
     void save_added();

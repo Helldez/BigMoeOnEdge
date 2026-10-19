@@ -571,6 +571,39 @@ static void file_tests() {
           "and refused where that folder is not listed");
     check(!confine_model_path((dir / "secret.gguf").u8string(), roots, out, err), "a second root widens nothing else");
     check(!confine_model_path("x.gguf", {}, out, err) && !err.empty(), "no folder at all opens nothing");
+
+    // The scan goes one folder deep (a split set kept in a folder of its own), and no further: not
+    // into a folder inside that one, and not through a link to a folder, which could loop or lead
+    // out of the root. What the listing shows is still opened only through the confinement.
+    write(dir / "models" / "set" / "big-00001-of-00002.gguf", "");
+    write(dir / "models" / "set" / "big-00002-of-00002.gguf", "");
+    write(dir / "models" / "set" / "deeper" / "hidden.gguf", "");
+    write(dir / "outside" / "far.gguf", "");
+    fs::create_directory_symlink(dir / "outside", dir / "models" / "linked", ec);
+    const bool linked = !ec;
+    const std::vector<ModelFiles> scanned = scan_model_files(models.front());
+    const auto listed = [&](const std::string & folder, const std::string & first) {
+        for (const ModelFiles & m : scanned)
+            if (m.folder == folder && m.first == first) return &m;
+        return (const ModelFiles *) nullptr;
+    };
+    check(listed("", "a.gguf") != nullptr, "scan: a model in the folder itself is listed");
+    const ModelFiles * set = listed("set", "big-00001-of-00002.gguf");
+    check(set && set->complete() && set->files.size() == 2, "scan: a split set in a subfolder is one model, complete");
+    check(!listed("set/deeper", "hidden.gguf") && !listed("deeper", "hidden.gguf"),
+          "scan: a folder inside a subfolder is not entered");
+    if (linked) {
+        check(!listed("linked", "far.gguf"), "scan: a link to a folder is not followed");
+        check(!confine_model_path("linked/far.gguf", models, out, err) &&
+                  !confine_model_path((dir / "models" / "linked" / "far.gguf").u8string(), models, out, err),
+              "scan: and a model through it, named by hand, is refused by the confinement");
+    }
+    check(confine_model_path("set/big-00001-of-00002.gguf", models, out, err) &&
+              fs::equivalent(fs::u8path(out), dir / "models" / "set" / "big-00001-of-00002.gguf"),
+          "scan: a model in a subfolder opens through the confinement");
+    check(!confine_model_path("set/../../secret.gguf", models, out, err) &&
+              !confine_model_path((dir / "models" / "set" / ".." / ".." / "secret.gguf").u8string(), models, out, err),
+          "scan: a way out through the subfolder is refused");
     fs::remove_all(dir, ec);
 }
 
@@ -639,6 +672,49 @@ static void model_files_tests() {
           "a set is listed by its first shard, with the files present in shard order");
     check(g.size() == 3 && g[2].first == "c-00001-of-00002.gguf" && g[2].files.size() == 1 && !g[2].complete(),
           "a set missing its first shard is still listed under the first shard's name, incomplete");
+
+    // What a file is for, from its header. The facts mirror three companion files of one released
+    // repository and a model that carries its own prediction head.
+    GgufHeaderFacts h;
+    check(file_role(h) == FileRole::Unknown && std::string(file_role_name(file_role(h))).empty(),
+          "role: an unreadable header says nothing");
+    h.ok = true;
+    h.arch = "clip";
+    h.type = "mmproj";
+    check(file_role(h) == FileRole::Projector, "role: a projector says so in general.type");
+    h.type.clear();
+    check(file_role(h) == FileRole::Projector, "role: and an older one by its projector architecture");
+    h = {};
+    h.ok = true;
+    h.arch = "dflash";
+    h.type = "model";
+    h.n_block = 5;
+    h.reads_target = true;
+    check(file_role(h) == FileRole::Draft, "role: a file that reads another model's layers is a draft");
+    h.arch = "gemma4-assistant";
+    h.reads_target = false;
+    h.n_block = 4;
+    h.n_nextn = 4;
+    check(file_role(h) == FileRole::Draft, "role: a file of prediction heads and nothing else is a draft");
+    h.arch = "glm4moe";
+    h.n_block = 47;
+    h.n_nextn = 1;
+    check(file_role(h) == FileRole::Model, "role: a model with its own prediction head is a model");
+    h.type.clear();
+    check(file_role(h) == FileRole::Model, "role: and so is one with no general.type");
+    h.n_block = 0;
+    h.n_nextn = 0;
+    check(file_role(h) == FileRole::Other, "role: no transformer blocks is no language model");
+    h.n_block = 10;
+    h.type = "adapter";
+    check(file_role(h) == FileRole::Other && std::string(file_role_name(FileRole::Other)) == "other",
+          "role: another file type is not a model");
+    check(file_role_hint("mmproj-gemma-4-26B-A4B-it-Q8_0.gguf") == FileRole::Projector &&
+              file_role_hint("sub/Model-MMPROJ-f16.gguf") == FileRole::Projector &&
+              file_role_hint("mtp-gemma-4-26B-A4B-it-Q8_0.gguf") == FileRole::Draft &&
+              file_role_hint("dflash-x-BF16.gguf") == FileRole::Draft &&
+              file_role_hint("gemma-4-26B-A4B-it-Q4_0.gguf") == FileRole::Model,
+          "role: a name only hints, for ordering a listing whose headers are unread");
 }
 
 // A repository as a person types it, what a listing holds, and the catalog entry a model becomes.
@@ -670,12 +746,16 @@ static void hf_tests() {
       {"type":"file","path":"README.md","size":467},
       {"type":"file","path":"Qwen3.6-35B-A3B-Q4_K_M.gguf","size":20419565568},
       {"type":"file","path":"mmproj-Qwen3.6-35B-A3B-Q8_0.gguf","size":614194304},
+      {"type":"file","path":"mtp-Qwen3.6-35B-A3B-Q8_0.gguf","size":4194304},
       {"type":"file","path":"Q2_K/big-Q2_K-00002-of-00003.gguf","size":200},
       {"type":"file","path":"Q2_K/big-Q2_K-00001-of-00003.gguf","size":100},
       {"type":"directory","path":"Q2_K"}
     ])");
     std::vector<HfModel> models;
-    check(parse_hf_tree(tree, models, err) && models.size() == 3, "hf: a listing's gguf files, shards grouped");
+    check(parse_hf_tree(tree, models, err) && models.size() == 4, "hf: a listing's gguf files, shards grouped");
+    check(models.size() == 4 && models[0].role == "model" && models[1].role == "model" && models[2].role == "draft" &&
+              models[3].role == "projector",
+          "hf: what the names suggest are models come first, the companion files after them");
     check(models[0].name == "Q2_K/big-Q2_K-00001-of-00003.gguf" && models[0].count == 3 &&
               models[0].files.size() == 2 && !models[0].complete() && models[0].bytes == 300 &&
               models[0].files[0].bytes == 100,
@@ -692,8 +772,9 @@ static void hf_tests() {
           "hf: the listing URL");
     check(hf_search_url("https://huggingface.co", "gemma 4 26B/it", 20) ==
               "https://huggingface.co/api/"
-              "models?search=gemma%204%2026B%2Fit&filter=gguf&sort=downloads&direction=-1&limit=20",
-          "hf: the search URL, the query percent-encoded");
+              "models?search=gemma%204%2026B%2Fit&filter=gguf&sort=downloads&direction=-1&limit=20"
+              "&expand%5B%5D=downloads&expand%5B%5D=likes&expand%5B%5D=lastModified&expand%5B%5D=gated",
+          "hf: the search URL, the query percent-encoded and every field a hit carries asked for");
     std::vector<HfRepoHit> hits;
     check(parse_hf_search(json::parse(R"([
             {"id":"unsloth/gemma-4-26B-A4B-it-GGUF","downloads":886490,"likes":1224,"lastModified":"2026-10-01T00:00:00.000Z","gated":false},
@@ -754,6 +835,48 @@ static void hf_tests() {
           "hf: a refused MoE carries the reason");
     in.readable = false;
     check(fit_verdict(in).mode == "not readable", "hf: an unreadable header is a fact, not a guess");
+
+    in.readable = true;
+    in.refusal.clear();
+    in.role = "projector";
+    v = fit_verdict(in);
+    check(v.mode == "not a model" && !v.downloadable && v.memory.find("projector") != std::string::npos,
+          "hf: a projector is not a model, and is not offered for download");
+    in.role = "draft";
+    check(fit_verdict(in).mode == "not a model" && fit_verdict(in).memory.find("draft") != std::string::npos,
+          "hf: nor is a draft head");
+    in.role = "other";
+    check(fit_verdict(in).mode == "not a model", "hf: nor a file with no transformer blocks");
+
+    // The model loaded now is given back: loading this one unloads it first (#285). The figures are
+    // the measured case: 450 MiB free with a session holding ~8.6 GB, 9323 MiB once it was unloaded.
+    in.role = "model";
+    in.is_moe = true;
+    in.streamable = true;
+    in.disk_free = 40ull << 30;
+    in.file_bytes = 14ull << 30;
+    in.dense_bytes = 2ull << 30;
+    in.token_cycle = 600ull << 20;
+    in.budget = 450ull << 20;
+    v = fit_verdict(in);
+    check(v.memory.find("more than the 450 MiB") != std::string::npos && v.budget == (450ull << 20),
+          "hf: with nothing loaded, the budget is what is free now");
+    in.session_model = "Qwen3.6-35B-A3B-Q4_K_M.gguf";
+    v = fit_verdict(in);
+    check(v.budget == (450ull << 20) &&
+              v.memory.find("measured with Qwen3.6-35B-A3B-Q4_K_M.gguf loaded") != std::string::npos,
+          "hf: a session with no ledger cannot be given back, and the verdict says the figure is with it loaded");
+    in.session_held = 8873ull << 20;
+    v = fit_verdict(in);
+    check(v.budget == (9323ull << 20) && v.memory.find("fits in the 9323 MiB") != std::string::npos &&
+              v.memory.find("8873 MiB of it held now by Qwen3.6-35B-A3B-Q4_K_M.gguf") != std::string::npos,
+          "hf: the session's ledger is given back, and the verdict says how much and by whom");
+    in.memory_total = 8ull << 30;
+    check(fit_verdict(in).budget == (8ull << 30), "hf: never more than the machine has");
+    in.is_moe = false;
+    in.streamable = false;
+    check(fit_verdict(in).memory.find("held now by") != std::string::npos,
+          "hf: a dense model's verdict is given the same budget");
 }
 
 int main() {

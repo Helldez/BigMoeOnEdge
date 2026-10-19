@@ -86,6 +86,8 @@ public:
     bool loaded_or_loading() const;
     bool generating() const { return generating_; }
     std::string model_name() const;
+    // The file of the model loaded or loading, "" when none.
+    std::string model_path() const;
 
     // True when a session is loaded and `current` differs from it in a session-scoped parameter.
     bool reload_required(const RunConfig & current) const;

@@ -14,7 +14,8 @@ cli/            bmoe-cli — parses flags, the only place env vars are read
 server/         bmoe-server: the application framework every UI speaks to (docs/application-framework.md),
                 and the engine behind the desktop web UI (docs/server-api.md)
                 openai_chat (the chat protocol), turn_queue, settings_store, event_bus, json_util,
-                model_files (which gguf names make one model): pure policy (bmoe_server_core)
+                model_files (which gguf names make one model, the one-level folder scan, and what a
+                file is for by its header: model, projector, draft): pure policy (bmoe_server_core)
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
                 (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,
                 downloads; planner_adapter: /api/plan when the planner is built in;

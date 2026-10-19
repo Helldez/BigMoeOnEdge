@@ -20,6 +20,40 @@ Semantic Versioning.
   three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
   with their own dark card so they read on either GitHub theme.
 
+### Fixed
+- **Checking a model on the Models page while another is loaded no longer reads every MoE as "will
+  decline" (#285).** `POST /api/hf/inspect` set the candidate against what the machine had free
+  with the loaded model still resident, although loading the new one unloads it first: measured on
+  a 15 GB laptop, 450 MiB with a 35B loaded against 9323 MiB once it was unloaded. The verdict now
+  gives back what the loaded session holds, by its own account (the memory ledger of the plan it
+  was loaded with), no more than the machine has, and says so: "(8873 MiB of it held now by ...,
+  which loading this model unloads first)". A model loaded without a plan has no account, so the
+  figure stays the measured one and the sentence says it was measured with that model loaded. No
+  second measurement is made. `machine` gains `budget_if_loaded`, `loaded_model`, `loaded_held`.
+- **Projectors and draft heads are no longer offered as models (#286).** What a file is for is now
+  read from its gguf header, never its name: a projector (`general.type` `mmproj`, or the `clip`
+  architecture), a draft head (it names another model's `<arch>.target_layers`, or all of its
+  blocks are prediction heads), or no language model at all (another `general.type`, no
+  `<arch>.block_count`). `POST /api/hf/inspect` answers such a file with mode `not a model`, a
+  sentence saying what it is, and `downloadable` false, where it said "plain mmap" and offered an
+  800 MB projector for download. `GET /api/models` gives each local file a `role` from its header;
+  `POST /api/hf/models`, which reads no header, gives one from the name, says it is only a hint,
+  and uses it to list the models first. The Models screen of the web UI and of the Android app set
+  companion files apart in both lists: after the models, labelled, with no Load.
+- **A Hugging Face search now carries when each repository changed, and whether it is gated
+  (#290).** The site's search leaves `lastModified` and `gated` out unless they are asked for, so
+  `modified` was always empty and `gated` always false; the server now asks for every field it
+  reads (`expand[]`, percent-encoded like the query), and both UIs show the date.
+- **`--scan-dir` finds a split model kept in a folder of its own (#290).** The models folder and
+  each scan directory are read one level deep: their own files, then those of each folder directly
+  inside. No deeper, and a link to a folder is not followed, so a scan cannot loop or leave the
+  directory; what a network client may open is still only what the confinement to those folders
+  allows, tested through the new subfolders. `--help` and `docs/server-api.md` say so, and each
+  listed model gains `folder`.
+- **`docs/server-api.md` describes `POST /api/hf/add` as it behaves (#287).** Adding a model that
+  was already added is a `201` that replaces the entry; `409` is for an id of the shipped catalog,
+  and for a split set with shards missing.
+
 ## [0.31.0] - 2026-10-18
 
 ### Added

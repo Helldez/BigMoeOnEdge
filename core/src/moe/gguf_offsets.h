@@ -63,6 +63,15 @@ struct GgufModelInfo {
     int n_expert = 0;
     int n_expert_used = 0;
     int n_embd = 0; // hidden state width: what a tensor crossing a backend boundary carries
+    // What kind of file this is, by the format's own keys rather than its name: `general.type`
+    // ("model", "mmproj", "adapter"; "" when absent), the transformer blocks it declares
+    // (`<arch>.block_count`), how many of them are next-token prediction heads
+    // (`<arch>.nextn_predict_layers`), and whether it names layers of another model it reads
+    // hidden states from (`<arch>.target_layers`), which only a draft for that model does.
+    std::string type;
+    int n_block = 0;
+    int n_nextn = 0;
+    bool reads_target = false;
     bool ok = false;
 };
 

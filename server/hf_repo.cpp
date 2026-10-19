@@ -237,9 +237,13 @@ bool parse_hf_tree(const json & tree, std::vector<HfModel> & out, std::string & 
         for (const HfFile & f : m.files)
             m.bytes += f.bytes;
         m.quant = quant_from_name(m.name);
+        m.role = file_role_name(file_role_hint(m.name));
         out.push_back(std::move(m));
     }
-    std::sort(out.begin(), out.end(), [](const HfModel & a, const HfModel & b) { return a.name < b.name; });
+    std::sort(out.begin(), out.end(), [](const HfModel & a, const HfModel & b) {
+        const bool am = a.role == "model", bm = b.role == "model";
+        return am != bm ? am : a.role != b.role ? a.role < b.role : a.name < b.name;
+    });
     return true;
 }
 
@@ -264,8 +268,13 @@ std::string percent_encode(const std::string & text) {
 } // namespace
 
 std::string hf_search_url(const std::string & endpoint, const std::string & query, int limit) {
-    return endpoint + "/api/models?search=" + percent_encode(query) +
-           "&filter=gguf&sort=downloads&direction=-1&limit=" + std::to_string(limit);
+    // `expand[]` replaces the default fields rather than adding to them, so every field read below
+    // is named; the brackets are percent-encoded like the query.
+    std::string url = endpoint + "/api/models?search=" + percent_encode(query) +
+                      "&filter=gguf&sort=downloads&direction=-1&limit=" + std::to_string(limit);
+    for (const char * field : {"downloads", "likes", "lastModified", "gated"})
+        url += "&" + percent_encode("expand[]") + "=" + field;
+    return url;
 }
 
 bool parse_hf_search(const json & hits, std::vector<HfRepoHit> & out, std::string & error) {
@@ -342,16 +351,46 @@ FitVerdict fit_verdict(const FitInputs & in) {
         v.memory = "the file's header could not be read, so nothing about it is known";
         return v;
     }
+    if (in.role != "model") {
+        v.mode = "not a model";
+        v.downloadable = false;
+        v.memory = in.role == "projector"
+                       ? "a multimodal projector, by its header: it gives a model image or audio input and cannot "
+                         "be chatted with on its own, and this engine does not load projectors"
+                   : in.role == "draft"
+                       ? "a draft head, by its header: it proposes tokens for the model it was trained beside and "
+                         "cannot run on its own"
+                       : "by its header this is no language model: it declares no transformer blocks to run, or a "
+                         "file type other than a model";
+        return v;
+    }
+
+    // The budget the load would meet: what is free now, plus what the loaded session gives back.
+    uint64_t budget = in.budget;
+    std::string credit;
+    if (in.budget && !in.session_model.empty()) {
+        if (in.session_held) {
+            budget = in.budget + in.session_held;
+            if (in.memory_total && budget > in.memory_total) budget = in.memory_total;
+            credit = " (" + mib(budget - in.budget) + " of it held now by " + in.session_model +
+                     ", which loading this model unloads first)";
+        } else {
+            credit = " (measured with " + in.session_model +
+                     " loaded, which loading this model unloads first, so more may be free than this says)";
+        }
+    }
+    v.budget = budget;
+
     if (!in.is_moe) {
         v.mode = "plain mmap";
         v.memory =
             "a dense model: this engine runs it whole from the file, nothing is streamed" +
-            (in.budget ? std::string("; it is ") + mib(in.file_bytes) + " against " + mib(in.budget) +
-                             " this process may hold, " +
-                             (in.file_bytes <= in.budget
-                                  ? "so it fits in memory"
-                                  : "so the parts the system cannot hold are read back from the file as they are used")
-                       : std::string());
+            (budget ? std::string("; it is ") + mib(in.file_bytes) + " against " + mib(budget) +
+                          " this process may hold" + credit + ", " +
+                          (in.file_bytes <= budget
+                               ? "so it fits in memory"
+                               : "so the parts the system cannot hold are read back from the file as they are used")
+                    : std::string());
         return v;
     }
     if (!in.streamable) {
@@ -363,12 +402,12 @@ FitVerdict fit_verdict(const FitInputs & in) {
     v.mode = "streams";
     v.memory = "the experts stream from flash and " + mib(in.dense_bytes) +
                " stays resident, plus a cache of at least one token cycle (" + mib(in.token_cycle) + ")";
-    if (in.budget) {
+    if (budget) {
         const uint64_t floor = in.dense_bytes + in.token_cycle;
-        v.memory += floor <= in.budget ? "; that fits in the " + mib(in.budget) +
-                                             " this process may hold, and the plan sizes the cache from the rest"
-                                       : "; that is more than the " + mib(in.budget) +
-                                             " this process may hold, so the plan will decline or run it slowly";
+        v.memory += floor <= budget ? "; that fits in the " + mib(budget) + " this process may hold" + credit +
+                                          ", and the plan sizes the cache from the rest"
+                                    : "; that is more than the " + mib(budget) + " this process may hold" + credit +
+                                          ", so the plan will decline or run it slowly";
     }
     return v;
 }

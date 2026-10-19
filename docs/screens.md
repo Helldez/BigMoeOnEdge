@@ -75,16 +75,21 @@ What it is: what is on this device, how to get a model onto it, and which one is
   directory when it is not the server's own. Load, Unload, Delete (never while loaded; a split set
   deletes as a unit, every file the server listed for it). The other places a model can sit on the
   phone (adb-pushed, shared storage) are directories the app hands the server at launch
-  (`--scan-dir`), so they are listed the same way and loaded in place.
+  (`--scan-dir`), so they are listed the same way and loaded in place, with the folders directly
+  inside each (a split set in a folder of its own). Files the server says are not models
+  (`role`: a projector, a draft head) are listed apart, after the models, with what they are and
+  no Load.
 - **From Hugging Face.** A model's name, or a repository id or its URL, in one field, and the
   steps the server does (`docs/server-api.md`, "Models"): Find (a name searches the site and the
-  repositories found are offered, the most downloaded first, a gated one marked; a repository is
-  listed: every gguf it holds, split sets as one
-  model, with quantisation, size and whether every shard is there), Check (the model's header
+  repositories found are offered, the most downloaded first, a gated one marked, with the date it
+  last changed; a repository is listed: every gguf it holds, split sets as one
+  model, with quantisation, size and whether every shard is there, and the files whose names
+  suggest a projector or a draft head folded apart after the models), Check (the model's header
   read through a range request before any download: architecture, experts and top-k, layers,
-  what stays resident and what streams, and the verdict on this machine: streams, plain mmap or
-  not readable, needs so much disk against what is free, the resident floor against what this
-  process may hold), Add (the model becomes a catalog entry and its download starts). A token
+  what stays resident and what streams, and the verdict on this machine: streams, plain mmap,
+  not a model (a projector or a draft head, by its header, which cannot be added) or not
+  readable, needs so much disk against what is free, the resident floor against what this
+  process may hold with the loaded model given back), Add (the model becomes a catalog entry and its download starts). A token
   field for a gated or private repository, used for the requests and kept nowhere. The UI shows
   what the server answered and reads no gguf.
 - **The catalog.** The two reference models of `catalog/models.json` and the entries added from

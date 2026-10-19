@@ -137,6 +137,8 @@ data class LocalModel(
     val path: String,
     /** The directory the server found it in: its models directory, or one the app gave it to scan. */
     val dir: String,
+    /** The folder directly inside [dir] it sits in, "" when it is in [dir] itself. */
+    val folder: String = "",
     val bytes: Long,
     val shards: Int,
     /** Every file of the model that is present, in shard order: what a delete removes. */
@@ -144,6 +146,8 @@ data class LocalModel(
     val arch: String,
     val streamable: Boolean,
     val complete: Boolean,
+    /** What the header says it is for: "model", "projector", "draft", "other"; "" when unreadable (data/FileRole.kt). */
+    val role: String = "",
 )
 
 /** `GET /api/models`: the server's directories, and the catalog with the server's view of each entry. */
@@ -167,12 +171,14 @@ data class ModelsList(
                         name = m.optString("name"),
                         path = m.optString("path"),
                         dir = m.optString("dir"),
+                        folder = m.optString("folder", ""),
                         bytes = m.optLong("bytes"),
                         shards = m.optInt("shards", 1),
                         files = strings(m.optJSONArray("files")),
                         arch = m.optString("arch"),
                         streamable = m.optBoolean("streamable", false),
                         complete = m.optBoolean("complete", true),
+                        role = m.optString("role", ""),
                     )
                 }
             }.orEmpty()

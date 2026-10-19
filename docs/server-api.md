@@ -356,8 +356,8 @@ a UI shows "flash" from them without knowing whether the session overlaps.
   "models_dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
   "scan_dirs": [],
   "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
-             "bytes": 18556686912, "shards": 1, "files": ["..."], "arch": "qwen3moe", "streamable": true,
-             "complete": true}],
+             "folder": "", "bytes": 18556686912, "shards": 1, "files": ["..."], "arch": "qwen3moe",
+             "role": "model", "streamable": true, "complete": true}],
   "catalog": [{"id": "qwen3-30b-a3b-q4_k_m", "title": "Qwen3-30B-A3B", "quant": "Q4_K_M",
                "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
                "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://..."}],
@@ -367,13 +367,25 @@ a UI shows "flash" from them without knowing whether the session overlaps.
 
 `local` lists every gguf in the models directory, then in each directory given with `--scan-dir
 PATH` (repeatable; `scan_dirs` lists them), in that order: a split set once, by its first shard, with
-`complete: false` while shards are missing. `dir` is the directory a model was found in, and `files`
+`complete: false` while shards are missing. Each of these directories is read one level deep: its
+own files, then those of every folder directly inside it, which is where a split set kept in a
+folder of its own sits (`<dir>/<model>/<model>-00001-of-00003.gguf`). No deeper, and a link to a
+folder is not followed, so a scan cannot loop or leave the directory through a name inside it; what
+a client may open is still decided by the confinement above, whatever the listing shows. `dir` is
+the directory a model was found in, `folder` the folder inside it ("" for the directory itself),
+and `files`
 every file of it that is present, in shard order, so a client that deletes a model deletes the set
 and never has to know how shards are named. A scan directory is only read: downloads land in the
 models directory, and a model in a scan directory is loaded in place by its `path`. The host app is
 what knows where else models sit (the phone's adb-pushed and shared-storage folders); the server is
 what says what they are. `streamable` is whether this build streams the
-architecture. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
+architecture. `role` is what the file is for, read from its header and never from its name:
+`model`; `projector` (a multimodal projector: `general.type` is `mmproj`, or the projector
+architecture `clip`); `draft` (a draft head for speculative decoding: it names another model's
+`<arch>.target_layers`, or every one of its `<arch>.block_count` blocks is a prediction head,
+`<arch>.nextn_predict_layers`); `other` (another `general.type`, or no `<arch>.block_count` at
+all); `""` when the header could not be read. A UI lists anything but `model` and `""` apart from
+the models, as files that are not loaded on their own. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
 entry with its URL, in order, for a client that downloads for itself (a phone, where the server
 has no `curl`); `file` and `bytes` are the first file's name and the whole entry's size.
 
@@ -390,7 +402,9 @@ Cancels a running download. The partial file is kept so a later download resumes
 
 Body `{"query": "<a model's name>", "token": "<optional>"}`. The repositories on the site with gguf
 files whose name matches, the most downloaded first, twenty at most: `{"query", "repos": [{"id",
-"downloads", "likes", "modified", "gated"}]}`. `gated` is a repository that needs a token. A UI
+"downloads", "likes", "modified", "gated"}]}`. `gated` is a repository that needs a token, and
+`modified` when it last changed, as the site gives it (ISO 8601); the server asks the site for each
+of these fields by name (`expand[]`), since its search leaves the last two out otherwise. A UI
 calls it when `POST /api/hf/models` refused the text with the code `not_a_repo`.
 
 ### `POST /api/hf/models`
@@ -402,9 +416,15 @@ preselect it.
 
 ```json
 {"repo": "ggml-org/gemma-4-26B-A4B-it-GGUF", "revision": "main", "file": "",
- "models": [{"name": "gemma-4-26B-A4B-it-Q4_0.gguf", "quant": "Q4_0", "bytes": 14618145824,
+ "models": [{"name": "gemma-4-26B-A4B-it-Q4_0.gguf", "quant": "Q4_0", "bytes": 14618145824, "role": "model",
              "count": 1, "complete": true, "files": [{"path": "gemma-4-26B-A4B-it-Q4_0.gguf", "bytes": 14618145824}]}]}
 ```
+
+`role` here comes from the file NAME, because the listing reads no header: `projector` for a name
+with `mmproj` in it, `draft` for one starting `mtp-`, `dflash-` or `draft-`, `model` otherwise. Names
+are a convention and not the format, so this only orders the listing (what the names suggest are
+models first, then the companion files) and lets a UI group them; `POST /api/hf/inspect` reads the
+header and decides.
 
 `400` with the code `not_a_repo` for text that is not a repository id or a URL on the site (a
 name to search for, `POST /api/hf/search`); `502` when the listing could
@@ -420,11 +440,12 @@ megabytes of each shard) and parsed by the planner's own model probe, set agains
 ```json
 {"repo": "...", "revision": "main", "name": "gemma-4-26B-A4B-it-Q4_0.gguf", "quant": "Q4_0",
  "bytes": 14618145824, "files": 1, "complete": true,
- "model": {"readable": true, "arch": "gemma4", "is_moe": true, "n_expert": 128, "n_expert_used": 8,
+ "model": {"readable": true, "arch": "gemma4", "role": "model", "type": "model", "block_count": 30, "is_moe": true, "n_expert": 128, "n_expert_used": 8,
            "n_layer": 30, "n_moe_layer": 30, "n_embd": 2816, "dense_bytes": 1755954296,
            "expert_bytes": 12846366720, "token_cycle_bytes": 802897920, "largest_dense_tensor": 784334848,
            "has_mtp": false, "streamable": true, "refusal": ""},
- "machine": {"residency_budget": 5736517632, "memory_total": 15919931392, "disk_free": 38495465472, "present_bytes": 0},
+ "machine": {"residency_budget": 5736517632, "budget_if_loaded": 5736517632, "loaded_model": "", "loaded_held": 0,
+             "memory_total": 15919931392, "disk_free": 38495465472, "present_bytes": 0},
  "verdict": {"downloadable": true, "mode": "streams",
              "disk": "needs 13940 MiB of disk; the models folder has 36712 MiB free",
              "memory": "the experts stream from flash and 1674 MiB stays resident, plus a cache of at least one token cycle (765 MiB); that fits in the 5470 MiB this process may hold, and the plan sizes the cache from the rest"}}
@@ -432,9 +453,22 @@ megabytes of each shard) and parsed by the planner's own model probe, set agains
 
 `model.readable` false means the header did not parse, and the rest of `model` is empty; a MoE
 whose experts this engine does not stream carries the reason in `refusal` and `streamable` false.
-`verdict.mode` is `streams`, `plain mmap` or `not readable`; `downloadable` is false only when the
-disk cannot take what is still to download (`present_bytes` is what is already there, complete).
-The two sentences are the facts in words, for a UI to show as they are. `404` when the listing
+`model.role` is what the file is for, by its header, as `GET /api/models` has it; `type` and
+`block_count` are the header's `general.type` and `<arch>.block_count` it was read from. A file
+that is not a model (a projector, a draft head, or no language model at all) is `verdict.mode`
+`not a model`, with a sentence saying what it is, and `downloadable` false: it cannot be chatted
+with. Otherwise `verdict.mode` is `streams`, `plain mmap` or `not readable`, and `downloadable` is
+false only when the disk cannot take what is still to download (`present_bytes` is what is
+already there, complete).
+
+The memory verdict answers "what happens if I load this", and a load unloads the model loaded now
+first. `residency_budget` is what this process may hold as measured now, with that model still
+resident; the verdict is set against `budget_if_loaded`, which adds back `loaded_held`, what the
+plan the loaded model was loaded with charged in its memory ledger (no more than `memory_total`),
+and the sentence names the model and how much of the figure it holds. A model loaded without a plan
+has no such account (`loaded_held` 0): the figure stays the measured one, and the sentence says it
+was measured with that model loaded. No second measurement is made for this. The two sentences are
+the facts in words, for a UI to show as they are. `404` when the listing
 has no such model, `502` when a header could not be fetched.
 
 ### `POST /api/hf/add`
@@ -443,8 +477,10 @@ Body `{"repo", "name", "token"}`. The model becomes a catalog entry, id
 `hf:<repo>/<name>`, one file per shard with its resolve URL, listed by `GET /api/models` with
 `"added": true` and kept between runs (`added-models.json` beside the settings). `201` with
 `{"id", "title", "quant", "bytes"}`; the download is then `POST /api/models/download` with that
-id, or, on a host that downloads for itself, the entry's `files[].url`. `409` for a split set
-with shards missing, or an id the catalog already has.
+id, or, on a host that downloads for itself, the entry's `files[].url`. Adding a model that was
+already added is a `201` too, and replaces that entry (a repository's files change). `409` for a
+split set with shards missing, or for an id the shipped catalog (`catalog/models.json`) already
+has, which an addition never replaces.
 
 ### `DELETE /api/hf/entry/<id>`
 

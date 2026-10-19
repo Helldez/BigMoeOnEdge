@@ -97,6 +97,7 @@ PlanOutcome make_plan(const RunConfig & cfg, const std::vector<std::string> & pi
             {{"knob", d.knob}, {"value", d.value}, {"source", source_name(d.source)}, {"reason", d.reason}});
 
     o.ok = true;
+    o.held_bytes = plan.allocation.ledger.held;
     o.body = json{{"available", true},
                   {"model", cfg.model_path},
                   {"machine", hw.label},

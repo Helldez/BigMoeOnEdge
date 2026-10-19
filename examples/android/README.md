@@ -75,8 +75,10 @@ vendor's, not Android's, so treat any figure as a per-device measurement.
 The Models screen lists what the engine sees: its own directory (the app's internal storage, where
 in-app downloads and imports land) and the other places a model can sit on the phone, which the app
 hands the server at launch (`--scan-dir`: the app's external files directory, and on the dev flavor
-`/data/local/tmp/bmoe` and Downloads). The server groups split sets, reads each model's
-architecture and says whether this build streams it; the app reads no gguf itself. Nothing below
+`/data/local/tmp/bmoe` and Downloads), each with the folders directly inside it. The server groups
+split sets, reads each model's architecture, says whether this build streams it and whether the
+file is a model at all (a projector or a draft head is listed apart, with no Load); the app reads
+no gguf itself. Nothing below
 needs a storage permission except the last option.
 
 1. **Built-in catalog** (both flavors): the models this engine is measured on, one tap each. The

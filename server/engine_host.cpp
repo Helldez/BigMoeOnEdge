@@ -187,6 +187,11 @@ std::string EngineHost::model_name() const {
     return model_.is_object() ? model_.value("name", "") : "";
 }
 
+std::string EngineHost::model_path() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return model_.is_object() ? model_.value("path", "") : "";
+}
+
 bool EngineHost::reload_required(const RunConfig & current) const {
     std::lock_guard<std::mutex> lk(m_);
     if (state_ != State::Ready) return false;
