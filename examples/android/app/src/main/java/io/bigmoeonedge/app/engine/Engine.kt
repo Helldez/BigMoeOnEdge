@@ -90,12 +90,29 @@ data class ServerInfo(
     }
 }
 
-data class PlanDecision(val knob: String, val value: String, val source: String, val reason: String) {
+data class PlanDecision(
+    val knob: String,
+    val value: String,
+    val source: String,
+    val reason: String,
+    /** The knob's settings label; empty when it is not a parameter. */
+    val label: String = "",
+    /** set | kept | notes: a setting the plan decided, one it left, a note that is no setting. */
+    val group: String = "",
+    /** The decision in one short line; [reason] is the full account. Empty from an older server. */
+    val brief: String = "",
+    /** [value] as a person reads it ("4.6 GiB", "pinned in memory"). */
+    val valueText: String = "",
+) {
+
     companion object {
         fun list(arr: JSONArray?): List<PlanDecision> = arr?.let { a ->
             (0 until a.length()).map { i ->
                 val d = a.getJSONObject(i)
-                PlanDecision(d.optString("knob"), d.optString("value"), d.optString("source"), d.optString("reason"))
+                PlanDecision(
+                    d.optString("knob"), d.optString("value"), d.optString("source"), d.optString("reason"),
+                    d.optString("label"), d.optString("group"), d.optString("brief"), d.optString("value_text"),
+                )
             }
         }.orEmpty()
     }
@@ -199,9 +216,66 @@ data class PlanResult(
     val warning: String,
     val fromLastLoad: Boolean,
     val explain: String,
+    /** What the plan decided, in one sentence; empty from a server that does not say. */
+    val sentence: String = "",
+    val lanes: List<PlanLane> = emptyList(),
+    /** Decode as the plan priced it: seconds per token (0 = no prediction), cache hits (-1 = none). */
+    val predictedSPerToken: Double = 0.0,
+    val predictedHitPct: Double = -1.0,
+    /** What the loaded model's last turn measured, beside the prediction; null before one. */
+    val measured: PlanMeasured? = null,
+    val pools: List<PlanPool> = emptyList(),
+    val devices: List<PlanDevice> = emptyList(),
+    /** Why there is no device beyond the host, in words; empty when there is one. */
+    val devicesNoneText: String = "",
+    /** The server holds no plan yet (`?cached=1`): nothing was measured. */
+    val none: Boolean = false,
+    /** The last plan held, read without measuring. */
+    val cached: Boolean = false,
 ) {
     companion object {
-        fun of(o: JSONObject): PlanResult = PlanResult(
+        private fun strings(a: JSONArray?): List<String> = a?.let { (0 until it.length()).map { i -> it.getString(i) } }.orEmpty()
+        private fun objects(a: JSONArray?): List<JSONObject> = a?.let { (0 until it.length()).map { i -> it.getJSONObject(i) } }.orEmpty()
+
+        fun of(o: JSONObject): PlanResult = base(o).copy(
+            sentence = o.optJSONObject("summary")?.optString("sentence").orEmpty(),
+            lanes = objects(o.optJSONObject("summary")?.optJSONArray("lanes")).map {
+                PlanLane(it.optString("label").ifEmpty { it.optString("phase") }, strings(it.optJSONArray("on")))
+            },
+            predictedSPerToken = o.optJSONObject("predicted")?.optDouble("s_per_token", 0.0) ?: 0.0,
+            predictedHitPct = o.optJSONObject("predicted")?.optDouble("cache_hit_pct", -1.0) ?: -1.0,
+            measured = o.optJSONObject("measured")?.let {
+                PlanMeasured(it.optDouble("s_per_token", 0.0), it.optDouble("cache_hit_pct", -1.0), it.optInt("tokens"))
+            },
+            pools = objects(o.optJSONObject("memory")?.optJSONArray("pools")).map { p ->
+                PlanPool(
+                    label = p.optString("label").ifEmpty { p.optString("name") },
+                    estimated = p.optBoolean("estimated"),
+                    capBytes = p.optLong("cap_bytes"),
+                    lockedBytes = p.optLong("locked_bytes"),
+                    rows = objects(p.optJSONArray("rows")).map {
+                        PlanRow(it.optString("label").ifEmpty { it.optString("name") }, it.optLong("bytes"), it.optBoolean("locked"), it.optBoolean("in_turn"))
+                    },
+                )
+            },
+            devices = objects(o.optJSONArray("devices")).map {
+                PlanDevice(
+                    name = it.optString("name"),
+                    description = it.optString("description"),
+                    cpu = it.optBoolean("cpu"),
+                    promptRatio = it.optDouble("prompt_ratio", 0.0),
+                    rateText = it.optString("rate_text"),
+                    status = it.optString("status"),
+                    badge = it.optString("badge").ifEmpty { it.optString("status") },
+                    why = it.optString("why"),
+                )
+            },
+            devicesNoneText = o.optString("devices_none_text"),
+            none = o.optBoolean("none", false),
+            cached = o.optBoolean("cached", false),
+        )
+
+        private fun base(o: JSONObject): PlanResult = PlanResult(
             available = o.optBoolean("available", false),
             error = o.optString("error").ifEmpty { o.optString("reason") },
             model = o.optString("model"),
@@ -210,14 +284,43 @@ data class PlanResult(
             declined = o.optBoolean("streaming_declined", false),
             declineReason = o.optString("decline_reason"),
             decisions = PlanDecision.list(o.optJSONArray("decisions")),
-            args = o.optJSONArray("args")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
-            notApplicable = o.optJSONArray("not_applicable")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
+            args = strings(o.optJSONArray("args")),
+            notApplicable = strings(o.optJSONArray("not_applicable")),
             warning = o.optString("warning"),
             fromLastLoad = o.optBoolean("from_last_load", false),
             explain = o.optString("explain"),
         )
     }
 }
+
+// The plan as the Plan screen draws it (server/plan_view.h). Every word arrives from the server;
+// a code (`status`) is kept only to pick a colour.
+
+/** Which phase runs where, in words, on these devices by name. */
+data class PlanLane(val label: String, val on: List<String>)
+
+data class PlanMeasured(val sPerToken: Double, val cacheHitPct: Double, val tokens: Int)
+
+/** One line of the memory ledger. `inTurn`: lent by the expert cache while a prompt runs. */
+data class PlanRow(val label: String, val bytes: Long, val locked: Boolean, val inTurn: Boolean)
+
+/** One memory pool: the host's, or a device's that is its own. `estimated`: an even share of a sum. */
+data class PlanPool(val label: String, val estimated: Boolean, val capBytes: Long, val lockedBytes: Long, val rows: List<PlanRow>)
+
+/** A device the plan saw: its rate and badge in words, its role as a code, and why. */
+data class PlanDevice(
+    val name: String,
+    val description: String,
+    val cpu: Boolean,
+    val promptRatio: Double,
+    val rateText: String,
+    val status: String,
+    val badge: String,
+    val why: String,
+)
+
+/** A `plan_progress` event: a stage of the measurement starting, with its words. */
+data class PlanProgress(val step: String, val label: String, val index: Int, val count: Int)
 
 /** Everything the screens observe about the engine. Immutable snapshots on one StateFlow. */
 data class EngineUi(
@@ -226,6 +329,8 @@ data class EngineUi(
     val serverError: String? = null,
     /** How the running server was started: on the network with the key, or on loopback. */
     val shared: Boolean = false,
+    /** The system refuses this app any socket, loopback included: only the person can fix it (#298). */
+    val networkDenied: Boolean = false,
     val info: ServerInfo? = null,
     val params: List<ParamSpec>? = null,
     val config: ConfigState? = null,
@@ -233,6 +338,8 @@ data class EngineUi(
     val live: Telemetry = Telemetry(),
     val lastDone: JSONObject? = null,
     val cpuTempC: Double? = null,
+    /** The stage a measurement is in; null when none runs. */
+    val planProgress: PlanProgress? = null,
 ) {
     val ready get() = serverUp && info?.ready == true
     val generating get() = info?.generating == true
@@ -271,6 +378,9 @@ object Engine {
     // Whether a server this app started should be up: between a stop and the next start the
     // connector waits, rather than reconnect to the process that is still on its way out.
     @Volatile private var serving = false
+    // The model a restart found loaded, to load again once the next server is up: changing the
+    // address or the key is not a person asking to unload. Cleared once used, or by a plain stop.
+    @Volatile private var reloadAfterRestart: String? = null
 
     val current: EngineUi get() = _state.value
 
@@ -293,6 +403,7 @@ object Engine {
 
     /** Stop the server (and free the model). The next [start] brings it back. */
     fun stop(ctx: Context) {
+        reloadAfterRestart = null
         val app = ctx.applicationContext
         app.startService(Intent(app, EngineService::class.java).setAction(EngineService.ACTION_STOP))
     }
@@ -303,6 +414,7 @@ object Engine {
      * never race for the port.
      */
     fun restart(ctx: Context) {
+        reloadAfterRestart = _state.value.info?.takeIf { it.ready }?.model?.path ?: reloadAfterRestart
         val app = attach(ctx)
         ContextCompat.startForegroundService(app, Intent(app, EngineService::class.java).setAction(EngineService.ACTION_RESTART))
     }
@@ -376,9 +488,15 @@ object Engine {
                     onEvent = { ev ->
                         if (current()) {
                             if (!_state.value.serverUp) {
-                                _state.update { it.copy(serverUp = true, serverError = null) }
+                                _state.update { it.copy(serverUp = true, serverError = null, networkDenied = false) }
                                 backoffMs = 500L
-                                scope.launch { refreshStatic() }
+                                scope.launch {
+                                    refreshStatic()
+                                    reloadAfterRestart?.let { path ->
+                                        reloadAfterRestart = null
+                                        if (_state.value.info?.state == "empty") load(path)
+                                    }
+                                }
                             }
                             onEvent(ev)
                         }
@@ -393,9 +511,16 @@ object Engine {
                 // The watchdog: two pings missed, the stream died without closing. Reconnect now.
                 backoffMs = 500L
             } catch (t: Throwable) {
-                // Anything else (a key, a policy, a broken stream) is what a person needs to read.
-                val why = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
-                _state.update { it.copy(serverError = "Engine not reachable: $why") }
+                if (isNetworkDenied(t)) {
+                    // The raw "socket failed: EPERM" says nothing a person can act on, and a retry
+                    // cannot succeed until the switch is turned back on: keep polling, slowly.
+                    _state.update { it.copy(serverError = NETWORK_DENIED, networkDenied = true) }
+                    backoffMs = 5_000L
+                } else {
+                    // Anything else (a key, a policy, a broken stream) is what a person needs to read.
+                    val why = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+                    _state.update { it.copy(serverError = "Engine not reachable: $why", networkDenied = false) }
+                }
             }
             if (_state.value.serverUp) _state.update { it.copy(serverUp = false) }
             delay(backoffMs)
@@ -457,6 +582,12 @@ object Engine {
                 recorder?.done(o)
                 _state.update { it.copy(live = t, lastDone = o) }
             }
+            "plan_progress" -> {
+                val step = o.optString("step")
+                val p = if (step.isEmpty() || step == "done") null
+                else PlanProgress(step, o.optString("label").ifEmpty { step }, o.optInt("index"), o.optInt("count"))
+                _state.update { it.copy(planProgress = p) }
+            }
             else -> {} // downloads are the app's own, not the server's
         }
     }
@@ -489,6 +620,7 @@ object Engine {
         catching { ConfigState.of(api.updateConfig(JSONObject(), emptyList(), on)).also { c -> _state.update { it.copy(config = c) } } }
     }
 
+    /** The plan in force or the last one held (never a measurement), or a new measurement. */
     suspend fun plan(measure: Boolean): Result<PlanResult> = withContext(Dispatchers.IO) {
         catching { PlanResult.of(api.plan(measure)) }
     }

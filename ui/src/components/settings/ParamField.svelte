@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import SourceBadge from '../SourceBadge.svelte';
   import { coerceInput, displayValue } from '../../lib/coerce';
-  import { isDefault } from '../../lib/schema';
+  import { helpParts, isDefault, specialLabel, typicalText } from '../../lib/schema';
   import type { ParamSpec, ParamValue, PlanDecision } from '../../lib/types';
   import { settings } from '../../stores/settings.svelte';
 
@@ -33,6 +33,9 @@
 
   let modified = $derived(!isDefault(spec, value));
   let numeric = $derived(spec.type === 'int' || spec.type === 'float');
+  let named = $derived(specialLabel(spec, value));
+  let usually = $derived(typicalText(spec));
+  let help = $derived(helpParts(spec.help ?? ''));
 
   function commit(raw: string | boolean) {
     const r = coerceInput(spec, raw);
@@ -54,8 +57,6 @@
     settings.flush();
   }
 
-  const range = (s: ParamSpec) =>
-    s.min !== undefined && s.max !== undefined ? `${s.min} to ${s.max}${s.unit ? ` ${s.unit}` : ''}` : (s.unit ?? '');
 </script>
 
 <div class="field" class:modified>
@@ -127,7 +128,9 @@
           <button type="button" onclick={() => { draft = 'auto'; commit('auto'); settings.flush(); }}>Auto</button>
         {/if}
       {/if}
-      {#if spec.unit || (spec.min !== undefined && numeric)}<span class="muted range">{range(spec)}</span>{/if}
+      {#if spec.unit && numeric}<span class="muted unit">{spec.unit}</span>{/if}
+      {#if named}<span class="named">= {named}</span>{/if}
+      {#if usually}<span class="muted range">{usually}</span>{/if}
       {#if userSet || modified}
         <button type="button" class="link" onclick={() => settings.reset(spec.key)}>Reset to default</button>
       {/if}
@@ -141,13 +144,17 @@
   {#if localError || rejected}
     <p class="err" role="alert">{localError || rejected}</p>
   {/if}
-  {#if spec.help}
-    <details class="help">
-      <summary>Help <span class="visually-hidden">for {spec.label}</span></summary>
-      <p>{spec.help}</p>
-      <p class="muted flag"><code>{spec.flag}</code> default <code>{displayValue(spec.default)}</code></p>
-    </details>
+  {#if help.lead}
+    <p class="lead muted">{help.lead}</p>
   {/if}
+  <details class="help">
+    <summary>More <span class="visually-hidden">about {spec.label}</span></summary>
+    {#if help.rest}<p>{help.rest}</p>{/if}
+    {#if spec.special?.length}
+      <p>{spec.special.map((s) => `${displayValue(s.value)} = ${s.label}`).join('; ')}</p>
+    {/if}
+    <p class="muted flag"><code>{spec.flag || (spec.switches ?? []).map((s) => s.flag).join(' ')}</code> default <code>{displayValue(spec.default)}</code>{#if spec.min !== undefined && numeric}, accepted from {spec.min}{spec.max !== undefined ? ` to ${spec.max}` : ''}{/if}</p>
+  </details>
 </div>
 
 <style>
@@ -200,8 +207,17 @@
     width: 100%;
     max-width: 40rem;
   }
-  .range {
+  .range,
+  .unit {
     font-size: 0.8rem;
+  }
+  .named {
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  .lead {
+    margin: 0.3rem 0 0;
+    font-size: 0.85rem;
   }
   .err {
     color: var(--err);

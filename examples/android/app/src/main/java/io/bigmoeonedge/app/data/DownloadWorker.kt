@@ -11,6 +11,8 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import io.bigmoeonedge.app.engine.DOWNLOAD_NETWORK_DENIED
+import io.bigmoeonedge.app.engine.isNetworkDenied
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -69,6 +71,8 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         } catch (c: CancellationException) {
             throw c // cancellation — the .part stays, and the row offers Resume and Delete partial download
         } catch (t: Throwable) {
+            // Denied, not failing: no back-off brings the network back, so say where the switch is.
+            if (isNetworkDenied(t)) return@withContext fail(DOWNLOAD_NETWORK_DENIED)
             // Transient network error: keep the .part and let WorkManager back off and resume.
             retryOrFail(t.message ?: "network error")
         }

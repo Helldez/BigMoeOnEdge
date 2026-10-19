@@ -7,6 +7,13 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Fixed
+- **Android: an app denied the network says so, and where to give it back** (#298). Android ties
+  every IP socket to the network permission, loopback included, so on GrapheneOS with the app's
+  Network toggle off, or behind a firewall app, the app cannot reach its own engine even offline.
+  The status line said "Engine not reachable: socket failed: EPERM"; it now says the app has no
+  network access, which the engine needs even offline, with a button that opens the app's system
+  settings, and polls slowly until it is back. A download denied the same way fails at once with
+  that reason, instead of retrying, and points to importing the file.
 - **A stopped model download says it can be resumed, and resumes the same way on the phone and on
   the desktop.** The bytes always landed in `<name>.part` and the next attempt continued them, but
   little on screen said so, and the two front-ends disagreed on what Cancel meant (#293). Now a
@@ -25,6 +32,31 @@ Semantic Versioning.
   `docs/server-api.md` and `examples/android/README.md` describe the resume behaviour.
 
 ### Changed
+- **Settings say what a value means and what is usual, and Advanced holds only the rest (#268).**
+  The parameter table gains, per row, a typical range (named constants in `core/src/params.cpp`,
+  every default inside it or one of the row's named values, which `bmoe_params_test` checks) and
+  special values with a name (`0` = off, `0` = as wide as the context, `4294967295` = random per
+  run); `GET /api/params` returns them as `typical` and `special`. Rows whose only upper limit was
+  the type's (the cache sizes, the row-stream window, the prefill device width, the seed) no
+  longer report it as `max`. Units on the rows that lacked one (lanes, threads, layers, reads,
+  candidates, experts). Labels a person can read: "Wrap in chat turns" (was "Chat template", a
+  switch), "Start reads in two waves", "Unmap the file after load", "Read a busy layer whole",
+  "Route experts early". The web UI and the app render all of it from the same data: the special
+  value's name and the typical range under each field instead of "0 to 2147483647", the help's
+  first sentence with the rest on demand. The Advanced section no longer repeats the basic rows shown above it, and its title is
+  in sentence case.
+
+### Fixed
+- **App: turning on Serve on the network no longer unloads the model or scrolls the page away.**
+  The restart it needs (the server binds another address) unloaded the model and, while the engine
+  was down, replaced the settings with one line, so the page jumped to the top. The rows now stay in place with a line
+  saying the engine is restarting, and the model that was loaded is loaded again once the new
+  server is up. The same holds for New key.
+- **App: the address to connect to is shown, not described.** With Serve on the network on, the
+  page shows `http://<ip>:8765/v1` with the phone's own IPv4 on its Wi-Fi or Ethernet network (a
+  mobile network's private address is left out: no laptop on the Wi-Fi reaches it), with Copy, and
+  follows it when the network changes; with no such network it says no other device can reach the
+  engine. The app asks for `ACCESS_NETWORK_STATE`, a permission without a prompt.
 - **The README, rewritten around what the engine is: an adaptive streaming optimizer for big local
   AI agents on any device.** It opens with a silent 30-second loop (an animated WebP, so it shows
   inline everywhere, the GitHub app included) linking to the full promo video recorded on a 16 GB
@@ -37,6 +69,61 @@ Semantic Versioning.
   hold them (`docs/settings.md`, `docs/which-models-stream.md`, `docs/benchmarks.md`), and the
   three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
   with their own dark card so they read on either GitHub theme.
+- **The Plan screen leads with the outcome, and reads the same on every machine.** The web UI and
+  the Android app open the plan with what it decided in one sentence ("Experts stream from flash,
+  with a 4.8 GiB cache") and three tiles: decode speed expected and, once the loaded model has
+  answered, measured beside it with the difference; the cache hit rate measured against what the
+  plan credited; which device computes the prompt and which the tokens. Then the memory as one bar
+  per pool (every ledger row, what is free, what is locked), every device with its rate against
+  the host, what it does in this run and why, and the decisions in three groups: the settings the
+  plan decided (under their settings labels), the ones it left, and the notes that are no
+  setting (regime, placement, ledger, costs), folded. A measurement shows the stage that is
+  running instead of a blind wait. One layout for a phone with an NPU, a laptop with an
+  integrated GPU, a discrete card or a machine with only cores: every block is a list of what the
+  plan holds, device names are the plan's own, and nothing in either UI names a device or a
+  system (#288). On a laptop: 0.307 s/token predicted, 0.212 measured on the first answer;
+  hits credited 28%, measured 64%.
+- **`GET /api/plan` describes the plan for a person.** New fields beside the old ones:
+  `summary` (the sentence and the lanes), `predicted` (decode as the plan priced it), `measured`
+  (the loaded model's last complete turn, on a plan from the last load; a cancelled turn is no measurement), `memory.pools` (the ledger, a
+  pool per memory that is separate), `devices` (rates, `uses`, `status`, `why`) and
+  `devices_none`; each decision carries its settings `label` and its `group`. Every word the
+  screen shows comes with them (`label`, `badge`, `rate_text`, `devices_none_text`), beside a
+  code a UI reads only for a colour, so the words live once, in `server/plan_view.cpp`, pure and
+  unit-tested on an NPU phone, a discrete card and a machine with only cores, and no UI keeps a
+  table of its own. A measurement now publishes `plan_progress` events, one per stage with its
+  words, from a progress callback on `probe_and_plan()` (`AutoPlanOptions::on_step`).
+- **Every plan decision says itself in one line, and each cost note has its own name.** A
+  `Decision` carries a `brief` beside its `reason`: one plain sentence for a person, at most 120
+  characters, with the number that decided it and no flag names ("Prompts run on MTL0, 8.1x faster
+  than the CPU, same results"), which the Plan screen leads with while the reason stays the full
+  account `--plan` prints. The cost model's notes, which all came out as `cost = -` and could not
+  be told apart, are now structured (`AllocationNote`: a topic, a value, a brief, a detail) and each
+  is its own decision under its topic (`storage-rate = 6.3 GB/s`, `cache-floor = 581 MiB`,
+  `shared-memory`, ...); `/api/plan` adds `brief` and gives every note a `label` to be read under.
+  The reasons stop citing one machine's story on every other (#290). Each decision also comes with
+  `value_text`, its value as a person reads it ("4.6 GiB", "pinned in memory", "experts stream"),
+  and every size on the screen is in GiB or MiB, the briefs included. The dense-weights choices
+  read "mapped from the file", "mapped and read ahead", "copied into memory" and "pinned in
+  memory" in Settings too. `docs/server-api.md` and `docs/screens.md` describe both.
+- **The hardware probe tells "this build carries no accelerator backend" from "it carries one and
+  found nothing".** `HardwareProfile::backends_placeable` counts the backends that could offer a
+  local device, read from what each offers: a remote one (RPC) and a library the host calls into
+  (BLAS) do not count, so a build with only those no longer reads as a machine without devices.
+
+### Fixed
+- **The tag build no longer publishes the release.** Its APK job attached the debug APK with an
+  action that creates the release when none exists yet, as the workflow's own token; a release made
+  that way fires no `release: published`, so `release-apk` and `release-host` never ran and 0.31.0
+  went out with one debug APK and no archives (#284). The step is gone, and with it the job's write
+  permission: `release-apk` already uploads the debug APK beside the signed one. The agent guide
+  says who publishes a release.
+- **Small things from the 0.31.0 smoke tests (#290).** The chat list ellipsizes a long title before
+  its Delete link instead of running under it. Loading a model shows the seconds since it began
+  and, while the plan measures, the same stages the Plan screen shows, in the web UI and the app,
+  instead of a blind wait of half a minute or more. The macOS archives' README says how to open a
+  program a browser download quarantined (`xattr -dr com.apple.quarantine`, or right-click and
+  Open) until a signed installer ships (#234).
 
 ## [0.31.0] - 2026-10-18
 

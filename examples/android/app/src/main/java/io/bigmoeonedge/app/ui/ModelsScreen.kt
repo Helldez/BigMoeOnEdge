@@ -28,6 +28,7 @@ import io.bigmoeonedge.app.data.gbLabel
 import io.bigmoeonedge.app.data.resumeLabel
 import io.bigmoeonedge.app.engine.Engine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -106,14 +107,21 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                 Text("The engine is not running.", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             }
             if (engine.loading) {
+                // Seconds since the load began, so a long load reads as progress rather than as a hang.
+                var elapsed by remember { mutableStateOf(0) }
+                LaunchedEffect(Unit) {
+                    val t0 = System.currentTimeMillis()
+                    while (true) {
+                        elapsed = ((System.currentTimeMillis() - t0) / 1000).toInt()
+                        delay(1000)
+                    }
+                }
+                val planning = engine.info?.state == "planning"
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Text(
-                        if (engine.info?.state == "planning") "Measuring the phone (storage, memory, each compute device), then loading…"
-                        else "Loading the model…",
-                        fontSize = 13.sp,
-                    )
+                    Text((if (planning) "Measuring this phone, then loading" else "Loading the model") + " · $elapsed s", fontSize = 13.sp)
                 }
+                if (planning) PlanProgressCard(engine.planProgress)
             }
 
             // ── on the phone ──

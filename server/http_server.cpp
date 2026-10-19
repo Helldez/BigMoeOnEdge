@@ -305,6 +305,19 @@ struct App {
 
     void publish_config() { bus.publish("config", config_object()); }
 
+    // A measurement, with each stage announced as it starts (`plan_progress` events) and its end, so
+    // a UI says which probe is running rather than waiting blind. The caller holds measure_m.
+    PlanOutcome measure_plan() {
+        PlanOutcome p =
+            make_plan(store.planning_config(), store.operator_keys(), opt.isolated_probes,
+                      [this](const std::string & step, const std::string & label, int index, int count) {
+                          bus.publish("plan_progress",
+                                      json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
+                      });
+        bus.publish("plan_progress", json{{"step", "done"}});
+        return p;
+    }
+
     // A client on the network names a model in a folder this server lists models from (the models
     // folder, the --scan-dir ones) and nowhere else: it may not have the server open any file its
     // user can read. A local client is the person at this machine, as
@@ -337,7 +350,7 @@ struct App {
             host.unload();
             host.begin_planning();
             std::unique_lock<std::mutex> measuring(measure_m);
-            PlanOutcome p = make_plan(store.planning_config(), store.operator_keys(), opt.isolated_probes);
+            PlanOutcome p = measure_plan();
             measuring.unlock();
             if (p.ok) {
                 store.apply_plan(p.values, p.decisions);
@@ -806,14 +819,30 @@ void register_routes(httplib::Server & svr, App & app) {
             if (lp.ok && lp.body.value("model", "") == app.store.config().model_path) {
                 json body = lp.body;
                 body["from_last_load"] = true;
+                // What the loaded model has done since, beside what the plan predicted.
+                const json measured = app.host.last_turn();
+                if (!measured.is_null()) body["measured"] = measured;
                 return send_json(res, body);
             }
+        }
+        // `?cached=1`: the last plan this server holds, never a measurement. A screen opens on it, so
+        // opening the Plan screen costs nothing on any machine and every UI shows the same thing.
+        if (req.has_param("cached")) {
+            PlanOutcome last;
+            {
+                std::lock_guard<std::mutex> lk(app.plan_m);
+                last = app.last_plan.ok ? app.last_plan : app.load_plan;
+            }
+            if (!last.ok) return send_json(res, json{{"available", true}, {"none", true}});
+            json body = last.body;
+            body["cached"] = true;
+            return send_json(res, body);
         }
         if (app.host.generating())
             return send_error(res, 409, "busy: a plan measures the machine, and a running generation would skew it");
         std::unique_lock<std::mutex> measuring(app.measure_m, std::try_to_lock);
         if (!measuring) return send_error(res, 409, "busy: a plan is already being measured");
-        PlanOutcome p = make_plan(app.store.planning_config(), app.store.operator_keys(), app.opt.isolated_probes);
+        PlanOutcome p = app.measure_plan();
         measuring.unlock();
         if (!p.ok) return send_json(res, json{{"available", true}, {"error", p.error}});
         json body = p.body;

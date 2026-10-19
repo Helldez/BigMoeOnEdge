@@ -3,19 +3,17 @@
   import { api } from '../lib/api';
   import { commandLine } from '../lib/format';
   import { decisionsByKnob, planDecisions } from '../lib/plan';
-  import { ALL_LEVELS, groupParams } from '../lib/schema';
+  import { advancedGroups as advancedOf, groupParams } from '../lib/schema';
   import { server } from '../stores/server.svelte';
   import { settings } from '../stores/settings.svelte';
 
   let config = $derived(server.config);
   let params = $derived(server.params ?? []);
   // The recommended configuration is each group's basic rows; everything else lives in one
-  // Advanced section, folded, grouped the same way (docs/screens.md).
-  let groups = $derived(groupParams(params, new Set(ALL_LEVELS)));
-  let basicGroups = $derived(groups.map((g) => ({ ...g, params: g.params.filter((p) => p.level === 'basic') })).filter((g) => g.params.length > 0));
-  // The Advanced section holds every row, the basic ones included: the whole engine in one place.
-  let advancedGroups = $derived(groups);
-  let advancedCount = $derived(groups.reduce((n, g) => n + g.params.length, 0));
+  // Advanced section, folded, grouped the same way (docs/screens.md). Each row appears once.
+  let basicGroups = $derived(groupParams(params, new Set()));
+  let advancedGroups = $derived(advancedOf(params));
+  let advancedCount = $derived(advancedGroups.reduce((n, g) => n + g.params.length, 0));
   let advancedOpen = $state(false);
   let userKeys = $derived(new Set(config?.user_keys ?? []));
   let decisions = $derived(decisionsByKnob(planDecisions(config?.plan)));
@@ -98,8 +96,8 @@
   {/each}
   <details class="advanced card" bind:open={advancedOpen}>
     <summary>
-      <span class="adv-title">Advanced</span>
-      <span class="muted">every setting, {advancedCount} of them, grouped and marked with its level. The groups above are the recommended configuration; the planner sets what it can measure, and the levels beyond basic were measured once or on one device and can slow a run down or change the reply.</span>
+      <span class="adv-title">Advanced settings</span>
+      <span class="muted">{advancedCount} more, grouped like the ones above and marked with their level. The planner sets what it can measure; these were measured once or on one device and can slow a run down or change the reply.</span>
     </summary>
     {#each advancedGroups as g (g.group)}
       <section class="group" aria-labelledby="adv-{g.group}">
@@ -151,9 +149,6 @@
   }
   .adv-title {
     font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    font-size: 0.85rem;
   }
   .advanced[open] summary {
     margin-bottom: 0.75rem;

@@ -191,12 +191,17 @@ template). Each element:
 ```json
 {"key": "cache-mb", "label": "Expert cache", "type": "int", "group": "cache",
  "group_label": "Expert cache", "level": "basic", "scope": "session", "help": "...",
- "flag": "--cache-mb", "min": 0, "max": 2147483647, "unit": "MiB", "accepts_auto": true,
- "default": "auto"}
+ "flag": "--cache-mb", "min": 0, "unit": "MiB", "typical": {"min": 1500, "max": 8192},
+ "special": [{"value": 0, "label": "off"}], "accepts_auto": true, "default": "auto"}
 ```
 
 Optional fields: `short`, `switches` (`[{flag, value, deprecated?}]`), `choices`
-(`[{value, label}]`), `min`/`max` (present together), `unit`, `lossy`, `accepts_auto`.
+(`[{value, label}]`), `min` and `max`, `unit`, `typical`, `special`, `lossy`, `accepts_auto`.
+`min` and `max` are limits: `max` is absent where the only upper limit is the type's, which is no
+range to show a person. `typical` is guidance, not a limit: what a person usually sets, which a form
+shows as the range. `special` names the values that mean something other than their number (`0` is
+`off`, `4294967295` is `random per run`), with `value` in the row's own JSON type; a form shows the
+label in place of the number.
 `level` is `basic | advanced | experimental | debug`; `group` order in the array is form order.
 
 ### `GET /api/config`
@@ -342,6 +347,7 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 | `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: why the last attempt failed while the server waits to resume) |
 | `config` | the `GET /api/config` object, after any change |
+| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
 | `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
 
 `flash_wait_ms` (per token) and `flash_wait_s_tok` (the run's average) are the flash term that is a
@@ -492,20 +498,83 @@ unusable instead of ending the server; `--no-isolated-probes` runs them in-proce
 {"available": true, "model": "C:/models/Qwen3.6-35B-A3B-Q4_K_M.gguf",
  "machine": "16 cores, 3388 MiB available of 15182 MiB, 33 GiB/s on this model's matmul",
  "regime": "experts-stream", "streaming_declined": false, "decline_reason": "",
- "decisions": [{"knob": "cache-mb", "value": "703", "source": "derived", "reason": "..."}],
+ "decisions": [{"knob": "cache-mb", "label": "Expert cache", "group": "set", "value": "703",
+                "source": "derived", "brief": "703 MiB: what the cache earns most with, after the dense weights.",
+                "reason": "..."}],
  "values": {"cache-mb": 703, "threads": 8}, "args": ["--moe-stream", "--cache-mb", "703"],
- "not_applicable": [], "explain": "..."}
+ "not_applicable": [],
+ "summary": {"sentence": "Experts stream from flash, with a 0.7 GiB cache.",
+             "lanes": [{"phase": "prompt", "label": "Prompt", "on": ["CPU"]},
+                       {"phase": "tokens", "label": "Tokens", "on": ["CPU"]}]},
+ "predicted": {"s_per_token": 0.302, "cache_hit_pct": 38.0},
+ "memory": {"pools": [{"name": "host", "label": "This process", "cap_bytes": 3552575488,
+                       "lockable_cap_bytes": 0, "held_bytes": 3322400768, "locked_bytes": 0,
+                       "rows": [{"name": "dense", "label": "Dense", "bytes": 1932735283,
+                                 "locked": false, "in_turn": false}]}]},
+ "devices": [{"name": "CPU", "description": "...", "cpu": true, "own_memory": false, "memory_total": 0,
+              "prompt_ratio": 1.0, "token_ratio": 1.0, "rate_text": "The reference",
+              "uses": ["prompt", "tokens"], "status": "used", "badge": "Prompt and tokens",
+              "why": "The host: every rate is measured against it."}],
+ "devices_none": "build", "devices_none_text": "No other device: this build carries no backend for one.",
+ "explain": "..."}
 ```
 
 `source` is `measured | derived | policy | operator | unprobed`. Keys in `user_keys` come back as
-`operator`: the planner never touches them. `values` are the parameters the plan changes, read
+`operator`: the planner never touches them. A decision's `brief` is one plain sentence for a
+person (at most 120 characters, the number that decided it, no flag names; the `reason` where a
+decision has none), and `reason` the full account `explain` prints, for a "why" a UI folds away.
+`value_text` is `value` as a person reads it: a choice by its settings label ("pinned in memory"),
+a size in GiB or MiB, a number with its unit, a planner word as words; `value` stays the raw one.
+Its `label` is its knob's settings label from the parameter table, or, for a knob that is not a
+parameter, the name of the note (`regime` is "Streaming mode", `storage-rate` "Storage speed",
+`memory-ledger` "Memory use"; a topic the server does not know is titled from its key), so a UI
+shows "label: brief". `group` is how a UI reads it: `set` (a parameter the plan decided from a
+fact, whether or not the value changed), `kept` (a parameter it left: the caller's own, or one
+nothing measured), `notes` (what is not a parameter: the regime, the placement, the ledger, and
+each of the cost model's notes under its own topic - `storage-rate`, `cache-floor`,
+`shared-memory`, ... - with its key number as `value`, or `-`; there is no `cost` knob any more).
+
+The rest describes the plan for a person (`server/plan_view.h`), so a UI shows it without knowing
+any device, system or knob. Every list is as long as the machine makes it, and every word a UI
+shows is here: `label`, `badge`, `rate_text`, `why`, the sentences. A code beside a word
+(`phase`, `uses`, `status`, `devices_none`) is for a UI to pick a colour by, never to word itself,
+so a stage or a role the server adds reaches every UI with no UI change:
+
+- `summary.sentence` is what the plan decided, in a sentence; `summary.lanes` which device names
+  compute the prompt and the tokens (a device holding layers in memory of its own is on the
+  tokens lane beside the host).
+- `predicted` is decode as the plan priced it, the figures `bmoe-cli --auto` prints after a run:
+  `s_per_token`, and `cache_hit_pct` where there is a cache. Either is absent when not predicted.
+- `memory.pools` is the ledger the plan charged: the host's pool (`name` `host`; `cap_bytes`
+  what the process may hold, `lockable_cap_bytes` what it may hold locked) with one row per thing
+  held for the whole run, and one pool for each device with memory of its own that holds layers.
+  A row with `in_turn` is not held beside the expert cache but in its place while a prompt runs.
+  A device pool with `estimated` is an even share of a sum the placement reports over several
+  devices; with one device its figures are that device's own.
+- `devices` is every device the plan saw, the host included: its rate against the host on a
+  prompt-wide matmul (`prompt_ratio`, in words `rate_text`) and on one token (`token_ratio`), 0
+  when unmeasured; `uses`, which of `prompt`, `tokens`, `layers` it does in this run; `status`,
+  `used`, `unused`, `refused` (its results did not match the host's) or `unusable` (its probe did
+  not come back); `badge`, the two in words; `why` in a sentence.
+- `devices_none` says why there is no device beyond the host, when there is none: `build` (this
+  build carries no backend that could offer a local one), `machine` (it carries one and this
+  machine gave it no device) or `not_probed`; empty otherwise. `devices_none_text` is the same
+  in words. A remote backend (RPC) and a library the host calls into (BLAS) are not counted as
+  backends that could offer a device, so a build that carries only those reads `build`.
+
+`values` are the parameters the plan changes, read
 through the parameter table; `args` are the arguments that reproduce the plan, one per element
 and unquoted, and empty when the plan declines streaming; `not_applicable` names anything the plan
 decided that the table cannot hold (a tensor-placement pattern, say), so it is shown rather than
 silently dropped.
 With a model loaded that an auto load planned, `GET /api/plan` answers at once with that plan and
-`"from_last_load": true`, without measuring. `GET /api/plan?measure=1` measures again regardless;
-a plan computed while a model is loaded carries a `warning`, because that model's memory reads as
+`"from_last_load": true`, without measuring, and once the model has answered, `measured`: what
+its last complete turn measured for decode (`s_per_token`, `cache_hit_pct`, -1 without a cache,
+and `tokens`), to set beside `predicted`; a cancelled turn does not count. `GET /api/plan?cached=1`
+never measures: with no model loaded it answers the last plan this server holds (the last
+measurement, else the last load's) with `"cached": true`, or `{"available": true, "none": true}`
+when it holds none, so a screen can open on it at no cost. `GET /api/plan?measure=1` measures again
+regardless; a plan computed while a model is loaded carries a `warning`, because that model's memory reads as
 taken and the plan is sized for a smaller machine. Auto mode avoids this by planning with nothing
 loaded.
 
