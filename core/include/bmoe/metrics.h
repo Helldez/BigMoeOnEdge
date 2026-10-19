@@ -169,7 +169,8 @@ struct RunSummary {
     // Compute decomposition, generation phase only (measured whether or not streaming is on, since
     // dense-weight faults appear in the mmap baseline too). majflt_per_token ≫ 0 flags a residency
     // stall hiding in "compute"; cpu_util = cpu_s/token ÷ (s/token × threads) near 1 is compute-bound,
-    // well below 1 is a throttled/preempted core. 0 when the platform can't measure them.
+    // well below 1 is a throttled/preempted core. cpu_s 0 and majflt -1 when the platform can't
+    // measure them: a fault count of 0 is a measurement, and one never taken must not read as one.
     double majflt_per_token = 0.0;
     double cpu_s_per_token = 0.0;
     // Everything between the decodes, per token: the region gen_seconds (and so tok/s) excludes.

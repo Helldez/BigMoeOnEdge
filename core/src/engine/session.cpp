@@ -13,6 +13,7 @@
 #include "prefill_support.h"
 #include "thinking_control.h"
 #include "prefill_path.h"
+#include "llama_log.h"
 #include "../moe/router_hook.h"
 #include "../moe/decide_probe.h"
 #include "../moe/expert_stream_source.h"
@@ -391,6 +392,16 @@ struct Session::Impl {
     bool info_sent = false;
 
     std::atomic<bool> cancel_requested{false};
+    // Set while a cancel's abort is in flight, so llama.cpp's report of the aborted decode is not
+    // shown as an error (engine/llama_log.h). The abort callback sets it; end_cancel_quiet() clears.
+    std::atomic<bool> cancel_quieted{false};
+    // Close the window the abort callback opened, if it did, and say in the engine's own words
+    // what llama.cpp's demoted lines would have reported as a failure.
+    void end_cancel_quiet() {
+        if (!cancel_quieted.exchange(false, std::memory_order_relaxed)) return;
+        detail::llama_log_cancel_end();
+        log_printf(LogLevel::Info, "cancelled: the decode in progress was stopped on request");
+    }
 
     // ── open(), one named step at a time, in the order open() calls them (see Opening) ──
     struct Opening;
@@ -423,6 +434,7 @@ struct Session::Impl {
     struct Turn;
 
     ~Impl() {
+        end_cancel_quiet(); // a window still open would demote every later llama.cpp error
         // Deterministic teardown order: stop the I/O pool (it holds fds into the mmap and its
         // buffers back the rebound expert tensors), then the context (its eval callback points
         // at the hook), then the hook, then unmap the model, then release the backend.
@@ -635,6 +647,10 @@ DecideResult Session::decide(const DecideRequest & req) {
         return off;
     }
     im.cancel_requested.store(false, std::memory_order_relaxed);
+    struct CancelQuiet {
+        Impl & im;
+        ~CancelQuiet() { im.end_cancel_quiet(); }
+    } cancel_quiet{im}; // as in generate(): the window ends with the call
 
     // A decision is not a conversation turn: whatever generate() was continuing is gone once the
     // context is overwritten, so forget it rather than let a later turn diff against stale tokens.
@@ -1011,7 +1027,15 @@ void Session::Impl::install_abort_callback() {
         ctx.get(),
         [](void * ud) -> bool {
             auto * p = static_cast<Impl *>(ud);
-            return p->cancel_requested.load(std::memory_order_relaxed) || p->source.fatal();
+            if (p->cancel_requested.load(std::memory_order_relaxed)) {
+                // The decode this aborts is about to be logged by llama.cpp as a failure; it is a
+                // request honoured. Opened once per cancelled call (the callback is asked many
+                // times), closed by end_cancel_quiet() when that call returns. A fatal streaming
+                // error below is a real failure and opens nothing.
+                if (!p->cancel_quieted.exchange(true, std::memory_order_relaxed)) detail::llama_log_cancel_begin();
+                return true;
+            }
+            return p->source.fatal();
         },
         this);
 }
@@ -1589,6 +1613,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     Impl & im = *self->impl_;
     im.cfg = cfg;
 
+    // Before anything reaches llama.cpp: a session opened without the planner (a gate, an embedder)
+    // still gets llama.cpp's DEBUG lines dropped and a cancel not reported as a decode failure.
+    detail::install_llama_log();
+    detail::set_llama_log_debug(cfg.llama_debug_log);
     // llama_backend_init/free is process-global and reference counted; init here, free in ~Impl.
     llama_backend_init();
     im.backend_inited = true;
@@ -2362,7 +2390,7 @@ struct Session::Impl::Turn {
         s.prefill_io_seconds = prefill_tally.io_seconds;
         s.prefill_stall_seconds = prefill_tally.stall_seconds;
         s.prefill_mgmt_seconds = prefill_tally.mgmt_seconds;
-        s.majflt_per_token = n_gen ? (double) tally.majflt / n_gen : 0.0;
+        s.majflt_per_token = !pio::major_faults_counted() ? -1.0 : n_gen ? (double) tally.majflt / n_gen : 0.0;
         s.cpu_s_per_token = n_gen ? tally.cpu_seconds / n_gen : 0.0;
         if (moe.enabled) {
             IExpertSource::Stats st = im.source.stats();
@@ -2488,6 +2516,11 @@ RunResult Session::generate(const GenerateRequest & req,
                             IMetricsSink * sink) {
     Impl & im = *impl_;
     im.begin_generate(req, sink);
+    // Whichever way this call returns, a cancel's quiet window ends with it.
+    struct CancelQuiet {
+        Impl & im;
+        ~CancelQuiet() { im.end_cancel_quiet(); }
+    } cancel_quiet{im};
 
     RunResult res;
     Impl::Turn turn(im, req, res);

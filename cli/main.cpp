@@ -1144,14 +1144,20 @@ int main(int argc, char ** argv) {
             std::printf("; cache hits credited %.0f%%, measured %.1f%%", predicted_hit_pct, s.cache_hit_pct);
         std::printf("\n");
     }
-    // Compute decomposition (0 s/tok CPU means the platform couldn't measure it — Windows host).
-    // occupancy = CPU-time ÷ (wall × threads): ~1 is compute-bound, well under 1 is a throttled or
-    // preempted core; major faults/token > 0 means dense weights re-faulted from flash inside decode.
+    // Compute decomposition (0 s/tok CPU means the platform couldn't measure it; a negative fault
+    // count means the platform publishes none). occupancy = CPU-time ÷ (wall × threads): ~1 is
+    // compute-bound, well under 1 is a throttled or preempted core; major faults/token > 0 means
+    // dense weights re-faulted from flash inside decode.
     if (s.cpu_s_per_token > 0.0 || s.majflt_per_token > 0.0) {
         const double occ =
             s.s_per_token > 0 && cfg.n_threads > 0 ? s.cpu_s_per_token / (s.s_per_token * cfg.n_threads) : 0.0;
-        std::printf("compute: %.1f%% CPU occupancy (%.4f cpu-s/token over %d threads), %.2f major faults/token\n",
-                    occ * 100.0, s.cpu_s_per_token, cfg.n_threads, s.majflt_per_token);
+        char faults[64];
+        if (s.majflt_per_token < 0.0)
+            std::snprintf(faults, sizeof faults, "major faults not counted here");
+        else
+            std::snprintf(faults, sizeof faults, "%.2f major faults/token", s.majflt_per_token);
+        std::printf("compute: %.1f%% CPU occupancy (%.4f cpu-s/token over %d threads), %s\n", occ * 100.0,
+                    s.cpu_s_per_token, cfg.n_threads, faults);
     }
     // Acceptance is the number that decides whether speculation can pay at all; tokens-per-decode is
     // what it actually bought, and it is what tok/s above is a function of.

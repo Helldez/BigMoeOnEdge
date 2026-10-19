@@ -7,7 +7,9 @@
 // ::abs is not visible (GCC hard-errors; MSVC happened to tolerate it).
 #if defined(_WIN32)
 #include <windows.h>
+#include <psapi.h> // QueryWorkingSetEx: kernel32's K32 export on every supported Windows
 #include <malloc.h>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <string>
@@ -28,6 +30,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/wait.h>
+#include <dirent.h>
 #include <chrono>
 #include <ctime>
 #ifndef O_DIRECT
@@ -150,11 +153,26 @@ void vm_advise_random(void * /*p*/, size_t /*sz*/) {
     // No readahead to tame on a host build that never streams; the gates do not measure I/O.
 }
 
-// Unmeasured on the host build, like the fault counters below and for the same reason: the gates
-// prove byte-identity, they do not size a cache against a phone's reclaim. QueryWorkingSetEx could
-// answer this, but nothing here consumes it.
-bool vm_resident_sample(const void * /*p*/, size_t /*sz*/, size_t * /*sampled*/, size_t * /*resident*/) {
-    return false;
+// The same question mincore answers elsewhere, asked of this process's working set: a page whose
+// entry is Valid is resident. Clipped to whole pages exactly as the POSIX version is, so the two
+// fractions mean the same thing.
+bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * resident) {
+    const size_t page = vm_page();
+    uintptr_t a0 = ((uintptr_t) p + page - 1) & ~(uintptr_t) (page - 1);
+    uintptr_t a1 = ((uintptr_t) p + sz) & ~(uintptr_t) (page - 1);
+    if (a1 <= a0) return true;
+    PSAPI_WORKING_SET_EX_INFORMATION info[256];
+    for (uintptr_t a = a0; a < a1;) {
+        const size_t want = std::min<size_t>((size_t) (a1 - a) / page, sizeof(info) / sizeof(info[0]));
+        for (size_t i = 0; i < want; ++i)
+            info[i].VirtualAddress = (PVOID) (a + i * page);
+        if (!QueryWorkingSetEx(GetCurrentProcess(), info, (DWORD) (want * sizeof(info[0])))) return false;
+        for (size_t i = 0; i < want; ++i)
+            *resident += (size_t) info[i].VirtualAttributes.Valid;
+        *sampled += want;
+        a += want * page;
+    }
+    return true;
 }
 
 bool file_mapped_regions(const char * /*basename*/, std::vector<MappedRegion> & /*out*/) {
@@ -173,14 +191,22 @@ uint64_t mem_total_bytes() {
     return GlobalMemoryStatusEx(&ms) ? (uint64_t) ms.ullTotalPhys : 0;
 }
 
-// The host build exists for the byte-identity gates, not perf measurement, so these stay
-// unmeasured (0) rather than pulling in the imperfect Windows equivalents (PageFaultCount counts
-// soft faults too; GetProcessTimes would work but there is no consumer for it here).
+// No per-process count of HARD faults is published here: PageFaultCount adds the soft ones, which
+// would read a cheap remap as a flash stall. So this stays unmeasured (0), and the dense residency
+// sensor above is the instrument that sees a refaulting dense set on this platform.
 uint64_t major_faults() {
     return 0;
 }
+bool major_faults_counted() {
+    return false;
+}
 double process_cpu_seconds() {
-    return 0.0;
+    FILETIME created, exited, kernel, user;
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) return 0.0;
+    auto secs = [](const FILETIME & f) {
+        return (double) (((uint64_t) f.dwHighDateTime << 32) | f.dwLowDateTime) * 1e-7; // 100 ns ticks
+    };
+    return secs(kernel) + secs(user);
 }
 
 size_t fault_bytes() {
@@ -198,6 +224,16 @@ bool device_memory(DeviceMemory * out) {
     out->available_bytes = (uint64_t) ms.ullAvailPhys;
     out->free_bytes = (uint64_t) ms.ullAvailPhys; // no separate "free vs reclaimable" here
     out->swap_free_bytes = (uint64_t) ms.ullAvailPageFile;
+    return true;
+}
+
+// The commit limit is RAM plus the pagefiles, so a limit above RAM is a pagefile that exists. What
+// the memory manager compresses first is not published to a process, so it is not claimed.
+bool reclaim_facts(ReclaimFacts * out) {
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms)) return false;
+    out->swaps = ms.ullTotalPageFile > ms.ullTotalPhys;
     return true;
 }
 
@@ -421,6 +457,9 @@ uint64_t major_faults() {
     struct rusage ru;
     return getrusage(RUSAGE_SELF, &ru) == 0 ? (uint64_t) ru.ru_majflt : 0;
 }
+bool major_faults_counted() {
+    return true;
+}
 
 double process_cpu_seconds() {
     // Total CPU consumed across all threads. Divided by wall×threads downstream, this is the
@@ -494,6 +533,26 @@ bool device_memory(DeviceMemory * out) {
     out->compressed_held_bytes = (uint64_t) vm.compressor_page_count * (uint64_t) vm_page();
     return true;
 }
+
+bool reclaim_facts(ReclaimFacts * out) {
+#if TARGET_OS_IPHONE
+    // The share's remainder is published only where there is a share: 0 on the simulator, which
+    // runs on the host's kernel and is answered by the host's facts below.
+    out->own_share_left = (uint64_t) os_proc_available_memory();
+#endif
+    vm_statistics64_data_t vm;
+    if (!host_vm(&vm)) return out->own_share_left > 0;
+    // Compressions since boot: a kernel that compresses has done so within seconds of starting.
+    out->compresses = vm.compressions > 0;
+    // Swap files are created on demand, so an empty total says nothing; the switch does.
+    int enabled = 0;
+    size_t len = sizeof(enabled);
+    struct xsw_usage sw;
+    size_t swlen = sizeof(sw);
+    out->swaps = (sysctlbyname("vm.swap_enabled", &enabled, &len, nullptr, 0) == 0 && enabled != 0) ||
+                 (sysctlbyname("vm.swapusage", &sw, &swlen, nullptr, 0) == 0 && sw.xsu_total > 0);
+    return true;
+}
 #else
 bool process_memory(ProcessMemory * out) {
     static const char * const keys[] = {"VmRSS", "RssAnon", "RssFile", "VmSwap"};
@@ -524,6 +583,38 @@ bool device_memory(DeviceMemory * out) {
         }
         std::fclose(f);
     }
+    return true;
+}
+
+// What the machine reclaims INTO. /proc/swaps would say directly, but an unprivileged process on
+// Android may not read it (nor a zram device's own files). Two things it CAN see suffice: whether a
+// zram block device EXISTS (the directory entry is visible even where its files are not) and
+// whether /proc/meminfo reports any swap at all. A zram device that is swapped to means anonymous
+// memory is compressed in RAM; swap without zram means it is written out.
+//
+// Any zram device, not the first: devices are numbered as they are added, and a machine that
+// removed zram0 or configures several swaps on zram1.. compresses just the same. Where the listing
+// is refused, the device the kernel creates first is still asked for by name.
+bool reclaim_facts(ReclaimFacts * out) {
+    static const char * const keys[] = {"SwapTotal"};
+    uint64_t swap_total = 0;
+    if (!scan_kb_file("/proc/meminfo", keys, &swap_total, 1)) return false;
+    bool has_zram = false;
+    if (DIR * d = ::opendir("/sys/block")) {
+        while (const dirent * e = ::readdir(d)) {
+            if (std::strncmp(e->d_name, "zram", 4) == 0) {
+                has_zram = true;
+                break;
+            }
+        }
+        ::closedir(d);
+    }
+    if (!has_zram) {
+        struct stat st {};
+        has_zram = ::stat("/sys/block/zram0", &st) == 0;
+    }
+    out->swaps = swap_total > 0;
+    out->compresses = has_zram && out->swaps;
     return true;
 }
 #endif

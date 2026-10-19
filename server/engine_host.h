@@ -86,6 +86,13 @@ public:
     bool loaded_or_loading() const;
     bool generating() const { return generating_; }
     std::string model_name() const;
+    // The file of the model loaded or loading, "" when none.
+    std::string model_path() const;
+
+    // What the last completed turn of this session measured for decode: s_per_token, cache_hit_pct
+    // (-1 with no cache) and tokens; null before the first turn and after a load. The figures a plan
+    // predicted are checked against these.
+    json last_turn() const;
 
     // True when a session is loaded and `current` differs from it in a session-scoped parameter.
     bool reload_required(const RunConfig & current) const;
@@ -135,6 +142,7 @@ private:
     std::shared_ptr<HostedSession> session_;
     RunConfig requested_;
     json model_ = nullptr;
+    json last_turn_ = nullptr;
     std::thread loader_;
 
     std::mutex gen_m_; // held for a whole generation, and by a load while it swaps the session

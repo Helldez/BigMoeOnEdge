@@ -38,6 +38,20 @@ export function commandLine(args: readonly string[]): string {
   return ['bmoe-cli', ...args.map(quoteArg)].join(' ');
 }
 
+/**
+ * Decimal gigabytes with one decimal, the unit model repositories quote sizes in. The Android app
+ * writes sizes the same way, so a resumable download reads the same number on both.
+ */
+export function formatGb(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '?';
+  return `${(bytes / 1e9).toFixed(1)} GB`;
+}
+
+/** The label of a catalog row's action when part of it is already on disk, as both UIs write it. */
+export function resumeLabel(received: number, total: number): string {
+  return `Resume (${formatGb(received).replace(/ GB$/, '')} of ${formatGb(total)})`;
+}
+
 /** Download progress in [0, 1], or null when the total is unknown. */
 export function progress(received: number, total: number): number | null {
   if (!(total > 0)) return null;

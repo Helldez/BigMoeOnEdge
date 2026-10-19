@@ -8,6 +8,7 @@
 //     then runs on the new session or gets the 503 if the load failed;
 //   * cancel() and unload() during a turn stop it: the turn answers cancelled, and unload leaves the
 //     host empty with the session gone;
+//   * the last full turn is the measured one; a cancelled turn is not, and a load clears it;
 //   * a failed decode closes the session (500, state error), a recoverable kind keeps it (400);
 //   * decide() follows the same rule on `fatal`;
 //   * the engine's diagnostics reach the bus as `log` events while a host lives.
@@ -86,6 +87,7 @@ public:
             r.ok = true;
             r.generated_text = "hi";
             r.summary.n_generated = 1;
+            r.summary.s_per_token = 0.1;
             return r;
         }
         case Script::Turn::Block:
@@ -95,6 +97,9 @@ public:
                 std::this_thread::sleep_for(1ms);
             r.ok = true;
             r.cancelled = cancelled_.load();
+            // A turn stopped mid-answer has tokens and a rate too: they must not count as measured.
+            r.summary.n_generated = 3;
+            r.summary.s_per_token = 0.5;
             return r;
         case Script::Turn::Fail:
             r.error = "decode failed during generation";
@@ -269,6 +274,49 @@ static void cancel_tests() {
     }
 }
 
+// The plan screen shows the loaded model's last turn as "measured": a full turn records it, a
+// cancelled one does not, and a load clears it even when a turn of the old model ends after.
+static void measured_tests() {
+    {
+        EventBus bus;
+        Script script;
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        wait_state(host, "ready");
+        check(host.last_turn().is_null(), "a fresh load has no measured turn");
+        host.chat(turn(), nullptr);
+        check(host.last_turn().value("s_per_token", 0.0) == 0.1, "a full turn is the measured one");
+    }
+    {
+        EventBus bus;
+        Script script;
+        script.turn = Script::Turn::Block;
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        wait_state(host, "ready");
+        auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
+        script.started.wait();
+        host.cancel();
+        check(pending.get().result.cancelled && host.last_turn().is_null(), "a cancelled turn is no measurement");
+    }
+    {
+        EventBus bus;
+        Script script;
+        script.turn = Script::Turn::Ok;
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        wait_state(host, "ready");
+        host.chat(turn(), nullptr);
+        script.turn = Script::Turn::Block;
+        auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
+        script.started.wait();
+        check(host.load(config(), config()).empty(), "a load during a turn starts");
+        pending.get();
+        check(wait_state(host, "ready") && host.last_turn().is_null(),
+              "the new model shows no figure measured on the old one");
+    }
+}
+
 static void failure_tests() {
     {
         EventBus bus;
@@ -342,6 +390,7 @@ int main() {
     load_tests();
     loading_tests();
     cancel_tests();
+    measured_tests();
     failure_tests();
     log_tests();
     if (failures) {

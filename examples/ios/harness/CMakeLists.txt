@@ -1,6 +1,6 @@
 # bmoe-harness: bmoe-cli inside an iOS app bundle. See main.mm for why it is built this way.
 #
-# The bundle id, the team and the memory entitlements are set in ../CMakeLists.txt.
+# The bundle id, the team and the entitlements file are set in ../CMakeLists.txt.
 
 enable_language(OBJCXX)
 
@@ -33,8 +33,8 @@ set_target_properties(bmoe-harness PROPERTIES
     XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${BMOE_IOS_TEAM}"
 )
 
-if(BMOE_IOS_MEMORY_ENTITLEMENTS)
+if(BMOE_IOS_ENTITLEMENTS)
     set_target_properties(bmoe-harness PROPERTIES
-        XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/../memory.entitlements"
+        XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${BMOE_IOS_ENTITLEMENTS}"
     )
 endif()

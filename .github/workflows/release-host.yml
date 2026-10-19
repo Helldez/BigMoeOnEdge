@@ -240,6 +240,21 @@ jobs:
           compute backends, loaded at start-up; a GPU backend loads only where its driver is
           installed, and the Plan page says which devices were found.
           EOF
+          # The binaries are ad-hoc signed, not notarised: a browser download is quarantined and
+          # Gatekeeper refuses the first start. Say how to open them until a signed installer ships.
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            for f in "$NAME/README.txt" "$DESK/README.txt"; do
+              cat >> "$f" <<'EOF'
+
+          macOS: these programs are not notarised yet, so a copy downloaded with a browser is
+          quarantined and macOS refuses to open it the first time. Once, in Terminal, clear the
+          quarantine on the extracted folder:
+            xattr -dr com.apple.quarantine path/to/this/folder
+          or right-click the program in Finder, choose Open, and confirm. A signed installer is
+          planned (https://github.com/Helldez/BigMoeOnEdge/issues/234).
+          EOF
+            done
+          fi
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$NAME.zip" "$NAME" > /dev/null
             7z a -tzip "$DESK.zip" "$DESK" > /dev/null

@@ -91,7 +91,6 @@ static HardwareProfile desktop() {
     h.memory_total = 16 * GiB;
     h.anon_overflow = Overflow::Swap;
     h.reclaim_exempt_max = 0;
-    h.file_pages_counted = Tri::Yes;
     h.n_cores = 16;
     h.storage = desktop_storage();
     ComputeDevice gpu;
@@ -115,7 +114,6 @@ static HardwareProfile phone() {
     // limit of a few pages. The dense set can be protected and the cache cannot.
     h.lockable_bytes = ~0ull;
     h.lock_in_place_bytes = 64 * KiB;
-    h.file_pages_counted = Tri::Yes;
     h.n_cores = 8;
     h.storage.align = 4096;
     h.storage.direct_ok = Tri::Yes;
@@ -132,8 +130,7 @@ static HardwareProfile phone() {
     return h;
 }
 
-// A platform that answers memory pressure by killing the process, and does not count clean mapped
-// file pages against that limit.
+// A platform that answers memory pressure by killing the process.
 static HardwareProfile hard_capped() {
     HardwareProfile h;
     h.label = "hard per-process cap";
@@ -141,7 +138,6 @@ static HardwareProfile hard_capped() {
     h.memory_total = 8 * GiB;
     h.anon_overflow = Overflow::Kill;
     h.reclaim_exempt_max = 0;
-    h.file_pages_counted = Tri::No;
     h.n_cores = 6;
     h.storage.align = 0;
     h.storage.direct_ok = Tri::Yes;
@@ -238,11 +234,15 @@ int main() {
     // ── a platform that kills instead of reclaiming ─────────────────────────────────
     {
         const Plan p = plan_run(base_cfg(), hard_capped(), model, PlanRequest{});
-        // The same rule that picks anon elsewhere picks mmap here, because mapped file pages sit
-        // outside the limit that can actually end the run. One rule, opposite answers, no branch.
-        check(p.config.moe.dense_weights == DenseWeightsMode::Mmap,
-              "hard cap: dense left mapped, because file pages are outside the fatal limit");
-        check(!p.config.moe.release_mmap, "hard cap: release-mmap stays off while the dense set is mapped");
+        // A fatal limit is a reason for a wider margin, not for leaving the dense set where the kernel
+        // may drop it: every token reads all of it, and a dropped page is read back from flash inside
+        // the decode. Held, it is charged to the ledger like anywhere else, and the ledger closes.
+        check(p.config.moe.dense_weights == DenseWeightsMode::Anonymous,
+              "hard cap: dense held in memory, not left mapped");
+        check(p.dense_pending_bytes > 0, "hard cap: the held dense set is charged to the ledger");
+        check(p.allocation.ledger.held <= p.allocation.ledger.holdable_cap, "hard cap: the ledger closes",
+              std::to_string(p.allocation.ledger.held >> 20) + " of " +
+                  std::to_string(p.allocation.ledger.holdable_cap >> 20) + " MiB");
         check(validate(p.config).ok, "hard cap: the plan is a valid config", validate(p.config).error);
     }
 
@@ -1300,18 +1300,6 @@ int main() {
         check(!pinned_off.config.prefill.enabled() && find(pinned_off, "prefill-device")->source == Source::Operator,
               "prefill: a caller who set it empty is not overruled");
 
-        // A library the host calls into is not somewhere a prefill can be placed, however it measures.
-        HardwareProfile helper = machine(0.0, Tri::Unknown);
-        ComputeDevice lib;
-        lib.name = "lib";
-        lib.is_host_helper = true;
-        lib.shares_host_memory = Tri::Yes;
-        lib.wide_matmul_gibs = 5000.0;
-        lib.wide_identity_ok = Tri::Yes;
-        helper.devices.push_back(lib);
-        check(!plan_run(base_cfg(), helper, mm, PlanRequest{}).config.prefill.enabled(),
-              "prefill: a host helper library is never the prefill device");
-
         // A device with memory of its own costs this pool nothing, and is refused only by its own.
         HardwareProfile disc = machine(1500.0, Tri::Yes);
         disc.devices[1].shares_host_memory = Tri::No;
@@ -1446,6 +1434,46 @@ int main() {
         probe_devices_isolated(plain, nullptr);
         check(plain.devices[1].usable == Tri::Unknown && plain.devices[1].probe_here(),
               "isolated: without a runner nothing changes");
+    }
+
+    // ── every decision says itself in one line, on every machine ───────────────────────
+    // A screen leads with the brief, so a rule that adds a decision without one, or with a paragraph,
+    // is a screen nobody can read. And no line, brief or reason, may cite one machine's story on every
+    // other: what is true of the machine being planned is what its profile says.
+    {
+        HardwareProfile tight = phone();
+        tight.residency_budget = 3 * GiB;
+        tight.storage.refault_mibs = 24.0;
+        HardwareProfile shared = unified();
+        shared.host_bandwidth_gibs = 60.0;
+        shared.storage.refault_mibs = 40.0;
+        shared.storage.rate_spread = 2.0;
+        PlanRequest pinned_cache;
+        pinned_cache.pinned = {"cache-mb", "ubatch"};
+        const std::pair<const char *, Plan> plans[] = {
+            {"desktop", plan_run(base_cfg(), desktop(), model, PlanRequest{})},
+            {"phone", plan_run(base_cfg(), phone(), model, PlanRequest{})},
+            {"hard-capped", plan_run(base_cfg(), hard_capped(), model, PlanRequest{})},
+            {"unified", plan_run(base_cfg(), shared, model, PlanRequest{})},
+            {"tight", plan_run(base_cfg(), tight, model, PlanRequest{})},
+            {"pinned", plan_run(base_cfg(), desktop(), model, pinned_cache)},
+        };
+        const char * anecdotes[] = {"phone", "Mac", "Windows", "Android", "11 GB machine"};
+        const char * jargon[] = {"token cycle", "ledger", "capacity tier", "fitter", "holdable"};
+        for (const auto & pl : plans) {
+            std::string bad;
+            for (const Decision & d : pl.second.decisions) {
+                if (d.brief.empty() || d.brief.size() > 120) bad += " [" + d.knob + ": length]";
+                for (const char * w : anecdotes)
+                    if (d.brief.find(w) != std::string::npos || d.reason.find(w) != std::string::npos)
+                        bad += " [" + d.knob + ": " + w + "]";
+                for (const char * w : jargon)
+                    if (d.brief.find(w) != std::string::npos) bad += " [" + d.knob + " brief: " + w + "]";
+                if (d.knob == "cost") bad += " [an unnamed cost note]";
+            }
+            check(!pl.second.decisions.empty() && bad.empty(),
+                  std::string(pl.first) + ": every decision has a plain one-line brief", bad);
+        }
     }
 
     // Informational: the rationale as a user would read it. Printed rather than asserted, because

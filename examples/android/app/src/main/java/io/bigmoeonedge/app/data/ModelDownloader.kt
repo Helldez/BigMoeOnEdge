@@ -75,8 +75,10 @@ object ModelDownloader {
         require(name.endsWith(".gguf")) { "URL must point to a .gguf file" }
 
         val dir = ModelManager.internalModelsDir(ctx)
-        if (expectedBytes > 0 && expectedBytes > dir.usableSpace) {
-            error("needs ${gbLabel(expectedBytes)}, only ${gbLabel(dir.usableSpace)} free")
+        if (expectedBytes > 0) {
+            // A resume needs only what the .part lacks, as enqueueEntry counts it.
+            val needed = bytesStillNeeded(expectedBytes, File(dir, name + DownloadWorker.PART_SUFFIX).length())
+            freeSpaceRefusal(needed, dir.usableSpace)?.let { error(it) }
         }
 
         val req = OneTimeWorkRequestBuilder<DownloadWorker>()
@@ -113,12 +115,8 @@ object ModelDownloader {
         val dir = ModelManager.internalModelsDir(ctx)
         val missing = entry.files.filter { !File(dir, it.name).isFile }
         if (missing.isEmpty()) return@runCatching entry.fileName // all landed — caller re-scans
-        val needed = missing.sumOf { s ->
-            (s.bytes - File(dir, s.name + DownloadWorker.PART_SUFFIX).length()).coerceAtLeast(0)
-        }
-        if (needed > dir.usableSpace) {
-            error("needs ${gbLabel(needed)}, only ${gbLabel(dir.usableSpace)} free")
-        }
+        val needed = missing.sumOf { s -> bytesStillNeeded(s.bytes, File(dir, s.name + DownloadWorker.PART_SUFFIX).length()) }
+        freeSpaceRefusal(needed, dir.usableSpace)?.let { error(it) }
 
         val requests = missing.map { s ->
             OneTimeWorkRequestBuilder<DownloadWorker>()
@@ -167,13 +165,13 @@ object ModelDownloader {
     }
 
     /**
-     * Cancel a catalog entry's download — the whole chain — and delete the leftover .part files.
-     * Files that fully landed stay: a later retry skips them.
+     * Stop a catalog entry's download — the whole chain. The .part files stay, as on the desktop:
+     * Cancel means "stop for now", the row then offers Resume, and deleting the partial file is its
+     * own explicit action ([Engine.deletePartial], through the server, which confines it to the
+     * models directory).
      */
     fun cancelEntry(ctx: Context, e: CatalogEntry) {
         WorkManager.getInstance(ctx).cancelUniqueWork(e.fileName).result.get()
-        val dir = ModelManager.internalModelsDir(ctx)
-        e.files.forEach { File(dir, it.name + DownloadWorker.PART_SUFFIX).delete() }
     }
 
     /**
@@ -243,7 +241,11 @@ object ModelDownloader {
         return if (part.renameTo(finalFile)) finalFile else null
     }
 
-    /** Cancel a download and delete its leftover .part file. */
+    /**
+     * Cancel a pasted-link download and delete its leftover .part file. Unlike a catalog entry, a
+     * pasted link has no row that would show the partial file and offer to resume or delete it, so
+     * keeping it would leave gigabytes on the phone that nothing lists.
+     */
     fun cancel(ctx: Context, name: String) {
         // Block until the cancellation is persisted, so the next events() emission reports the work
         // as finished instead of racing it back in as still-active.

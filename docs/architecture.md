@@ -14,7 +14,11 @@ cli/            bmoe-cli — parses flags, the only place env vars are read
 server/         bmoe-server: the application framework every UI speaks to (docs/application-framework.md),
                 and the engine behind the desktop web UI (docs/server-api.md)
                 openai_chat (the chat protocol), turn_queue, settings_store, event_bus, json_util,
-                model_files (which gguf names make one model): pure policy (bmoe_server_core)
+                model_files (which gguf names make one model, the one-level folder scan, and what a
+                file is for by its header: model, projector, draft), plan_view (the plan as the Plan
+                screen draws it, every word included), download_policy (which download failures
+                are retried and when, what a resume needs on disk, where a .part may be deleted):
+                pure policy (bmoe_server_core)
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
                 (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,
                 downloads; planner_adapter: /api/plan when the planner is built in;
@@ -76,6 +80,8 @@ core/
                 prefill_device - moves layer weights and model state onto a device per graph
                 prefill_path - the prefill device for one session: setup, placement, device decode
                 runtime — the one-shot run() wrapper over a Session
+                llama_log — what of llama.cpp's own log reaches stderr: DEBUG dropped unless
+                  asked for, a requested cancel's decode errors demoted while it is in flight
                 chat_messages — bmoe/chat.h to and from llama.cpp's chat types, in one place
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 ngram_draft — the prompt-lookup draft source (see ngram_draft.h)

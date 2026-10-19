@@ -53,6 +53,7 @@ if(BMOE_HAVE_LLAMA)
         src/moe/decide_probe.cpp
         src/moe/device_arena.cpp
         src/engine/session.cpp
+        src/engine/llama_log.cpp
         src/engine/prefill_device.cpp
         src/engine/prefill_path.cpp
         src/engine/decide/llama_backend.cpp
@@ -76,6 +77,11 @@ if(BMOE_HAVE_LLAMA)
         # libandroid carries AHardwareBuffer_*, the reclaim-exempt allocation behind
         # `--dense-weights ahwb` (pio::pinned_alloc). No other platform has an equivalent.
         target_link_libraries(bmoe_core PUBLIC android)
+    endif()
+    if(WIN32)
+        # QueryWorkingSetEx, behind the dense residency sensor (pio::vm_resident_sample). Newer SDKs
+        # resolve it from kernel32; the import library covers the ones that do not.
+        target_link_libraries(bmoe_core PUBLIC psapi)
     endif()
 
     # Intra-layer I/O–compute overlap needs the fork's expert-ready hook in the CPU backend. It is

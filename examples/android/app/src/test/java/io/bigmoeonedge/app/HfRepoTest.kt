@@ -1,5 +1,6 @@
 package io.bigmoeonedge.app
 
+import io.bigmoeonedge.app.data.FileRole
 import io.bigmoeonedge.app.data.HfFacts
 import io.bigmoeonedge.app.data.HfModels
 import io.bigmoeonedge.app.data.HfSearch
@@ -78,5 +79,30 @@ class HfRepoTest {
         assertEquals("x.gguf", full.getString("name"))
         assertEquals("tok", full.getString("token"))
         assertFalse(hfRequestBody("a/b", "", "  ").has("token"))
+    }
+
+    @Test
+    fun companionFilesAreSetApartAsTheServerSays() {
+        val r = HfModels.of(
+            JSONObject(
+                """{"repo":"a/b","models":[{"name":"x-Q4_0.gguf","role":"model","bytes":1,"complete":true,"files":[]},
+                    {"name":"mtp-x.gguf","role":"draft","bytes":1,"complete":true,"files":[]},
+                    {"name":"mmproj-x.gguf","role":"projector","bytes":1,"complete":true,"files":[]},
+                    {"name":"old.gguf","bytes":1,"complete":true,"files":[]}]}""",
+            ),
+        )
+        val (models, companions) = FileRole.split(r.models) { it.role }
+        assertEquals(listOf("x-Q4_0.gguf", "old.gguf"), models.map { it.name })
+        assertEquals(listOf("mtp-x.gguf", "mmproj-x.gguf"), companions.map { it.name })
+        assertFalse(FileRole.isCompanion("")) // an unreadable header is not known to be a companion
+        assertEquals("draft head", FileRole.label("draft"))
+        assertEquals("not a model", FileRole.label("other"))
+        assertEquals("2026-07-17", FileRole.isoDate("2026-07-17T13:00:49.000Z"))
+        assertEquals("", FileRole.isoDate(""))
+
+        val f = HfFacts.of(JSONObject("""{"name":"mmproj-x.gguf","bytes":1,"model":{"readable":true,"arch":"clip","role":"projector"},"verdict":{"downloadable":false,"mode":"not a model","disk":"","memory":"a multimodal projector"}}"""))
+        assertEquals("projector", f.role)
+        assertEquals("not a model", f.mode)
+        assertFalse(f.downloadable)
     }
 }

@@ -224,6 +224,18 @@ floor, the I/O knobs, the devices the run lists - and `allocate` a list of named
 this page describes them. A reason that tells a person what to type spells the flag through the
 parameter table, so a renamed flag cannot leave the rationale advising one that no longer parses.
 
+Every decision says itself twice. Its `reason` is the full account `--plan` prints, written for
+whoever is checking the arithmetic; its `brief` is one plain sentence for a person, carrying the
+number that decided it ("1024 tokens per pass; wider would take 2.1 GB from the cache"), with no
+flag names and none of this page's vocabulary. `note()` takes both, so no rule can add a decision
+only an engineer can read. Neither cites one machine's story on every other: what a line says about
+the machine is what its profile says. The cost model's own notes (`Allocation::notes`) are
+structured the same way, each under a stable kebab-case `topic` that becomes the decision's knob -
+`storage-rate`, `storage-spread`, `cache-floor`, `cache-off`, `cache-lock`, `cache-unpriced`,
+`dense-pin`, `shared-memory`, `device-crossing`, `device-unapplied`, `device-excluded`,
+`device-host-pointer`, `unmeasured-compute`, `unmeasured-refault`, `unmeasured-storage` - with the
+number it turns on as its value ("6.3 GB/s", "581 MiB") or `-`.
+
 ## The facts, and which knob each one decides
 
 | fact | decides |
@@ -241,7 +253,6 @@ parameter table, so a renamed flag cannot leave the rationale advising one that 
 | the same matmul many tokens wide, on the host and on every device, with the result compared | `--prefill-device`: which device, if any, runs the prefill |
 | model: the largest layer's experts, and its other weights | what a prefill device costs in memory |
 | compute buffers at the widest graph, and what a token of width adds | `--ubatch`: how wide a prompt is computed |
-| whether mapped file pages count against the fatal limit | whether leaving the dense set mapped is free |
 | whether uncached reads work on this path | `--no-odirect` |
 | whether a live mapping serialises concurrent reads | `--release-mmap` |
 | read rate by request size and lane count | `--io-threads` |
@@ -249,11 +260,18 @@ parameter table, so a renamed flag cannot leave the rationale advising one that 
 | model: token cycle | the cache floor, below which the cache is off and the experts stream uncached |
 
 There are no platform names in the rules — Windows, Android, iOS, CUDA and Metal appear only in
-`core/src/plan/hardware_probe.cpp`, the adapter that fills the profile. That is what lets the rules
-be unit-tested against machines nobody here owns (`tests/planner_test.cpp`), and it is why the same
-rule that picks anonymous buffers on a desktop picks a pinned allocation on a phone and leaves the
-weights mapped on a platform that kills a process for holding too much: one rule, three facts,
-three answers, no branch.
+`core/src/plan/hardware_probe.cpp`, the adapter that fills the profile, and in `core/src/io/`, where
+each kernel is asked in its own words. That is what lets the rules be unit-tested against machines
+nobody here owns (`tests/planner_test.cpp`), and it is why the same rule that picks anonymous
+buffers on a desktop picks a pinned allocation on a phone: one rule, different facts, no branch.
+
+What happens to anonymous memory under pressure is read, not assumed: whether this process has a
+share of its own that it is ended for exceeding (Kill), whether the kernel compresses anonymous
+memory first (Compress), whether a swap exists (Swap) - a syscall or a counter each
+(`pio::reclaim_facts`), microseconds in all. A fatal limit widens the margin; it does not leave the
+dense set mapped. That used to be a branch of its own (clean file pages are not charged to the
+limit, so a mapping looked free), and on a phone it cost 25581 major faults a token: every decoded
+token reads the whole dense set, and the kernel owes a mapping nothing.
 
 ## The token cycle
 
@@ -857,10 +875,10 @@ are designed and not yet active.
  | STAGE 2 . PURE PLANNER                     (RAM -> flash)      |
  | 0 llama.cpp symbols . 0 platform names                         |
  |                                                                |
- |  DENSE policy  <-- overflow + reclaim-exempt store + who bills |
+ |  DENSE policy  <-- overflow + reclaim-exempt store + ledger    |
  |      compress & dma-buf         -> pinned (ahwb)               |
- |      kill & file pages uncounted -> mmap                       |
  |      otherwise                  -> anon                        |
+ |      (kill -> a wider margin, not a mapping)                   |
  |                                                                |
  |  CACHE budget = usable - host dense - fitter reservations      |
  |      cap: only the expert share left on the host               |

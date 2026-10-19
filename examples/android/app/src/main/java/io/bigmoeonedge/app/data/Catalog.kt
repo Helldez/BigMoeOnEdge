@@ -22,6 +22,13 @@ data class CatalogEntry(
     val files: List<CatalogFile>,
     /** Added at run time from a repository (`POST /api/hf/add`): it can be removed; its files stay. */
     val added: Boolean = false,
+    /** Bytes of it already in the models directory, complete files and `.part` files alike. */
+    val received: Long = 0,
+    /**
+     * Not downloading on the server, and a `.part` of it is on disk: downloading resumes it. The
+     * server's models directory is this app's, so its answer covers the app's own downloads too.
+     */
+    val partial: Boolean = false,
 ) {
     /** The file handed to the engine: the first (and for a split set, the first shard). */
     val fileName: String get() = files.first().name
@@ -45,6 +52,8 @@ data class CatalogEntry(
                 serverStatus = o.optString("status", "available"),
                 files = files,
                 added = o.optBoolean("added", false),
+                received = o.optLong("received", 0),
+                partial = o.optBoolean("partial", false),
             )
         }
     }
@@ -69,3 +78,21 @@ fun catalogStatus(e: CatalogEntry, present: Set<String>, downloading: Set<String
  * Quoting a model as 17.0 GB and then refusing it for "15 GiB" reads as a bug though both are true.
  */
 fun gbLabel(bytes: Long): String = String.format(Locale.US, "%.1f GB", bytes.toDouble() / 1_000_000_000L)
+
+/**
+ * A catalog row's action when part of it is already on disk, worded as the web UI words it, so the
+ * same stopped download reads the same on the phone and on the desktop.
+ */
+fun resumeLabel(received: Long, total: Long): String =
+    String.format(Locale.US, "Resume (%.1f of %s)", received.toDouble() / 1_000_000_000L, gbLabel(total))
+
+/**
+ * Bytes a download still needs on disk: what the file will hold, less what its `.part` already
+ * does. `usableSpace` already counts the `.part` as used, so comparing the whole size against it
+ * would refuse a resume that fits.
+ */
+fun bytesStillNeeded(expected: Long, onDisk: Long): Long = (expected - onDisk).coerceAtLeast(0)
+
+/** Why a download needing [needed] more bytes cannot start with [free] available, or null when it fits. */
+fun freeSpaceRefusal(needed: Long, free: Long): String? =
+    if (needed > free) "needs ${gbLabel(needed)} more, only ${gbLabel(free)} free" else null

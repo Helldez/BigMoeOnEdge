@@ -233,16 +233,16 @@ jobs:
 
   # Cross-compiles the arm64 engine (the native compile gate) with the Vulkan and OpenCL backends
   # the release APK carries (Hexagon needs its SDK's container and is release-apk.yml's alone),
-  # and packages the example APK around it, uploading the APK as an artifact — and attaching it
-  # to the release on a tag push. Debug-signed: for on-device validation, not Play distribution.
+  # and packages the example APK around it, uploading the APK as an artifact. It never touches a
+  # release: one created with this workflow's token would fire no release-apk or release-host run.
+  # Debug-signed: for on-device validation, not Play distribution.
   android-apk:
     # The long job (NDK + cross-compile + gradle). Build it on PRs (catch APK breakage before merge)
-    # and on release tags (attach the APK), but not on every main push. Trigger a one-off manually
-    # with the Run workflow button (workflow_dispatch) if you need a fresh main APK between releases.
+    # and on release tags (built, never attached: release-apk publishes the APKs), but not on every
+    # main push. Trigger a one-off manually with the Run workflow button (workflow_dispatch) if you
+    # need a fresh main APK between releases.
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write   # only used by the tag-triggered release attach step
     steps:
       - uses: actions/checkout@v5
         with:
@@ -304,10 +304,3 @@ jobs:
           name: bmoe-example-dev-debug-apk
           path: examples/android/app/build/outputs/apk/dev/debug/app-dev-debug.apk
           if-no-files-found: error
-      - name: Attach APK to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        # Pinned by commit SHA for the same reason. This step only runs on a tag push, so a
-        # wrong pin would not surface until a release: resolve the SHA, do not hand-edit it.
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          files: examples/android/app/build/outputs/apk/dev/debug/app-dev-debug.apk

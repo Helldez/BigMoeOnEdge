@@ -15,7 +15,8 @@
 #   BMOE_IOS_APP_BUNDLE_ID (io.bigmoeonedge.app) the app's, unique to the team on a device
 #   BMOE_IOS_BUNDLE_ID   (io.bigmoeonedge.harness) the harness's, likewise
 #   BMOE_IOS_TARGETS     ("bmoe-app bmoe-harness") which of the two to build
-#   BMOE_IOS_MEMORY_ENTITLEMENTS=ON   ask for the larger memory limit and address space
+#   BMOE_IOS_MEMORY_ENTITLEMENTS=ON   ask for the larger memory limit (a Personal Team is granted it)
+#   BMOE_IOS_EXTENDED_ADDRESSING=ON   also ask for the larger address space (a paid team only)
 #   IOS_MIN_VERSION      (16.4, the oldest llama.cpp builds for)
 set -euo pipefail
 
@@ -76,6 +77,7 @@ cmake -S . -B "$BUILD_DIR" -G Xcode \
     -DBMOE_IOS_BUNDLE_ID="${BMOE_IOS_BUNDLE_ID:-io.bigmoeonedge.harness}" \
     -DBMOE_IOS_APP_BUNDLE_ID="${BMOE_IOS_APP_BUNDLE_ID:-io.bigmoeonedge.app}" \
     -DBMOE_IOS_MEMORY_ENTITLEMENTS="${BMOE_IOS_MEMORY_ENTITLEMENTS:-OFF}" \
+    -DBMOE_IOS_EXTENDED_ADDRESSING="${BMOE_IOS_EXTENDED_ADDRESSING:-OFF}" \
     "${SIGN[@]}"
 for t in "${TARGETS[@]}"; do
     if [ "$TARGET" = device ]; then

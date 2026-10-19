@@ -44,6 +44,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.spec = cfg.spec;       // self-speculation (MTP head or n-gram lookup); off by default
     sc.prefill = cfg.prefill; // prefill on an accelerator; off by default
     sc.decide = cfg.decide;
+    sc.llama_debug_log = cfg.llama_debug_log;
     return sc;
 }
 

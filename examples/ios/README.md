@@ -10,9 +10,11 @@ Two apps, one engine:
 - **The harness** (`harness/`): `bmoe-cli` compiled into an app, one field for the command line
   and the CLI's own output. A measuring instrument, not a chat app.
 
-**Status: both build and run in the simulator (CI compiles them there); neither has run on a
-device.** What the planner reads on real hardware (the process's memory share, whether memory can
-be locked, whether a model larger than memory can be mapped at all) is unmeasured.
+**Status: both build and run in the simulator (CI compiles them there); the harness has run on a
+device, the app has not.** A contributor streamed a 35B-A3B on a 12 GB iPhone with the harness,
+signed by a free Personal Team with the memory limit entitlement alone (#235), and the plan it read
+there is what #304 corrected: the dense set was left mapped and refaulted from flash on every token.
+A streamed generation in the simulator says the app works and nothing about a phone.
 
 ## The app
 
@@ -64,8 +66,15 @@ Xcode to run, debug and profile either app. `BMOE_IOS_TARGETS=bmoe-app` builds o
 
 A device build is signed by your own Apple development team, and each bundle identifier
 (`BMOE_IOS_APP_BUNDLE_ID`, `BMOE_IOS_BUNDLE_ID` for the harness) has to be unique to it.
-`BMOE_IOS_MEMORY_ENTITLEMENTS=ON` asks for the increased memory limit and the extended address
-space (`memory.entitlements`); both must be granted to the team, or the build does not sign.
+Entitlements must be granted to the team, or the build does not sign; the app and the harness ask
+for the same ones:
+
+- `BMOE_IOS_MEMORY_ENTITLEMENTS=ON` asks for the increased memory limit (`memory.entitlements`). A
+  free Personal Team is granted it (with a seven-day profile), and it is what a streamed 35B needed
+  on a 12 GB phone.
+- `BMOE_IOS_EXTENDED_ADDRESSING=ON` also asks for the extended address space
+  (`memory-extended.entitlements`), which a Personal Team is refused. Nothing measured so far has
+  needed it.
 
 ## Run in the simulator
 
@@ -80,8 +89,9 @@ The simulator shares the Mac's loopback: if a desktop `bmoe-server` holds port 8
 says so on its status line. Launch it on another port with `-BmoePort 8799` after the bundle id.
 
 **The simulator proves that it builds and runs, not what a device would do.** It runs on the Mac's
-kernel with the Mac's memory, storage and GPU, while the build still describes the machine as one
-that ends a process for holding too much. Do not read a plan or a throughput figure from it.
+kernel with the Mac's memory, storage and GPU, and the planner reads that kernel's facts (no
+per-process share, a compressor): it plans for the Mac. Do not read a plan or a throughput figure
+from it.
 
 ## The harness
 
@@ -95,10 +105,25 @@ On a device, install the signed build from Xcode or with `xcrun devicectl device
 copy a model in with the Files app or the Finder, and type the command line in the app or script
 it: `xcrun devicectl device process launch --console --device <id> <your.own.id> --bmoe --auto --plan -m model.gguf`.
 
+## The runs a report needs, in one command
+
+`scripts/ios-runs.sh` runs the plan, a run of it, and the same run with the dense set left mapped,
+each in a fresh process of the harness, and brings the console output and per-token CSV of each
+back to the Mac with a `summary.txt` on top (tok/s, the decode split, major faults, dense residency):
+
+```bash
+BMOE_IOS_DEVICE=<id> BMOE_IOS_BUNDLE_ID=<your.own.id> scripts/ios-runs.sh device model.gguf
+RUNS="plan auto mmap t2 t4" ...   # add the same run at 2 and 4 threads
+```
+
+`scripts/ios-runs.sh sim model.gguf` does the same in the booted simulator, which checks the
+harness and nothing else.
+
 ## Limits
 
 - One process: the device probes run in it (there is no second process to isolate a failing
   driver in), and an engine crash ends the app.
 - The harness: `--session` reads requests from a standard input an app does not have, and a
   command line the CLI rejects by exiting (a flag with its value missing) ends the app.
-- Which regions of the model's mapping are resident is not reported here.
+- The process's region list is not offered to an app, so the dense residency sensor reads the
+  mapping at each tensor's own address instead, which works here as everywhere else.

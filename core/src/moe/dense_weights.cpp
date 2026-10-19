@@ -1,6 +1,7 @@
 #include "dense_weights.h"
 #include "bmoe/log.h"
 
+#include "ggml-backend.h"
 #include "ggml.h"
 #include "row_stream.h"
 
@@ -39,11 +40,7 @@ bool DenseWeights::init(DenseWeightsMode mode,
     paths_ = paths;
     ranges_ = std::move(ranges);
     tensors_ = std::move(tensors);
-    basenames_.clear();
-    for (const std::string & p : paths_) {
-        const size_t slash = p.find_last_of("/\\");
-        basenames_.push_back(slash == std::string::npos ? p : p.substr(slash + 1));
-    }
+    index_mapping();
 
     hold_back_oversized();
     take_row_gathered();
@@ -227,7 +224,6 @@ void DenseWeights::take_row_gathered() {
 
 void DenseWeights::advise_random_mapped() {
     if (mapped_.empty()) return;
-    resolve_vmas();
     const size_t page = pio::vm_page();
     for (const DenseTensorRef & d : mapped_) {
         const char * a = addr_of(d.file_idx, d.file_off);
@@ -322,33 +318,42 @@ bool DenseWeights::read_anonymous() {
     return true;
 }
 
-// Per-shard VMA resolution for every consumer that must turn (file_idx, offset) into an address.
-// llama.cpp maps each shard of a split model separately, so the lookup is per shard basename.
-void DenseWeights::resolve_vmas() {
-    if (vmas_tried_) return;
-    vmas_tried_ = true;
-    vmas_.resize(basenames_.size());
-    for (size_t s = 0; s < basenames_.size(); ++s)
-        pio::file_mapped_regions(basenames_[s].c_str(), vmas_[s]);
+// Every consumer that must turn (file_idx, offset) into an address asks here. It used to ask the
+// process's own region list (/proc/self/maps, or a walk of the address space), which an iOS app is
+// not given, so the sensor read -1 there and a dense set being refaulted every token went unseen.
+// The tensors already know: before anything is rebound, a weight's data is where its bytes are
+// mapped. A tensor in a buffer the host cannot address (a device's) has no such address.
+void DenseWeights::index_mapping() {
+    spans_.assign(paths_.size(), {});
+    for (const DenseTensorRef & d : tensors_) {
+        const ggml_tensor * t = d.tensor;
+        if (!t || !t->data || !t->buffer || !ggml_backend_buffer_is_host(t->buffer) || d.size == 0) continue;
+        if (d.file_idx < 0 || (size_t) d.file_idx >= spans_.size()) continue;
+        spans_[(size_t) d.file_idx].push_back({d.file_off, d.size, (const char *) t->data});
+    }
+    for (auto & shard : spans_)
+        std::sort(shard.begin(), shard.end(),
+                  [](const MappedSpan & a, const MappedSpan & b) { return a.file_off < b.file_off; });
 }
 
 const char * DenseWeights::addr_of(int file_idx, uint64_t off) const {
-    if (file_idx < 0 || file_idx >= (int) vmas_.size()) return nullptr;
-    for (const auto & v : vmas_[file_idx]) {
-        const uint64_t span = (uint64_t) (v.end - v.start);
-        if (off >= v.file_offset && off < v.file_offset + span) return (const char *) v.start + (off - v.file_offset);
-    }
-    return nullptr;
+    if (file_idx < 0 || (size_t) file_idx >= spans_.size()) return nullptr;
+    const std::vector<MappedSpan> & shard = spans_[(size_t) file_idx];
+    // The last span starting at or before `off`; the bytes between tensors map to nothing here.
+    auto it = std::upper_bound(shard.begin(), shard.end(), off,
+                               [](uint64_t o, const MappedSpan & sp) { return o < sp.file_off; });
+    if (it == shard.begin()) return nullptr;
+    --it;
+    return off < it->file_off + it->size ? it->addr + (off - it->file_off) : nullptr;
 }
 
 // Hand the mmap copies back. The capture warm-up decode faulted these dense pages in mmap-resident,
 // and read_anonymous has just copied them into anon buffers and rebound every tensor — so the file-
 // backed pages are referenced by nobody. Left alone they sit resident until reclaim, doubling the
 // dense footprint at the worst moment (right before prefill). Drop them with MADV_DONTNEED: a clean
-// read-only mapping, so nothing is lost and nothing will refault the range. Best-effort — needs
-// /proc/self/maps to turn a file offset into an address; where that is unreadable the pages stay.
+// read-only mapping, so nothing is lost and nothing will refault the range. Best-effort: a tensor
+// whose mapped address was not known (index_mapping) keeps its pages until reclaim.
 void DenseWeights::drop_mmap_copies(size_t page) {
-    resolve_vmas();
     uint64_t dropped = 0;
     for (const DenseTensorRef & d : tensors_) {
         if (!d.tensor || d.size == 0) continue;
@@ -440,12 +445,11 @@ void DenseWeights::sample_anon(size_t page) {
 }
 
 // Mmap/Warmed: the weights are llama.cpp's mmaps of the gguf shards; a dense (shard, offset) becomes
-// an address through the VMA that backs it (/proc/self/maps), which an app may read, being its own.
+// an address through the tensor that holds it (index_mapping), on every platform alike.
 // Probe sample_pages points spread evenly across the dense bytes of ALL shards, one page each, so the
 // fraction keeps meaning "of the whole dense set" whatever the shard layout.
 void DenseWeights::sample_mmap(size_t page) {
     if (ranges_.empty()) return;
-    resolve_vmas();
 
     uint64_t total = 0;
     for (const auto & shard : ranges_)
