@@ -11,9 +11,9 @@
 
   const groups = $derived(groupDecisions(decisions));
   const sections = $derived([
-    { title: 'Set by the plan', rows: groups.set, open: true },
-    { title: 'Left as is', rows: groups.kept, open: false },
-    { title: 'Notes', rows: groups.notes, open: false },
+    { title: 'Set by the plan', hint: '', rows: groups.set, open: true },
+    { title: 'Left as is', hint: 'Settings the plan looked at and left as they were.', rows: groups.kept, open: false },
+    { title: 'Notes', hint: 'What the plan measured and weighed. None of these is a setting.', rows: groups.notes, open: false },
   ]);
 </script>
 
@@ -23,6 +23,7 @@
       <summary>
         <span class="title">{s.title}</span>
         <span class="badge">{s.rows.length}</span>
+        {#if s.hint}<span class="hint muted">{s.hint}</span>{/if}
       </summary>
       <!-- Keyed by position: a knob can carry several decisions (the planner notes `cost` more than
            once), and a duplicate key stops Svelte rendering the whole page. -->
@@ -34,8 +35,11 @@
             <SourceBadge source={d.source} reason={d.reason} />
           </summary>
           <div class="reason">
-            <p>{d.reason}</p>
-            {#if d.label}<a href={href('settings')}>{d.label} in Settings</a>{/if}
+            <p>{d.brief || d.reason}</p>
+            {#if d.brief && d.brief !== d.reason}
+              <details class="why"><summary>Why</summary><p>{d.reason}</p></details>
+            {/if}
+            {#if d.label && d.group !== 'notes'}<a href={href('settings')}>{d.label} in Settings</a>{/if}
           </div>
         </details>
       {/each}
@@ -101,5 +105,13 @@
   }
   .reason p {
     margin: 0 0 0.4rem;
+  }
+  .hint {
+    flex-basis: 100%;
+    font-size: 0.85rem;
+  }
+  .why > summary {
+    color: var(--accent);
+    margin-bottom: 0.3rem;
   }
 </style>

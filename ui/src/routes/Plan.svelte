@@ -24,7 +24,7 @@
     error = '';
     measuring = measure;
     try {
-      plan = await api.plan(measure);
+      plan = await api.plan(measure ? 'measure' : 'cached');
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -112,6 +112,14 @@
 
   {#if plan.error}
     <p class="muted">{plan.error}</p>
+  {:else if plan.none}
+    <section class="card summary">
+      <p class="sentence">Not measured yet.</p>
+      <p class="muted machine">Measure this machine to see what the plan does with the chosen model.</p>
+      <div class="apply">
+        <button type="button" class="primary" onclick={() => refresh(true)} disabled={measuring}>Measure</button>
+      </div>
+    </section>
   {:else if avail && check}
     {#if avail.warning}
       <p class="banner warn" role="status">{avail.warning}</p>
@@ -120,6 +128,8 @@
     <section class="card summary">
       {#if avail.from_last_load}
         <span class="badge ok">The loaded model runs this plan</span>
+      {:else if avail.cached}
+        <span class="badge">The last plan measured</span>
       {/if}
       <p class="sentence">{avail.summary?.sentence ?? `Regime: ${avail.regime}`}</p>
       {#if avail.machine}<p class="muted machine">{avail.machine}</p>{/if}

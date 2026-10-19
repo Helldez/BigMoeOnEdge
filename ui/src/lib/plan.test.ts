@@ -23,11 +23,9 @@ describe('groupDecisions', () => {
     const g = groupDecisions([dec('a', 'measured', 'set'), dec('b', 'derived', 'kept'), dec('regime', 'derived', 'notes')]);
     expect([g.set.length, g.kept.length, g.notes.length]).toEqual([1, 1, 1]);
   });
-  it('falls back on knob and source for a server without groups', () => {
-    const g = groupDecisions([dec('cost', 'derived'), dec('a', 'operator'), dec('b', 'unprobed'), dec('c', 'measured')]);
-    expect(g.notes.map((d) => d.knob)).toEqual(['cost']);
-    expect(g.kept.map((d) => d.knob)).toEqual(['a', 'b']);
-    expect(g.set.map((d) => d.knob)).toEqual(['c']);
+  it('keeps no grouping policy of its own: an ungrouped decision is with the set ones', () => {
+    const g = groupDecisions([dec('storage-rate', 'derived'), dec('a', 'operator')]);
+    expect([g.set.length, g.kept.length, g.notes.length]).toEqual([2, 0, 0]);
   });
 });
 

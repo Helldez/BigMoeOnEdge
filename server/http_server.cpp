@@ -816,6 +816,19 @@ void register_routes(httplib::Server & svr, App & app) {
                 return send_json(res, body);
             }
         }
+        // `?cached=1`: the last plan this server holds, never a measurement. A screen opens on it, so
+        // opening the Plan screen costs nothing on any machine and every UI shows the same thing.
+        if (req.has_param("cached")) {
+            PlanOutcome last;
+            {
+                std::lock_guard<std::mutex> lk(app.plan_m);
+                last = app.last_plan.ok ? app.last_plan : app.load_plan;
+            }
+            if (!last.ok) return send_json(res, json{{"available", true}, {"none", true}});
+            json body = last.body;
+            body["cached"] = true;
+            return send_json(res, body);
+        }
         if (app.host.generating())
             return send_error(res, 409, "busy: a plan measures the machine, and a running generation would skew it");
         std::unique_lock<std::mutex> measuring(app.measure_m, std::try_to_lock);

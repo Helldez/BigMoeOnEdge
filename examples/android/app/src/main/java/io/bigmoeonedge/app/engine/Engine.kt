@@ -97,18 +97,11 @@ data class PlanDecision(
     val reason: String,
     /** The knob's settings label; empty when it is not a parameter. */
     val label: String = "",
-    /** set | kept | notes: a setting the plan decided, one it left, a note that is no setting. Empty from an older server. */
+    /** set | kept | notes: a setting the plan decided, one it left, a note that is no setting. */
     val group: String = "",
+    /** The decision in one short line; [reason] is the full account. Empty from an older server. */
+    val brief: String = "",
 ) {
-    /** The group, read by knob and source where the server does not say. */
-    val readGroup: String
-        get() = group.ifEmpty {
-            when {
-                knob == "cost" -> "notes"
-                source == "operator" || source == "unprobed" -> "kept"
-                else -> "set"
-            }
-        }
 
     companion object {
         fun list(arr: JSONArray?): List<PlanDecision> = arr?.let { a ->
@@ -116,7 +109,7 @@ data class PlanDecision(
                 val d = a.getJSONObject(i)
                 PlanDecision(
                     d.optString("knob"), d.optString("value"), d.optString("source"), d.optString("reason"),
-                    d.optString("label"), d.optString("group"),
+                    d.optString("label"), d.optString("group"), d.optString("brief"),
                 )
             }
         }.orEmpty()
@@ -233,6 +226,10 @@ data class PlanResult(
     val devices: List<PlanDevice> = emptyList(),
     /** Why there is no device beyond the host, in words; empty when there is one. */
     val devicesNoneText: String = "",
+    /** The server holds no plan yet (`?cached=1`): nothing was measured. */
+    val none: Boolean = false,
+    /** The last plan held, read without measuring. */
+    val cached: Boolean = false,
 ) {
     companion object {
         private fun strings(a: JSONArray?): List<String> = a?.let { (0 until it.length()).map { i -> it.getString(i) } }.orEmpty()
@@ -272,6 +269,8 @@ data class PlanResult(
                 )
             },
             devicesNoneText = o.optString("devices_none_text"),
+            none = o.optBoolean("none", false),
+            cached = o.optBoolean("cached", false),
         )
 
         private fun base(o: JSONObject): PlanResult = PlanResult(
@@ -599,6 +598,7 @@ object Engine {
         catching { ConfigState.of(api.updateConfig(JSONObject(), emptyList(), on)).also { c -> _state.update { it.copy(config = c) } } }
     }
 
+    /** The plan in force or the last one held (never a measurement), or a new measurement. */
     suspend fun plan(measure: Boolean): Result<PlanResult> = withContext(Dispatchers.IO) {
         catching { PlanResult.of(api.plan(measure)) }
     }

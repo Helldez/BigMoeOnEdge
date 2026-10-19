@@ -73,6 +73,8 @@ export interface PlanDecision {
   value: string;
   source: PlanSource | (string & {});
   reason: string;
+  /** The decision in one short line for a person; `reason` is the full account. */
+  brief?: string;
   /** The knob's settings label, empty when the knob is not a parameter. */
   label?: string;
   /** A setting the plan decided, one it left (the person's, or unmeasured), or a note that is no setting. */
@@ -185,6 +187,10 @@ export interface PlanAvailable {
   /** Set when the plan was measured with a model loaded, which makes it pessimistic. */
   warning?: string;
   /** The plan applied at the last load, served without measuring again. */
+  /** `GET /api/plan?cached=1` held no plan: nothing was measured yet. */
+  none?: boolean;
+  /** The last plan held, read without measuring. */
+  cached?: boolean;
   from_last_load?: boolean;
   summary?: { sentence: string; lanes: PlanLane[] };
   predicted?: { s_per_token?: number; cache_hit_pct?: number };

@@ -93,7 +93,7 @@ private fun Root() {
         when (screen) {
             Screen.CHAT -> ChatScreen(m, onOpenModels = { screen = Screen.MODELS })
             Screen.MODELS -> ModelsScreen(m)
-            Screen.PLAN -> PlanScreen(m)
+            Screen.PLAN -> PlanScreen(m, onOpenSettings = { screen = Screen.SETTINGS })
             Screen.SETTINGS -> SettingsScreen(m)
             Screen.METRICS -> MetricsScreen(m)
         }

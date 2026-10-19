@@ -26,11 +26,12 @@ export interface DecisionGroups {
   notes: PlanDecision[];
 }
 
-/** The three groups a plan is read in. A server without `group` gets the nearest split it can say. */
+/** The three groups a plan is read in, as the server says (server/plan_view.cpp decides them). The UI
+ *  ships with its own server, so a decision without a group is one it puts with the settings set. */
 export function groupDecisions(decisions: readonly PlanDecision[]): DecisionGroups {
   const out: DecisionGroups = { set: [], kept: [], notes: [] };
   for (const d of decisions) {
-    const g = d.group ?? (d.knob === 'cost' ? 'notes' : d.source === 'operator' || d.source === 'unprobed' ? 'kept' : 'set');
+    const g = d.group ?? 'set';
     (g === 'notes' ? out.notes : g === 'kept' ? out.kept : out.set).push(d);
   }
   return out;
