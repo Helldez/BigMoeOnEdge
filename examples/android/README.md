@@ -12,6 +12,14 @@ of its own is the crash boundary: a driver that ends the engine does not end the
 
 Nothing about a prompt or an answer leaves the phone unless **Serve on the network** is on.
 
+The app still needs the network permission, offline too: Android ties every IP socket to it,
+loopback included, so the app cannot reach its own engine without it. Being offline is fine (the
+loopback interface is always there, airplane mode included); being *denied* the network is not.
+Stock Android grants it at install and nobody can revoke it, but GrapheneOS's per-app **Network**
+toggle and firewall apps can. The app then says so in the status line, with a button to its system
+settings, and a download fails with the same reason instead of retrying; a model can still be
+imported from a file.
+
 ## Build
 
 1. Cross-compile and stage the engine binaries (needs the Android NDK):
