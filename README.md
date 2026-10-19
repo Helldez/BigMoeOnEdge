@@ -18,7 +18,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Helldez/BigMoeOnEdge" alt="License"></a>
 </p>
 
-https://github.com/user-attachments/assets/PROMO-VIDEO-ID
+https://github.com/user-attachments/assets/b389bb14-baec-4970-b164-c770c185198a
 
 <p align="center"><em>Real recordings on a 16 GB laptop and a 12 GB Android phone. Sped-up parts are marked in the video.</em></p>
 
