@@ -7,6 +7,13 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **A device prefill where nothing can be locked.** A platform that publishes no wire limit reads a
+  lock store of 0, and the planner charged an accelerator's buffers to it anyway, so the device
+  never fit: a 12 GB phone's GPU, measured at 17.8x its cores on a wide prefill, was refused "on
+  memory" (#304). The lock ceiling exists to keep what the process locks from being outbid, and
+  where nothing can be locked there is nothing to outbid: the device is now charged there only where
+  a lock store exists, and to what the process may hold everywhere. Machines that publish one, the
+  Mac and the Android phone among them, plan exactly as before (checked side by side on the Mac).
 - **The expert cache brakes when the system takes it back mid-run** (`--cache-brake`, on by
   default). On a 12 GB phone the default `--auto` budget ended in a Jetsam `proc-thrashing` kill
   (#304): the system compressed 2.5 GB of the engine's own memory and a token took 52 s. No figure

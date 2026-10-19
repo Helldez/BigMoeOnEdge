@@ -931,7 +931,13 @@ void charge_prefill(const Planning & s, const ComputeDevice * dev, AllocationInp
     const uint64_t rest = 2 * s.model.largest_layer_dense_bytes + compute;
     in.device_bytes = on_demand ? rest : rest + experts;
     in.device_turn_bytes = on_demand ? experts : 0;
-    in.device_locked = !dev || dev->charges_lockable();
+    // Charged to the lock ceiling only where there is one. That ceiling exists to keep what this
+    // process locks - the dense set, the cache - from being outbid by a device that wires the same
+    // pool. Where nothing can be locked (a platform that publishes no wire limit reads 0), there is
+    // nothing to outbid, and charging the device to it read as "no room": a phone's GPU, measured at
+    // 17.8x the host on a wide prefill, was refused for 0 MiB of a store the run could not use. Its
+    // bytes are still charged where they are held, to what the process may hold.
+    in.device_locked = (in.lockable_bytes > 0 || in.lock_in_place_bytes > 0) && (!dev || dev->charges_lockable());
 }
 
 // What the profile says about prefill-width devices: the fastest that is both measured and
