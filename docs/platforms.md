@@ -4,7 +4,7 @@ What runs where, how far each platform has been taken, and what each one still o
 the summary; the evidence behind every cell is in the page it links to, and a cell with no
 measurement behind it says so rather than implying one.
 
-Last reviewed on 2026-10-18, against release 0.31.0.
+Last reviewed on 2026-10-19, against release 0.32.0.
 
 ## How to read the tables
 
