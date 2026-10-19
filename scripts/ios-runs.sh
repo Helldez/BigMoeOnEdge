@@ -56,7 +56,8 @@ fetch() { # a file from the app's Documents folder into $OUT
 
 # The mean of one CSV column over the rows that measured it (-1 is "unmeasured" there).
 column_mean() {
-    awk -F, -v name="$2" '
+    # The C locale: a decimal-comma locale reads "0.849" as 0 and prints its result with a comma.
+    LC_ALL=C awk -F, -v name="$2" '
         /^#/ { next }
         !col { for (i = 1; i <= NF; i++) if ($i == name) col = i; next }
         col && $col != "" && $col + 0 >= 0 { sum += $col; n++ }

@@ -8,9 +8,12 @@ enable_language(OBJCXX)
 set(BMOE_IOS_BUNDLE_ID "io.bigmoeonedge.harness" CACHE STRING "Bundle identifier of the iOS harness")
 # The signing team, for a build that goes on a device. A simulator build needs none.
 set(BMOE_IOS_TEAM "" CACHE STRING "Apple development team id that signs the iOS harness")
-# Off by default: both entitlements have to be granted to the signing team, and a build that asks
-# for one it was not granted does not sign at all.
-option(BMOE_IOS_MEMORY_ENTITLEMENTS "Ask for the increased memory limit and the extended address space" OFF)
+# Off by default: an entitlement has to be granted to the signing team, and a build that asks for
+# one it was not granted does not sign at all. The memory limit is granted to a free Personal Team
+# and is what a streamed 35B needed on a 12 GB phone (#235); the extended address space is not
+# granted to one, so it is asked for separately.
+option(BMOE_IOS_MEMORY_ENTITLEMENTS "Ask for the increased memory limit" OFF)
+option(BMOE_IOS_EXTENDED_ADDRESSING "Also ask for the extended address space (not granted to a Personal Team)" OFF)
 
 set(_cli_main "${PROJECT_SOURCE_DIR}/cli/main.cpp")
 
@@ -41,7 +44,11 @@ set_target_properties(bmoe-harness PROPERTIES
     XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${BMOE_IOS_TEAM}"
 )
 
-if(BMOE_IOS_MEMORY_ENTITLEMENTS)
+if(BMOE_IOS_EXTENDED_ADDRESSING)
+    set_target_properties(bmoe-harness PROPERTIES
+        XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/harness-extended.entitlements"
+    )
+elseif(BMOE_IOS_MEMORY_ENTITLEMENTS)
     set_target_properties(bmoe-harness PROPERTIES
         XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/harness.entitlements"
     )
