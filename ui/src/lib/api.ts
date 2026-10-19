@@ -120,6 +120,8 @@ export const api = {
   models: () => request<ModelsResponse>('GET', 'api/models', undefined, isModelsResponse),
   download: (id: string) => request<unknown>('POST', 'api/models/download', { id }),
   cancelDownload: (id: string) => request<unknown>('DELETE', `api/models/download/${encodeURIComponent(id)}`),
+  /** Delete the partial files a stopped download left; by catalog id, never by path. */
+  deletePartial: (id: string) => request<unknown>('DELETE', `api/models/partial/${encodeURIComponent(id)}`),
   /** Repositories with gguf files whose name matches, the most downloaded first. */
   hfSearch: (query: string, token?: string) =>
     request<HfSearchResponse>('POST', 'api/hf/search', token ? { query, token } : { query }, isHfSearchResponse),

@@ -702,14 +702,23 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!parse_body(req, res, body)) return;
         if (!body.contains("id") || !body["id"].is_string())
             return send_error(res, 400, "id must be a catalog id string", "invalid_request");
-        const std::string err = app.lib.start_download(body["id"].get<std::string>());
-        if (!err.empty()) return send_error(res, 404, err);
+        const ModelLibrary::DownloadRefusal r = app.lib.start_download(body["id"].get<std::string>());
+        if (r.status) return send_error(res, r.status, r.error);
         send_json(res, json{{"ok", true}}, 202);
     });
 
     svr.Delete(R"(/api/models/download/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
         const bool cancelled = app.lib.cancel_download(req.matches[1].str());
         send_json(res, json{{"ok", cancelled}}, cancelled ? 200 : 404);
+    });
+
+    // A catalog id, never a path: the library deletes only the `.part` files that entry names, in
+    // the models folder (download_policy.h).
+    svr.Delete(R"(/api/models/partial/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
+        uint64_t freed = 0;
+        const ModelLibrary::DownloadRefusal r = app.lib.delete_partial(req.matches[1].str(), freed);
+        if (r.status) return send_error(res, r.status, r.error);
+        send_json(res, json{{"ok", true}, {"freed", freed}});
     });
 
     // ── a model from a Hugging Face repository (hf_repo.h, the helpers above register_routes) ──

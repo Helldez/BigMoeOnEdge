@@ -12,11 +12,14 @@
 //   * model files: which names make a split set, and how a directory's files group into models;
 //   * the plan view: one shape for every machine (an NPU phone, a discrete card, the cores alone),
 //     the device roles and their words, the memory pools, the decision groups.
+//   * downloads: which curl failures are retried and after how long, what a resume still needs on
+//     disk, and that deleting a partial download stays inside the models folder.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "access.h"
 #include "decide_protocol.h"
+#include "download_policy.h"
 #include "hf_repo.h"
 #include "json_util.h"
 #include "model_files.h"
@@ -958,6 +961,74 @@ static void plan_view_tests() {
           "plan view: stage words, and a stage it does not know");
 }
 
+static void download_tests() {
+    namespace fs = std::filesystem;
+    check(is_transient_curl_exit(18) && is_transient_curl_exit(56) && is_transient_curl_exit(7) &&
+              is_transient_curl_exit(28),
+          "downloads: a short body, a reset, a refused connection and a stall are retried");
+    check(!is_transient_curl_exit(0) && !is_transient_curl_exit(22) && !is_transient_curl_exit(23) &&
+              !is_transient_curl_exit(33),
+          "downloads: an HTTP error, a write error (full disk) and a refused range are not");
+    check(download_retry_delay(1) == kDownloadRetryFirstDelay &&
+              download_retry_delay(2) == 2 * kDownloadRetryFirstDelay,
+          "downloads: the wait doubles after each failed attempt");
+    check(download_retry_delay(1000) == kDownloadRetryMaxDelay, "downloads: and stops at its cap");
+    bool rising = true;
+    for (int i = 2; i <= kDownloadMaxAttempts; ++i)
+        rising = rising && download_retry_delay(i) >= download_retry_delay(i - 1);
+    check(rising, "downloads: never shorter than the one before");
+
+    check(bytes_still_needed(47, 33) == 14 && bytes_still_needed(10, 12) == 0,
+          "downloads: a resume needs only what the partial file lacks");
+    check(free_space_refusal(14'000'000'000ull, 20'000'000'000ull).empty(),
+          "downloads: 14 GB still to fetch fits in 20 GB free, whatever the whole model weighs");
+    const std::string no = free_space_refusal(14'000'000'000ull, 3'000'000'000ull);
+    check(no == "needs 14.0 GB more, only 3.0 GB free", "downloads: and a disk too small says by how much: " + no);
+    check(free_space_refusal(14'000'000'000ull, 0).empty(), "downloads: unknown free space refuses nothing");
+
+    const fs::path dir = fs::temp_directory_path() / ("bmoe-dl-test-" + std::to_string(std::rand()));
+    const fs::path models = dir / "models";
+    fs::create_directories(models);
+    const auto write = [](const fs::path & p, const char * s) {
+        std::FILE * f = std::fopen(p.u8string().c_str(), "wb");
+        if (!f) return;
+        std::fputs(s, f);
+        std::fclose(f);
+    };
+    std::string out;
+    check(partial_file_path(models.u8string(), "m.gguf", out) && fs::u8path(out) == models / "m.gguf.part",
+          "downloads: a file's partial is <name>.part in the models folder");
+    for (const char * bad : {"../m.gguf", "a/b.gguf", "a\\b.gguf", "..", ".", "", "C:m.gguf"})
+        check(!partial_file_path(models.u8string(), bad, out),
+              std::string("downloads: '") + bad + "' names no partial");
+
+    write(models / "a.gguf.part", "12345");
+    write(models / "b.gguf.part", "678");
+    write(models / "a.gguf", "whole");
+    write(dir / "outside.part", "keep");
+    uint64_t freed = 0;
+    std::string err;
+    check(delete_partial_files(models.u8string(), {"a.gguf", "b.gguf", "absent.gguf"}, freed, err) && freed == 8 &&
+              !fs::exists(models / "a.gguf.part") && !fs::exists(models / "b.gguf.part"),
+          "downloads: deleting a partial download removes its .part files, a missing one included");
+    check(fs::exists(models / "a.gguf"), "downloads: and never the finished file beside them");
+    check(!delete_partial_files(models.u8string(), {"../outside"}, freed, err) && !err.empty() &&
+              fs::exists(dir / "outside.part"),
+          "downloads: a name that walks out of the models folder deletes nothing");
+    write(models / "ok.gguf.part", "x");
+    check(!delete_partial_files(models.u8string(), {"ok.gguf", "../outside"}, freed, err) &&
+              fs::exists(models / "ok.gguf.part") && fs::exists(dir / "outside.part"),
+          "downloads: one bad name refuses the whole request before anything is deleted");
+    std::error_code ec;
+    fs::create_symlink(dir / "outside.part", models / "link.gguf.part", ec);
+    if (!ec)
+        check(delete_partial_files(models.u8string(), {"link.gguf"}, freed, err) && fs::exists(dir / "outside.part") &&
+                  !fs::exists(fs::symlink_status(models / "link.gguf.part")),
+              "downloads: a link named like a partial is removed as the link, its target kept");
+    check(gb_label(47'000'000'000ull) == "47.0 GB", "downloads: sizes are decimal GB, as the Android app writes them");
+    fs::remove_all(dir, ec);
+}
+
 int main() {
     protocol_tests();
     queue_tests();
@@ -970,6 +1041,7 @@ int main() {
     model_files_tests();
     hf_tests();
     plan_view_tests();
+    download_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

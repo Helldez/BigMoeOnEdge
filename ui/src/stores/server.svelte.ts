@@ -186,6 +186,12 @@ class ServerStore {
     };
   }
 
+  /** Drop a download's last event: its partial files were deleted, so nothing is left to resume. */
+  forgetDownload(id: string): void {
+    const { [id]: _gone, ...rest } = this.downloads;
+    this.downloads = rest;
+  }
+
   private onDownload(d: DownloadEvent): void {
     this.downloads = { ...this.downloads, [d.id]: d };
     if (d.state !== 'running') this.downloadsFinished++;

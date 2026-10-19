@@ -14,6 +14,22 @@ Semantic Versioning.
   network access, which the engine needs even offline, with a button that opens the app's system
   settings, and polls slowly until it is back. A download denied the same way fails at once with
   that reason, instead of retrying, and points to importing the file.
+- **A stopped model download says it can be resumed, and resumes the same way on the phone and on
+  the desktop.** The bytes always landed in `<name>.part` and the next attempt continued them, but
+  little on screen said so, and the two front-ends disagreed on what Cancel meant (#293). Now a
+  catalog row with a partial file reads **Resume (X of Y GB)** after a failure, a cancel or a
+  restart, in the web UI and the app alike, and **Delete partial download** beside it is the one
+  action that throws the bytes away: Cancel on the phone keeps them, as it already did on the
+  desktop. `GET /api/models` gains `received` and `partial` per catalog entry, so a server
+  restarted mid-download still shows the entry as resumable, and `DELETE /api/models/partial/<id>`
+  deletes an entry's `.part` files, by catalog id and inside the models directory only. The desktop
+  server now retries a dropped connection on its own (curl's exit 18 or 56 and the other line
+  failures `--retry` leaves alone), resuming from the `.part`, up to six attempts with a wait
+  that doubles from 2 s to 60 s, and refuses a download the disk cannot take before a byte moves
+  (`507`), counting only the bytes still to fetch. On the phone, a resume of a single file is no
+  longer refused for the whole model's size, a failed space check no longer deletes the partial
+  file, and the download notification follows the progress instead of sitting at 0%.
+  `docs/server-api.md` and `examples/android/README.md` describe the resume behaviour.
 
 ### Changed
 - **Settings say what a value means and what is usual, and Advanced holds only the rest (#268).**

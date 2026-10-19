@@ -4,7 +4,7 @@
   import PlanProgress from '../components/plan/PlanProgress.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
   import { api } from '../lib/api';
-  import { formatBytes } from '../lib/format';
+  import { formatBytes, resumeLabel } from '../lib/format';
   import type { CatalogEntry, ModelsResponse } from '../lib/types';
   import { server } from '../stores/server.svelte';
 
@@ -74,6 +74,14 @@
     await refresh();
     await act(`dl:${id}`, async () => {
       await api.download(id);
+      await refresh();
+    });
+  }
+
+  function deletePartial(entry: CatalogEntry) {
+    act(`part:${entry.id}`, async () => {
+      await api.deletePartial(entry.id);
+      server.forgetDownload(entry.id);
       await refresh();
     });
   }
@@ -185,11 +193,14 @@
         {#if entry.note}<p class="muted note">{entry.note}</p>{/if}
         {#if dl && (dl.state === 'running' || isDownloading(entry))}
           <ProgressBar received={dl.received} total={dl.total} label="Download progress for {entry.title}" />
+          {#if dl.state === 'running' && dl.error}<p class="muted note">{dl.error}</p>{/if}
+        {:else if entry.partial}
+          <ProgressBar received={entry.received ?? 0} total={entry.bytes} label="Downloaded so far of {entry.title}" />
         {/if}
         {#if dl?.state === 'error'}
           <p class="err">Download failed: {dl.error}</p>
         {:else if dl?.state === 'cancelled'}
-          <p class="muted">Download cancelled. Downloading again resumes it.</p>
+          <p class="muted">Download cancelled. The partial file is kept: Resume continues it.</p>
         {/if}
         <div class="actions">
           {#if isDownloading(entry)}
@@ -198,8 +209,13 @@
             </button>
           {:else if entry.status !== 'on_disk'}
             <button type="button" class="primary" disabled={pending[`dl:${entry.id}`]} onclick={() => download(entry)}>
-              Download<span class="visually-hidden"> {entry.title}</span>
+              {entry.partial ? resumeLabel(entry.received ?? 0, entry.bytes) : 'Download'}<span class="visually-hidden"> {entry.title}</span>
             </button>
+            {#if entry.partial}
+              <button type="button" class="danger" disabled={pending[`part:${entry.id}`]} onclick={() => deletePartial(entry)} title="Delete the partially downloaded file and free its space">
+                Delete partial download<span class="visually-hidden"> of {entry.title}</span>
+              </button>
+            {/if}
           {/if}
           {#if entry.added && !isDownloading(entry)}
             <button type="button" disabled={pending[`rm:${entry.id}`]} onclick={() => remove(entry)} title="Forget this entry; its files stay">
@@ -265,6 +281,7 @@
   .actions {
     margin-top: 0.5rem;
     display: flex;
+    flex-wrap: wrap;
     gap: 0.5rem;
   }
 </style>

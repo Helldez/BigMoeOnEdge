@@ -45,17 +45,22 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         if (finalFile.isFile) return@withContext Result.success() // already downloaded
 
         val part = File(dir, name + PART_SUFFIX)
-        // usableSpace already accounts for the bytes on disk in .part, so check the remainder.
-        if (expected > 0 && expected - part.length() > dir.usableSpace) {
-            part.delete()
-            return@withContext fail("needs ${gbLabel(expected)}, only ${gbLabel(dir.usableSpace)} free")
+        // usableSpace already accounts for the bytes on disk in .part, so check the remainder. The
+        // .part stays: freeing space and pressing Resume continues it.
+        if (expected > 0) {
+            freeSpaceRefusal(bytesStillNeeded(expected, part.length()), dir.usableSpace)?.let {
+                return@withContext fail(it)
+            }
         }
 
-        setForeground(foregroundInfo(name, 0f))
+        setForeground(foregroundInfo(name, part.length(), expected))
 
         try {
             val total = transfer(url, part) { downloaded, size ->
                 setProgressAsync(workDataOf(KEY_DONE to downloaded, KEY_TOTAL to size))
+                // The notification follows the same throttled ticks as the in-app row: it is what the
+                // user sees of a long download with the app in the background.
+                setForegroundAsync(foregroundInfo(name, downloaded, if (size > 0) size else expected))
             }
             if (total >= 0 && part.length() != total) {
                 // Server closed early: keep the .part so the next run's Range request resumes it.
@@ -64,7 +69,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             if (!part.renameTo(finalFile)) return@withContext fail("could not finalize the download")
             Result.success()
         } catch (c: CancellationException) {
-            throw c // cancellation — leave the .part for a manual resume; the UI deletes it on Cancel
+            throw c // cancellation — the .part stays, and the row offers Resume and Delete partial download
         } catch (t: Throwable) {
             // Denied, not failing: no back-off brings the network back, so say where the switch is.
             if (isNetworkDenied(t)) return@withContext fail(DOWNLOAD_NETWORK_DENIED)
@@ -156,7 +161,8 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
 
     private fun fail(message: String): Result = Result.failure(workDataOf(KEY_ERROR to message))
 
-    private fun foregroundInfo(name: String, frac: Float): ForegroundInfo {
+    private fun foregroundInfo(name: String, done: Long, total: Long): ForegroundInfo {
+        val frac = if (total > 0) done.toFloat() / total else -1f
         val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             nm.createNotificationChannel(
@@ -165,7 +171,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         }
         val notif: Notification = Notification.Builder(applicationContext, CHANNEL)
             .setContentTitle("Downloading model")
-            .setContentText(name)
+            .setContentText(if (total > 0) "$name · ${gbLabel(done)} of ${gbLabel(total)}" else name)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
             .setProgress(100, (frac * 100).toInt().coerceIn(0, 100), frac < 0f)

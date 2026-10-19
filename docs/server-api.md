@@ -75,7 +75,10 @@ other software, or other people, on that machine or on a network it was told to 
 - `max_tokens` on a chat request is clamped to the `n-predict` parameter's upper bound, and one
   that is not a non-negative integer is refused with `400`.
 - Downloads take a catalog id, never a URL or a path. `DELETE` on a download cancels it and
-  removes no model. An entry added from a Hugging Face repository (`POST /api/hf/add`) is built by
+  removes no model. Deleting a partial download (`DELETE /api/models/partial/<id>`) takes a catalog
+  id too: the server deletes the `<name>.part` of each file that entry names, in the models
+  directory only (never a scan directory), and refuses a file name that is not a plain name, so a
+  client can name an entry but never a file. An entry added from a Hugging Face repository (`POST /api/hf/add`) is built by
   the server from a repository id and file names it validated (letters, digits, `.`, `_`, `-`,
   `+`, folders, no `..`), on the one endpoint it was started with (`--hf-endpoint`, the site or a
   mirror); the server never fetches a URL a client wrote. A token sent with those requests goes to
@@ -342,7 +345,7 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 | `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `flash_wait_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch` |
 | `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `flash_wait_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
 | `decide` | per decision: the `POST /api/decide` answer |
-| `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` |
+| `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: why the last attempt failed while the server waits to resume) |
 | `config` | the `GET /api/config` object, after any change |
 | `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
 | `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
@@ -367,7 +370,8 @@ a UI shows "flash" from them without knowing whether the session overlaps.
   "catalog": [{"id": "qwen3-30b-a3b-q4_k_m", "title": "Qwen3-30B-A3B", "quant": "Q4_K_M",
                "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
                "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://..."}],
-               "blurb": "...", "status": "available", "note": ""}]
+               "blurb": "...", "status": "available", "received": 12884901888, "partial": true,
+               "note": ""}]
 }
 ```
 
@@ -382,15 +386,36 @@ what says what they are. `streamable` is whether this build streams the
 architecture. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
 entry with its URL, in order, for a client that downloads for itself (a phone, where the server
 has no `curl`); `file` and `bytes` are the first file's name and the whole entry's size.
+`received` is what of the entry is already in the models directory, complete files and `.part`
+files alike, and `partial` is true when the entry is `available` with a `.part` on disk: a download
+stopped by a failure, a cancel or a restart of the server (jobs live in memory, the `.part` files do
+not), which downloading again resumes. A UI labels that action **Resume (X of Y GB)** (decimal GB,
+`received` of `bytes`) and offers **Delete partial download** beside it. The phone's app downloads
+into the server's models directory, so the same two fields describe its downloads too.
 
 ### `POST /api/models/download`
 
 Body `{"id": "<catalog id>"}`. Starts (or resumes) the download of every file of the entry into
-the models directory. `202`; progress arrives as `download` events.
+the models directory. `202`; progress arrives as `download` events. Each file is written to
+`<name>.part` and renamed once whole; a start resumes whatever `.part` is there. Before a byte
+moves, the bytes still needed (the entry's size less what is already on disk) are checked against
+the free space of the models directory: `507` with `needs X GB more, only Y GB free` when they do not
+fit. A dropped connection (curl's exit 6, 7, 16, 18, 28, 35, 52, 55, 56, 92: the line failed, not the
+request) is retried on its own, resuming from the `.part`, up to six attempts per file with a wait
+that starts at 2 s and doubles to at most 60 s (`server/download_policy.h`); while it waits the
+`download` event stays `running` and carries the failure in `error`. Any other failure, or the last
+attempt, ends in `error` with the `.part` kept.
 
 ### `DELETE /api/models/download/<id>`
 
 Cancels a running download. The partial file is kept so a later download resumes it.
+
+### `DELETE /api/models/partial/<id>`
+
+Deletes the partial files a stopped download of entry `<id>` left: `{"ok": true, "freed": <bytes>}`
+(`freed` 0 when there were none). Only the `.part` of each file the entry names, in the models
+directory; complete files stay. `404` for an unknown entry, `409` while it downloads (cancel it
+first).
 
 ### `POST /api/hf/search`
 
