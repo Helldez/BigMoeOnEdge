@@ -16,6 +16,31 @@ Semantic Versioning.
   that reason, instead of retrying, and points to importing the file.
 
 ### Changed
+- **Settings say what a value means and what is usual, and Advanced holds only the rest (#268).**
+  The parameter table gains, per row, a typical range (named constants in `core/src/params.cpp`,
+  every default inside it or one of the row's named values, which `bmoe_params_test` checks) and
+  special values with a name (`0` = off, `0` = as wide as the context, `4294967295` = random per
+  run); `GET /api/params` returns them as `typical` and `special`. Rows whose only upper limit was
+  the type's (the cache sizes, the row-stream window, the prefill device width, the seed) no
+  longer report it as `max`. Units on the rows that lacked one (lanes, threads, layers, reads,
+  candidates, experts). Labels a person can read: "Wrap in chat turns" (was "Chat template", a
+  switch), "Start reads in two waves", "Unmap the file after load", "Read a busy layer whole",
+  "Route experts early". The web UI and the app render all of it from the same data: the special
+  value's name and the typical range under each field instead of "0 to 2147483647", the help's
+  first sentence with the rest on demand. The Advanced section no longer repeats the basic rows shown above it, and its title is
+  in sentence case.
+
+### Fixed
+- **App: turning on Serve on the network no longer unloads the model or scrolls the page away.**
+  The restart it needs (the server binds another address) unloaded the model and, while the engine
+  was down, replaced the settings with one line, so the page jumped to the top. The rows now stay in place with a line
+  saying the engine is restarting, and the model that was loaded is loaded again once the new
+  server is up. The same holds for New key.
+- **App: the address to connect to is shown, not described.** With Serve on the network on, the
+  page shows `http://<ip>:8765/v1` with the phone's own IPv4 on its Wi-Fi or Ethernet network (a
+  mobile network's private address is left out: no laptop on the Wi-Fi reaches it), with Copy, and
+  follows it when the network changes; with no such network it says no other device can reach the
+  engine. The app asks for `ACCESS_NETWORK_STATE`, a permission without a prompt.
 - **The README, rewritten around what the engine is: an adaptive streaming optimizer for big local
   AI agents on any device.** It opens with a silent 30-second loop (an animated WebP, so it shows
   inline everywhere, the GitHub app included) linking to the full promo video recorded on a 16 GB
