@@ -5,11 +5,12 @@
   </picture>
 </p>
 
-<p align="center">
-  <a href="https://trendshift.io/repositories/85652?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85652" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85652/daily?language=C%2B%2B" alt="Helldez%2FBigMoeOnEdge | Trendshift" width="250" height="55"/></a>
-</p>
+<p align="center"><b>Big local AI agents, on every edge device.</b></p>
 
-<p align="center"><b>Run Mixture-of-Experts models bigger than your device's RAM.</b></p>
+<p align="center">
+  An adaptive streaming optimizer for Mixture-of-Experts models.<br>
+  Any hardware, any OS, any model, any quantization, behind a local OpenAI-compatible server.
+</p>
 
 <p align="center">
   <a href="https://github.com/Helldez/BigMoeOnEdge/releases/latest"><img src="https://img.shields.io/github/v/release/Helldez/BigMoeOnEdge" alt="Latest release"></a>
@@ -17,287 +18,152 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Helldez/BigMoeOnEdge" alt="License"></a>
 </p>
 
+https://github.com/user-attachments/assets/b389bb14-baec-4970-b164-c770c185198a
+
+<p align="center"><em>Real recordings on a 16 GB laptop and a 12 GB Android phone. Sped-up parts are marked in the video.</em></p>
+
 ---
 
-A Mixture-of-Experts model uses only a few of its experts for each token. BigMoeOnEdge keeps the
-always-needed part of the model in RAM and reads the experts a token asks for from storage, when it
-asks. The rest stays on disk, so a model several times larger than RAM runs, and the output is
-byte-identical to running it fully resident.
+## What it does
 
-- **On llama.cpp's public API.** Every quantization, tokenizer and chat template llama.cpp
-  supports works unchanged. A new MoE architecture is one registry row; a new llama.cpp release is
-  a submodule bump.
-- **It configures itself.** `--auto` measures the machine (memory, storage, cores, accelerators),
-  reads the model's shape and derives the streaming settings, with the fact behind each one. The
-  goal is the best streaming for any MoE model on any hardware: a phone with an NPU and an
-  Apple-silicon laptop, for example, each get a different plan from the same rules.
-- **One engine, one application layer.** `bmoe-server` is what every UI talks to: the Android app
-  runs it as a process of its own, the desktop serves a web UI from it, and both offer an
-  OpenAI-compatible API that, with a key, serves other machines too. What runs on each platform:
-  [docs/platforms.md](docs/platforms.md).
+A Mixture-of-Experts model uses only a few of its experts for each token. BigMoeOnEdge keeps in
+memory what every token needs and streams the rest from storage, exactly when it is needed. A model
+several times larger than RAM runs, and its output is identical to running it fully in memory.
 
-<p align="center"><img src="docs/assets/hero-dsv4.gif" width="360" alt="DeepSeek V4 Flash 0731 (284B, ~91 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
-<p align="center"><em>DeepSeek V4 Flash 0731: 284B parameters, ~91 GB on disk, on a 12 GB phone.
-0.94 tok/s in the demo app, real time.</em></p>
+- **Adaptive streaming optimizer.** The planner measures the machine (memory, storage speed, every
+  CPU, GPU and NPU) and builds the plan for that exact device: what stays in memory, what streams,
+  which chip reads the prompt and which writes the answer. It shows the reason behind every choice.
+  No flags, no tuning.
+- **Any hardware, any OS.** Android, macOS, Windows and Linux ship today, with iOS on the way. CPU,
+  GPU and NPU backends load as modules, and the planner uses whichever the machine has.
+- **Any model, any quantization.** Any MoE gguf that llama.cpp loads. Search Hugging Face from the
+  app, and the engine reads the model's header before the download and tells you how it will run.
+- **A local OpenAI-compatible server.** Every device serves the models it runs, so chat clients and
+  coding agents such as opencode work fully local. A phone can serve a laptop over Wi-Fi.
 
-<p align="center"><img src="docs/assets/hero-qwen38.gif" width="360" alt="Qwen3.8-Flash-Next (125B, ~80 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
-<p align="center"><em>Qwen3.8-Flash-Next: 125B parameters, ~80 GB on disk (Q2_K), on a 12 GB phone.
-3.48 tok/s in the demo app, real time.</em></p>
+## Examples
 
-Qwen3.8-Flash-Next ran on that phone the day its weights appeared, before upstream supported it.
-Three more, one after another on the same phone:
+Real runs, measured live. They are examples, not limits: the engine fits itself to whatever it runs
+on, and stronger hardware runs faster.
 
-https://github.com/user-attachments/assets/f899b93f-c7c4-4ce9-9fb0-5ed1bae13761
+| Model | On disk | Device | × its RAM | Decode |
+|---|---:|---|---:|---:|
+| DeepSeek V4 Flash 284B | 91 GB | 12 GB Android phone | 7.6× | 0.94 tok/s |
+| Qwen3.8-Flash-Next 125B | 80 GB | 12 GB Android phone | 6.7× | 2.2-3.5 tok/s |
+| gpt-oss-120b | 60 GB | 12 GB Android phone | 5× | 1.3 tok/s |
+| Qwen3.6-35B-A3B | 21 GB | 12 GB Android phone | 1.9× | 4.8-5.0 tok/s |
+| Qwen3-30B-A3B | 18.5 GB | 12 GB Android phone | 1.5× | 5.2 tok/s |
+| Gemma-4-26B-A4B | 17 GB | 12 GB Android phone | 1.4× | 4.1 tok/s |
+| Qwen3.8-Flash-Next 125B | 76 GB | 16 GB Apple-silicon laptop | 4.8× | 6.5-9 tok/s |
+| Qwen3.6-35B-A3B | 21 GB | 16 GB Apple-silicon laptop | 1.3× | 18-24 tok/s |
+| Qwen3-Coder-30B-A3B | 18.6 GB | 16 GB Apple-silicon laptop | 1.2× | 23 tok/s; 7-9 inside opencode |
+| Qwen3.6-35B-A3B | 21 GB | 16 GB Windows laptop | 1.3× | 4.8 tok/s |
 
-<p align="center"><em>Left to right: gpt-oss-120b (~60 GB), Qwen3-30B-A3B (18.5 GB), Gemma-4-26B-A4B (17 GB),
-recorded in the demo app on a 12 GB phone, real time, not sped up.</em></p>
+Every figure, the configuration behind it and the method: [docs/benchmarks.md](docs/benchmarks.md).
+Got a machine that is not here? Run `scripts/bench-report.sh /path/to/model.gguf` and paste the
+table into a [benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
 
-## Table of contents
+## Get started
 
-- [Why](#why)
-- [Try it](#try-it)
-- [Automatic configuration (`--auto`)](#automatic-configuration---auto)
-- [Settings](#settings)
-- [Supported models](#supported-models)
-- [Benchmarks](#benchmarks)
-- [Build from source](#build-from-source)
-- [How it works](#how-it-works)
-- [Documentation](#documentation)
-- [Prior art](#prior-art)
-- [License](#license)
+**Phone (Android).** Install the APK from the
+[latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest), pick a model under
+**Models**, and chat. **Settings → Serve on the network** shares it with other devices, with a key.
 
-## Why
+**Desktop (macOS, Windows, Linux).** Download the `bmoe-desktop` archive from the same release and
+run `bmoe-server --open`. The app opens at `http://127.0.0.1:8765/`.
 
-Mainstream runtimes hold or page the whole model file. Past RAM that means refusing to load, or
-thrashing. Streaming changes three cases:
-
-- **Far past RAM.** A ~60 GB model on a 12 GB phone cannot be resident. Streamed, it runs.
-- **Just past RAM.** An 18 to 22 GB model on a 12 GB phone turns ordinary loading into a fault
-  storm. Streamed, it runs stably at up to 5 tok/s with byte-identical output.
-- **Barely fits.** The model runs inside a memory budget you choose and leaves the rest of the
-  system alone.
-
-Decode runs on the CPU. Prefill can run on a Snapdragon's Hexagon NPU or an Apple GPU.
-
-## Try it
-
-**Phone.** Install the APK from the
-[latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest). On the Models screen,
-under **Get a model**, take any gguf from its Hugging Face repository: the engine reads the model's
-header before the download and says what it is and whether it fits this phone. Two reference
-models are one tap away in the catalog, and a direct gguf URL works too. Models split into shards
-download and load as they are, with no merge step. The planner configures every load and
-the Plan screen shows why. **Serve on the network**, in Settings, lets any OpenAI-compatible client
-on your network use the phone, with a generated key.
-
-**Desktop.** Download the `bmoe-desktop` archive from the same release and start `bmoe-server`. The
-UI opens at `http://127.0.0.1:8765/` (this machine only; `--port` changes it): pick a model, let
-the planner configure it, chat. Any OpenAI client can use the same address, and `--host` with
-`--api-key` serves it to other machines ([docs/server-api.md](docs/server-api.md)).
-
-Both show the same five screens: chat, models, plan, settings and metrics
-([docs/screens.md](docs/screens.md)).
-
-**Command line.** See [Build from source](#build-from-source).
-
-## Automatic configuration (`--auto`)
+**Command line.**
 
 ```bash
 bmoe-cli -m model.gguf --auto -p "Explain MoE routing."   # measure, plan, run
-bmoe-cli -m model.gguf --plan                              # print the plan and exit
+bmoe-cli -m model.gguf --plan                              # show the plan and exit
 ```
 
-```
- model.gguf metadata --+
-                       +--> regime: fits | experts-stream | dense-oversized
- machine, measured ----+
-   -> memory ledger: buffers, prefill device, dense set, expert cache
-   -> I/O and compute: read lanes, threads, graph width, prefill device
-   -> plan: each setting, the fact behind it, the flags that reproduce it
+The phone and the desktop show the same five screens: Chat, Models, Plan, Settings and Metrics.
+
+## Use it from your tools
+
+Any OpenAI client works with the local address:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8765/v1", api_key="local")
+reply = client.chat.completions.create(
+    model="local",
+    messages=[{"role": "user", "content": "Write a haiku about experts on flash."}],
+)
+print(reply.choices[0].message.content)
 ```
 
-A setting passed by hand is never overruled. The rules name no platform or device; each machine
-answers the same questions through its own probes. Rules, and what each was measured on:
+Streaming, tool calls and reasoning are supported. For opencode, add the server as an
+OpenAI-compatible provider with `baseURL` set to `http://127.0.0.1:8765/v1`. To serve other machines,
+start the server with `--host` and `--api-key`. The full API: [docs/server-api.md](docs/server-api.md).
+
+## How it works
+
+<p align="center"><img src="docs/assets/diagrams/streaming.svg" width="900" alt="The whole model sits on storage. RAM holds the always-needed weights and a cache of hot experts. For each layer the router picks k experts: hits come from the cache, misses are read from storage, and the layer computes as usual."></p>
+
+The engine is built on llama.cpp's public API, so every quantization, tokenizer and chat template
+llama.cpp supports works unchanged, and a new llama.cpp release is a submodule bump. Which tensors
+are the routed experts is read from the file itself, so new MoE architectures need no code here
+([docs/which-models-stream.md](docs/which-models-stream.md)).
+
+Correctness is a test, not a promise: `ctest` checks that streaming gives output identical to
+running with every expert in memory, across the cache, evictions, overlap, sessions and split
+models. [docs/architecture.md](docs/architecture.md).
+
+## How it adapts
+
+<p align="center"><img src="docs/assets/diagrams/planner.svg" width="900" alt="The planner measures the model and the machine, then writes a plan: what stays in memory, the cache size, which chip reads the prompt and which writes the answer. A 16 GB laptop gets the prompt on its GPU, a 12 GB phone on its NPU."></p>
+
+The planner reads the model's shape from its header and measures the machine it runs on. Its rules
+name no platform and no device, so a phone and a laptop get different plans from the same rules. A
+setting you pass by hand is never overruled. The Plan screen shows the result: a one-line summary,
+where the memory goes, what each device does, and every decision with its reason.
 [docs/hardware-planning.md](docs/hardware-planning.md).
 
-## Settings
+<p align="center"><img src="docs/assets/diagrams/memory.svg" width="900" alt="Qwen3.6-35B-A3B on a 16 GB laptop: of the 21 GB model, 2.2 GB of always-needed weights stay in RAM and 18.6 GB of experts stay on storage; RAM holds context, GPU buffers, dense weights and a 6.1 GB cache of the hot experts."></p>
 
-The ones that matter most when setting things by hand:
+## Platforms
 
-| Setting | Flag | What it does |
-|---|---|---|
-| Expert cache | `--cache-mb N\|auto` | Keeps the most-used experts in RAM. The main lossless lever. |
-| Dense weights | `--dense-weights mmap\|warm\|anon\|ahwb` | How the always-needed weights are held. Decisive far past RAM. |
-| Read lanes | `--io-threads N` | Parallel expert reads. |
-| Overlap I/O | `--overlap` | Issues the next reads while the current layer computes. Byte-identical. |
-| Prefill device | `--prefill-device D` | Runs wide prompt graphs on an NPU or GPU; decode stays on the CPU. |
+| | Android | macOS | Windows | Linux | iOS |
+|---|---|---|---|---|---|
+| Engine and CLI | ✓ arm64 | ✓ Apple silicon | ✓ x86_64 | ✓ x86_64, aarch64 | ✓ builds; runs in the simulator |
+| App and OpenAI server | ✓ native app | ✓ web app | ✓ web app | ✓ web app | app wanted ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
+| Accelerators | NPU (Hexagon), Vulkan, OpenCL | Metal | Vulkan | Vulkan | Metal, built in; not yet run on a device |
 
-Those change how weights are fetched, never the result. These trade quality for fewer reads, for a
-model so far past memory that the alternative is no answer:
-
-| Setting | Flag | What it gives up |
-|---|---|---|
-| Active experts | `--n-expert-used N` | Consults fewer experts per token than the model asks for. Same prompt, same answer. |
-| Drop cold experts | `--drop-cold-experts F` | Skips an expert only when it is a cache miss and the router barely wanted it. The answer depends on what the cache held. |
-| Expert substitution | `--expert-substitute F` | Nudges the routing toward experts already in RAM. Cache-dependent. Experimental. |
-| Route ahead | `--route-ahead N` | Commits a layer's routing early so its reads start early. Experimental. |
-
-`--mtp` and `--ngram` draft several tokens and verify them in one decode, with no loss. `--decide`
-answers a multiple-choice prompt from one prefill, with no decode ([docs/decide.md](docs/decide.md)).
-Every setting, with its values and measurements: [docs/settings.md](docs/settings.md).
-
-## Supported models
-
-Any MoE model llama.cpp loads: which tensors are the routed experts is read from the file, from
-their shapes and the expert count it declares, so a new architecture upstream needs no change here
-([docs/which-models-stream.md](docs/which-models-stream.md)). The engine refuses to stream a file it
-cannot read that way - a dense model, or a layout the gates have not proved - and says why. The
-table lists the architectures with a byte-identity gate or a measured run behind them.
-
-| Architecture | Reference models | Notes |
-|---|---|---|
-| `qwen3moe` | Qwen3-30B-A3B and siblings | Shipped default, validated below |
-| `qwen35moe` | Qwen3.6-35B-A3B and siblings, Ornith-1.5-35B-A3B | Hybrid attention/SSM stack; routed experts stream unchanged |
-| `qwen2moe` | Qwen2 MoE family | Same layout as qwen3moe |
-| `gemma4` | Gemma 4 MoE (e.g. 26B-A4B) | Fused expert layout |
-| `gpt-oss` | OpenAI gpt-oss-20b / 120b | Purely routed; MXFP4 weights stream unchanged |
-| `nemotron_h_moe` | NVIDIA Nemotron 3 / 3.5 MoE (e.g. Nemotron-3.5-Lightning-30B-A3B) | Gate-less experts (up/down only); hybrid Mamba2/attention stack, optional latent projections and a shared expert stay resident |
-| `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
-| `deepseek4` | DeepSeek V4 Flash (284B-A13B), validated on the 0731 release | V3.2-style routing (256 experts + shared); compressed attention is dense-side; ships multi-shard |
-| `bailingmoe3` | Ling 3.0 (e.g. Ling-3.0-flash, 127B-A5B) | 512 routed experts + shared, biased top-k; hybrid KDA/MLA attention is dense-side |
-| `qwen4exp` | Qwen3.8-Flash-Next (125B-A6B), the Qwen4 architecture preview | 512 routed experts + shared; a 51B n-gram embedding table stays mmap'd (see limitations). Runs on the 12 GB test phone with pinned dense weights: ~2 tok/s at UD-IQ3_XXS, 3.5 tok/s at the Q2_K build; upstream support merged in `b10666` |
-
-
-Expert counts, strides, offsets and the layout itself are read from the model file at load.
-
-## Benchmarks
-
-Measured, tok/s, on a 12 GB phone with UFS 4.x storage. All models Q4_K_M.
-
-| Model | Size | Ordinary load (mmap) | Streamed, lossless | Streamed, fewer experts |
-|---|---:|---:|---:|---:|
-| gpt-oss-120b | ~60 GB | 0.09 | 1.3 | 2.2 (2 of 4) |
-| Qwen3.6-35B-A3B | 22.3 GB | 0.1, unstable | 5.0 | 5.8 (6 of 8) |
-| Qwen3-30B-A3B | 18.5 GB | 2.0, unstable | 5.2 | 5.0 (6 of 8) |
-| Gemma-4-26B-A4B | 17.0 GB | 0.4 | 4.1 | 5.0 (6 of 8) |
-
-Best observed per configuration, 256-token greedy decode (Qwen3.6: a single 96-token run);
-gpt-oss with reasoning off. Phone throughput moves with heat and free memory. Every row, the
-configurations behind it and the method: [docs/benchmarks.md](docs/benchmarks.md),
-[docs/benchmark-method.md](docs/benchmark-method.md).
-
-**Prefill on the NPU** (same phone, Hexagon v81; decode stays on the CPU):
-
-| Model | Prompt | CPU | NPU | Speedup |
-|---|---|---|---|---|
-| Qwen3.6-35B-A3B Q4_0 | 1418 tokens | 63.8 s | 8.2 s | 7.8x |
-| Qwen3.6-35B-A3B Q4_0 | 1921 tokens | 106.5 s | 11.2 s | 9.5x |
-| Qwen3.6-35B-A3B Q4_K_M | 1418 tokens | 80.6 s | 10.2 s | 7.9x |
-| Gemma 4 26B-A4B | 238 tokens | 16.2 s | 5.85 s | 2.8x |
-
-
-Off by default; the NPU computes in fp16, so its output is not identical to the CPU's.
-[docs/npu-prefill.md](docs/npu-prefill.md).
-
-**Desktop.** Windows x86 laptop, 16 GB, Qwen3.6-35B-A3B set by hand: 4.8 tok/s lossless, 7.3 with
-cold experts dropped. Apple-silicon laptop, 16 GB, same model with `--auto` alone: 22.4 tok/s, and
-a 10850-token prompt prefilled in 31.8 s. One machine each.
-
-The rows above come from one phone and two laptops. To add your machine, one command runs the fixed
-protocol and prints a table to paste into a
-[benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml):
-
-```bash
-scripts/bench-report.sh /path/to/any-moe-model.gguf
-```
+Backends load as modules beside the engine, so a CUDA, HIP or SYCL module built with its own
+toolchain loads like the shipped ones. Details, and what was measured where:
+[docs/platforms.md](docs/platforms.md).
 
 ## Build from source
 
 ```bash
 git clone --recursive https://github.com/Helldez/BigMoeOnEdge.git
 cd BigMoeOnEdge
-scripts/build-host.sh
-build/bin/bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf --auto --chatml -p "Explain MoE routing."
-```
-
-The same run with the settings given by hand:
-
-```bash
-build/bin/bmoe-cli -m Qwen3-30B-A3B-Q4_K_M.gguf --moe-stream \
-  --cache-mb auto --cache-ceil-mb 4000 --io-threads 4 -t 4 -n 48 \
-  --chatml -p "Explain MoE routing."
-```
-
-Desktop app, from source (the UI is built first so the CMake build can place it beside the server):
-
-```bash
 cd ui && npm ci && npm run build && cd ..
 scripts/build-host.sh
 build/bin/bmoe-server --open
 ```
 
-Android: `scripts/build-android.ps1` builds the engine and the server for arm64, then the APK in
-[`examples/android`](examples/android). A model pushed by hand for the CLI over `adb` must sit on a
-real filesystem (`/data/local/tmp/...`, not `/sdcard`).
-Tests: `cd build && ctest --output-on-failure` (needs `python3` with the `gguf` package).
-
-Android, macOS, Linux and Windows have release builds; iOS builds as a measuring harness
-([`examples/ios`](examples/ios)). On Windows, build with CMake: the script is bash. What each
-platform runs, what CI checks on it and what was measured there:
-[docs/platforms.md](docs/platforms.md).
-
-## How it works
-
-The model loads file-backed and the engine hooks llama.cpp's public evaluation callback:
-
-```
- layer L picks its top-k experts            (llama.cpp, public callback)
-   -> in the cache: use it  |  not in the cache: read its slices from flash
-   -> point the layer's expert tensors at those bytes
-   -> llama.cpp runs the matmul as if they had been resident
-```
-
-The dense weights are read on every token and stay in RAM; only the experts, most of the file,
-are streamed. No llama.cpp source is modified, with one exception: `--overlap` needs a wait point
-no public API exposes, carried as a single ~25-line hook on a fork branch and dropped when upstream
-ships an equivalent. [docs/architecture.md](docs/architecture.md), [docs/seam.md](docs/seam.md).
-
-Correctness is a gate, not a benchmark: `ctest` asserts that streaming only the routed experts
-gives output identical to running with every expert resident, across the cache, evictions,
-overlap, prefetch, sessions and split models.
-
-Every run accounts for its own time: `--progress` splits each token into flash I/O, cache
-management and compute, and `--csv` adds the memory picture. The apps show the same feed live.
-[docs/telemetry.md](docs/telemetry.md).
+Tests: `cd build && ctest --output-on-failure` (needs `python3` with the `gguf` package). Android:
+`scripts/build-android.ps1`, then the APK in [`examples/android`](examples/android).
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 
-[docs/](docs/README.md) is indexed by what you are trying to do. Entry points:
-
-- [architecture.md](docs/architecture.md): the layer map and the llama.cpp relationship.
-- [hardware-planning.md](docs/hardware-planning.md): `--auto` and the rules behind each choice.
-- [settings.md](docs/settings.md): every setting.
-- [platforms.md](docs/platforms.md): what runs on each operating system and backend.
-- [application-framework.md](docs/application-framework.md) and
-  [server-api.md](docs/server-api.md): the server every UI talks to, and its HTTP API.
-- [screens.md](docs/screens.md): the five screens every UI shows, specified once.
-- [design.md](docs/design.md): the visual language, pixel, from the logo: palette, type, geometry.
-- [which-models-stream.md](docs/which-models-stream.md): which models stream, read from the file, and what is refused.
-- [benchmarks.md](docs/benchmarks.md) and [benchmark-method.md](docs/benchmark-method.md):
-  results and how they were produced.
-- [community-benchmarks.md](docs/community-benchmarks.md): results on hardware we do not own.
-- [limitations.md](docs/limitations.md): what this does not do.
-- [roadmap.md](docs/roadmap.md): where the project is going, and what was measured and refuted.
+[docs/](docs/README.md), indexed by what you are trying to do. Start with
+[hardware-planning.md](docs/hardware-planning.md), [settings.md](docs/settings.md),
+[server-api.md](docs/server-api.md), [platforms.md](docs/platforms.md) and
+[limitations.md](docs/limitations.md).
 
 ## Prior art
 
-An engineering package of ideas from AirLLM, Apple's *LLM in a flash*, FlexGen, PowerInfer and
-EdgeMoE, not a novel technique. The closest recent work is
-[flash-moe](https://github.com/danveloper/flash-moe), a purpose-built Metal engine that streams a
-397B MoE from SSD on Apple Silicon. BigMoeOnEdge takes the other side: llama.cpp's public API,
-across architectures and platforms. The cache-aware routing behind `--expert-substitute` is the
-rerouting of Skliar et al. ([arXiv:2412.00099](https://arxiv.org/abs/2412.00099)), applied to a
-RAM cache in front of flash.
+Ideas from AirLLM, Apple's *LLM in a flash*, FlexGen, PowerInfer and EdgeMoE, packaged on top of
+llama.cpp. The closest recent work is [flash-moe](https://github.com/danveloper/flash-moe), a Metal
+engine that streams a 397B MoE from SSD on Apple Silicon; BigMoeOnEdge takes llama.cpp's public API
+across architectures and platforms instead.
 
 ## License
 
