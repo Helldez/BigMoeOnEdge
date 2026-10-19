@@ -30,6 +30,16 @@ Semantic Versioning.
   longer refused for the whole model's size, a failed space check no longer deletes the partial
   file, and the download notification follows the progress instead of sitting at 0%.
   `docs/server-api.md` and `examples/android/README.md` describe the resume behaviour.
+### Added
+- **The runs a device report needs, in one command: `scripts/ios-runs.sh`.** It runs the plan, a
+  run of it and the same run with the dense set left mapped, each in a fresh process of the iOS
+  harness, and brings back the console output and per-token CSV of each with a `summary.txt`
+  (tok/s, the decode split, major faults, dense residency); `t2`/`t4` add the run at 2 and 4
+  threads. `device` drives a signed harness through `devicectl`, `sim` the booted simulator.
+- **The iOS memory entitlements, one at a time.** `BMOE_IOS_MEMORY_ENTITLEMENTS=ON` now asks for the
+  increased memory limit alone, which a free Personal Team is granted and which was enough for a
+  streamed 35B on a 12 GB phone (#235); `BMOE_IOS_EXTENDED_ADDRESSING=ON` adds the extended
+  address space, which a Personal Team is refused and which made the build unsignable for one.
 
 ### Changed
 - **Settings say what a value means and what is usual, and Advanced holds only the rest (#268).**
@@ -187,6 +197,30 @@ Semantic Versioning.
   profile by its device type rather than its name; GPU, integrated GPU and NPU devices (Hexagon
   registers as a GPU) are kept. A new `device_probe` test checks this against the build's real
   registry (#290).
+- **The dense set is held in memory on every platform, and what a reclaim costs is measured, not
+  named.** The planner left the dense weights mapped wherever exceeding the memory limit ends the
+  process, because clean file pages are not charged to that limit. They are not charged because the
+  kernel may drop them, and every decoded token reads the whole dense set: on a 12 GB iOS phone the
+  35B-A3B decoded at 1.2 tok/s with 25581 major faults a token (about 400 MiB read back from flash
+  per token, the cores 75% idle), where the same model held in memory makes 5 on the Android test
+  phone (#304). That branch is gone: a fatal limit widens the margin the ledger sizes against, and
+  the dense set is held (`anon`, or pinned where a reclaim-exempt store exists) like anywhere else.
+  The fact behind it was a constant per OS; it is now read from the kernel in microseconds
+  (`pio::reclaim_facts`: a per-process share left, compressions since boot, a swap), so iOS, macOS
+  and Windows answer from their own accounting as Linux and Android already did, and
+  `HardwareProfile::file_pages_counted` is removed. The Apple-only "device buffers are locked"
+  constant goes too: unknown is charged the same way. Plans on macOS, Linux, Android and Windows
+  with a pagefile are unchanged; `docs/hardware-planning.md` describes the facts.
+
+### Fixed
+- **The dense residency sensor reads the same on every platform.** Under `mmap`/`warm` it found the
+  mapping through the process's region list, which an iOS app is not given and Windows does not
+  have, so `dense_resident_frac` was `-1` exactly where the dense set was being refaulted. It now
+  reads each tensor's own address in llama.cpp's mapping, and the same lookup serves dropping the
+  mapped copies after an `anon` read and the random-access advice on held-back tables. On Windows
+  the sample is `QueryWorkingSetEx` and the CPU time is `GetProcessTimes`, so the `compute:` line
+  is printed there; with no per-process count of hard faults published, it says so rather than
+  print a 0, and the summary's `majflt_tok` is `-1`.
 
 ## [0.31.0] - 2026-10-18
 

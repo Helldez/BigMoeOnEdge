@@ -9,7 +9,8 @@
 #   BUILD_TYPE           (Release)
 #   BMOE_IOS_TEAM        Apple development team id; required for a device
 #   BMOE_IOS_BUNDLE_ID   (io.bigmoeonedge.harness) must be unique to the team on a device
-#   BMOE_IOS_MEMORY_ENTITLEMENTS=ON   ask for the larger memory limit and address space
+#   BMOE_IOS_MEMORY_ENTITLEMENTS=ON   ask for the larger memory limit (a Personal Team is granted it)
+#   BMOE_IOS_EXTENDED_ADDRESSING=ON   also ask for the larger address space (a paid team only)
 #   IOS_MIN_VERSION      (16.4, the oldest llama.cpp builds for)
 set -euo pipefail
 
@@ -68,6 +69,7 @@ cmake -S . -B "$BUILD_DIR" -G Xcode \
     -DGGML_METAL_EMBED_LIBRARY=ON \
     -DBMOE_IOS_BUNDLE_ID="${BMOE_IOS_BUNDLE_ID:-io.bigmoeonedge.harness}" \
     -DBMOE_IOS_MEMORY_ENTITLEMENTS="${BMOE_IOS_MEMORY_ENTITLEMENTS:-OFF}" \
+    -DBMOE_IOS_EXTENDED_ADDRESSING="${BMOE_IOS_EXTENDED_ADDRESSING:-OFF}" \
     "${SIGN[@]}"
 if [ "$TARGET" = device ]; then
     cmake --build "$BUILD_DIR" --config "$BUILD_TYPE" --target bmoe-harness -- -allowProvisioningUpdates

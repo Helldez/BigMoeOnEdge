@@ -782,7 +782,18 @@ void note_expert_compute(Planning & s, const DeviceSurvey & v) {
                                "the file's native layout");
 }
 
-// ── the dense policy: decided by what a reclaim COSTS here, nothing else ────────
+// ── the dense policy: held in memory; how is what a reclaim COSTS here ─────────
+// Every decoded token reads the whole dense set, so a page of it the kernel drops is a page read
+// back from flash on the next token, in fault-sized pieces and outside every counter the streamer
+// keeps. A mapping is free of whatever limit the process is held to for exactly the reason it is
+// dropped: the kernel owes it nothing. There used to be a branch here that left the dense set
+// mapped where exceeding the limit is fatal and clean file pages are not charged to it. It held the
+// run inside its share and cost it 25581 major faults a token (about 400 MiB read back per token,
+// the cores 75% idle): 1.2 tok/s where the same model held in memory makes 5. What a fatal limit
+// asks for is a wider margin (margin_frac), which the ledger then sizes against, not a weight the
+// kernel may take back. (A tensor larger than the process may hold at all still stays mapped: that
+// is the runtime's rule and dense_pending's below, and it is about size, not about the platform.)
+//
 // One branch is only a candidate at this point. That a reclaim-exempt store exists says the dense
 // set MAY be pinned; whether it is depends on what else is charged to the same total, which is the
 // ledger's to say. So that branch is settled after the allocation (settle_dense_pin), and this
@@ -791,16 +802,7 @@ bool choose_dense_policy(Planning & s) {
     Plan & p = s.p;
     const HardwareProfile & hw = s.hw;
     if (s.pinned("dense-weights", dense_mode_name(p.config.moe.dense_weights))) return false;
-    if (hw.anon_overflow == Overflow::Kill && hw.file_pages_counted == Tri::No) {
-        // Where the process is killed for holding too much and clean file pages are outside that
-        // accounting, leaving a weight mapped costs nothing against the limit that can actually end
-        // the run. This inverts the policy that is right everywhere else.
-        p.config.moe.dense_weights = DenseWeightsMode::Mmap;
-        s.note("dense-weights", "mmap", Source::Derived,
-               "Dense weights stay mapped from the file: here that costs nothing against the limit.",
-               "holding too much is fatal here and mapped file pages are not counted against the limit, "
-               "so the dense set is cheapest left where it is");
-    } else if (hw.reclaim_exempt_max > 0 && hw.anon_overflow == Overflow::Compress) {
+    if (hw.reclaim_exempt_max > 0 && hw.anon_overflow == Overflow::Compress) {
         // Anonymous memory keeps the dense set off flash but not out of a compressed swap, where
         // every touch costs a decompression that no I/O counter shows. A store the kernel may not
         // reclaim is the only thing that closes that gap.

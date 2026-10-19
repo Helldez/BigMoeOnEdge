@@ -91,7 +91,6 @@ static HardwareProfile desktop() {
     h.memory_total = 16 * GiB;
     h.anon_overflow = Overflow::Swap;
     h.reclaim_exempt_max = 0;
-    h.file_pages_counted = Tri::Yes;
     h.n_cores = 16;
     h.storage = desktop_storage();
     ComputeDevice gpu;
@@ -115,7 +114,6 @@ static HardwareProfile phone() {
     // limit of a few pages. The dense set can be protected and the cache cannot.
     h.lockable_bytes = ~0ull;
     h.lock_in_place_bytes = 64 * KiB;
-    h.file_pages_counted = Tri::Yes;
     h.n_cores = 8;
     h.storage.align = 4096;
     h.storage.direct_ok = Tri::Yes;
@@ -132,8 +130,7 @@ static HardwareProfile phone() {
     return h;
 }
 
-// A platform that answers memory pressure by killing the process, and does not count clean mapped
-// file pages against that limit.
+// A platform that answers memory pressure by killing the process.
 static HardwareProfile hard_capped() {
     HardwareProfile h;
     h.label = "hard per-process cap";
@@ -141,7 +138,6 @@ static HardwareProfile hard_capped() {
     h.memory_total = 8 * GiB;
     h.anon_overflow = Overflow::Kill;
     h.reclaim_exempt_max = 0;
-    h.file_pages_counted = Tri::No;
     h.n_cores = 6;
     h.storage.align = 0;
     h.storage.direct_ok = Tri::Yes;
@@ -238,11 +234,15 @@ int main() {
     // ── a platform that kills instead of reclaiming ─────────────────────────────────
     {
         const Plan p = plan_run(base_cfg(), hard_capped(), model, PlanRequest{});
-        // The same rule that picks anon elsewhere picks mmap here, because mapped file pages sit
-        // outside the limit that can actually end the run. One rule, opposite answers, no branch.
-        check(p.config.moe.dense_weights == DenseWeightsMode::Mmap,
-              "hard cap: dense left mapped, because file pages are outside the fatal limit");
-        check(!p.config.moe.release_mmap, "hard cap: release-mmap stays off while the dense set is mapped");
+        // A fatal limit is a reason for a wider margin, not for leaving the dense set where the kernel
+        // may drop it: every token reads all of it, and a dropped page is read back from flash inside
+        // the decode. Held, it is charged to the ledger like anywhere else, and the ledger closes.
+        check(p.config.moe.dense_weights == DenseWeightsMode::Anonymous,
+              "hard cap: dense held in memory, not left mapped");
+        check(p.dense_pending_bytes > 0, "hard cap: the held dense set is charged to the ledger");
+        check(p.allocation.ledger.held <= p.allocation.ledger.holdable_cap, "hard cap: the ledger closes",
+              std::to_string(p.allocation.ledger.held >> 20) + " of " +
+                  std::to_string(p.allocation.ledger.holdable_cap >> 20) + " MiB");
         check(validate(p.config).ok, "hard cap: the plan is a valid config", validate(p.config).error);
     }
 

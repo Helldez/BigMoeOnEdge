@@ -27,11 +27,11 @@ The machines are described generically on purpose.
 | **Engine and `bmoe-cli`** | Shipped, in the APK | Shipped | Shipped | Shipped | Built, compiled into the harness app |
 | **`bmoe-server` and the web UI** | Shipped, in the APK as a child process of the app | Shipped, desktop archive | Shipped, desktop archive | Shipped, desktop archive | Not built: an app may not start a process, and the in-process mode is owed |
 | **Native app** | Measured: the Compose app, a client of the server | - (web UI in the browser) | - (web UI in the browser) | - (web UI in the browser) | Owed: a measuring harness only, not a chat app |
-| **Planner (`--auto`)** | Measured, in the app's load path | Measured on one laptop | Built, not run on Linux hardware | Owed: one documented run | Built, run in the simulator only |
+| **Planner (`--auto`)** | Measured, in the app's load path | Measured on one laptop | Built, not run on Linux hardware | Owed: one documented run | Run on one 12 GB phone by a contributor (#235); its dense policy corrected in #304 |
 | **Device probes in a process of their own** | Yes | Yes | Yes | Yes, built; owed a run | - (no second process) |
 | **CI** | Engine cross-compiled and the APK packaged, on PRs and tags | Compiled and smoke-tested, on PRs and tags | Built, byte-identity gates and UI tests, on every push | Compiled only, on PRs and tags | Compiled for the simulator, on PRs and tags; packaged by the release workflow |
 | **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends as modules | CLI and desktop archives, with Metal | CLI and desktop archives, both architectures, with Vulkan | CLI and desktop archives, with Vulkan | Harness app for the simulator, unsigned, built by CI |
-| **Run on hardware** | Measured: a 12 GB phone, Snapdragon class, UFS 4.x | Measured: a 16 GB Apple-silicon laptop | Owed: the gates only, no throughput run | Measured: an x86 laptop, 8 cores, 16 GB, NVMe | Owed: the simulator only |
+| **Run on hardware** | Measured: a 12 GB phone, Snapdragon class, UFS 4.x | Measured: a 16 GB Apple-silicon laptop | Owed: the gates only, no throughput run | Measured: an x86 laptop, 8 cores, 16 GB, NVMe | Measured by a contributor: a 12 GB phone, a 35B-A3B streamed at 1.2 tok/s before #304 |
 
 Sources: [application-framework.md](application-framework.md) for the server on each platform,
 [hardware-planning.md](hardware-planning.md) for the planner and the isolated probes,
@@ -80,10 +80,10 @@ platform: the device is measured, and the streamer's own memory is not yet hande
   a GPU; the cache lock, the residency sample, the byte-identity gates in its CI job, one
   documented planner run, and a signed installer. Tracked in
   [#234](https://github.com/Helldez/BigMoeOnEdge/issues/234).
-- **iOS.** The release carries the harness for the simulator; a device, an Apple development
-  team and the memory entitlements, none of which this
-  project has, then an app on the shared framework running the server in-process. Tracked in
-  [#235](https://github.com/Helldez/BigMoeOnEdge/issues/235) as a call for a contributor.
+- **iOS.** The release carries the harness for the simulator. A contributor has run it on a
+  device signed by a free Personal Team (#235), and the plan it read there is corrected in #304;
+  owed are a device run of that plan, then an app on the shared framework running the server
+  in-process. Tracked in [#235](https://github.com/Helldez/BigMoeOnEdge/issues/235).
 - **Every platform.** The planner's owed measurements and the loop that compares its prediction
   with what each run measured, tracked in [#237](https://github.com/Helldez/BigMoeOnEdge/issues/237).
 

@@ -2390,7 +2390,7 @@ struct Session::Impl::Turn {
         s.prefill_io_seconds = prefill_tally.io_seconds;
         s.prefill_stall_seconds = prefill_tally.stall_seconds;
         s.prefill_mgmt_seconds = prefill_tally.mgmt_seconds;
-        s.majflt_per_token = n_gen ? (double) tally.majflt / n_gen : 0.0;
+        s.majflt_per_token = !pio::major_faults_counted() ? -1.0 : n_gen ? (double) tally.majflt / n_gen : 0.0;
         s.cpu_s_per_token = n_gen ? tally.cpu_seconds / n_gen : 0.0;
         if (moe.enabled) {
             IExpertSource::Stats st = im.source.stats();

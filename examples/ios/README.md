@@ -9,11 +9,11 @@ and speak to it over pipes) does not exist here. The harness compiles `cli/main.
 with its entry point renamed and calls it on a thread: every flag, the plan's rationale and the
 metrics CSV are the CLI's own.
 
-**Status: builds and runs in the simulator (CI compiles it there); not yet run on a device.** A
-streamed generation in the simulator gives the host's text on the gates' tiny model, which says the
-app works and nothing about a phone. What the planner reads on
-real hardware (the process's memory share, whether memory can be locked, whether a model larger
-than memory can be mapped at all) is unmeasured.
+**Status: builds and runs in the simulator (CI compiles it there), and has run on a device.** A
+contributor streamed a 35B-A3B on a 12 GB iPhone signed by a free Personal Team with the memory
+limit entitlement alone (#235), and the plan it read there is what #304 corrected: the dense set
+was left mapped and refaulted from flash on every token. A streamed generation in the simulator
+says the app works and nothing about a phone.
 
 ## From a release
 
@@ -31,8 +31,12 @@ BMOE_IOS_TEAM=<team id> BMOE_IOS_BUNDLE_ID=<your.own.id> scripts/build-ios.sh de
 ```
 
 A device build is signed by your own Apple development team, and the bundle identifier has to be
-unique to it. `BMOE_IOS_MEMORY_ENTITLEMENTS=ON` asks for the increased memory limit and the
-extended address space; both must be granted to the team, or the build does not sign.
+unique to it. Entitlements must be granted to the team, or the build does not sign:
+
+- `BMOE_IOS_MEMORY_ENTITLEMENTS=ON` asks for the increased memory limit. A free Personal Team is
+  granted it (with a seven-day profile), and it is what a streamed 35B needed on a 12 GB phone.
+- `BMOE_IOS_EXTENDED_ADDRESSING=ON` also asks for the extended address space, which a Personal Team
+  is refused. Nothing measured so far has needed it.
 
 ## Run in the simulator
 
@@ -49,8 +53,9 @@ Relative paths resolve against the documents folder, so `--csv run.csv` lands wh
 copied back.
 
 **The simulator proves that it builds and runs, not what a device would do.** It runs on the Mac's
-kernel with the Mac's memory, storage and GPU, while the build still describes the machine as one
-that ends a process for holding too much. Do not read a plan or a throughput figure from it.
+kernel with the Mac's memory, storage and GPU, and the planner reads that kernel's facts (no
+per-process share, a compressor): it plans for the Mac. Do not read a plan or a throughput figure
+from it.
 
 ## Run on a device
 
@@ -62,9 +67,24 @@ command line in the app, or script it:
 xcrun devicectl device process launch --console --device <id> <your.own.id> --bmoe --auto --plan -m model.gguf
 ```
 
+## The runs a report needs, in one command
+
+`scripts/ios-runs.sh` runs the plan, a run of it, and the same run with the dense set left mapped,
+each in a fresh process, and brings the console output and per-token CSV of each back to the Mac
+with a `summary.txt` on top (tok/s, the decode split, major faults, dense residency):
+
+```bash
+BMOE_IOS_DEVICE=<id> BMOE_IOS_BUNDLE_ID=<your.own.id> scripts/ios-runs.sh device model.gguf
+RUNS="plan auto mmap t2 t4" ...   # add the same run at 2 and 4 threads
+```
+
+`scripts/ios-runs.sh sim model.gguf` does the same in the booted simulator, which checks the
+harness and nothing else.
+
 ## Limits
 
 - `--session` reads requests from a standard input an app does not have.
 - A command line the CLI rejects by exiting (a flag with its value missing) ends the app.
 - Devices are probed in-process: there is no second process to isolate a failing driver in.
-- Which regions of the model's mapping are resident is not reported here.
+- The process's region list is not offered to an app, so the dense residency sensor reads the
+  mapping at each tensor's own address instead, which works here as everywhere else.

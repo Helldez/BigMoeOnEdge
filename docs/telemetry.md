@@ -93,12 +93,14 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
   re-faulted from flash *inside* the decode, i.e. a >RAM residency stall masquerading as compute.
   `cpu_ms` is CPU time summed across all threads; compare it to `wall_ms × threads` for occupancy —
   near 100% is genuinely compute-bound, well below means the cores were throttled, preempted, or
-  blocked (a low-clock frequency cap or a co-resident process), not doing more math. Both are `0`
-  when the platform can't report them (the Windows host build); treat `0` as "unmeasured".
+  blocked (a low-clock frequency cap or a co-resident process), not doing more math. `majflt` is `0`
+  where the platform publishes no per-process count of hard faults (Windows), and the summary's
+  `majflt_tok` is `-1` there so it never reads as "no faults"; `cpu_ms` is measured everywhere.
 - `dense_resident_frac` is the sampled fraction of the DENSE (non-expert) weights still in RAM (by
   `mincore`, throttled). Under `--dense-weights anon` it samples our own buffers (is zram holding
-  them?); under mmap/warm the model's mmap (is the kernel dropping it?). A diagnostic read alongside
-  `majflt` — nothing acts on it. `-1` when unmeasured.
+  them?); under mmap/warm the model's mmap, at the addresses llama.cpp mapped each tensor at (is the
+  kernel dropping it?), so it reads the same on every platform, iOS and Windows included. A
+  diagnostic read alongside `majflt` — nothing acts on it. `-1` when unmeasured.
 - `delta_text` is the newly generated **answer** text since the previous `BMOE_PROGRESS` line,
   JSON-escaped, with any reasoning span stripped out. The reader appends it to what this
   generation already delivered. (Carrying the cumulative answer on every line made a generation of
@@ -132,8 +134,9 @@ routed experts, that case names the flag; on a dense model it says so.
 
 The `compute:` line decomposes the residual: low CPU occupancy points at a throttled/preempted
 core (a frequency cap, a co-resident process) rather than heavy math, and non-zero major
-faults/token means dense weights were re-faulting from flash inside the decode. It is omitted on
-platforms that can't measure it (the Windows host build).
+faults/token means dense weights were re-faulting from flash inside the decode. Where the platform
+counts no hard faults (Windows) the line says so instead of printing a 0; read
+`dense_resident_frac` there.
 
 `compute` in the `moe-stream:` line is the same residual described for `compute_ms` above; `cache
 mgmt` is the per-token mean of `mgmt_ms`.
@@ -380,7 +383,7 @@ The trailing block is the memory picture, added so a run can be diagnosed from i
 | `cache_budget_mib` | the expert-cache budget in effect. Fixed for the run (an explicit `--cache-mb`, or what `auto` sized to once at load) — the runtime governor that moved it is retired — with one exception: where the platform grants locks and stops part way, the budget shrinks once to what was locked, never under one token cycle, and `cache_resizes` counts it. |
 | `rss_anon_mib` | resident anonymous memory — **the expert cache lives here** (and, under `--dense-weights anon`, the dense buffers). Falling while `cache_budget_mib` stays put means the kernel is taking it. |
 | `rss_file_mib` | resident file-backed memory — the mmap'd model. Reclaimed by being dropped, not swapped, so it never shows in `swap_mib`. |
-| `dense_resident_frac` | fraction of the DENSE (non-expert) weights still in RAM, by `mincore` (throttled). Under `--dense-weights anon` it samples our own buffers — is zram holding them? Under mmap/warm the model's VMAs (`/proc/self/maps`) — is the kernel dropping the model? Read with `majflt`. `-1` when unmeasured. |
+| `dense_resident_frac` | fraction of the DENSE (non-expert) weights still in RAM, by `mincore` (throttled). Under `--dense-weights anon` it samples our own buffers — is zram holding them? Under mmap/warm the model's mapping, at each tensor's own address — is the kernel dropping the model? Read with `majflt`. `-1` when unmeasured. |
 | `swap_mib` | anonymous memory already lost to zram (`VmSwap`). |
 | `rss_mib` | total resident (`VmRSS`). |
 | `mem_available_mib` / `mem_free_mib` / `swap_free_mib` | what the device claims about itself. `MemAvailable` counts this process's own mmap'd weights as reclaimable, so it over-states headroom — it is recorded next to what we measured ourselves because the gap between them is the story. |

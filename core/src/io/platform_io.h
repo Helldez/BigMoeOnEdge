@@ -258,8 +258,8 @@ uint64_t mem_total_bytes();
 
 // Process-wide compute-decomposition counters, cumulative since process start; the caller deltas
 // them across a single decode to split the per-token "compute" residual into its real causes.
-// Both return 0 when the platform cannot report them (Windows host build), which the metrics treat
-// as "unmeasured" rather than "zero work".
+// Both return 0 when the platform cannot report them, which the metrics treat as "unmeasured"
+// rather than "zero work"; major_faults_counted() says which reading a 0 fault count is.
 //
 //   * major_faults(): hard page faults served from backing store (getrusage ru_majflt). A non-zero
 //     per-token delta means a mmap-resident weight was re-faulted from flash *inside* the decode —
@@ -270,6 +270,9 @@ uint64_t mem_total_bytes();
 //     fault wait) rather than computing.
 uint64_t major_faults();
 double process_cpu_seconds();
+// Whether major_faults() counts anything here. Where it does not (no per-process count of HARD
+// faults is published), a 0 is "unmeasured", and a report must not print it as "no faults".
+bool major_faults_counted();
 
 // Bytes one major fault moves: the page size. Faults are counted, but what a reader wants to know is
 // how much memory the kernel took back and made us re-read — and a count only becomes that once it
@@ -312,5 +315,17 @@ struct DeviceMemory {
     uint64_t compressed_held_bytes = 0;
 };
 bool device_memory(DeviceMemory * out);
+
+// What the kernel does with anonymous memory it wants back, as the facts that decide it. Each is
+// read from the kernel's own accounting - a syscall or a counter, never a benchmark - so asking
+// costs microseconds. False when nothing could be read at all.
+struct ReclaimFacts {
+    // What is left of this process's OWN share of memory, where the kernel keeps one and ends the
+    // process for exceeding it; 0 where no such share is published (the limit is the machine's).
+    uint64_t own_share_left = 0;
+    bool compresses = false; // anonymous memory is compressed in RAM before anything else happens to it
+    bool swaps = false;      // a backing store on disk exists for anonymous memory
+};
+bool reclaim_facts(ReclaimFacts * out);
 
 } // namespace bmoe::pio
