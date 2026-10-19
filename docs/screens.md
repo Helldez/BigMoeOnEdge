@@ -135,8 +135,7 @@ the same thing and a stage or role added later reaches them all unchanged.
   count. A row shows the knob's settings label, its value and where it came
   from (`measured`, `derived`, `policy`, `operator` for a value the person set and the planner left
   alone, `unprobed`); opening it shows the decision in one short line (`brief`), the full account
-  behind Why, and the way to the setting. The two folded groups say in a line what they hold. Each
-  note has a name of its own (Storage speed, Cache floor, Shared memory...), never a bare "cost".
+  behind Why, and the way to the setting. The two folded groups say in a line what they hold.
 - **Measuring.** While the probes run (Measure, or an auto load), the stages from `plan_progress`:
   done, running, how many to go. Never a blind wait.
 - **Actions.** Measure again (the probes run again: storage reads, a matmul on every device; on a

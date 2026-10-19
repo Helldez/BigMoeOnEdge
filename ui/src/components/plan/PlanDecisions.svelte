@@ -1,6 +1,6 @@
 <script lang="ts">
   // The decisions in the three groups a plan is read in: the settings it decided, open; the ones
-  // it left, and the notes that are no setting (regime, ledger, costs), folded. Every row opens to
+  // it left, and the notes that are no setting (regime, memory use, storage speed...), folded. Every row opens to
   // its reason.
   import SourceBadge from '../SourceBadge.svelte';
   import { decisionLabel, groupDecisions } from '../../lib/plan';
@@ -25,8 +25,8 @@
         <span class="badge">{s.rows.length}</span>
         {#if s.hint}<span class="hint muted">{s.hint}</span>{/if}
       </summary>
-      <!-- Keyed by position: a knob can carry several decisions (the planner notes `cost` more than
-           once), and a duplicate key stops Svelte rendering the whole page. -->
+      <!-- Keyed by position: a knob can carry several decisions (a note topic can recur), and a
+           duplicate key stops Svelte rendering the whole page. -->
       {#each s.rows as d, i (i)}
         <details class="row">
           <summary>
