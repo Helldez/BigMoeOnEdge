@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import SourceBadge from '../SourceBadge.svelte';
   import { coerceInput, displayValue } from '../../lib/coerce';
-  import { helpParts, isDefault, planSuggestion, specialLabel, typicalText } from '../../lib/schema';
+  import { helpParts, isDefault, specialLabel, typicalText } from '../../lib/schema';
   import type { ParamSpec, ParamValue, PlanDecision } from '../../lib/types';
   import { settings } from '../../stores/settings.svelte';
 
@@ -36,12 +36,6 @@
   let named = $derived(specialLabel(spec, value));
   let usually = $derived(typicalText(spec));
   let help = $derived(helpParts(spec.help ?? ''));
-  // The plan's value, offered only when it is one this field takes: a decision can also be a word
-  // ("cpu only") that is a reason, not a value to type.
-  let suggested = $derived.by(() => {
-    const s = planSuggestion(value, decision?.value);
-    return s !== undefined && coerceInput(spec, s).ok ? s : undefined;
-  });
 
   function commit(raw: string | boolean) {
     const r = coerceInput(spec, raw);
@@ -137,10 +131,6 @@
       {#if spec.unit && numeric}<span class="muted unit">{spec.unit}</span>{/if}
       {#if named}<span class="named">= {named}</span>{/if}
       {#if usually}<span class="muted range">{usually}</span>{/if}
-      {#if suggested !== undefined}
-        <span class="muted range">plan suggests {suggested}{spec.unit ? ` ${spec.unit}` : ''}</span>
-        <button type="button" class="link" onclick={() => { commit(suggested ?? ''); settings.flush(); }}>Use</button>
-      {/if}
       {#if userSet || modified}
         <button type="button" class="link" onclick={() => settings.reset(spec.key)}>Reset to default</button>
       {/if}

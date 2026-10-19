@@ -18,8 +18,7 @@ Semantic Versioning.
   switch), "Start reads in two waves", "Unmap the file after load", "Read a busy layer whole",
   "Route experts early". The web UI and the app render all of it from the same data: the special
   value's name and the typical range under each field instead of "0 to 2147483647", the help's
-  first sentence with the rest on demand, and in the web UI the plan's value offered where it
-  differs. The Advanced section no longer repeats the basic rows shown above it, and its title is
+  first sentence with the rest on demand. The Advanced section no longer repeats the basic rows shown above it, and its title is
   in sentence case.
 
 ### Fixed

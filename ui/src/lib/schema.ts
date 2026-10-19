@@ -90,8 +90,3 @@ export function helpParts(help: string): { lead: string; rest: string } {
   return { lead: text, rest: '' };
 }
 
-/** The plan's value for a row when it differs from the one in force, for the form to offer. */
-export function planSuggestion(value: ParamValue | undefined, planned: string | undefined): string | undefined {
-  if (planned === undefined || planned === '') return undefined;
-  return sameValue(value, planned) || String(value) === planned ? undefined : planned;
-}

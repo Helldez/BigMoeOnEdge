@@ -12,6 +12,8 @@ import java.net.InetAddress
  * Where other devices on this network reach the phone's engine: the IPv4 addresses of the Wi-Fi and
  * Ethernet networks it is on. Only those: a mobile network often carries a private address too
  * (carrier NAT), which no laptop on the same Wi-Fi can reach, so offering it would be wrong.
+ * A hotspot the phone itself serves is not one of its networks either, so its clients are not
+ * offered an address here, although the engine listens on every interface.
  */
 object LanAddress {
     /** The addresses worth showing among [addresses]: IPv4, neither loopback nor link-local, each once. */
@@ -45,7 +47,10 @@ object LanAddress {
             override fun onLost(network: Network) = onChange(current(app))
             override fun onLinkPropertiesChanged(network: Network, lp: android.net.LinkProperties) = onChange(current(app))
         }
+        // A builder asks for INTERNET by default; a LAN with no way out (a lab switch, a router
+        // offline) is exactly where clients reach the phone, so it must be followed too.
         val request = NetworkRequest.Builder()
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
             .build()

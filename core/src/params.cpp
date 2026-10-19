@@ -199,7 +199,7 @@ constexpr double top_p_lo = 0.8, top_p_hi = 0.95;
 constexpr int io_threads_lo = 2, io_threads_hi = 8;
 constexpr int cache_hi_mb = 8192;
 constexpr int cache_floor_lo_mb = 1024, cache_floor_hi_mb = 3072;
-constexpr int ubatch_lo = 256, ubatch_hi = 2048;
+constexpr int ubatch_lo = 512, ubatch_hi = 2048;
 constexpr int row_stream_lo_mb = 32, row_stream_hi_mb = 256;
 constexpr int prefill_min_tokens_hi = 128;
 constexpr int prefill_loaders_lo = 4, prefill_loaders_hi = 8;

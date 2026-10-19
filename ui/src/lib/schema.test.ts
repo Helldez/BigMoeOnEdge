@@ -5,7 +5,6 @@ import {
   helpParts,
   isDefault,
   isLevelVisible,
-  planSuggestion,
   sameValue,
   specialLabel,
   typicalText,
@@ -135,11 +134,3 @@ describe('helpParts', () => {
   });
 });
 
-describe('planSuggestion', () => {
-  it('offers the plan value only when it differs', () => {
-    expect(planSuggestion(2000, '7110')).toBe('7110');
-    expect(planSuggestion(7110, '7110')).toBeUndefined();
-    expect(planSuggestion('auto', 'auto')).toBeUndefined();
-    expect(planSuggestion(4, undefined)).toBeUndefined();
-  });
-});
