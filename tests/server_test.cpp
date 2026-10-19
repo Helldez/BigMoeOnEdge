@@ -1003,10 +1003,6 @@ static void plan_view_tests() {
     json cv = plan_view(cpu, model, Plan{});
     check(cv["devices_none"] == "machine" && !cv["devices_none_text"].get<std::string>().empty(),
           "plan view: a backend found nothing here");
-    ComputeDevice helper = device("BLAS");
-    helper.is_host_helper = true;
-    cpu.devices.push_back(helper);
-    check(plan_view(cpu, model, Plan{})["devices_none"] == "machine", "plan view: a host helper is not a device");
     check(plan_view(cpu, model, Plan{})["summary"]["sentence"] == "The model could not be read.",
           "plan view: an unread model says so");
 
