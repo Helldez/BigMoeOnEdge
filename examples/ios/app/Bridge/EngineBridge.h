@@ -14,7 +14,8 @@ extern "C" {
 // stopped or refused to start, on that thread.
 void bmoe_server_start(int argc, const char * const * argv, void (^exited)(int code));
 
-// Asks the running server to stop: run() returns and `exited` follows. False when none listens.
+// Asks the server to stop: run() returns and `exited` follows. One still starting stops as soon as
+// it listens. False when none is running or starting.
 bool bmoe_server_stop(void);
 
 #ifdef __cplusplus

@@ -312,6 +312,10 @@ jobs:
         run: bash scripts/check-version.sh "$TAG"
 
       - name: Configure & build (examples/ios, simulator)
+        # The harness is the asset; the app is built by ci.yml's ios-harness job on every PR, so a
+        # release does not fail on a target it does not ship.
+        env:
+          BMOE_IOS_TARGETS: bmoe-harness
         run: scripts/build-ios.sh sim
 
       - name: Package

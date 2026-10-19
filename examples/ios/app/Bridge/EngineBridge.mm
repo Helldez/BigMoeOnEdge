@@ -79,6 +79,11 @@ private:
 
 std::mutex g_m;
 std::function<void()> g_stop; // set while a server listens, empty otherwise
+// Between start and listening there is no stop to call yet. A stop asked for in that window (a
+// Share toggle while the engine comes up) is kept and carried out the moment the server listens,
+// rather than dropped while the app believes it was done.
+bool g_starting = false;
+bool g_stop_requested = false;
 
 // The server's own thread: the accept loop and whatever a handler calls before it hands work to the
 // engine's threads. A secondary thread's default stack is a fraction of the main thread's.
@@ -89,6 +94,11 @@ constexpr NSUInteger kServerStackBytes = 8u << 20;
 void bmoe_server_start(int argc, const char * const * argv, void (^exited)(int code)) {
     // Owned here: the caller's strings are gone by the time the thread reads them.
     auto args = std::make_shared<std::vector<std::string>>(argv, argv + argc);
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        g_starting = true;
+        g_stop_requested = false;
+    }
     NSThread * t = [[NSThread alloc] initWithBlock:^{
         std::vector<char *> raw;
         for (std::string & a : *args)
@@ -99,8 +109,20 @@ void bmoe_server_start(int argc, const char * const * argv, void (^exited)(int c
         embedding.listening = [](std::function<void()> stop) {
             std::lock_guard<std::mutex> lock(g_m);
             g_stop = std::move(stop);
+            if (!g_stop) return;
+            g_starting = false;
+            if (g_stop_requested) {
+                g_stop_requested = false;
+                g_stop(); // safe before the accept loop runs: it then returns at once
+            }
         };
         const int rc = bmoe::server::run((int) args->size(), raw.data(), embedding);
+        {
+            // A server that never listened (its port taken) leaves no pending stop behind.
+            std::lock_guard<std::mutex> lock(g_m);
+            g_starting = false;
+            g_stop_requested = false;
+        }
         exited(rc);
     }];
     t.name = @"bmoe-server";
@@ -113,7 +135,13 @@ bool bmoe_server_stop(void) {
     // Under the lock: the server withdraws the stop (an empty one) before what it reaches is gone,
     // and that waits here until a stop in progress has returned.
     std::lock_guard<std::mutex> lock(g_m);
-    if (!g_stop) return false;
-    g_stop();
-    return true;
+    if (g_stop) {
+        g_stop();
+        return true;
+    }
+    if (g_starting) {
+        g_stop_requested = true;
+        return true;
+    }
+    return false;
 }
