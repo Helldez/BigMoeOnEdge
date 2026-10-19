@@ -519,6 +519,14 @@ object Engine {
         catching { api.removeAdded(id); Unit }.also { refreshModels() }
     }
 
+    /**
+     * Delete the partial files a stopped catalog download left. The server does it, by catalog id:
+     * it knows which files the entry names and deletes only those, inside the models directory.
+     */
+    suspend fun deletePartial(id: String): Result<Unit> = withContext(Dispatchers.IO) {
+        catching { api.deletePartial(id); Unit }.also { refreshModels() }
+    }
+
     /** The client for a chat stream: the chat runs it on its own thread and owns the connection. */
     fun api(): Api = api
 

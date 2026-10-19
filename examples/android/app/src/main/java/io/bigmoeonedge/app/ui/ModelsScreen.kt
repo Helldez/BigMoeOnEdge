@@ -25,6 +25,7 @@ import io.bigmoeonedge.app.data.ModelManager
 import io.bigmoeonedge.app.data.SafImport
 import io.bigmoeonedge.app.data.catalogStatus
 import io.bigmoeonedge.app.data.gbLabel
+import io.bigmoeonedge.app.data.resumeLabel
 import io.bigmoeonedge.app.engine.Engine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -65,7 +66,8 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
             when (ev) {
                 is ModelDownloader.Event.InFlight -> progress = ev.downloads
                 is ModelDownloader.Event.Completed -> refreshKey++
-                is ModelDownloader.Event.Failed -> say("${ev.name}: ${ev.reason}")
+                // The server lists the .part it left, so the row offers Resume with its bytes.
+                is ModelDownloader.Event.Failed -> { say("${ev.name}: ${ev.reason}"); refreshKey++ }
             }
         }
     }
@@ -167,7 +169,13 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                     onDownload = {
                         ModelDownloader.enqueueEntry(context, e).onFailure { say("${e.title}: ${it.message ?: "download failed to start"}") }
                     },
-                    onCancel = { ModelDownloader.cancelEntry(context, e) },
+                    onCancel = {
+                        scope.launch {
+                            withContext(Dispatchers.IO) { ModelDownloader.cancelEntry(context, e) }
+                            refreshKey++ // the kept .part turns the row into Resume
+                        }
+                    },
+                    onDeletePartial = { scope.launch { Engine.deletePartial(e.id).onFailure { say(it.message ?: "could not delete the partial download") } } },
                     onDelete = {
                         // The app's own downloads, in its models directory; a copy elsewhere is listed above.
                         val dir = ModelManager.internalModelsDir(context)
@@ -280,6 +288,8 @@ private fun CatalogRow(
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onDelete: () -> Unit,
+    /** Delete the partial files a stopped download left, for a row that has them. */
+    onDeletePartial: () -> Unit,
     /** Forget an entry added from a repository; its files stay. Null for the catalog's own. */
     onRemove: (() -> Unit)? = null,
 ) {
@@ -288,7 +298,9 @@ private fun CatalogRow(
             Text(entry.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(8.dp))
             when (status) {
-                CatalogStatus.AVAILABLE -> Button(shape = RectangleShape, onClick = onDownload, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Download", maxLines = 1, softWrap = false) }
+                CatalogStatus.AVAILABLE -> Button(shape = RectangleShape, onClick = onDownload, contentPadding = PaddingValues(horizontal = 16.dp)) {
+                    Text(if (entry.partial) resumeLabel(entry.received, entry.bytes) else "Download", maxLines = 1, softWrap = false)
+                }
                 CatalogStatus.DOWNLOADING -> TextButton(shape = RectangleShape, onClick = onCancel) { Text("Cancel", maxLines = 1, softWrap = false) }
                 CatalogStatus.ON_DEVICE -> {
                     Text("On device", fontSize = 13.sp, maxLines = 1, softWrap = false, color = MaterialTheme.colorScheme.primary)
@@ -301,6 +313,13 @@ private fun CatalogRow(
             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (progress != null) DownloadProgress(progress, onCancel = null, showName = false)
+        else if (status == CatalogStatus.AVAILABLE && entry.partial) {
+            // Stopped by a failure, a cancel or a restart: what is on disk, and the way to give it back.
+            if (entry.bytes > 0) LinearProgressIndicator(progress = { (entry.received.toFloat() / entry.bytes).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+            TextButton(shape = RectangleShape, onClick = onDeletePartial, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                Text("Delete partial download", fontSize = 12.sp)
+            }
+        }
         if (onRemove != null && status != CatalogStatus.DOWNLOADING) {
             TextButton(shape = RectangleShape, onClick = onRemove, contentPadding = PaddingValues(horizontal = 0.dp)) {
                 Text("Remove from the catalog", fontSize = 12.sp)

@@ -75,6 +75,7 @@ class Api(private val baseUrl: String, private val apiKey: String) {
     fun hfInspect(body: JSONObject): JSONObject = send("POST", "/api/hf/inspect", body, SLOW_MS)
     fun hfAdd(body: JSONObject): JSONObject = send("POST", "/api/hf/add", body, SLOW_MS)
     fun removeAdded(id: String): JSONObject = send("DELETE", "/api/hf/entry/" + java.net.URLEncoder.encode(id, "UTF-8"), null, QUICK_MS)
+    fun deletePartial(id: String): JSONObject = send("DELETE", "/api/models/partial/" + java.net.URLEncoder.encode(id, "UTF-8"), null, QUICK_MS)
     fun plan(measure: Boolean): JSONObject = getJson(if (measure) "/api/plan?measure=1" else "/api/plan", SLOW_MS)
     fun applyPlan(): JSONObject = send("POST", "/api/plan/apply", null, QUICK_MS)
 

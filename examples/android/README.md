@@ -83,6 +83,7 @@ needs a storage permission except the last option.
    catalog is the project's one data file, `catalog/models.json`, shipped in the APK and read by
    the server; the app does the transfers itself (a phone has no `curl` for the server to run), in
    a foreground worker that survives the app being killed and resumes an interrupted transfer.
+   Its notification shows the progress as the row does.
 2. **Any other model**: under **Other model**, paste a direct gguf URL (a Hugging Face
    `…/resolve/main/model.gguf` link), or pick a `.gguf` already on the device to import it.
 3. **adb push** (dev flavor only, needs all-files access, which the dev build requests on Refresh):
@@ -95,6 +96,16 @@ needs a storage permission except the last option.
 In-app downloads and imports land on a real f2fs/ext4 volume, so the streamed expert reads use
 O_DIRECT at full speed; a model read from the emulated external directories falls back to buffered
 I/O. A download needs free space equal to the model size, with no temporary second copy.
+
+**Resume.** A download writes `<name>.part` and renames it once whole, so a stopped one keeps its
+bytes. A dropped connection is retried on its own with backoff, each attempt continuing from the
+`.part` with a `Range` request. Whatever stopped it (the retries ran out, you pressed **Cancel**, or
+the app or the phone restarted), the row then reads **Resume (X of Y GB)** with the bytes already
+on disk, and pressing it continues from there; the free-space check counts only the bytes still to
+fetch. **Delete partial download** on the same row is the one action that throws them away (the
+server deletes the entry's `.part` files, in its models directory only). These are the desktop web
+UI's words and behaviour too (`docs/server-api.md`, "Models"). A download from a pasted link has no
+row to resume from, so its **Cancel** deletes its partial file.
 
 ### Sharded models (gpt-oss-120b, DeepSeek V4 Flash, Qwen3.8-Flash-Next)
 

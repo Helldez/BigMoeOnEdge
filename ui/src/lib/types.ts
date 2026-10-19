@@ -146,6 +146,10 @@ export interface CatalogEntry {
   bytes: number;
   blurb: string;
   status: CatalogStatus | (string & {});
+  /** Bytes of the entry already in the models directory: complete files plus partial ones. */
+  received?: number;
+  /** Not downloading, and a partial file is on disk: downloading resumes it. */
+  partial?: boolean;
   note: string;
   /** Added at run time from a repository (`POST /api/hf/add`); it can be removed. */
   added?: boolean;

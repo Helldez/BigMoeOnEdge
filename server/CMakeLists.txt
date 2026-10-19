@@ -21,6 +21,7 @@ add_library(bmoe_server_core STATIC
     event_bus.cpp
     json_util.cpp
     model_files.cpp
+    download_policy.cpp
     hf_repo.cpp
     settings_store.cpp
 )
