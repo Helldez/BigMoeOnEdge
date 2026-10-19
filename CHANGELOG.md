@@ -4,32 +4,8 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.32.0] - 2026-10-19
 
-### Fixed
-- **Android: an app denied the network says so, and where to give it back** (#298). Android ties
-  every IP socket to the network permission, loopback included, so on GrapheneOS with the app's
-  Network toggle off, or behind a firewall app, the app cannot reach its own engine even offline.
-  The status line said "Engine not reachable: socket failed: EPERM"; it now says the app has no
-  network access, which the engine needs even offline, with a button that opens the app's system
-  settings, and polls slowly until it is back. A download denied the same way fails at once with
-  that reason, instead of retrying, and points to importing the file.
-- **A stopped model download says it can be resumed, and resumes the same way on the phone and on
-  the desktop.** The bytes always landed in `<name>.part` and the next attempt continued them, but
-  little on screen said so, and the two front-ends disagreed on what Cancel meant (#293). Now a
-  catalog row with a partial file reads **Resume (X of Y GB)** after a failure, a cancel or a
-  restart, in the web UI and the app alike, and **Delete partial download** beside it is the one
-  action that throws the bytes away: Cancel on the phone keeps them, as it already did on the
-  desktop. `GET /api/models` gains `received` and `partial` per catalog entry, so a server
-  restarted mid-download still shows the entry as resumable, and `DELETE /api/models/partial/<id>`
-  deletes an entry's `.part` files, by catalog id and inside the models directory only. The desktop
-  server now retries a dropped connection on its own (curl's exit 18 or 56 and the other line
-  failures `--retry` leaves alone), resuming from the `.part`, up to six attempts with a wait
-  that doubles from 2 s to 60 s, and refuses a download the disk cannot take before a byte moves
-  (`507`), counting only the bytes still to fetch. On the phone, a resume of a single file is no
-  longer refused for the whole model's size, a failed space check no longer deletes the partial
-  file, and the download notification follows the progress instead of sitting at 0%.
-  `docs/server-api.md` and `examples/android/README.md` describe the resume behaviour.
 ### Added
 - **The runs a device report needs, in one command: `scripts/ios-runs.sh`.** It runs the plan, a
   run of it and the same run with the dense set left mapped, each in a fresh process of the iOS
@@ -42,6 +18,18 @@ Semantic Versioning.
   address space, which a Personal Team is refused and which made the build unsignable for one.
 
 ### Changed
+- **The README, rewritten around what the engine is: an adaptive streaming optimizer for big local
+  AI agents on any device.** It opens with a silent 30-second loop (an animated WebP, so it shows
+  inline everywhere, the GitHub app included) linking to the full promo video recorded on a 16 GB
+  laptop and a 12 GB phone (real time, sped-up parts marked), then the four things it does (adaptive streaming, any
+  hardware and OS, any model and quantization, a local OpenAI-compatible server), ten measured runs
+  presented as examples rather than limits, getting started on the phone, the desktop and the
+  command line, an OpenAI client example, and three diagrams drawn for it: how one token runs, how
+  the planner adapts to the machine, and where the memory goes. The settings tables, the
+  architecture table and the long benchmark tables leave the README for the pages that already
+  hold them (`docs/settings.md`, `docs/which-models-stream.md`, `docs/benchmarks.md`), and the
+  three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
+  with their own dark card so they read on either GitHub theme.
 - **Settings say what a value means and what is usual, and Advanced holds only the rest (#268).**
   The parameter table gains, per row, a typical range (named constants in `core/src/params.cpp`,
   every default inside it or one of the row's named values, which `bmoe_params_test` checks) and
@@ -55,30 +43,6 @@ Semantic Versioning.
   value's name and the typical range under each field instead of "0 to 2147483647", the help's
   first sentence with the rest on demand. The Advanced section no longer repeats the basic rows shown above it, and its title is
   in sentence case.
-
-### Fixed
-- **App: turning on Serve on the network no longer unloads the model or scrolls the page away.**
-  The restart it needs (the server binds another address) unloaded the model and, while the engine
-  was down, replaced the settings with one line, so the page jumped to the top. The rows now stay in place with a line
-  saying the engine is restarting, and the model that was loaded is loaded again once the new
-  server is up. The same holds for New key.
-- **App: the address to connect to is shown, not described.** With Serve on the network on, the
-  page shows `http://<ip>:8765/v1` with the phone's own IPv4 on its Wi-Fi or Ethernet network (a
-  mobile network's private address is left out: no laptop on the Wi-Fi reaches it), with Copy, and
-  follows it when the network changes; with no such network it says no other device can reach the
-  engine. The app asks for `ACCESS_NETWORK_STATE`, a permission without a prompt.
-- **The README, rewritten around what the engine is: an adaptive streaming optimizer for big local
-  AI agents on any device.** It opens with a silent 30-second loop (an animated WebP, so it shows
-  inline everywhere, the GitHub app included) linking to the full promo video recorded on a 16 GB
-  laptop and a 12 GB phone (real time, sped-up parts marked), then the four things it does (adaptive streaming, any
-  hardware and OS, any model and quantization, a local OpenAI-compatible server), ten measured runs
-  presented as examples rather than limits, getting started on the phone, the desktop and the
-  command line, an OpenAI client example, and three diagrams drawn for it: how one token runs, how
-  the planner adapts to the machine, and where the memory goes. The settings tables, the
-  architecture table and the long benchmark tables leave the README for the pages that already
-  hold them (`docs/settings.md`, `docs/which-models-stream.md`, `docs/benchmarks.md`), and the
-  three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
-  with their own dark card so they read on either GitHub theme.
 - **The Plan screen leads with the outcome, and reads the same on every machine.** The web UI and
   the Android app open the plan with what it decided in one sentence ("Experts stream from flash,
   with a 4.8 GiB cache") and three tiles: decode speed expected and, once the loaded model has
@@ -120,22 +84,67 @@ Semantic Versioning.
   found nothing".** `HardwareProfile::backends_placeable` counts the backends that could offer a
   local device, read from what each offers: a remote one (RPC) and a library the host calls into
   (BLAS) do not count, so a build with only those no longer reads as a machine without devices.
+- **The dense set is held in memory on every platform, and what a reclaim costs is measured, not
+  named.** The planner left the dense weights mapped wherever exceeding the memory limit ends the
+  process, because clean file pages are not charged to that limit. They are not charged because the
+  kernel may drop them, and every decoded token reads the whole dense set: on a 12 GB iOS phone the
+  35B-A3B decoded at 1.2 tok/s with 25581 major faults a token (about 400 MiB read back from flash
+  per token, the cores 75% idle), where the same model held in memory makes 5 on the Android test
+  phone (#304). That branch is gone: a fatal limit widens the margin the ledger sizes against, and
+  the dense set is held (`anon`, or pinned where a reclaim-exempt store exists) like anywhere else.
+  The fact behind it was a constant per OS; it is now read from the kernel in microseconds
+  (`pio::reclaim_facts`: a per-process share left, compressions since boot, a swap), so iOS, macOS
+  and Windows answer from their own accounting as Linux and Android already did, and
+  `HardwareProfile::file_pages_counted` is removed. The Apple-only "device buffers are locked"
+  constant goes too: unknown is charged the same way. Plans on macOS, Linux, Android and Windows
+  with a pagefile are unchanged; `docs/hardware-planning.md` describes the facts.
 
 ### Fixed
+- **Android: an app denied the network says so, and where to give it back** (#298). Android ties
+  every IP socket to the network permission, loopback included, so on GrapheneOS with the app's
+  Network toggle off, or behind a firewall app, the app cannot reach its own engine even offline.
+  The status line said "Engine not reachable: socket failed: EPERM"; it now says the app has no
+  network access, which the engine needs even offline, with a button that opens the app's system
+  settings, and polls slowly until it is back. A download denied the same way fails at once with
+  that reason, instead of retrying, and points to importing the file.
 - **The tag build no longer publishes the release.** Its APK job attached the debug APK with an
   action that creates the release when none exists yet, as the workflow's own token; a release made
   that way fires no `release: published`, so `release-apk` and `release-host` never ran and 0.31.0
   went out with one debug APK and no archives (#284). The step is gone, and with it the job's write
   permission: `release-apk` already uploads the debug APK beside the signed one. The agent guide
   says who publishes a release.
+- **App: turning on Serve on the network no longer unloads the model or scrolls the page away.**
+  The restart it needs (the server binds another address) unloaded the model and, while the engine
+  was down, replaced the settings with one line, so the page jumped to the top. The rows now stay in place with a line
+  saying the engine is restarting, and the model that was loaded is loaded again once the new
+  server is up. The same holds for New key.
+- **App: the address to connect to is shown, not described.** With Serve on the network on, the
+  page shows `http://<ip>:8765/v1` with the phone's own IPv4 on its Wi-Fi or Ethernet network (a
+  mobile network's private address is left out: no laptop on the Wi-Fi reaches it), with Copy, and
+  follows it when the network changes; with no such network it says no other device can reach the
+  engine. The app asks for `ACCESS_NETWORK_STATE`, a permission without a prompt.
 - **Small things from the 0.31.0 smoke tests (#290).** The chat list ellipsizes a long title before
   its Delete link instead of running under it. Loading a model shows the seconds since it began
   and, while the plan measures, the same stages the Plan screen shows, in the web UI and the app,
   instead of a blind wait of half a minute or more. The macOS archives' README says how to open a
   program a browser download quarantined (`xattr -dr com.apple.quarantine`, or right-click and
   Open) until a signed installer ships (#234).
-
-### Fixed
+- **A stopped model download says it can be resumed, and resumes the same way on the phone and on
+  the desktop.** The bytes always landed in `<name>.part` and the next attempt continued them, but
+  little on screen said so, and the two front-ends disagreed on what Cancel meant (#293). Now a
+  catalog row with a partial file reads **Resume (X of Y GB)** after a failure, a cancel or a
+  restart, in the web UI and the app alike, and **Delete partial download** beside it is the one
+  action that throws the bytes away: Cancel on the phone keeps them, as it already did on the
+  desktop. `GET /api/models` gains `received` and `partial` per catalog entry, so a server
+  restarted mid-download still shows the entry as resumable, and `DELETE /api/models/partial/<id>`
+  deletes an entry's `.part` files, by catalog id and inside the models directory only. The desktop
+  server now retries a dropped connection on its own (curl's exit 18 or 56 and the other line
+  failures `--retry` leaves alone), resuming from the `.part`, up to six attempts with a wait
+  that doubles from 2 s to 60 s, and refuses a download the disk cannot take before a byte moves
+  (`507`), counting only the bytes still to fetch. On the phone, a resume of a single file is no
+  longer refused for the whole model's size, a failed space check no longer deletes the partial
+  file, and the download notification follows the progress instead of sitting at 0%.
+  `docs/server-api.md` and `examples/android/README.md` describe the resume behaviour.
 - **Checking a model on the Models page while another is loaded no longer reads every MoE as "will
   decline" (#285).** `POST /api/hf/inspect` set the candidate against what the machine had free
   with the loaded model still resident, although loading the new one unloads it first: measured on
@@ -168,8 +177,6 @@ Semantic Versioning.
 - **`docs/server-api.md` describes `POST /api/hf/add` as it behaves (#287).** Adding a model that
   was already added is a `201` that replaces the entry; `409` is for an id of the shipped catalog,
   and for a split set with shards missing.
-
-### Fixed
 - **llama.cpp's debug log no longer buries the engine's output.** llama.cpp and ggml wrote every
   line they log to stderr, DEBUG included: about 1200 lines of graph-input bookkeeping per model
   load, ~9700 for a CLI run with `--auto` (one load per probe child) and 12k in a server log after
@@ -197,22 +204,6 @@ Semantic Versioning.
   profile by its device type rather than its name; GPU, integrated GPU and NPU devices (Hexagon
   registers as a GPU) are kept. A new `device_probe` test checks this against the build's real
   registry (#290).
-- **The dense set is held in memory on every platform, and what a reclaim costs is measured, not
-  named.** The planner left the dense weights mapped wherever exceeding the memory limit ends the
-  process, because clean file pages are not charged to that limit. They are not charged because the
-  kernel may drop them, and every decoded token reads the whole dense set: on a 12 GB iOS phone the
-  35B-A3B decoded at 1.2 tok/s with 25581 major faults a token (about 400 MiB read back from flash
-  per token, the cores 75% idle), where the same model held in memory makes 5 on the Android test
-  phone (#304). That branch is gone: a fatal limit widens the margin the ledger sizes against, and
-  the dense set is held (`anon`, or pinned where a reclaim-exempt store exists) like anywhere else.
-  The fact behind it was a constant per OS; it is now read from the kernel in microseconds
-  (`pio::reclaim_facts`: a per-process share left, compressions since boot, a swap), so iOS, macOS
-  and Windows answer from their own accounting as Linux and Android already did, and
-  `HardwareProfile::file_pages_counted` is removed. The Apple-only "device buffers are locked"
-  constant goes too: unknown is charged the same way. Plans on macOS, Linux, Android and Windows
-  with a pagefile are unchanged; `docs/hardware-planning.md` describes the facts.
-
-### Fixed
 - **The dense residency sensor reads the same on every platform.** Under `mmap`/`warm` it found the
   mapping through the process's region list, which an iOS app is not given and Windows does not
   have, so `dense_resident_frac` was `-1` exactly where the dense set was being refaulted. It now

@@ -27,8 +27,11 @@ desktop server and the iOS harness in 0.29.0; the server as the framework, the A
 and one visual language in 0.30.0; the compute backends as modules on every OS, any model from
 its Hugging Face repository with the header read before the download, the expert layout read
 from the file instead of a table, and llama.cpp at its 2026-10 master in 0.31.0, after a run of
-the app on a phone (CPU build) and of the desktop server on Windows. Owed: the NPU prefill on the
-release APK, the one build that carries the Hexagon backend, where a load with the NPU armed last
+the app on a phone (CPU build) and of the desktop server on Windows; the Plan screen led by its
+outcome in the web UI and the Android app, settings that say what a value means, a download that
+resumes the same way on the phone and the desktop, files judged by their header and the dense set
+held in memory on every platform in 0.32.0. Owed: the NPU prefill on the release APK, the one
+build that carries the Hexagon backend, where a load with the NPU armed last
 ended in the allocator ([#264](https://github.com/Helldez/BigMoeOnEdge/issues/264)).
 
 **One application framework.** The server is it ([application-framework.md](application-framework.md)).
