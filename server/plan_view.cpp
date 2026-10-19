@@ -215,11 +215,54 @@ json lanes_json(const HardwareProfile & hw, const Plan & plan) {
 
 // The three groups a person reads a plan in, by who decided and what: a setting the plan decided
 // from a fact (whether or not it differs from the value it had), a setting it left to the caller or
-// could not measure, and the notes that are not settings at all (the regime, the ledger, a cost).
+// could not measure, and the notes that are not settings at all (the regime, the ledger, each of the
+// cost model's notes under its topic).
 const char * decision_group(const Decision & d, bool is_param) {
     if (!is_param) return "notes";
     if (d.source == Source::Operator || d.source == Source::Unprobed) return "kept";
     return "set";
+}
+
+// The title a note is read under. A note is no parameter, so the settings table has no label for
+// it; the names live here, once, so no UI keeps a table of its own. A topic this does not know is
+// titled from its key, which keeps a new note readable before it is named.
+std::string note_label(const std::string & knob) {
+    static const struct {
+        const char * knob;
+        const char * label;
+    } k_labels[] = {
+        {"regime", "Streaming mode"},
+        {"residency", "Residency"},
+        {"placement", "Layer placement"},
+        {"placement-cost", "Placement cost"},
+        {"placement-declined", "Placement declined"},
+        {"extra-offload", "Further offload"},
+        {"experts", "Where experts live"},
+        {"memory-ledger", "Memory use"},
+        {"cache-floor", "Cache floor"},
+        {"cache-off", "Cache off"},
+        {"cache-lock", "Cache lock"},
+        {"cache-unpriced", "Cache size"},
+        {"kv-budget", "Context memory"},
+        {"lossy", "Output quality"},
+        {"shared-pool", "Shared memory pool"},
+        {"shared-memory", "Shared memory"},
+        {"storage-rate", "Storage speed"},
+        {"storage-spread", "Storage consistency"},
+        {"unmeasured-compute", "Compute speed"},
+        {"unmeasured-refault", "Re-read cost"},
+        {"unmeasured-storage", "Storage speed"},
+        {"dense-pin", "Dense weights pinning"},
+        {"device-crossing", "Device hop"},
+        {"device-unapplied", "Device placement"},
+        {"device-excluded", "Device excluded"},
+        {"device-host-pointer", "Device memory access"},
+    };
+    for (const auto & l : k_labels)
+        if (knob == l.knob) return l.label;
+    std::string words = knob;
+    std::replace(words.begin(), words.end(), '-', ' ');
+    return sentence_case(words);
 }
 
 } // namespace
@@ -242,8 +285,13 @@ json plan_view(const HardwareProfile & hw, const ModelProfile & model, const Pla
 
 json decision_json(const Decision & d) {
     const ParamDesc * p = find_param(d.knob);
-    return {{"knob", d.knob},   {"label", p ? p->label : ""},      {"group", decision_group(d, p != nullptr)},
-            {"value", d.value}, {"source", source_name(d.source)}, {"reason", d.reason}};
+    return {{"knob", d.knob},
+            {"label", p ? p->label : note_label(d.knob)},
+            {"group", decision_group(d, p != nullptr)},
+            {"value", d.value},
+            {"source", source_name(d.source)},
+            {"brief", d.brief.empty() ? d.reason : d.brief},
+            {"reason", d.reason}};
 }
 
 std::string plan_step_label(const std::string & step) {

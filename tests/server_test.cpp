@@ -25,6 +25,8 @@
 #include "settings_store.h"
 #include "turn_queue.h"
 
+#include "bmoe/planner.h"
+
 #include <atomic>
 #include <chrono>
 #include <limits>
@@ -890,10 +892,61 @@ static void plan_view_tests() {
     check(decision_json(dec)["group"] == "kept", "plan view: the person's value is kept");
     dec.source = Source::Unprobed;
     check(decision_json(dec)["group"] == "kept", "plan view: an unmeasured value is kept");
-    check(decision_json(Decision{"cost", "-", Source::Derived, "r"})["group"] == "notes",
-          "plan view: a cost is a note");
-    check(decision_json(Decision{"regime", "experts-stream", Source::Derived, "r"})["label"] == "",
-          "plan view: a note has no settings label");
+    check(decision_json(Decision{"storage-rate", "6.3 GB/s", Source::Derived, "r", "b"})["group"] == "notes",
+          "plan view: a cost model's note is a note");
+    check(decision_json(Decision{"regime", "experts-stream", Source::Derived, "r"})["label"] == "Streaming mode",
+          "plan view: a note is titled by its topic");
+    check(decision_json(Decision{"some-new-topic", "-", Source::Derived, "r"})["label"] == "Some new topic",
+          "plan view: a topic it does not know is titled from its key");
+    check(decision_json(Decision{"regime", "-", Source::Derived, "the reason"})["brief"] == "the reason",
+          "plan view: a decision without a brief shows its reason");
+
+    // A real plan, through the wire form: every line says itself in one sentence, and every note has a
+    // name to be read under.
+    {
+        ModelProfile m;
+        m.arch = "qwen3moe";
+        m.is_moe = m.ok = true;
+        m.n_layer = m.n_moe_layer = 48;
+        m.n_expert = 256;
+        m.n_expert_used = 8;
+        m.n_expert_projections = 3;
+        m.expert_slice_bytes = 530432;
+        m.token_cycle_bytes = 48ull * 8 * 3 * 530432;
+        m.file_bytes = 21ull << 30;
+        m.expert_bytes = 18ull << 30;
+        m.dense_bytes = 3ull << 30;
+        m.largest_dense_tensor = 243ull << 20;
+        m.group(WeightGroup::Attention) = {1400ull << 20, 1400ull << 20, false, false};
+        m.group(WeightGroup::Output) = {700ull << 20, 700ull << 20, false, false};
+        m.group(WeightGroup::Experts) = {18ull << 30, m.token_cycle_bytes, false, true};
+        HardwareProfile h;
+        h.residency_budget = 12ull << 30;
+        h.memory_total = 16ull << 30;
+        h.anon_overflow = Overflow::Compress;
+        h.host_bandwidth_gibs = 60;
+        h.storage.direct_ok = Tri::Yes;
+        h.storage.refault_mibs = 40;
+        h.storage.rate_curve = {{576u << 10, 1, 1600.0}, {576u << 10, 4, 6400.0}};
+        h.devices.push_back(device("CPU", true));
+        ComputeDevice gpu = device("GPU0");
+        gpu.shares_host_memory = Tri::Yes;
+        h.devices.push_back(gpu);
+        const Plan p = plan_run(RunConfig{}, h, m, PlanRequest{});
+        bool briefs = !p.decisions.empty(), labels = true, any_note = false;
+        std::string bad;
+        for (const Decision & d : p.decisions) {
+            const json j = decision_json(d);
+            const std::string brief = j["brief"];
+            if (d.brief.empty() || brief.size() > 120) briefs = false, bad += d.knob + " ";
+            if (j["group"] == "notes") {
+                any_note = true;
+                if (j["label"].get<std::string>().empty()) labels = false, bad += d.knob + " ";
+            }
+        }
+        check(briefs, "plan view: every decision of a plan has a brief of one line" + (bad.empty() ? "" : ": " + bad));
+        check(any_note && labels, "plan view: every note of a plan has a label" + (bad.empty() ? "" : ": " + bad));
+    }
     check(plan_step_label("rules") == "Decisions" && plan_step_label("future") == "Future",
           "plan view: stage words, and a stage it does not know");
 }
