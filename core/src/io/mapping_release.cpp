@@ -22,8 +22,9 @@ MappingPlaceholders::~MappingPlaceholders() {
 }
 
 MappingPlaceholders::MappingPlaceholders(MappingPlaceholders && o) noexcept
-    : reserved_(std::move(o.reserved_)), plugs_(std::move(o.plugs_)) {
+    : reserved_(std::move(o.reserved_)), viewed_(std::move(o.viewed_)), plugs_(std::move(o.plugs_)) {
     o.reserved_.clear();
+    o.viewed_.clear();
     o.plugs_.clear();
 }
 
@@ -31,8 +32,10 @@ MappingPlaceholders & MappingPlaceholders::operator=(MappingPlaceholders && o) n
     if (this != &o) {
         release();
         reserved_ = std::move(o.reserved_);
+        viewed_ = std::move(o.viewed_);
         plugs_ = std::move(o.plugs_);
         o.reserved_.clear();
+        o.viewed_.clear();
         o.plugs_.clear();
     }
     return *this;
@@ -40,8 +43,13 @@ MappingPlaceholders & MappingPlaceholders::operator=(MappingPlaceholders && o) n
 
 void MappingPlaceholders::release() {
 #if defined(_WIN32)
-    for (const auto & r : reserved_)
+    for (const auto & r : reserved_) {
         VirtualFree(r.first, 0, MEM_RELEASE);
+    }
+    // The placeholder views are the model's to unmap, and its teardown (which runs before this)
+    // already has: unmapping the base again could take out whatever was mapped there since. The
+    // same reasoning as the POSIX placeholders below. If the model never unmaps, a reserved view
+    // with no commit behind it leaks until process exit.
 #else
     // POSIX: the model's own munmap of "its" range has already removed the placeholder by the
     // time this runs (it is called after the model is freed), and unmapping the range again could
@@ -49,12 +57,13 @@ void MappingPlaceholders::release() {
     // reservation leaks until process exit. Either way: forget, do not touch.
 #endif
 #if defined(_WIN32)
-        // The plugs are deliberately NOT closed here. Each occupies a handle value the model still
-        // believes is its section, and the model's own teardown closes that value; closing it here as
-        // well would be a double close of whatever occupies the slot by then. If the model never
-        // closes it (it always does today), one inert event per section leaks until process exit.
+    // The plugs are deliberately NOT closed here. Each occupies a handle value the model still
+    // believes is its section, and the model's own teardown closes that value; closing it here as
+    // well would be a double close of whatever occupies the slot by then. If the model never
+    // closes it (it always does today), one inert event per section leaks until process exit.
 #endif
     reserved_.clear();
+    viewed_.clear();
     plugs_.clear();
 }
 
@@ -129,10 +138,32 @@ std::vector<std::pair<void *, size_t>> find_views(GetMappedFileNameW_t fn, const
     return out;
 }
 
-// Hold the released range so nothing else can be allocated there: the model will still call
-// UnmapViewOfFile on this base at teardown, which must find our reservation (a harmless failure),
-// never a live allocation. A reservation is in 64 KiB units, so if the exact size collides with a
-// neighbour the tail is given up rather than the whole placeholder.
+// Hold the released range with a VIEW of an empty pagefile-backed section, so the model's own
+// UnmapViewOfFile on this base at teardown is a success that releases the placeholder, exactly as
+// its munmap does on POSIX. A plain reservation would also keep the range safe, but llama.cpp's
+// unmap of it then fails and warns ("UnmapViewOfFile failed") on every run that released the
+// mapping. SEC_RESERVE makes the section's pages reserved, not committed: the placeholder costs no
+// commit charge however large the model file, and touching it faults like any reservation. The
+// section handle is closed at once; the view alone keeps the section alive, so no handle is left
+// for the section pass below to find. Null if the range cannot be mapped at this exact base.
+void * map_placeholder(void * base, size_t size) {
+    const uint64_t s = (uint64_t) size;
+    HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE | SEC_RESERVE, (DWORD) (s >> 32),
+                                    (DWORD) (s & 0xFFFFFFFFu), nullptr);
+    if (!sec) return nullptr;
+    void * v = MapViewOfFileEx(sec, FILE_MAP_READ, 0, 0, size, base);
+    CloseHandle(sec);
+    if (v && v != base) { // cannot happen with an explicit base, but a view elsewhere holds nothing
+        UnmapViewOfFile(v);
+        return nullptr;
+    }
+    return v;
+}
+
+// The fallback when the range cannot be held by a view: a reservation keeps it out of reach of
+// any later allocation, at the price of the model's unmap failing (harmlessly) at teardown. A
+// reservation is in 64 KiB units, so if the exact size collides with a neighbour the tail is given
+// up rather than the whole placeholder.
 void * reserve_placeholder(void * base, size_t size) {
     if (void * r = VirtualAlloc(base, size, MEM_RESERVE, PAGE_NOACCESS)) return r;
     SYSTEM_INFO si;
@@ -265,7 +296,9 @@ MappingReleaseReport release_file_mappings(const std::vector<std::string> & path
         }
         ++rep.views_unmapped;
         rep.bytes += v.second;
-        if (void * r = reserve_placeholder(v.first, v.second)) {
+        if (void * pv = map_placeholder(v.first, v.second)) {
+            if (out) out->viewed_.emplace_back(pv, v.second);
+        } else if (void * r = reserve_placeholder(v.first, v.second)) {
             if (out) out->reserved_.emplace_back(r, v.second);
         } else if (rep.error.empty()) {
             rep.error = "placeholder reservation failed";

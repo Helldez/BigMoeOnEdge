@@ -81,6 +81,19 @@ target_link_libraries(bmoe_mapping_release_test PRIVATE bmoe_core)
 target_include_directories(bmoe_mapping_release_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
 add_test(NAME mapping_release COMMAND bmoe_mapping_release_test)
 
+# The llama.cpp log bridge: DEBUG dropped unless asked, CONT following its message, a requested
+# cancel's decode errors demoted while it is in flight. Drives the installed callback; no model.
+add_executable(bmoe_llama_log_test llama_log_test.cpp)
+target_link_libraries(bmoe_llama_log_test PRIVATE bmoe_core)
+target_include_directories(bmoe_llama_log_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
+add_test(NAME llama_log COMMAND bmoe_llama_log_test)
+
+# probe_devices against this build's real ggml registry: an accelerator (BLAS, AMX, ...) is left out
+# of the profile by its device type, every other device is kept. No model needed.
+add_executable(bmoe_device_probe_test device_probe_test.cpp)
+target_link_libraries(bmoe_device_probe_test PRIVATE bmoe_core)
+add_test(NAME device_probe COMMAND bmoe_device_probe_test)
+
 # The n-gram draft matcher. Pure policy over token ids (no llama.cpp, no model), so the drafting
 # decision is covered exhaustively here; what it costs is a bench question, not a test.
 add_executable(bmoe_ngram_test ngram_test.cpp)

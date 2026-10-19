@@ -42,12 +42,16 @@ struct HfModel {
     std::vector<HfFile> files; // in shard order, the ones the listing has
     int count = 1;             // shards the set declares
     uint64_t bytes = 0;        // of the files present
+    // What the file NAME suggests it is for (model_files.h: file_role_hint): the listing reads no
+    // header, so this only orders and groups it. /api/hf/inspect reads the header and decides.
+    std::string role = "model";
     bool complete() const { return (int) files.size() == count; }
 };
 
 // The models in a tree listing (the JSON array the `/api/models/<repo>/tree/<rev>` endpoint
 // answers, recursive). Files that are not gguf are ignored; shards group as model_files.h groups
-// a directory. Sorted by name. False with the reason when the JSON is not a listing.
+// a directory. Sorted by name, the files whose names suggest a model first and the companion
+// files (projectors, draft heads) after them. False with the reason when the JSON is not a listing.
 bool parse_hf_tree(const json & tree, std::vector<HfModel> & out, std::string & error);
 
 // The quantization a gguf file name spells, or "".
@@ -75,7 +79,8 @@ struct HfRepoHit {
 };
 
 // The search URL on `endpoint`: repositories with gguf files whose name matches `query`
-// (percent-encoded here), the most downloaded first, at most `limit`.
+// (percent-encoded here), the most downloaded first, at most `limit`. The fields a hit carries are
+// asked for by name: the site's listing leaves `lastModified` and `gated` out unless they are.
 std::string hf_search_url(const std::string & endpoint, const std::string & query, int limit);
 
 // The repositories a search listing holds (the JSON array `/api/models?search=` answers). An
@@ -83,7 +88,13 @@ std::string hf_search_url(const std::string & endpoint, const std::string & quer
 bool parse_hf_search(const json & hits, std::vector<HfRepoHit> & out, std::string & error);
 
 // What the numbers mean on this machine, in one sentence each, from facts alone: no platform,
-// no name. `budget` is what this process may hold resident (0 when unknown).
+// no name. `budget` is what this process may hold resident (0 when unknown), measured now.
+//
+// A model already loaded holds part of the machine, and loading another unloads it first, so the
+// question "what happens if I load this" is asked of the budget with that part given back. The
+// session's own account of what it holds is its plan's memory ledger; with one, the verdict is set
+// against `budget + session_held` (no more than `memory_total`, where known) and says so. A session
+// loaded without a plan has no account, and the verdict says the figure was measured with it loaded.
 struct FitInputs {
     uint64_t file_bytes = 0;    // the whole model
     uint64_t present_bytes = 0; // already on disk, complete files only
@@ -95,12 +106,19 @@ struct FitInputs {
     bool is_moe = false;
     bool streamable = false;
     std::string refusal; // why a MoE is not streamed, when it is not
+    // model_files.h: file_role_name of the header. Anything but "model" is a companion file or
+    // no language model at all, which nothing here can run.
+    std::string role = "model";
+    uint64_t memory_total = 0; // the machine's, 0 unknown: a ceiling for the credited budget
+    std::string session_model; // the model loaded now, "" when none
+    uint64_t session_held = 0; // what its plan's ledger holds, 0 when it has no ledger
 };
 struct FitVerdict {
-    bool downloadable = true; // false only when the disk cannot take it
-    std::string mode;         // "streams", "plain mmap", "not readable"
+    bool downloadable = true; // false when the disk cannot take it, or the file is not a model
+    std::string mode;         // "streams", "plain mmap", "not a model", "not readable"
     std::string disk;         // the disk sentence
     std::string memory;       // the memory sentence
+    uint64_t budget = 0;      // the budget the memory sentence was set against
 };
 FitVerdict fit_verdict(const FitInputs & in);
 

@@ -586,6 +586,11 @@ struct RunConfig {
     PrefillDeviceConfig prefill; // prefill graphs on an accelerator; off by default
     DecideConfig decide;         // decide()'s prefix-state policy; off by default
 
+    // Let llama.cpp's and ggml's DEBUG log lines through to stderr. Off, they are dropped: about
+    // 1200 lines of graph bookkeeping per model load, which buried the engine's own output. For
+    // debugging llama.cpp itself, not the engine. Process-wide, as llama.cpp's log is.
+    bool llama_debug_log = false;
+
     // The upper ends of the ranges a settings form offers. They keep a slider finite and a typo
     // out; validate() does not enforce them, and none is a property of any model or machine.
     static constexpr int tokens_max = 1 << 20; // n_predict, n_ctx and n_ubatch alike

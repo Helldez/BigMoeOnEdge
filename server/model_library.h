@@ -10,6 +10,7 @@
 #include "json_util.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -58,12 +59,13 @@ public:
     // The /api/models object: local files and the catalog with each entry's status.
     json list();
 
-    // What a gguf is, from its headers alone (no tensor bytes): its architecture, and whether it
-    // carries routed experts in a layout this engine streams (docs/which-models-stream.md). "" and
-    // false when unreadable.
+    // What a gguf is, from its headers alone (no tensor bytes): its architecture, whether it
+    // carries routed experts in a layout this engine streams (docs/which-models-stream.md), and
+    // what it is for (model_files.h: file_role_name). "" and false when unreadable.
     struct ModelFacts {
         std::string arch;
         bool streamable = false;
+        std::string role;
     };
     ModelFacts probe(const std::string & path);
 
@@ -75,8 +77,19 @@ public:
     // The entry, when the catalog or the added ones have it.
     bool entry(const std::string & id, CatalogEntry & out) const;
 
-    std::string start_download(const std::string & id); // "" once started
+    // Why a download did not start, as the HTTP status that says so; status 0 once started (or
+    // already running).
+    struct DownloadRefusal {
+        int status = 0; // 404: no such entry; 507: the disk cannot take what is left to download
+        std::string error;
+    };
+    DownloadRefusal start_download(const std::string & id);
+    // Stop a running download. Its partial files stay, so the next start resumes them.
     bool cancel_download(const std::string & id);
+    // Delete the partial files (`.part`) of entry `id` in the models folder: the one way to give a
+    // stopped download's bytes back. Only names the entry lists, only in the models folder (never a
+    // scan directory), and never while it downloads. status 0 when done, with the bytes freed.
+    DownloadRefusal delete_partial(const std::string & id, uint64_t & freed);
 
 private:
     struct Job {
@@ -96,8 +109,21 @@ private:
                  const std::string & error);
     const CatalogEntry * find(const std::string & id) const;
     bool entry_on_disk(const CatalogEntry & e) const;
+    // What entry `e` already has in the models folder: complete files plus the bytes of each
+    // `.part`, and whether any `.part` is there - what a resume would continue from.
+    struct OnDisk {
+        uint64_t received = 0;
+        uint64_t still_needed = 0;
+        bool partial = false;
+    };
+    OnDisk on_disk(const CatalogEntry & e) const;
+    // The job of `id` runs: its entry's files are being written. Called with m_ held.
+    bool running_locked(const std::string & id) const;
+    // Wait `d`, waking early when the job is cancelled. False when it was.
+    bool wait_unless_cancelled(Job & job, std::chrono::seconds d);
 
-    // One directory's models as /api/models `local` entries, appended to `out`.
+    // One directory's models, and those of the folders directly inside it (model_files.h:
+    // scan_model_files), as /api/models `local` entries, appended to `out`.
     void list_dir(const std::string & dir, json & out);
 
     void save_added();

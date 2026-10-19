@@ -53,6 +53,7 @@ if(BMOE_HAVE_LLAMA)
         src/moe/decide_probe.cpp
         src/moe/device_arena.cpp
         src/engine/session.cpp
+        src/engine/llama_log.cpp
         src/engine/prefill_device.cpp
         src/engine/prefill_path.cpp
         src/engine/decide/llama_backend.cpp

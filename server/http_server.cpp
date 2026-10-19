@@ -93,7 +93,8 @@ void print_usage(const char * argv0) {
                 "  --port N             port (default %d)\n"
                 "  --open               open the UI in the default browser once listening\n"
                 "  --models-dir PATH    where models are listed and downloaded (default: <data dir>/models)\n"
-                "  --scan-dir PATH      also list the models in PATH, loaded in place (repeatable)\n"
+                "  --scan-dir PATH      also list the models in PATH and in the folders directly inside it,\n"
+                "                       loaded in place (repeatable; one level deep, links to folders skipped)\n"
                 "  --data-dir PATH      settings and models (default: the per-user application data folder)\n"
                 "  --ui-dir PATH        the built web UI (default: ui/ beside this binary)\n"
                 "  --catalog PATH       the model catalog (default: catalog/models.json beside this binary)\n"
@@ -305,6 +306,19 @@ struct App {
 
     void publish_config() { bus.publish("config", config_object()); }
 
+    // A measurement, with each stage announced as it starts (`plan_progress` events) and its end, so
+    // a UI says which probe is running rather than waiting blind. The caller holds measure_m.
+    PlanOutcome measure_plan() {
+        PlanOutcome p =
+            make_plan(store.planning_config(), store.operator_keys(), opt.isolated_probes,
+                      [this](const std::string & step, const std::string & label, int index, int count) {
+                          bus.publish("plan_progress",
+                                      json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
+                      });
+        bus.publish("plan_progress", json{{"step", "done"}});
+        return p;
+    }
+
     // A client on the network names a model in a folder this server lists models from (the models
     // folder, the --scan-dir ones) and nowhere else: it may not have the server open any file its
     // user can read. A local client is the person at this machine, as
@@ -316,6 +330,20 @@ struct App {
         if (!confine_model_path(v.get<std::string>(), lib.model_roots(), path, err)) return false;
         out = path;
         return true;
+    }
+
+    // The model loaded now and what its plan's ledger says it holds: the memory a load of another
+    // model gets back, since a load unloads first. Only the plan this session was loaded with
+    // counts; one measured by hand afterwards, or a load with no plan, gives no account (0).
+    LoadedSession loaded_session() {
+        LoadedSession s;
+        if (!host.loaded_or_loading()) return s;
+        const std::string path = host.model_path();
+        s.model = host.model_name();
+        std::lock_guard<std::mutex> lk(plan_m);
+        if (load_plan.ok && !path.empty() && load_plan.body.value("model", "") == path)
+            s.held_bytes = load_plan.held_bytes;
+        return s;
     }
 
     // On by default wherever there is a planner to ask: the point of measuring the machine is that
@@ -337,7 +365,7 @@ struct App {
             host.unload();
             host.begin_planning();
             std::unique_lock<std::mutex> measuring(measure_m);
-            PlanOutcome p = make_plan(store.planning_config(), store.operator_keys(), opt.isolated_probes);
+            PlanOutcome p = measure_plan();
             measuring.unlock();
             if (p.ok) {
                 store.apply_plan(p.values, p.decisions);
@@ -453,7 +481,7 @@ json hf_model_json(const HfModel & m) {
     json files = json::array();
     for (const HfFile & f : m.files)
         files.push_back({{"path", f.path}, {"bytes", f.bytes}});
-    return json{{"name", m.name},   {"quant", m.quant},         {"bytes", m.bytes},
+    return json{{"name", m.name},   {"quant", m.quant},         {"bytes", m.bytes}, {"role", m.role},
                 {"count", m.count}, {"complete", m.complete()}, {"files", files}};
 }
 
@@ -689,14 +717,23 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!parse_body(req, res, body)) return;
         if (!body.contains("id") || !body["id"].is_string())
             return send_error(res, 400, "id must be a catalog id string", "invalid_request");
-        const std::string err = app.lib.start_download(body["id"].get<std::string>());
-        if (!err.empty()) return send_error(res, 404, err);
+        const ModelLibrary::DownloadRefusal r = app.lib.start_download(body["id"].get<std::string>());
+        if (r.status) return send_error(res, r.status, r.error);
         send_json(res, json{{"ok", true}}, 202);
     });
 
     svr.Delete(R"(/api/models/download/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
         const bool cancelled = app.lib.cancel_download(req.matches[1].str());
         send_json(res, json{{"ok", cancelled}}, cancelled ? 200 : 404);
+    });
+
+    // A catalog id, never a path: the library deletes only the `.part` files that entry names, in
+    // the models folder (download_policy.h).
+    svr.Delete(R"(/api/models/partial/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
+        uint64_t freed = 0;
+        const ModelLibrary::DownloadRefusal r = app.lib.delete_partial(req.matches[1].str(), freed);
+        if (r.status) return send_error(res, r.status, r.error);
+        send_json(res, json{{"ok", true}, {"freed", freed}});
     });
 
     // ── a model from a Hugging Face repository (hf_repo.h, the helpers above register_routes) ──
@@ -754,7 +791,7 @@ void register_routes(httplib::Server & svr, App & app) {
         json facts;
         std::string err;
         if (!inspect_remote_model(*app.net, app.opt.hf_endpoint, r.ref, m, r.token, app.scratch_dir,
-                                  app.lib.models_dir(), facts, err))
+                                  app.lib.models_dir(), app.loaded_session(), facts, err))
             return send_error(res, 502, "could not read the header of " + m.name + ": " + err, "upstream");
         send_json(res, facts);
     });
@@ -797,14 +834,30 @@ void register_routes(httplib::Server & svr, App & app) {
             if (lp.ok && lp.body.value("model", "") == app.store.config().model_path) {
                 json body = lp.body;
                 body["from_last_load"] = true;
+                // What the loaded model has done since, beside what the plan predicted.
+                const json measured = app.host.last_turn();
+                if (!measured.is_null()) body["measured"] = measured;
                 return send_json(res, body);
             }
+        }
+        // `?cached=1`: the last plan this server holds, never a measurement. A screen opens on it, so
+        // opening the Plan screen costs nothing on any machine and every UI shows the same thing.
+        if (req.has_param("cached")) {
+            PlanOutcome last;
+            {
+                std::lock_guard<std::mutex> lk(app.plan_m);
+                last = app.last_plan.ok ? app.last_plan : app.load_plan;
+            }
+            if (!last.ok) return send_json(res, json{{"available", true}, {"none", true}});
+            json body = last.body;
+            body["cached"] = true;
+            return send_json(res, body);
         }
         if (app.host.generating())
             return send_error(res, 409, "busy: a plan measures the machine, and a running generation would skew it");
         std::unique_lock<std::mutex> measuring(app.measure_m, std::try_to_lock);
         if (!measuring) return send_error(res, 409, "busy: a plan is already being measured");
-        PlanOutcome p = make_plan(app.store.planning_config(), app.store.operator_keys(), app.opt.isolated_probes);
+        PlanOutcome p = app.measure_plan();
         measuring.unlock();
         if (!p.ok) return send_json(res, json{{"available", true}, {"error", p.error}});
         json body = p.body;

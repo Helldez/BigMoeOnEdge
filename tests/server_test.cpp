@@ -9,18 +9,26 @@
 //   * access: which host names, origins, keys and content types reach the API, and when the server
 //     may not start at all;
 //   * decide: the request fields a decision is read from, and its answer on the wire;
-//   * model files: which names make a split set, and how a directory's files group into models.
+//   * model files: which names make a split set, and how a directory's files group into models;
+//   * the plan view: one shape for every machine (an NPU phone, a discrete card, the cores alone),
+//     the device roles and their words, the memory pools, the decision groups.
+//   * downloads: which curl failures are retried and after how long, what a resume still needs on
+//     disk, and that deleting a partial download stays inside the models folder.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "access.h"
 #include "decide_protocol.h"
+#include "download_policy.h"
 #include "hf_repo.h"
 #include "json_util.h"
 #include "model_files.h"
 #include "openai_chat.h"
+#include "plan_view.h"
 #include "settings_store.h"
 #include "turn_queue.h"
+
+#include "bmoe/planner.h"
 
 #include <atomic>
 #include <chrono>
@@ -571,6 +579,39 @@ static void file_tests() {
           "and refused where that folder is not listed");
     check(!confine_model_path((dir / "secret.gguf").u8string(), roots, out, err), "a second root widens nothing else");
     check(!confine_model_path("x.gguf", {}, out, err) && !err.empty(), "no folder at all opens nothing");
+
+    // The scan goes one folder deep (a split set kept in a folder of its own), and no further: not
+    // into a folder inside that one, and not through a link to a folder, which could loop or lead
+    // out of the root. What the listing shows is still opened only through the confinement.
+    write(dir / "models" / "set" / "big-00001-of-00002.gguf", "");
+    write(dir / "models" / "set" / "big-00002-of-00002.gguf", "");
+    write(dir / "models" / "set" / "deeper" / "hidden.gguf", "");
+    write(dir / "outside" / "far.gguf", "");
+    fs::create_directory_symlink(dir / "outside", dir / "models" / "linked", ec);
+    const bool linked = !ec;
+    const std::vector<ModelFiles> scanned = scan_model_files(models.front());
+    const auto listed = [&](const std::string & folder, const std::string & first) {
+        for (const ModelFiles & m : scanned)
+            if (m.folder == folder && m.first == first) return &m;
+        return (const ModelFiles *) nullptr;
+    };
+    check(listed("", "a.gguf") != nullptr, "scan: a model in the folder itself is listed");
+    const ModelFiles * set = listed("set", "big-00001-of-00002.gguf");
+    check(set && set->complete() && set->files.size() == 2, "scan: a split set in a subfolder is one model, complete");
+    check(!listed("set/deeper", "hidden.gguf") && !listed("deeper", "hidden.gguf"),
+          "scan: a folder inside a subfolder is not entered");
+    if (linked) {
+        check(!listed("linked", "far.gguf"), "scan: a link to a folder is not followed");
+        check(!confine_model_path("linked/far.gguf", models, out, err) &&
+                  !confine_model_path((dir / "models" / "linked" / "far.gguf").u8string(), models, out, err),
+              "scan: and a model through it, named by hand, is refused by the confinement");
+    }
+    check(confine_model_path("set/big-00001-of-00002.gguf", models, out, err) &&
+              fs::equivalent(fs::u8path(out), dir / "models" / "set" / "big-00001-of-00002.gguf"),
+          "scan: a model in a subfolder opens through the confinement");
+    check(!confine_model_path("set/../../secret.gguf", models, out, err) &&
+              !confine_model_path((dir / "models" / "set" / ".." / ".." / "secret.gguf").u8string(), models, out, err),
+          "scan: a way out through the subfolder is refused");
     fs::remove_all(dir, ec);
 }
 
@@ -639,6 +680,49 @@ static void model_files_tests() {
           "a set is listed by its first shard, with the files present in shard order");
     check(g.size() == 3 && g[2].first == "c-00001-of-00002.gguf" && g[2].files.size() == 1 && !g[2].complete(),
           "a set missing its first shard is still listed under the first shard's name, incomplete");
+
+    // What a file is for, from its header. The facts mirror three companion files of one released
+    // repository and a model that carries its own prediction head.
+    GgufHeaderFacts h;
+    check(file_role(h) == FileRole::Unknown && std::string(file_role_name(file_role(h))).empty(),
+          "role: an unreadable header says nothing");
+    h.ok = true;
+    h.arch = "clip";
+    h.type = "mmproj";
+    check(file_role(h) == FileRole::Projector, "role: a projector says so in general.type");
+    h.type.clear();
+    check(file_role(h) == FileRole::Projector, "role: and an older one by its projector architecture");
+    h = {};
+    h.ok = true;
+    h.arch = "dflash";
+    h.type = "model";
+    h.n_block = 5;
+    h.reads_target = true;
+    check(file_role(h) == FileRole::Draft, "role: a file that reads another model's layers is a draft");
+    h.arch = "gemma4-assistant";
+    h.reads_target = false;
+    h.n_block = 4;
+    h.n_nextn = 4;
+    check(file_role(h) == FileRole::Draft, "role: a file of prediction heads and nothing else is a draft");
+    h.arch = "glm4moe";
+    h.n_block = 47;
+    h.n_nextn = 1;
+    check(file_role(h) == FileRole::Model, "role: a model with its own prediction head is a model");
+    h.type.clear();
+    check(file_role(h) == FileRole::Model, "role: and so is one with no general.type");
+    h.n_block = 0;
+    h.n_nextn = 0;
+    check(file_role(h) == FileRole::Other, "role: no transformer blocks is no language model");
+    h.n_block = 10;
+    h.type = "adapter";
+    check(file_role(h) == FileRole::Other && std::string(file_role_name(FileRole::Other)) == "other",
+          "role: another file type is not a model");
+    check(file_role_hint("mmproj-gemma-4-26B-A4B-it-Q8_0.gguf") == FileRole::Projector &&
+              file_role_hint("sub/Model-MMPROJ-f16.gguf") == FileRole::Projector &&
+              file_role_hint("mtp-gemma-4-26B-A4B-it-Q8_0.gguf") == FileRole::Draft &&
+              file_role_hint("dflash-x-BF16.gguf") == FileRole::Draft &&
+              file_role_hint("gemma-4-26B-A4B-it-Q4_0.gguf") == FileRole::Model,
+          "role: a name only hints, for ordering a listing whose headers are unread");
 }
 
 // A repository as a person types it, what a listing holds, and the catalog entry a model becomes.
@@ -670,12 +754,16 @@ static void hf_tests() {
       {"type":"file","path":"README.md","size":467},
       {"type":"file","path":"Qwen3.6-35B-A3B-Q4_K_M.gguf","size":20419565568},
       {"type":"file","path":"mmproj-Qwen3.6-35B-A3B-Q8_0.gguf","size":614194304},
+      {"type":"file","path":"mtp-Qwen3.6-35B-A3B-Q8_0.gguf","size":4194304},
       {"type":"file","path":"Q2_K/big-Q2_K-00002-of-00003.gguf","size":200},
       {"type":"file","path":"Q2_K/big-Q2_K-00001-of-00003.gguf","size":100},
       {"type":"directory","path":"Q2_K"}
     ])");
     std::vector<HfModel> models;
-    check(parse_hf_tree(tree, models, err) && models.size() == 3, "hf: a listing's gguf files, shards grouped");
+    check(parse_hf_tree(tree, models, err) && models.size() == 4, "hf: a listing's gguf files, shards grouped");
+    check(models.size() == 4 && models[0].role == "model" && models[1].role == "model" && models[2].role == "draft" &&
+              models[3].role == "projector",
+          "hf: what the names suggest are models come first, the companion files after them");
     check(models[0].name == "Q2_K/big-Q2_K-00001-of-00003.gguf" && models[0].count == 3 &&
               models[0].files.size() == 2 && !models[0].complete() && models[0].bytes == 300 &&
               models[0].files[0].bytes == 100,
@@ -692,8 +780,9 @@ static void hf_tests() {
           "hf: the listing URL");
     check(hf_search_url("https://huggingface.co", "gemma 4 26B/it", 20) ==
               "https://huggingface.co/api/"
-              "models?search=gemma%204%2026B%2Fit&filter=gguf&sort=downloads&direction=-1&limit=20",
-          "hf: the search URL, the query percent-encoded");
+              "models?search=gemma%204%2026B%2Fit&filter=gguf&sort=downloads&direction=-1&limit=20"
+              "&expand%5B%5D=downloads&expand%5B%5D=likes&expand%5B%5D=lastModified&expand%5B%5D=gated",
+          "hf: the search URL, the query percent-encoded and every field a hit carries asked for");
     std::vector<HfRepoHit> hits;
     check(parse_hf_search(json::parse(R"([
             {"id":"unsloth/gemma-4-26B-A4B-it-GGUF","downloads":886490,"likes":1224,"lastModified":"2026-10-01T00:00:00.000Z","gated":false},
@@ -754,6 +843,309 @@ static void hf_tests() {
           "hf: a refused MoE carries the reason");
     in.readable = false;
     check(fit_verdict(in).mode == "not readable", "hf: an unreadable header is a fact, not a guess");
+
+    in.readable = true;
+    in.refusal.clear();
+    in.role = "projector";
+    v = fit_verdict(in);
+    check(v.mode == "not a model" && !v.downloadable && v.memory.find("projector") != std::string::npos,
+          "hf: a projector is not a model, and is not offered for download");
+    in.role = "draft";
+    check(fit_verdict(in).mode == "not a model" && fit_verdict(in).memory.find("draft") != std::string::npos,
+          "hf: nor is a draft head");
+    in.role = "other";
+    check(fit_verdict(in).mode == "not a model", "hf: nor a file with no transformer blocks");
+
+    // The model loaded now is given back: loading this one unloads it first (#285). The figures are
+    // the measured case: 450 MiB free with a session holding ~8.6 GB, 9323 MiB once it was unloaded.
+    in.role = "model";
+    in.is_moe = true;
+    in.streamable = true;
+    in.disk_free = 40ull << 30;
+    in.file_bytes = 14ull << 30;
+    in.dense_bytes = 2ull << 30;
+    in.token_cycle = 600ull << 20;
+    in.budget = 450ull << 20;
+    v = fit_verdict(in);
+    check(v.memory.find("more than the 450 MiB") != std::string::npos && v.budget == (450ull << 20),
+          "hf: with nothing loaded, the budget is what is free now");
+    in.session_model = "Qwen3.6-35B-A3B-Q4_K_M.gguf";
+    v = fit_verdict(in);
+    check(v.budget == (450ull << 20) &&
+              v.memory.find("measured with Qwen3.6-35B-A3B-Q4_K_M.gguf loaded") != std::string::npos,
+          "hf: a session with no ledger cannot be given back, and the verdict says the figure is with it loaded");
+    in.session_held = 8873ull << 20;
+    v = fit_verdict(in);
+    check(v.budget == (9323ull << 20) && v.memory.find("fits in the 9323 MiB") != std::string::npos &&
+              v.memory.find("8873 MiB of it held now by Qwen3.6-35B-A3B-Q4_K_M.gguf") != std::string::npos,
+          "hf: the session's ledger is given back, and the verdict says how much and by whom");
+    in.memory_total = 8ull << 30;
+    check(fit_verdict(in).budget == (8ull << 30), "hf: never more than the machine has");
+    in.is_moe = false;
+    in.streamable = false;
+    check(fit_verdict(in).memory.find("held now by") != std::string::npos,
+          "hf: a dense model's verdict is given the same budget");
+}
+
+// A synthetic machine and plan: the view is pure, so it is driven with the facts alone.
+static ComputeDevice device(const char * name, bool cpu = false) {
+    ComputeDevice d;
+    d.name = name;
+    d.is_cpu = cpu;
+    return d;
+}
+
+static const json * device_named(const json & view, const std::string & name) {
+    for (const json & d : view["devices"])
+        if (d.value("name", "") == name) return &d;
+    return nullptr;
+}
+
+static void plan_view_tests() {
+    // A phone: the NPU is armed for the prompt, a GPU is slower, another gave the wrong results,
+    // one did not survive its probe, and the device slots take turns with the cache.
+    HardwareProfile hw;
+    hw.backends_looked = true;
+    hw.backends_placeable = 3;
+    hw.host_wide_matmul_gibs = 30;
+    hw.host_bandwidth_gibs = 30;
+    hw.devices.push_back(device("CPU", true));
+    ComputeDevice npu = device("NPU0");
+    npu.wide_matmul_gibs = 1200;
+    npu.wide_identity_ok = Tri::Yes;
+    hw.devices.push_back(npu);
+    ComputeDevice gpu = device("GPU0");
+    gpu.wide_matmul_gibs = 180;
+    gpu.wide_identity_ok = Tri::Yes;
+    hw.devices.push_back(gpu);
+    ComputeDevice wrong = device("GPU1");
+    wrong.wide_matmul_gibs = 300;
+    wrong.wide_identity_ok = Tri::No;
+    hw.devices.push_back(wrong);
+    ComputeDevice dead = device("GPU2");
+    dead.usable = Tri::No;
+    dead.unusable_reason = "the probe ended without an answer";
+    hw.devices.push_back(dead);
+    ModelProfile model;
+    model.expert_bytes = 10ull << 30;
+    Plan plan;
+    plan.regime = Regime::ExpertsStream;
+    plan.config.prefill.device = "NPU0";
+    plan.allocation.cache_bytes = 2ull << 30;
+    plan.allocation.seconds_per_token = 0.3;
+    plan.allocation.ledger.holdable_cap = 5ull << 30;
+    plan.allocation.ledger.rows = {{"dense", 1ull << 30, true, false},
+                                   {"expert cache", 2ull << 30, true, false},
+                                   {"device slots", 1ull << 29, true, true}};
+    json v = plan_view(hw, model, plan);
+    check(v["summary"]["sentence"] == "Experts stream from flash, with a 2.0 GiB cache.", "plan view: the sentence");
+    check(v["summary"]["lanes"][0]["on"] == json::array({"NPU0"}) && v["summary"]["lanes"][0]["label"] == "Prompt",
+          "plan view: the prompt lane names the armed device");
+    check(v["summary"]["lanes"][1]["on"] == json::array({"CPU"}), "plan view: tokens stay on the host");
+    check(v["predicted"]["s_per_token"] == 0.3 && v["predicted"]["cache_hit_pct"] == 20.0,
+          "plan view: the prediction the CLI prints");
+    const json * c = device_named(v, "CPU");
+    check(c && (*c)["uses"] == json::array({"tokens"}) && (*c)["badge"] == "Tokens" &&
+              (*c)["rate_text"] == "The reference",
+          "plan view: the host decodes, the prompt went to a device");
+    const json * n = device_named(v, "NPU0");
+    check(n && (*n)["status"] == "used" && (*n)["badge"] == "Prompt" && (*n)["rate_text"] == "40x the host on a prompt",
+          "plan view: the armed device, with its rate");
+    const json * g = device_named(v, "GPU0");
+    check(g && (*g)["status"] == "unused" && (*g)["badge"] == "Not used" &&
+              (*g)["why"].get<std::string>().find("NPU0") != std::string::npos,
+          "plan view: a slower device says which one was armed");
+    const json * w = device_named(v, "GPU1");
+    check(w && (*w)["status"] == "refused" && (*w)["badge"] == "Wrong results", "plan view: wrong results refuse");
+    const json * d = device_named(v, "GPU2");
+    check(d && (*d)["status"] == "unusable" && (*d)["why"] == "the probe ended without an answer",
+          "plan view: a device that died says why");
+    check(v["devices_none"] == "" && v["devices_none_text"] == "", "plan view: devices, so no none line");
+    const json & pools = v["memory"]["pools"];
+    check(pools.size() == 1 && pools[0]["label"] == "This process" && pools[0]["rows"].size() == 3 &&
+              pools[0]["rows"][1]["label"] == "Expert cache" && pools[0]["rows"][2]["in_turn"] == true,
+          "plan view: one pool, the ledger rows worded, the slots in turn");
+
+    // The same view on a desktop whose card holds layers in memory of its own: a second pool, and
+    // the card on the tokens lane beside the host.
+    HardwareProfile desk;
+    desk.backends_looked = true;
+    desk.devices.push_back(device("CPU", true));
+    ComputeDevice card = device("CUDA0");
+    card.shares_host_memory = Tri::No;
+    card.memory_total = 12ull << 30;
+    desk.devices.push_back(card);
+    Plan dp;
+    dp.regime = Regime::ExpertsStream;
+    dp.placement.fitted = true;
+    dp.placement.device_bytes = 9ull << 30;
+    dp.placement.device_compute_bytes = 1ull << 30;
+    dp.placement.projected_devices = {"CUDA0"};
+    dp.placement.projected_compute_bytes = {1ull << 30};
+    v = plan_view(desk, model, dp);
+    check(v["memory"]["pools"].size() == 2 && v["memory"]["pools"][1]["name"] == "CUDA0" &&
+              v["memory"]["pools"][1]["rows"][0]["bytes"] == (8ull << 30) &&
+              v["memory"]["pools"][1]["estimated"] == false,
+          "plan view: a device's own memory is its own pool");
+    check(v["summary"]["lanes"][1]["on"] == json::array({"CPU", "CUDA0"}), "plan view: layers put the card on tokens");
+    check((*device_named(v, "CUDA0"))["badge"] == "Layers", "plan view: the card's badge");
+    dp.placement.shared_memory_placement = true;
+    v = plan_view(desk, model, dp);
+    check(v["memory"]["pools"].size() == 1, "plan view: a declined placement holds nothing on the device");
+
+    // The cores alone: three answers to "no device", kept apart.
+    HardwareProfile cpu;
+    cpu.devices.push_back(device("CPU", true));
+    check(plan_view(cpu, model, Plan{})["devices_none"] == "not_probed", "plan view: nobody looked");
+    cpu.backends_looked = true;
+    check(plan_view(cpu, model, Plan{})["devices_none"] == "build", "plan view: the build carries no backend");
+    cpu.backends_placeable = 1;
+    json cv = plan_view(cpu, model, Plan{});
+    check(cv["devices_none"] == "machine" && !cv["devices_none_text"].get<std::string>().empty(),
+          "plan view: a backend found nothing here");
+    check(plan_view(cpu, model, Plan{})["summary"]["sentence"] == "The model could not be read.",
+          "plan view: an unread model says so");
+
+    // Decisions: who decided, and what.
+    Decision dec{"cache-mb", "2048", Source::Measured, "r"};
+    json dj = decision_json(dec);
+    check(dj["group"] == "set" && !dj["label"].get<std::string>().empty(), "plan view: a decided setting, labelled");
+    dec.source = Source::Operator;
+    check(decision_json(dec)["group"] == "kept", "plan view: the person's value is kept");
+    dec.source = Source::Unprobed;
+    check(decision_json(dec)["group"] == "kept", "plan view: an unmeasured value is kept");
+    check(value_text(Decision{"cache-mb", "4737", Source::Derived, "r", "b"}) == "4.6 GiB" &&
+              value_text(Decision{"dense-weights", "ahwb", Source::Derived, "r", "b"}) == "pinned in memory" &&
+              value_text(Decision{"o-direct", "true", Source::Measured, "r", "b"}) == "on" &&
+              value_text(Decision{"memory-ledger", "7265 MiB", Source::Derived, "r", "b"}) == "7.1 GiB" &&
+              value_text(Decision{"regime", "experts-stream", Source::Derived, "r", "b"}) == "experts stream" &&
+              value_text(Decision{"shared-memory", "-", Source::Derived, "r", "b"}).empty(),
+          "plan view: a value as a person reads it");
+    check(decision_json(Decision{"storage-rate", "6.3 GiB/s", Source::Derived, "r", "b"})["group"] == "notes",
+          "plan view: a cost model's note is a note");
+    check(decision_json(Decision{"regime", "experts-stream", Source::Derived, "r"})["label"] == "Streaming mode",
+          "plan view: a note is titled by its topic");
+    check(decision_json(Decision{"some-new-topic", "-", Source::Derived, "r"})["label"] == "Some new topic",
+          "plan view: a topic it does not know is titled from its key");
+    check(decision_json(Decision{"regime", "-", Source::Derived, "the reason"})["brief"] == "the reason",
+          "plan view: a decision without a brief shows its reason");
+
+    // A real plan, through the wire form: every line says itself in one sentence, and every note has a
+    // name to be read under.
+    {
+        ModelProfile m;
+        m.arch = "qwen3moe";
+        m.is_moe = m.ok = true;
+        m.n_layer = m.n_moe_layer = 48;
+        m.n_expert = 256;
+        m.n_expert_used = 8;
+        m.n_expert_projections = 3;
+        m.expert_slice_bytes = 530432;
+        m.token_cycle_bytes = 48ull * 8 * 3 * 530432;
+        m.file_bytes = 21ull << 30;
+        m.expert_bytes = 18ull << 30;
+        m.dense_bytes = 3ull << 30;
+        m.largest_dense_tensor = 243ull << 20;
+        m.group(WeightGroup::Attention) = {1400ull << 20, 1400ull << 20, false, false};
+        m.group(WeightGroup::Output) = {700ull << 20, 700ull << 20, false, false};
+        m.group(WeightGroup::Experts) = {18ull << 30, m.token_cycle_bytes, false, true};
+        HardwareProfile h;
+        h.residency_budget = 12ull << 30;
+        h.memory_total = 16ull << 30;
+        h.anon_overflow = Overflow::Compress;
+        h.host_bandwidth_gibs = 60;
+        h.storage.direct_ok = Tri::Yes;
+        h.storage.refault_mibs = 40;
+        h.storage.rate_curve = {{576u << 10, 1, 1600.0}, {576u << 10, 4, 6400.0}};
+        h.devices.push_back(device("CPU", true));
+        ComputeDevice gpu = device("GPU0");
+        gpu.shares_host_memory = Tri::Yes;
+        h.devices.push_back(gpu);
+        const Plan p = plan_run(RunConfig{}, h, m, PlanRequest{});
+        bool briefs = !p.decisions.empty(), labels = true, any_note = false;
+        std::string bad;
+        for (const Decision & d : p.decisions) {
+            const json j = decision_json(d);
+            const std::string brief = j["brief"];
+            if (d.brief.empty() || brief.size() > 120) briefs = false, bad += d.knob + " ";
+            if (j["group"] == "notes") {
+                any_note = true;
+                if (j["label"].get<std::string>().empty()) labels = false, bad += d.knob + " ";
+            }
+        }
+        check(briefs, "plan view: every decision of a plan has a brief of one line" + (bad.empty() ? "" : ": " + bad));
+        check(any_note && labels, "plan view: every note of a plan has a label" + (bad.empty() ? "" : ": " + bad));
+    }
+    check(plan_step_label("rules") == "Decisions" && plan_step_label("future") == "Future",
+          "plan view: stage words, and a stage it does not know");
+}
+
+static void download_tests() {
+    namespace fs = std::filesystem;
+    check(is_transient_curl_exit(18) && is_transient_curl_exit(56) && is_transient_curl_exit(7) &&
+              is_transient_curl_exit(28),
+          "downloads: a short body, a reset, a refused connection and a stall are retried");
+    check(!is_transient_curl_exit(0) && !is_transient_curl_exit(22) && !is_transient_curl_exit(23) &&
+              !is_transient_curl_exit(33),
+          "downloads: an HTTP error, a write error (full disk) and a refused range are not");
+    check(download_retry_delay(1) == kDownloadRetryFirstDelay &&
+              download_retry_delay(2) == 2 * kDownloadRetryFirstDelay,
+          "downloads: the wait doubles after each failed attempt");
+    check(download_retry_delay(1000) == kDownloadRetryMaxDelay, "downloads: and stops at its cap");
+    bool rising = true;
+    for (int i = 2; i <= kDownloadMaxAttempts; ++i)
+        rising = rising && download_retry_delay(i) >= download_retry_delay(i - 1);
+    check(rising, "downloads: never shorter than the one before");
+
+    check(bytes_still_needed(47, 33) == 14 && bytes_still_needed(10, 12) == 0,
+          "downloads: a resume needs only what the partial file lacks");
+    check(free_space_refusal(14'000'000'000ull, 20'000'000'000ull).empty(),
+          "downloads: 14 GB still to fetch fits in 20 GB free, whatever the whole model weighs");
+    const std::string no = free_space_refusal(14'000'000'000ull, 3'000'000'000ull);
+    check(no == "needs 14.0 GB more, only 3.0 GB free", "downloads: and a disk too small says by how much: " + no);
+    check(free_space_refusal(14'000'000'000ull, 0).empty(), "downloads: unknown free space refuses nothing");
+
+    const fs::path dir = fs::temp_directory_path() / ("bmoe-dl-test-" + std::to_string(std::rand()));
+    const fs::path models = dir / "models";
+    fs::create_directories(models);
+    const auto write = [](const fs::path & p, const char * s) {
+        std::FILE * f = std::fopen(p.u8string().c_str(), "wb");
+        if (!f) return;
+        std::fputs(s, f);
+        std::fclose(f);
+    };
+    std::string out;
+    check(partial_file_path(models.u8string(), "m.gguf", out) && fs::u8path(out) == models / "m.gguf.part",
+          "downloads: a file's partial is <name>.part in the models folder");
+    for (const char * bad : {"../m.gguf", "a/b.gguf", "a\\b.gguf", "..", ".", "", "C:m.gguf"})
+        check(!partial_file_path(models.u8string(), bad, out),
+              std::string("downloads: '") + bad + "' names no partial");
+
+    write(models / "a.gguf.part", "12345");
+    write(models / "b.gguf.part", "678");
+    write(models / "a.gguf", "whole");
+    write(dir / "outside.part", "keep");
+    uint64_t freed = 0;
+    std::string err;
+    check(delete_partial_files(models.u8string(), {"a.gguf", "b.gguf", "absent.gguf"}, freed, err) && freed == 8 &&
+              !fs::exists(models / "a.gguf.part") && !fs::exists(models / "b.gguf.part"),
+          "downloads: deleting a partial download removes its .part files, a missing one included");
+    check(fs::exists(models / "a.gguf"), "downloads: and never the finished file beside them");
+    check(!delete_partial_files(models.u8string(), {"../outside"}, freed, err) && !err.empty() &&
+              fs::exists(dir / "outside.part"),
+          "downloads: a name that walks out of the models folder deletes nothing");
+    write(models / "ok.gguf.part", "x");
+    check(!delete_partial_files(models.u8string(), {"ok.gguf", "../outside"}, freed, err) &&
+              fs::exists(models / "ok.gguf.part") && fs::exists(dir / "outside.part"),
+          "downloads: one bad name refuses the whole request before anything is deleted");
+    std::error_code ec;
+    fs::create_symlink(dir / "outside.part", models / "link.gguf.part", ec);
+    if (!ec)
+        check(delete_partial_files(models.u8string(), {"link.gguf"}, freed, err) && fs::exists(dir / "outside.part") &&
+                  !fs::exists(fs::symlink_status(models / "link.gguf.part")),
+              "downloads: a link named like a partial is removed as the link, its target kept");
+    check(gb_label(47'000'000'000ull) == "47.0 GB", "downloads: sizes are decimal GB, as the Android app writes them");
+    fs::remove_all(dir, ec);
 }
 
 int main() {
@@ -767,6 +1159,8 @@ int main() {
     decide_tests();
     model_files_tests();
     hf_tests();
+    plan_view_tests();
+    download_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

@@ -224,6 +224,18 @@ floor, the I/O knobs, the devices the run lists - and `allocate` a list of named
 this page describes them. A reason that tells a person what to type spells the flag through the
 parameter table, so a renamed flag cannot leave the rationale advising one that no longer parses.
 
+Every decision says itself twice. Its `reason` is the full account `--plan` prints, written for
+whoever is checking the arithmetic; its `brief` is one plain sentence for a person, carrying the
+number that decided it ("1024 tokens per pass; wider would take 2.1 GB from the cache"), with no
+flag names and none of this page's vocabulary. `note()` takes both, so no rule can add a decision
+only an engineer can read. Neither cites one machine's story on every other: what a line says about
+the machine is what its profile says. The cost model's own notes (`Allocation::notes`) are
+structured the same way, each under a stable kebab-case `topic` that becomes the decision's knob -
+`storage-rate`, `storage-spread`, `cache-floor`, `cache-off`, `cache-lock`, `cache-unpriced`,
+`dense-pin`, `shared-memory`, `device-crossing`, `device-unapplied`, `device-excluded`,
+`device-host-pointer`, `unmeasured-compute`, `unmeasured-refault`, `unmeasured-storage` - with the
+number it turns on as its value ("6.3 GB/s", "581 MiB") or `-`.
+
 ## The facts, and which knob each one decides
 
 | fact | decides |

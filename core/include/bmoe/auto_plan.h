@@ -48,7 +48,18 @@ struct AutoPlanOptions {
     // probed in this process, as they also are where this platform cannot start a second one.
     std::function<std::vector<std::string>(const std::string & device)> isolated_probe_args;
     double isolated_probe_seconds = k_isolated_probe_seconds;
+
+    // Called as each stage of the sequence starts, with its key (k_plan_steps), its position and
+    // the number of stages, so a front-end can say which probe is running instead of a blind wait.
+    // Called on the planning thread; empty, nothing is reported.
+    std::function<void(const char * step, int index, int count)> on_step;
 };
+
+// The stages probe_and_plan() reports through AutoPlanOptions::on_step, in the order they run. The
+// keys are a protocol for front-ends (the server's `plan_progress` event), not words to display.
+inline constexpr const char * k_plan_steps[] = {"devices", "model",     "compute", "storage",
+                                                "memory",  "placement", "rules"};
+inline constexpr int k_plan_step_count = (int) (sizeof(k_plan_steps) / sizeof(k_plan_steps[0]));
 
 // The plan and the two profiles it was made from: a front-end that explains a plan quotes the
 // facts (every device's figures, the model's weight groups) beside the decisions. The first

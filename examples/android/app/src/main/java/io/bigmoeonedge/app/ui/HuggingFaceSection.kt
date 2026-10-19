@@ -13,6 +13,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.bigmoeonedge.app.data.FileRole
 import io.bigmoeonedge.app.data.HfFacts
 import io.bigmoeonedge.app.data.HfModel
 import io.bigmoeonedge.app.data.HfRepoHit
@@ -41,6 +42,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
     var busy by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     var added by remember { mutableStateOf("") }
+    var companionsOpen by remember { mutableStateOf(false) }
 
     val chosen = models?.firstOrNull { it.name == selected }
 
@@ -129,7 +131,11 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
                     ) {
                         Text(h.id, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Text(
-                            listOfNotNull("${h.downloads} downloads", "${h.likes} likes", if (h.gated) "gated: needs a token" else null).joinToString(" · "),
+                            listOfNotNull(
+                                "${h.downloads} downloads", "${h.likes} likes",
+                                FileRole.isoDate(h.modified).takeIf { it.isNotEmpty() }?.let { "updated $it" },
+                                if (h.gated) "gated: needs a token" else null,
+                            ).joinToString(" · "),
                             fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -141,7 +147,11 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
             if (list.isEmpty()) {
                 Text("No gguf files in $listed.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
-                list.forEach { m ->
+                // Files whose names suggest a projector or a draft head go after the models, folded:
+                // the name is only a hint, so they can still be checked, and the header then decides.
+                val (main, companions) = FileRole.split(list) { it.role }
+                @Composable
+                fun ModelChoice(m: HfModel) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
@@ -163,6 +173,17 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
                         }
                     }
                 }
+                main.forEach { ModelChoice(it) }
+                if (companions.isNotEmpty()) {
+                    TextButton(shape = RectangleShape, onClick = { companionsOpen = !companionsOpen }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                        Text(
+                            "${companions.size} companion ${if (companions.size == 1) "file" else "files"} (projectors, draft heads, going by their names; Check reads the header)" +
+                                if (companionsOpen) "" else " · show",
+                            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (companionsOpen) companions.forEach { ModelChoice(it) }
+                }
                 Button(
                     shape = RectangleShape, onClick = { inspect() },
                     enabled = chosen != null && busy.isEmpty(), modifier = Modifier.fillMaxWidth(),
@@ -179,7 +200,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
                     f.mode, fontSize = 12.sp,
                     color = when (f.mode) {
                         "streams" -> MaterialTheme.colorScheme.primary
-                        "not readable" -> MaterialTheme.colorScheme.error
+                        "not readable", "not a model" -> MaterialTheme.colorScheme.error
                         else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )
@@ -187,6 +208,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
             if (f.readable) {
                 val lines = buildList {
                     add("Architecture: ${f.arch.ifEmpty { "?" }}")
+                    if (FileRole.isCompanion(f.role)) add("What it is: ${FileRole.label(f.role)}")
                     add(if (f.isMoe) "Experts: ${f.nExpert}, ${f.nExpertUsed} per token" else "Experts: none (dense)")
                     if (f.streamable) {
                         add("Layers: ${f.nLayer} (${f.nMoeLayer} with experts)")

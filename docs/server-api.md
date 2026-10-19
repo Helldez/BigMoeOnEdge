@@ -75,7 +75,10 @@ other software, or other people, on that machine or on a network it was told to 
 - `max_tokens` on a chat request is clamped to the `n-predict` parameter's upper bound, and one
   that is not a non-negative integer is refused with `400`.
 - Downloads take a catalog id, never a URL or a path. `DELETE` on a download cancels it and
-  removes no model. An entry added from a Hugging Face repository (`POST /api/hf/add`) is built by
+  removes no model. Deleting a partial download (`DELETE /api/models/partial/<id>`) takes a catalog
+  id too: the server deletes the `<name>.part` of each file that entry names, in the models
+  directory only (never a scan directory), and refuses a file name that is not a plain name, so a
+  client can name an entry but never a file. An entry added from a Hugging Face repository (`POST /api/hf/add`) is built by
   the server from a repository id and file names it validated (letters, digits, `.`, `_`, `-`,
   `+`, folders, no `..`), on the one endpoint it was started with (`--hf-endpoint`, the site or a
   mirror); the server never fetches a URL a client wrote. A token sent with those requests goes to
@@ -188,12 +191,17 @@ template). Each element:
 ```json
 {"key": "cache-mb", "label": "Expert cache", "type": "int", "group": "cache",
  "group_label": "Expert cache", "level": "basic", "scope": "session", "help": "...",
- "flag": "--cache-mb", "min": 0, "max": 2147483647, "unit": "MiB", "accepts_auto": true,
- "default": "auto"}
+ "flag": "--cache-mb", "min": 0, "unit": "MiB", "typical": {"min": 1500, "max": 8192},
+ "special": [{"value": 0, "label": "off"}], "accepts_auto": true, "default": "auto"}
 ```
 
 Optional fields: `short`, `switches` (`[{flag, value, deprecated?}]`), `choices`
-(`[{value, label}]`), `min`/`max` (present together), `unit`, `lossy`, `accepts_auto`.
+(`[{value, label}]`), `min` and `max`, `unit`, `typical`, `special`, `lossy`, `accepts_auto`.
+`min` and `max` are limits: `max` is absent where the only upper limit is the type's, which is no
+range to show a person. `typical` is guidance, not a limit: what a person usually sets, which a form
+shows as the range. `special` names the values that mean something other than their number (`0` is
+`off`, `4294967295` is `random per run`), with `value` in the row's own JSON type; a form shows the
+label in place of the number.
 `level` is `basic | advanced | experimental | debug`; `group` order in the array is form order.
 
 ### `GET /api/config`
@@ -337,8 +345,9 @@ is sent every 15 s. On connect the server sends one `state` event with the curre
 | `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `flash_wait_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch` |
 | `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `flash_wait_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
 | `decide` | per decision: the `POST /api/decide` answer |
-| `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` |
+| `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: why the last attempt failed while the server waits to resume) |
 | `config` | the `GET /api/config` object, after any change |
+| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
 | `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
 
 `flash_wait_ms` (per token) and `flash_wait_s_tok` (the run's average) are the flash term that is a
@@ -356,41 +365,77 @@ a UI shows "flash" from them without knowing whether the session overlaps.
   "models_dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
   "scan_dirs": [],
   "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
-             "bytes": 18556686912, "shards": 1, "files": ["..."], "arch": "qwen3moe", "streamable": true,
-             "complete": true}],
+             "folder": "", "bytes": 18556686912, "shards": 1, "files": ["..."], "arch": "qwen3moe",
+             "role": "model", "streamable": true, "complete": true}],
   "catalog": [{"id": "qwen3-30b-a3b-q4_k_m", "title": "Qwen3-30B-A3B", "quant": "Q4_K_M",
                "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
                "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://..."}],
-               "blurb": "...", "status": "available", "note": ""}]
+               "blurb": "...", "status": "available", "received": 12884901888, "partial": true,
+               "note": ""}]
 }
 ```
 
 `local` lists every gguf in the models directory, then in each directory given with `--scan-dir
 PATH` (repeatable; `scan_dirs` lists them), in that order: a split set once, by its first shard, with
-`complete: false` while shards are missing. `dir` is the directory a model was found in, and `files`
+`complete: false` while shards are missing. Each of these directories is read one level deep: its
+own files, then those of every folder directly inside it, which is where a split set kept in a
+folder of its own sits (`<dir>/<model>/<model>-00001-of-00003.gguf`). No deeper, and a link to a
+folder is not followed, so a scan cannot loop or leave the directory through a name inside it; what
+a client may open is still decided by the confinement above, whatever the listing shows. `dir` is
+the directory a model was found in, `folder` the folder inside it ("" for the directory itself),
+and `files`
 every file of it that is present, in shard order, so a client that deletes a model deletes the set
 and never has to know how shards are named. A scan directory is only read: downloads land in the
 models directory, and a model in a scan directory is loaded in place by its `path`. The host app is
 what knows where else models sit (the phone's adb-pushed and shared-storage folders); the server is
 what says what they are. `streamable` is whether this build streams the
-architecture. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
+architecture. `role` is what the file is for, read from its header and never from its name:
+`model`; `projector` (a multimodal projector: `general.type` is `mmproj`, or the projector
+architecture `clip`); `draft` (a draft head for speculative decoding: it names another model's
+`<arch>.target_layers`, or every one of its `<arch>.block_count` blocks is a prediction head,
+`<arch>.nextn_predict_layers`); `other` (another `general.type`, or no `<arch>.block_count` at
+all); `""` when the header could not be read. A UI lists anything but `model` and `""` apart from
+the models, as files that are not loaded on their own. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
 entry with its URL, in order, for a client that downloads for itself (a phone, where the server
 has no `curl`); `file` and `bytes` are the first file's name and the whole entry's size.
+`received` is what of the entry is already in the models directory, complete files and `.part`
+files alike, and `partial` is true when the entry is `available` with a `.part` on disk: a download
+stopped by a failure, a cancel or a restart of the server (jobs live in memory, the `.part` files do
+not), which downloading again resumes. A UI labels that action **Resume (X of Y GB)** (decimal GB,
+`received` of `bytes`) and offers **Delete partial download** beside it. The phone's app downloads
+into the server's models directory, so the same two fields describe its downloads too.
 
 ### `POST /api/models/download`
 
 Body `{"id": "<catalog id>"}`. Starts (or resumes) the download of every file of the entry into
-the models directory. `202`; progress arrives as `download` events.
+the models directory. `202`; progress arrives as `download` events. Each file is written to
+`<name>.part` and renamed once whole; a start resumes whatever `.part` is there. Before a byte
+moves, the bytes still needed (the entry's size less what is already on disk) are checked against
+the free space of the models directory: `507` with `needs X GB more, only Y GB free` when they do not
+fit. A dropped connection (curl's exit 6, 7, 16, 18, 28, 35, 52, 55, 56, 92: the line failed, not the
+request) is retried on its own, resuming from the `.part`, up to six attempts per file with a wait
+that starts at 2 s and doubles to at most 60 s (`server/download_policy.h`); while it waits the
+`download` event stays `running` and carries the failure in `error`. Any other failure, or the last
+attempt, ends in `error` with the `.part` kept.
 
 ### `DELETE /api/models/download/<id>`
 
 Cancels a running download. The partial file is kept so a later download resumes it.
 
+### `DELETE /api/models/partial/<id>`
+
+Deletes the partial files a stopped download of entry `<id>` left: `{"ok": true, "freed": <bytes>}`
+(`freed` 0 when there were none). Only the `.part` of each file the entry names, in the models
+directory; complete files stay. `404` for an unknown entry, `409` while it downloads (cancel it
+first).
+
 ### `POST /api/hf/search`
 
 Body `{"query": "<a model's name>", "token": "<optional>"}`. The repositories on the site with gguf
 files whose name matches, the most downloaded first, twenty at most: `{"query", "repos": [{"id",
-"downloads", "likes", "modified", "gated"}]}`. `gated` is a repository that needs a token. A UI
+"downloads", "likes", "modified", "gated"}]}`. `gated` is a repository that needs a token, and
+`modified` when it last changed, as the site gives it (ISO 8601); the server asks the site for each
+of these fields by name (`expand[]`), since its search leaves the last two out otherwise. A UI
 calls it when `POST /api/hf/models` refused the text with the code `not_a_repo`.
 
 ### `POST /api/hf/models`
@@ -402,9 +447,15 @@ preselect it.
 
 ```json
 {"repo": "ggml-org/gemma-4-26B-A4B-it-GGUF", "revision": "main", "file": "",
- "models": [{"name": "gemma-4-26B-A4B-it-Q4_0.gguf", "quant": "Q4_0", "bytes": 14618145824,
+ "models": [{"name": "gemma-4-26B-A4B-it-Q4_0.gguf", "quant": "Q4_0", "bytes": 14618145824, "role": "model",
              "count": 1, "complete": true, "files": [{"path": "gemma-4-26B-A4B-it-Q4_0.gguf", "bytes": 14618145824}]}]}
 ```
+
+`role` here comes from the file NAME, because the listing reads no header: `projector` for a name
+with `mmproj` in it, `draft` for one starting `mtp-`, `dflash-` or `draft-`, `model` otherwise. Names
+are a convention and not the format, so this only orders the listing (what the names suggest are
+models first, then the companion files) and lets a UI group them; `POST /api/hf/inspect` reads the
+header and decides.
 
 `400` with the code `not_a_repo` for text that is not a repository id or a URL on the site (a
 name to search for, `POST /api/hf/search`); `502` when the listing could
@@ -420,11 +471,12 @@ megabytes of each shard) and parsed by the planner's own model probe, set agains
 ```json
 {"repo": "...", "revision": "main", "name": "gemma-4-26B-A4B-it-Q4_0.gguf", "quant": "Q4_0",
  "bytes": 14618145824, "files": 1, "complete": true,
- "model": {"readable": true, "arch": "gemma4", "is_moe": true, "n_expert": 128, "n_expert_used": 8,
+ "model": {"readable": true, "arch": "gemma4", "role": "model", "type": "model", "block_count": 30, "is_moe": true, "n_expert": 128, "n_expert_used": 8,
            "n_layer": 30, "n_moe_layer": 30, "n_embd": 2816, "dense_bytes": 1755954296,
            "expert_bytes": 12846366720, "token_cycle_bytes": 802897920, "largest_dense_tensor": 784334848,
            "has_mtp": false, "streamable": true, "refusal": ""},
- "machine": {"residency_budget": 5736517632, "memory_total": 15919931392, "disk_free": 38495465472, "present_bytes": 0},
+ "machine": {"residency_budget": 5736517632, "budget_if_loaded": 5736517632, "loaded_model": "", "loaded_held": 0,
+             "memory_total": 15919931392, "disk_free": 38495465472, "present_bytes": 0},
  "verdict": {"downloadable": true, "mode": "streams",
              "disk": "needs 13940 MiB of disk; the models folder has 36712 MiB free",
              "memory": "the experts stream from flash and 1674 MiB stays resident, plus a cache of at least one token cycle (765 MiB); that fits in the 5470 MiB this process may hold, and the plan sizes the cache from the rest"}}
@@ -432,9 +484,22 @@ megabytes of each shard) and parsed by the planner's own model probe, set agains
 
 `model.readable` false means the header did not parse, and the rest of `model` is empty; a MoE
 whose experts this engine does not stream carries the reason in `refusal` and `streamable` false.
-`verdict.mode` is `streams`, `plain mmap` or `not readable`; `downloadable` is false only when the
-disk cannot take what is still to download (`present_bytes` is what is already there, complete).
-The two sentences are the facts in words, for a UI to show as they are. `404` when the listing
+`model.role` is what the file is for, by its header, as `GET /api/models` has it; `type` and
+`block_count` are the header's `general.type` and `<arch>.block_count` it was read from. A file
+that is not a model (a projector, a draft head, or no language model at all) is `verdict.mode`
+`not a model`, with a sentence saying what it is, and `downloadable` false: it cannot be chatted
+with. Otherwise `verdict.mode` is `streams`, `plain mmap` or `not readable`, and `downloadable` is
+false only when the disk cannot take what is still to download (`present_bytes` is what is
+already there, complete).
+
+The memory verdict answers "what happens if I load this", and a load unloads the model loaded now
+first. `residency_budget` is what this process may hold as measured now, with that model still
+resident; the verdict is set against `budget_if_loaded`, which adds back `loaded_held`, what the
+plan the loaded model was loaded with charged in its memory ledger (no more than `memory_total`),
+and the sentence names the model and how much of the figure it holds. A model loaded without a plan
+has no such account (`loaded_held` 0): the figure stays the measured one, and the sentence says it
+was measured with that model loaded. No second measurement is made for this. The two sentences are
+the facts in words, for a UI to show as they are. `404` when the listing
 has no such model, `502` when a header could not be fetched.
 
 ### `POST /api/hf/add`
@@ -443,8 +508,10 @@ Body `{"repo", "name", "token"}`. The model becomes a catalog entry, id
 `hf:<repo>/<name>`, one file per shard with its resolve URL, listed by `GET /api/models` with
 `"added": true` and kept between runs (`added-models.json` beside the settings). `201` with
 `{"id", "title", "quant", "bytes"}`; the download is then `POST /api/models/download` with that
-id, or, on a host that downloads for itself, the entry's `files[].url`. `409` for a split set
-with shards missing, or an id the catalog already has.
+id, or, on a host that downloads for itself, the entry's `files[].url`. Adding a model that was
+already added is a `201` too, and replaces that entry (a repository's files change). `409` for a
+split set with shards missing, or for an id the shipped catalog (`catalog/models.json`) already
+has, which an addition never replaces.
 
 ### `DELETE /api/hf/entry/<id>`
 
@@ -467,20 +534,83 @@ unusable instead of ending the server; `--no-isolated-probes` runs them in-proce
 {"available": true, "model": "C:/models/Qwen3.6-35B-A3B-Q4_K_M.gguf",
  "machine": "16 cores, 3388 MiB available of 15182 MiB, 33 GiB/s on this model's matmul",
  "regime": "experts-stream", "streaming_declined": false, "decline_reason": "",
- "decisions": [{"knob": "cache-mb", "value": "703", "source": "derived", "reason": "..."}],
+ "decisions": [{"knob": "cache-mb", "label": "Expert cache", "group": "set", "value": "703",
+                "source": "derived", "brief": "703 MiB: what the cache earns most with, after the dense weights.",
+                "reason": "..."}],
  "values": {"cache-mb": 703, "threads": 8}, "args": ["--moe-stream", "--cache-mb", "703"],
- "not_applicable": [], "explain": "..."}
+ "not_applicable": [],
+ "summary": {"sentence": "Experts stream from flash, with a 0.7 GiB cache.",
+             "lanes": [{"phase": "prompt", "label": "Prompt", "on": ["CPU"]},
+                       {"phase": "tokens", "label": "Tokens", "on": ["CPU"]}]},
+ "predicted": {"s_per_token": 0.302, "cache_hit_pct": 38.0},
+ "memory": {"pools": [{"name": "host", "label": "This process", "cap_bytes": 3552575488,
+                       "lockable_cap_bytes": 0, "held_bytes": 3322400768, "locked_bytes": 0,
+                       "rows": [{"name": "dense", "label": "Dense", "bytes": 1932735283,
+                                 "locked": false, "in_turn": false}]}]},
+ "devices": [{"name": "CPU", "description": "...", "cpu": true, "own_memory": false, "memory_total": 0,
+              "prompt_ratio": 1.0, "token_ratio": 1.0, "rate_text": "The reference",
+              "uses": ["prompt", "tokens"], "status": "used", "badge": "Prompt and tokens",
+              "why": "The host: every rate is measured against it."}],
+ "devices_none": "build", "devices_none_text": "No other device: this build carries no backend for one.",
+ "explain": "..."}
 ```
 
 `source` is `measured | derived | policy | operator | unprobed`. Keys in `user_keys` come back as
-`operator`: the planner never touches them. `values` are the parameters the plan changes, read
+`operator`: the planner never touches them. A decision's `brief` is one plain sentence for a
+person (at most 120 characters, the number that decided it, no flag names; the `reason` where a
+decision has none), and `reason` the full account `explain` prints, for a "why" a UI folds away.
+`value_text` is `value` as a person reads it: a choice by its settings label ("pinned in memory"),
+a size in GiB or MiB, a number with its unit, a planner word as words; `value` stays the raw one.
+Its `label` is its knob's settings label from the parameter table, or, for a knob that is not a
+parameter, the name of the note (`regime` is "Streaming mode", `storage-rate` "Storage speed",
+`memory-ledger` "Memory use"; a topic the server does not know is titled from its key), so a UI
+shows "label: brief". `group` is how a UI reads it: `set` (a parameter the plan decided from a
+fact, whether or not the value changed), `kept` (a parameter it left: the caller's own, or one
+nothing measured), `notes` (what is not a parameter: the regime, the placement, the ledger, and
+each of the cost model's notes under its own topic - `storage-rate`, `cache-floor`,
+`shared-memory`, ... - with its key number as `value`, or `-`; there is no `cost` knob any more).
+
+The rest describes the plan for a person (`server/plan_view.h`), so a UI shows it without knowing
+any device, system or knob. Every list is as long as the machine makes it, and every word a UI
+shows is here: `label`, `badge`, `rate_text`, `why`, the sentences. A code beside a word
+(`phase`, `uses`, `status`, `devices_none`) is for a UI to pick a colour by, never to word itself,
+so a stage or a role the server adds reaches every UI with no UI change:
+
+- `summary.sentence` is what the plan decided, in a sentence; `summary.lanes` which device names
+  compute the prompt and the tokens (a device holding layers in memory of its own is on the
+  tokens lane beside the host).
+- `predicted` is decode as the plan priced it, the figures `bmoe-cli --auto` prints after a run:
+  `s_per_token`, and `cache_hit_pct` where there is a cache. Either is absent when not predicted.
+- `memory.pools` is the ledger the plan charged: the host's pool (`name` `host`; `cap_bytes`
+  what the process may hold, `lockable_cap_bytes` what it may hold locked) with one row per thing
+  held for the whole run, and one pool for each device with memory of its own that holds layers.
+  A row with `in_turn` is not held beside the expert cache but in its place while a prompt runs.
+  A device pool with `estimated` is an even share of a sum the placement reports over several
+  devices; with one device its figures are that device's own.
+- `devices` is every device the plan saw, the host included: its rate against the host on a
+  prompt-wide matmul (`prompt_ratio`, in words `rate_text`) and on one token (`token_ratio`), 0
+  when unmeasured; `uses`, which of `prompt`, `tokens`, `layers` it does in this run; `status`,
+  `used`, `unused`, `refused` (its results did not match the host's) or `unusable` (its probe did
+  not come back); `badge`, the two in words; `why` in a sentence.
+- `devices_none` says why there is no device beyond the host, when there is none: `build` (this
+  build carries no backend that could offer a local one), `machine` (it carries one and this
+  machine gave it no device) or `not_probed`; empty otherwise. `devices_none_text` is the same
+  in words. A remote backend (RPC) and a library the host calls into (BLAS) are not counted as
+  backends that could offer a device, so a build that carries only those reads `build`.
+
+`values` are the parameters the plan changes, read
 through the parameter table; `args` are the arguments that reproduce the plan, one per element
 and unquoted, and empty when the plan declines streaming; `not_applicable` names anything the plan
 decided that the table cannot hold (a tensor-placement pattern, say), so it is shown rather than
 silently dropped.
 With a model loaded that an auto load planned, `GET /api/plan` answers at once with that plan and
-`"from_last_load": true`, without measuring. `GET /api/plan?measure=1` measures again regardless;
-a plan computed while a model is loaded carries a `warning`, because that model's memory reads as
+`"from_last_load": true`, without measuring, and once the model has answered, `measured`: what
+its last complete turn measured for decode (`s_per_token`, `cache_hit_pct`, -1 without a cache,
+and `tokens`), to set beside `predicted`; a cancelled turn does not count. `GET /api/plan?cached=1`
+never measures: with no model loaded it answers the last plan this server holds (the last
+measurement, else the last load's) with `"cached": true`, or `{"available": true, "none": true}`
+when it holds none, so a screen can open on it at no cost. `GET /api/plan?measure=1` measures again
+regardless; a plan computed while a model is loaded carries a `warning`, because that model's memory reads as
 taken and the plan is sized for a smaller machine. Auto mode avoids this by planning with nothing
 loaded.
 

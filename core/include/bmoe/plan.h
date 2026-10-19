@@ -37,7 +37,12 @@ struct Decision {
     std::string knob;  // the flag or field name, as a user would type it
     std::string value; // the chosen value, rendered
     Source source = Source::Unprobed;
-    std::string reason; // one sentence, in the user's terms
+    std::string reason; // the full account: what --explain prints, and a screen's "why"
+
+    // One plain sentence for a person, carrying the number that decided it: no flag names, no
+    // planner vocabulary. A screen leads with this and folds the reason away; the reason alone is
+    // written for whoever is checking the arithmetic.
+    std::string brief;
 };
 
 // What the planner was asked for, on top of the two profiles. Everything here is the caller's

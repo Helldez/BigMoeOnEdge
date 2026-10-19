@@ -1,5 +1,7 @@
 #include "model_inspect.h"
 
+#include "model_files.h"
+
 #include "bmoe/probe.h"
 
 #include <atomic>
@@ -61,6 +63,7 @@ bool inspect_remote_model(HttpFetch & net,
                           const std::string & token,
                           const std::string & scratch_dir,
                           const std::string & models_dir,
+                          const LoadedSession & loaded,
                           json & out,
                           std::string & error) {
     if (model.files.empty()) {
@@ -121,6 +124,11 @@ bool inspect_remote_model(HttpFetch & net,
     in.is_moe = header.n_expert > 1;
     in.streamable = m.ok && m.is_moe;
     if (header.ok && !m.ok) in.refusal = m.error;
+    const std::string role = file_role_name(file_role(header));
+    if (header.ok) in.role = role;
+    in.memory_total = hw.memory_total;
+    in.session_model = loaded.model;
+    in.session_held = loaded.held_bytes;
     const FitVerdict v = fit_verdict(in);
 
     out = json{
@@ -133,6 +141,9 @@ bool inspect_remote_model(HttpFetch & net,
         {"complete", model.complete()},
         {"model", json{{"readable", header.ok},
                        {"arch", header.arch},
+                       {"role", role},
+                       {"type", header.type},
+                       {"block_count", header.n_block},
                        {"is_moe", in.is_moe},
                        {"n_expert", header.n_expert},
                        {"n_expert_used", header.n_expert_used},
@@ -147,6 +158,9 @@ bool inspect_remote_model(HttpFetch & net,
                        {"streamable", in.streamable},
                        {"refusal", in.refusal}}},
         {"machine", json{{"residency_budget", hw.residency_budget},
+                         {"budget_if_loaded", v.budget},
+                         {"loaded_model", loaded.model},
+                         {"loaded_held", loaded.held_bytes},
                          {"memory_total", hw.memory_total},
                          {"disk_free", disk_free},
                          {"present_bytes", present}}},
