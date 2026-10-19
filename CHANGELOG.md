@@ -35,7 +35,7 @@ Semantic Versioning.
   hits credited 28%, measured 64%.
 - **`GET /api/plan` describes the plan for a person.** New fields beside the old ones:
   `summary` (the sentence and the lanes), `predicted` (decode as the plan priced it), `measured`
-  (the loaded model's last turn, on a plan from the last load), `memory.pools` (the ledger, a
+  (the loaded model's last complete turn, on a plan from the last load; a cancelled turn is no measurement), `memory.pools` (the ledger, a
   pool per memory that is separate), `devices` (rates, `uses`, `status`, `why`) and
   `devices_none`; each decision carries its settings `label` and its `group`. Every word the
   screen shows comes with them (`label`, `badge`, `rate_text`, `devices_none_text`), beside a

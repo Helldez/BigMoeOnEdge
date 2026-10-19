@@ -530,8 +530,8 @@ decided that the table cannot hold (a tensor-placement pattern, say), so it is s
 silently dropped.
 With a model loaded that an auto load planned, `GET /api/plan` answers at once with that plan and
 `"from_last_load": true`, without measuring, and once the model has answered, `measured`: what
-its last turn measured for decode (`s_per_token`, `cache_hit_pct`, -1 without a cache, and
-`tokens`), to set beside `predicted`. `GET /api/plan?measure=1` measures again regardless;
+its last complete turn measured for decode (`s_per_token`, `cache_hit_pct`, -1 without a cache,
+and `tokens`), to set beside `predicted`; a cancelled turn does not count. `GET /api/plan?measure=1` measures again regardless;
 a plan computed while a model is loaded carries a `warning`, because that model's memory reads as
 taken and the plan is sized for a smaller machine. Auto mode avoids this by planning with nothing
 loaded.

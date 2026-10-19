@@ -116,6 +116,9 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
         {
             std::lock_guard<std::mutex> lk(m_);
             session_.reset();
+            // Again here, under gen_m_: a turn still running when load() cleared it records its
+            // figure on its way out, and that figure is the old model's.
+            last_turn_ = nullptr;
         }
         std::string error;
         std::shared_ptr<HostedSession> s = open_(session_config_from(effective), error);
@@ -308,7 +311,8 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     out.n_predict = gr.n_predict;
     out.result = std::move(r);
     const RunSummary & sum = out.result.summary;
-    if (sum.n_generated > 0 && sum.s_per_token > 0) {
+    // A cancelled turn is no measurement: it stopped at a moment the person chose, often mid-load.
+    if (!out.result.cancelled && sum.n_generated > 0 && sum.s_per_token > 0) {
         std::lock_guard<std::mutex> lk(m_);
         last_turn_ =
             json{{"s_per_token", sum.s_per_token}, {"cache_hit_pct", sum.cache_hit_pct}, {"tokens", sum.n_generated}};
