@@ -98,17 +98,23 @@ struct Badge: View {
     }
 }
 
-/// A flat meter: the `surface-2` track, the fill, a 2-point edge.
+/// A flat meter: the `surface-2` track, the fill, a 2-point edge, and where there is one a 2-point
+/// mark at a second figure (what a plan credited, beside what was measured).
 struct Meter: View {
     let fraction: Double
     var color: Color = Palette.accent
     var height: CGFloat = 12
+    var mark: Double?
 
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .leading) {
                 Rectangle().fill(Palette.surface2)
                 Rectangle().fill(color).frame(width: g.size.width * min(1, max(0, fraction)))
+                if let mark {
+                    Rectangle().fill(Palette.text).frame(width: Grid.edge)
+                        .offset(x: max(0, g.size.width * min(1, max(0, mark)) - Grid.edge))
+                }
             }
         }
         .frame(height: height)

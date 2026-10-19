@@ -38,7 +38,8 @@ BmoeKit/        the client side with no UI: the API client, the event stream, th
 
 What the app does itself, and why: it holds the conversations (the server keeps none), downloads
 the catalog's files with the system's background transfers (they go on while the app is away;
-the server has no `curl` here and only lists what lands), writes a metrics CSV per loaded model
+the server has no `curl` here and only lists what lands; a stopped one keeps the system's resume
+data, so its row reads Resume (X of Y GB) beside Delete partial download), writes a metrics CSV per loaded model
 from the event stream, and keeps the network key in the keychain. Nothing in it names an engine
 parameter: the settings are rendered from the parameter table, the plan from the planner.
 

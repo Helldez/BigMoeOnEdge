@@ -3,7 +3,8 @@ import SwiftUI
 
 /// Settings (docs/screens.md): every engine tunable, rendered from the parameter table, and the few
 /// settings that are the app's own. The basic rows of each group make the recommended
-/// configuration; the rest live in one folded section, each marked with its level.
+/// configuration; the rest live in one folded section, each marked with its level. Each row
+/// appears once.
 struct SettingsView: View {
     @EnvironmentObject private var engine: Engine
     @State private var advancedOpen = false
@@ -20,19 +21,24 @@ struct SettingsView: View {
                 }
             }
             if let failure { Banner(text: failure, color: Palette.err) }
-            if engine.params.isEmpty {
-                Text(engine.serverUp ? "Reading the parameter table…" : "The engine is not running.")
+            // While the engine is down (a sharing change restarts it) the rows stay where they are, so
+            // the page keeps its length and its scroll; a line above says why a change waits.
+            if !engine.serverUp || engine.params.isEmpty {
+                Text(engine.params.isEmpty ? (engine.serverUp ? "Reading the parameter table…" : "The engine is not running.")
+                    : "The engine is not running; changes apply once it is back.")
                     .font(.subheadline).foregroundStyle(Palette.muted)
             }
-            ForEach(groups(basic: true), id: \.label) { g in group(g.label, g.rows) }
-            if !groups(basic: false).isEmpty { advanced }
+            ForEach(basicGroups, id: \.label) { g in group(g.label, g.rows) }
+            if !advancedGroups.isEmpty { advanced }
             AppSettingsSection()
         }
     }
 
-    private func groups(basic: Bool) -> [(label: String, rows: [ParamSpec])] {
-        ParamSpec.grouped(engine.params.filter { ($0.level == .basic) == basic })
+    private var basicGroups: [(label: String, rows: [ParamSpec])] {
+        ParamSpec.grouped(engine.params.filter { $0.level == .basic })
     }
+
+    private var advancedGroups: [(label: String, rows: [ParamSpec])] { ParamSpec.advanced(engine.params) }
 
     private func group(_ label: String, _ rows: [ParamSpec]) -> some View {
         VStack(alignment: .leading, spacing: Grid.s) {
@@ -48,19 +54,23 @@ struct SettingsView: View {
     }
 
     private var advanced: some View {
-        VStack(alignment: .leading, spacing: Grid.m) {
+        let groups = advancedGroups
+        return VStack(alignment: .leading, spacing: Grid.m) {
             Button {
                 withAnimation { advancedOpen.toggle() }
             } label: {
                 HStack {
-                    Text("Advanced").font(.pixel(18, bold: true)).foregroundStyle(Palette.accent2)
+                    Text("Advanced settings").font(.pixel(18, bold: true)).foregroundStyle(Palette.accent2)
                     Spacer()
+                    Text("\(groups.reduce(0) { $0 + $1.rows.count })").font(.pixel(14)).foregroundStyle(Palette.muted)
                     Image(systemName: advancedOpen ? "chevron.up" : "chevron.down").foregroundStyle(Palette.muted)
                 }
             }
             if advancedOpen {
-                Banner(text: "Measured once or on one device: these can slow a run down or change the reply.")
-                ForEach(groups(basic: false), id: \.label) { g in group(g.label, g.rows) }
+                Banner(text: "The rest of the engine, grouped like the settings above and marked with their level. The planner "
+                    + "sets what it can measure; these were measured once or on one device and can slow a run down or "
+                    + "change the reply.")
+                ForEach(groups, id: \.label) { g in group(g.label, g.rows) }
             }
         }
     }
@@ -73,14 +83,15 @@ struct SettingsView: View {
     }
 }
 
-/// One parameter: its label, its help, its control by type, and where its value came from.
+/// One parameter: its label, its help, its control by type, what its value means and what is
+/// usual, and where its value came from.
 struct ParamRow: View {
     @EnvironmentObject private var engine: Engine
     let spec: ParamSpec
     var onError: (String) -> Void
 
     @State private var text = ""
-    @State private var showHelp = false
+    @State private var more = false
     @FocusState private var focused: Bool
 
     private var value: JSON { engine.config?[spec.key] ?? .null }
@@ -97,17 +108,38 @@ struct ParamRow: View {
                 if spec.kind == .bool { toggle }
             }
             if spec.kind != .bool { control }
-            marks
-            if showHelp && !spec.help.isEmpty {
-                Text(spec.help).font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+            if let rejected {
+                // The limits appear only here, beside a value the server refused.
+                Text([rejected, spec.rangeText.map { "accepted: \($0)" }].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption).foregroundStyle(Palette.err)
             }
-            if let rejected { Text(rejected).font(.caption).foregroundStyle(Palette.err) }
+            help
+            marks
         }
         .padding(.vertical, 10)
-        .contentShape(Rectangle())
-        .onTapGesture { showHelp.toggle() }
         .onAppear { text = value.display }
         .onChange(of: value) { v in if !focused { text = v.display } }
+    }
+
+    /// The help's first sentence, always; the rest and the named values on demand.
+    @ViewBuilder
+    private var help: some View {
+        let parts = spec.helpParts
+        let extra = [parts.rest.isEmpty ? nil : parts.rest,
+                     spec.special.isEmpty ? nil : spec.special.map { "\($0.value) = \($0.label)" }.joined(separator: "; ")]
+            .compactMap { $0 }
+        if !parts.lead.isEmpty {
+            Text(parts.lead).font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+        }
+        if !extra.isEmpty {
+            if more {
+                ForEach(extra, id: \.self) {
+                    Text($0).font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Button(more ? "Less" : "More") { more.toggle() }
+                .font(.pixel(13)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
+        }
     }
 
     private var toggle: some View {
@@ -151,6 +183,15 @@ struct ParamRow: View {
                     Button("auto") { set(.string("auto")) }.buttonStyle(.pixel)
                 }
             }
+            // Under the number: what the value means (0 = off), and what is usual. Never the type's limit.
+            if spec.kind == .int || spec.kind == .float {
+                HStack(spacing: Grid.s) {
+                    if let named = spec.specialLabel(value) {
+                        Text("= \(named)").font(.caption.weight(.semibold)).foregroundStyle(Palette.text)
+                    }
+                    if let usually = spec.typicalText { Text(usually).font(.caption).foregroundStyle(Palette.muted) }
+                }
+            }
         }
     }
 
@@ -164,7 +205,6 @@ struct ParamRow: View {
             }
             if spec.lossy { Badge(text: "changes the reply", color: Palette.warn) }
             if spec.scope == .session, engine.info?.model != nil { Text("applies on reload").font(.caption).foregroundStyle(Palette.muted) }
-            if let range = spec.rangeText { Text(range).font(.caption).foregroundStyle(Palette.muted) }
         }
     }
 
@@ -238,10 +278,15 @@ struct AppSettingsSection: View {
     }
 
     private var endpoint: some View {
-        let base = "http://\(NetworkAddress.local() ?? "<this device>"):\(EngineServer.port)/v1"
+        let address = NetworkAddress.local()
         return VStack(alignment: .leading, spacing: 6) {
             Text("Base URL").font(.pixel(13)).foregroundStyle(Palette.muted)
-            Text(base).font(.code).foregroundStyle(Palette.text).textSelection(.enabled)
+            if let address {
+                Text("http://\(address):\(EngineServer.port)/v1").font(.code).foregroundStyle(Palette.text).textSelection(.enabled)
+            } else {
+                Text("Not on a Wi-Fi or wired network: no other device can reach the engine until this one joins one.")
+                    .font(.caption).foregroundStyle(Palette.err)
+            }
             Text("Key").font(.pixel(13)).foregroundStyle(Palette.muted)
             Text(engine.networkKey).font(.code).foregroundStyle(Palette.text).textSelection(.enabled)
             Button(copied ? "Copied" : "Copy key") {

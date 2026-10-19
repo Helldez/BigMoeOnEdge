@@ -29,6 +29,8 @@ public struct HFRepoHit: Equatable, Sendable, Identifiable {
     public let id: String
     public let downloads: Int64
     public let likes: Int64
+    /// When the repository last changed, as the site gives it (ISO 8601).
+    public let modified: String
     public let gated: Bool
 }
 
@@ -40,7 +42,7 @@ public struct HFSearch: Equatable, Sendable {
         query = j["query"].string(or: "")
         repos = (j["repos"].array ?? []).map {
             HFRepoHit(id: $0["id"].string(or: ""), downloads: $0["downloads"].int64(or: 0), likes: $0["likes"].int64(or: 0),
-                      gated: $0["gated"].bool(or: false))
+                      modified: $0["modified"].string(or: ""), gated: $0["gated"].bool(or: false))
         }
     }
 }
@@ -52,6 +54,8 @@ public struct HFModel: Equatable, Sendable, Identifiable {
     public let bytes: Int64
     public let count: Int
     public let complete: Bool
+    /// What the file name suggests it is for: a hint that only orders the listing; inspect reads the header.
+    public let role: String
     public var id: String { name }
 }
 
@@ -69,7 +73,7 @@ public struct HFModels: Equatable, Sendable {
         file = j["file"].string(or: "")
         models = (j["models"].array ?? []).map {
             HFModel(name: $0["name"].string(or: ""), quant: $0["quant"].string(or: ""), bytes: $0["bytes"].int64(or: 0),
-                    count: $0["count"].int(or: 1), complete: $0["complete"].bool(or: true))
+                    count: $0["count"].int(or: 1), complete: $0["complete"].bool(or: true), role: $0["role"].string(or: "model"))
         }
     }
 }
@@ -83,6 +87,8 @@ public struct HFFacts: Equatable, Sendable {
     public let complete: Bool
     public let readable: Bool
     public let arch: String
+    /// What the header says the file is for: `model`, `projector`, `draft`, `other`.
+    public let role: String
     public let isMoE: Bool
     public let nExpert: Int
     public let nExpertUsed: Int
@@ -91,9 +97,9 @@ public struct HFFacts: Equatable, Sendable {
     public let expertBytes: Int64
     public let streamable: Bool
     public let refusal: String
-    /// False only when the disk cannot take the download.
+    /// False when the disk cannot take the download, or the file is not a model.
     public let downloadable: Bool
-    /// `streams`, `plain mmap` or `not readable`.
+    /// `streams`, `plain mmap`, `not a model` or `not readable`.
     public let mode: String
     public let disk: String
     public let memory: String
@@ -107,6 +113,7 @@ public struct HFFacts: Equatable, Sendable {
         complete = j["complete"].bool(or: true)
         readable = m["readable"].bool(or: false)
         arch = m["arch"].string(or: "")
+        role = m["role"].string(or: "model")
         isMoE = m["is_moe"].bool(or: false)
         nExpert = m["n_expert"].int(or: 0)
         nExpertUsed = m["n_expert_used"].int(or: 0)

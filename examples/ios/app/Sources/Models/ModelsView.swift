@@ -18,6 +18,7 @@ struct ModelsView: View {
                     Button("Dismiss") { self.failure = nil }.buttonStyle(.pixel)
                 }
             }
+            LoadStages()
             onDevice
             catalog
             HuggingFaceSection()
@@ -43,15 +44,36 @@ struct ModelsView: View {
     // MARK: on this device
 
     private var onDevice: some View {
-        VStack(alignment: .leading, spacing: Grid.m) {
-            SectionTitle("On this device", trailing: engine.models.local.isEmpty ? nil : "\(engine.models.local.count)")
-            if engine.models.local.isEmpty {
+        // Projectors and draft heads (by their headers) are no model to load: listed apart, after the models.
+        let (models, companions) = FileRole.split(engine.models.local) { $0.role }
+        return VStack(alignment: .leading, spacing: Grid.m) {
+            SectionTitle("On this device", trailing: models.isEmpty ? nil : "\(models.count)")
+            if models.isEmpty {
                 Text("No model yet. Download one below, add one from Hugging Face, or copy a .gguf into this app's "
                     + "folder with the Files app or the Finder.")
                     .font(.subheadline).foregroundStyle(Palette.muted)
             }
-            ForEach(engine.models.local) { m in localRow(m) }
+            ForEach(models) { m in localRow(m) }
+            if !companions.isEmpty {
+                Text("Companion files, not models to load (by their headers)").font(.pixel(13)).foregroundStyle(Palette.muted)
+                ForEach(companions) { m in companionRow(m) }
+            }
         }
+    }
+
+    /// A file that only goes with a model: what it is, and Delete, as any file in the app's folder.
+    private func companionRow(_ m: LocalModel) -> some View {
+        VStack(alignment: .leading, spacing: Grid.s) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(m.name).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.text).lineLimit(2)
+                Spacer()
+                Badge(text: FileRole.label(m.role), color: Palette.muted)
+            }
+            Text([ByteText.gb(m.bytes), m.arch, m.folder.isEmpty ? "" : "in \(m.folder)"].filter { !$0.isEmpty }.joined(separator: " · "))
+                .font(.pixel(13)).foregroundStyle(Palette.muted)
+            Button("Delete") { confirmDelete = m }.buttonStyle(.pixelDestructive).disabled(busy)
+        }
+        .card(padding: 12)
     }
 
     private func localRow(_ m: LocalModel) -> some View {
@@ -66,6 +88,7 @@ struct ModelsView: View {
                 Text(ByteText.gb(m.bytes)).font(.pixel(14))
                 if !m.arch.isEmpty { Text(m.arch).font(.pixel(14)) }
                 if m.shards > 1 { Text("\(m.shards) shards").font(.pixel(14)) }
+                if !m.folder.isEmpty { Text("in \(m.folder)").font(.pixel(14)).lineLimit(1) }
             }
             .foregroundStyle(Palette.muted)
             HStack(spacing: Grid.s) {
@@ -99,6 +122,7 @@ struct ModelsView: View {
     private func catalogRow(_ e: CatalogEntry) -> some View {
         let progress = engine.downloads[e.id]
         let status = engine.models.status(of: e, downloading: Set(engine.downloads.filter { $0.value.state == .running }.keys))
+        let partial = status == .available ? engine.partials[e.id] : nil
         return VStack(alignment: .leading, spacing: Grid.s) {
             HStack(alignment: .firstTextBaseline) {
                 Text(e.title).font(.headline).foregroundStyle(Palette.text)
@@ -107,16 +131,16 @@ struct ModelsView: View {
                     .font(.pixel(14)).foregroundStyle(Palette.muted)
             }
             if !e.blurb.isEmpty { Text(e.blurb).font(.subheadline).foregroundStyle(Palette.muted) }
-            if let p = progress {
+            if let p = progress, p.state == .running {
                 Meter(fraction: p.fraction)
                 Text("\(ByteText.gb(p.received)) of \(ByteText.gb(p.total))").font(.pixel(13)).foregroundStyle(Palette.muted)
-                if case let .failed(why) = p.state {
-                    Banner(text: why, color: Palette.err) {
-                        HStack(spacing: Grid.s) {
-                            Button("Retry") { engine.download(e) }.buttonStyle(.pixel)
-                            Button("Dismiss") { engine.dismissDownload(e.id) }.buttonStyle(.pixel)
-                        }
-                    }
+            } else if let got = partial, e.bytes > 0 {
+                // Stopped by a failure, a cancel or a relaunch: what is on the device already.
+                Meter(fraction: min(1, Double(got) / Double(e.bytes)))
+            }
+            if case let .failed(why) = progress?.state {
+                Banner(text: why, color: Palette.err) {
+                    Button("Dismiss") { engine.dismissDownload(e.id) }.buttonStyle(.pixel)
                 }
             }
             HStack(spacing: Grid.s) {
@@ -126,12 +150,19 @@ struct ModelsView: View {
                 case .onDevice:
                     Badge(text: "on device", color: Palette.ok)
                 case .available:
-                    Button("Download") { engine.download(e) }.buttonStyle(.pixelPrimary)
+                    Button(partial.map { ByteText.resume(received: $0, total: e.bytes) } ?? "Download") { engine.download(e) }
+                        .buttonStyle(.pixelPrimary)
                 }
-                if e.added {
+                if e.added && status != .downloading {
                     Spacer()
                     Button("Remove") { run { try await engine.removeAdded(e.id) } }.buttonStyle(.pixel)
                 }
+            }
+            if partial != nil {
+                // The one action that throws the bytes away: Cancel keeps them.
+                Button("Delete partial download") { run { try await engine.deletePartial(e) } }
+                    .buttonStyle(.pixelDestructive)
+                    .disabled(busy)
             }
         }
         .card()
@@ -170,6 +201,7 @@ struct HuggingFaceSection: View {
     @State private var facts: [String: HFFacts] = [:]
     @State private var working: String?
     @State private var failure: String?
+    @State private var companionsOpen = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.m) {
@@ -207,7 +239,8 @@ struct HuggingFaceSection: View {
                         Text(r.id).font(.code).foregroundStyle(Palette.text).lineLimit(1)
                         Spacer()
                         if r.gated { Badge(text: "gated", color: Palette.warn) }
-                        Text("\(r.downloads)↓").font(.pixel(13)).foregroundStyle(Palette.muted)
+                        let updated = FileRole.isoDate(r.modified)
+                        Text(updated.isEmpty ? "\(r.downloads)↓" : "\(r.downloads)↓ · \(updated)").font(.pixel(13)).foregroundStyle(Palette.muted)
                     }
                     .padding(10)
                     .pixelBox(shadow: false)
@@ -224,27 +257,47 @@ struct HuggingFaceSection: View {
                 if hits != nil { Button("Back") { listing = nil }.buttonStyle(.pixel) }
             }
             if l.models.isEmpty { Text("This repository holds no gguf.").font(.subheadline).foregroundStyle(Palette.muted) }
-            ForEach(l.models) { m in
-                VStack(alignment: .leading, spacing: Grid.s) {
+            // Files whose names suggest a projector or a draft head go after the models, folded: the
+            // name is only a hint, so they can still be checked, and the header then decides.
+            let parts = FileRole.split(l.models) { $0.role }
+            let companions = parts.companions
+            ForEach(parts.models) { m in modelChoice(l, m) }
+            if !companions.isEmpty {
+                Button {
+                    withAnimation { companionsOpen.toggle() }
+                } label: {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(m.name).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.text).lineLimit(2)
+                        Text("\(companions.count) companion \(companions.count == 1 ? "file" : "files") (projectors, draft heads, "
+                            + "going by their names; Check reads the header)")
+                            .font(.caption).foregroundStyle(Palette.muted).multilineTextAlignment(.leading)
                         Spacer()
-                        Text([m.quant, ByteText.gb(m.bytes)].filter { !$0.isEmpty }.joined(separator: " · "))
-                            .font(.pixel(13)).foregroundStyle(Palette.muted)
-                    }
-                    if m.count > 1 { Text("\(m.count) shards").font(.pixel(13)).foregroundStyle(Palette.muted) }
-                    if !m.complete { Badge(text: "shards missing", color: Palette.warn) }
-                    if let f = facts[m.name] { FactsView(facts: f) }
-                    HStack(spacing: Grid.s) {
-                        Button("Check") { check(l.repo, m.name) }.buttonStyle(.pixel).disabled(working != nil)
-                        Button("Add") { add(l.repo, m.name) }.buttonStyle(.pixelPrimary)
-                            .disabled(working != nil || !m.complete || facts[m.name]?.downloadable == false)
+                        Image(systemName: companionsOpen ? "chevron.up" : "chevron.down").foregroundStyle(Palette.muted)
                     }
                 }
-                .card(padding: 12)
-                .background(m.name == l.file ? Palette.tint(Palette.accent) : .clear)
+                if companionsOpen { ForEach(companions) { m in modelChoice(l, m) } }
             }
         }
+    }
+
+    private func modelChoice(_ l: HFModels, _ m: HFModel) -> some View {
+        VStack(alignment: .leading, spacing: Grid.s) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(m.name).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.text).lineLimit(2)
+                Spacer()
+                Text([m.quant, ByteText.gb(m.bytes)].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.pixel(13)).foregroundStyle(Palette.muted)
+            }
+            if m.count > 1 { Text("\(m.count) shards").font(.pixel(13)).foregroundStyle(Palette.muted) }
+            if !m.complete { Badge(text: "shards missing", color: Palette.warn) }
+            if let f = facts[m.name] { FactsView(facts: f) }
+            HStack(spacing: Grid.s) {
+                Button("Check") { check(l.repo, m.name) }.buttonStyle(.pixel).disabled(working != nil)
+                Button("Add") { add(l.repo, m.name) }.buttonStyle(.pixelPrimary)
+                    .disabled(working != nil || !m.complete || facts[m.name]?.downloadable == false)
+            }
+        }
+        .card(padding: 12)
+        .background(m.name == l.file ? Palette.tint(Palette.accent) : .clear)
     }
 
     private func find() {
@@ -258,6 +311,7 @@ struct HuggingFaceSection: View {
             do {
                 listing = try await engine.hfModels(text, token: token)
                 facts = [:]
+                companionsOpen = false
             } catch let e as APIError where e.code == APIError.notARepo {
                 listing = nil
                 hits = try await engine.hfSearch(text, token: token)
@@ -290,7 +344,9 @@ struct FactsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: Grid.s) {
-                Badge(text: facts.mode, color: facts.mode == "streams" ? Palette.accent : facts.readable ? Palette.muted : Palette.err)
+                Badge(text: facts.mode, color: facts.mode == "streams" ? Palette.accent
+                    : facts.readable && facts.mode != "not a model" ? Palette.muted : Palette.err)
+                if FileRole.isCompanion(facts.role) { Badge(text: FileRole.label(facts.role), color: Palette.muted) }
                 if !facts.arch.isEmpty { Text(facts.arch).font(.pixel(13)).foregroundStyle(Palette.muted) }
                 if facts.isMoE {
                     Text("\(facts.nExpert) experts, \(facts.nExpertUsed) active").font(.pixel(13)).foregroundStyle(Palette.muted)

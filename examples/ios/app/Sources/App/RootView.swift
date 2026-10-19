@@ -54,7 +54,7 @@ struct RootView: View {
         switch s {
         case .chat: ChatView(openModels: { screen = .models })
         case .models: ModelsView()
-        case .plan: PlanView()
+        case .plan: PlanView(openSettings: { screen = .settings })
         case .settings: SettingsView()
         case .metrics: MetricsView()
         }

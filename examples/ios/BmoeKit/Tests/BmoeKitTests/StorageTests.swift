@@ -66,6 +66,29 @@ final class StorageTests: XCTestCase {
         XCTAssertEqual(DownloadPlan.remaining(files, in: dir).map(\.name), ["b.gguf", "c.gguf"])
     }
 
+    func testAStoppedDownloadCountsWhatLandedAndWhatItsResumeDataHolds() throws {
+        let models = dir.appendingPathComponent("models"), resume = dir.appendingPathComponent("resume")
+        try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: resume, withIntermediateDirectories: true)
+        let files = [CatalogFile(name: "a.gguf", bytes: 4, url: "https://x/a"), CatalogFile(name: "b.gguf", bytes: 10, url: "https://x/b")]
+        try Data(count: 4).write(to: models.appendingPathComponent("a.gguf"))
+        // Nothing to resume without resume data, though a shard landed whole.
+        XCTAssertNil(DownloadPlan.partial(files, in: models, resumeDir: resume))
+        let data = try PropertyListSerialization.data(fromPropertyList: ["NSURLSessionResumeBytesReceived": 6,
+                                                                          "NSURLSessionResumeInfoTempFileName": "CFNetworkDownload_x.tmp"],
+                                                      format: .binary, options: 0)
+        try data.write(to: resume.appendingPathComponent("b.gguf.resume"))
+        XCTAssertEqual(ResumeData.bytesReceived(data), 6)
+        XCTAssertEqual(DownloadPlan.partial(files, in: models, resumeDir: resume), 10)
+        // Resume data the system no longer reads the same way still says a download can resume.
+        try Data("not a plist".utf8).write(to: resume.appendingPathComponent("b.gguf.resume"))
+        XCTAssertEqual(DownloadPlan.partial(files, in: models, resumeDir: resume), 4)
+        // The bytes it names are found in the folders the system keeps them in.
+        try Data(count: 6).write(to: dir.appendingPathComponent("CFNetworkDownload_x.tmp"))
+        XCTAssertEqual(ResumeData.tempFile(data, candidates: [resume, dir])?.lastPathComponent, "CFNetworkDownload_x.tmp")
+        XCTAssertNil(ResumeData.tempFile(data, candidates: [resume]))
+    }
+
     func testTheLiveCardSplitsTheWall() throws {
         var t = Telemetry()
         t.computeThreads = 4

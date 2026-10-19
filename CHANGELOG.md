@@ -77,10 +77,32 @@ Semantic Versioning.
   the catalog's files with the system's background transfers (resumed after a break or a
   relaunch), imports a `.gguf` from Files, adds a model from Hugging Face through the server's
   find, check and add, and writes a metrics CSV per loaded model. Its client side is
-  `examples/ios/BmoeKit`, a Swift package with no UI, tested with `swift test` on the Mac (26
+  `examples/ios/BmoeKit`, a Swift package with no UI, tested with `swift test` on the Mac (36
   tests: the event stream, the chat protocol, decide, the parameter table, models, the plan,
   conversations, metrics files, downloads); CI runs them and compiles both apps for the
   simulator. Built and run in the simulator only: a device run is still owed (#235).
+- **The iOS app's Plan screen, as the web UI and the Android app draw it.** Opening it measures
+  nothing (`GET /api/plan?cached=1`, "Not measured yet" with Measure when the server holds no
+  plan); the summary first (the sentence, the machine, decode speed expected against measured with
+  the difference, cache hits with a mark at what the plan credited, the lanes, Apply, auto-plan),
+  then one memory bar per pool, the devices with their prompt rate against the fastest, the
+  decisions grouped (set open, left as is and notes folded, each row opening to its brief, Why and
+  Open in Settings) and the command line with the full explanation folded. The `plan_progress`
+  stages show while a measurement runs, and Models shows the seconds since a load began and,
+  during an auto load, the same stages. BmoeKit reads the whole plan and the progress event.
+- **The iOS app's Settings and Models match the web UI and the Android app.** Settings renders the
+  parameter table's new `typical` and `special` fields: the name of a special value under a number
+  ("= off"), the usual range ("usually 2 to 8") instead of the type's limit, which now appears only
+  beside a refused value, the help's first sentence with the rest on demand, and an Advanced
+  settings section that no longer repeats the basic rows; with no Wi-Fi or wired network the
+  address line says no other device can reach the engine. A stopped catalog download (a failure,
+  a cancel, a relaunch) reads **Resume (X of Y GB)** from what landed and what the system's resume
+  data holds, with **Delete partial download** beside it, which throws away the resume data, the
+  bytes the system kept for it and, through `DELETE /api/models/partial/<id>`, any `.part` of the
+  entry; Cancel keeps them. Files whose header `role` says they are not models (projectors, draft
+  heads) are listed apart with what they are and no Load, a model in a folder says which, and the
+  Hugging Face listing folds the files whose names suggest a projector or a draft head after the
+  models, shows when a repository last changed and marks a header that is not a model.
 - **`server::Embedding`, for a server inside an app** (`server/server.h`). `run()` takes the
   network a repository is read through (the iOS app hands it `URLSession`, where the desktop runs
   `curl`) and hands back the way to stop the server, so a change of address restarts it in the

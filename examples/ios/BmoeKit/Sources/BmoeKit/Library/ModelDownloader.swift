@@ -25,6 +25,49 @@ public enum DownloadPlan {
     static func size(of url: URL) -> Int64? {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value
     }
+
+    /// What a stopped download of these files already has on the device: the files that landed
+    /// whole, plus what the resume data of the others says came. Nil when no file has resume data:
+    /// nothing is there to resume, and the row offers Download.
+    public static func partial(_ files: [CatalogFile], in dir: URL, resumeDir: URL) -> Int64? {
+        var got: Int64 = 0
+        var resumable = false
+        for f in files {
+            if size(of: dir.appendingPathComponent(f.name)) == f.bytes {
+                got += f.bytes
+            } else if let data = try? Data(contentsOf: resumeURL(f.name, in: resumeDir)) {
+                resumable = true
+                got += min(f.bytes, ResumeData.bytesReceived(data) ?? 0)
+            }
+        }
+        return resumable ? got : nil
+    }
+
+    static func resumeURL(_ name: String, in resumeDir: URL) -> URL { resumeDir.appendingPathComponent(name + ".resume") }
+}
+
+/// What the system's resume data says about a broken-off transfer. Its format is the system's (a
+/// property list), read here only for the bytes it holds and the file it holds them in; a key it
+/// no longer carries reads as unknown, never as an error.
+public enum ResumeData {
+    public static func bytesReceived(_ data: Data) -> Int64? {
+        (plist(data)?["NSURLSessionResumeBytesReceived"] as? NSNumber)?.int64Value
+    }
+
+    /// Where the system keeps the bytes that came, among `candidates` (directories the temporary
+    /// file is looked for in when the data names it without its directory).
+    static func tempFile(_ data: Data, candidates: [URL]) -> URL? {
+        guard let p = plist(data) else { return nil }
+        if let path = p["NSURLSessionResumeInfoLocalPath"] as? String, FileManager.default.fileExists(atPath: path) {
+            return URL(fileURLWithPath: path)
+        }
+        guard let name = p["NSURLSessionResumeInfoTempFileName"] as? String, !name.contains("/") else { return nil }
+        return candidates.map { $0.appendingPathComponent(name) }.first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private static func plist(_ data: Data) -> [String: Any]? {
+        (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
+    }
 }
 
 /// Downloads catalog entries into the models directory with the system's background transfer
@@ -99,7 +142,7 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
                 fail(entry.id, "the catalog gives no https URL for \(file.name)")
                 return
             }
-            let resume = resumeDir.appendingPathComponent(file.name + ".resume")
+            let resume = DownloadPlan.resumeURL(file.name, in: resumeDir)
             let task: URLSessionDownloadTask
             if let data = try? Data(contentsOf: resume) {
                 try? FileManager.default.removeItem(at: resume)
@@ -113,20 +156,50 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
         publish()
     }
 
-    /// Cancels the entry's transfers. What came so far is kept, so a later start resumes it.
+    /// Cancels the entry's transfers. What came so far is kept, so a later start resumes it and
+    /// the row offers Resume; throwing it away is its own action, `discard`.
     public func cancel(_ entryID: String) {
         lock.lock()
         cancelling.insert(entryID)
         lock.unlock()
         session.getAllTasks { tasks in
-            for task in tasks where Tag(task.taskDescription)?.entry == entryID {
+            for task in tasks {
+                guard let tag = Tag(task.taskDescription), tag.entry == entryID else { continue }
                 if let d = task as? URLSessionDownloadTask {
-                    d.cancel(byProducingResumeData: { _ in }) // the delegate keeps the resume data
+                    d.cancel(byProducingResumeData: { data in
+                        if let data { self.keep(data, for: tag.file) }
+                        self.onLanded?()
+                    })
                 } else {
                     task.cancel()
                 }
             }
         }
+    }
+
+    /// What a stopped download of the entry already has on the device, or nil when nothing of it
+    /// can be resumed (`DownloadPlan.partial`).
+    public func partial(_ entry: CatalogEntry) -> Int64? {
+        DownloadPlan.partial(entry.files, in: modelsDir, resumeDir: resumeDir)
+    }
+
+    /// Throws away what stopped downloads of the entry kept: the resume data and, where it can be
+    /// found, the bytes the system holds for it. Files that landed whole stay.
+    public func discard(_ entry: CatalogEntry) {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        // Where the system has kept a background transfer's bytes: the app's temporary folder, or
+        // the transfer daemon's folder in the app's caches.
+        var candidates = [FileManager.default.temporaryDirectory]
+        if let bundle = Bundle.main.bundleIdentifier {
+            candidates.append(caches.appendingPathComponent("com.apple.nsurlsessiond/Downloads/\(bundle)"))
+        }
+        for f in entry.files {
+            let resume = DownloadPlan.resumeURL(f.name, in: resumeDir)
+            guard let data = try? Data(contentsOf: resume) else { continue }
+            if let tmp = ResumeData.tempFile(data, candidates: candidates) { try? FileManager.default.removeItem(at: tmp) }
+            try? FileManager.default.removeItem(at: resume)
+        }
+        dismiss(entry.id)
     }
 
     /// Forgets a failed entry's error, once the person has read it.
@@ -142,6 +215,11 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
 
     private func hasTasks(_ entryID: String) -> Bool {
         entries[entryID]?.contains { received[$0.name] != nil } ?? false
+    }
+
+    private func keep(_ resumeData: Data, for file: String) {
+        try? FileManager.default.createDirectory(at: resumeDir, withIntermediateDirectories: true)
+        try? resumeData.write(to: DownloadPlan.resumeURL(file, in: resumeDir))
     }
 
     private func fail(_ entryID: String, _ why: String) {
@@ -214,10 +292,7 @@ extension ModelDownloader: URLSessionDownloadDelegate {
         lock.unlock()
         if let error = error as NSError? {
             // Whatever came is kept for the next start, whether the person stopped it or the network did.
-            if let data = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
-                try? FileManager.default.createDirectory(at: resumeDir, withIntermediateDirectories: true)
-                try? data.write(to: resumeDir.appendingPathComponent(tag.file + ".resume"))
-            }
+            if let data = error.userInfo[NSURLSessionDownloadTaskResumeData] as? Data { keep(data, for: tag.file) }
             if !cancelled { fail(tag.entry, "\(tag.file): \(error.localizedDescription)") }
         }
         publish()

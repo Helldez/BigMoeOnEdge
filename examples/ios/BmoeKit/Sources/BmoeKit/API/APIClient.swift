@@ -133,8 +133,16 @@ public final class APIClient: @unchecked Sendable {
         _ = try await send("DELETE", "/api/hf/entry/" + escaped, nil, timeout: Self.quick)
     }
 
+    /// Deletes the partial files a stopped download of the entry left in the models directory, by
+    /// catalog id: the server knows which files the entry names, and deletes only those.
+    public func deletePartial(id: String) async throws {
+        let escaped = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id
+        _ = try await send("DELETE", "/api/models/partial/" + escaped, nil, timeout: Self.quick)
+    }
+
+    /// A measurement, or (never measuring) the plan the loaded model runs with, else the last one held.
     public func plan(measure: Bool) async throws -> PlanResult {
-        PlanResult(try await get(measure ? "/api/plan?measure=1" : "/api/plan", timeout: Self.slow))
+        PlanResult(try await get(measure ? "/api/plan?measure=1" : "/api/plan?cached=1", timeout: Self.slow))
     }
 
     public func applyPlan() async throws -> ConfigState {

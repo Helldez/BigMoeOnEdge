@@ -21,8 +21,13 @@ final class Engine: ObservableObject {
     @Published private(set) var config: ConfigState?
     @Published private(set) var models = ModelsList.empty
     @Published private(set) var downloads: [String: DownloadProgress] = [:]
+    /// Per catalog entry, what a stopped download of it already has on the device: the row offers
+    /// Resume with it, and Delete partial download.
+    @Published private(set) var partials: [String: Int64] = [:]
     @Published private(set) var live = Telemetry()
     @Published private(set) var lastDone: JSON?
+    /// The stage a measurement is in (Measure, or an auto load), from `plan_progress`; nil when none runs.
+    @Published private(set) var planProgress: PlanProgress?
     /// The engine's last diagnostics (`log` events), newest last.
     @Published private(set) var log: [String] = []
 
@@ -156,6 +161,10 @@ final class Engine: ObservableObject {
 
     func refreshModels() async {
         if let m = try? await api.models() { models = m }
+        // The app downloads for itself here, so what a stopped transfer kept is its own to report.
+        var p: [String: Int64] = [:]
+        for e in models.catalog { if let got = downloader.partial(e) { p[e.id] = got } }
+        partials = p
     }
 
     private func handle(_ e: SSEEvent) {
@@ -190,6 +199,8 @@ final class Engine: ObservableObject {
             live = t
             lastDone = o
             recorder.done(o)
+        case "plan_progress":
+            planProgress = PlanProgress(o)
         case "log":
             log.append("\(o["level"].string(or: "info")): \(o["message"].string(or: ""))")
             if log.count > Self.logLines { log.removeFirst(log.count - Self.logLines) }
@@ -230,6 +241,19 @@ final class Engine: ObservableObject {
     func download(_ entry: CatalogEntry) { downloader.start(entry) }
     func cancelDownload(_ id: String) { downloader.cancel(id) }
     func dismissDownload(_ id: String) { downloader.dismiss(id) }
+
+    /// Throws away what stopped downloads of the entry kept: the app's own resume data, and through
+    /// the server, by catalog id, any `.part` of it in the models directory.
+    func deletePartial(_ entry: CatalogEntry) async throws {
+        downloader.discard(entry)
+        do {
+            try await api.deletePartial(id: entry.id)
+        } catch {
+            await refreshModels()
+            throw error
+        }
+        await refreshModels()
+    }
 
     /// The system woke the app for the download session: the handler runs once its events are in.
     func handleBackgroundDownloads(_ completion: @escaping () -> Void) {
