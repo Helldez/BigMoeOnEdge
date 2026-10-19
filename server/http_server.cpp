@@ -93,7 +93,8 @@ void print_usage(const char * argv0) {
                 "  --port N             port (default %d)\n"
                 "  --open               open the UI in the default browser once listening\n"
                 "  --models-dir PATH    where models are listed and downloaded (default: <data dir>/models)\n"
-                "  --scan-dir PATH      also list the models in PATH, loaded in place (repeatable)\n"
+                "  --scan-dir PATH      also list the models in PATH and in the folders directly inside it,\n"
+                "                       loaded in place (repeatable; one level deep, links to folders skipped)\n"
                 "  --data-dir PATH      settings and models (default: the per-user application data folder)\n"
                 "  --ui-dir PATH        the built web UI (default: ui/ beside this binary)\n"
                 "  --catalog PATH       the model catalog (default: catalog/models.json beside this binary)\n"
@@ -331,6 +332,20 @@ struct App {
         return true;
     }
 
+    // The model loaded now and what its plan's ledger says it holds: the memory a load of another
+    // model gets back, since a load unloads first. Only the plan this session was loaded with
+    // counts; one measured by hand afterwards, or a load with no plan, gives no account (0).
+    LoadedSession loaded_session() {
+        LoadedSession s;
+        if (!host.loaded_or_loading()) return s;
+        const std::string path = host.model_path();
+        s.model = host.model_name();
+        std::lock_guard<std::mutex> lk(plan_m);
+        if (load_plan.ok && !path.empty() && load_plan.body.value("model", "") == path)
+            s.held_bytes = load_plan.held_bytes;
+        return s;
+    }
+
     // On by default wherever there is a planner to ask: the point of measuring the machine is that
     // nobody has to tune it by hand. A person can turn it off and it stays off.
     bool auto_plan() const { return planner_available() && store.auto_plan(true); }
@@ -466,7 +481,7 @@ json hf_model_json(const HfModel & m) {
     json files = json::array();
     for (const HfFile & f : m.files)
         files.push_back({{"path", f.path}, {"bytes", f.bytes}});
-    return json{{"name", m.name},   {"quant", m.quant},         {"bytes", m.bytes},
+    return json{{"name", m.name},   {"quant", m.quant},         {"bytes", m.bytes}, {"role", m.role},
                 {"count", m.count}, {"complete", m.complete()}, {"files", files}};
 }
 
@@ -776,7 +791,7 @@ void register_routes(httplib::Server & svr, App & app) {
         json facts;
         std::string err;
         if (!inspect_remote_model(*app.net, app.opt.hf_endpoint, r.ref, m, r.token, app.scratch_dir,
-                                  app.lib.models_dir(), facts, err))
+                                  app.lib.models_dir(), app.loaded_session(), facts, err))
             return send_error(res, 502, "could not read the header of " + m.name + ": " + err, "upstream");
         send_json(res, facts);
     });

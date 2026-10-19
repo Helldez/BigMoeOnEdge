@@ -7,6 +7,7 @@
 <script lang="ts">
   import { api, ApiError, CODE_NOT_A_REPO } from '../../lib/api';
   import { formatBytes, formatNum } from '../../lib/format';
+  import { isoDate, roleLabel, splitByRole } from '../../lib/roles';
   import type { HfFacts, HfModel, HfRepoHit } from '../../lib/types';
 
   let { onAdded }: { onAdded: (id: string) => Promise<void> | void } = $props();
@@ -24,6 +25,9 @@
   let added = $state('');
 
   let chosen = $derived(models?.find((m) => m.name === selected) ?? null);
+  // Files whose names suggest a projector or a draft head go after the models, set apart: the
+  // name is only a hint, so they can still be checked, and the header then says what they are.
+  let groups = $derived(splitByRole(models ?? []));
 
   async function run(what: string, fn: () => Promise<void>) {
     busy = what;
@@ -84,7 +88,12 @@
     added = '';
   }
 
-  const modeLabel: Record<string, string> = { streams: 'streams', 'plain mmap': 'plain mmap', 'not readable': 'not readable' };
+  const modeLabel: Record<string, string> = {
+    streams: 'streams',
+    'plain mmap': 'plain mmap',
+    'not a model': 'not a model',
+    'not readable': 'not readable',
+  };
 </script>
 
 <section class="card hf">
@@ -117,7 +126,7 @@
         {#each hits as h (h.id)}
           <li>
             <button type="button" class="link" onclick={() => pick(h)}>{h.id}</button>
-            <span class="muted">{formatNum(h.downloads, 0)} downloads · {formatNum(h.likes, 0)} likes</span>
+            <span class="muted">{formatNum(h.downloads, 0)} downloads · {formatNum(h.likes, 0)} likes{#if isoDate(h.modified)} · updated {isoDate(h.modified)}{/if}</span>
             {#if h.gated}<span class="badge warn" title="Needs an access token">gated</span>{/if}
           </li>
         {/each}
@@ -129,20 +138,29 @@
     {#if models.length === 0}
       <p class="muted">No gguf files in <code>{listed}</code>.</p>
     {:else}
+      {#snippet row(m: HfModel)}
+        <li class:chosen={m.name === selected}>
+          <label>
+            <input type="radio" name="hf-model" value={m.name} checked={m.name === selected} onchange={() => choose(m.name)} />
+            <span class="name">{m.name}</span>
+            {#if m.quant}<span class="badge">{m.quant}</span>{/if}
+            <span class="muted">{formatBytes(m.bytes)}</span>
+            {#if m.count > 1}<span class="muted">{m.files.length} of {m.count} shards</span>{/if}
+            {#if !m.complete}<span class="badge err">incomplete</span>{/if}
+          </label>
+        </li>
+      {/snippet}
       <ul class="models" aria-label="Models in {listed}">
-        {#each models as m (m.name)}
-          <li class:chosen={m.name === selected}>
-            <label>
-              <input type="radio" name="hf-model" value={m.name} checked={m.name === selected} onchange={() => choose(m.name)} />
-              <span class="name">{m.name}</span>
-              {#if m.quant}<span class="badge">{m.quant}</span>{/if}
-              <span class="muted">{formatBytes(m.bytes)}</span>
-              {#if m.count > 1}<span class="muted">{m.files.length} of {m.count} shards</span>{/if}
-              {#if !m.complete}<span class="badge err">incomplete</span>{/if}
-            </label>
-          </li>
-        {/each}
+        {#each groups.models as m (m.name)}{@render row(m)}{/each}
       </ul>
+      {#if groups.companions.length}
+        <details class="companions">
+          <summary class="muted">{groups.companions.length} companion {groups.companions.length === 1 ? 'file' : 'files'} (projectors, draft heads, going by their names; Check reads the header)</summary>
+          <ul class="models" aria-label="Companion files in {listed}">
+            {#each groups.companions as m (m.name)}{@render row(m)}{/each}
+          </ul>
+        </details>
+      {/if}
       <div class="actions">
         <button type="button" class="primary" disabled={!chosen || busy !== ''} onclick={inspect}>
           {busy === 'inspect' ? 'Reading the header...' : 'Check'}<span class="visually-hidden"> {selected}</span>
@@ -156,9 +174,10 @@
     <div class="facts">
       <header>
         <strong>{f.name}</strong>
-        <span class="badge {f.verdict.mode === 'streams' ? 'ok' : f.verdict.mode === 'not readable' ? 'err' : 'warn'}">
+        <span class="badge {f.verdict.mode === 'streams' ? 'ok' : f.verdict.mode === 'not readable' || f.verdict.mode === 'not a model' ? 'err' : 'warn'}">
           {modeLabel[f.verdict.mode] ?? f.verdict.mode}
         </span>
+        {#if f.model.role && f.model.role !== 'model'}<span class="badge">{roleLabel(f.model.role)}</span>{/if}
       </header>
       {#if f.model.readable}
         <dl>
@@ -237,6 +256,12 @@
   }
   .models .name {
     overflow-wrap: anywhere;
+  }
+  .companions {
+    margin-top: 0.5rem;
+  }
+  .companions summary {
+    cursor: pointer;
   }
   .models li.chosen {
     background: var(--ok-bg);

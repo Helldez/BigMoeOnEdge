@@ -5,6 +5,7 @@
   import ProgressBar from '../components/ProgressBar.svelte';
   import { api } from '../lib/api';
   import { formatBytes, resumeLabel } from '../lib/format';
+  import { roleLabel, splitByRole } from '../lib/roles';
   import type { CatalogEntry, ModelsResponse } from '../lib/types';
   import { server } from '../stores/server.svelte';
 
@@ -14,6 +15,8 @@
   let pending = $state<Record<string, boolean>>({});
 
   let loadedPath = $derived(server.info?.model?.path ?? null);
+  // Projectors and draft heads (by their headers) are no model to load: listed apart, after the models.
+  let localGroups = $derived(splitByRole(data?.local ?? []));
   let planning = $derived(server.info?.state === 'planning');
   let loading = $derived(server.info?.state === 'loading' || planning);
 
@@ -139,13 +142,14 @@
           <tr><th>Model</th><th>Size</th><th>Arch</th><th>Status</th><th><span class="visually-hidden">Actions</span></th></tr>
         </thead>
         <tbody>
-          {#each data.local as m (m.path)}
+          {#each localGroups.models as m (m.path)}
             <tr class:loaded={m.path === loadedPath}>
               <td class="name">
                 {m.name}
                 {#if m.path === loadedPath}<span class="badge ok">loaded</span>{/if}
                 {#if m.shards > 1}<span class="muted"> ({m.shards} shards)</span>{/if}
                 {#if m.dir && m.dir !== data.models_dir}<span class="muted"> in <code>{m.dir}</code></span>{/if}
+                {#if m.folder}<span class="muted"> / <code>{m.folder}</code></span>{/if}
               </td>
               <td>{formatBytes(m.bytes)}</td>
               <td>{m.arch || '?'}</td>
@@ -172,6 +176,20 @@
         </tbody>
       </table>
     </div>
+    {#if localGroups.companions.length}
+      <details class="companions">
+        <summary class="muted">{localGroups.companions.length} companion {localGroups.companions.length === 1 ? 'file' : 'files'}: not models to load, by their headers</summary>
+        <ul>
+          {#each localGroups.companions as m (m.path)}
+            <li>
+              <span class="name">{m.name}</span>
+              <span class="badge">{roleLabel(m.role ?? '')}</span>
+              <span class="muted">{formatBytes(m.bytes)}{m.arch ? `, ${m.arch}` : ''}{m.folder ? `, in ${m.folder}` : ''}</span>
+            </li>
+          {/each}
+        </ul>
+      </details>
+    {/if}
   {/if}
 
   <h2>Get a model</h2>
@@ -247,6 +265,20 @@
     display: flex;
     gap: 0.3rem;
     flex-wrap: wrap;
+  }
+  .companions {
+    margin-top: 0.5rem;
+  }
+  .companions summary {
+    cursor: pointer;
+  }
+  .companions ul {
+    list-style: none;
+    padding: 0;
+    margin: 0.4rem 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
   }
   .catalog {
     display: grid;

@@ -86,6 +86,8 @@ public:
     bool loaded_or_loading() const;
     bool generating() const { return generating_; }
     std::string model_name() const;
+    // The file of the model loaded or loading, "" when none.
+    std::string model_path() const;
 
     // What the last completed turn of this session measured for decode: s_per_token, cache_hit_pct
     // (-1 with no cache) and tokens; null before the first turn and after a load. The figures a plan

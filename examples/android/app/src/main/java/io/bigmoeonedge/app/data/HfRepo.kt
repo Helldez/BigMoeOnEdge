@@ -17,6 +17,8 @@ data class HfModel(
     /** Shards the set declares, and whether the listing has them all. */
     val count: Int,
     val complete: Boolean,
+    /** What the file name suggests it is for: a hint that only orders the listing; inspect reads the header. */
+    val role: String = "model",
 ) {
     companion object {
         fun of(o: JSONObject): HfModel = HfModel(
@@ -25,6 +27,7 @@ data class HfModel(
             bytes = o.optLong("bytes", 0),
             count = o.optInt("count", 1),
             complete = o.optBoolean("complete", true),
+            role = o.optString("role", "model"),
         )
     }
 }
@@ -55,6 +58,8 @@ data class HfFacts(
     val complete: Boolean,
     val readable: Boolean,
     val arch: String,
+    /** What the header says the file is for: "model", "projector", "draft", "other". */
+    val role: String,
     val isMoe: Boolean,
     val nExpert: Int,
     val nExpertUsed: Int,
@@ -65,9 +70,9 @@ data class HfFacts(
     val tokenCycleBytes: Long,
     val streamable: Boolean,
     val refusal: String,
-    /** False only when the disk cannot take the download. */
+    /** False when the disk cannot take the download, or the file is not a model. */
     val downloadable: Boolean,
-    /** "streams", "plain mmap" or "not readable". */
+    /** "streams", "plain mmap", "not a model" or "not readable". */
     val mode: String,
     val disk: String,
     val memory: String,
@@ -84,6 +89,7 @@ data class HfFacts(
                 complete = o.optBoolean("complete", true),
                 readable = m.optBoolean("readable", false),
                 arch = m.optString("arch", ""),
+                role = m.optString("role", "model"),
                 isMoe = m.optBoolean("is_moe", false),
                 nExpert = m.optInt("n_expert", 0),
                 nExpertUsed = m.optInt("n_expert_used", 0),

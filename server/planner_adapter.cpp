@@ -106,6 +106,7 @@ PlanOutcome make_plan(const RunConfig & cfg,
         o.decisions.push_back(decision_json(d));
 
     o.ok = true;
+    o.held_bytes = plan.allocation.ledger.held;
     o.body = json{{"available", true},
                   {"model", cfg.model_path},
                   {"machine", hw.label},

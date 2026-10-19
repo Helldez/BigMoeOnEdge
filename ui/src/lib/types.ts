@@ -223,6 +223,10 @@ export interface LocalModel {
   path: string;
   /** The directory it was found in: the models directory or one of `scan_dirs`. */
   dir: string;
+  /** The folder directly inside `dir` it sits in, "" when it is in `dir` itself. */
+  folder?: string;
+  /** What the header says it is for: "model", "projector", "draft", "other"; "" when unreadable. */
+  role?: string;
   /** Every file of the model that is present, in shard order. */
   files: string[];
   bytes: number;
@@ -261,6 +265,8 @@ export interface HfFile {
 export interface HfModel {
   name: string;
   quant: string;
+  /** What the file name suggests it is for; a hint for ordering only, the header decides on inspect. */
+  role?: string;
   bytes: number;
   count: number;
   complete: boolean;
@@ -287,6 +293,8 @@ export interface HfFacts {
   model: {
     readable: boolean;
     arch: string;
+    /** What the header says the file is for: "model", "projector", "draft", "other". */
+    role?: string;
     is_moe: boolean;
     n_expert: number;
     n_expert_used: number;
@@ -303,6 +311,10 @@ export interface HfFacts {
   };
   machine: {
     residency_budget: number;
+    /** The budget the verdict used: what is free now plus what the loaded model gives back. */
+    budget_if_loaded?: number;
+    loaded_model?: string;
+    loaded_held?: number;
     memory_total: number;
     disk_free: number;
     present_bytes: number;
@@ -320,6 +332,7 @@ export interface HfRepoHit {
   id: string;
   downloads: number;
   likes: number;
+  /** When the repository last changed, as the site gives it (ISO 8601). */
   modified: string;
   gated: boolean;
 }

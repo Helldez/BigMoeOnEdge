@@ -37,10 +37,19 @@ ModelProfile probe_model(const char * model_path);
 // gguf that parses. A MoE whose expert layout probe_model refuses to plan still reads here, so a
 // caller can tell "not a gguf" from "a gguf this engine does not stream" without reading an
 // error's words. Only the first shard is read.
+//
+// The rest says what kind of file it is, from the format's own keys, so a caller can tell a model
+// from a companion file (a projector, a draft head) without trusting its name: `general.type`
+// ("" when absent), `<arch>.block_count`, `<arch>.nextn_predict_layers`, and whether the file
+// names `<arch>.target_layers` (layers of another model it reads from).
 struct GgufHeaderFacts {
     std::string arch;
     int n_expert = 0;
     int n_expert_used = 0;
+    std::string type;
+    int n_block = 0;
+    int n_nextn = 0;
+    bool reads_target = false;
     bool ok = false;
 };
 GgufHeaderFacts probe_gguf_header(const char * model_path);

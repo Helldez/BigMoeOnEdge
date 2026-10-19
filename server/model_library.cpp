@@ -194,6 +194,7 @@ ModelLibrary::ModelFacts ModelLibrary::probe(const std::string & path) {
     ModelFacts facts;
     facts.arch = m.arch;
     facts.streamable = m.ok && m.is_moe;
+    facts.role = file_role_name(file_role(probe_gguf_header(path.c_str())));
     std::lock_guard<std::mutex> lk(m_);
     facts_cache_[path] = {size, mt, facts};
     return facts;
@@ -253,13 +254,9 @@ bool ModelLibrary::wait_unless_cancelled(Job & job, std::chrono::seconds d) {
 }
 
 void ModelLibrary::list_dir(const std::string & dir, json & out) {
-    std::vector<std::string> names;
-    std::error_code ec;
-    for (const auto & ent : fs::directory_iterator(fs::u8path(dir), ec))
-        if (ent.is_regular_file(ec)) names.push_back(ent.path().filename().u8string());
-
-    const fs::path base = fs::u8path(dir);
-    for (const ModelFiles & m : group_model_files(names)) {
+    const fs::path root = fs::u8path(dir);
+    for (const ModelFiles & m : scan_model_files(dir)) {
+        const fs::path base = m.folder.empty() ? root : root / fs::u8path(m.folder);
         uint64_t bytes = 0;
         json files = json::array();
         for (const std::string & f : m.files) {
@@ -272,11 +269,13 @@ void ModelLibrary::list_dir(const std::string & dir, json & out) {
         const ModelFacts facts = has_first ? probe(first.u8string()) : ModelFacts{};
         out.push_back({{"name", m.first},
                        {"path", first.generic_u8string()},
-                       {"dir", base.generic_u8string()},
+                       {"dir", root.generic_u8string()},
+                       {"folder", m.folder},
                        {"bytes", bytes},
                        {"shards", m.count},
                        {"files", files},
                        {"arch", facts.arch},
+                       {"role", facts.role},
                        {"streamable", facts.streamable},
                        {"complete", m.complete()}});
     }

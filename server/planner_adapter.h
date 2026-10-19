@@ -11,6 +11,7 @@
 
 #include "bmoe/config.h"
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <string>
@@ -24,6 +25,9 @@ struct PlanOutcome {
     json body;                                 // the /api/plan object
     std::map<std::string, std::string> values; // parameters the plan changes, by key
     json decisions = json::array();
+    // What the plan's memory ledger charges the run with (Ledger::held): the session's own account
+    // of the memory it holds once loaded, which a question about loading another model gives back.
+    uint64_t held_bytes = 0;
 };
 
 bool planner_available();

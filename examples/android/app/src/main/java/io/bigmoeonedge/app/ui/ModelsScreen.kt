@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.bigmoeonedge.app.data.CatalogEntry
 import io.bigmoeonedge.app.data.CatalogStatus
+import io.bigmoeonedge.app.data.FileRole
 import io.bigmoeonedge.app.data.ModelDownloader
 import io.bigmoeonedge.app.data.ModelManager
 import io.bigmoeonedge.app.data.SafImport
@@ -127,13 +128,15 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
             // ── on the phone ──
             Text("On this phone", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
             val local = models?.local.orEmpty()
+            // Projectors and draft heads (by their headers) are no model to load: listed apart, after the models.
+            val (localModels, companions) = FileRole.split(local) { it.role }
             if (local.isEmpty()) {
                 Text(
                     if (models == null) "Waiting for the engine…" else ModelManager.pushHint(),
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            local.forEach { m ->
+            localModels.forEach { m ->
                 LocalModelRow(
                     name = m.name,
                     detail = listOfNotNull(
@@ -143,6 +146,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                         if (!m.complete) "incomplete" else null,
                         if (m.complete && !m.streamable) "not a MoE this build streams" else null,
                         m.dir.takeIf { it.isNotEmpty() && it != models?.modelsDir },
+                        m.folder.takeIf { it.isNotEmpty() }?.let { "in $it" },
                     ).joinToString(" · "),
                     loaded = m.path == loadedPath,
                     loadable = m.complete && engine.serverUp && !engine.loading,
@@ -152,6 +156,26 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                     // leaving a 40 GB tail, and the app never has to know how shards are named.
                     onDelete = m.files.map(::File).takeIf { ModelManager.canDelete(it) }?.let { files -> { deleteTarget = files } },
                 )
+            }
+
+            if (companions.isNotEmpty()) {
+                Text(
+                    "Companion files, not models to load (by their headers):",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                companions.forEach { m ->
+                    // Not loadable; still deletable, as any file the app put there.
+                    LocalModelRow(
+                        name = m.name,
+                        detail = listOfNotNull(FileRole.label(m.role), gbLabel(m.bytes), m.arch.ifEmpty { null }, m.folder.takeIf { it.isNotEmpty() }?.let { "in $it" })
+                            .joinToString(" · "),
+                        loaded = false,
+                        loadable = false,
+                        onLoad = {},
+                        onUnload = {},
+                        onDelete = m.files.map(::File).takeIf { ModelManager.canDelete(it) }?.let { files -> { deleteTarget = files } },
+                    )
+                }
             }
 
             // ── the catalog ──
