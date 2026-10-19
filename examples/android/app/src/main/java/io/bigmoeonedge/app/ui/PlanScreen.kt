@@ -91,7 +91,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSettings: () -> Unit = {}) {
             if (model.isEmpty()) {
                 Text("Choose a model from Models: a plan is for one model on this phone.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (busy || engine.planProgress != null) ProgressCard(engine.planProgress)
+            if (busy || engine.planProgress != null) PlanProgressCard(engine.planProgress)
 
             val p = plan
             when {
@@ -340,8 +340,9 @@ private fun DecisionRow(d: PlanDecision, onOpenSettings: () -> Unit) {
     }
 }
 
+/** A measurement in progress, in the server's words: done, running, how many to go. Models shows it during a load too. */
 @Composable
-private fun ProgressCard(p: PlanProgress?) {
+fun PlanProgressCard(p: PlanProgress?) {
     var done by remember { mutableStateOf(listOf<String>()) }
     var last by remember { mutableStateOf("") }
     LaunchedEffect(p) {
