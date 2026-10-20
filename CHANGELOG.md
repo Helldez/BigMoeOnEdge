@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.32.3] - 2026-10-20
+
+### Fixed
+- **A model larger than VRAM beside GPUs loads where the fitter placed it (#321).** DeepSeek-V4-Flash
+  on two 16 GB cards tried a 17 GB allocation on one of them. Two causes, both in how the first
+  stage's placement reached the load:
+  - The planner armed a prefill device over layers the fitter had already placed, since a prefill
+    is compute-bound and the GPU won it. A prefill device loads as the model's only device, so every
+    placed layer landed on that one card. A placement is now a conflict the prefill rule declines
+    with the reason, and `validate()` refuses the combination when set by hand.
+  - The fitter's per-device layer split was dropped, so llama.cpp divided the layers by free memory
+    rather than as the fitter had sized each card's share. It is now carried as `--device-split`
+    (device names, in the fitter's order, each with its count), applied with the same device list,
+    printed in the plan's reproduce line, and checked against `--gpu-layers`.
+- **Layers on a device plus `--overlap` no longer corrupt a long prompt.** In a wide graph llama.cpp
+  offers the host-weight matmuls to the device, which copies a streamed expert before its read has
+  landed: with 12 layers on a Metal GPU and a 548-token prompt the answer was blank lines. Under
+  overlap with layers placed, the session turns that offload off; serial streaming keeps it, and
+  both now match the resident run byte for byte. `bmoe-server` runs with overlap on by default, so
+  this was the app's path on a desktop with a GPU.
+
 ## [0.32.2] - 2026-10-20
 
 ### Changed

@@ -832,6 +832,32 @@ int main() {
         check(placed_flags.find("model.gguf") == std::string::npos,
               "placed: the reproduce line leaves the model to the caller", placed_flags);
 
+        // The fitter's per-device split is part of the placement: carried as it was projected, and
+        // in the line that reproduces it. Without it llama.cpp divides by free memory (#321).
+        Placement split_pl = pl;
+        split_pl.device_split = {{"discrete", 24}};
+        const Plan sp = plan_run(base_cfg(), desktop(), model, split_pl, PlanRequest{});
+        check(sp.config.device_split.size() == 1 && sp.config.device_split[0].first == "discrete" &&
+                  sp.config.device_split[0].second == 24,
+              "placed: the fitter's per-device split is carried into the config");
+        check(sp.to_flags().find("--device-split discrete:24") != std::string::npos,
+              "placed: the reproduce line carries the per-device split", sp.to_flags());
+        check(validate(sp.config).ok, "placed: a split that sums to n_gpu_layers is a valid config",
+              validate(sp.config).error);
+
+        // A device that would win the prefill is not armed over placed layers: the prefill device
+        // loads as the model's only device, and every placed layer would land on it (#321).
+        HardwareProfile fast = desktop();
+        fast.host_wide_matmul_gibs = 200.0;
+        fast.wide_batch = 128;
+        fast.devices[0].wide_matmul_gibs = 1500.0;
+        fast.devices[0].wide_identity_ok = Tri::Yes;
+        const Plan pp = plan_run(base_cfg(), fast, model, split_pl, PlanRequest{});
+        const Decision * pd = find(pp, "prefill-device");
+        check(!pp.config.prefill.enabled() && pd && pd->reason.find("already placed layers") != std::string::npos,
+              "placed: no prefill device over layers the fitter placed", pd ? pd->reason : "no decision");
+        check(validate(pp.config).ok, "placed: and the plan stays a valid config", validate(pp.config).error);
+
         // When the fitter's host residual FITS in RAM, the right answer is the classic offload -
         // experts resident on the host, no streaming - and the plan must say so rather than stream.
         Placement small = pl;

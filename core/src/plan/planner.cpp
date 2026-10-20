@@ -531,6 +531,9 @@ void apply_placement(Planning & s) {
     }
     p.config.n_gpu_layers = placement.n_gpu_layers;
     p.config.buft_overrides = placement.override_patterns;
+    p.config.device_split.clear();
+    for (const auto & d : placement.device_split)
+        p.config.device_split.emplace_back(d.first, (int) d.second);
 
     // The two stages answer different questions, and where they disagree the disagreement is the
     // finding. The fitter solves CAPACITY - what fits where - and its answer is applied because it
@@ -989,6 +992,11 @@ PrefillSurvey survey_prefill(const HardwareProfile & hw) {
 // validate() refuses, read here so the plan declines them with a reason instead of producing a
 // config that does not start. Empty when nothing conflicts.
 std::string prefill_conflict(const RunConfig & c) {
+    // The prefill device joins the load as the model's only device, with no layer of its own; with
+    // layers already placed, that list would hand every one of them to this one device.
+    if (c.n_gpu_layers != 0)
+        return "the capacity fitter already placed layers on devices, and a prefill device loads as the model's "
+               "only device with none of its own";
     if (c.moe.row_stream)
         return "row-streamed tables are gathered on the host, inside a graph that would run on the device";
     if (c.spec.enabled())
@@ -1548,6 +1556,7 @@ void choose_devices(Planning & s) {
         } else {
             if (!c.prefill.enabled()) c.device_use = DeviceUse::CpuOnly;
             c.n_gpu_layers = 0;
+            c.device_split.clear();
             s.note("devices", c.prefill.enabled() ? "prefill device only" : "cpu only", Source::Measured,
                    "A device that failed its check is left out of the run.",
                    "a device was probed in a process of its own and did not survive it (" + broken +
