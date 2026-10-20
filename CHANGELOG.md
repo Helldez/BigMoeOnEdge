@@ -13,6 +13,20 @@ Semantic Versioning.
   preserved. Info-level snapshots through the existing log sink expose memory across automatic
   probe stages, model loading and session setup. Apple compressed-memory accounting is documented
   separately from disk swap and RSS; these observations do not change budgets or planning policy.
+- **The expert cache brakes when the system takes it back mid-run** (`--cache-brake`, on by
+  default). On a 12 GB phone the default `--auto` budget ended in a Jetsam `proc-thrashing` kill
+  (#304): the system compressed 2.5 GB of the engine's own memory and a token took 52 s. No figure
+  a platform reports says how much a process can keep resident, so the run now watches for it: a
+  token whose compute stalls at twice this machine's own median, confirmed by a sample of the
+  cache's pages that are no longer in RAM, halves the cache. It never grows back within the run
+  and never goes under one token's cycle; a slow token with the pages in place moves nothing. Same
+  procedure on every platform (`mincore`, or `QueryWorkingSetEx` on Windows). On a 16 GB desktop
+  with a 6000 MiB unpinned cache it took decode from 5.99 to 7.49 tok/s in ordinary use and from
+  4.77 to 5.97 beside a process holding 9 GB; under `--auto`, whose cache is pinned there, it never
+  fired. `docs/pressure.md` has the design and why it is not the retired governor.
+- **`scripts/ios-runs.sh` sweeps the expert cache.** A `c<MiB>` run (`RUNS="c1000 c1500 c2000"`)
+  is the plan's run with only the cache fixed at that size, so one command shows where a larger
+  cache stops paying and where the device starts taking memory back (`examples/ios/README.md`).
 
 ### Changed
 - **`scripts/bench-report.sh` measures the machine as well as the streamer (#321).** It used to run
@@ -32,6 +46,30 @@ Semantic Versioning.
   the requested cases, partial-CSV retrieval and summaries, but exits `1` if any launch command
   failed. Each case retains its exact exit status; all-success and plan-only batches exit `0`.
   Device-free fixtures cover both simulator and device command paths in CI.
+- **A layer's experts are never split between a device and the host** (#304). On a 12 GB phone
+  `--auto` stopped before generating with `captured MoE layer is missing expert tensor
+  'ffn_gate_exps'`: the planner had read the phone's GPU as having memory of its own, the capacity
+  fitter put 11 layers on it whole and split the next (`blk.11.ffn_down` on the host, its `gate` and
+  `up` on the device), and the streamer, which loads a layer's experts as a set, found half of it.
+  - *A pattern that moves part of a layer's FFN now brings all of that layer's experts with it.*
+    Any fitter's partial layer can take that shape, on any device. The experts are then streamed,
+    and the device holds less than the fitter projected. A split given by hand
+    (`--tensor-overrides`) is refused by name, with the pattern that keeps the layer whole, instead
+    of the missing tensor it used to trip on. Checked on a Mac with the phone's own placement
+    applied by hand: refused as given, and decoding the same text as a CPU-only run once the layer
+    is kept whole.
+  - *The GPU's memory is read from the device, not inferred from an allocation.* The Apple probe
+    adapter reads `hasUnifiedMemory` from Metal's default device and applies it to the ggml device
+    whose description matches it; a known shared pool cannot then be turned into separate memory by
+    a flat allocation delta (allocator reuse or reclaim can hide the allocation there). Contributed
+    by @gjjkbssg. Where no native fact exists, the allocation probe now counts what is charged to
+    the process (resident plus compressed or swapped), not what is resident, so a kernel making
+    room by compressing our own pages no longer reads as separate memory.
+  - *A dense weight a device owns stays on the device.* With layers placed on a device,
+    `--dense-weights anon` moved their dense weights into host memory as well, where the device
+    cannot read them: Metal reported a nil buffer and the run decoded `!`. Only weights in host
+    buffers are converted now, and the ones left on a device keep `--release-mmap` from dropping a
+    mapping the device may still read.
 
 ## [0.32.0] - 2026-10-19
 

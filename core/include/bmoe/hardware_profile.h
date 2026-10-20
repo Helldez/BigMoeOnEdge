@@ -87,7 +87,8 @@ struct ComputeDevice {
     // separate memory: Metal reports it on hardware whose memory is unified, and trusting it there
     // is how the same physical RAM gets counted twice — the accounting that took a phone down when
     // an integrated device was credited with "15195 MiB free" on a machine holding 11 GB. So the
-    // type only ever narrows this to Yes; a No has to be measured (see probe_device_costs).
+    // type only ever narrows this to Yes; a No needs native topology or an allocation probe.
+    // A known shared pool cannot become separate merely because its allocation delta was flat.
     //
     // Read it through the accessors below rather than directly. They encode the asymmetry once: an
     // unknown is treated as SHARED, because counting a shared pool as extra capacity overcommits a

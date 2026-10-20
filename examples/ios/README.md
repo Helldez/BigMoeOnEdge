@@ -76,7 +76,12 @@ with a `summary.txt` on top (tok/s, the decode split, major faults, dense reside
 ```bash
 BMOE_IOS_DEVICE=<id> BMOE_IOS_BUNDLE_ID=<your.own.id> scripts/ios-runs.sh device model.gguf
 RUNS="plan auto mmap t2 t4" ...   # add the same run at 2 and 4 threads
+RUNS="c1000 c1500 c2000" N_PREDICT=128 ...   # the plan's run with the cache fixed at each size
 ```
+
+A `c<MiB>` run keeps everything the plan chose except the expert cache, which it sets to that size
+(`--cache-mb`, `--force-cache`). Run at a few sizes, it shows where a larger cache stops paying and
+where the device starts taking memory back.
 
 `scripts/ios-runs.sh sim model.gguf` does the same in the booted simulator, which checks the
 harness and nothing else.

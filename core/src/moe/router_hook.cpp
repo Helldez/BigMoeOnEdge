@@ -1309,6 +1309,7 @@ void RouterHook::capture_sources(ggml_tensor * t) {
             // buffer keeps the historical answer, since that is what a CPU-only run has
             // always presented here.
             const bool servable = !src->buffer || ggml_backend_buffer_is_host(src->buffer);
+            if (!servable && il >= 0 && il < n_layer_) captured_[il].on_device = true;
             if (servable && il >= 0 && il < n_layer_ && src->ne[2] > 0) { // expert dim is dim-2
                 LayerExperts & L = captured_[il];
                 L.bound = true;

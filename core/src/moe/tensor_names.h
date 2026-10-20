@@ -85,4 +85,9 @@ std::string expert_override_pattern(int il);
 // layer, an attention share, the all-layers form with "\d+" in place of an index.
 int expert_override_layer(const char * pattern);
 
+// The layer any per-layer FFN pattern names - its experts, its whole FFN, or a share of it such as
+// the fitter's partial layer ("blk\\.5\\.ffn_down.*") - or -1 for a pattern that names no layer's
+// FFN. A share is the form that splits a layer's experts, so it is the one a caller must widen.
+int ffn_override_layer(const char * pattern);
+
 } // namespace bmoe::tensor_names

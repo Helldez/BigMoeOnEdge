@@ -60,9 +60,32 @@ plan's ledger never held. And its host
 only the context and compute reservations come from the fitter — the one thing it knows that the
 profile does not, and 605 MiB the earlier budget had overcommitted on the desktop.
 
+The memory-topology fact can come directly from a device API, rather than from an allocation's
+effect on the host's available-memory counter. The Apple adapter reads `hasUnifiedMemory` from
+`MTLCreateSystemDefaultDevice()`, but applies the answer only to a ggml `MTL` device whose public
+description exactly matches that native device's name. The pinned Metal backend uses that default
+physical device. A virtual device with a suffix, a different description, or an unavailable API
+does not establish that identity and leaves the native fact `Unknown`; the existing differential
+probe can still supply an answer. This is an identity check in the adapter, not a rule that guesses
+a memory topology from a model name.
+
+A direct shared-memory answer takes precedence over a later allocation-delta estimate: available
+memory may rise while the kernel reclaims other pages, so that difference cannot turn a known
+shared pool into separate memory. A native separate-memory answer is not changed into `Unknown`,
+and other backends retain their existing differential probe. The pure planning rules still read
+the same tri-state property: only a known separate pool adds capacity; the bandwidth measurements
+still decide whether moving compute is worthwhile. This topology correction does not establish
+that an entire automatic run fits or completes under memory pressure.
+
 Two outcomes of the first stage end the plan early, and both are stated: if the host residual
 fits in RAM the experts stay resident and nothing streams (the classic `-ot exps=CPU` offload);
 if every layer's experts land on a device, nothing is left for the streamer.
+
+A layer's experts are never split between the two. The fitter's partial layer can overflow a share
+of its FFN to the host (`ffn_down` here, `ffn_gate` and `ffn_up` on the device), and the streamer
+cannot serve half a layer: it loads a layer's experts as a set. So any pattern that moves part of a
+layer's FFN brings all of that layer's experts to the host with it, where they are streamed. A split
+given by hand is refused at load, by name.
 
 ## The unit everything is priced in
 
@@ -161,10 +184,12 @@ The profile records how many backends came linked, how many were loaded at run t
 anyone looked at all, so the plan keeps three answers apart: *this machine has no accelerator*,
 *this build carries none*, and *nobody went to look*.
 
-None of this writes a backend or forks one. Every backend comes from ggml; the planner asks devices
+None of this writes a backend or forks one. Every backend comes from ggml; the planning rules ask
 about **properties** — `host_memory`, `host_buffer`, `host_ptr_buffers`, `needs_repack`,
-`runs_expert_op`, `identity_ok` — and never matches a name. That is how an NPU with two native quant
-formats excludes itself without a line written for it.
+`runs_expert_op`, `identity_ok` — and never infer hardware from a name. An adapter may match a
+backend's public device description to a native API's device identity before recording a property,
+as the Metal memory-topology probe does above. That is how an NPU with two native quant formats
+excludes itself without a line in the rules written for it.
 
 ## The two invariants
 
@@ -932,7 +957,7 @@ Each row is a gap here paired with the public facility that closes it. None need
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
 | KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
 | device selection | `mparams.devices[]`, `split_mode`, `main_gpu` | tell the fitter which devices to use, e.g. exclude one that demands a repack |
-| ~~a unified-memory device looks discrete~~ — **no longer decides anything** | the bandwidth probe, not the `integrated` flag | what the flag would have told us cheaply is now measured directly, and measured beats reported: the rule compares the device's figure to the host's on the same graph |
+| ~~a unified-memory device looks discrete~~ — **accounted for** | native memory-topology facts, or the allocation-delta probe where no direct fact is available | a shared pool is not added to host capacity; the separate bandwidth measurement decides whether moving compute is worthwhile |
 | ~~the budget under a compressing reclaim~~ — **in** (`--probe-mem`, and a free estimate always) | nothing in llama.cpp: a kernel fact | the headroom probe stays ours, and is the one measurement no other engine takes |
 
 ### DGX Spark, as a worked case
