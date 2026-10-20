@@ -552,6 +552,40 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-split", "Layers per device", G::Memory, L::Debug,
+                          "How many of the layers on devices each device takes, as NAME:LAYERS pairs separated by "
+                          "',', in the order llama.cpp's capacity fitter listed the devices. Set by the hardware "
+                          "planner; empty leaves the split to llama.cpp, which divides by free memory.");
+        d.type = ParamType::Text;
+        d.value_hint = "NAME:N,...";
+        d.get = [](const RunConfig & c) {
+            std::string s;
+            for (const auto & e : c.device_split)
+                s += (s.empty() ? "" : ",") + e.first + ":" + std::to_string(e.second);
+            return s;
+        };
+        d.set = [](RunConfig & c, const std::string & s, std::string & err) {
+            c.device_split.clear();
+            for (size_t a = 0; !s.empty();) {
+                const size_t b = s.find(',', a);
+                const std::string item = s.substr(a, b == std::string::npos ? std::string::npos : b - a);
+                const size_t colon = item.rfind(':');
+                char * end = nullptr;
+                const long n = colon == std::string::npos ? -1 : std::strtol(item.c_str() + colon + 1, &end, 10);
+                if (colon == 0 || n < 1 || n > RunConfig::n_gpu_layers_max || !end || *end) {
+                    err = "expected NAME:LAYERS with LAYERS in [1, " + std::to_string(RunConfig::n_gpu_layers_max) +
+                          "], got '" + item + "'";
+                    return false;
+                }
+                c.device_split.emplace_back(item.substr(0, colon), (int) n);
+                if (b == std::string::npos) break;
+                a = b + 1;
+            }
+            return true;
+        };
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("devices", "Compute devices", G::Memory, L::Advanced,
                           "Which compute devices llama.cpp may use. auto gives it all of them when a layer is "
                           "placed on one and the CPU alone otherwise: a device left registered but unused "
