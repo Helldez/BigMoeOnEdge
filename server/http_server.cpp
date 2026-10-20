@@ -20,6 +20,7 @@
 #include "planner_adapter.h"
 #include "platform.h"
 #include "settings_store.h"
+#include "warmup.h"
 
 #include "bmoe/config.h"
 #include "bmoe/params.h"
@@ -61,6 +62,7 @@ struct Options {
     std::string api_key;
     std::string api_key_file; // --api-key-file: the key, read at start, never on the command line
     bool no_api_key = false;  // listen beyond loopback with no key, on purpose
+    bool no_warmup = false;   // skip the conversation warm-up: no prefix file is read or written
     bool models_only = false; // every client, local ones too, names models in the models folder only
     bool open_browser = false;
     bool isolated_probes = true;                  // the planner asks each device in a child process first
@@ -104,6 +106,7 @@ void print_usage(const char * argv0) {
                 "                       command line: prefer --api-key-file\n"
                 "  --api-key-file PATH  the same, with the key read from PATH (trailing newline ignored)\n"
                 "  --no-api-key         listen beyond loopback with no key, on a network you trust\n"
+                "  --no-warmup          disable conversation warm-up (no replay at load, no prefix file)\n"
                 "  --models-only        local clients too may only open models from the folders models\n"
                 "                       are listed from (clients on the network always are)\n"
                 "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
@@ -158,6 +161,8 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.api_key_file = next();
         else if (a == "--no-api-key")
             o.no_api_key = true;
+        else if (a == "--no-warmup")
+            o.no_warmup = true;
         else if (a == "--models-only")
             o.models_only = true;
         else if (a == "--no-isolated-probes")
@@ -256,6 +261,7 @@ struct App {
     EventBus bus;
     SettingsStore store;
     EngineHost host;
+    Warmup warmup;
     ModelLibrary lib;
     std::atomic<long long> chat_seq{0};
 
@@ -285,7 +291,8 @@ struct App {
         std::string catalog,
         std::string added,
         std::string scratch)
-        : opt(std::move(o)), store(server_defaults(), std::move(settings_path)), host(bus),
+        : opt(std::move(o)), store(server_defaults(), settings_path), host(bus),
+          warmup((fs::u8path(settings_path).parent_path() / "warmup.json").u8string(), !opt.no_warmup),
           lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), std::move(added), bus),
           net(curl_fetch(scratch)), scratch_dir(std::move(scratch)) {}
 
@@ -390,7 +397,9 @@ struct App {
         const ModelLibrary::ModelFacts facts = lib.probe(requested.model_path);
         if (effective.moe.enabled && !pinned && !facts.arch.empty() && !facts.streamable) effective.moe.enabled = false;
         if (!effective.moe.enabled) drop_streaming_only(effective);
-        return host.load(effective, requested);
+        const std::string err = host.load(effective, requested);
+        if (err.empty()) warmup.restart(host, effective); // replays once the load announces Ready
+        return err;
     }
 
     // Everything that only means something on a running stream, turned off with it. A default the
@@ -567,6 +576,7 @@ void register_routes(httplib::Server & svr, App & app) {
     });
 
     svr.Post("/v1/chat/completions", [&](const httplib::Request & req, httplib::Response & res) {
+        app.warmup.client_seen(); // a real turn is arriving: no further warm-up segments behind it
         json body;
         if (!parse_body(req, res, body)) return;
         OpenAiChatRequest cr;
@@ -585,6 +595,8 @@ void register_routes(httplib::Server & svr, App & app) {
             // Waiting for a turn, the only sign of a client that left is its closed connection.
             ChatOutcome out = app.host.chat(cr.turn, nullptr, [&req] { return !req.is_connection_closed(); });
             if (out.status != 200) return send_error(res, out.status, out.error, out.code);
+            // A finished, non-cancelled turn is what the warm-up's next session replays.
+            if (out.n_predict > 0) app.warmup.record(app.store.config().model_path, cr.turn);
             ensure_tool_call_ids(out.result.tool_calls, meta.id);
             return send_json(res, completion_json(meta, out.result, finish_reason(out.result, out.n_predict)));
         }
@@ -669,6 +681,7 @@ void register_routes(httplib::Server & svr, App & app) {
                 chunk(json::object(), finish_reason(out.result, out.n_predict),
                       json{{"summary", summary_json(out.result.summary, out.result.cancelled)}});
                 if (cr.include_usage) write("data: " + dump(usage_chunk_json(meta, out.result.summary)) + "\n\n");
+                if (!out.result.cancelled) app.warmup.record(app.store.config().model_path, cr.turn);
             }
             write("data: [DONE]\n\n");
             sink.done();
@@ -679,6 +692,7 @@ void register_routes(httplib::Server & svr, App & app) {
     // A decision: which of a list of choices the model would answer next, from one prefill and no
     // decode (docs/decide.md). Not streamed: there is nothing to stream, and the answer is one object.
     svr.Post("/api/decide", [&](const httplib::Request & req, httplib::Response & res) {
+        app.warmup.client_seen(); // a client acting now beats a prefix it has not asked for yet
         json body;
         if (!parse_body(req, res, body)) return;
         DecideRequest dr;

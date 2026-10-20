@@ -31,4 +31,8 @@ void open_url(const std::string & url);
 // Windows): nobody is there to read a URL, so the server opens the browser itself.
 bool started_by_double_click();
 
+// Best effort: restrict `path` to its owner (the file holds conversation contents). Already-racy
+// windows are a no-op: a personal data directory is user-private by its own permissions.
+void restrict_file_to_user(const std::string & path);
+
 } // namespace bmoe::server::platform

@@ -620,3 +620,30 @@ Applies the current plan's `values` to the config without adding them to `user_k
 the decisions so `GET /api/config` returns them under `plan`. Returns the config object. A plan is
 made from the configuration without the plan layer (defaults, launch flags, the person's values),
 so its `values` are complete on their own and replace the previous plan whole.
+
+## Conversation warm-up
+
+The server can make the first request of a fresh session pay only its own tokens instead of a
+full re-prefill. After a finished, non-cancelled chat turn it saves the conversation *prefix*
+(everything but the last message) to `warmup.json` in the server's data directory, and the next
+load of the same model replays that prefix into the KV as prefill-only segments before the first
+request arrives.
+
+- **The replay is speculative by construction.** The session's reuse rule diffs whatever a client
+  next renders against what the KV holds and cuts at the first divergence, so a prefix that no
+  longer matches costs only the prefill already spent on the segments that ran — never a wrong
+  answer. The in-flight user message is deliberately not saved: caching content edits and retries
+  may replace, and that would cost one message's prefill to be wrong, which is the cheapest
+  speculation there is.
+- **Preemptable in segments.** The replay runs ~300 tokens at a time; a request arriving
+  mid-replay waits at most one segment (they share the chat turn line), the rest is skipped, and
+  everything the finished segments have done is kept.
+- **What is not warmed.** Conversations that carry tool calls or tool messages are not saved: a
+  replay of one could never match its real render, which is written through this turn's tool
+  schemas. A prefix the client regenerates or edits re-prefills from its first differing token,
+  exactly as without warm-up.
+- **Launch option.** `--no-warmup` turns the feature off entirely: no replay at load and no file
+  is written or read.
+
+The file holds conversation contents, so it is written through a temp file for atomicity and
+restricted to the user (0600 on POSIX; the data directory's own ACL on Windows).
