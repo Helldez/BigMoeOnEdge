@@ -147,7 +147,12 @@ struct ModelProfile {
     // instead answered 2 threads on a phone where the engine is 58% faster at 4: an F32 GEMV
     // saturates the bus at very few threads, a quantized one carries dequantization work per byte
     // and keeps scaling.
+    //
+    // A mixed quant carries several: `expert_type_id` is the one holding the most expert bytes,
+    // `expert_type_ids` every one of them (ascending), so a device is asked about all the layouts
+    // it would have to execute and not only the commonest.
     int expert_type_id = -1;
+    std::vector<int> expert_type_ids;
 
     // ── shapes that constrain what may be done ──────────────────────────────────────
     // The output head is the embedding table. Two tensor objects over one range, so a policy that
