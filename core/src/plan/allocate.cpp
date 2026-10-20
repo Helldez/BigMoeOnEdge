@@ -99,6 +99,7 @@ void price_unstreamed(Allocation & a) {
     a.dense_pinned = false;
     a.cache_bytes = 0;
     a.cache_locked_bytes = 0;
+    a.cache_lock_unverified = false;
 
     // The ledger keeps what the run holds whatever it does with the weights, and drops the rest.
     Ledger & l = a.ledger;
@@ -237,7 +238,8 @@ void charge_fixed(Pricing & c) {
     c.locked = in.device_locked ? in.device_bytes : 0;
 
     const uint64_t lock_room = in.lockable_bytes > c.locked ? in.lockable_bytes - c.locked : 0;
-    a.dense_pinned = in.can_pin && in.reserved_bytes > 0 && (in.pin_forced || in.reserved_bytes <= lock_room);
+    a.dense_pinned = in.can_pin && in.reserved_bytes > 0 &&
+                     (in.pin_forced || (in.lockable_bytes_known && in.reserved_bytes <= lock_room));
     if (in.can_pin && in.reserved_bytes > lock_room) {
         a.pinned_shortfall_bytes = in.reserved_bytes - lock_room;
         note(a, "dense-pin", size_brief(a.pinned_shortfall_bytes),
@@ -445,7 +447,8 @@ void bound_cache(Pricing & c) {
     // platform that grants no lock, and it is bounded by what can be held like everything else.
     const uint64_t cache_lock_room =
         (in.lock_in_place_bytes > c.locked ? in.lock_in_place_bytes - c.locked : 0) & ~((1ull << 20) - 1);
-    const bool cache_protected = in.cache_lock && cache_lock_room >= model.token_cycle_bytes;
+    const bool cache_may_lock = in.cache_lock && cache_lock_room >= model.token_cycle_bytes;
+    const bool cache_protected = cache_may_lock && in.lock_in_place_bytes_known;
     uint64_t holdable_cap = in.budget_bytes;
     if (cache_protected && in.holdable_bytes > 0) {
         // With the cache locked, most of what this run holds cannot be taken back, and a margin sized
@@ -464,14 +467,16 @@ void bound_cache(Pricing & c) {
         sized = std::min(holdable_cap > taken ? holdable_cap - taken : 0, in.cacheable_bytes) & ~((1ull << 20) - 1);
     }
     a.ledger.holdable_cap = holdable_cap;
-    if (cache_protected && sized > cache_lock_room) {
+    if (cache_may_lock && sized > cache_lock_room) {
         note(a, "cache-lock", size_brief(cache_lock_room),
-             "The cache stops at " + size_brief(cache_lock_room) + ", all that can be locked in RAM.",
+             in.lock_in_place_bytes_known
+                 ? "The cache stops at " + size_brief(cache_lock_room) + ", all that can be locked in RAM."
+                 : "A known lock bound limits the cache to " + size_brief(cache_lock_room) + ".",
              "the expert cache is bounded by what can be locked in place (" + mibs(cache_lock_room) +
                  ") rather than by what can be held (" + mibs(sized) +
                  "): past that it would be memory the machine may take back");
         sized = cache_lock_room;
-    } else if (in.cache_lock && !cache_protected && in.lock_in_place_bytes >= model.token_cycle_bytes) {
+    } else if (in.cache_lock && !cache_may_lock && in.lock_in_place_bytes >= model.token_cycle_bytes) {
         note(a, "cache-lock", size_brief(cache_lock_room),
              "The cache is not locked: " + size_brief(cache_lock_room) + " can be, one token needs " +
                  size_brief(model.token_cycle_bytes) + ".",
@@ -510,6 +515,14 @@ void bound_cache(Pricing & c) {
     }
     a.cache_bytes = sized;
     a.cache_locked_bytes = cache_protected ? sized : 0;
+    a.cache_lock_unverified = cache_may_lock && !in.lock_in_place_bytes_known && sized > 0;
+    if (a.cache_lock_unverified) {
+        note(a, "cache-lock", "unmeasured", "The lock ceiling is unmeasured: ask for a runtime grant.",
+             "the lock-in-place ceiling could not be read; the cache stays within the ordinary process budget "
+             "and every known lock bound, with no margin reduction or predicted lock grant. The runtime asks "
+             "to lock its pages; an automatically sized cache enables fitting to the grant, never below one "
+             "token cycle. Explicit caller settings retain their authority");
+    }
     GroupPlacement & p = a.at(WeightGroup::Experts);
     // The ranking may already have written a size that the reservation or the floor then took away.
     // Leaving it there makes the plan contradict itself - a placement claiming to hold memory the
@@ -654,6 +667,7 @@ void write_ledger(Pricing & c) {
     // The two stores are one figure where they are one pool and two where they are not; the ceiling
     // a reader checks `locked` against is whichever the locked rows were charged to.
     a.ledger.lockable_cap = std::max(in.lockable_bytes, in.lock_in_place_bytes);
+    a.ledger.lockable_cap_known = in.lockable_bytes_known && in.lock_in_place_bytes_known;
     auto row = [&](const char * name, uint64_t bytes, bool is_locked) {
         if (bytes == 0) return;
         a.ledger.rows.push_back({name, bytes, is_locked});

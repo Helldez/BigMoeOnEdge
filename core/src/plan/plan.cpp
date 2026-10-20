@@ -199,10 +199,18 @@ std::string Plan::explain() const {
     if (!allocation.ledger.rows.empty()) {
         const Ledger & l = allocation.ledger;
         char line[200];
-        std::snprintf(line, sizeof(line),
-                      "plan:   memory held %llu of %llu MiB holdable, locked %llu of %llu MiB lockable\n",
-                      (unsigned long long) (l.held >> 20), (unsigned long long) (l.holdable_cap >> 20),
-                      (unsigned long long) (l.locked >> 20), (unsigned long long) (l.lockable_cap >> 20));
+        if (l.lockable_cap_known) {
+            std::snprintf(line, sizeof(line),
+                          "plan:   memory held %llu of %llu MiB holdable, locked %llu of %llu MiB lockable\n",
+                          (unsigned long long) (l.held >> 20), (unsigned long long) (l.holdable_cap >> 20),
+                          (unsigned long long) (l.locked >> 20), (unsigned long long) (l.lockable_cap >> 20));
+        } else {
+            std::snprintf(
+                line, sizeof(line),
+                "plan:   memory held %llu of %llu MiB holdable, locked %llu MiB; lockable ceiling unmeasured\n",
+                (unsigned long long) (l.held >> 20), (unsigned long long) (l.holdable_cap >> 20),
+                (unsigned long long) (l.locked >> 20));
+        }
         out += line;
         for (const LedgerRow & r : l.rows) {
             std::snprintf(line, sizeof(line), "plan:     %-20s %6llu MiB  %s%s\n", r.name.c_str(),
@@ -210,6 +218,8 @@ std::string Plan::explain() const {
                           r.in_turn ? ", in turn with the cache (not in the total)" : "");
             out += line;
         }
+        if (allocation.cache_lock_unverified)
+            out += "plan:     expert cache lock requested; runtime grant unverified\n";
     }
 
     if (streaming_declined) {

@@ -227,6 +227,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+      - name: Backend configure defaults and explicit overrides
+        run: python3 tests/ios_backend_defaults_test.py
       - name: Configure & build (examples/ios, simulator)
         run: scripts/build-ios.sh sim
 

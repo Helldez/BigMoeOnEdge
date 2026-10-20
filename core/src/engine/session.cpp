@@ -899,6 +899,14 @@ bool Session::Impl::read_model(Opening & o) {
     llama_model_meta_val_str(m, "general.architecture", arch_buf, sizeof(arch_buf));
     arch = arch_buf;
 
+    // Startup prefills already load experts, so their pin-fit floor needs the same effective
+    // routing width as generation before any streamed graph runs, even without a metrics sink.
+    n_expert_used = cfg.n_expert_used;
+    if (n_expert_used <= 0) {
+        const GgufModelInfo & mi = o.gguf();
+        n_expert_used = mi.ok ? mi.n_expert_used : 0;
+    }
+
     if (cfg.moe.enabled) {
         // Which tensors are the routed experts, read off the file's shapes. A dense model, or a MoE
         // laid out in a way this engine has not proved byte-identical, is refused here with the reason
@@ -1327,6 +1335,7 @@ bool Session::Impl::bind_streaming(Opening & o) {
     if (prefill && cfg.prefill.slots_on_demand) prefill->share_memory_with(&source);
     if (!source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
         return o.fail("expert stream source init failed");
+    source.set_pin_floor(source.worst_cycle_bytes(n_expert_used));
     hook->set_source(&source);
     // The row policy exists only once dense_.init has taken the tables over; null means nothing
     // qualified or the takeover declined, and the hook then costs exactly nothing per node.
@@ -1571,28 +1580,14 @@ void Session::Impl::describe_run(Opening & o) {
         // The EFFECTIVE top-k: an override IS the applied width, otherwise the model's own. Same
         // resolution the route trace does, and worth a header read — a run whose top-k is unknown
         // cannot be compared against one whose top-k differs, which is most of the point.
-        ri.n_expert_used = cfg.n_expert_used;
-        if (ri.n_expert_used <= 0 || ri.n_expert == 0) {
-            const GgufModelInfo & mi = o.gguf();
-            if (mi.ok) {
-                ri.n_expert = mi.n_expert;
-                if (ri.n_expert_used <= 0) ri.n_expert_used = mi.n_expert_used;
-            }
-        }
+        ri.n_expert_used = n_expert_used;
+        const GgufModelInfo & mi = o.gguf();
+        if (mi.ok) ri.n_expert = mi.n_expert;
         // Last, because it needs both numbers above: the budget the streamer settled on and the
         // width that was actually applied. Rounded UP — a cycle reported as smaller than it is
         // would put a budget on the wrong side of the cliff in exactly the borderline case.
         ri.cache_cycle_mb =
             (int) ((source.worst_cycle_bytes(ri.n_expert_used) + 1024ull * 1024ull - 1) / (1024ull * 1024ull));
-        source.set_pin_floor(source.worst_cycle_bytes(ri.n_expert_used));
-    }
-
-    // The effective routing width, resolved once: an override IS the applied width, otherwise the
-    // model's own count. Exposed so a UI can interpret drop_cold_frac, and used by the warning below.
-    n_expert_used = cfg.n_expert_used;
-    if (n_expert_used <= 0) {
-        const GgufModelInfo & mi = o.gguf();
-        n_expert_used = mi.ok ? mi.n_expert_used : 0;
     }
 }
 

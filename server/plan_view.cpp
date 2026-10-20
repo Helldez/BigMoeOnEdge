@@ -165,6 +165,8 @@ json memory_json(const HardwareProfile & hw, const Plan & plan) {
                      {"label", "This process"},
                      {"cap_bytes", l.holdable_cap},
                      {"lockable_cap_bytes", l.lockable_cap},
+                     {"lockable_cap_known", l.lockable_cap_known},
+                     {"cache_lock_unverified", plan.allocation.cache_lock_unverified},
                      {"held_bytes", l.held},
                      {"locked_bytes", l.locked},
                      {"rows", rows}});
