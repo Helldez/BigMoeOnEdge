@@ -214,6 +214,16 @@ struct GenTally {
     }
 };
 
+// Whether the load placed `t` in a buffer that belongs to a device other than the host's. Asked as
+// "names a non-CPU device" rather than "names the CPU" because the buffer type over the file
+// mapping names no device at all in this llama.cpp (a FIXME upstream); that is the host's buffer,
+// and it stays ours whether or not the field is ever filled in.
+bool on_other_device(const ggml_tensor * t) {
+    if (!t->buffer) return false;
+    ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
+    return dev && ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU;
+}
+
 // The names of the expert weight tensors the streamer rebinds. "Dense" is defined by subtraction —
 // everything the model has that is NOT one of these — so both consumers below start by asking this
 // same question, and used to answer it with their own copy of the same triple loop.
@@ -1156,6 +1166,12 @@ void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
         if (!t) continue;
         const std::string name = t->name;
         if (expert_names.count(name)) continue;
+        // Only a weight the load left on the host is ours to re-home. A layer the first stage put
+        // on a device keeps its dense tensors in that device's buffer - its own memory, or the file
+        // mapping wrapped for it - and rebinding `data` onto a host allocation leaves the device
+        // reading an address it never registered: garbage output on a unified-memory GPU, worse on
+        // a discrete one. Asked of the buffer's device, so no backend is named.
+        if (on_other_device(t)) continue;
         auto off = offs.off_by_name.find(name);
         auto sz = offs.size_by_name.find(name);
         if (off == offs.off_by_name.end() || sz == offs.size_by_name.end()) continue; // not a file tensor
@@ -2030,6 +2046,7 @@ struct Session::Impl::Turn {
         // Announced only once the prompt is in both contexts: begin() checks how far the draft context
         // has actually got, so calling it before prefill would warn about a gap that is about to close.
         if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
+        llama_synchronize(ctx); // the last chunk may still be queued on a device, as in the decode bracket
         prefill_seconds = secs(t_prefill0, clock_t_::now());
         // Prefill attribution, closed here (the begin() snapshot sits above the chunk loop): deltas
         // of the cumulative counters across the prompt, the quantities the decode phase reports per
@@ -2181,6 +2198,10 @@ struct Session::Impl::Turn {
         loop_overhead_s += s.overhead;
         trace_begin(n_past, /*n_tokens*/ 1 + s.n_draft, /*phase*/ 1);
         const int dec = llama_decode(ctx, step);
+        // On a device backend llama_decode returns once the graph is queued, not computed: the wait
+        // would land in the next logits read and be billed to loop overhead, and a two-GPU run read
+        // 1777 tok/s for 241. On the CPU the graph is already done and this returns at once.
+        llama_synchronize(ctx);
         s.s1 = clock_t_::now();
         loop_mark = s.s1; // the next token's overhead is measured from here
         s.f1 = pio::major_faults();
