@@ -4,28 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.32.3] - 2026-10-20
-
-### Fixed
-- **A model larger than VRAM beside GPUs loads where the fitter placed it (#321).** DeepSeek-V4-Flash
-  on two 16 GB cards tried a 17 GB allocation on one of them. Two causes, both in how the first
-  stage's placement reached the load:
-  - The planner armed a prefill device over layers the fitter had already placed, since a prefill
-    is compute-bound and the GPU won it. A prefill device loads as the model's only device, so every
-    placed layer landed on that one card. A placement is now a conflict the prefill rule declines
-    with the reason, and `validate()` refuses the combination when set by hand.
-  - The fitter's per-device layer split was dropped, so llama.cpp divided the layers by free memory
-    rather than as the fitter had sized each card's share. It is now carried as `--device-split`
-    (device names, in the fitter's order, each with its count), applied with the same device list,
-    printed in the plan's reproduce line, and checked against `--gpu-layers`.
-- **Layers on a device plus `--overlap` no longer corrupt a long prompt.** In a wide graph llama.cpp
-  offers the host-weight matmuls to the device, which copies a streamed expert before its read has
-  landed: with 12 layers on a Metal GPU and a 548-token prompt the answer was blank lines. Under
-  overlap with layers placed, the session turns that offload off; serial streaming keeps it, and
-  both now match the resident run byte for byte. `bmoe-server` runs with overlap on by default, so
-  this was the app's path on a desktop with a GPU.
-
-## [0.32.2] - 2026-10-20
+## [0.33.0] - 2026-10-20
 
 ### Added
 - **The iOS app, on the shared framework.** `examples/ios/app` is the five screens (chat, models,
@@ -68,6 +47,35 @@ Semantic Versioning.
   `curl`) and hands back the way to stop the server, so a change of address restarts it in the
   same process. Without one, the server does what the executable does. The server library now
   builds for iOS: opening a browser is a no-op there.
+- **Process memory accounting beside system availability.** Per-token CSVs append
+  `process_footprint_mib` (Apple's dirty-memory ledger charge) and `process_headroom_mib` (the
+  current allowance remaining for a physical iOS app), with `-1` for unknown and measured zeros
+  preserved. Info-level snapshots through the existing log sink expose memory across automatic
+  probe stages, model loading and session setup. Apple compressed-memory accounting is documented
+  separately from disk swap and RSS; these observations do not change budgets or planning policy.
+- **A device prefill where nothing can be locked.** An unavailable wire-limit query was read as a
+  lock store of 0, and the planner charged an accelerator's buffers to it anyway, so the device
+  never fit: a 12 GB phone's GPU, measured at 17.8x its cores on a wide prefill, was refused "on
+  memory" (#304). The lock ceiling exists to keep what the process locks from being outbid, and
+  where nothing can be locked there is nothing to outbid: the device is now charged there only where
+  a lock store exists, and to what the process may hold everywhere. Machines that publish one, the
+  Mac and the Android phone among them, plan exactly as before (checked side by side on the Mac).
+- **The expert cache brakes when the system takes it back mid-run** (`--cache-brake`, on by
+  default). On a 12 GB phone the default `--auto` budget ended in a Jetsam `proc-thrashing` kill
+  (#304): the system compressed 2.5 GB of the engine's own memory and a token took 52 s. No figure
+  a platform reports says how much a process can keep resident, so the run now watches for it: a
+  token whose compute stalls at twice this machine's own median, confirmed by a sample of the
+  cache's pages that are no longer in RAM, halves the cache. It never grows back within the run
+  and never goes under one token's cycle; a slow token with the pages in place moves nothing. Same
+  procedure on every platform (`mincore`, or `QueryWorkingSetEx` on Windows). On a 16 GB desktop
+  with a 6000 MiB unpinned cache it took decode from 5.99 to 7.49 tok/s in ordinary use and from
+  4.77 to 5.97 beside a process holding 9 GB; under `--auto`, whose cache is pinned there, it never
+  fired. `docs/pressure.md` has the design and why it is not the retired governor.
+- **`scripts/ios-runs.sh` sweeps the expert cache.** A `c<MiB>` run (`RUNS="c1000 c1500 c2000"`)
+  is the plan's run with only the cache fixed at that size, so one command shows where a larger
+  cache stops paying and where the device starts taking memory back (`examples/ios/README.md`).
+  Its `summary.txt` also carries the prefill line, the plan's `prefill-device` and any
+  `cache brake:` line.
 
 ### Changed
 - **One readable face for the whole UI: Oxanium, on the desktop and in the Android app.** The pixel
@@ -79,8 +87,34 @@ Semantic Versioning.
   `examples/ios/harness`, the memory entitlements to `examples/ios/memory.entitlements`, shared by
   both. `scripts/build-ios.sh` builds both (`BMOE_IOS_TARGETS` picks one; `BMOE_IOS_APP_BUNDLE_ID`
   names the app on a device).
+- **`scripts/bench-report.sh` measures the machine as well as the streamer (#321).** It used to run
+  one configuration only, streaming forced on with CPU-only settings fixed for the reference phone,
+  so a desktop with the model inside its RAM, or GPUs beside it, reported the cost of reads a
+  resident model never makes and never touched its GPUs: a 17 GiB model on a 60 GB, two-GPU
+  workstation read 4.3 tok/s. It now runs `--auto` first (the planner's own placement: devices,
+  resident when the model fits, streaming only the residue) and then the fixed streaming protocol,
+  and prints one row each with the settings read back from each run's CSV, plus the plan `auto`
+  chose. `MODES=stream` reproduces the old single run. The community-benchmark page, the method
+  page and the issue template describe the two rows, and how a CUDA build joins the `auto` one.
 
 ### Fixed
+- **A model larger than VRAM beside GPUs loads where the fitter placed it (#321).** DeepSeek-V4-Flash
+  on two 16 GB cards tried a 17 GB allocation on one of them. Two causes, both in how the first
+  stage's placement reached the load:
+  - The planner armed a prefill device over layers the fitter had already placed, since a prefill
+    is compute-bound and the GPU won it. A prefill device loads as the model's only device, so every
+    placed layer landed on that one card. A placement is now a conflict the prefill rule declines
+    with the reason, and `validate()` refuses the combination when set by hand.
+  - The fitter's per-device layer split was dropped, so llama.cpp divided the layers by free memory
+    rather than as the fitter had sized each card's share. It is now carried as `--device-split`
+    (device names, in the fitter's order, each with its count), applied with the same device list,
+    printed in the plan's reproduce line, and checked against `--gpu-layers`.
+- **Layers on a device plus `--overlap` no longer corrupt a long prompt.** In a wide graph llama.cpp
+  offers the host-weight matmuls to the device, which copies a streamed expert before its read has
+  landed: with 12 layers on a Metal GPU and a 548-token prompt the answer was blank lines. Under
+  overlap with layers placed, the session turns that offload off; serial streaming keeps it, and
+  both now match the resident run byte for byte. `bmoe-server` runs with overlap on by default, so
+  this was the app's path on a desktop with a GPU.
 - **`--auto` no longer aborts on a 1- or 2-bit IQ quant (#321).** The bandwidth probe encodes a
   synthetic matrix in the model's expert type, and ggml asserts when IQ2_XXS, IQ2_XS or IQ1_S are
   encoded without importance weights: DeepSeek-V4-Flash UD-IQ2_M died before loading on Linux. The
@@ -113,52 +147,6 @@ Semantic Versioning.
   constant 95 °C while the cores read 47-55. Zones are now taken in numeric order, one reading its
   own `trip_point_*_temp` is skipped, and the figure is the hottest zone that moves (the median
   until one has). JVM tests over a fake `/sys/class/thermal` cover it.
-
-## [0.32.1] - 2026-10-20
-
-### Added
-- **Process memory accounting beside system availability.** Per-token CSVs append
-  `process_footprint_mib` (Apple's dirty-memory ledger charge) and `process_headroom_mib` (the
-  current allowance remaining for a physical iOS app), with `-1` for unknown and measured zeros
-  preserved. Info-level snapshots through the existing log sink expose memory across automatic
-  probe stages, model loading and session setup. Apple compressed-memory accounting is documented
-  separately from disk swap and RSS; these observations do not change budgets or planning policy.
-- **A device prefill where nothing can be locked.** An unavailable wire-limit query was read as a
-  lock store of 0, and the planner charged an accelerator's buffers to it anyway, so the device
-  never fit: a 12 GB phone's GPU, measured at 17.8x its cores on a wide prefill, was refused "on
-  memory" (#304). The lock ceiling exists to keep what the process locks from being outbid, and
-  where nothing can be locked there is nothing to outbid: the device is now charged there only where
-  a lock store exists, and to what the process may hold everywhere. Machines that publish one, the
-  Mac and the Android phone among them, plan exactly as before (checked side by side on the Mac).
-- **The expert cache brakes when the system takes it back mid-run** (`--cache-brake`, on by
-  default). On a 12 GB phone the default `--auto` budget ended in a Jetsam `proc-thrashing` kill
-  (#304): the system compressed 2.5 GB of the engine's own memory and a token took 52 s. No figure
-  a platform reports says how much a process can keep resident, so the run now watches for it: a
-  token whose compute stalls at twice this machine's own median, confirmed by a sample of the
-  cache's pages that are no longer in RAM, halves the cache. It never grows back within the run
-  and never goes under one token's cycle; a slow token with the pages in place moves nothing. Same
-  procedure on every platform (`mincore`, or `QueryWorkingSetEx` on Windows). On a 16 GB desktop
-  with a 6000 MiB unpinned cache it took decode from 5.99 to 7.49 tok/s in ordinary use and from
-  4.77 to 5.97 beside a process holding 9 GB; under `--auto`, whose cache is pinned there, it never
-  fired. `docs/pressure.md` has the design and why it is not the retired governor.
-- **`scripts/ios-runs.sh` sweeps the expert cache.** A `c<MiB>` run (`RUNS="c1000 c1500 c2000"`)
-  is the plan's run with only the cache fixed at that size, so one command shows where a larger
-  cache stops paying and where the device starts taking memory back (`examples/ios/README.md`).
-  Its `summary.txt` also carries the prefill line, the plan's `prefill-device` and any
-  `cache brake:` line.
-
-### Changed
-- **`scripts/bench-report.sh` measures the machine as well as the streamer (#321).** It used to run
-  one configuration only, streaming forced on with CPU-only settings fixed for the reference phone,
-  so a desktop with the model inside its RAM, or GPUs beside it, reported the cost of reads a
-  resident model never makes and never touched its GPUs: a 17 GiB model on a 60 GB, two-GPU
-  workstation read 4.3 tok/s. It now runs `--auto` first (the planner's own placement: devices,
-  resident when the model fits, streaming only the residue) and then the fixed streaming protocol,
-  and prints one row each with the settings read back from each run's CSV, plus the plan `auto`
-  chose. `MODES=stream` reproduces the old single run. The community-benchmark page, the method
-  page and the issue template describe the two rows, and how a CUDA build joins the `auto` one.
-
-### Fixed
 - **The benchmark-report issue form parses again.** Its engine-version placeholder was two quoted
   strings on one line, which is not YAML, so GitHub could not render the form.
 - **iOS run batches report launch failures to automation.** `scripts/ios-runs.sh` still finishes
