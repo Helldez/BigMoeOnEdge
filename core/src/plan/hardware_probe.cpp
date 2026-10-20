@@ -300,9 +300,16 @@ void probe_device_support(HardwareProfile & hw, const ModelProfile & model) {
     ggml_context * ctx = ggml_init(ip);
     if (!ctx) return;
 
-    const ggml_type type = (ggml_type) model.expert_type_id;
-    const int64_t blk = ggml_blck_size(type);
-    if (blk > 0) {
+    // One op per expert layout the file carries: a mixed quant is executed in every one of its
+    // formats, so a device that lacks a kernel for any of them cannot run the experts as a whole.
+    // Asked for each rather than for the commonest, which is what this used to do.
+    std::vector<ggml_tensor *> ops;
+    const std::vector<int> types =
+        model.expert_type_ids.empty() ? std::vector<int>{model.expert_type_id} : model.expert_type_ids;
+    for (int id : types) {
+        const ggml_type type = (ggml_type) id;
+        const int64_t blk = ggml_blck_size(type);
+        if (blk <= 0) continue;
         // Shapes only have to be legal and representative; the graph is never run.
         const int64_t n_embd = blk * 8;
         const int64_t n_ff = blk * 8;
@@ -315,28 +322,30 @@ void probe_device_support(HardwareProfile & hw, const ModelProfile & model) {
         ggml_tensor * w = ggml_new_tensor_3d(ctx, type, n_embd, n_ff, (int64_t) model.n_expert);
         ggml_tensor * x = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, 1, 1);
         ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, 1);
-        ggml_tensor * op = (w && x && ids) ? ggml_mul_mat_id(ctx, w, x, ids) : nullptr;
+        if (w && x && ids) ops.push_back(ggml_mul_mat_id(ctx, w, x, ids));
+    }
+    if (!ops.empty() && ops.size() == types.size()) {
+        for (ComputeDevice & d : hw.devices) {
+            if (!d.is_cpu && !d.probe_here()) continue; // asked in another process
+            ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
+            if (!dev) continue;
+            bool all = true;
+            for (ggml_tensor * op : ops)
+                all = all && ggml_backend_dev_supports_op(dev, op);
+            d.runs_expert_op = all ? Tri::Yes : Tri::No;
 
-        if (op) {
-            for (ComputeDevice & d : hw.devices) {
-                if (!d.is_cpu && !d.probe_here()) continue; // asked in another process
-                ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
-                if (!dev) continue;
-                d.runs_expert_op = ggml_backend_dev_supports_op(dev, op) ? Tri::Yes : Tri::No;
-
-                // A device that executes this layout only out of a buffer type of its own needs the
-                // weight converted at load. For a streamed expert that is fatal rather than merely
-                // costly: the streamer's whole mechanism is rebinding `data` onto the file's native
-                // layout, and a repack is precisely what replaces that layout.
-                // Ask about the buffer type this weight would ACTUALLY live in. For a streamed
-                // expert that is the host buffer where one is offered, not the device's default:
-                // a discrete accelerator's own buffer needs a repack and its host buffer does not,
-                // and reading the wrong one of the two is the difference between "this device
-                // cannot serve streamed experts" and the truth.
-                ggml_backend_buffer_type_t buft = ggml_backend_dev_host_buffer_type(dev);
-                if (!buft) buft = ggml_backend_dev_buffer_type(dev);
-                d.needs_repack = (buft && !ggml_backend_buft_is_host(buft)) ? Tri::Yes : Tri::No;
-            }
+            // A device that executes this layout only out of a buffer type of its own needs the
+            // weight converted at load. For a streamed expert that is fatal rather than merely
+            // costly: the streamer's whole mechanism is rebinding `data` onto the file's native
+            // layout, and a repack is precisely what replaces that layout.
+            // Ask about the buffer type this weight would ACTUALLY live in. For a streamed
+            // expert that is the host buffer where one is offered, not the device's default:
+            // a discrete accelerator's own buffer needs a repack and its host buffer does not,
+            // and reading the wrong one of the two is the difference between "this device
+            // cannot serve streamed experts" and the truth.
+            ggml_backend_buffer_type_t buft = ggml_backend_dev_host_buffer_type(dev);
+            if (!buft) buft = ggml_backend_dev_buffer_type(dev);
+            d.needs_repack = (buft && !ggml_backend_buft_is_host(buft)) ? Tri::Yes : Tri::No;
         }
     }
     ggml_free(ctx);

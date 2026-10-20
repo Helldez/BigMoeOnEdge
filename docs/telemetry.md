@@ -20,7 +20,9 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
 - `BMOE_PROGRESS.step`/`steps` are 1-based index and target token counts.
 - `read_mb` is the flash bytes read this token; `stall_ms` is the overlap-only wall time compute
   lost to reads (0 in serial mode).
-- `wall_ms` = total token time; `io_ms` = flash read time. `compute_ms` is a **residual, not a
+- `wall_ms` = total token time, closed only once the device backends have finished the token
+  (`llama_synchronize`), so a layer computed on a GPU is in it rather than in `loop_overhead_ms`;
+  `io_ms` = flash read time. `compute_ms` is a **residual, not a
   measured quantity**: no clock runs around llama.cpp's matmul kernels in a normal run, so compute
   is whatever wall time is left after the measured terms are subtracted — `wall_ms − io_ms −
   mgmt_ms` in serial, `wall_ms − stall_ms − mgmt_ms` under overlap. When that residual is the

@@ -94,6 +94,12 @@ add_executable(bmoe_device_probe_test device_probe_test.cpp)
 target_link_libraries(bmoe_device_probe_test PRIVATE bmoe_core)
 add_test(NAME device_probe COMMAND bmoe_device_probe_test)
 
+# probe_bandwidth on the expert formats ggml cannot encode without importance weights (#321): the
+# probe quantizes into the model's own type, and those formats used to abort `--auto`. Host only.
+add_executable(bmoe_bandwidth_probe_test bandwidth_probe_test.cpp)
+target_link_libraries(bmoe_bandwidth_probe_test PRIVATE bmoe_core)
+add_test(NAME bandwidth_probe COMMAND bmoe_bandwidth_probe_test)
+
 # The n-gram draft matcher. Pure policy over token ids (no llama.cpp, no model), so the drafting
 # decision is covered exhaustively here; what it costs is a bench question, not a test.
 add_executable(bmoe_ngram_test ngram_test.cpp)
