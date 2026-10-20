@@ -119,11 +119,6 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     if(APPLE AND GGML_METAL)
         enable_language(OBJCXX)
     endif()
-    # The BLAS backend can retain full float32 copies of quantized matrices outside the planner's
-    # buffer estimate. Keep that scratch out of an iOS app's tight allowance unless explicitly opted in.
-    if(IOS)
-        set(GGML_BLAS OFF CACHE BOOL "ggml: use BLAS")
-    endif()
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
 endif()
 

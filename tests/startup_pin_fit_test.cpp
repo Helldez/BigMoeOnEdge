@@ -213,8 +213,8 @@ int main(int argc, char ** argv) {
             bmoe::set_log_sink(nullptr);
             continue;
         }
-        const size_t confirmation = logs.find("confirmation: 64 tokens, top token agrees 100%");
-        failures += check(confirmation < logs.lines.size(), "all 64 confirmation rows ran on the device");
+        const size_t confirmation = logs.find("confirmation: 64 tokens, 31 compared, top token agrees 100%");
+        failures += check(confirmation < logs.lines.size(), "the 64-token confirmation ran on the device");
         failures += check(locked().refusals > 0, "the startup confirmation actually reached the fake lock limit");
         if (spec.second) {
             failures +=

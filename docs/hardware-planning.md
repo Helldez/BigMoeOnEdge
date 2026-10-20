@@ -601,7 +601,11 @@ text's perplexity from 32.4 to 711 445 - no next token right in 1070.
 So the session confirms the device on the model before keeping it (`--prefill-verify`, on by
 default). After the load it prefills a fixed text on the host and on the device - 64 tokens, or the
 device's narrowest graph (`--prefill-min-tokens`) where that is wider - and keeps the device only
-if the top next token agrees in at least 90% of the positions; otherwise the device is handed back
+if the top next token agrees in at least 90% of 31 positions spread across it. Not all of them: each
+compared position is a row of the output head, the model's largest matrix, and from 32 rows up
+ggml's BLAS backend unpacks it into float32 and keeps that copy - 1940 MiB on a 248k vocabulary, at
+load, which ended the run on a phone. Compared this way, a 16 GB Mac's peak footprint at load fell
+from 7.58 to 5.66 GiB with the same 97% agreement. A device that falls short is handed back
 exactly as one that failed to open, and with `--prefill-best-effort`, which a plan that armed the
 device sets, the prefill stays on the CPU. A check that cannot run - a text the vocabulary does not
 tokenize, no graph as wide as the device's narrowest within what one graph may return - leaves the
