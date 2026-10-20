@@ -107,6 +107,12 @@ Semantic Versioning.
 - **`bench-report.sh` measures the drive on the largest shard.** A split model's first shard can be
   metadata alone (5-10 MB), so the 1 GiB read a quarter into it read nothing and timed the open:
   #321's 960 MiB/s, 2113 MiB/s on a laptop whose drive reads 6400.
+- **The Android app's CPU temperature is a sensor's, not a threshold's (#311).** It took the first
+  thermal zone whose type names the CPU, in the order the directory lists them, and on a
+  Snapdragon-class phone that was a trip threshold published as a zone: the metrics line read a
+  constant 95 °C while the cores read 47-55. Zones are now taken in numeric order, one reading its
+  own `trip_point_*_temp` is skipped, and the figure is the hottest zone that moves (the median
+  until one has). JVM tests over a fake `/sys/class/thermal` cover it.
 
 ## [0.32.1] - 2026-10-20
 
