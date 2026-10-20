@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.32.1] - 2026-10-20
+
+### Fixed
+- **iOS run batches report launch failures to automation.** `scripts/ios-runs.sh` still finishes
+  the requested cases, partial-CSV retrieval and summaries, but exits `1` if any launch command
+  failed. Each case retains its exact exit status; all-success and plan-only batches exit `0`.
+  Device-free fixtures cover both simulator and device command paths in CI.
+
 ## [0.32.0] - 2026-10-19
 
 ### Added

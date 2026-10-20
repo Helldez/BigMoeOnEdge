@@ -81,6 +81,12 @@ RUNS="plan auto mmap t2 t4" ...   # add the same run at 2 and 4 threads
 `scripts/ios-runs.sh sim model.gguf` does the same in the booted simulator, which checks the
 harness and nothing else.
 
+The batch continues through every requested run, including attempts to retrieve partial CSVs after
+a launch failure, then exits `1` if any launch command failed and `0` if all launches succeeded.
+Each run's exact launch exit status remains in its console log and `summary.txt`. CSV retrieval
+is best effort and does not set the batch status; a plan-only run needs no CSV. The status is the
+launcher command's result, so inspect the console log for the harness's own exit marker as well.
+
 ## Limits
 
 - `--session` reads requests from a standard input an app does not have.
