@@ -27,6 +27,13 @@ Semantic Versioning.
 
 ## [0.32.2] - 2026-10-20
 
+### Changed
+- **One readable face for the whole UI: Oxanium, on the desktop and in the Android app.** The pixel
+  face was set on buttons, badges, the navigation and every figure, and at those sizes it was hard
+  to read; it now marks only the wordmark beside the logo. Oxanium (SIL OFL 1.1, bundled) keeps the
+  squared look and takes every other word, the model's answers included; figures keep tabular
+  digits. Sizes are unchanged.
+
 ### Fixed
 - **`--auto` no longer aborts on a 1- or 2-bit IQ quant (#321).** The bandwidth probe encodes a
   synthetic matrix in the model's expert type, and ggml asserts when IQ2_XXS, IQ2_XS or IQ1_S are

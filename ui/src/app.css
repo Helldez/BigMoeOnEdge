@@ -1,9 +1,16 @@
-/* The visual language (docs/design.md): the logo's palette, a pixel face for the product's own
-   voice, square boxes with 2 px edges and a hard shadow. Dark by default, light when asked. */
+/* The visual language (docs/design.md): the logo's palette, a pixel face for the wordmark and one
+   squared face for every other word, square boxes with 2 px edges and a hard shadow. Dark by
+   default, light when asked. */
 @font-face {
   font-family: 'Pixelify Sans';
   src: url('/fonts/PixelifySans.ttf') format('truetype');
   font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Oxanium';
+  src: url('/fonts/Oxanium.ttf') format('truetype');
+  font-weight: 200 800;
   font-display: swap;
 }
 
@@ -29,9 +36,10 @@
   --radius: 0;
   --edge: 2px;
   --pixel: 'Pixelify Sans', ui-monospace, monospace;
+  --ui: 'Oxanium', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
   color-scheme: dark light;
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--ui);
   font-size: 15px;
   line-height: 1.5;
   color: var(--text);
@@ -77,7 +85,6 @@ a {
 h1,
 h2,
 h3 {
-  font-family: var(--pixel);
   font-weight: 700;
   letter-spacing: 0.01em;
 }
@@ -104,7 +111,6 @@ button {
   background: var(--surface-2);
   border-radius: 0;
   padding: 0.35rem 0.8rem;
-  font-family: var(--pixel);
   font-size: 0.95rem;
 }
 button:hover:not(:disabled) {
@@ -213,7 +219,6 @@ pre {
 
 .badge {
   display: inline-block;
-  font-family: var(--pixel);
   font-size: 0.8rem;
   line-height: 1.4;
   padding: 0.05rem 0.45rem;
@@ -279,15 +284,13 @@ td {
   vertical-align: top;
 }
 th {
-  font-family: var(--pixel);
   font-weight: 600;
   color: var(--muted);
   font-size: 0.9rem;
 }
 
-/* A figure the engine reports, in the product's own face. */
+/* A figure the engine reports: digits of one width, so a live value does not jitter. */
 .figure {
-  font-family: var(--pixel);
   font-variant-numeric: tabular-nums;
 }
 
