@@ -124,16 +124,16 @@ endif()
 
 add_subdirectory(core)
 
-# An app is the only thing that runs on iOS, so there the CLI is built as one: the same main.cpp,
-# inside the harness's bundle, and no command-line binary.
+if(BMOE_BUILD_SERVER AND BMOE_HAVE_LLAMA)
+    add_subdirectory(server)
+endif()
+
+# An app is the only thing that runs on iOS, so there the CLI and the server are built into apps:
+# the harness carries the CLI's main.cpp, the app links the server library. No command-line binary.
 if(BMOE_HAVE_LLAMA AND IOS)
     add_subdirectory(examples/ios)
 elseif(BMOE_BUILD_CLI AND BMOE_HAVE_LLAMA)
     add_subdirectory(cli)
-endif()
-
-if(BMOE_BUILD_SERVER AND BMOE_HAVE_LLAMA)
-    add_subdirectory(server)
 endif()
 
 if(BMOE_BUILD_TESTS AND BMOE_HAVE_LLAMA)

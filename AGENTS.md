@@ -44,7 +44,9 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   against stock upstream.
 - `tests/` — byte-identity gates. `examples/android/` — the Android app, a client of `bmoe-server`
   (shipped in the APK, run as a child process; no engine logic in Kotlin). `examples/ios/` — the iOS
-  harness: `cli/main.cpp` compiled into an app, since an app there may not start a process.
+  app (`app/`: `bmoe_server` run on a thread, since an app there may not start a process, and
+  SwiftUI screens over its API; `BmoeKit/`: its client side, `swift test` on a Mac) and the
+  harness (`harness/`: `cli/main.cpp` compiled into an app). No engine logic in Swift.
 
 ## Build and test
 

@@ -1,7 +1,6 @@
 # One experience, three native UIs: the five screens
 
-Every UI of this project (the web UI the desktop serves, the Android app, the iOS app when it
-comes) is a client of the same `bmoe-server` API ([server-api.md](server-api.md)) and shows the same
+Every UI of this project (the web UI the desktop serves, the Android app, the iOS app) is a client of the same `bmoe-server` API ([server-api.md](server-api.md)) and shows the same
 five screens. This page says what each screen shows, what a person can do on it, and what every
 state means, so the three toolkits render the same thing their own way. It describes behaviour,
 not layout: a phone puts the five in a bottom bar and the prompt under a thumb, a desktop puts them

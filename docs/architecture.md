@@ -107,7 +107,9 @@ third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates
 examples/android the Android app: bmoe-server from the APK as a child process, five screens over its API
-examples/ios    a harness app with bmoe-cli compiled in (an app there may not start a process)
+examples/ios    app/: the iOS app, bmoe_server linked and run on a thread, five SwiftUI screens over
+                its API; BmoeKit/: the app's client side (API, chat, downloads, metrics), a Swift
+                package tested on the host; harness/: bmoe-cli compiled into an app
 ```
 
 Dependencies point inward: adapters depend on the port headers, the CLI and the server compose

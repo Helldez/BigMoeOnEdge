@@ -62,7 +62,7 @@ host app supplies or the server does without:
 
 Three native UIs, one experience: the five screens (chat, models, plan, settings, metrics) are
 specified once, in what they show and what a setting means, and each toolkit renders them its own
-way: [screens.md](screens.md). The web UI and the Android app are its first two implementations.
+way: [screens.md](screens.md). The web UI, the Android app and the iOS app implement it.
 
 ## The order of the work
 
@@ -73,7 +73,12 @@ way: [screens.md](screens.md). The web UI and the Android app are its first two 
    reimplementations of settings, catalog and telemetry parsing are deleted, not ported; the
    planner, the plan screen and the network switch came with it. What it still owes is a run on a
    phone, and the decide endpoint (#245) for the one feature the move left behind.
-3. **iOS on the framework** (issue #235): `run()` on a thread, the same client over loopback.
+3. **iOS on the framework** (issue #235). Done in code: the app (`examples/ios/app`) links
+   `bmoe_server` and calls `run()` on a thread with a `server::Embedding` (`server/server.h`)
+   that hands the server the system's HTTP stack for reading a repository, where the desktop runs
+   `curl`, and the way to stop it so a change of address restarts it in-process; the five screens
+   are SwiftUI over the same API. Downloads are the app's, with the system's background transfers.
+   What it owes is a run on a device.
 4. **Desktop and Windows at parity** (issue #234): an installer per OS, the device probes isolated
    in the server, the cache lock and the gates on Windows.
 

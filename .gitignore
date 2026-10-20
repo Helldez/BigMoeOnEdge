@@ -58,3 +58,7 @@ keystore.properties
 # and .so binaries as untracked, which is exactly what the never-'git add -A' rule exists to
 # survive.
 .claude/
+
+# The iOS app's Swift package (swift test)
+examples/ios/BmoeKit/.build/
+examples/ios/BmoeKit/.swiftpm/

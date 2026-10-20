@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# Configure and build the iOS harness (examples/ios). Needs Xcode, not only the command line tools.
+# Configure and build the iOS app and harness (examples/ios). Needs Xcode, not only the command line
+# tools.
 #
 #   scripts/build-ios.sh                 the simulator, unsigned
 #   scripts/build-ios.sh device          a device, signed by BMOE_IOS_TEAM
+#
+# The generated Xcode project (<build dir>/bigmoeonedge.xcodeproj) opens in Xcode to run, debug and
+# profile either target.
 #
 # Env overrides:
 #   BUILD_DIR            (default build-ios-sim / build-ios-device)
 #   BUILD_TYPE           (Release)
 #   BMOE_IOS_TEAM        Apple development team id; required for a device
-#   BMOE_IOS_BUNDLE_ID   (io.bigmoeonedge.harness) must be unique to the team on a device
+#   BMOE_IOS_APP_BUNDLE_ID (io.bigmoeonedge.app) the app's, unique to the team on a device
+#   BMOE_IOS_BUNDLE_ID   (io.bigmoeonedge.harness) the harness's, likewise
+#   BMOE_IOS_TARGETS     ("bmoe-app bmoe-harness") which of the two to build
 #   BMOE_IOS_MEMORY_ENTITLEMENTS=ON   ask for the larger memory limit (a Personal Team is granted it)
 #   BMOE_IOS_EXTENDED_ADDRESSING=ON   also ask for the larger address space (a paid team only)
 #   IOS_MIN_VERSION      (16.4, the oldest llama.cpp builds for)
@@ -16,6 +22,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${1:-sim}"
+read -r -a TARGETS <<< "${BMOE_IOS_TARGETS:-bmoe-app bmoe-harness}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 IOS_MIN_VERSION="${IOS_MIN_VERSION:-16.4}"
 
@@ -68,18 +75,23 @@ cmake -S . -B "$BUILD_DIR" -G Xcode \
     -DGGML_OPENMP=OFF \
     -DGGML_METAL_EMBED_LIBRARY=ON \
     -DBMOE_IOS_BUNDLE_ID="${BMOE_IOS_BUNDLE_ID:-io.bigmoeonedge.harness}" \
+    -DBMOE_IOS_APP_BUNDLE_ID="${BMOE_IOS_APP_BUNDLE_ID:-io.bigmoeonedge.app}" \
     -DBMOE_IOS_MEMORY_ENTITLEMENTS="${BMOE_IOS_MEMORY_ENTITLEMENTS:-OFF}" \
     -DBMOE_IOS_EXTENDED_ADDRESSING="${BMOE_IOS_EXTENDED_ADDRESSING:-OFF}" \
     "${SIGN[@]}"
-if [ "$TARGET" = device ]; then
-    cmake --build "$BUILD_DIR" --config "$BUILD_TYPE" --target bmoe-harness -- -allowProvisioningUpdates
-else
-    cmake --build "$BUILD_DIR" --config "$BUILD_TYPE" --target bmoe-harness
-fi
+for t in "${TARGETS[@]}"; do
+    if [ "$TARGET" = device ]; then
+        cmake --build "$BUILD_DIR" --config "$BUILD_TYPE" --target "$t" -- -allowProvisioningUpdates
+    else
+        cmake --build "$BUILD_DIR" --config "$BUILD_TYPE" --target "$t"
+    fi
+done
 
-APP="$(find "$BUILD_DIR" -maxdepth 4 -name bmoe-harness.app -type d | head -n 1)"
-echo "built: $APP"
+for app in BigMoeOnEdge bmoe-harness; do
+    APP="$(find "$BUILD_DIR" -maxdepth 4 -name "$app.app" -type d | head -n 1)"
+    if [ -n "$APP" ]; then echo "built: $APP"; fi
+done
 if [ "$TARGET" = sim ]; then
-    echo "run:   xcrun simctl boot <device>; xcrun simctl install booted \"$APP\""
+    echo "run:   xcrun simctl boot <device>; xcrun simctl install booted <the .app above>"
     echo "       see examples/ios/README.md"
 fi
