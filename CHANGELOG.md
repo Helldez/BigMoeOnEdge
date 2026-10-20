@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.32.2] - 2026-10-20
+
+### Fixed
+- **`--auto` no longer aborts on a 1- or 2-bit IQ quant (#321).** The bandwidth probe encodes a
+  synthetic matrix in the model's expert type, and ggml asserts when IQ2_XXS, IQ2_XS or IQ1_S are
+  encoded without importance weights: DeepSeek-V4-Flash UD-IQ2_M died before loading on Linux. The
+  probe now passes a uniform importance where ggml says one is required. Which expert type the
+  probe used was also the first expert tensor met while walking an unordered map, so on a mixed
+  quant (that file: IQ2_XXS gate and up, IQ3_XXS down) the format probed, and whether the run
+  aborted, depended on hash order rather than on the file; it is now the type carrying the most
+  expert bytes, and the device-support question is
+  asked of every expert type the file carries. `bandwidth_probe_test` covers every format ggml
+  names as needing importance weights.
+- **A layer placed on a device keeps its dense weights there.** The dense policy rebound every
+  non-expert tensor onto host memory, including those of layers the first stage had put on a GPU,
+  so a run with layers on a device and the rest streamed printed garbage (Metal: "buffer is nil",
+  repeated `!`). It now re-homes only tensors whose buffer names no device other than the CPU; the
+  same run is byte-identical to its resident counterpart. This is the placement `--auto` gives a
+  model larger than VRAM beside a GPU, and no machine the planner had run on had reached it.
+- **Decode and prefill time include the device's work.** On a GPU backend `llama_decode` returns
+  once the graph is queued, so the wait landed in `loop_overhead_ms` and tok/s overstated a GPU run:
+  a two-GPU CUDA run read 1777 tok/s for 241, and a Metal run with 12 layers on the GPU 16.4 for 13.6.
+  Both timers now close after `llama_synchronize`; a CPU run is unchanged.
+- **The bandwidth probe encodes one row and copies it.** Every row of its matrix was already the
+  same row, and encoding 16384 of them in an IQ grid took 13-16 s of a laptop core before every
+  `--auto` run. `--plan` on an IQ3_XXS model: 26.2 s to 14.5 s, the same figures measured.
+- **`bench-report.sh` measures the drive on the largest shard.** A split model's first shard can be
+  metadata alone (5-10 MB), so the 1 GiB read a quarter into it read nothing and timed the open:
+  #321's 960 MiB/s, 2113 MiB/s on a laptop whose drive reads 6400.
+
 ## [0.32.1] - 2026-10-20
 
 ### Added
