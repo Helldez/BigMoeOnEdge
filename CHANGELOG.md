@@ -47,11 +47,6 @@ Semantic Versioning.
   and prints one row each with the settings read back from each run's CSV, plus the plan `auto`
   chose. `MODES=stream` reproduces the old single run. The community-benchmark page, the method
   page and the issue template describe the two rows, and how a CUDA build joins the `auto` one.
-- **iOS defaults the separate BLAS backend off.** Its wide matrix operations can retain float32
-  copies of quantized weights outside the planner's current buffer estimate. New device and
-  simulator builds avoid that scratch by default while keeping CPU Accelerate and Metal enabled.
-  Explicit or cached `GGML_BLAS` settings are respected; other platforms keep their defaults.
-  This is a memory-cost mitigation, not a claim that default automatic runs are pressure-safe.
 
 ### Fixed
 - **The benchmark-report issue form parses again.** Its engine-version placeholder was two quoted
@@ -84,6 +79,16 @@ Semantic Versioning.
     cannot read them: Metal reported a nil buffer and the run decoded `!`. Only weights in host
     buffers are converted now, and the ones left on a device keep `--release-mmap` from dropping a
     mapping the device may still read.
+- **The prefill-device confirmation no longer costs 2 GB at load.** It asked the host for all 64
+  rows of logits, and from 32 rows up ggml's BLAS backend unpacks the output head, the model's
+  largest matrix, into float32 and keeps it: 1940 MiB on a 248k vocabulary, outside every budget,
+  which a 12 GB phone's process limit ended the run on (#304, found by @gjjkbssg). The device still
+  computes all 64 positions; 31 spread across them are compared. On a 16 GB Mac the peak footprint
+  of an `--auto` load fell from 7.58 to 5.66 GiB, with the same 97% agreement. BLAS stays on: it
+  takes a CPU prefill of a 1208-token prompt from 66.7 to 92.6 tok/s there. On the phone, with BLAS
+  on, the default `--auto` now completes every case of the device runner, a 1208-token prompt
+  prefilled on its GPU included, with the startup checkpoints peaking near 5.0 GiB (validated by
+  @gjjkbssg).
 - **An unreadable lock ceiling no longer disables cache locking.** Denied platform queries retain
   their uncertainty and every independent finite bound, including zero. An automatic plan can
   request cache locks and fit to actual runtime grants without increasing its ordinary memory

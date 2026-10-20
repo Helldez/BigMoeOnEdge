@@ -38,16 +38,6 @@ unique to it. Entitlements must be granted to the team, or the build does not si
 - `BMOE_IOS_EXTENDED_ADDRESSING=ON` also asks for the extended address space, which a Personal Team
   is refused. Nothing measured so far has needed it.
 
-New iOS device and simulator builds default the separate ggml BLAS backend off. Its wide matrix
-operations can retain a full float32 copy of quantized weights, scratch that the planner's current
-buffer estimate does not reserve. The CPU's Accelerate support (`GGML_ACCELERATE`) and Metal stay
-enabled. This removes that backend's extra scratch; it does not establish that the default automatic
-configuration fits or stays resident under system memory pressure.
-
-An existing CMake cache keeps its setting. Reconfigure it with `-DGGML_BLAS=OFF` to adopt this
-policy, or explicitly use `-DGGML_BLAS=ON` for a BLAS experiment that accepts the extra memory
-cost. Other platforms keep their existing backend defaults.
-
 The iOS sandbox can deny the wire-limit queries available on macOS. An unreadable limit now stays
 unmeasured: the automatic plan keeps its ordinary memory budget and margin, requests cache locks,
 and enables fitting to the kernel's actual grants. Known finite limits, including zero, still apply.
@@ -55,8 +45,7 @@ The plan reports the pending request separately from a protected cache. A refuse
 leave ordinary memory; the plan alone does not establish that a run will stay resident.
 
 The model-derived cache floor is initialized before startup's complete prefill-device confirmation,
-so fitting can handle a partial grant there as well as during generation. The confirmation's token
-count, full logits comparison, and acceptance threshold are unchanged.
+so fitting can handle a partial grant there as well as during generation.
 
 ## Run in the simulator
 
