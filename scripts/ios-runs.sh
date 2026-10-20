@@ -11,7 +11,8 @@
 # by its file name. Env overrides:
 #   BMOE_IOS_DEVICE     device id or name, as `xcrun devicectl list devices` prints it (device only)
 #   BMOE_IOS_BUNDLE_ID  (io.bigmoeonedge.harness) the bundle id the harness was signed with
-#   RUNS                ("plan auto mmap") any of: plan, auto, mmap, t2, t4 (auto with 2 or 4 threads)
+#   RUNS                ("plan auto mmap") any of: plan, auto, mmap, t2, t4 (auto with 2 or 4 threads),
+#                       c<MiB> (auto with the expert cache fixed at that size, e.g. c1500)
 #   PROMPT              ("The capital of France is")
 #   N_PREDICT           (48)
 #   OUT                 (ios-runs-<date>-<time>) where the outputs land
@@ -95,7 +96,8 @@ for r in $RUNS; do
         mmap) run mmap --auto --dense-weights mmap "${common[@]}" --csv mmap.csv ;;
         t2) run t2 --auto --threads 2 "${common[@]}" --csv t2.csv ;;
         t4) run t4 --auto --threads 4 "${common[@]}" --csv t4.csv ;;
-        *) echo "unknown run '$r' (plan, auto, mmap, t2, t4)" >&2 ;;
+        c[0-9]*) run "$r" --auto --cache-mb "${r#c}" --force-cache "${common[@]}" --csv "$r.csv" ;;
+        *) echo "unknown run '$r' (plan, auto, mmap, t2, t4, c<MiB>)" >&2 ;;
     esac
 done
 echo "outputs: $OUT (summary.txt first)"

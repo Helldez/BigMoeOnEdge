@@ -206,3 +206,16 @@ endif()
 add_executable(bmoe_planner_test planner_test.cpp)
 target_link_libraries(bmoe_planner_test PRIVATE bmoe_core)
 add_test(NAME planner COMMAND bmoe_planner_test)
+
+add_executable(bmoe_memory_topology_test memory_topology_test.cpp)
+target_link_libraries(bmoe_memory_topology_test PRIVATE bmoe_core)
+target_include_directories(bmoe_memory_topology_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/plan)
+if(APPLE AND GGML_METAL)
+    target_compile_definitions(bmoe_memory_topology_test PRIVATE BMOE_HAVE_METAL_MEMORY_PROBE=1)
+endif()
+add_test(NAME memory_topology COMMAND bmoe_memory_topology_test)
+
+# The cache brake's policy, replayed on measured per-token compute traces.
+add_executable(bmoe_cache_brake_test cache_brake_test.cpp)
+target_link_libraries(bmoe_cache_brake_test PRIVATE bmoe_core)
+add_test(NAME cache_brake COMMAND bmoe_cache_brake_test)

@@ -5,6 +5,7 @@
 
 #include "../io/platform_io.h"
 #include "../engine/llama_log.h"
+#include "memory_topology.h"
 
 #include "ggml-backend.h"
 #include "ggml.h"
@@ -127,9 +128,17 @@ void probe_devices(HardwareProfile & h) {
             // claiming shared memory - a claim worth believing, because believing it errs safe.
             // `TYPE_GPU` is not the opposite claim: Metal reports it on unified-memory hardware, so
             // taking it as evidence of separate memory is how one physical pool gets counted twice.
-            // It stays Unknown - which the accessors read as shared - until probe_device_costs
-            // settles it by allocating on the device and watching what the host loses.
+            // Native topology can settle it below; otherwise it stays Unknown - read as shared -
+            // until probe_device_costs allocates on the device and watches what the host loses.
             if (d.is_cpu || props.type == GGML_BACKEND_DEVICE_TYPE_IGPU) d.shares_host_memory = Tri::Yes;
+#if defined(BMOE_HAVE_METAL_MEMORY_PROBE)
+            // Metal reports TYPE_GPU even for a shared physical pool. Ask the native device
+            // before an allocation delta can mistake reused or compressed pages for extra RAM.
+            if (std::strcmp(ggml_backend_reg_name(reg), "MTL") == 0) {
+                d.shares_host_memory = detail::refine_memory_sharing(d.shares_host_memory,
+                                                                     detail::metal_memory_sharing(props.description));
+            }
+#endif
             // Whether this device will execute over memory the host owns. Asking the backend for a
             // host buffer type is the question; a device that answers is one we can read flash into
             // and it can compute out of, which is exactly the pair of properties a streamed expert

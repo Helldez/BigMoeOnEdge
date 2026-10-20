@@ -100,6 +100,16 @@ int main() {
         check(tn::expert_override_layer("blk\\.\\d+\\.ffn_(up|down|gate_up|gate)_(ch|)exps") == -1,
               "expert_override_layer: the all-layers form names no layer");
         check(tn::expert_override_layer("exps=CPU") == -1, "expert_override_layer: an unrelated pattern");
+
+        check(tn::ffn_override_layer("blk\\.11\\.ffn_down.*") == 11,
+              "ffn_override_layer: the fitter's share of a layer");
+        check(tn::ffn_override_layer("blk\\.5\\.ffn_(gate|gate_up|down).*") == 5,
+              "ffn_override_layer: the share that keeps only up on the device");
+        check(tn::ffn_override_layer(tn::expert_override_pattern(7).c_str()) == 7,
+              "ffn_override_layer: the experts-only form is a layer's FFN too");
+        check(tn::ffn_override_layer("blk\\.3\\.attn_q.*") == -1, "ffn_override_layer: not an FFN pattern");
+        check(tn::ffn_override_layer("blk\\.\\d+\\.ffn_(up|down|gate_up|gate)_(ch|)exps") == -1,
+              "ffn_override_layer: the all-layers form names no layer");
     }
 
     if (failures) {

@@ -19,6 +19,7 @@
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
 #include "../moe/tensor_names.h"
+#include "cache_brake.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 #include "../metrics/memory_snapshot.h"
@@ -282,6 +283,9 @@ struct Session::Impl {
     std::unique_ptr<llama_context, void (*)(llama_context *)> ctx{nullptr, llama_free};
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
     ExpertStreamSource source;
+    // Kept per session, not per turn: the reference it measures stalls against is this machine's,
+    // and a later turn of a chat is compared with what the earlier ones settled to.
+    CacheBrake brake;
 
     // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
     // load, whose device list it holds, and opened after it.
@@ -1112,8 +1116,19 @@ bool Session::Impl::bind_expert_offsets(Opening & o,
                                         std::vector<LayerExperts> & layers,
                                         int & n_expert) {
     int n_bound = 0;
-    for (LayerExperts & L : layers) {
+    for (size_t il = 0; il < layers.size(); ++il) {
+        LayerExperts & L = layers[il];
         if (!L.bound) continue;
+        // Half a layer on a device. The planner never places one (a pattern that moves part of a
+        // layer's FFN brings all its experts to the host), so this is a placement given by hand, and
+        // the streamer cannot serve it: the projections it would load with the host half are on the
+        // device. Said in those terms, rather than as the missing tensor it would otherwise trip on.
+        if (L.on_device)
+            return o.fail("MoE layer " + std::to_string(il) +
+                          " has its experts split between a device and the host, which streaming cannot "
+                          "serve: place all of blk." +
+                          std::to_string(il) + "'s experts on one side (" +
+                          tensor_names::expert_override_pattern((int) il) + " keeps them on the host)");
         ++n_bound;
         for (int p = 0; p < o.layout.n_slots; ++p) {
             ggml_tensor * t = L.proj[p].tensor;
@@ -1160,6 +1175,11 @@ void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
     std::unordered_map<uint64_t, size_t> dense_at; // (shard, file offset) -> index in `dense`
     for (ggml_tensor * t : hook->captured_weight_objects()) {
         if (!t) continue;
+        // A weight a device owns is not ours to move, for the reason the capture gives for experts:
+        // the device computes from its own buffer, so a tensor pointed at host bytes it cannot see
+        // reads nothing (Metal said "buffer is nil" and the run decoded '!'). Left out, it is also
+        // unowned below, which keeps release-mmap from dropping a mapping a device may still read.
+        if (t->buffer && !ggml_backend_buffer_is_host(t->buffer)) continue;
         const std::string name = t->name;
         if (expert_names.count(name)) continue;
         // Only a weight the load left on the host is ours to re-home. A layer the first stage put
@@ -1739,6 +1759,7 @@ struct Session::Impl::Turn {
     std::string gen;
     int n_gen = 0;
     double gen_seconds = 0.0;
+    double last_compute_s = 0.0; // the last decode's compute, what the cache brake reads
     GenTally tally;
     long long prev_spec_bytes = 0, prev_spec_experts = 0, prev_spec_useful = 0;
     long long prev_routed = 0, prev_dropped = 0, prev_reranked = 0, prev_substituted = 0;
@@ -2317,14 +2338,38 @@ struct Session::Impl::Turn {
                 m.text = std::move(sv.content);
                 m.reasoning = std::move(sv.reasoning);
             }
-            if (e == 0)
+            if (e == 0) {
                 tally.record(m, wall, s.f1 - s.f0, s.c1 - s.c0, im.turn, moe.enabled ? &st : nullptr);
-            else
+                last_compute_s = m.compute_ms / 1000.0;
+            } else
                 tally.record(m, 0.0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr);
             if (on_token) on_token(m);
             if (sink) sink->on_token(m);
         }
     }
+
+    // ── the cache brake (cache_brake.h) ──
+    // Between two decodes, which is the only time the budget may move. A stalled token is asked
+    // about first, because it is the cheap signal; the residency sample is the expensive one and runs
+    // only to confirm it, so a run that never stalls never pays for it.
+    void brake_cache() {
+        if (!moe.enabled || !moe.cache_brake || im.source.cache_budget() == 0) return;
+        const double ref = im.brake.reference();
+        if (!im.brake.stalled(last_compute_s)) return;
+        const double lost = im.source.cache_lost_frac(k_brake_sample);
+        if (lost <= 0.0) return; // slow, but not because memory went: the cores, the clock, a neighbour
+        const size_t budget = im.source.cache_budget();
+        const size_t next = CacheBrake::braked(budget, im.source.cache_floor());
+        if (next >= budget) return;
+        im.source.set_cache_budget(next);
+        log_printf(LogLevel::Info,
+                   "cache brake: a token took %.0f ms of compute against %.0f, and %.0f%% of the cache's sampled "
+                   "pages were no longer in RAM; cache %zu -> %zu MiB",
+                   last_compute_s * 1000.0, ref * 1000.0, lost * 100.0, budget >> 20, next >> 20);
+    }
+    // Entries sampled per stall: enough that a system holding back a tenth of the cache is seen,
+    // few enough to be a few dozen syscalls on a token that already took seconds.
+    static constexpr int k_brake_sample = 64;
 
     // ── greedy generation ──
     // Returns false only on a failure; a cancel ends the loop with res.cancelled set.
@@ -2348,6 +2393,7 @@ struct Session::Impl::Turn {
             ++im.mtp_decodes;
             if (!accept(s)) return false;
             emit(s, on_token, sink);
+            brake_cache();
 
             if (s.eog_hit) break;
             // The accepted group is now KV-resident, and the logits at the first unverified position
