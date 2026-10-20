@@ -1392,6 +1392,7 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
     // placement the device will actually see; bounded by what one graph may return.
     const int want = std::min({std::max(PrefillDeviceConfig::verify_tokens, cfg.prefill.min_tokens),
                                PrefillDeviceConfig::max_outputs, prefill_piece(this->cfg), cfg.n_ctx - 1});
+    const int rows = std::min(want, PrefillDeviceConfig::verify_rows);
     double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0;
     // A check that cannot run is not a verdict: the device stays as the plan or the caller set it,
     // and the line below says it was not confirmed.
@@ -1409,7 +1410,13 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
         probe.resize((size_t) want);
 
         llama_batch b = llama_batch_init(want, 0, 1);
-        std::vector<float> host_logits((size_t) want * (size_t) n_vocab);
+        // The device computes every position; verify_rows spread positions come back to compare,
+        // which keeps the output head's product narrow on the host (see verify_rows): all 64 rows
+        // made a phone end the process at load.
+        std::vector<int> at((size_t) rows);
+        for (int r = 0; r < rows; ++r)
+            at[(size_t) r] = (int) ((int64_t) (r + 1) * want / rows) - 1; // the last position included
+        std::vector<float> host_logits((size_t) rows * (size_t) n_vocab);
         // 0 ran, 1 the device had no room, -1 the decode failed.
         auto pass = [&](bool device, bool keep, double & secs) -> int {
             // Two wide graphs of one shape in a row would let llama.cpp reuse the first for the
@@ -1422,7 +1429,9 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
             clear_memory(c);
             const bool placed = place_prefill(device);
             if (device && !placed) return 1;
-            batch_fill(b, probe.data(), want, 0, /*all_logits*/ true);
+            batch_fill(b, probe.data(), want, 0, /*all_logits*/ false);
+            for (int j : at)
+                b.logits[j] = 1;
             hook->set_batch_phase(0);
             const auto t0 = std::chrono::steady_clock::now();
             const int rc = decode_placed(c, b);
@@ -1431,8 +1440,8 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
             place_prefill(false);
             if (rc != 0) return -1;
             if (keep)
-                for (int j = 0; j < want; ++j)
-                    std::memcpy(host_logits.data() + (size_t) j * n_vocab, llama_get_logits_ith(c, j),
+                for (int r = 0; r < rows; ++r)
+                    std::memcpy(host_logits.data() + (size_t) r * n_vocab, llama_get_logits_ith(c, at[(size_t) r]),
                                 sizeof(float) * (size_t) n_vocab);
             return 0;
         };
@@ -1449,9 +1458,9 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
         } else {
             int same = 0;
             double num = 0.0, den = 0.0;
-            for (int j = 0; j < want; ++j) {
-                const float * h = host_logits.data() + (size_t) j * n_vocab;
-                const float * d = llama_get_logits_ith(c, j);
+            for (int r = 0; r < rows; ++r) {
+                const float * h = host_logits.data() + (size_t) r * n_vocab;
+                const float * d = llama_get_logits_ith(c, at[(size_t) r]);
                 if (argmax(h, n_vocab) == argmax(d, n_vocab)) ++same;
                 for (int v = 0; v < n_vocab; ++v) {
                     const double e = (double) d[v] - (double) h[v];
@@ -1459,10 +1468,10 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
                     den += (double) h[v] * (double) h[v];
                 }
             }
-            agree = (double) same / want;
+            agree = (double) same / rows;
             nmse = den > 0.0 ? num / den : 0.0;
             if (agree < PrefillDeviceConfig::verify_min_agree)
-                why = "it picked the host's next token in " + std::to_string(same) + " of " + std::to_string(want) +
+                why = "it picked the host's next token in " + std::to_string(same) + " of " + std::to_string(rows) +
                       " positions of a " + std::to_string(want) + "-token prefill: it does not compute this model";
         }
         llama_batch_free(b);
@@ -1474,9 +1483,9 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
         return true;
     }
     log_printf(LogLevel::Info,
-               "prefill-device %s confirmation: %d tokens, top token agrees %.0f%%, logit NMSE %.2e, host %.2f s, "
-               "device %.2f s%s%s",
-               cfg.prefill.device.c_str(), want, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
+               "prefill-device %s confirmation: %d tokens, %d compared, top token agrees %.0f%%, logit NMSE %.2e, "
+               "host %.2f s, device %.2f s%s%s",
+               cfg.prefill.device.c_str(), want, rows, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
                why.c_str());
     if (!why.empty()) {
         const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
