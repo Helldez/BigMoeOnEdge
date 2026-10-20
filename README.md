@@ -126,6 +126,9 @@ setting you pass by hand is never overruled. The Plan screen shows the result: a
 where the memory goes, what each device does, and every decision with its reason.
 [docs/hardware-planning.md](docs/hardware-planning.md).
 
+<p align="center"><img src="docs/assets/phone-plan.gif" width="360" alt="Qwen3.6-35B-A3B answering on a 12 GB Android phone in real time, then the Plan screen: experts stream from flash with a 1.6 GiB cache, decode speed measured against expected, the prompt on the NPU, the answer on the CPU, and where the memory goes."><br>
+<sub>Qwen3.6-35B-A3B on a 12 GB Android phone, real time: the answer, then the plan it runs.</sub></p>
+
 <p align="center"><img src="docs/assets/diagrams/memory.svg" width="900" alt="Qwen3.6-35B-A3B on a 16 GB laptop: of the 21 GB model, 2.2 GB of always-needed weights stay in RAM and 18.6 GB of experts stay on storage; RAM holds context, GPU buffers, dense weights and a 6.1 GB cache of the hot experts."></p>
 
 ## Platforms

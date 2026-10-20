@@ -29,7 +29,8 @@ Semantic Versioning.
   architecture table and the long benchmark tables leave the README for the pages that already
   hold them (`docs/settings.md`, `docs/which-models-stream.md`, `docs/benchmarks.md`), and the
   three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
-  with their own dark card so they read on either GitHub theme.
+  with their own dark card so they read on either GitHub theme. Under the planner diagram, a
+  one-minute real-time GIF from the phone: a 35B answering, then the Plan screen it runs.
 - **Settings say what a value means and what is usual, and Advanced holds only the rest (#268).**
   The parameter table gains, per row, a typical range (named constants in `core/src/params.cpp`,
   every default inside it or one of the row's named values, which `bmoe_params_test` checks) and
