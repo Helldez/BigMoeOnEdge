@@ -1,12 +1,11 @@
 #include "planner_adapter.h"
 
+#include "plan_view.h"
+
 #include "bmoe/params.h"
 
 #if defined(BMOE_HAVE_PLANNER)
-#include "bmoe/planner.h"
-#include "bmoe/probe.h"
-
-#include "llama.h"
+#include "bmoe/auto_plan.h"
 
 #include <cstdio>
 #endif
@@ -23,35 +22,33 @@ bool planner_available() {
 #endif
 }
 
-// What a device probe may take before the parent gives up on it: a backend's first allocation
-// on a slow driver, and nothing a plan should wait longer for. The CLI's figure.
-static constexpr double k_device_probe_seconds = 120.0;
-
 int run_device_probe_child(const std::string & model_path, const std::string & device) {
 #if !defined(BMOE_HAVE_PLANNER)
     (void) model_path;
     (void) device;
     return 3;
 #else
-    register_backends();
-    llama_backend_init();
-    std::string facts;
-    if (!probe_one_device(model_path.c_str(), device, facts)) {
+    std::string line;
+    if (!probe_device_child(model_path.c_str(), device, line)) {
         std::fprintf(stderr, "bmoe-server: no such device to probe: %s\n", device.c_str());
         return 3;
     }
-    std::printf("%s %s\n", device_facts_marker, facts.c_str());
+    std::printf("%s\n", line.c_str());
     std::fflush(stdout);
     return 0;
 #endif
 }
 
-PlanOutcome make_plan(const RunConfig & cfg, const std::vector<std::string> & pinned, bool isolated_probes) {
+PlanOutcome make_plan(const RunConfig & cfg,
+                      const std::vector<std::string> & pinned,
+                      bool isolated_probes,
+                      const PlanStepFn & on_step) {
     PlanOutcome o;
 #if !defined(BMOE_HAVE_PLANNER)
     (void) cfg;
     (void) pinned;
     (void) isolated_probes;
+    (void) on_step;
     o.error = "this build does not include the automatic hardware planner";
     return o;
 #else
@@ -62,35 +59,27 @@ PlanOutcome make_plan(const RunConfig & cfg, const std::vector<std::string> & pi
     PlanRequest req;
     req.pinned = pinned;
 
-    // The probe order of bmoe-cli --auto, and for its reasons: register backends before anything
-    // looks at devices; quiet measurements before dirty ones; the headroom estimate (never the
-    // intrusive active probe from a server) last.
-    const char * path = cfg.model_path.c_str();
-    register_backends();
-    HardwareProfile hw = probe_hardware(path);
-    // Every device beyond the host is asked in a process of its own first, as bmoe-cli --auto does:
-    // a driver that ends the process it is used from would otherwise end the server with the UI
-    // waiting on it, and this server is what an app on a phone runs behind.
+    // The probe order is core's (probe_and_plan), the one bmoe-cli --auto runs. What the server
+    // decides: the storage is measured, the headroom only ever estimated - never the intrusive
+    // active probe from a server - and every device beyond the host is asked in a process of its
+    // own, because a driver that ends the process it is used from would otherwise end the server
+    // with the UI waiting on it, and this server is what an app on a phone runs behind.
+    AutoPlanOptions opt;
+    opt.probe_io = true;
+    opt.probe_mem = false;
     if (isolated_probes) {
         const std::string model = cfg.model_path;
-        probe_devices_isolated(hw, self_process_runner(
-                                       [model](const std::string & dev) {
-                                           return std::vector<std::string>{"--probe-device", dev, "-m", model};
-                                       },
-                                       k_device_probe_seconds));
+        opt.isolated_probe_args = [model](const std::string & dev) {
+            return std::vector<std::string>{"--probe-device", dev, "-m", model};
+        };
     }
-    const ModelProfile mp = probe_model(path);
-    probe_device_support(hw, mp);
-    llama_backend_init();
-    probe_bandwidth(hw, mp);
-    probe_device_costs(hw, mp);
-    // Where the expert reads land, which on a split model is not the file the caller named.
-    probe_storage(hw, mp.expert_file.empty() ? path : mp.expert_file.c_str(), mp.expert_slice_bytes);
-    const uint64_t guard = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
-    const uint64_t cache_floor = mp.token_cycle_bytes > guard ? mp.token_cycle_bytes : guard;
-    probe_headroom(hw, false, mp.dense_bytes + cache_floor);
-    const Placement placement = probe_placement(path, mp, hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch);
-    const Plan plan = plan_run(cfg, hw, mp, placement, req);
+    if (on_step)
+        opt.on_step = [&on_step](const char * step, int index, int count) {
+            on_step(step, plan_step_label(step), index, count);
+        };
+    const AutoPlan planned = probe_and_plan(cfg, req, opt);
+    const HardwareProfile & hw = planned.hw;
+    const Plan & plan = planned.plan;
 
     // What the plan changes, read through the parameter table: every parameter whose value in the
     // plan's config differs from the config it was given.
@@ -114,10 +103,10 @@ PlanOutcome make_plan(const RunConfig & cfg, const std::vector<std::string> & pi
         for (const std::string & p : plan.config.buft_overrides)
             not_applicable.push_back("tensor override " + p);
     for (const Decision & d : plan.decisions)
-        o.decisions.push_back(
-            {{"knob", d.knob}, {"value", d.value}, {"source", source_name(d.source)}, {"reason", d.reason}});
+        o.decisions.push_back(decision_json(d));
 
     o.ok = true;
+    o.held_bytes = plan.allocation.ledger.held;
     o.body = json{{"available", true},
                   {"model", cfg.model_path},
                   {"machine", hw.label},
@@ -129,6 +118,8 @@ PlanOutcome make_plan(const RunConfig & cfg, const std::vector<std::string> & pi
                   {"args", args},
                   {"not_applicable", not_applicable},
                   {"explain", plan.explain()}};
+    // What a person reads first: the outcome, the memory, the devices (plan_view.h).
+    o.body.update(plan_view(hw, planned.model, plan));
     return o;
 #endif
 }

@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -33,6 +34,7 @@ import io.bigmoeonedge.app.engine.Chat
 import io.bigmoeonedge.app.engine.ChatMessage
 import io.bigmoeonedge.app.engine.Decide
 import io.bigmoeonedge.app.engine.Engine
+import io.bigmoeonedge.app.engine.openAppSettings
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -121,25 +123,33 @@ fun ChatScreen(modifier: Modifier = Modifier, onOpenModels: () -> Unit) {
     }
 }
 
-/** One line that says what the engine is doing, with the way to the Models screen when it has nothing. */
+/**
+ * One line that says what the engine is doing, with the way out when there is one: the Models
+ * screen when it has nothing, the app's settings when the system denies it the network.
+ */
 @Composable
 private fun EngineStatusLine(onOpenModels: () -> Unit) {
     val engine by Engine.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val info = engine.info
+    val toSettings = "Allow" to { openAppSettings(context) }
+    val toModels = "Choose one" to onOpenModels
     val (text, action) = when {
+        !engine.serverUp && engine.networkDenied -> engine.serverError.orEmpty() to toSettings
         !engine.serverUp -> (engine.serverError?.lineSequence()?.firstOrNull()?.take(120) ?: "Engine not running") to null
         info == null -> "Connecting…" to null
         info.state == "planning" -> "Measuring the phone, then loading…" to null
         info.state == "loading" -> "Loading model…" to null
         info.state == "error" -> "Engine error: ${info.error.take(120)}" to null
-        info.model == null -> "No model loaded" to "Choose one"
+        info.model == null -> "No model loaded" to toModels
         info.generating -> "${info.model.name} · generating" to null
         else -> "${info.model.name} · ready" to null
     }
     Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(text, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            if (action != null) TextButton(shape = RectangleShape, onClick = onOpenModels, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(action, fontSize = 12.sp) }
+            // The denial is the one status a person must read whole to act on: it may wrap.
+            Text(text, fontSize = 12.sp, maxLines = if (engine.networkDenied) 3 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            if (action != null) TextButton(shape = RectangleShape, onClick = action.second, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(action.first, fontSize = 12.sp) }
         }
     }
 }
@@ -217,11 +227,14 @@ private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit) {
                                         modifier = Modifier.weight(1f),
                                     )
                                     TextButton(shape = RectangleShape, onClick = { Chat.newConversation() }) { Text("New chat") }
-                                } else if (err.contains("Load a model")) {
+                                } else if (chat.noModel) {
                                     Spacer(Modifier.weight(1f))
                                     TextButton(shape = RectangleShape, onClick = onOpenModels) { Text("Models") }
                                 } else {
                                     Spacer(Modifier.weight(1f))
+                                    if (chat.canRetry) {
+                                        TextButton(shape = RectangleShape, onClick = { Chat.retry() }) { Text("Send again") }
+                                    }
                                     TextButton(shape = RectangleShape, onClick = { Chat.clearError() }) { Text("Dismiss") }
                                 }
                             }
@@ -400,11 +413,7 @@ private fun LiveLine() {
     val chat by Chat.state.collectAsStateWithLifecycle()
     val t = engine.live
     if (t.step == 0 && t.avgTokensPerSecond <= 0) return
-    val cfg = engine.config
-    val threads = cfg?.int("threads", 4) ?: 4
-    val overlap = cfg?.bool("overlap", true) ?: true
-    val ioThreads = cfg?.int("io-threads", 4) ?: 4
-    val b = breakdown(t, overlap, busyThreads = threads + if (overlap) ioThreads else 0, computeThreads = threads)
+    val b = breakdown(t)
     val loc = Locale.US
     val rate = if (b.isAverage) String.format(loc, "%.1f tok/s avg", t.avgTokensPerSecond)
     else String.format(loc, "%.1f tok/s", t.tokensPerSecond)

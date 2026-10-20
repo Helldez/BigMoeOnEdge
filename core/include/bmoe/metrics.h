@@ -9,6 +9,7 @@
 #include "bmoe/predict_stats.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,11 @@ struct TokenMetrics {
     double mgmt_ms = 0.0;    // cache-management time (vm commit + evict + LRU bookkeeping) this token
     double compute_ms = 0.0; // residual: serial wall - io - mgmt; overlap wall - stall - mgmt
     double stall_ms = 0.0;   // overlap only: wall time the FFN kernel blocked on flash (0 when serial)
+    // The flash term that is a share of wall_ms, already chosen for the run's mode: io_ms in serial
+    // (the blocking read), stall_ms under overlap (where io_ms is summed lane time and can exceed the
+    // wall). The term the compute residual subtracts, so a consumer never has to know the mode to
+    // pick it, and never recovers it by inverting the clamped residual. 0 when streaming is off.
+    double flash_wait_ms = 0.0;
     // Named eval-thread costs that otherwise hide inside a residual (all 0 when the feature that
     // pays them is off). drain_ms sits inside compute_ms: the async load waiting out the previous
     // layer's batch before reusing its flags. adopt_ms sits inside mgmt_ms: the route-ahead load
@@ -103,6 +109,8 @@ struct RunSummary {
     // the run was capable of and not only what it did: a MoE arch that ran without streaming is the
     // baseline, not a measurement of this engine (see the CLI's mode line).
     std::string arch;
+    // The file's routed expert count, 0 for a dense model: with arch, what the run could have streamed.
+    int n_expert = 0;
 
     int n_generated = 0;
     // The answer's budget this turn: the request's n_predict, or less when the context had less
@@ -153,12 +161,16 @@ struct RunSummary {
     double moe_io_s_per_token = 0.0;
     double moe_mgmt_s_per_token = 0.0;  // cache-management time per token (commit + evict + LRU)
     double moe_stall_s_per_token = 0.0; // overlap only: per-token wall the kernel waited on flash
-    double cache_hit_pct = -1.0;        // -1 when no cache
+    // Per token, the wall-additive flash term (TokenMetrics::flash_wait_ms): io in serial, stall
+    // under overlap.
+    double moe_flash_wait_s_per_token = 0.0;
+    double cache_hit_pct = -1.0; // -1 when no cache
 
     // Compute decomposition, generation phase only (measured whether or not streaming is on, since
     // dense-weight faults appear in the mmap baseline too). majflt_per_token ≫ 0 flags a residency
     // stall hiding in "compute"; cpu_util = cpu_s/token ÷ (s/token × threads) near 1 is compute-bound,
-    // well below 1 is a throttled/preempted core. 0 when the platform can't measure them.
+    // well below 1 is a throttled/preempted core. cpu_s 0 and majflt -1 when the platform can't
+    // measure them: a fault count of 0 is a measurement, and one never taken must not read as one.
     double majflt_per_token = 0.0;
     double cpu_s_per_token = 0.0;
     // Everything between the decodes, per token: the region gen_seconds (and so tok/s) excludes.
@@ -376,6 +388,6 @@ public:
 
 // A sink that appends one CSV row per token to `path` (header written on open).
 // Returns nullptr if the file cannot be opened.
-IMetricsSink * make_csv_metrics_sink(const std::string & path);
+std::unique_ptr<IMetricsSink> make_csv_metrics_sink(const std::string & path);
 
 } // namespace bmoe

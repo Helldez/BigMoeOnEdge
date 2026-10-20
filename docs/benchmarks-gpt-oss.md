@@ -14,7 +14,7 @@ whole story here](#why-the-dense-policy-is-the-whole-story-here).
 
 | | |
 |---|---|
-| Device | OnePlus 15R, Android 16, 11.3 GB RAM — same as [benchmarks.md](benchmarks.md) |
+| Device | 12 GB Android phone, Android 16, 11.3 GB usable RAM — same as [benchmarks.md](benchmarks.md) |
 | Model | `gpt-oss-120b-Q4_K_M.gguf` — 58.46 GB, 36 layers, 128 experts, **top-4** default, MXFP4 expert weights |
 | Device path | `/data/local/tmp/shardllm/` — the real `/data` partition, **required** for working O_DIRECT (`/sdcard` is FUSE and silently falls back to buffered) |
 | Fraction of RAM | ≈**5.2×** (58.46 GB / 11.3 GB) — resident load is impossible, so there is no in-RAM baseline, only `mmap` page-cache thrash |

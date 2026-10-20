@@ -16,7 +16,599 @@ Semantic Versioning.
   prefill, never a wrong answer), runs ~300 tokens per segment so a real request waits at most one
   segment and takes over, skips tool-calling conversations a replay could never match, and is off
   entirely with `--no-warmup`. The file holds conversation contents, so it is written atomically
-  and restricted to the user.
+  and  restricted to the user.
+
+## [0.32.0] - 2026-10-19
+
+### Added
+- **The runs a device report needs, in one command: `scripts/ios-runs.sh`.** It runs the plan, a
+  run of it and the same run with the dense set left mapped, each in a fresh process of the iOS
+  harness, and brings back the console output and per-token CSV of each with a `summary.txt`
+  (tok/s, the decode split, major faults, dense residency); `t2`/`t4` add the run at 2 and 4
+  threads. `device` drives a signed harness through `devicectl`, `sim` the booted simulator.
+- **The iOS memory entitlements, one at a time.** `BMOE_IOS_MEMORY_ENTITLEMENTS=ON` now asks for the
+  increased memory limit alone, which a free Personal Team is granted and which was enough for a
+  streamed 35B on a 12 GB phone (#235); `BMOE_IOS_EXTENDED_ADDRESSING=ON` adds the extended
+  address space, which a Personal Team is refused and which made the build unsignable for one.
+
+### Changed
+- **The README, rewritten around what the engine is: an adaptive streaming optimizer for big local
+  AI agents on any device.** It opens with a silent 30-second loop (an animated WebP, so it shows
+  inline everywhere, the GitHub app included) linking to the full promo video recorded on a 16 GB
+  laptop and a 12 GB phone (real time, sped-up parts marked), then the four things it does (adaptive streaming, any
+  hardware and OS, any model and quantization, a local OpenAI-compatible server), ten measured runs
+  presented as examples rather than limits, getting started on the phone, the desktop and the
+  command line, an OpenAI client example, and three diagrams drawn for it: how one token runs, how
+  the planner adapts to the machine, and where the memory goes. The settings tables, the
+  architecture table and the long benchmark tables leave the README for the pages that already
+  hold them (`docs/settings.md`, `docs/which-models-stream.md`, `docs/benchmarks.md`), and the
+  three GIFs and the older demo video go. The diagrams are SVG from `scripts/readme-diagrams.py`,
+  with their own dark card so they read on either GitHub theme. Under the planner diagram, a
+  one-minute real-time GIF from the phone: a 35B answering, then the Plan screen it runs.
+- **Settings say what a value means and what is usual, and Advanced holds only the rest (#268).**
+  The parameter table gains, per row, a typical range (named constants in `core/src/params.cpp`,
+  every default inside it or one of the row's named values, which `bmoe_params_test` checks) and
+  special values with a name (`0` = off, `0` = as wide as the context, `4294967295` = random per
+  run); `GET /api/params` returns them as `typical` and `special`. Rows whose only upper limit was
+  the type's (the cache sizes, the row-stream window, the prefill device width, the seed) no
+  longer report it as `max`. Units on the rows that lacked one (lanes, threads, layers, reads,
+  candidates, experts). Labels a person can read: "Wrap in chat turns" (was "Chat template", a
+  switch), "Start reads in two waves", "Unmap the file after load", "Read a busy layer whole",
+  "Route experts early". The web UI and the app render all of it from the same data: the special
+  value's name and the typical range under each field instead of "0 to 2147483647", the help's
+  first sentence with the rest on demand. The Advanced section no longer repeats the basic rows shown above it, and its title is
+  in sentence case.
+- **The Plan screen leads with the outcome, and reads the same on every machine.** The web UI and
+  the Android app open the plan with what it decided in one sentence ("Experts stream from flash,
+  with a 4.8 GiB cache") and three tiles: decode speed expected and, once the loaded model has
+  answered, measured beside it with the difference; the cache hit rate measured against what the
+  plan credited; which device computes the prompt and which the tokens. Then the memory as one bar
+  per pool (every ledger row, what is free, what is locked), every device with its rate against
+  the host, what it does in this run and why, and the decisions in three groups: the settings the
+  plan decided (under their settings labels), the ones it left, and the notes that are no
+  setting (regime, placement, ledger, costs), folded. A measurement shows the stage that is
+  running instead of a blind wait. One layout for a phone with an NPU, a laptop with an
+  integrated GPU, a discrete card or a machine with only cores: every block is a list of what the
+  plan holds, device names are the plan's own, and nothing in either UI names a device or a
+  system (#288). On a laptop: 0.307 s/token predicted, 0.212 measured on the first answer;
+  hits credited 28%, measured 64%.
+- **`GET /api/plan` describes the plan for a person.** New fields beside the old ones:
+  `summary` (the sentence and the lanes), `predicted` (decode as the plan priced it), `measured`
+  (the loaded model's last complete turn, on a plan from the last load; a cancelled turn is no measurement), `memory.pools` (the ledger, a
+  pool per memory that is separate), `devices` (rates, `uses`, `status`, `why`) and
+  `devices_none`; each decision carries its settings `label` and its `group`. Every word the
+  screen shows comes with them (`label`, `badge`, `rate_text`, `devices_none_text`), beside a
+  code a UI reads only for a colour, so the words live once, in `server/plan_view.cpp`, pure and
+  unit-tested on an NPU phone, a discrete card and a machine with only cores, and no UI keeps a
+  table of its own. A measurement now publishes `plan_progress` events, one per stage with its
+  words, from a progress callback on `probe_and_plan()` (`AutoPlanOptions::on_step`).
+- **Every plan decision says itself in one line, and each cost note has its own name.** A
+  `Decision` carries a `brief` beside its `reason`: one plain sentence for a person, at most 120
+  characters, with the number that decided it and no flag names ("Prompts run on MTL0, 8.1x faster
+  than the CPU, same results"), which the Plan screen leads with while the reason stays the full
+  account `--plan` prints. The cost model's notes, which all came out as `cost = -` and could not
+  be told apart, are now structured (`AllocationNote`: a topic, a value, a brief, a detail) and each
+  is its own decision under its topic (`storage-rate = 6.3 GB/s`, `cache-floor = 581 MiB`,
+  `shared-memory`, ...); `/api/plan` adds `brief` and gives every note a `label` to be read under.
+  The reasons stop citing one machine's story on every other (#290). Each decision also comes with
+  `value_text`, its value as a person reads it ("4.6 GiB", "pinned in memory", "experts stream"),
+  and every size on the screen is in GiB or MiB, the briefs included. The dense-weights choices
+  read "mapped from the file", "mapped and read ahead", "copied into memory" and "pinned in
+  memory" in Settings too. `docs/server-api.md` and `docs/screens.md` describe both.
+- **The hardware probe tells "this build carries no accelerator backend" from "it carries one and
+  found nothing".** `HardwareProfile::backends_placeable` counts the backends that could offer a
+  local device, read from what each offers: a remote one (RPC) and a library the host calls into
+  (BLAS) do not count, so a build with only those no longer reads as a machine without devices.
+- **The dense set is held in memory on every platform, and what a reclaim costs is measured, not
+  named.** The planner left the dense weights mapped wherever exceeding the memory limit ends the
+  process, because clean file pages are not charged to that limit. They are not charged because the
+  kernel may drop them, and every decoded token reads the whole dense set: on a 12 GB iOS phone the
+  35B-A3B decoded at 1.2 tok/s with 25581 major faults a token (about 400 MiB read back from flash
+  per token, the cores 75% idle), where the same model held in memory makes 5 on the Android test
+  phone (#304). That branch is gone: a fatal limit widens the margin the ledger sizes against, and
+  the dense set is held (`anon`, or pinned where a reclaim-exempt store exists) like anywhere else.
+  The fact behind it was a constant per OS; it is now read from the kernel in microseconds
+  (`pio::reclaim_facts`: a per-process share left, compressions since boot, a swap), so iOS, macOS
+  and Windows answer from their own accounting as Linux and Android already did, and
+  `HardwareProfile::file_pages_counted` is removed. The Apple-only "device buffers are locked"
+  constant goes too: unknown is charged the same way. Plans on macOS, Linux, Android and Windows
+  with a pagefile are unchanged; `docs/hardware-planning.md` describes the facts.
+
+### Fixed
+- **Android: an app denied the network says so, and where to give it back** (#298). Android ties
+  every IP socket to the network permission, loopback included, so on GrapheneOS with the app's
+  Network toggle off, or behind a firewall app, the app cannot reach its own engine even offline.
+  The status line said "Engine not reachable: socket failed: EPERM"; it now says the app has no
+  network access, which the engine needs even offline, with a button that opens the app's system
+  settings, and polls slowly until it is back. A download denied the same way fails at once with
+  that reason, instead of retrying, and points to importing the file.
+- **The tag build no longer publishes the release.** Its APK job attached the debug APK with an
+  action that creates the release when none exists yet, as the workflow's own token; a release made
+  that way fires no `release: published`, so `release-apk` and `release-host` never ran and 0.31.0
+  went out with one debug APK and no archives (#284). The step is gone, and with it the job's write
+  permission: `release-apk` already uploads the debug APK beside the signed one. The agent guide
+  says who publishes a release.
+- **App: turning on Serve on the network no longer unloads the model or scrolls the page away.**
+  The restart it needs (the server binds another address) unloaded the model and, while the engine
+  was down, replaced the settings with one line, so the page jumped to the top. The rows now stay in place with a line
+  saying the engine is restarting, and the model that was loaded is loaded again once the new
+  server is up. The same holds for New key.
+- **App: the address to connect to is shown, not described.** With Serve on the network on, the
+  page shows `http://<ip>:8765/v1` with the phone's own IPv4 on its Wi-Fi or Ethernet network (a
+  mobile network's private address is left out: no laptop on the Wi-Fi reaches it), with Copy, and
+  follows it when the network changes; with no such network it says no other device can reach the
+  engine. The app asks for `ACCESS_NETWORK_STATE`, a permission without a prompt.
+- **Small things from the 0.31.0 smoke tests (#290).** The chat list ellipsizes a long title before
+  its Delete link instead of running under it. Loading a model shows the seconds since it began
+  and, while the plan measures, the same stages the Plan screen shows, in the web UI and the app,
+  instead of a blind wait of half a minute or more. The macOS archives' README says how to open a
+  program a browser download quarantined (`xattr -dr com.apple.quarantine`, or right-click and
+  Open) until a signed installer ships (#234).
+- **A stopped model download says it can be resumed, and resumes the same way on the phone and on
+  the desktop.** The bytes always landed in `<name>.part` and the next attempt continued them, but
+  little on screen said so, and the two front-ends disagreed on what Cancel meant (#293). Now a
+  catalog row with a partial file reads **Resume (X of Y GB)** after a failure, a cancel or a
+  restart, in the web UI and the app alike, and **Delete partial download** beside it is the one
+  action that throws the bytes away: Cancel on the phone keeps them, as it already did on the
+  desktop. `GET /api/models` gains `received` and `partial` per catalog entry, so a server
+  restarted mid-download still shows the entry as resumable, and `DELETE /api/models/partial/<id>`
+  deletes an entry's `.part` files, by catalog id and inside the models directory only. The desktop
+  server now retries a dropped connection on its own (curl's exit 18 or 56 and the other line
+  failures `--retry` leaves alone), resuming from the `.part`, up to six attempts with a wait
+  that doubles from 2 s to 60 s, and refuses a download the disk cannot take before a byte moves
+  (`507`), counting only the bytes still to fetch. On the phone, a resume of a single file is no
+  longer refused for the whole model's size, a failed space check no longer deletes the partial
+  file, and the download notification follows the progress instead of sitting at 0%.
+  `docs/server-api.md` and `examples/android/README.md` describe the resume behaviour.
+- **Checking a model on the Models page while another is loaded no longer reads every MoE as "will
+  decline" (#285).** `POST /api/hf/inspect` set the candidate against what the machine had free
+  with the loaded model still resident, although loading the new one unloads it first: measured on
+  a 15 GB laptop, 450 MiB with a 35B loaded against 9323 MiB once it was unloaded. The verdict now
+  gives back what the loaded session holds, by its own account (the memory ledger of the plan it
+  was loaded with), no more than the machine has, and says so: "(8873 MiB of it held now by ...,
+  which loading this model unloads first)". A model loaded without a plan has no account, so the
+  figure stays the measured one and the sentence says it was measured with that model loaded. No
+  second measurement is made. `machine` gains `budget_if_loaded`, `loaded_model`, `loaded_held`.
+- **Projectors and draft heads are no longer offered as models (#286).** What a file is for is now
+  read from its gguf header, never its name: a projector (`general.type` `mmproj`, or the `clip`
+  architecture), a draft head (it names another model's `<arch>.target_layers`, or all of its
+  blocks are prediction heads), or no language model at all (another `general.type`, no
+  `<arch>.block_count`). `POST /api/hf/inspect` answers such a file with mode `not a model`, a
+  sentence saying what it is, and `downloadable` false, where it said "plain mmap" and offered an
+  800 MB projector for download. `GET /api/models` gives each local file a `role` from its header;
+  `POST /api/hf/models`, which reads no header, gives one from the name, says it is only a hint,
+  and uses it to list the models first. The Models screen of the web UI and of the Android app set
+  companion files apart in both lists: after the models, labelled, with no Load.
+- **A Hugging Face search now carries when each repository changed, and whether it is gated
+  (#290).** The site's search leaves `lastModified` and `gated` out unless they are asked for, so
+  `modified` was always empty and `gated` always false; the server now asks for every field it
+  reads (`expand[]`, percent-encoded like the query), and both UIs show the date.
+- **`--scan-dir` finds a split model kept in a folder of its own (#290).** The models folder and
+  each scan directory are read one level deep: their own files, then those of each folder directly
+  inside. No deeper, and a link to a folder is not followed, so a scan cannot loop or leave the
+  directory; what a network client may open is still only what the confinement to those folders
+  allows, tested through the new subfolders. `--help` and `docs/server-api.md` say so, and each
+  listed model gains `folder`.
+- **`docs/server-api.md` describes `POST /api/hf/add` as it behaves (#287).** Adding a model that
+  was already added is a `201` that replaces the entry; `409` is for an id of the shipped catalog,
+  and for a split set with shards missing.
+- **llama.cpp's debug log no longer buries the engine's output.** llama.cpp and ggml wrote every
+  line they log to stderr, DEBUG included: about 1200 lines of graph-input bookkeeping per model
+  load, ~9700 for a CLI run with `--auto` (one load per probe child) and 12k in a server log after
+  three loads. A log bridge (`core/src/engine/llama_log.cpp`, through the public `llama_log_get` /
+  `llama_log_set`) is installed before the first backend loads, in the CLI, the server, every
+  probe child and any session opened without the planner. It forwards everything else unchanged to
+  the callback it replaced and drops DEBUG, together with the continuation lines of a dropped
+  message, unless `--llama-debug` (the `llama-debug` parameter) asks for them (#287).
+- **A cancel is no longer logged as a decode failure.** Stopping a generation aborts the graph
+  through the engine's own abort callback, which llama.cpp reports as three errors
+  (`graph_compute: ... failed with error 1`, `process_ubatch: failed to compute graph`,
+  `llama_decode: failed to decode`). While an abort the engine requested for a cancel is in flight,
+  until the cancelled `generate()` or `decide()` returns, llama.cpp's ERROR lines are demoted to
+  DEBUG, and the engine says `cancelled: the decode in progress was stopped on request` instead. An
+  abort for a fatal streaming error opens no such window, so a real failure still reads as one
+  (#287).
+- **No `UnmapViewOfFile failed` warning on Windows with `--release-mmap`.** The released view's
+  range was held by a plain reservation, so llama.cpp's own unmap of it at teardown failed and
+  warned on every released run, the default `--auto` path included. The range is now held by a view
+  of an empty, uncommitted pagefile section, which llama.cpp's unmap releases successfully, as its
+  `munmap` already did on POSIX; a plain reservation remains the fallback (#287).
+- **The planner no longer lists BLAS as a device.** `plan: device BLAS: one token 0 GiB/s` appeared
+  on every macOS plan. A device ggml registers as an accelerator (BLAS, AMX, ...) is a library the
+  host's graphs call into, never a place for a layer, so the device probe leaves it out of the
+  profile by its device type rather than its name; GPU, integrated GPU and NPU devices (Hexagon
+  registers as a GPU) are kept. A new `device_probe` test checks this against the build's real
+  registry (#290).
+- **The dense residency sensor reads the same on every platform.** Under `mmap`/`warm` it found the
+  mapping through the process's region list, which an iOS app is not given and Windows does not
+  have, so `dense_resident_frac` was `-1` exactly where the dense set was being refaulted. It now
+  reads each tensor's own address in llama.cpp's mapping, and the same lookup serves dropping the
+  mapped copies after an `anon` read and the random-access advice on held-back tables. On Windows
+  the sample is `QueryWorkingSetEx` and the CPU time is `GetProcessTimes`, so the `compute:` line
+  is printed there; with no per-process count of hard faults published, it says so rather than
+  print a 0, and the summary's `majflt_tok` is `-1`.
+
+## [0.31.0] - 2026-10-18
+
+### Added
+- **iOS rides with every release: the harness app for the simulator, as a release asset.** The
+  `release-host` workflow gains an `ios-harness` job that builds `examples/ios` for the simulator,
+  unsigned, and attaches `bmoe-ios-harness-sim-<tag>.zip` (the app, a README with the simulator
+  commands, the licence) to the release, or keeps it as an artifact on a dry run. The one build of
+  this engine for the platform anyone can run without an Apple team; a device build stays signed by
+  whoever has the device (#235). `docs/platforms.md` and the harness README say so.
+- **A model's name is enough: the Hugging Face field searches.** Text that is not a repository id
+  or URL (`POST /api/hf/models` answers `400` with the code `not_a_repo`) is searched for on the
+  site (`POST /api/hf/search`: repositories with gguf files whose name matches, the most
+  downloaded first, a gated one marked), and the repositories found are offered to pick from, in
+  the web UI and in the app alike. The query is percent-encoded by the server and goes to the one
+  endpoint the server was started with, as every other request does.
+- **A model from any Hugging Face repository, with its header read before the download.** The
+  Models screen of the web UI and of the Android app takes a repository id or URL and the server
+  does three things in turn (`POST /api/hf/models`, `/inspect`, `/add`, `docs/server-api.md`):
+  lists the gguf files the repository holds (a split set as one model), reads one model's header
+  through a range request and parses it with the planner's own model probe, and says what it is
+  on this machine: architecture, experts and top-k, what stays resident and what streams, whether
+  this engine streams it or runs it as plain mmap, how much disk it needs against what is free and
+  the resident floor against what this process may hold. Added, the model is a catalog entry like
+  the others (`"added": true`, kept between runs, removable; its files stay) and its download is
+  the catalog's: the server's `curl` on the desktop, the app's own downloader on the phone. The
+  server fetches only from its endpoint (`--hf-endpoint`, the site or a mirror) with a repository
+  id and paths it validated, never a URL a client wrote; a token for a gated repository is used for
+  the requests through a file only this process reads and kept nowhere. The rules (what a person
+  typed, what a listing holds, the entry a model becomes, the verdict from the numbers) are one
+  pure module, `server/hf_repo`, with tests; the network is a port with the system's `curl` behind
+  it, and the core gains `probe_gguf_header()` so a gguf that parses can be told from one this
+  engine does not stream without reading an error's words.
+
+- **Every release carries its compute backends as modules, on every OS.** The engine knows no
+  backend at compile time: each is a library ggml loads from the executable's own directory at
+  start-up, the CPU one once per instruction-set tier with the best picked on the machine, and a
+  module whose driver library is missing is not loaded instead of keeping the binary from
+  starting (`BMOE_BACKEND_MODULES`, on by default; iOS stays linked, as the platform demands).
+  The APK carries Vulkan and OpenCL beside Hexagon, the Linux and Windows archives Vulkan, the
+  macOS one Metal; a module built with another toolchain (CUDA, HIP, SYCL) and dropped beside
+  the binary loads like the shipped ones. The planner enumerates whatever registered, measures
+  each device in a process of its own and arms a prefill device by the rule that arms Metal and
+  the NPU, with no engine change (`docs/backends.md`, `docs/hardware-planning.md`). `--overlap`
+  survives the move: the fork's expert-ready hook is reached through the CPU backend's registry
+  (`ggml_backend_reg_get_proc_address`) rather than linked, so the fork stays one commit and a
+  build on stock upstream refuses `--overlap` with the reason instead of failing to link; the
+  server's default and its `overlap_available` follow the backend that loaded
+  (`docs/seam.md`). The gates that prove `--overlap` (G4, G5b, S2) skip themselves where the
+  hook is absent, and with `-DBMOE_GATES_REQUIRE_HOOK=ON`, which CI's gate job passes, fail
+  instead, so a CPU module without the hook cannot pass the suite unseen. Windows gains the
+  device probe in a process of its own, so a GPU driver that
+  dies there ends the probe and not the server. `scripts/build-portable.sh` is gone: the default
+  build is that build. The modules share the engine's C runtime, so the Windows archives carry
+  the C++ runtime DLLs beside the binaries and still start on a machine that never installed the
+  Visual C++ Redistributable. The Linux x86_64 archive builds on Ubuntu 22.04 with LunarG's
+  Vulkan SDK and runs where the previous ones did; the aarch64 one builds on 24.04 for the newest
+  ARM tier, as llama.cpp's release does, and needs glibc 2.38 or newer.
+- **Android: the app's launcher names no backend.** The engine's linker path is its own
+  directory, then `/system/lib64`, then `/vendor/lib64`: the OpenCL module links the phone's own
+  `libOpenCL.so` where there is one (through the Khronos loader instead, the two deadlock,
+  measured on a Snapdragon phone) and is not loaded otherwise. The vendor directory has to be on
+  the path and not reached through a symlink: a process the app starts links in the linker's
+  default namespace, which refuses a vendor library from anywhere else, and the OpenCL and
+  Hexagon modules then fail to load without a word. Last, it shadows no system library. The two
+  Hexagon variables stay set (`GGML_HEXAGON_HOSTBUF`, `GGML_HEXAGON_OPPOLL`); only that backend
+  reads them. `scripts/android-gpu-deps.sh` fetches the Khronos headers
+  and the OpenCL link-time library at pinned tags, for the release recipe and for CI, which
+  cross-compiles both GPU modules on every PR; the release-apk workflow gains a dry run from any
+  ref that keeps the APKs as an artifact. Run on a Snapdragon-class phone: OpenCL is 9x the cores
+  at prefill width and wrong, Vulkan is right in fp32 and no faster than the cores, so the plan
+  arms neither and keeps arming the NPU where the ledger has room; the figures are in
+  `docs/npu-prefill.md`, and the crash that followed the NPU load there is #264.
+  `docs/backends.md` also corrects one cell: OpenCL's `buffer_from_host_ptr` is wired to a
+  function that declines, not to an implementation.
+- **A prefill device is confirmed on the model before the session keeps it** (`--prefill-verify`,
+  on by default). After the load the session prefills a fixed text, 64 tokens or the device's
+  narrowest graph where that is wider, on the host and on the device and keeps the device only if
+  its top next token matches the host's in at least 90% of the positions; otherwise it is handed
+  back like a device that failed to open, and a plan's device leaves the prefill on the CPU. A
+  check that cannot run (a text that does not tokenize, no graph that wide within what one graph
+  may return) leaves the device as set and says so: not confirming is no evidence against it. The
+  planner's synthetic matmul cannot see a fault only the model's
+  activations trigger: a phone GPU's half-precision Vulkan prefill took a 1070-token text's
+  perplexity from 32.4 to 711 445. A laptop iGPU agrees in 98%. Three short prefills at load; the
+  check judges correctness, not speed (`docs/hardware-planning.md`).
+- **A security policy and the forms a contributor expects.** `SECURITY.md` says how to report a
+  problem privately and what is in scope; a bug-report issue form and a pull-request checklist
+  (gates, changelog and docs in the same PR, no hand-written tunable) join the benchmark form.
+- **A log port: where the engine's diagnostics go.** The engine wrote its ~70 diagnostic lines
+  ("prefill stays on the CPU", the cache budget it settled on, a policy disarmed) straight to stderr
+  from wherever it was; they now go through `bmoe/log.h` (`set_log_sink`, `set_log_level`, three
+  levels). The default sink writes the same `bmoe: <line>` to stderr, byte for byte, so nothing that
+  reads the CLI's stderr changes; the `BMOE_*` protocol lines and the CSV/trace sinks never pass
+  through it. `bmoe-server` keeps the stderr line and also publishes each one as a `log` event
+  (`level`, `message`) on `GET /api/events`, so a UI can show why a load fell back.
+- **The engine host is tested.** `bmoe-server`'s state machine around the one session (loads in the
+  background, turns in line, cancel and unload mid-turn, which failures close the session) had no
+  test. It now drives the session through a narrow seam (`server/hosted_session.h`, a real `Session`
+  by default), and `tests/engine_host_test.cpp` runs it with a scripted session: a load ending ready
+  or in error, a turn with nothing loaded (503 `no_model`), a turn sent during a load waiting for it,
+  cancel and unload during a turn, a failed decode closing the session (500) and a recoverable kind
+  keeping it (400), the same for decisions, and diagnostics reaching the bus.
+- **CI runs the gates under AddressSanitizer and UndefinedBehaviorSanitizer** (a Linux job,
+  RelWithDebInfo, llama.cpp instrumented too, so ggml's reads of the streamer's own buffers are
+  checked), and **on macOS**, where the job only compiled before: the Apple I/O paths are now proven
+  byte-identical on every PR, not only on a developer's Mac. llama.cpp's own sanitizer findings,
+  which this project does not patch, are listed one by one in `tests/sanitizers/ubsan.supp` (today:
+  ggml-rpc's unaligned reads, reached by the RPC gate). The web UI job also type-checks
+  (`npm run check`) and builds. Windows stays compile-only, with the reason in the workflow: its
+  gates have never been run.
+- **`--scan-dir PATH`: the server lists models outside its own directory.** Repeatable; each is
+  only read. `GET /api/models` adds `scan_dirs`, and each local model its `dir` and its `files` (every
+  file present, in shard order), so a client deletes a split set without knowing how shards are
+  named. The phone hands the server its other model folders this way instead of scanning them in
+  Kotlin. Split sets are recognised by a small explicit parser (`server/model_files.h`, tested) in
+  place of a `std::regex`.
+- **The web UI checks what the server answers.** Every read is checked at runtime for the parts of
+  its shape the UI depends on (`ui/src/lib/guards.ts`), and so is every event; an answer that is not
+  the documented shape fails where it is read, with `code: "bad_response"`, instead of as an
+  undefined inside a component. A reconnection now asks for the config again, beside the schema: a
+  change made while the page was cut off arrived as no event.
+- `docs/roadmap.md` gains a step that makes measuring and loading readable in every UI: each
+  measurement step with its result and duration, the load's progress with a cancel, a notice before
+  measuring, and measurements kept between loads if the recorded durations show it pays.
+
+### Changed
+- `docs/roadmap.md`: how the server will keep a hybrid model's conversation through a tool loop
+  (replay the assistant's own tokens, then a recurrent checkpoint per turn), after issue #240 showed
+  Qwen3.8-Flash-Next recomputing the whole history on every tool call.
+- **llama.cpp moves to upstream master of 2026-10-18** (523 commits past the 2026-09-26 base): the
+  fork branch `bmoe/expert-ready-hook-1810-dl` carries the same single expert-ready-hook commit,
+  in the variant that also answers the CPU registry, so the backend-module builds reach it too.
+  The new base loads architectures the old one did not (Kolibri-1, `kolibri1`, among them); their
+  expert layout is read off the file like any other, but none of them has been run here yet.
+  Upstream reworked `common`'s chat and speculative APIs, and the engine follows with the smallest
+  change that keeps its behaviour: the rendered prompt is joined back into one string (`.str()`,
+  as upstream's own server does), the parser arena is copied instead of reloaded from a
+  serialization upstream removed, and the batch handed to the MTP driver is mirrored into the
+  `common_batch` it now reads. Same backends and build options, so `docs/backends.md` holds;
+  greedy output on a real model is unchanged.
+- **The catalog is the two reference models.** `catalog/models.json` offers Qwen3.6-35B-A3B
+  (Q4_K_M) and Gemma 4 26B-A4B-it (Q4_0), both from ggml-org, the models the engine is measured
+  on and a first run starts from; every other model comes from its own repository through the
+  Models screen, where the server reads its header first. The five other entries are gone, not
+  because they stopped working but because a list cannot keep up with what is published, and the
+  product is the engine's rules, not the list.
+- **`Session::open()` and `Session::generate()` read as their steps.** The two functions were 690
+  and 770 lines; each is now a short sequence of named steps on the session's `Impl` (`load_model`,
+  `read_model`, `build_hook`, `create_contexts`, ..., `bind_streaming`, `describe_run`; a `Turn` with
+  `render_prompt`, `tokenize_prompt`, `reuse_kv_prefix`, `prefill`, `decode` and its `draft`,
+  `verify_decode`, `accept`, `emit`, then `summarize` and `finish`). The order of operations, the
+  error kinds and messages and every metric are unchanged, which the byte-identity gates confirm.
+  The router hook's eval callback is split the same way (capture, compute trace, device arena, row
+  tables, routing node), each job reached only when its feature is on, so a node no job wants costs
+  what it did.
+- **`RunConfig` holds tunables only, and the table names every bound.** `--progress` and
+  `--compute-trace-layers` were hand-written flags writing two `RunConfig` fields the parameter
+  table had no row for. Neither is a tunable of a run, so neither is in `RunConfig` any more: the
+  line protocol is the CLI's output mode and reaches the engine as `RunOutputs::render_text`
+  (`run()` now takes the token callback, the sinks and that switch as one `RunOutputs`), and the
+  compute trace's granularity is the trace's own (`IComputeTraceSink::layers_only()`, set by
+  `make_csv_compute_trace_sink(path, layers)`); the CSV preamble's `compute_trace_layers` is now read
+  from the attached trace. `BMOE_PROGRESS` goes through the CLI's one table of environment
+  overrides instead of a line of its own. `--ppl-skip` is read with the table's strict parser, now
+  public as `parse_int_strict`: `4x` is an error, not 4, and `abc` not 0. The table's
+  last literal bounds are named constants that `validate()` checks too (`SamplingConfig::temp_max`,
+  `top_p_max`, `seed_random`, `SpecConfig::draft_p_min_max`,
+  `MoeStreamConfig::drop_cold_frac_max`, `substitute_lambda_max`). The sink factories return
+  `std::unique_ptr`.
+- **One probe-and-plan sequence, in core.** `bmoe-cli --auto` and the server's `/api/plan` each
+  carried the planner's probe calls in the same order, the cache-floor arithmetic behind the
+  headroom probe and the two-minute device-probe limit, kept in step by hand. Both now call
+  `probe_and_plan` (`core/include/bmoe/auto_plan.h`) with what differs between them as options (the
+  storage and memory probes, how the executable starts itself again to probe a device), the child of
+  an isolated probe is one call (`probe_device_child`), and neither front-end includes `llama.h` to
+  plan. The rules are unchanged and still pure: `plan_run` is now a list of named stages over one
+  planning state and `allocate` a list of named steps, and every plan the planner tests make is the
+  same before and after, decision for decision. A reason that tells a person what to type spells
+  the flag through the parameter table (`flag_spelling`), so a renamed flag cannot leave advice
+  naming one that no longer parses; the one reason that named a front-end flag (`--auto`) now says
+  "the planner". The smallest context the rationale suggests and the capacity fitter's device
+  margin and minimum context are named constants.
+- **Tensor and graph-node names are read in one place.** How llama.cpp spells a block's tensors, an
+  expert weight, a per-layer graph node and the router weight chain, and the capacity fitter's
+  expert-override patterns, was parsed where it was used: a `sscanf` in the session and the prefill
+  path, two copies of the node matchers in the router hook and the decide probe, a third block
+  parser in the model probe, and a `std::regex` in the placement probe. All of them now go through
+  `core/src/moe/tensor_names.{h,cpp}`, with one rule for an index (digits only, the whole of it) and
+  no regex, and `tests/tensor_names_test.cpp` covers the shapes the conventions produce and the near
+  misses each rule rejects.
+- **The UIs read facts, not parameters.** The live line and the metrics card took the flash term
+  from `stall` or `io` by reading the `overlap` parameter, and the streaming badge guessed from
+  `moe-stream` what a load would do. The engine now reports the wall-additive flash term already
+  chosen (`TokenMetrics::flash_wait_ms`, `RunSummary::moe_flash_wait_s_per_token`), the server's
+  events carry it as `flash_wait_ms` and `flash_wait_s_tok`, the CLI's `BMOE_DONE` as
+  `flash_wait_s_tok`, and the loaded model in `/api/info` carries the threads a CPU figure is read against (`compute_threads`, `busy_threads`). The web UI
+  names no engine parameter any more; its metrics card shows the flash wait in place of the stall
+  share, which read 0 on every serial run, and the badge appears once a model has loaded, since
+  only the load knows (a dense model, a plan that declines).
+- **The Hexagon backend's environment is the server's to set.** Polling for the DSP and the host
+  buffer type the prefill device moves the KV cache into were set by the Android service before it
+  started the server; they are platform policy, and now live in `server/platform.cpp`, set first
+  thing in `run()` (so a device-probe child inherits them) and only where the environment has not
+  set them already.
+- **The Android app reads the server's facts and labels, and keeps no model logic.** The live line
+  and the metrics card took the threads, the read lanes and overlap from the settings with invented
+  defaults (4, 4, on); they now read the flash term and the threads the server reports. The
+  metrics screen's hand-kept labels for the CSV preamble (`CONFIG_ORDER`, `ConfigFields`) are gone:
+  a recorded setting is labelled, typed and explained by the parameter table, and a run's identity
+  names every setting that changes the reply and is off its default (the table's `lossy`), instead
+  of a list of keys. The Kotlin gguf parser that decided MoE-ness from a text marker
+  (`GgufHeader.kt`) and the shard-name regexes are deleted: the service starts the server with the
+  phone's other model folders as `--scan-dir`, the Models screen lists what the server lists -
+  every gguf, so a dense model the engine runs as plain mmap now appears too, labelled as one this
+  build does not stream, where the app used to hide it - and a
+  delete removes the files the server named. A summary's rate is read by field name, not by regex,
+  a chat error is acted on by its `code` (`no_model` links to Models), a closed port is told apart
+  by `ConnectException`, not by the text of a message, and a failed message can be sent again, as
+  on the web; a failed decision leaves no question behind to be sent as history.
+- **The line under an answer names each rate by its phase, and gives the prefill a rate.** It read
+  `1.7 tok/s · 9 tok · prefill 4.0s (13 tok)`: a bare rate that was the decode's, and a prefill
+  given only as time. It now reads `decode 1.7 tok/s (9 tok) · prefill 3.3 tok/s (13 tok, 4.0 s)`,
+  in the web UI and in the app alike, from the `prefill_tps` the server already sends. The prefill
+  counts the tokens the turn read, which with the conversation reused from the KV cache is the new
+  message. `docs/screens.md` gives the line.
+- **No table of architectures: which tensors are the routed experts is read from the file.** A
+  routed expert weight is a block's `.weight` with three dimensions whose third is the expert count
+  the file declares, which is how llama.cpp lays out every weight it hands to the expert matmul; the
+  shared expert, the router, a per-expert scale and the router's bias all have another rank and fall
+  out by shape (`bmoe/expert_layout.h`, unit-tested). The registry of ten architecture rows
+  (`arch_registry.cpp`, `recipe.h`) is gone, and `--list-archs` with it: of the 57 model builders
+  the pinned llama.cpp routes through `build_moe_ffn`, the engine named 10, and 8 of the rows spelt
+  the same three names. The refusal stays and names its reason: a dense model, a file whose MoE
+  layers disagree on their expert tensors, or one with more than three per layer is refused on the
+  CLI, in the plan and in the server's `streamable` fact, which now comes from the same reading of
+  the file. The three layouts (split, fused, gate-less) keep their byte-identity gates, and a new
+  layout gets a gate, not a row (`docs/which-models-stream.md` replaces `adding-a-model.md`). The
+  CLI's `mode:` line reads the file's expert count (`RunSummary::n_expert`) to tell a MoE run
+  without streaming from a dense model.
+
+### Fixed
+- **A host-only run hands llama.cpp no device instead of naming the CPU as one.** Since `--devices
+  auto` (0.29.0) a run with no layer on a device passed the CPU in llama.cpp's device list, which
+  names the devices it offloads to; the context then built a second CPU backend beside its own and
+  scheduled the graph on it, with the other idle. An empty list is what a build without a GPU
+  backend gets from llama.cpp's own selection: one CPU backend, and still no GPU in the scheduler.
+  Same output and the same memory; one backend fewer.
+- **The planner counted every block of a hybrid model as a MoE layer on the host.** The fitter's
+  list of layers left on the host speaks in llama.cpp's block indices, and on an architecture
+  where most blocks carry no experts (Nemotron-H, Qwen3.8-Flash-Next, the leading-dense families)
+  the plan read "52 of 23 MoE layers keep their experts on the host" and prorated the expert set
+  by that ratio: 2.3 times the bytes on the host, in the regime line and the cache arithmetic. The
+  model profile now names the blocks that carry experts (`moe_layers`), the placement probe keeps
+  only those in its host list, and the planner counts the list against them either way.
+- **The page two experts' slices share is released with the last of the two.** A slice is
+  committed through the slack after it, which is the head page of the next slice; eviction
+  released only the pages between the two boundaries, so once an expert had been resident the
+  head page of its right neighbour stayed committed until the buffer was freed, outside the
+  cache ledger: one page per expert and projection, up to 72 MiB on a 48-layer, 128-expert
+  model. A boundary page now goes when neither neighbour is resident or being read.
+- **The device agreement check is llama.cpp's own.** The planner compared a device's matmul with
+  the host's under a private bound five times stricter than the normalized mean squared error
+  `test-backend-ops` allows a matmul (5e-4), and refused a laptop iGPU whose half-precision
+  prefill leaves the model's perplexity unchanged (32.58 against 32.46). The measure and the bound
+  are now upstream's; the confirmation above catches what a matmul cannot.
+- **A device that pads a single expert past its share of the slot is refused, not aborted on.**
+  The OpenCL backend adds carve slack to every quantized tensor's allocation, so one expert's
+  allocation outgrows its stride and the last expert reached past the slot, where ggml aborts
+  inside the allocation instead of returning. The arena checks it when it sizes the slots and
+  refuses with the reason, where a planned device still falls back to the host.
+- **The capacity fitter's placement is applied only where every device it used has memory of its
+  own.** The check was whether any device on the machine did. On a phone an NPU, whose buffers
+  come from a kernel allocator and states no size, passed it, and the fitter's answer, 41 layers
+  and 2106 MiB on the GPU beside it, was applied although that GPU's memory is the host's and the
+  plan's ledger held none of it. The devices given bytes are now the ones asked, each with a stated
+  size; where one shares the host's memory the placement is quoted and not applied, as it already
+  was where every device does.
+- **A prefill device is charged its own compute buffer, not the fitter's sum.** The fitter projects
+  compute buffers for the devices it places layers on, and the planner charged their sum to
+  whichever device would prefill. On a phone that put a GPU's 467 MiB on the NPU beside it, which
+  the fitter never places on, and took it from the expert cache (904 MiB instead of about 1370, and
+  one expert slot instead of two). Each device's part is now kept, and the prefill device pays its
+  own.
+- **Every buffer the engine allocates for tensor data keeps a page readable past its end.** One of
+  ggml's CPU kernels (Q6_K, on cores with SVE and int8 matmul) loads 14 bytes past a block's end,
+  which llama.cpp's own buffers absorb. A dense weight in a buffer sized to it exactly, with a guard
+  page after it, faulted: seen on a phone, at random, once the release carried that CPU variant.
+  The dense copies, the expert slots and cache regions, the row-gathered tables and the probe's
+  host copy now end with the OS's page of slack, committed wherever the platform faults on a page
+  that was only reserved.
+- **A turn sent the moment a load is announced waits for the load.** `EngineHost::load()` reads
+  "loading" before its thread has taken the generation lock, and a request in that gap took the lock
+  first, found no session and answered 503 for a model seconds from ready. A turn now gives the lock
+  back while the state reads loading and takes it once the load has ended either way; the engine
+  host test that caught it on Windows runs stable (30 runs under `ctest`).
+- **The prefill device's dense layer slots are one table, indexed as they were sized**, in place
+  of a conditional between two member arrays. The two spell the same selection, so this changes no
+  behaviour: it was made while gate G17 (nemotron_h_moe) aborted under AddressSanitizer and
+  UndefinedBehaviorSanitizer with a recurrent layer placed in the wrong parity's slot, and the
+  gate has passed since, but the cause of that abort was not found and this rewrite cannot have
+  been it. The fault is recorded as open (a race in the arena's workers or an uninitialised read
+  are the candidates), and the sanitizer job is where it would show again.
+- **Two gate runs on one machine no longer meet on one port.** The prefill-device gate served its
+  RPC device on a fixed `127.0.0.1:50599`, so a second build tree or CI job running the gates at the
+  same time failed to bind, or registered the other run's server; the port is now one the kernel
+  picks per process.
+- **The docs index the pages they have, and name the test phone as a class.** `docs/README.md`
+  lists the application framework, the five screens and the visual language; the bench-data index
+  lists all eighteen sessions; the agent guide's project map names `session.cpp` as the composition
+  root; and the benchmark pages, bench notes and scripts call the phone "the 12 GB test phone".
+- **The server holds against malformed requests, the pages around it and the network.** A field of
+  the wrong type in a request (a `role` or a content part's `type` that is a number, a download
+  `id` that is an object, a body that is an array) threw out of the JSON library and answered
+  `500`; every read is now type-checked, a body must be an object, and anything a handler still
+  throws on a JSON value is a `400` with `code: "invalid_request"`. An answer no longer makes the
+  browser fetch anything: the Markdown renderer keeps an image only when its bytes are inline
+  (`data:`) and shows any other as its alt text, so text that talks the model into writing
+  `![](https://host/?q=...)` can no longer send what the URL carries, or GET the server's own API;
+  media, `srcset` and `background` go too. Every response now carries a Content-Security-Policy
+  (`default-src 'self'`, images from the page or `data:`, no inline script or style, no framing, no
+  form submission) with `nosniff` and `no-referrer`. A request with no `Origin` that the browser
+  marks `Sec-Fetch-Site: same-site` (another port on the same host, where a hostile local page is
+  served) was answered; only `same-origin` and `none` are now. `--api-key-file PATH` reads the key
+  from a file, since a command line is visible to every local user; `--api-key` stays. A client on
+  the network may name a model only in a folder the server lists models from, the models directory
+  and each `--scan-dir` (canonicalised, `..` and links resolved; `403` `outside_models_dir`
+  otherwise), and `--models-only` confines local clients too. Both "no model loaded" refusals of
+  the chat and decide routes carry `code: "no_model"`, which the UIs' Models link reads.
+  The default host, port, context and answer length are named in `server/server.h`, and the usage
+  text is built from them; `--port` is read strictly. `docs/server-api.md` says all of it.
+- **The release workflows no longer splice typed text or a secret into a shell script.** The tag a
+  person types into a manual run, and the release's tag name, were expanded straight into `run:`
+  lines, so a tag with shell syntax in it would have run on a job that signs and publishes; they
+  now reach the shell as environment variables, quoted, and a tag that is not a plain ref name
+  (letters, digits, `.`, `_`, `-`) stops the run. The signing passwords were expanded inside an
+  unquoted heredoc, where a `$` or a backtick in one is shell syntax; they are environment
+  variables written with `printf '%s'`. `ci.yml` declares `permissions: contents: read` for every
+  job but the one that attaches the APK, which already asks for its own.
+- **Any app on the phone could read the conversations.** The Android app started the server on
+  loopback without a key unless it was shared, and loopback on a phone is reachable by every
+  installed app: any of them could follow `/api/events` and read every prompt and answer, or drive
+  the engine. The server is now always started with a key: a random one per launch
+  (`SecureRandom`), handed over in a file of the app's private storage with mode 0600
+  (`--api-key-file`, never on the command line), or the persistent key Settings shows when it is
+  shared; every request carries it. Before it trusts the server on the port the app checks that it
+  is its own (it refuses a random key and accepts the launch's), and a port held by another program
+  is reported as such and sent nothing.
+- **Stopping the engine no longer blocks the phone's main thread.** A stop waited up to six seconds
+  for the server to exit on the main thread; starts and stops now run one at a time on a background
+  thread, a restart starts the next server only once the previous one has ended (it slept 800 ms
+  and hoped), and a stopped server's exit, which arrives seconds later, no longer overwrites the
+  state of the one that replaced it (each launch has a number, and only the current one's exit
+  counts). Every call has a read timeout fitted to what it waits for, instead of none; the chat
+  stream and a decision still wait as long as they must, and the event stream has a watchdog that
+  reconnects after two missed pings. A cancelled coroutine is no longer read as a failed call.
+- **A failed message stays in the web UI's transcript.** A send refused before anything streamed
+  moved the message back into the composer and out of the conversation, against the screen
+  specification; it now stays, saved, with the error under it, Send again resends it as it is, and
+  a server without a model links to Models (`code: "no_model"`). A failed decision still leaves no
+  question behind, since it is not a conversation turn. Tested against a stubbed server.
+- **Direct reads are aligned to what the file's filesystem states, not to 4096.** Every reader cut its
+  O_DIRECT windows at 4 KiB, and the storage probe reported that literal as the storage's alignment. A
+  filesystem formatted with 16 KiB blocks rejects a 4 KiB window, and the open-time check then put the
+  run on buffered reads, blaming the storage for returning wrong data. The reader now asks the
+  descriptor it opened (`pio::direct_alignment`: `statx(STATX_DIOALIGN)` on Linux and Android where
+  the kernel and the app sandbox have it, the filesystem's block size otherwise; the volume's sector
+  sizes on Windows; the block size on Apple, where `F_NOCACHE` needs none), keeps 4096 only as the
+  named fallback, and the probe reports `0` (unknown) instead of a value it did not read. Buffers the
+  reads land in are aligned to that granule and never less than a page. Three more facts are no longer
+  assumed: the refault price is read at this machine's page (16 KiB on Apple silicon) rather than at 4
+  KiB; a row-stream slab is a whole number of pages, so on a 64 KiB-page kernel evicting one slab can
+  no longer zero its resident neighbours; and the expert-readiness flags are padded to 128 bytes, the
+  widest cache line of any target, instead of 64. The swap probe finds a zram device under any number
+  rather than only `zram0`, and the spin-wait's pause and the decide probe's 64-bit file reads moved
+  behind `core/src/io/`, so no operating-system branch is left in `core/src/moe/`.
+- **The plan names every compute device it did not weigh for the prefill, and why.** A device
+  with no measurement at prefill width dropped out of the `prefill-device` line without a word, so
+  a plan read the same whether the machine had no such device or had one that could not run this
+  model. On a phone with an NPU, a Q2_K model planned as if the NPU were absent; the line now ends
+  with "HTP0 was not weighed: it does not run this model's expert matmul in the model's own
+  format", or "it gave no measurement at that width" where the reason is not known.
 
 ## [0.30.0] - 2026-10-16
 
@@ -812,7 +1404,6 @@ Semantic Versioning.
   release archive's README.txt opens with the same fact and a complete Windows command, and no
   longer points a Windows user at a bash script as the only instruction. The Windows build also
   links the MSVC runtime statically, so the exe no longer needs the VC++ Redistributable to start.
-
 
 ### Added
 - **Prefill-phase attribution in `BMOE_DONE` and the CSV `# summary`.** `prefill_cpu_s` /
@@ -1874,7 +2465,7 @@ to produce a confident wrong number rather than an error.
   change, one registry row. Added to the in-app one-tap download catalog. At ~2× device RAM it needs
   streaming: mmap baseline 0.1 tok/s (fault storm) vs **5.0 tok/s** streamed at the model's own
   width (cache 3000 MiB, byte-identical output), or **5.8 tok/s** with turbo top-k (`k=6`, lossy).
-  Measured on the OnePlus 15R (indicative 96-token run, not yet the full 256-token protocol); see
+  Measured on the 12 GB test phone (indicative 96-token run, not yet the full 256-token protocol); see
   the README benchmarks section.
 
 ## [0.10.0] - 2026-07-19
@@ -2094,7 +2685,7 @@ to produce a confident wrong number rather than an error.
   final channel removes the model's scratch space, so reasoning-dependent answers degrade — a
   latency/throughput mode, not a free win (see the gpt-oss quality note in `docs/benchmarks.md`).
 - **gpt-oss-120b on-device benchmark**: streaming a 58.46 GB MoE (128 experts, top-4) on the 11.3 GB
-  OnePlus 15R — **5.2× device RAM** — at up to 7.7× a plain-mmap load (top-k 2). A top-k × lanes ×
+  test phone — **5.2× device RAM** — at up to 7.7× a plain-mmap load (top-k 2). A top-k × lanes ×
   prefetch sweep plus an mmap baseline, with the k=4-interruption and 24-token-probe caveats and a
   quality note, in `docs/benchmarks.md`; raw data under `docs/bench-data/2026-07-14/`, drivers
   `scripts/gptoss-matrix.sh` and `scripts/gptoss-mmap.sh`.

@@ -52,14 +52,11 @@ public:
 
     // Take over `tensors` (already filtered by the caller to tables the graph only row-gathers),
     // reserving address space for each and rebinding its ggml tensor onto it. `paths` are the shard
-    // files in shard order, `align` the O_DIRECT block size, `budget_bytes` the ceiling on resident
-    // slabs across all tables (0 = a built-in default). Returns false only if a table could not be
-    // taken over at all, in which case NOTHING has been rebound and the caller keeps its own policy:
-    // this module never leaves a tensor half-owned.
-    bool init(std::vector<DenseTensorRef> tensors,
-              const std::vector<std::string> & paths,
-              size_t align,
-              uint64_t budget_bytes);
+    // files in shard order (each reader asks its file for the read alignment), `budget_bytes` the
+    // ceiling on resident slabs across all tables (0 = a built-in default). Returns false only if a
+    // table could not be taken over at all, in which case NOTHING has been rebound and the caller
+    // keeps its own policy: this module never leaves a tensor half-owned.
+    bool init(std::vector<DenseTensorRef> tensors, const std::vector<std::string> & paths, uint64_t budget_bytes);
 
     bool empty() const { return tables_.empty(); }
 
@@ -76,8 +73,11 @@ public:
     // A row is far below any device's request floor, so a slab is the unit actually read: large
     // enough that the read costs what the floor costs anyway, small enough that a scattered
     // vocabulary does not drag megabytes of neighbours in behind it. Not a per-model number —
-    // it is a property of the storage, and the same value serves every table.
-    static constexpr uint64_t slab_bytes = 16ull << 10;
+    // it is a property of the storage, and the same value serves every table. The floor, that is:
+    // the slab in use is this rounded up to whole pages (see slab_), because a slab is committed and
+    // evicted as pages, and evicting one that shares a page with a resident neighbour would hand
+    // that neighbour back as zeros.
+    static constexpr uint64_t slab_min_bytes = 16ull << 10;
     static constexpr uint64_t default_budget_bytes = 64ull << 20;
 
 private:
@@ -111,10 +111,10 @@ private:
     std::list<std::pair<size_t, uint64_t>> lru_;       // (table index, slab index), oldest first
     uint64_t budget_bytes_ = default_budget_bytes;
     uint64_t table_bytes_ = 0; // total size of the tables taken over
-    size_t align_ = 4096;
-    uint64_t page_ = 4096;
-    uint32_t gen_ = 0;           // gather generation, stamped on the slabs the current node needs
-    std::vector<uint64_t> need_; // scratch: the slabs of the gather in flight (eval thread only)
+    uint64_t page_ = pio::vm_page();
+    uint64_t slab_ = slab_min_bytes; // slab_min_bytes in whole pages; settled at init
+    uint32_t gen_ = 0;               // gather generation, stamped on the slabs the current node needs
+    std::vector<uint64_t> need_;     // scratch: the slabs of the gather in flight (eval thread only)
 
     std::atomic<uint64_t> resident_bytes_{0};
     // Counters are written on the eval thread and read by the metrics thread; relaxed atomics keep

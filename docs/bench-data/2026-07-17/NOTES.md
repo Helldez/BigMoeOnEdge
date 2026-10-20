@@ -3,7 +3,7 @@
 Captured against `main` @ `1419af3` + a fresh arm64 build of the CLI (NDK r29,
 `armv8.2-a+dotprod+fp16`). Everything here runs the dense (non-expert) weights through
 **O_DIRECT into anonymous buffers** instead of leaving them mmap'd in the page cache — the axis
-this session set out to measure. Device: OnePlus 15R, Android 16, 11.3 GB RAM. All runs are
+this session set out to measure. Device: the 12 GB test phone, Android 16, 11.3 GB usable RAM. All runs are
 256-token greedy decode over `adb shell`, `--overlap` on, `-t 4`.
 
 ## What the runs are

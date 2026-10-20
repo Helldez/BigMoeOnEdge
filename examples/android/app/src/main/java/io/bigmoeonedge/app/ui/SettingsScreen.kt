@@ -26,6 +26,7 @@ import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.engine.ConfigState
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.ParamSpec
+import io.bigmoeonedge.app.engine.LanAddress
 import io.bigmoeonedge.app.engine.paramValueFromText
 import io.bigmoeonedge.app.engine.paramValueText
 import kotlinx.coroutines.launch
@@ -75,9 +76,17 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 Text("The configuration does not validate: ${cfg.error}", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             }
 
+            // While the engine restarts (a sharing change, a new key) the rows stay where they are, so the
+            // page keeps its length and its scroll; a line above says why a change waits.
+            if (!engine.serverUp) {
+                Text(
+                    if (params != null) "The engine is restarting; changes apply once it is back." else "The engine is not running.",
+                    color = if (params != null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                    fontSize = 13.sp,
+                )
+            }
             when {
-                !engine.serverUp -> Text("The engine is not running.", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-                params == null || cfg == null -> Text("Waiting for the engine…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                params == null || cfg == null -> if (engine.serverUp) Text("Waiting for the engine…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
                     // A path other than the model is set at launch, not over the API: not a setting here.
                     val settable = params.filter { it.type != "path" || it.key == "model" }
@@ -91,12 +100,12 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                             ParamRow(spec, cfg, modelName = engine.info?.model?.name, onSet = { set(spec.key, it) }, onReset = { reset(spec.key) })
                         }
                     }
-                    // Every row in one section of its own, folded, the basic ones included: the whole
-                    // engine in one place, each row marked with its level. They ship on purpose, because
-                    // measuring them on other hardware is part of what this app is for; a lever nobody
-                    // can reach is a lever nobody can refute.
+                    // The other rows in one section of their own, folded and grouped the same way; a basic
+                    // row is shown once, above. They ship on purpose, because measuring them on other
+                    // hardware is part of what this app is for; a lever nobody can reach is a lever
+                    // nobody can refute.
                     AdvancedSection(advancedOpen, onToggle = { advancedOpen = !advancedOpen }) {
-                        groups.forEach { (groupLabel, rows) ->
+                        ParamSpec.advanced(settable).forEach { (groupLabel, rows) ->
                             Text(groupLabel, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary)
                             rows.forEach { spec ->
                                 ParamRow(spec, cfg, modelName = engine.info?.model?.name, onSet = { set(spec.key, it) }, onReset = { reset(spec.key) })
@@ -113,7 +122,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             SwitchRow(
                 "Serve on the network",
                 "Other devices on this network can use this phone's engine through its OpenAI-compatible " +
-                    "API, with the key below. Changing this restarts the engine, which unloads the model. " +
+                    "API, with the key below. Changing this restarts the engine; a loaded model is loaded again. " +
                     "Prompts and answers cross the network in clear.",
                 share,
             ) { on ->
@@ -123,7 +132,26 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             }
             if (share) {
                 val clipboard = LocalClipboardManager.current
-                Text("Address: http://<this phone's IP>:8765/v1 · key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // The phone's own address on this network, followed as the network changes: what a
+                // client types, not a placeholder to work out.
+                var lan by remember { mutableStateOf(LanAddress.current(context)) }
+                DisposableEffect(Unit) { onDispose(LanAddress.watch(context) { lan = it }) }
+                if (lan.isEmpty()) {
+                    Text(
+                        "Not on a Wi-Fi or Ethernet network: no other device can reach the engine until the phone joins one.",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                    )
+                } else {
+                    Text("Address:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    lan.forEach { ip ->
+                        val url = LanAddress.url(ip)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(url, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                            TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(url)) }) { Text("Copy") }
+                        }
+                    }
+                }
+                Text("Key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(key, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
                     TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
@@ -167,8 +195,22 @@ private fun ParamRow(spec: ParamSpec, cfg: ConfigState, modelName: String?, onSe
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                if (spec.type != "bool") Hint(spec.help)
-                else if (spec.help.isNotEmpty()) Hint(spec.help)
+                val (lead, rest) = spec.helpParts()
+                var more by remember(spec.key) { mutableStateOf(false) }
+                if (lead.isNotEmpty()) Hint(lead)
+                val extra = listOfNotNull(
+                    rest.ifEmpty { null },
+                    spec.special.takeIf { it.isNotEmpty() }?.joinToString("; ") { "${it.first} = ${it.second}" },
+                )
+                if (extra.isNotEmpty()) {
+                    if (more) extra.forEach { Hint(it) }
+                    Text(
+                        if (more) "Less" else "More",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable { more = !more }.padding(vertical = 2.dp),
+                    )
+                }
                 val tags = listOfNotNull(
                     spec.level,
                     if (mine) "set by you" else null,
@@ -196,7 +238,8 @@ private fun NumberOrTextField(spec: ParamSpec, value: Any?, onSet: (Any?) -> Uni
         }
         val n = (v as? Number)?.toDouble()
         if (n != null && ((spec.min != null && n < spec.min) || (spec.max != null && n > spec.max))) {
-            error = "between ${paramValueText(spec.min)} and ${paramValueText(spec.max)}"
+            error = if (spec.max != null) "between ${paramValueText(spec.min)} and ${paramValueText(spec.max)}"
+            else "at least ${paramValueText(spec.min)}"
             return
         }
         error = null
@@ -208,7 +251,8 @@ private fun NumberOrTextField(spec: ParamSpec, value: Any?, onSet: (Any?) -> Uni
         label = { Text(spec.label) },
         suffix = spec.unit?.let { { Text(it, fontSize = 12.sp) } },
         isError = error != null,
-        supportingText = error?.let { { Text(it) } },
+        // Below the field: the problem, else what the value means (0 = off), else what is usual.
+        supportingText = (error ?: spec.specialLabel(value)?.let { "= $it" } ?: spec.typicalText())?.let { { Text(it) } },
         singleLine = spec.type != "text",
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { commit() }),
@@ -231,16 +275,16 @@ private fun AdvancedSection(open: Boolean, onToggle: () -> Unit, content: @Compo
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp).clickable(onClick = onToggle),
         ) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("ADVANCED", fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                Text("Advanced settings", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onTertiaryContainer)
                 Spacer(Modifier.weight(1f))
                 Text(if (open) "hide" else "show", fontSize = 12.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
             }
         }
         if (open) {
             Text(
-                "Every setting, grouped and marked with its level. The groups above are the recommended " +
-                    "configuration; the planner sets what it can measure, and the levels beyond basic were " +
-                    "measured once or on one device and can slow a run down or change the reply.",
+                "The rest of the engine, grouped like the settings above and marked with their level. The " +
+                    "planner sets what it can measure; these were measured once or on one device and can " +
+                    "slow a run down or change the reply.",
                 fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
             )

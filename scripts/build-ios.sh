@@ -9,7 +9,8 @@
 #   BUILD_TYPE           (Release)
 #   BMOE_IOS_TEAM        Apple development team id; required for a device
 #   BMOE_IOS_BUNDLE_ID   (io.bigmoeonedge.harness) must be unique to the team on a device
-#   BMOE_IOS_MEMORY_ENTITLEMENTS=ON   ask for the larger memory limit and address space
+#   BMOE_IOS_MEMORY_ENTITLEMENTS=ON   ask for the larger memory limit (a Personal Team is granted it)
+#   BMOE_IOS_EXTENDED_ADDRESSING=ON   also ask for the larger address space (a paid team only)
 #   IOS_MIN_VERSION      (16.4, the oldest llama.cpp builds for)
 set -euo pipefail
 
@@ -53,12 +54,14 @@ case "$TARGET" in
 esac
 
 # Static libraries, so the app is one executable with nothing to embed and sign beside it; the
-# Metal shaders compiled in for the same reason. The rest is what the host builds already say.
+# Metal shaders compiled in for the same reason. The one platform where the backends are not
+# modules loaded from beside the executable (the top-level CMakeLists turns that off for iOS).
 cmake -S . -B "$BUILD_DIR" -G Xcode \
     -DCMAKE_SYSTEM_NAME=iOS \
     -DCMAKE_OSX_SYSROOT="$SYSROOT" \
     -DCMAKE_OSX_ARCHITECTURES="$ARCHS" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_MIN_VERSION" \
+    -DBMOE_BACKEND_MODULES=OFF \
     -DBUILD_SHARED_LIBS=OFF \
     -DBMOE_BUILD_TESTS=OFF \
     -DGGML_NATIVE=OFF \
@@ -66,6 +69,7 @@ cmake -S . -B "$BUILD_DIR" -G Xcode \
     -DGGML_METAL_EMBED_LIBRARY=ON \
     -DBMOE_IOS_BUNDLE_ID="${BMOE_IOS_BUNDLE_ID:-io.bigmoeonedge.harness}" \
     -DBMOE_IOS_MEMORY_ENTITLEMENTS="${BMOE_IOS_MEMORY_ENTITLEMENTS:-OFF}" \
+    -DBMOE_IOS_EXTENDED_ADDRESSING="${BMOE_IOS_EXTENDED_ADDRESSING:-OFF}" \
     "${SIGN[@]}"
 if [ "$TARGET" = device ]; then
     cmake --build "$BUILD_DIR" --config "$BUILD_TYPE" --target bmoe-harness -- -allowProvisioningUpdates

@@ -22,10 +22,13 @@ namespace bmoe {
 struct SamplingConfig {
     float temp = 0.0f;           // <= 0: greedy (argmax). > 0: stochastic sampling.
     int top_k = 40;              // 0 disables the top-k stage (llama.cpp convention)
-    float top_p = 0.95f;         // nucleus cutoff, in (0, 1]
-    uint32_t seed = 0xFFFFFFFFu; // == LLAMA_DEFAULT_SEED (random per run); static_assert'd in session.cpp
+    float top_p = 0.95f;         // nucleus cutoff, in (0, top_p_max]
+    uint32_t seed = seed_random; // == LLAMA_DEFAULT_SEED, static_assert'd in session.cpp
 
-    static constexpr int top_k_max = 1000; // the widest cutoff a form offers; validate() does not enforce it
+    static constexpr uint32_t seed_random = 0xFFFFFFFFu; // the seed that draws a fresh one per run
+    static constexpr int top_k_max = 1000;   // the widest cutoff a form offers; validate() does not enforce it
+    static constexpr float temp_max = 2.0f;  // the hottest a form offers; validate() does not enforce it
+    static constexpr float top_p_max = 1.0f; // a probability mass: the whole distribution
 };
 
 // How the dense (non-expert) model weights are kept resident. See MoeStreamConfig::dense_weights and
@@ -292,6 +295,8 @@ struct MoeStreamConfig {
     static constexpr int prefetch_layers_max = 8;
     static constexpr int route_ahead_max = 8; // beyond this the staleness has no measured meaning
     static constexpr int predict_spec_max_limit = 8;
+    static constexpr float drop_cold_frac_max = 1.0f;    // the uniform share: never empties a routing
+    static constexpr float substitute_lambda_max = 1.0f; // the whole score range: residency always wins
 };
 
 // Where the draft tokens of a self-speculative step come from. The verify half of the loop is
@@ -358,6 +363,7 @@ struct SpecConfig {
 
     static constexpr int draft_max_limit = 8;
     static constexpr int ngram_match_limit = 64;
+    static constexpr float draft_p_min_max = 1.0f; // a probability: only drafts the head is sure of
 
     bool enabled() const { return source != DraftSource::none; }
     bool is_mtp() const { return source == DraftSource::mtp; }
@@ -388,6 +394,18 @@ struct PrefillDeviceConfig {
     // the session falls back to the CPU and runs, which is what a plan that armed the device on
     // its own must ask for - a speed-up the planner chose is never a reason for a model not to load.
     bool best_effort = false;
+
+    // Confirm the device on THIS model before the session keeps it: one prefill of a fixed text
+    // computed on the host and on the device, compared row by row. A device that does not pick the
+    // host's next token in nearly every row is handed back like one that failed to open
+    // (best_effort decides how). The planner's test is one synthetic matmul, which cannot see a
+    // fault only the model's own activations trigger: a phone GPU's half-precision prefill turned
+    // a model into noise. Whether the device is FASTER is not judged here - at this width cold
+    // expert reads dominate - and stays the planner's call. The cost is three short prefills at
+    // load; false skips it.
+    bool verify = true;
+    static constexpr int verify_tokens = 64;        // the probe prefill's width, under max_outputs
+    static constexpr float verify_min_agree = 0.9f; // rows whose top token must match the host's
 
     // How many layers of streamed experts the device holds at once (with moe.enabled). Two reads a
     // layer while the one before it computes; one reads each layer at its own routing node, with
@@ -511,8 +529,7 @@ struct RunConfig {
     // Decode is unaffected: a decode graph is one token wide whatever this says. The cost is
     // prefill throughput, which processes a long prompt in more, smaller passes.
     int n_ubatch = 0;
-    bool chatml = false;   // wrap the prompt in the model family's chat turn (arch-aware)
-    bool progress = false; // emit machine telemetry (one JSON line per token)
+    bool chatml = false; // wrap the prompt in the model family's chat turn (arch-aware)
 
     // Render the chat template with reasoning enabled. Passed to the template as the
     // `enable_thinking` kwarg, so a reasoning model (Qwen3, thinking Gemma, …) only emits
@@ -527,13 +544,6 @@ struct RunConfig {
     // changes the output. Applied at load via a llama.cpp kv_override on the arch-prefixed
     // expert_used_count metadata key; must stay in [1, n_expert]. Independent of streaming.
     int n_expert_used = 0;
-
-    // Compute-trace granularity. false (default): a barrier per graph node — exact per-op
-    // attribution, but it serializes the graph against the expert stream and distorts the run.
-    // true: a barrier only at layer boundaries, cheap enough that the traced numbers stay close
-    // to an untraced run. Only meaningful when a compute-trace sink is attached; see
-    // bmoe/decode_trace.h for what the layer-mode rows contain.
-    bool compute_trace_layers = false;
 
     // ── what the first stage (llama.cpp's capacity fitter) decided ─────────────────
     // Layers stored on devices, counted from the top the way llama.cpp fills them, and the
@@ -552,9 +562,9 @@ struct RunConfig {
     // Off by default, armed by the caller, and currently REFUSED by the planner - because it was
     // measured three times in July on a device of exactly this class and it lost by 27%: the dense
     // and expert halves interleave, so a two-device split crosses the boundary twice per layer and
-    // the boundary tax eats the CPU time the device frees. See
-    // docs/bench-data/2026-07-27-gpu-dense-offload/. Kept as a named lever so the next person to
-    // have this idea finds the verdict instead of the idea.
+    // the boundary tax eats the CPU time the device frees. See the OpenCL row of
+    // docs/backends.md. Kept as a named lever so the next person to have this idea finds the
+    // verdict instead of the idea.
     bool dense_on_device = false;
 
     // Hand llama.cpp the CPU and nothing else. Set when this plan has decided no weight goes on a
@@ -575,6 +585,11 @@ struct RunConfig {
     SpecConfig spec;             // self-speculative decoding (MTP head or n-gram lookup); off by default
     PrefillDeviceConfig prefill; // prefill graphs on an accelerator; off by default
     DecideConfig decide;         // decide()'s prefix-state policy; off by default
+
+    // Let llama.cpp's and ggml's DEBUG log lines through to stderr. Off, they are dropped: about
+    // 1200 lines of graph bookkeeping per model load, which buried the engine's own output. For
+    // debugging llama.cpp itself, not the engine. Process-wide, as llama.cpp's log is.
+    bool llama_debug_log = false;
 
     // The upper ends of the ranges a settings form offers. They keep a slider finite and a typo
     // out; validate() does not enforce them, and none is a property of any model or machine.

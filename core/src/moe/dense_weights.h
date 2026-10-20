@@ -67,12 +67,12 @@ public:
 
     // Apply `mode` for the model files `paths` (per-shard dense `ranges` precomputed via byte_ranges;
     // `tensors` is what Anonymous/Pinned read, and what every mode checks for a tensor too large to
-    // be resident — see hold_back_oversized). `align` is the O_DIRECT block size. Runs once at load,
-    // before the streamer's workers start (Anonymous rebinds tensor->data on the caller's thread).
+    // be resident — see hold_back_oversized). The readers it opens ask each file for its own read
+    // alignment. Runs once at load, before the streamer's workers start (Anonymous rebinds
+    // tensor->data on the caller's thread).
     // Returns false only on a hard Anonymous failure (alloc/read); Mmap and Warmed cannot fail.
     bool init(DenseWeightsMode mode,
               const std::vector<std::string> & paths,
-              size_t align,
               std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges,
               std::vector<DenseTensorRef> tensors);
 
@@ -100,7 +100,8 @@ public:
     RowSourceStats row_stats() const;
 
     // Sample how much of the dense set the kernel still has in RAM (mincore), setting resident_frac().
-    // Anonymous samples the anon buffers; Mmap/Warmed sample the mmap ranges via /proc/self/maps.
+    // Anonymous samples the anon buffers; Mmap/Warmed sample the model's mapping at the addresses
+    // llama.cpp gave each tensor, which every platform answers the same way.
     // The caller throttles (calls this only when it wants a fresh sample); `page` is the OS page size.
     void sample_residency(size_t page);
     double resident_frac() const { return resident_frac_; }
@@ -123,18 +124,19 @@ private:
     // Random-access advice on the mmap of every held-back tensor: a fault brings in one page, not a
     // readahead window the gather will never touch.
     void advise_random_mapped();
-    bool read_anonymous(size_t align);
+    bool read_anonymous();
     void warm();
     void drop_mmap_copies(size_t page);
     void sample_anon(size_t page);
     void sample_mmap(size_t page);
-    void resolve_vmas(); // per-shard /proc/self/maps lookup, once
+    // Where each tensor's file bytes are mapped, taken from the tensors themselves before anything
+    // is rebound: llama.cpp loads memory-mapped, so a dense weight's data IS its address in the
+    // mapping. No listing of the process's regions is needed, which some platforms do not offer.
+    void index_mapping();
     const char * addr_of(int file_idx, uint64_t off) const;
 
     DenseWeightsMode mode_ = DenseWeightsMode::Warmed;
-    std::vector<std::string> paths_;     // one per shard, in shard order
-    std::vector<std::string> basenames_; // what /proc/self/maps entries are matched against
-    size_t align_ = 4096;
+    std::vector<std::string> paths_; // one per shard, in shard order
 
     // Anonymous/Pinned: our own readers (one per shard; FileReader is not movable, hence the
     // unique_ptr), the tensors we read, and the buffers backing them. `bases_` is what the sensor
@@ -152,11 +154,15 @@ private:
     std::vector<pio::PinnedAlloc> pinned_;
     std::vector<size_t> buf_sz_;
 
-    // Mmap/Warmed: the dense byte ranges and the mmap VMAs that back them, per shard, resolved once
-    // from /proc/self/maps for the sensor (llama.cpp maps every shard of a split model).
+    // The dense byte ranges, and where the mapping holds each tensor's bytes, per shard (llama.cpp
+    // maps every shard of a split model). Spans are sorted by file offset.
+    struct MappedSpan {
+        uint64_t file_off = 0;
+        uint64_t size = 0;
+        const char * addr = nullptr;
+    };
     std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges_;
-    std::vector<std::vector<pio::MappedRegion>> vmas_;
-    bool vmas_tried_ = false;
+    std::vector<std::vector<MappedSpan>> spans_;
 
     double resident_frac_ = -1.0; // last sampled dense residency; -1 = never/unmeasured
     uint64_t pin_refused_bytes_ = 0;

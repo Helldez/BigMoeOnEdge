@@ -8,14 +8,17 @@
 #pragma once
 
 #include "chat_turn.h"
+#include "hosted_session.h"
 #include "turn_queue.h"
 #include "event_bus.h"
 #include "json_util.h"
 
 #include "bmoe/config.h"
+#include "bmoe/log.h"
 #include "bmoe/session.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -54,7 +57,10 @@ inline constexpr size_t k_max_waiting_turns = 16;
 
 class EngineHost {
 public:
-    explicit EngineHost(EventBus & bus);
+    // `open` makes the session a load installs; a test passes a scripted one (hosted_session.h).
+    // The host also routes the engine's diagnostics (bmoe/log.h) to the bus as `log` events, still
+    // writing them to stderr as before, for as long as it lives.
+    explicit EngineHost(EventBus & bus, SessionOpener open = open_real_session);
     ~EngineHost();
 
     // What /api/info adds about the machine; called on every state publish.
@@ -80,6 +86,13 @@ public:
     bool loaded_or_loading() const;
     bool generating() const { return generating_; }
     std::string model_name() const;
+    // The file of the model loaded or loading, "" when none.
+    std::string model_path() const;
+
+    // What the last completed turn of this session measured for decode: s_per_token, cache_hit_pct
+    // (-1 with no cache) and tokens; null before the first turn and after a load. The figures a plan
+    // predicted are checked against these.
+    json last_turn() const;
 
     // True when a session is loaded and `current` differs from it in a session-scoped parameter.
     bool reload_required(const RunConfig & current) const;
@@ -101,7 +114,17 @@ private:
 
     void publish_state() const;
 
+    // Take gen_m_ for a turn, after any load that has been announced. load() reads Loading before
+    // its thread takes the lock, and a turn arriving in that gap would take it first, find no
+    // session and answer 503 for a model that is seconds from ready: so a turn that holds the lock
+    // while the state still reads Loading has overtaken the loader, and gives the lock back until
+    // the load has ended one way or the other.
+    std::unique_lock<std::mutex> take_turn();
+
+    static void log_to_bus(LogLevel level, const char * message, void * self);
+
     EventBus & bus_;
+    const SessionOpener open_;
     std::function<json()> host_info_;
     std::atomic<bool> planner_available_{false};
     std::atomic<bool> planning_{false};
@@ -112,12 +135,14 @@ private:
     // it, so waiting for a load under it cannot deadlock.
     std::mutex life_m_;
 
-    mutable std::mutex m_; // guards everything below except loader_ (see life_m_)
+    mutable std::mutex m_;                     // guards everything below except loader_ (see life_m_)
+    mutable std::condition_variable state_cv_; // signalled by publish_state(), after any change
     State state_ = State::Empty;
     std::string error_;
-    std::shared_ptr<Session> session_;
+    std::shared_ptr<HostedSession> session_;
     RunConfig requested_;
     json model_ = nullptr;
+    json last_turn_ = nullptr;
     std::thread loader_;
 
     std::mutex gen_m_; // held for a whole generation, and by a load while it swaps the session

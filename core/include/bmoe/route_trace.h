@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,6 @@ public:
 
 // A sink that writes `path` as long-format CSV: a `#` preamble carrying the static block, then
 // one row per routed expert. Returns nullptr if the file cannot be opened.
-IRouteTraceSink * make_csv_route_trace_sink(const std::string & path);
+std::unique_ptr<IRouteTraceSink> make_csv_route_trace_sink(const std::string & path);
 
 } // namespace bmoe

@@ -108,9 +108,8 @@ bool device_facts_from_text(const std::string & text, ComputeDevice & d) {
 void probe_devices_isolated(HardwareProfile & hw, const DeviceProbeRunner & run) {
     if (!run) return;
     for (ComputeDevice & d : hw.devices) {
-        // The host is this process, and a library the host calls into runs inside its own graphs:
-        // neither is something a second process could try on this one's behalf.
-        if (d.is_cpu || d.is_host_helper) continue;
+        // The host is this process: not something a second process could try on its behalf.
+        if (d.is_cpu) continue;
         std::string facts, why;
         d.probed_out_of_process = true;
         if (run(d.name, facts, why) && device_facts_from_text(facts, d)) {

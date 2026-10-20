@@ -15,8 +15,11 @@
 
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <set>
+#include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace bmoe;
@@ -119,9 +122,35 @@ int main() {
         const std::string v = d.get(defaults);
         check(d.set(c, v, err) && d.get(c) == v, d.key + ": default '" + v + "' round-trips");
 
-        if (d.bounded && (d.type == ParamType::Int || d.type == ParamType::Float) && v != "auto") {
+        const bool numeric = d.type == ParamType::Int || d.type == ParamType::Float;
+        if (d.bounded && numeric && v != "auto") {
             const double x = std::stod(v);
             check(x >= d.min && x <= d.max, d.key + ": default inside [min, max]");
+        }
+        if (d.bounded_below && numeric && v != "auto") check(std::stod(v) >= d.min, d.key + ": default >= min");
+        // A form shows the bounds as a range, so the type's own limit is not one (#268).
+        if (d.bounded)
+            check(d.max < (double) std::numeric_limits<int>::max(), d.key + ": max is a limit, not the type's");
+
+        // The typical range is guidance inside the limits, and the default is either in it or one
+        // of the row's named values: a form must never present its own default as unusual.
+        bool default_special = false;
+        for (const ParamSpecial & s : d.specials) {
+            RunConfig cs;
+            check(numeric, d.key + ": special values belong to numeric rows");
+            check(d.set(cs, s.value, err) && d.get(cs) == s.value, d.key + ": special '" + s.value + "' round-trips");
+            check(!s.label.empty(), d.key + ": special '" + s.value + "' has a label");
+            default_special |= s.value == v;
+        }
+        if (d.has_typical) {
+            check(numeric, d.key + ": a typical range belongs to a numeric row");
+            check(d.typical_min <= d.typical_max, d.key + ": typical min <= max");
+            if (d.bounded || d.bounded_below) check(d.typical_min >= d.min, d.key + ": typical inside the limits");
+            if (d.bounded) check(d.typical_max <= d.max, d.key + ": typical inside the limits");
+            if (v != "auto" && !default_special) {
+                const double x = std::stod(v);
+                check(x >= d.typical_min && x <= d.typical_max, d.key + ": default inside its typical range");
+            }
         }
         if (d.type == ParamType::Choice) {
             bool listed = false;
@@ -187,6 +216,7 @@ int main() {
     expect_flag({"--dense-weights", "mmap", "--dense-odirect"},
                 [](const RunConfig & c) { return c.moe.dense_weights == DenseWeightsMode::Anonymous; });
     expect_flag({"--load-all"}, [](const RunConfig & c) { return c.moe.load_all; });
+    expect_flag({"--llama-debug"}, [](const RunConfig & c) { return c.llama_debug_log; });
     expect_flag({"--force-cache"}, [](const RunConfig & c) { return c.moe.force_cache; });
     expect_flag({"--overlap"}, [](const RunConfig & c) { return c.moe.overlap; });
     expect_flag({"--io-two-wave"}, [](const RunConfig & c) { return c.moe.io_two_wave; });
@@ -215,7 +245,7 @@ int main() {
 
     // Flags the table must NOT claim: they belong to the front-end, not to a run's configuration.
     for (const char * f : {"-p", "--prompt", "--progress", "--session", "--csv", "--route-trace", "--compute-trace",
-                           "--compute-trace-layers", "--io-trace", "--ppl", "--list-archs", "--help", "--version"}) {
+                           "--compute-trace-layers", "--io-trace", "--ppl", "--help", "--version"}) {
         RunConfig c;
         check(!apply_flag(c, f, "x").matched, std::string("front-end flag ") + f + " is not in the table");
     }
@@ -281,6 +311,30 @@ int main() {
         c.moe.dense_weights = DenseWeightsMode::Mmap;
         const std::vector<std::string> args = to_args(c);
         check(join(args) == "--dense-weights mmap", "to_args prefers --dense-weights over the deprecated alias");
+    }
+
+    // ── flag_spelling: what prose tells a person to type ─────────────────────────────
+    {
+        check(flag_spelling("ubatch") == "--ubatch", "flag_spelling names the flag that takes a value");
+        check(flag_spelling("ctx-size", "4096") == "--ctx-size 4096", "flag_spelling spells a flag with its value");
+        check(flag_spelling("overlap", "true") == "--overlap", "flag_spelling prefers the switch that says the value");
+        check(flag_spelling("no-such-knob", "1").empty(), "flag_spelling is empty for a key the table lacks");
+        // Every spelling the planner's rationale prints must parse back to the value it names.
+        const std::pair<const char *, const char *> named[] = {
+            {"ctx-size", "4096"},   {"release-mmap", "true"}, {"dense-on-device", "true"}, {"overlap", "true"},
+            {"moe-stream", "true"}, {"ubatch", "256"},        {"prefill-device", "accel"},
+        };
+        for (const auto & kv : named) {
+            std::vector<std::string> argv;
+            std::istringstream words(flag_spelling(kv.first, kv.second));
+            for (std::string w; words >> w;)
+                argv.push_back(w);
+            RunConfig c;
+            std::string err;
+            const bool ok = !argv.empty() && parse(c, argv, err);
+            check(ok && find_param(kv.first)->get(c) == kv.second,
+                  std::string("flag_spelling(") + kv.first + ", " + kv.second + ") parses back: " + join(argv));
+        }
     }
 
     // ── schema ───────────────────────────────────────────────────────────────────────

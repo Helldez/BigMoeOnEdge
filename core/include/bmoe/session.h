@@ -53,9 +53,6 @@ struct SessionConfig {
     std::vector<std::string> buft_overrides;
     // See RunConfig::device_use.
     DeviceUse device_use = DeviceUse::Auto;
-    // Compute-trace granularity: false = a barrier per graph node, true = per layer boundary.
-    // Only read when a compute-trace sink is attached. See RunConfig::compute_trace_layers.
-    bool compute_trace_layers = false;
     SamplingConfig sampling; // fixed for the session; greedy by default (temp <= 0)
     MoeStreamConfig moe;
     // Self-speculative decoding, and which source drafts. Fixed for the session: it decides whether
@@ -65,7 +62,8 @@ struct SessionConfig {
     // Wide prefill graphs on an accelerator, decode on the CPU. Fixed for the session: the device
     // joins the scheduler at load. See RunConfig::prefill.
     PrefillDeviceConfig prefill;
-    DecideConfig decide; // decide()'s prefix-state policy. See RunConfig::decide.
+    DecideConfig decide;          // decide()'s prefix-state policy. See RunConfig::decide.
+    bool llama_debug_log = false; // See RunConfig::llama_debug_log.
 };
 
 // The RunConfig → SessionConfig mapping, in one place. Both entry points that open a session from a

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { groupParams, isDefault, isLevelVisible, sameValue } from './schema';
+import {
+  advancedGroups,
+  groupParams,
+  helpParts,
+  isDefault,
+  isLevelVisible,
+  sameValue,
+  specialLabel,
+  typicalText,
+} from './schema';
 import type { ParamSpec } from './types';
 
 // Synthetic rows: the tests must not depend on the engine's real parameter table.
@@ -79,3 +88,49 @@ describe('default comparison', () => {
     expect(isDefault(s, 4096)).toBe(false);
   });
 });
+
+describe('advancedGroups', () => {
+  it('holds every row but the basic ones, so no row appears twice', () => {
+    const g = advancedGroups(rows);
+    const keys = g.flatMap((x) => x.params.map((p) => p.key));
+    expect(keys).toEqual(['c', 'b', 'd']);
+    const basic = groupParams(rows, new Set()).flatMap((x) => x.params.map((p) => p.key));
+    expect(keys.filter((k) => basic.includes(k))).toEqual([]);
+  });
+});
+
+describe('special values and the typical range', () => {
+  const lanes = spec('lanes', 'g', 'advanced', {
+    unit: 'lanes',
+    typical: { min: 2, max: 8 },
+    special: [{ value: 0, label: 'off' }],
+  });
+
+  it('names a special value whatever JSON type carries it', () => {
+    expect(specialLabel(lanes, 0)).toBe('off');
+    expect(specialLabel(lanes, '0')).toBe('off');
+    expect(specialLabel(lanes, 4)).toBeUndefined();
+    expect(specialLabel(spec('x', 'g', 'basic'), 0)).toBeUndefined();
+  });
+
+  it('says the typical range in words', () => {
+    expect(typicalText(lanes)).toBe('usually 2 to 8');
+    expect(typicalText(spec('x', 'g', 'basic', { typical: { min: 3, max: 3 } }))).toBe('usually 3');
+    expect(typicalText(spec('x', 'g', 'basic'))).toBe('');
+  });
+});
+
+describe('helpParts', () => {
+  it('keeps the first sentence and folds the rest', () => {
+    expect(helpParts('Parallel expert-read lanes, including the calling thread. 1 is the serial baseline.')).toEqual({
+      lead: 'Parallel expert-read lanes, including the calling thread.',
+      rest: '1 is the serial baseline.',
+    });
+  });
+
+  it('does not split on an abbreviation or a short opening', () => {
+    expect(helpParts('Run it on this device (e.g. HTP0) while decode stays.').rest).toBe('');
+    expect(helpParts('Compute threads.').lead).toBe('Compute threads.');
+  });
+});
+

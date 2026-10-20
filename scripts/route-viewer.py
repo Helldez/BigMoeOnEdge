@@ -264,7 +264,7 @@ a{color:var(--accent)}
 <header>
   <p class="eyebrow">BigMoeOnEdge · bench-data / 2026-07-15</p>
   <h1>Route trace — which experts each layer actually picks</h1>
-  <p class="lede">Every routed expert of three MoE models, captured on a OnePlus 15R with
+  <p class="lede">Every routed expert of three MoE models, captured on a 12 GB Android phone with
   <code class="mono">--route-trace</code>. One row per step, layer and rank slot: the expert id, the
   weight the router gave it, and whether it was already in the cache.</p>
   <div class="warn"><span>⚠</span><div><b>These are not benchmark numbers.</b> Every run had the trace on,
@@ -364,7 +364,7 @@ a{color:var(--accent)}
 </div>
 
 <footer>
-  Captured 2026-07-15 · OnePlus 15R (SM8845), 11.1 GB · engine <code class="mono">feat/route-trace</code>
+  Captured 2026-07-15 · 12 GB Android phone, 11.1 GB usable · engine <code class="mono">feat/route-trace</code>
   on <code class="mono">main@e7d2e8c</code> · device clocks were capped (policy0 2.19 of 3.32 GHz) and
   are recorded per run in the <code class="mono">.state</code> files.
 </footer>

@@ -4,14 +4,12 @@
 #include "bmoe/probe.h"
 
 #include "../io/platform_io.h"
+#include "../engine/llama_log.h"
 
 #include "ggml-backend.h"
 #include "ggml.h"
 
 #include <cstdio>
-#if !defined(_WIN32)
-#include <sys/stat.h>
-#endif
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -21,7 +19,6 @@
 #include <vector>
 
 #if defined(__APPLE__)
-#include <TargetConditionals.h>
 #include <sys/sysctl.h>
 #endif
 
@@ -30,63 +27,19 @@ namespace bmoe {
 namespace {
 
 // What a reclaim costs here. The question the dense policy actually asks is not "which OS is this"
-// but "if the kernel wants this memory back, what happens to us", and the honest answer comes from
-// what the machine has to reclaim INTO — which is why this looks at the swap devices rather than at
-// a platform name. A desktop Linux with zram configured is Compress, and gets the phone's policy
-// for the phone's reason.
+// but "if the kernel wants this memory back, what happens to us", and the answer is read from the
+// kernel's own accounting rather than from a platform name: whether this process has a share of its
+// own that it is ended for exceeding, whether anonymous memory is compressed first, and whether a
+// swap exists. A desktop Linux with zram configured is Compress, and gets the phone's policy for
+// the phone's reason; a phone whose kernel keeps a per-process share is Kill whoever made it.
 Overflow probe_anon_overflow() {
-#if defined(_WIN32)
-    // A pagefile is present on any default install; anonymous pages are written to it and the
-    // process survives.
-    return Overflow::Swap;
-#elif defined(__APPLE__)
-#if TARGET_OS_IPHONE
-    // No user swap: memory pressure is answered by terminating the process, and the limit is the
-    // process's own rather than the system's.
+    pio::ReclaimFacts f;
+    if (!pio::reclaim_facts(&f)) return Overflow::Unknown;
+    if (f.own_share_left > 0) return Overflow::Kill;
+    if (f.compresses) return Overflow::Compress;
+    if (f.swaps) return Overflow::Swap;
+    // Nothing to reclaim into: anonymous memory cannot be evicted, and pressure ends in a kill.
     return Overflow::Kill;
-#else
-    return Overflow::Compress; // the VM compressor, not a swap device
-#endif
-#else
-    // What the machine reclaims INTO. /proc/swaps would say directly, but an unprivileged process
-    // on Android may not read it (nor /sys/block/zram0's contents). Two things it CAN see suffice:
-    // whether a zram block device EXISTS (the directory entry is visible even where its files are
-    // not) and whether /proc/meminfo reports any swap at all. A zram device means anonymous memory
-    // is compressed in RAM; swap without zram means it is written out; no swap at all means it
-    // cannot be evicted, and pressure ends in a kill.
-    struct stat st {};
-    const bool has_zram = ::stat("/sys/block/zram0", &st) == 0;
-    uint64_t swap_total_kb = 0;
-    if (FILE * f = std::fopen("/proc/meminfo", "re")) {
-        char line[256];
-        while (std::fgets(line, sizeof(line), f)) {
-            unsigned long long v = 0;
-            if (std::sscanf(line, "SwapTotal: %llu kB", &v) == 1) {
-                swap_total_kb = v;
-                break;
-            }
-        }
-        std::fclose(f);
-    } else {
-        return Overflow::Unknown;
-    }
-    if (has_zram && swap_total_kb > 0) return Overflow::Compress;
-    if (swap_total_kb > 0) return Overflow::Swap;
-    return Overflow::Kill;
-#endif
-}
-
-// Whether clean mapped file pages sit outside the limit that can end this run. Only asked where
-// exceeding is fatal; everywhere else the dense rule never reaches it, so leaving it Unknown costs
-// nothing and claims nothing.
-Tri probe_file_pages_counted() {
-#if defined(__APPLE__) && TARGET_OS_IPHONE
-    // The per-process limit is on dirty memory; clean file-backed pages can be evicted and are not
-    // charged, which is what makes a mapped weight the cheap residency here.
-    return Tri::No;
-#else
-    return Tri::Unknown;
-#endif
 }
 
 // The core classes this machine has, fastest first, as counts. A barrier waits for its slowest
@@ -154,6 +107,14 @@ void probe_devices(HardwareProfile & h) {
             if (!dev) continue;
             ggml_backend_dev_props props{};
             ggml_backend_dev_get_props(dev, &props);
+            // An accelerator in ggml's sense (BLAS, AMX, ...) is not somewhere work can be placed:
+            // it is a library the host's own graphs call into for some operations, registered as a
+            // device because that is how a backend is made known. It computes on the host's memory
+            // with the host's cores, holds no weights of its own, and llama.cpp never places a layer
+            // on it. The device type says so, whatever the library is called; listed, it was probed
+            // as if it were a device and reported at 0 GiB/s on every plan (#290). A GPU or NPU
+            // backend (Hexagon among them) reports GPU or IGPU and is kept.
+            if (props.type == GGML_BACKEND_DEVICE_TYPE_ACCEL) continue;
 
             ComputeDevice d;
             d.name = props.name ? props.name : "";
@@ -161,7 +122,6 @@ void probe_devices(HardwareProfile & h) {
             d.memory_free = props.memory_free;
             d.memory_total = props.memory_total;
             d.is_cpu = props.type == GGML_BACKEND_DEVICE_TYPE_CPU;
-            d.is_host_helper = props.type == GGML_BACKEND_DEVICE_TYPE_ACCEL;
             // The device TYPE may only ever narrow this to "shared", never to "its own". The CPU's
             // memory is the host's by definition, and a device that calls itself integrated is
             // claiming shared memory - a claim worth believing, because believing it errs safe.
@@ -203,14 +163,10 @@ void probe_devices(HardwareProfile & h) {
             d.async_copies = props.caps.async ? Tri::Yes : Tri::No;
             // Whether this device's buffers come out of the total the process locks against. The
             // CPU's are ordinary host memory and do not. For the rest it is a property of how the
-            // platform backs a device allocation, known where it was observed - a device prefill
-            // here took the system's wired count to 14.4 GB of 16 - and Unknown everywhere else,
-            // which the ledger charges like a yes.
+            // platform backs a device allocation, which no call here reports: Unknown, which the
+            // ledger charges like a yes - the reading that cannot overcommit, and the one observed
+            // where it was measured (a device prefill took the system's wired count to 14.4 GB of 16).
             if (d.is_cpu) d.buffers_locked = Tri::No;
-#if defined(__APPLE__)
-            else
-                d.buffers_locked = Tri::Yes;
-#endif
             h.devices.push_back(std::move(d));
         }
     }
@@ -227,12 +183,26 @@ uint32_t g_backends_loaded = 0;
 bool g_backends_looked = false;
 
 void register_backends() {
-    // ggml looks beside the executable, and in GGML_BACKEND_DIR where the build set one, for
-    // libraries named after each backend. In a build that linked them statically this finds nothing
-    // and costs a few failed lookups; in one built with GGML_BACKEND_DL it is the difference between
-    // a machine with an accelerator and a machine that appears to have none.
+    // Once: llama_backend_init() loads nothing when the registry is already filled, and a second
+    // pass here would count the modules the first one loaded as linked in.
+    if (g_backends_looked) return;
+    // The first thing every front-end and every probe child does with llama.cpp, so the log bridge
+    // goes in here: loading the backends already logs, and so does every model load after it.
+    detail::install_llama_log();
+    // What the registry holds before anything is loaded is what came linked in (the CPU backend
+    // in a build that links it, nothing in one that loads it). Then the modules: ggml looks for
+    // libraries named after each backend, and left to itself it looks in the working directory
+    // too, which is wherever the process happened to be started from. Only the directory the
+    // executable is in is a place a release put files; a module it did not ship is not loaded.
     g_backends_linked = (uint32_t) ggml_backend_reg_count();
-    ggml_backend_load_all();
+    const std::string self = pio::self_path();
+    if (!self.empty()) {
+        const size_t slash = self.find_last_of("/\\");
+        const std::string dir = slash == std::string::npos ? std::string(".") : self.substr(0, slash);
+        ggml_backend_load_all_from_path(dir.c_str());
+    } else {
+        ggml_backend_load_all();
+    }
     const uint32_t after = (uint32_t) ggml_backend_reg_count();
     g_backends_loaded = after > g_backends_linked ? after - g_backends_linked : 0;
     g_backends_looked = true;
@@ -245,7 +215,20 @@ BackendInventory backend_inventory() {
     inv.looked = g_backends_looked;
     for (size_t i = 0; i < ggml_backend_reg_count(); ++i) {
         ggml_backend_reg_t reg = ggml_backend_reg_get(i);
-        if (reg) inv.names.push_back(ggml_backend_reg_name(reg));
+        if (!reg) continue;
+        inv.names.push_back(ggml_backend_reg_name(reg));
+        // Read from what a backend offers, not from its name. A backend whose devices are added by
+        // naming a server is remote: it offers nothing local whatever this machine has. The host's
+        // own backend and a library the host calls into have devices of their own kind. Anything
+        // else could offer a device here, and offering none on this machine is then the answer.
+        if (ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_add_server")) continue;
+        const size_t n = ggml_backend_reg_dev_count(reg);
+        bool host_side = n > 0;
+        for (size_t j = 0; j < n; ++j) {
+            const enum ggml_backend_dev_type t = ggml_backend_dev_type(ggml_backend_reg_dev_get(reg, j));
+            if (t != GGML_BACKEND_DEVICE_TYPE_CPU && t != GGML_BACKEND_DEVICE_TYPE_ACCEL) host_side = false;
+        }
+        if (!host_side) ++inv.placeable;
     }
     return inv;
 }
@@ -262,7 +245,6 @@ HardwareProfile probe_hardware(const char * model_path) {
     // have yet, since the headroom is measured after it.
     h.lockable_bytes = pio::lockable_bytes();
     h.lock_in_place_bytes = pio::lock_in_place_bytes();
-    h.file_pages_counted = probe_file_pages_counted();
     h.n_cores = std::thread::hardware_concurrency();
     probe_core_classes(h);
 
@@ -270,6 +252,7 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.backends_linked = inv.linked;
     h.backends_loaded = inv.loaded_at_runtime;
     h.backends_looked = inv.looked;
+    h.backends_placeable = inv.placeable;
 
     probe_devices(h);
 

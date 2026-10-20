@@ -79,12 +79,6 @@ struct ComputeDevice {
     bool probed_out_of_process = false;
     bool probe_here() const { return !probed_out_of_process; }
 
-    // True for a device that is not somewhere work can be PLACED: a library the host's own graphs
-    // call into for some operations, registered as a device because that is how a backend is made
-    // known. It computes on the host's memory with the host's cores and holds no weights of its
-    // own, so "put the prefill on it" is not a sentence that means anything.
-    bool is_host_helper = false;
-
     // Whether this device's memory IS the host's — one physical pool, so moving a tensor onto it
     // frees nothing and the capacity tier is inert, leaving only bandwidth to win.
     //
@@ -277,7 +271,7 @@ struct HardwareProfile {
     uint64_t residency_budget = 0;
     uint64_t memory_total = 0; // for the rationale, and for margins expressed as a fraction
 
-    // What happens to our anonymous buffers under pressure. Decides the dense policy on its own.
+    // What happens to our anonymous buffers under pressure. Decides how the dense set is held, and the margin.
     Overflow anon_overflow = Overflow::Unknown;
 
     // How many bytes this process can hold and expect to KEEP. It is a different question from
@@ -309,11 +303,6 @@ struct HardwareProfile {
     // the dense set can be protected and the cache cannot. Where they are one pool the two
     // figures are equal, and the ledger charges both against the smaller.
     uint64_t lock_in_place_bytes = 0;
-
-    // Whether clean file-backed pages count against `residency_budget`. Where they do not, leaving
-    // a weight mmap'd is free of the budget entirely — which inverts the dense policy on a platform
-    // that kills on resident size.
-    Tri file_pages_counted = Tri::Unknown;
 
     // ── compute ─────────────────────────────────────────────────────────────────────
     uint32_t n_cores = 0; // 0 when unknown
@@ -353,6 +342,12 @@ struct HardwareProfile {
     uint32_t backends_linked = 0;
     uint32_t backends_loaded = 0; // found at run time as separate shared libraries
     bool backends_looked = false; // false: nothing was even enumerated
+    // The registered backends that could offer a LOCAL device work is placed on: not the host's
+    // own, not a library the host calls into, not one whose devices live on another machine. Zero
+    // with `devices` empty beyond the host means the build carries no accelerator backend at all;
+    // above zero, the build carries one and this machine gave it no device. The two counts above
+    // cannot tell those apart, since a remote or helper backend registers like any other.
+    uint32_t backends_placeable = 0;
 
     // ── storage ─────────────────────────────────────────────────────────────────────
     StorageFacts storage;

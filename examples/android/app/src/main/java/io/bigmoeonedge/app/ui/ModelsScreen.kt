@@ -20,23 +20,25 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.bigmoeonedge.app.data.CatalogEntry
 import io.bigmoeonedge.app.data.CatalogStatus
+import io.bigmoeonedge.app.data.FileRole
 import io.bigmoeonedge.app.data.ModelDownloader
 import io.bigmoeonedge.app.data.ModelManager
 import io.bigmoeonedge.app.data.SafImport
 import io.bigmoeonedge.app.data.catalogStatus
 import io.bigmoeonedge.app.data.gbLabel
+import io.bigmoeonedge.app.data.resumeLabel
 import io.bigmoeonedge.app.engine.Engine
-import io.bigmoeonedge.app.engine.LocalModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
 /**
- * Models: what is on the phone (the server's own directory, and the other places a model can sit),
- * the catalog to get one from, and the escape hatches for any other gguf. Loading is one tap; with
- * auto-plan on, the engine measures the phone and chooses the run before it loads.
+ * Models: what is on the phone (the server lists its own directory and the other places the app
+ * started it with), the catalog to get one from, and the escape hatches for any other gguf. Loading
+ * is one tap; with auto-plan on, the engine measures the phone and chooses the run before it loads.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,7 +49,6 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
     val snackbar = remember { SnackbarHostState() }
 
     var progress by remember { mutableStateOf<Map<String, ModelDownloader.Progress>>(emptyMap()) }
-    var elsewhere by remember { mutableStateOf<List<File>>(emptyList()) }
     var refreshKey by remember { mutableStateOf(0) }
     var deleteTarget by remember { mutableStateOf<List<File>?>(null) }
     var importStatus by remember { mutableStateOf<String?>(null) }
@@ -57,10 +58,9 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
 
     fun say(msg: String) = scope.launch { snackbar.showSnackbar(msg) }
 
-    // The server lists its directory; the scan finds what sits outside it (dev flavor, old builds).
+    // The server lists every place a model can sit; a refresh asks it again.
     LaunchedEffect(refreshKey, engine.serverUp) {
         Engine.refreshModels()
-        elsewhere = withContext(Dispatchers.IO) { ModelManager.listModelsElsewhere(context) }
     }
     // Follow the app's own downloads: a landed one is finalized before it is reported.
     LaunchedEffect(Unit) {
@@ -68,7 +68,8 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
             when (ev) {
                 is ModelDownloader.Event.InFlight -> progress = ev.downloads
                 is ModelDownloader.Event.Completed -> refreshKey++
-                is ModelDownloader.Event.Failed -> say("${ev.name}: ${ev.reason}")
+                // The server lists the .part it left, so the row offers Resume with its bytes.
+                is ModelDownloader.Event.Failed -> { say("${ev.name}: ${ev.reason}"); refreshKey++ }
             }
         }
     }
@@ -86,9 +87,7 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
 
     val models = engine.models
     val loadedPath = engine.info?.model?.path
-    val present = remember(models, elsewhere) {
-        models?.local?.map { it.name }.orEmpty().toSet() + ModelManager.allGgufNames(context)
-    }
+    val present = remember(models) { models?.fileNames.orEmpty() }
 
     Scaffold(
         modifier = modifier,
@@ -109,26 +108,35 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                 Text("The engine is not running.", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             }
             if (engine.loading) {
+                // Seconds since the load began, so a long load reads as progress rather than as a hang.
+                var elapsed by remember { mutableStateOf(0) }
+                LaunchedEffect(Unit) {
+                    val t0 = System.currentTimeMillis()
+                    while (true) {
+                        elapsed = ((System.currentTimeMillis() - t0) / 1000).toInt()
+                        delay(1000)
+                    }
+                }
+                val planning = engine.info?.state == "planning"
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Text(
-                        if (engine.info?.state == "planning") "Measuring the phone (storage, memory, each compute device), then loading…"
-                        else "Loading the model…",
-                        fontSize = 13.sp,
-                    )
+                    Text((if (planning) "Measuring this phone, then loading" else "Loading the model") + " · $elapsed s", fontSize = 13.sp)
                 }
+                if (planning) PlanProgressCard(engine.planProgress)
             }
 
             // ── on the phone ──
             Text("On this phone", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
             val local = models?.local.orEmpty()
-            if (local.isEmpty() && elsewhere.isEmpty()) {
+            // Projectors and draft heads (by their headers) are no model to load: listed apart, after the models.
+            val (localModels, companions) = FileRole.split(local) { it.role }
+            if (local.isEmpty()) {
                 Text(
                     if (models == null) "Waiting for the engine…" else ModelManager.pushHint(),
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            local.forEach { m ->
+            localModels.forEach { m ->
                 LocalModelRow(
                     name = m.name,
                     detail = listOfNotNull(
@@ -137,34 +145,52 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                         if (m.shards > 1) "${m.shards} shards" else null,
                         if (!m.complete) "incomplete" else null,
                         if (m.complete && !m.streamable) "not a MoE this build streams" else null,
+                        m.dir.takeIf { it.isNotEmpty() && it != models?.modelsDir },
+                        m.folder.takeIf { it.isNotEmpty() }?.let { "in $it" },
                     ).joinToString(" · "),
                     loaded = m.path == loadedPath,
                     loadable = m.complete && engine.serverUp && !engine.loading,
                     onLoad = { scope.launch { Engine.load(m.path).onFailure { say(it.message ?: "load failed") } } },
                     onUnload = { scope.launch { Engine.unload() } },
-                    onDelete = {
-                        val dir = File(models?.modelsDir ?: ModelManager.internalModelsDir(context).absolutePath)
-                        deleteTarget = groupFiles(dir, m)
-                    },
+                    // Every file the server listed for it: a split set deletes as a unit, never
+                    // leaving a 40 GB tail, and the app never has to know how shards are named.
+                    onDelete = m.files.map(::File).takeIf { ModelManager.canDelete(it) }?.let { files -> { deleteTarget = files } },
                 )
             }
-            elsewhere.forEach { f ->
-                LocalModelRow(
-                    name = f.name,
-                    detail = "${gbLabel(f.length())} · ${f.parentFile?.absolutePath}",
-                    loaded = f.absolutePath == loadedPath,
-                    loadable = engine.serverUp && !engine.loading,
-                    onLoad = { scope.launch { Engine.load(f.absolutePath).onFailure { say(it.message ?: "load failed") } } },
-                    onUnload = { scope.launch { Engine.unload() } },
-                    onDelete = if (ModelManager.isAppDeletable(f)) ({ deleteTarget = listOf(f) }) else null,
+
+            if (companions.isNotEmpty()) {
+                Text(
+                    "Companion files, not models to load (by their headers):",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                companions.forEach { m ->
+                    // Not loadable; still deletable, as any file the app put there.
+                    LocalModelRow(
+                        name = m.name,
+                        detail = listOfNotNull(FileRole.label(m.role), gbLabel(m.bytes), m.arch.ifEmpty { null }, m.folder.takeIf { it.isNotEmpty() }?.let { "in $it" })
+                            .joinToString(" · "),
+                        loaded = false,
+                        loadable = false,
+                        onLoad = {},
+                        onUnload = {},
+                        onDelete = m.files.map(::File).takeIf { ModelManager.canDelete(it) }?.let { files -> { deleteTarget = files } },
+                    )
+                }
             }
 
             // ── the catalog ──
             HorizontalDivider()
             Text("Get a model", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+            HuggingFaceSection(onAdded = { id ->
+                // The entry is in the list the server just answered; the download is the app's, as
+                // for every catalog entry, so progress shows on its row below.
+                Engine.state.value.models?.catalog?.firstOrNull { it.id == id }?.let { e ->
+                    ModelDownloader.enqueueEntry(context, e).onFailure { say("${e.title}: ${it.message ?: "download failed to start"}") }
+                }
+            })
+            HorizontalDivider()
             Text(
-                "The models this engine is measured on. Any other MoE gguf works too, below.",
+                "The models this engine is measured on, and the ones added above.",
                 fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             models?.catalog.orEmpty().forEach { e ->
@@ -175,11 +201,19 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                     onDownload = {
                         ModelDownloader.enqueueEntry(context, e).onFailure { say("${e.title}: ${it.message ?: "download failed to start"}") }
                     },
-                    onCancel = { ModelDownloader.cancelEntry(context, e) },
+                    onCancel = {
+                        scope.launch {
+                            withContext(Dispatchers.IO) { ModelDownloader.cancelEntry(context, e) }
+                            refreshKey++ // the kept .part turns the row into Resume
+                        }
+                    },
+                    onDeletePartial = { scope.launch { Engine.deletePartial(e.id).onFailure { say(it.message ?: "could not delete the partial download") } } },
                     onDelete = {
+                        // The app's own downloads, in its models directory; a copy elsewhere is listed above.
                         val dir = ModelManager.internalModelsDir(context)
                         deleteTarget = e.files.map { File(dir, it.name) }.filter { it.isFile }
                     },
+                    onRemove = if (e.added) ({ scope.launch { Engine.removeAdded(e.id).onFailure { say(it.message ?: "could not remove") } } }) else null,
                 )
             }
 
@@ -233,7 +267,8 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
                 TextButton(shape = RectangleShape, 
                     onClick = {
                         scope.launch {
-                            withContext(Dispatchers.IO) { files.forEach { runCatching { it.delete() } } }
+                            val kept = withContext(Dispatchers.IO) { files.filter { it.exists() && !it.delete() } }
+                            if (kept.isNotEmpty()) say("Could not delete ${kept.joinToString { it.name }}")
                             deleteTarget = null
                             refreshKey++
                         }
@@ -244,13 +279,6 @@ fun ModelsScreen(modifier: Modifier = Modifier) {
             dismissButton = { TextButton(shape = RectangleShape, onClick = { deleteTarget = null }) { Text("Cancel") } },
         )
     }
-}
-
-/** Every file of a model the server listed: a split set deletes as a unit, never leaving a 40 GB tail. */
-private fun groupFiles(dir: File, m: LocalModel): List<File> {
-    if (m.shards <= 1) return listOf(File(m.path)).filter { it.isFile }
-    val stem = m.name.replace(Regex("-00001-of-(\\d{5})\\.gguf$"), "")
-    return (1..m.shards).map { i -> File(dir, String.format(Locale.US, "%s-%05d-of-%05d.gguf", stem, i, m.shards)) }.filter { it.isFile }
 }
 
 @Composable
@@ -292,13 +320,19 @@ private fun CatalogRow(
     onDownload: () -> Unit,
     onCancel: () -> Unit,
     onDelete: () -> Unit,
+    /** Delete the partial files a stopped download left, for a row that has them. */
+    onDeletePartial: () -> Unit,
+    /** Forget an entry added from a repository; its files stay. Null for the catalog's own. */
+    onRemove: (() -> Unit)? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(entry.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(8.dp))
             when (status) {
-                CatalogStatus.AVAILABLE -> Button(shape = RectangleShape, onClick = onDownload, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Download", maxLines = 1, softWrap = false) }
+                CatalogStatus.AVAILABLE -> Button(shape = RectangleShape, onClick = onDownload, contentPadding = PaddingValues(horizontal = 16.dp)) {
+                    Text(if (entry.partial) resumeLabel(entry.received, entry.bytes) else "Download", maxLines = 1, softWrap = false)
+                }
                 CatalogStatus.DOWNLOADING -> TextButton(shape = RectangleShape, onClick = onCancel) { Text("Cancel", maxLines = 1, softWrap = false) }
                 CatalogStatus.ON_DEVICE -> {
                     Text("On device", fontSize = 13.sp, maxLines = 1, softWrap = false, color = MaterialTheme.colorScheme.primary)
@@ -306,8 +340,23 @@ private fun CatalogRow(
                 }
             }
         }
-        Text("${entry.quant} · ~${gbLabel(entry.bytes)} · ${entry.blurb}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            listOf(entry.quant, "~${gbLabel(entry.bytes)}", entry.blurb).filter { it.isNotEmpty() }.joinToString(" · "),
+            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         if (progress != null) DownloadProgress(progress, onCancel = null, showName = false)
+        else if (status == CatalogStatus.AVAILABLE && entry.partial) {
+            // Stopped by a failure, a cancel or a restart: what is on disk, and the way to give it back.
+            if (entry.bytes > 0) LinearProgressIndicator(progress = { (entry.received.toFloat() / entry.bytes).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+            TextButton(shape = RectangleShape, onClick = onDeletePartial, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                Text("Delete partial download", fontSize = 12.sp)
+            }
+        }
+        if (onRemove != null && status != CatalogStatus.DOWNLOADING) {
+            TextButton(shape = RectangleShape, onClick = onRemove, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                Text("Remove from the catalog", fontSize = 12.sp)
+            }
+        }
     }
 }
 

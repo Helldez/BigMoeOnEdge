@@ -64,7 +64,15 @@
         <button type="button" onclick={() => chat.newChat()}>New chat</button>
       </p>
     {:else if chat.error}
-      <p class="banner error" role="alert">{chat.error}</p>
+      <p class="banner error" role="alert">
+        {chat.error}
+        {#if chat.noModel}
+          <a href="#/models">Models</a>
+        {:else if chat.retryable}
+          <button type="button" onclick={() => chat.retry()} disabled={chat.busy}>Send again</button>
+        {/if}
+        <button type="button" onclick={() => chat.clearError()}>Dismiss</button>
+      </p>
     {/if}
     <LiveLine />
     <Composer />
@@ -116,6 +124,8 @@
   .pick {
     flex: 1;
     min-width: 0;
+    /* A button does not clip what it lays out: without this a long title runs under Delete. */
+    overflow: hidden;
     text-align: left;
     border: none;
     background: none;
@@ -125,17 +135,20 @@
     gap: 0.1rem;
   }
   .pick .title {
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .pick .meta {
+    max-width: 100%;
     font-size: 0.75rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .del {
+    flex: none;
     font-size: 0.8rem;
   }
   .small {

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Inspect a freshly published MoE release and answer the two questions that decide whether
-this engine can stream it: does its expert layout reduce to one registry row, and what else
-in it is large enough to be worth streaming?
+this engine can stream it: is its expert layout one the engine reads off the file (split,
+fused or gate-less, docs/which-models-stream.md), and what else in it is large enough to be
+worth streaming?
 
 A new architecture usually lands on Hugging Face hours before llama.cpp can convert it, so
 this reads the *source* repository rather than a gguf: config.json plus the safetensors
@@ -14,14 +15,13 @@ What it prints:
   * the routing shape (experts, top-k, shared experts, leading dense blocks, MTP)
   * the tensor inventory, layer and expert indices collapsed so per-layer tensors group
   * the expert layout verdict -- split {gate, up, down}, fused {gate_up, down}, or
-    unrecognised -- with the arch_registry.cpp row it implies
+    unrecognised -- as the engine will read it from the converted file
   * the largest non-expert tensor groups, which is where a novel parameter block (an
     n-gram embedding table, say) shows up as a streaming candidate that the dense path
     would otherwise map resident in full
 
-The gguf general.architecture string is chosen by the llama.cpp converter, not by
-config.json, so a suggested row names model_type as a placeholder and must be confirmed
-against the converted model. Use --gguf once one exists.
+The engine reads the layout from the gguf, not from config.json, so the verdict here is a
+forecast of what the converted file will say. Use --gguf once one exists.
 
 Usage:
     python scripts/inspect-hf-moe-release.py --repo Qwen/Qwen3.8-Flash-Next
@@ -195,31 +195,24 @@ def report(cfg, groups):
     present = {p for p in PROJECTIONS
                for k in expert_groups
                if k.endswith(p + ".weight") or ("." + p + ".") in k}
-    arch = cfg.get("model_type") or "<arch>"
-    row = None
     if not expert_groups:
         # No expert tensors at all is a different answer from an expert layout we failed to
         # parse: a dense model is not a candidate this engine can do anything with, whereas an
-        # unparsed layout is a recipe waiting to be written.
+        # unparsed layout is one the converter may still lay out the way the engine reads.
         print("  Dense model: no tensor in it is indexed by expert. There is nothing for the")
-        print("  streamer to bind, so no registry row applies and the whole model would load")
-        print("  resident. If you expected experts here, check that this is the MoE variant.")
+        print("  streamer to bind, so the engine runs it as plain mmap, whole and resident.")
+        print("  If you expected experts here, check that this is the MoE variant.")
     elif {"gate_proj", "up_proj", "down_proj"} <= present:
-        row = '{"%s", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},' % arch
-        print("  Split expert layout. One registry row:")
+        print("  Split expert layout: ffn_gate_exps, ffn_up_exps, ffn_down_exps once converted.")
+        print("  The engine reads that layout off the file and streams it.")
     elif {"gate_up_proj", "down_proj"} <= present:
-        row = '{"%s", {"ffn_gate_up_exps", "ffn_down_exps", nullptr}},' % arch
-        print("  Fused gate+up layout. One registry row:")
+        print("  Fused gate+up layout: ffn_gate_up_exps, ffn_down_exps once converted.")
+        print("  The engine reads that layout off the file and streams it.")
     else:
         print("  Unrecognised expert projection set: %s" % (sorted(present) or "none"))
-        print("  Read the converter before writing a row: the streamer binds exactly the")
-        print("  per-layer expert tensors a recipe names, and nothing else.")
-    if row:
-        print()
-        print("      " + row)
-        print()
-        print("  That arch string is config.json's model_type, a placeholder. The gguf")
-        print("  general.architecture is the converter's choice -- confirm it with --gguf.")
+        print("  Read the converter: the engine streams any block weight with three dimensions")
+        print("  whose third is the file's expert count, up to three per layer, and refuses the")
+        print("  rest with the reason (docs/which-models-stream.md).")
 
     print()
     print("== largest non-expert tensor groups " + "=" * 28)
@@ -304,8 +297,7 @@ def from_gguf(path):
         print_group_table(groups, exps, width=46)
         suffixes = sorted({k.split("blk.<il>.")[-1].replace(".weight", "") for k in exps})
         print()
-        print("  registry row:")
-        print('      {"%s", {%s}},' % (arch, ", ".join('"%s"' % s for s in suffixes)))
+        print("  expert layout the engine will read off this file: %s" % ", ".join(suffixes))
     else:
         print("  none. This gguf names no *_exps tensors, so there is nothing for the")
         print("  streamer to bind -- the model would load fully resident.")

@@ -126,6 +126,35 @@ std::string default_data_dir() {
 #endif
 }
 
+namespace {
+// A value someone set stays; the engine's defaults only fill what is empty.
+void set_env_default(const char * name, const std::string & value) {
+#if defined(_WIN32)
+    if (!std::getenv(name)) _putenv_s(name, value.c_str());
+#else
+    setenv(name, value.c_str(), 0);
+#endif
+}
+} // namespace
+
+void prepare_compute_backends(const std::string & data_dir) {
+    // Where a backend may keep compiled programs between runs (the OpenCL kernels, for one). Its
+    // own default is a temporary directory, which an app's process may not be able to write, and
+    // the cache then disables itself. Read when the backend is loaded, so set before that.
+    std::error_code ec;
+    const fs::path cache = fs::u8path(data_dir) / "backend-cache";
+    fs::create_directories(cache, ec);
+    if (!ec) set_env_default("GGML_OPENCL_KERNEL_CACHE_DIR", cache.u8string());
+#if defined(__ANDROID__)
+    // Polling halves the cost of each crossing to the DSP, and the prefill arena stops the graph at
+    // every layer, twice (measured on device). The backend polls only while a DSP op is in flight,
+    // so neither costs anything until the planner arms the NPU, and neither is read where the
+    // Hexagon backend is not built in. setenv with overwrite 0 leaves a value someone set alone.
+    set_env_default("GGML_HEXAGON_OPPOLL", "1");
+    set_env_default("GGML_HEXAGON_HOSTBUF", "1");
+#endif
+}
+
 void open_url(const std::string & url) {
 #if defined(_WIN32)
     ShellExecuteW(nullptr, L"open", widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);

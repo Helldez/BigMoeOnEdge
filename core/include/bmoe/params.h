@@ -16,8 +16,9 @@
 // asks it rather than re-deriving them.
 //
 // Not in the table, because they are not tunables of a run: the prompt (a request's payload), the
-// line-protocol switch (`progress`, an output mode of the CLI) and the compute-trace granularity
-// (a property of a diagnostics sink). Front-ends own those.
+// line-protocol switch (`--progress`, an output mode of the CLI, which reaches the engine as
+// RunOutputs::render_text) and the compute-trace granularity (IComputeTraceSink::layers_only(), a
+// property of a diagnostics sink). Front-ends own those, and none of them is a RunConfig field.
 //
 // Pure policy: no llama.cpp, no I/O, no environment.
 #pragma once
@@ -74,6 +75,13 @@ struct ParamSwitch {
     bool deprecated = false;
 };
 
+// A value of a numeric parameter that means something other than its number: 0 = off, 0 = the
+// model's own, 4294967295 = random. A form shows the label in place of the number.
+struct ParamSpecial {
+    std::string value; // as get() renders it
+    std::string label; // "off", "as wide as the context"
+};
+
 struct ParamDesc {
     std::string key;   // stable identifier: the long flag without dashes
     std::string label; // short name for a form
@@ -90,10 +98,21 @@ struct ParamDesc {
     std::vector<ParamChoice> choices; // Choice only
 
     // What a form offers; validate() decides what a run accepts. Unbounded when bounded is false.
+    // bounded_below: only `min` is a limit, because the only upper one is the type's, which is no
+    // range to show a person.
     bool bounded = false;
+    bool bounded_below = false;
     double min = 0.0;
     double max = 0.0;
     std::string unit; // "MiB", "tokens", "" ...
+
+    // What a person usually sets, for a form to show as the guide. Not a limit: a value outside it
+    // is accepted, it is just unusual. Absent where the right value depends on the model or the
+    // machine, and the plan is the guide instead.
+    bool has_typical = false;
+    double typical_min = 0.0;
+    double typical_max = 0.0;
+    std::vector<ParamSpecial> specials;
 
     bool lossy = false;              // changes the output: a quality trade, not an optimisation
     bool accepts_auto = false;       // an Int that also takes the literal "auto"
@@ -129,11 +148,23 @@ struct FlagResult {
 };
 FlagResult apply_flag(RunConfig & cfg, const char * arg, const char * value);
 
+// The table's own integer reading, for a front-end value that is not a parameter (a CLI mode's
+// count, a server's port): the whole string must be the number, and it must lie in [lo, hi]. What
+// atoi() would make of "4x" or "abc" is an error here, with the reason in `err`.
+bool parse_int_strict(const std::string & s, long long lo, long long hi, long long & out, std::string & err);
+
 // The config as command-line arguments: every parameter that differs from a default RunConfig, in
 // table order, in the spelling apply_flag() reads back. Parsing the result into a default config
 // reproduces `cfg` for every parameter the table describes — the property a "copy as command"
 // button and a bench cell both depend on, and which the tests check.
 std::vector<std::string> to_args(const RunConfig & cfg);
+
+// How a person types parameter `key` at `value`, as one string in the spelling to_args() emits: the
+// switch that says exactly that value ("--overlap"), or the flag and the value ("--ctx-size 4096").
+// With no value, the flag that takes one ("--ubatch"). Empty for a key the table does not have.
+// This is what prose that tells a person what to type is built from - the planner's rationale - so
+// renaming a flag in the table cannot leave advice naming one that no longer parses.
+std::string flag_spelling(const std::string & key, const std::string & value = "");
 
 // The table as a JSON array, one object per parameter, with `default` read from `defaults` — so a
 // front-end that resolves its own defaults (the CLI turns the cache on with streaming) can say so.
