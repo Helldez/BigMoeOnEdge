@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.32.1] - 2026-10-20
+
+### Changed
+- **`scripts/bench-report.sh` measures the machine as well as the streamer (#321).** It used to run
+  one configuration only, streaming forced on with CPU-only settings fixed for the reference phone,
+  so a desktop with the model inside its RAM, or GPUs beside it, reported the cost of reads a
+  resident model never makes and never touched its GPUs: a 17 GiB model on a 60 GB, two-GPU
+  workstation read 4.3 tok/s. It now runs `--auto` first (the planner's own placement: devices,
+  resident when the model fits, streaming only the residue) and then the fixed streaming protocol,
+  and prints one row each with the settings read back from each run's CSV, plus the plan `auto`
+  chose. `MODES=stream` reproduces the old single run. The community-benchmark page, the method
+  page and the issue template describe the two rows, and how a CUDA build joins the `auto` one.
+
+### Fixed
+- **The benchmark-report issue form parses again.** Its engine-version placeholder was two quoted
+  strings on one line, which is not YAML, so GitHub could not render the form.
+
 ## [0.32.0] - 2026-10-19
 
 ### Added

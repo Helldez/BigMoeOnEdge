@@ -9,16 +9,25 @@
 #   2. records the machine: CPU, cores, RAM, kernel, the drive the model sits on and its
 #      measured O_DIRECT read rate at 512 KiB requests, straight from the model file — the same
 #      request size the expert stream issues, so the number is the ceiling this engine can see;
-#   3. runs the fixed protocol from docs/benchmark-method.md: 256 greedy tokens, the same prompt
-#      every table in the README uses, streaming with an auto-sized cache, 4 read lanes,
-#      intra-layer overlap, the dense weights kept out of the page cache, and the same 512-wide
-#      prefill batch the Android app pins (the reservation is memory the expert cache does not get);
-#   4. parses the CSV trailer the engine writes and prints one markdown block.
+#   3. runs the model twice, 256 greedy tokens each, with the same prompt every table in the
+#      README uses (docs/benchmark-method.md):
+#        auto   — `--auto` and nothing else (`--plan-explain` only prints the plan it runs): what
+#                 the engine does on this machine. The planner places what fits on the GPUs the build carries, keeps a model that fits in RAM
+#                 resident, and streams only what is left. This is the number to compare with
+#                 other engines.
+#        stream — the fixed streaming protocol the README rows use: streaming forced on with an
+#                 auto-sized cache, 4 read lanes, intra-layer overlap, the dense weights kept out
+#                 of the page cache, CPU only, and the 512-wide prefill batch the Android app pins.
+#                 It measures the streamer, not the machine: where the model fits in RAM or VRAM
+#                 it is slower than `auto` by design.
+#      `auto` runs first, so the planner sizes its plan on an idle machine;
+#   4. parses the CSV trailer of each run and prints one markdown block, with the plan `auto` chose.
 #
-# Env overrides: THREADS (default: min(8, online cores)), N_PREDICT (256), IO_THREADS (4),
-# CACHE_MB (auto), UBATCH (512), BENCH_OUT (.bench-report), BMOE_CLI (build/bin/bmoe-cli).
-# Anything after the model path is passed to bmoe-cli verbatim (e.g. --no-think for gpt-oss,
-# --n-expert-used 6 for the turbo top-k rows).
+# Env overrides: MODES ("auto stream"; name one to run only that), THREADS (stream only, default:
+# min(8, online cores)), N_PREDICT (256), IO_THREADS (4), CACHE_MB (auto), UBATCH (512),
+# BENCH_OUT (.bench-report), BMOE_CLI (build/bin/bmoe-cli).
+# Anything after the model path is passed to bmoe-cli verbatim in both modes (e.g. --no-think for
+# gpt-oss, --n-expert-used 6 for the turbo top-k rows).
 set -euo pipefail
 
 if [ $# -lt 1 ] || [ ! -f "$1" ]; then
@@ -32,6 +41,7 @@ readf() { cat "$1" 2>/dev/null || true; }   # optional sysfs/procfs files: absen
 OS="$(uname -s)"
 NPROC="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 THREADS="${THREADS:-$(( NPROC < 8 ? NPROC : 8 ))}"
+MODES="${MODES:-auto stream}"
 N_PREDICT="${N_PREDICT:-256}"
 IO_THREADS="${IO_THREADS:-4}"
 CACHE_MB="${CACHE_MB:-auto}"
@@ -116,39 +126,68 @@ READ_MIBS="$(probe_read_rate || true)"
 # --- 3. run ---------------------------------------------------------------------------------
 mkdir -p "$BENCH_OUT"
 TAG="$(basename "$MODEL" .gguf)"
-CSV="$BENCH_OUT/$TAG.csv"
-LOG="$BENCH_OUT/$TAG.log"
-echo "running: $TAG, $THREADS threads, $IO_THREADS lanes, cache $CACHE_MB, ubatch $UBATCH, $N_PREDICT tokens" >&2
-"$BMOE_CLI" -m "$MODEL" --chatml -n "$N_PREDICT" -t "$THREADS" --ubatch "$UBATCH" \
-    --moe-stream --cache-mb "$CACHE_MB" --io-threads "$IO_THREADS" --overlap --dense-weights anon \
-    --csv "$CSV" "$@" -p "$PROMPT" > "$LOG" 2>&1 || { echo "bmoe-cli failed, see $LOG" >&2; exit 1; }
+
+run_mode() {
+    local mode="$1"; shift
+    local csv="$BENCH_OUT/$TAG.$mode.csv" log="$BENCH_OUT/$TAG.$mode.log"
+    case "$mode" in
+        auto)
+            echo "running: $TAG, auto, $N_PREDICT tokens" >&2
+            "$BMOE_CLI" -m "$MODEL" --chatml -n "$N_PREDICT" --auto --plan-explain \
+                --csv "$csv" "$@" -p "$PROMPT" > "$log" 2>&1 ;;
+        stream)
+            echo "running: $TAG, stream, $THREADS threads, $IO_THREADS lanes, cache $CACHE_MB, ubatch $UBATCH, $N_PREDICT tokens" >&2
+            "$BMOE_CLI" -m "$MODEL" --chatml -n "$N_PREDICT" -t "$THREADS" --ubatch "$UBATCH" \
+                --moe-stream --cache-mb "$CACHE_MB" --io-threads "$IO_THREADS" --overlap --dense-weights anon \
+                --csv "$csv" "$@" -p "$PROMPT" > "$log" 2>&1 ;;
+        *) echo "unknown mode '$mode' in MODES (auto, stream)" >&2; exit 2 ;;
+    esac || { echo "bmoe-cli failed in mode $mode, see $log" >&2; exit 1; }
+}
+for MODE in $MODES; do run_mode "$MODE" "$@"; done
 
 # --- 4. report ------------------------------------------------------------------------------
-# The trailer is whitespace-separated key=value; read by NAME, never by position.
-SUMMARY="$(grep '^# summary' "$CSV" | tail -1)"
-key() { echo "$SUMMARY" | tr ' ' '\n' | sed -n "s|^$1=||p" | head -1; }
-ARCH="$(grep -o 'arch=[^ ]*' "$CSV" | head -1 | cut -d= -f2)"
-TOPK="$(grep -o 'n_expert_used=[^ ]*' "$CSV" | head -1 | cut -d= -f2)"
-TOKS="$(key tok/s)"; PREFILL="$(key prefill_tps)"; STALL="$(key stall_s/tok)"
-COMPUTE="$(key compute_s/tok)"; HIT="$(key cache_hit_pct)"; READ_MIB="$(key read_MiB)"
-TOKENS="$(key tokens)"; BUDGET="$(key cache_budget_MiB)"; MAJFLT="$(key majflt/tok)"
-LOAD_S="$(key load_s)"; DROPPED="$(key experts_dropped)"
-MIB_PER_TOK="$(awk -v r="$READ_MIB" -v n="$TOKENS" 'BEGIN { if (n>0) printf "%.0f", r/n; else print "n/a" }')"
+# The trailer and the header lines are whitespace-separated key=value; read by NAME, never by
+# position. Each row reads its settings from its own CSV, so the `auto` row shows what the plan
+# chose rather than what this script would have passed.
+row() {
+    local mode="$1" csv="$BENCH_OUT/$TAG.$1.csv"
+    local summary; summary="$(grep '^# summary' "$csv" | tail -1)"
+    key() { echo "$summary" | tr ' ' '\n' | sed -n "s|^$1=||p" | head -1; }
+    hdr() { grep -o "[ #]$1=[^ ]*" "$csv" | head -1 | cut -d= -f2; }
+    local streams="resident"; [ "$(hdr moe_stream)" = "1" ] && streams="streams"
+    local mib_per_tok
+    mib_per_tok="$(awk -v r="$(key read_MiB)" -v n="$(key tokens)" 'BEGIN { if (n>0) printf "%.0f", r/n; else print "n/a" }')"
+    echo "| $mode ($streams) | $(hdr threads) | $(hdr n_expert_used) | $(key cache_budget_MiB) MiB | $(hdr io_threads) | $(hdr n_ubatch) | $(key tok/s) | $(key prefill_tps) | $(key stall_s/tok) | $(key compute_s/tok) | $mib_per_tok MiB | $(key cache_hit_pct)% | $(key majflt/tok) | $(key load_s) | $(key experts_dropped) |"
+}
+FIRST_CSV="$BENCH_OUT/$TAG.${MODES%% *}.csv"
+ARCH="$(grep -o 'arch=[^ ]*' "$FIRST_CSV" | head -1 | cut -d= -f2)"
 
 cat <<EOF
 
 <!-- paste everything below into the benchmark-report issue -->
 **Machine**
 
-| CPU | Cores / threads used | RAM | Storage | Storage read (512 KiB, O_DIRECT) | OS |
+| CPU | Cores | RAM | Storage | Storage read (512 KiB, O_DIRECT) | OS |
 |---|---:|---:|---|---:|---|
-| $CPU_MODEL | $NPROC / $THREADS | $RAM_GIB GiB | $DRIVE_MODEL | $READ_MIBS MiB/s | $KERNEL |
+| $CPU_MODEL | $NPROC | $RAM_GIB GiB | $DRIVE_MODEL | $READ_MIBS MiB/s | $KERNEL |
 
 **Run** — engine $ENGINE_VERSION ($GIT_REV), model \`$(basename "$MODEL")\` ($MODEL_GIB GiB, arch \`$ARCH\`), $N_PREDICT tokens
 
-| Model | k | Cache | Lanes | ubatch | Decode tok/s | Prefill tok/s | Stall s/tok | Compute s/tok | Flash/token | Cache hit | majflt/tok | Load s |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| $TAG | $TOPK | $BUDGET MiB | $IO_THREADS | $UBATCH | $TOKS | $PREFILL | $STALL | $COMPUTE | $MIB_PER_TOK MiB | $HIT% | $MAJFLT | $LOAD_S |
-
-Extra flags: \`${*:-none}\`. Experts dropped: ${DROPPED:-0}. Raw CSV: \`$CSV\` (attach it to the issue).
+| Mode | Threads | k | Cache | Lanes | ubatch | Decode tok/s | Prefill tok/s | Stall s/tok | Compute s/tok | Flash/token | Cache hit | majflt/tok | Load s | Experts dropped |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 EOF
+for MODE in $MODES; do row "$MODE"; done
+echo
+echo "Extra flags: \`${*:-none}\`. Raw CSVs: \`$BENCH_OUT/$TAG.<mode>.csv\` (attach them to the issue)."
+if [[ " $MODES " == *" auto "* ]]; then
+    # The plan is what makes the `auto` row reproducible: the devices it used, what stayed
+    # resident, what streamed. It names GPU models, never a path.
+    echo
+    echo "<details><summary>Plan chosen by <code>--auto</code></summary>"
+    echo
+    echo '```'
+    grep '^plan:' "$BENCH_OUT/$TAG.auto.log" || echo "(no plan lines in the log)"
+    echo '```'
+    echo
+    echo "</details>"
+fi
