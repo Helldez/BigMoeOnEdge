@@ -394,6 +394,15 @@ ordinary memory bounded by what can be held, exactly as before. Another grants a
 up to a system-wide total, the same store either way. No rule names either machine; each adapter
 answers the two questions, and a machine that grants no lock answers zero to both.
 
+A failed or denied ceiling query is a separate fact from a ceiling of zero. It preserves every
+independently known upper bound, including zero, but does not establish a reclaim-exempt dense
+store. Where the lock-in-place ceiling is unmeasured and no known bound rules out a token cycle,
+the planner leaves cache pinning enabled and arms `--cache-pin-fit` for an automatically sized
+cache. Its size still comes from the ordinary process budget with the full memory-pressure
+margin: an unverified lock never creates more memory. The ledger marks the ceiling as unmeasured
+and the cache's lock as a runtime request, rather than counting that cache as a granted lock.
+An explicit caller choice of cache size, pinning, or fitting keeps its existing authority.
+
 That total is **net of what is already locked, by anyone it counts**. On the laptop this was
 measured on it is system-wide and counts the kernel's own wired memory: locking in 32 MiB steps
 until the kernel refused granted 10336 MiB where the limit less the system's wired count stood at

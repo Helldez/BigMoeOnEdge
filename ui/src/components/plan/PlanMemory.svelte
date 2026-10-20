@@ -37,7 +37,9 @@
     {#each turn as t, i (i)}
       <p class="muted note">{t.label ?? t.name}: {formatBytes(t.bytes)} borrowed from the expert cache while a prompt runs, given back after.</p>
     {/each}
-    {#if pi === 0 && pool.locked_bytes === 0}
+    {#if pi === 0 && pool.cache_lock_unverified}
+      <p class="muted note">The system's lock limit is unmeasured. The expert cache will try to lock its pages when the run starts.</p>
+    {:else if pi === 0 && pool.locked_bytes === 0}
       <p class="muted note">Nothing is locked in memory for this run: the system may take any of it back under pressure.</p>
     {/if}
   </div>

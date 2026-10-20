@@ -79,6 +79,8 @@ struct AllocationInputs {
     // part that is refused is ordinary memory on a machine that will then reclaim it.
     uint64_t lockable_bytes = 0;      // everything held reclaim-exempt, after the margin
     uint64_t lock_in_place_bytes = 0; // the part that may be locked where it already is (the cache)
+    bool lockable_bytes_known = true;
+    bool lock_in_place_bytes_known = true;
 
     // What the holdable ceiling was before its margin, and the margin's terms. The margin is room
     // left for memory the machine can take back, and locked memory is not that: so where the cache
@@ -152,8 +154,9 @@ struct Ledger {
     std::vector<LedgerRow> rows;
     uint64_t holdable_cap = 0; // what the process may hold, after the margin
     uint64_t lockable_cap = 0; // what it may hold reclaim-exempt, after its own margin
-    uint64_t held = 0;         // every row
-    uint64_t locked = 0;       // the rows held reclaim-exempt
+    bool lockable_cap_known = true;
+    uint64_t held = 0;   // every row
+    uint64_t locked = 0; // the rows held reclaim-exempt
 };
 
 // One thing the cost model has to say that is not a setting: a fact it priced by, or a reason it
@@ -190,6 +193,9 @@ struct Allocation {
     // The part of `cache_bytes` the platform can be asked to keep in place; 0 when the cache is
     // ordinary memory, because it was not asked for or because not even one token cycle fits.
     uint64_t cache_locked_bytes = 0;
+    // An unknown ceiling permits a bounded runtime attempt, not a predicted lock grant. This
+    // never widens the holdable budget; the run fits the cache to what the kernel actually grants.
+    bool cache_lock_unverified = false;
 
     uint64_t cache_bytes = 0; // expert cache budget; 0 means the expert lane is not used
 

@@ -7,7 +7,7 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
-- **A device prefill where nothing can be locked.** A platform that publishes no wire limit reads a
+- **A device prefill where nothing can be locked.** An unavailable wire-limit query was read as a
   lock store of 0, and the planner charged an accelerator's buffers to it anyway, so the device
   never fit: a 12 GB phone's GPU, measured at 17.8x its cores on a wide prefill, was refused "on
   memory" (#304). The lock ceiling exists to keep what the process locks from being outbid, and
@@ -56,6 +56,27 @@ Semantic Versioning.
     cannot read them: Metal reported a nil buffer and the run decoded `!`. Only weights in host
     buffers are converted now, and the ones left on a device keep `--release-mmap` from dropping a
     mapping the device may still read.
+
+## [0.32.1] - 2026-10-20
+
+### Changed
+- **iOS defaults the separate BLAS backend off.** Its wide matrix operations can retain float32
+  copies of quantized weights outside the planner's current buffer estimate. New device and
+  simulator builds avoid that scratch by default while keeping CPU Accelerate and Metal enabled.
+  Explicit or cached `GGML_BLAS` settings are respected; other platforms keep their defaults.
+  This is a memory-cost mitigation, not a claim that default automatic runs are pressure-safe.
+
+### Fixed
+- **An unreadable lock ceiling no longer disables cache locking.** Denied platform queries retain
+  their uncertainty and every independent finite bound, including zero. An automatic plan can
+  request cache locks and fit to actual runtime grants without increasing its ordinary memory
+  budget or reducing its margin. The plan and UI label that request as unverified, rather than
+  reporting a protected cache or a measured zero allowance. Explicit caller choices remain authoritative.
+- **Startup pin-fit uses the model's token-cycle floor before any streamed graph runs.** The
+  effective routing width is resolved before initialization, so a partial lock refusal during the
+  full prefill-device confirmation can shrink the cache instead of silently abandoning its locks.
+  A refusal below one cycle retains the ordinary-memory fallback. Real session regressions cover
+  the model default, a routing override, and the fallback; restoring the old ordering fails them.
 
 ## [0.32.0] - 2026-10-19
 

@@ -296,6 +296,9 @@ struct HardwareProfile {
     // platform whose store publishes no total reports the largest value there is, and the ledger
     // bounds it by what the process may hold at all.
     uint64_t lockable_bytes = 0;
+    // A denied query is not a grant of zero. When false, bytes still carries any independently
+    // known upper bound (including zero); it cannot establish a reclaim-exempt allocation.
+    bool lockable_bytes_known = true;
 
     // The same question for memory the process ALREADY owns and asks to keep in place - which is
     // how the expert cache is protected, since its pages are committed one slice at a time. Two
@@ -304,6 +307,7 @@ struct HardwareProfile {
     // the dense set can be protected and the cache cannot. Where they are one pool the two
     // figures are equal, and the ledger charges both against the smaller.
     uint64_t lock_in_place_bytes = 0;
+    bool lock_in_place_bytes_known = true;
 
     // ── compute ─────────────────────────────────────────────────────────────────────
     uint32_t n_cores = 0; // 0 when unknown
