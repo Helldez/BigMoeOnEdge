@@ -13,6 +13,13 @@ Semantic Versioning.
   preserved. Info-level snapshots through the existing log sink expose memory across automatic
   probe stages, model loading and session setup. Apple compressed-memory accounting is documented
   separately from disk swap and RSS; these observations do not change budgets or planning policy.
+- **A device prefill where nothing can be locked.** A platform that publishes no wire limit reads a
+  lock store of 0, and the planner charged an accelerator's buffers to it anyway, so the device
+  never fit: a 12 GB phone's GPU, measured at 17.8x its cores on a wide prefill, was refused "on
+  memory" (#304). The lock ceiling exists to keep what the process locks from being outbid, and
+  where nothing can be locked there is nothing to outbid: the device is now charged there only where
+  a lock store exists, and to what the process may hold everywhere. Machines that publish one, the
+  Mac and the Android phone among them, plan exactly as before (checked side by side on the Mac).
 - **The expert cache brakes when the system takes it back mid-run** (`--cache-brake`, on by
   default). On a 12 GB phone the default `--auto` budget ended in a Jetsam `proc-thrashing` kill
   (#304): the system compressed 2.5 GB of the engine's own memory and a token took 52 s. No figure
@@ -27,6 +34,8 @@ Semantic Versioning.
 - **`scripts/ios-runs.sh` sweeps the expert cache.** A `c<MiB>` run (`RUNS="c1000 c1500 c2000"`)
   is the plan's run with only the cache fixed at that size, so one command shows where a larger
   cache stops paying and where the device starts taking memory back (`examples/ios/README.md`).
+  Its `summary.txt` also carries the prefill line, the plan's `prefill-device` and any
+  `cache brake:` line.
 
 ### Changed
 - **`scripts/bench-report.sh` measures the machine as well as the streamer (#321).** It used to run

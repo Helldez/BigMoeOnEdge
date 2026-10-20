@@ -514,6 +514,12 @@ its budget again. In the ledger they are a row *in turn with the cache*, not in 
 fit if the cache can yield that much, or if what is left over still fits both ceilings. What stays
 for the session is the rest of the device's row, the layer's other weights and the compute buffer.
 
+The lock ceiling is one of the two only where it exists. It is there to keep what this process locks
+from being outbid by a device that wires the same pool; on a platform that publishes no wire limit
+nothing can be locked (the store reads 0), so there is nothing to outbid, and the device is charged
+to what the process may hold alone. Charging it to a store of 0 refused a 12 GB phone's GPU, measured
+at 17.8x its cores on a wide prefill, "on memory" with the memory there.
+
 It costs the re-read of what was evicted and one setup of the slots per prompt. Same laptop, same
 model, `--auto` alone: the 1461-token prefill takes 3.52 and 3.64 s against 3.43 with the slots
 held, the generated text is the same, and decode on the short prompt is back to 21.9 tok/s with a

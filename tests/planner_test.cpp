@@ -1286,6 +1286,22 @@ int main() {
         check(nofit.cache_budget_bytes == nodev.cache_budget_bytes && ledger_row(nofit, "device") == nullptr,
               "prefill: and a refusal leaves the ledger as it was");
 
+        // A machine where nothing can be locked: a phone whose platform publishes no wire limit. The
+        // device is still a row of what is held, and it is not refused for a lock store the run
+        // could never use.
+        HardwareProfile nolock = machine(1500.0, Tri::Yes);
+        nolock.lockable_bytes = 0;
+        nolock.lock_in_place_bytes = 0;
+        nolock.anon_overflow = Overflow::Kill;
+        const Plan unlocked = plan_run(base_cfg(), nolock, mm, PlanRequest{});
+        const LedgerRow * ul_row = ledger_row(unlocked, "device");
+        check(unlocked.config.prefill.device == "accel",
+              "prefill: where nothing can be locked, the device is not refused for the lock store", reason(unlocked));
+        check(ul_row && !ul_row->locked && unlocked.allocation.ledger.locked == 0,
+              "prefill: and it is charged to what is held, not to a store of 0");
+        check(unlocked.allocation.ledger.held <= unlocked.allocation.ledger.holdable_cap,
+              "prefill: the ledger still closes on what the process may hold");
+
         // Something else in the run that cannot share a session with it.
         RunConfig rows = base_cfg();
         rows.moe.row_stream = true;
