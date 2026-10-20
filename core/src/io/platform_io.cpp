@@ -1032,7 +1032,7 @@ size_t direct_alignment(fd_t fd) {
 // properties and the reason the ceiling is a lock boundary rather than an allocation one.
 LockLimit intersect_lock_limits(LockLimit a, LockLimit b) {
     if ((a.known && a.bytes == 0) || (b.known && b.bytes == 0)) return {0, true};
-    return {std::min(a.bytes, b.bytes), a.known && b.known};
+    return {std::min<uint64_t>(a.bytes, b.bytes), a.known && b.known};
 }
 
 LockLimit remaining_lock_limit(LockLimit limit, uint64_t held, bool held_known) {

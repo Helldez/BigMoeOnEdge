@@ -72,6 +72,8 @@ Semantic Versioning.
   request cache locks and fit to actual runtime grants without increasing its ordinary memory
   budget or reducing its margin. The plan and UI label that request as unverified, rather than
   reporting a protected cache or a measured zero allowance. Explicit caller choices remain authoritative.
+- **The lock-limit intersection compiles with Windows headers.** Its minimum operation uses an
+  explicit template argument so the Windows `min` macro cannot expand the function call.
 - **Startup pin-fit uses the model's token-cycle floor before any streamed graph runs.** The
   effective routing width is resolved before initialization, so a partial lock refusal during the
   full prefill-device confirmation can shrink the cache instead of silently abandoning its locks.
