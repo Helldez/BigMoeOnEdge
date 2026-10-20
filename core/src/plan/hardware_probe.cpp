@@ -5,6 +5,7 @@
 
 #include "../io/platform_io.h"
 #include "../engine/llama_log.h"
+#include "memory_topology.h"
 
 #include "ggml-backend.h"
 #include "ggml.h"
@@ -127,9 +128,17 @@ void probe_devices(HardwareProfile & h) {
             // claiming shared memory - a claim worth believing, because believing it errs safe.
             // `TYPE_GPU` is not the opposite claim: Metal reports it on unified-memory hardware, so
             // taking it as evidence of separate memory is how one physical pool gets counted twice.
-            // It stays Unknown - which the accessors read as shared - until probe_device_costs
-            // settles it by allocating on the device and watching what the host loses.
+            // Native topology can settle it below; otherwise it stays Unknown - read as shared -
+            // until probe_device_costs allocates on the device and watches what the host loses.
             if (d.is_cpu || props.type == GGML_BACKEND_DEVICE_TYPE_IGPU) d.shares_host_memory = Tri::Yes;
+#if defined(BMOE_HAVE_METAL_MEMORY_PROBE)
+            // Metal reports TYPE_GPU even for a shared physical pool. Ask the native device
+            // before an allocation delta can mistake reused or compressed pages for extra RAM.
+            if (std::strcmp(ggml_backend_reg_name(reg), "MTL") == 0) {
+                d.shares_host_memory = detail::refine_memory_sharing(d.shares_host_memory,
+                                                                     detail::metal_memory_sharing(props.description));
+            }
+#endif
             // Whether this device will execute over memory the host owns. Asking the backend for a
             // host buffer type is the question; a device that answers is one we can read flash into
             // and it can compute out of, which is exactly the pair of properties a streamed expert
@@ -240,11 +249,14 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.memory_total = pio::mem_total_bytes();
     h.anon_overflow = probe_anon_overflow();
     h.reclaim_exempt_max = pio::pinned_max_bytes();
-    // Recorded as the platform states them. A store that publishes no total answers "unbounded",
-    // and the ledger bounds that by what the process may hold - a figure this function does not
-    // have yet, since the headroom is measured after it.
-    h.lockable_bytes = pio::lockable_bytes();
-    h.lock_in_place_bytes = pio::lock_in_place_bytes();
+    // A denied query is not a zero grant or a measured unlimited store. Carry its uncertainty
+    // beside any independently known finite bound so the plan can make a bounded runtime attempt.
+    const pio::LockLimit lockable = pio::lockable_limit();
+    const pio::LockLimit in_place = pio::lock_in_place_limit();
+    h.lockable_bytes = lockable.bytes;
+    h.lockable_bytes_known = lockable.known;
+    h.lock_in_place_bytes = in_place.bytes;
+    h.lock_in_place_bytes_known = in_place.known;
     h.n_cores = std::thread::hardware_concurrency();
     probe_core_classes(h);
 
@@ -291,9 +303,16 @@ void probe_device_support(HardwareProfile & hw, const ModelProfile & model) {
     ggml_context * ctx = ggml_init(ip);
     if (!ctx) return;
 
-    const ggml_type type = (ggml_type) model.expert_type_id;
-    const int64_t blk = ggml_blck_size(type);
-    if (blk > 0) {
+    // One op per expert layout the file carries: a mixed quant is executed in every one of its
+    // formats, so a device that lacks a kernel for any of them cannot run the experts as a whole.
+    // Asked for each rather than for the commonest, which is what this used to do.
+    std::vector<ggml_tensor *> ops;
+    const std::vector<int> types =
+        model.expert_type_ids.empty() ? std::vector<int>{model.expert_type_id} : model.expert_type_ids;
+    for (int id : types) {
+        const ggml_type type = (ggml_type) id;
+        const int64_t blk = ggml_blck_size(type);
+        if (blk <= 0) continue;
         // Shapes only have to be legal and representative; the graph is never run.
         const int64_t n_embd = blk * 8;
         const int64_t n_ff = blk * 8;
@@ -306,28 +325,30 @@ void probe_device_support(HardwareProfile & hw, const ModelProfile & model) {
         ggml_tensor * w = ggml_new_tensor_3d(ctx, type, n_embd, n_ff, (int64_t) model.n_expert);
         ggml_tensor * x = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, 1, 1);
         ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, 1);
-        ggml_tensor * op = (w && x && ids) ? ggml_mul_mat_id(ctx, w, x, ids) : nullptr;
+        if (w && x && ids) ops.push_back(ggml_mul_mat_id(ctx, w, x, ids));
+    }
+    if (!ops.empty() && ops.size() == types.size()) {
+        for (ComputeDevice & d : hw.devices) {
+            if (!d.is_cpu && !d.probe_here()) continue; // asked in another process
+            ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
+            if (!dev) continue;
+            bool all = true;
+            for (ggml_tensor * op : ops)
+                all = all && ggml_backend_dev_supports_op(dev, op);
+            d.runs_expert_op = all ? Tri::Yes : Tri::No;
 
-        if (op) {
-            for (ComputeDevice & d : hw.devices) {
-                if (!d.is_cpu && !d.probe_here()) continue; // asked in another process
-                ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.name.c_str());
-                if (!dev) continue;
-                d.runs_expert_op = ggml_backend_dev_supports_op(dev, op) ? Tri::Yes : Tri::No;
-
-                // A device that executes this layout only out of a buffer type of its own needs the
-                // weight converted at load. For a streamed expert that is fatal rather than merely
-                // costly: the streamer's whole mechanism is rebinding `data` onto the file's native
-                // layout, and a repack is precisely what replaces that layout.
-                // Ask about the buffer type this weight would ACTUALLY live in. For a streamed
-                // expert that is the host buffer where one is offered, not the device's default:
-                // a discrete accelerator's own buffer needs a repack and its host buffer does not,
-                // and reading the wrong one of the two is the difference between "this device
-                // cannot serve streamed experts" and the truth.
-                ggml_backend_buffer_type_t buft = ggml_backend_dev_host_buffer_type(dev);
-                if (!buft) buft = ggml_backend_dev_buffer_type(dev);
-                d.needs_repack = (buft && !ggml_backend_buft_is_host(buft)) ? Tri::Yes : Tri::No;
-            }
+            // A device that executes this layout only out of a buffer type of its own needs the
+            // weight converted at load. For a streamed expert that is fatal rather than merely
+            // costly: the streamer's whole mechanism is rebinding `data` onto the file's native
+            // layout, and a repack is precisely what replaces that layout.
+            // Ask about the buffer type this weight would ACTUALLY live in. For a streamed
+            // expert that is the host buffer where one is offered, not the device's default:
+            // a discrete accelerator's own buffer needs a repack and its host buffer does not,
+            // and reading the wrong one of the two is the difference between "this device
+            // cannot serve streamed experts" and the truth.
+            ggml_backend_buffer_type_t buft = ggml_backend_dev_host_buffer_type(dev);
+            if (!buft) buft = ggml_backend_dev_buffer_type(dev);
+            d.needs_repack = (buft && !ggml_backend_buft_is_host(buft)) ? Tri::Yes : Tri::No;
         }
     }
     ggml_free(ctx);

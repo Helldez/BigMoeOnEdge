@@ -87,7 +87,8 @@ struct ComputeDevice {
     // separate memory: Metal reports it on hardware whose memory is unified, and trusting it there
     // is how the same physical RAM gets counted twice — the accounting that took a phone down when
     // an integrated device was credited with "15195 MiB free" on a machine holding 11 GB. So the
-    // type only ever narrows this to Yes; a No has to be measured (see probe_device_costs).
+    // type only ever narrows this to Yes; a No needs native topology or an allocation probe.
+    // A known shared pool cannot become separate merely because its allocation delta was flat.
     //
     // Read it through the accessors below rather than directly. They encode the asymmetry once: an
     // unknown is treated as SHARED, because counting a shared pool as extra capacity overcommits a
@@ -295,6 +296,9 @@ struct HardwareProfile {
     // platform whose store publishes no total reports the largest value there is, and the ledger
     // bounds it by what the process may hold at all.
     uint64_t lockable_bytes = 0;
+    // A denied query is not a grant of zero. When false, bytes still carries any independently
+    // known upper bound (including zero); it cannot establish a reclaim-exempt allocation.
+    bool lockable_bytes_known = true;
 
     // The same question for memory the process ALREADY owns and asks to keep in place - which is
     // how the expert cache is protected, since its pages are committed one slice at a time. Two
@@ -303,6 +307,7 @@ struct HardwareProfile {
     // the dense set can be protected and the cache cannot. Where they are one pool the two
     // figures are equal, and the ledger charges both against the smaller.
     uint64_t lock_in_place_bytes = 0;
+    bool lock_in_place_bytes_known = true;
 
     // ── compute ─────────────────────────────────────────────────────────────────────
     uint32_t n_cores = 0; // 0 when unknown

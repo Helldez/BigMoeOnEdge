@@ -50,6 +50,10 @@ struct ExpertTensorRef {
 // empty (tensor == nullptr). Unbound layers (dense, or non-MoE) stay false.
 struct LayerExperts {
     bool bound = false;
+    // Some of this layer's experts are on a device. Beside a bound layer that is a split the
+    // streamer cannot serve (the projections it would load with this half are elsewhere), and the
+    // session refuses it by name rather than tripping over the missing tensor.
+    bool on_device = false;
     ExpertTensorRef proj[ExpertLayout::max_slots];
 };
 
@@ -120,6 +124,15 @@ public:
     // and exercised by the shrink gate. This is the only thing that moves the budget after init.
     void set_cache_budget(size_t bytes);
     size_t cache_budget() const { return cache_max_; }
+
+    // The share of the cache's resident pages the system has taken back, from one page of each of up
+    // to `n` entries spread over the LRU. What the cache wrote and the kernel then compressed, swapped
+    // or trimmed is gone from RAM by definition, and every platform answers that about a process's own
+    // pages (pio::vm_resident_sample). -1 when nothing could be sampled. Same precondition as
+    // set_cache_budget: no decode in flight.
+    double cache_lost_frac(int n);
+    // The budget a brake may not go under: one token's worst-case cycle (set_pin_floor).
+    size_t cache_floor() const { return pin_floor_; }
 
     // The cliff from cache-sizing.md, computed at init from model shape alone: the bytes one
     // token's pass over the layer stack demands in the worst case, i.e. every bound layer's top_k

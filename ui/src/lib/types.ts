@@ -111,6 +111,10 @@ export interface PlanMemoryPool {
   estimated?: boolean;
   cap_bytes: number;
   lockable_cap_bytes: number;
+  /** False when the system did not publish a complete lock ceiling. Absent in older replies. */
+  lockable_cap_known?: boolean;
+  /** The cache will try to lock pages at runtime; the plan has not established a grant. */
+  cache_lock_unverified?: boolean;
   held_bytes: number;
   locked_bytes: number;
   rows: PlanMemoryRow[];

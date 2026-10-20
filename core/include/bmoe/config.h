@@ -89,6 +89,12 @@ struct MoeStreamConfig {
     // when it sized the cache to the lockable total; a hand-set budget is never shrunk unasked.
     bool cache_pin_fit = false;
 
+    // Halve the expert cache when the system takes it back mid-run: a token whose compute stalls
+    // against this machine's own reference, confirmed by a sample of the cache's pages that are no
+    // longer in RAM. Shrinks only, never under one token's cycle, and never grows back within the run
+    // (docs/pressure.md is why). Inert wherever nothing presses on memory.
+    bool cache_brake = true;
+
     // Overlap async expert reads with FFN compute instead of blocking on them: load_layer()
     // publishes the reads and returns immediately, and the CPU mul_mat_id kernel blocks per
     // expert (via the fork's expert-ready hook) only if that expert's slice is not yet in.
@@ -404,7 +410,12 @@ struct PrefillDeviceConfig {
     // expert reads dominate - and stays the planner's call. The cost is three short prefills at
     // load; false skips it.
     bool verify = true;
-    static constexpr int verify_tokens = 64;        // the probe prefill's width, under max_outputs
+    static constexpr int verify_tokens = 64; // the probe prefill's width, under max_outputs
+    // Positions compared, spread across that width. Each is a row of the output head, the model's
+    // largest matrix, and from 32 rows up ggml's BLAS backend unpacks a quantized matrix whole into
+    // float32 and keeps that scratch: 1940 MiB on a 248k vocabulary at load, outside every budget.
+    // As many rows as stay under that, for the most statistics a narrow product allows.
+    static constexpr int verify_rows = 31;
     static constexpr float verify_min_agree = 0.9f; // rows whose top token must match the host's
 
     // How many layers of streamed experts the device holds at once (with moe.enabled). Two reads a

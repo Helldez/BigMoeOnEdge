@@ -124,16 +124,30 @@ bool build_probe(Probe & p, ggml_type wtype, int64_t rows = k_rows, int64_t batc
     const size_t row_bytes = ggml_row_size(wtype, p.cols);
     if (row_bytes == 0) return false;
 
-    std::vector<float> src((size_t) (p.cols * p.rows));
-    for (size_t i = 0; i < src.size(); ++i)
-        src[i] = std::sin((float) (i % 1024) * 0.017f) * 0.5f;
+    // Every row is the same row, so one is encoded and copied down the matrix. The grid formats
+    // search a codebook per block: encoding all 16384 rows took 13-16 s of a laptop core for the
+    // 2- and 3-bit IQ types, paid before every `--auto` run, for bytes identical to the copies.
+    // What the probe measures is reading them, and a copy is read exactly like the original.
+    std::vector<float> src((size_t) p.cols);
+    for (size_t c = 0; c < src.size(); ++c)
+        src[c] = std::sin((float) (c % 1024) * 0.017f) * 0.5f;
+
+    // Some formats (the 1- and 2-bit IQ grids) cannot be encoded without per-column importance, and
+    // ggml asserts rather than declines when it is missing. These bytes are synthetic, so every
+    // column matters equally: a uniform importance is the honest answer, and the kernel the probe
+    // then times is exactly the one the model's own tensors run. Asked of ggml, not listed here.
+    std::vector<float> importance;
+    if (ggml_quantize_requires_imatrix(wtype)) importance.assign((size_t) p.cols, 1.0f);
 
     p.weight.resize(row_bytes * (size_t) p.rows);
     if (wtype == GGML_TYPE_F32) {
-        std::memcpy(p.weight.data(), src.data(), p.weight.size());
-    } else if (ggml_quantize_chunk(wtype, src.data(), p.weight.data(), 0, p.rows, p.cols, nullptr) == 0) {
+        std::memcpy(p.weight.data(), src.data(), row_bytes);
+    } else if (ggml_quantize_chunk(wtype, src.data(), p.weight.data(), 0, 1, p.cols,
+                                   importance.empty() ? nullptr : importance.data()) == 0) {
         return false;
     }
+    for (int64_t r = 1; r < p.rows; ++r)
+        std::memcpy(p.weight.data() + (size_t) r * row_bytes, p.weight.data(), row_bytes);
 
     // Every column differs from its neighbours, so a kernel that computed one token and repeated
     // it across the batch cannot agree with the reference.

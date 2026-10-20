@@ -8,7 +8,8 @@
 // Metal reports it on unified-memory hardware. Reading it as "has its own memory" is how one
 // physical pool gets counted twice, which is the accounting that told a capacity fitter an
 // integrated GPU had 15195 MiB free on a machine holding 11 GB, and took the machine down. So it is
-// settled by allocating on the device and watching what the host loses.
+// settled from the native memory topology where available, otherwise by allocating on the device
+// and watching what the host loses. A shared topology is not contradicted by a flat allocation delta.
 //
 // **What does one host/device boundary crossing cost?** This is the term a bandwidth ratio cannot
 // see and the one that decides an offload in practice: dense and expert halves alternate per layer,
@@ -27,6 +28,7 @@
 #include "bmoe/probe.h"
 
 #include "../io/platform_io.h"
+#include "memory_topology.h"
 
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
@@ -85,7 +87,12 @@ Tri measure_shared_memory(ggml_backend_dev_t dev) {
     // keeps a shared pool's pages off the process's books leaves it flat, and then the host's
     // figure below is the one left to ask. On a unified-memory desktop the host figure alone gave
     // both answers on consecutive runs, and the wrong one counts a single pool twice.
-    if (own_still_known && own_after.rss_bytes >= own_before.rss_bytes + k_probe_alloc / 2) return Tri::Yes;
+    //
+    // Resident plus swapped, not resident alone: a kernel that compresses or swaps our own idle pages
+    // to make room for the allocation leaves the resident figure flat while the charge still grows,
+    // and that flat figure is what read a phone's shared GPU as separate memory under pressure.
+    const auto charged = [](const pio::ProcessMemory & m) { return m.rss_bytes + m.swap_bytes; };
+    if (own_still_known && charged(own_after) >= charged(own_before) + k_probe_alloc / 2) return Tri::Yes;
 
     if (before == 0 || after == 0) return Tri::Unknown;
     const uint64_t lost = before > after ? before - after : 0;
@@ -223,8 +230,10 @@ void probe_device_costs(HardwareProfile & hw, const ModelProfile & model) {
 
         // Settle the memory question first: it is cheap, and a device whose memory turns out to be
         // the host's changes what every capacity rule above may conclude.
-        const Tri shared = measure_shared_memory(dev);
-        if (shared != Tri::Unknown) d.shares_host_memory = shared;
+        // Native topology and an integrated-device declaration are positive evidence. Allocator
+        // reuse or compression can flatten this delta, but cannot make their pool separate.
+        if (d.shares_host_memory != Tri::Yes)
+            d.shares_host_memory = detail::refine_memory_sharing(d.shares_host_memory, measure_shared_memory(dev));
 
         // Do not take a quarter of a gigabyte from a device that is short of it just to learn what
         // a crossing costs; the answer is worth having and it is not worth a failed allocation.

@@ -584,6 +584,10 @@ so a stage or a role the server adds reaches every UI with no UI change:
 - `memory.pools` is the ledger the plan charged: the host's pool (`name` `host`; `cap_bytes`
   what the process may hold, `lockable_cap_bytes` what it may hold locked) with one row per thing
   held for the whole run, and one pool for each device with memory of its own that holds layers.
+  The host pool's `lockable_cap_known` distinguishes a measured ceiling (including zero) from an
+  unread one; when false, `lockable_cap_bytes` preserves an upper bound rather than a measured
+  grant. `cache_lock_unverified` means cache pinning is a runtime request: that cache is not counted
+  in `locked_bytes` or marked as a locked row. Neither field changes the ordinary process capacity.
   A row with `in_turn` is not held beside the expert cache but in its place while a prompt runs.
   A device pool with `estimated` is an even share of a sum the placement reports over several
   devices; with one device its figures are that device's own.
