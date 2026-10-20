@@ -132,7 +132,21 @@ ValidationResult validate(const RunConfig & cfg) {
                     "spec.draft_max.");
     }
 
+    if (!cfg.device_split.empty()) {
+        long placed = 0;
+        for (const auto & d : cfg.device_split)
+            placed += d.second;
+        if (placed != cfg.n_gpu_layers)
+            return fail("device_split places " + std::to_string(placed) + " layers but n_gpu_layers is " +
+                        std::to_string(cfg.n_gpu_layers) + ": the two describe one placement and must agree.");
+    }
+
     if (cfg.prefill.enabled()) {
+        // The prefill device loads as the model's only device, with no layer on it; placed layers
+        // would all land on that one device instead of where they were placed.
+        if (cfg.n_gpu_layers != 0)
+            return fail("a prefill device cannot be combined with layers placed on devices (n_gpu_layers=" +
+                        std::to_string(cfg.n_gpu_layers) + "): it loads as the model's only device.");
         if (cfg.prefill.min_tokens < PrefillDeviceConfig::min_tokens_floor)
             return fail("prefill.min_tokens must be >= " + std::to_string(PrefillDeviceConfig::min_tokens_floor) +
                         ": a one-token device graph would share its shape with a CPU decode graph, and llama.cpp "

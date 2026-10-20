@@ -155,6 +155,14 @@ Placement probe_placement(const char * model_path,
     }
     if (placed_on_shared || placed_unknown) n_dev_local = 0;
     pl.n_gpu_layers = n_dev_local ? mparams.n_gpu_layers : 0;
+    // The fitter writes one layer count per device into tensor_split only when there are several;
+    // with one, every placed layer is that device's.
+    if (pl.n_gpu_layers > 0) {
+        for (size_t i = 0; i < devs.size(); ++i) {
+            const float n = devs.size() > 1 ? tensor_split[i] : (float) pl.n_gpu_layers;
+            if (n > 0.0f) pl.device_split.emplace_back(ggml_backend_dev_name(devs[i]), (uint32_t) n);
+        }
+    }
 
     // Where no device has memory of its own, the whole first stage has nothing to say. A capacity
     // fitter answers "what fits where" by moving bytes between pools, and there is one pool: moving
