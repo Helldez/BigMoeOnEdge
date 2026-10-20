@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.32.1] - 2026-10-20
+
+### Added
+- **Process memory accounting beside system availability.** Per-token CSVs append
+  `process_footprint_mib` (Apple's dirty-memory ledger charge) and `process_headroom_mib` (the
+  current allowance remaining for a physical iOS app), with `-1` for unknown and measured zeros
+  preserved. Info-level snapshots through the existing log sink expose memory across automatic
+  probe stages, model loading and session setup. Apple compressed-memory accounting is documented
+  separately from disk swap and RSS; these observations do not change budgets or planning policy.
+
 ## [0.32.0] - 2026-10-19
 
 ### Added

@@ -21,6 +21,7 @@
 #include "../moe/tensor_names.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
+#include "../metrics/memory_snapshot.h"
 
 #include "ggml-backend.h"
 #include "llama.h"
@@ -160,12 +161,7 @@ struct GenTally {
         // reads are cheap but they are not this token's work, and billing them to wall_ms would
         // corrupt the very number the reader is here to trust.
         pio::ProcessMemory pm;
-        if (pio::process_memory(&pm)) {
-            m.rss_mib = pm.rss_bytes / (1024.0 * 1024.0);
-            m.rss_anon_mib = pm.rss_anon_bytes / (1024.0 * 1024.0);
-            m.rss_file_mib = pm.rss_file_bytes / (1024.0 * 1024.0);
-            m.swap_mib = pm.swap_bytes / (1024.0 * 1024.0);
-        }
+        if (pio::process_memory(&pm)) detail::record_process_memory(m, pm);
         pio::DeviceMemory dm;
         if (pio::device_memory(&dm)) {
             m.mem_available_mib = dm.available_bytes / (1024.0 * 1024.0);
@@ -1626,6 +1622,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
     // The order is load-bearing; each step's comment says what it needs from the ones before.
     if (!im.load_model(o)) return nullptr;
+    detail::log_memory_snapshot("model-loaded");
     if (!im.read_model(o)) return nullptr;
     if (!im.build_hook(o)) return nullptr;
     if (!im.create_contexts(o)) return nullptr;
@@ -1640,6 +1637,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.warn_about_load(cfg);
 
     im.load_seconds = secs(t_load0, clock_t_::now());
+    detail::log_memory_snapshot("session-ready");
     return self;
 }
 
