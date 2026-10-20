@@ -89,6 +89,7 @@ ModelProfile probe_model(const char * model_path) {
     std::map<int, uint64_t> per_file_expert_bytes; // by index into the file's shard list
     std::map<int, uint32_t> projections_per_layer;
     std::map<int, uint64_t> per_layer_dense_bytes; // a block's non-expert tensors
+    std::map<int, uint64_t> expert_bytes_by_type;  // by ggml type id
     std::set<int> blocks;                          // every block index the file carries, MTP excluded
     std::set<int> mtp_layers;                      // blocks that carry a multi-token-prediction head
 
@@ -157,13 +158,25 @@ ModelProfile probe_model(const char * model_path) {
             per_layer_expert_bytes[elayer] += size;
             per_layer_one_expert[elayer] += one;
             projections_per_layer[elayer]++;
-            if (m.expert_type_id < 0) {
-                const auto t = meta.offsets.type_by_name.find(name);
-                if (t != meta.offsets.type_by_name.end()) m.expert_type_id = t->second;
-            }
+            const auto t = meta.offsets.type_by_name.find(name);
+            if (t != meta.offsets.type_by_name.end()) expert_bytes_by_type[t->second] += size;
         } else {
             m.largest_dense_tensor = std::max(m.largest_dense_tensor, size);
             if (in_block) per_layer_dense_bytes[layer] += size;
+        }
+    }
+
+    // The type that carries the most expert bytes is the one a token mostly reads, so it is the one
+    // the bandwidth probe measures; ties go to the lower id so the answer is the same on every
+    // standard library. It used to be the first expert tensor met while walking an unordered map,
+    // so on a mixed quant (a 2-bit gate and up beside a 3-bit down) the format probed was decided
+    // by hash order, and on Linux it was one ggml cannot encode without importance weights.
+    uint64_t most_type_bytes = 0;
+    for (const auto & kv : expert_bytes_by_type) {
+        m.expert_type_ids.push_back(kv.first);
+        if (kv.second > most_type_bytes) {
+            most_type_bytes = kv.second;
+            m.expert_type_id = kv.first;
         }
     }
 

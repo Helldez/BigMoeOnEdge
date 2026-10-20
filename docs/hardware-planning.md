@@ -20,7 +20,10 @@ A machine with an accelerator uses it. The first stage is llama.cpp's own capaci
 whatever it places on a device is placed, computed there, and none of the rules below touch it: the
 plan carries its `n_gpu_layers` and its override patterns straight into the load. On a box with
 24 GB of VRAM and a 150 GB model, the attention, the dense set and the experts of every layer that
-fits are on the GPU.
+fits are on the GPU. Nothing on the host side touches them either: the streamer serves only
+experts the load left on the host, and the dense policy re-homes only tensors whose buffer names
+no device other than the CPU (a device layer's weights live in that device's buffer, and
+rebinding them onto host memory left a Metal run printing garbage).
 
 What this planner owns is the residue - the expert tensors the fitter left on the host because
 there was no room - and those are the ones it streams from flash. **Those** cannot be computed on a
@@ -445,7 +448,9 @@ weight is multiplied by a whole batch, and what bounds it is how fast the engine
 two rank devices in opposite orders, and a decision about one read off the other's figure is made
 on the wrong axis.
 
-So the bandwidth probe runs its matmul twice, in this model's own quantized type: one token wide,
+So the bandwidth probe runs its matmul twice, in this model's own quantized type (on a mixed quant,
+the type carrying the most expert bytes; the device-support question is asked of every expert type
+the file carries, since a device runs all of them): one token wide,
 which is the figure everything about decode reads, and 128 wide, which nothing but this rule
 reads. On the laptop this was measured on the cores read 109 GiB/s on the first against the GPU's
 64 to 71, and compute 198 on the second against the GPU's 1512 to 1558: a device that loses the

@@ -85,14 +85,20 @@ fsize() { stat -Lc %s "$1" 2>/dev/null || stat -Lf %z "$1" 2>/dev/null || echo 0
 MODEL_BYTES="$(fsize "$MODEL")"
 
 # A split model is one model: report the sum of every sibling shard, not just the shard that was
-# passed on the command line (llama.cpp finds the others from it the same way).
+# passed on the command line (llama.cpp finds the others from it the same way). The storage probe
+# reads the largest shard: the first one can be metadata alone (5 MB beside two 40-50 GB shards),
+# and a 1 GiB read a quarter into 5 MB reads nothing and times the open (#321's 960 MiB/s).
 TOTAL_BYTES="$MODEL_BYTES"
+PROBE_FILE="$MODEL"
+PROBE_BYTES="$MODEL_BYTES"
 BASE="$(basename "$MODEL")"
 if echo "$BASE" | grep -qE -- '-[0-9]+-of-[0-9]+\.gguf$'; then
     SHARD_GLOB="$(echo "$BASE" | sed -E 's/-[0-9]+-of-([0-9]+)\.gguf$/-*-of-\1.gguf/')"
     TOTAL_BYTES=0
     for SHARD in "$(dirname "$MODEL")/"$SHARD_GLOB; do
-        TOTAL_BYTES=$(( TOTAL_BYTES + $(fsize "$SHARD") ))
+        SHARD_BYTES="$(fsize "$SHARD")"
+        TOTAL_BYTES=$(( TOTAL_BYTES + SHARD_BYTES ))
+        if [ "$SHARD_BYTES" -gt "$PROBE_BYTES" ]; then PROBE_FILE="$SHARD"; PROBE_BYTES="$SHARD_BYTES"; fi
     done
 fi
 MODEL_GIB="$(awk -v b="$TOTAL_BYTES" 'BEGIN { printf "%.1f", b/1024/1024/1024 }')"
@@ -103,10 +109,10 @@ MODEL_GIB="$(awk -v b="$TOTAL_BYTES" 'BEGIN { printf "%.1f", b/1024/1024/1024 }'
 # on a short read (EOF before count), and a filesystem can accept iflag=direct yet serve the
 # page cache anyway — that case shows up as a rate no single drive can do, and prints n/a.
 probe_read_rate() {
-    local skip=$(( MODEL_BYTES / 4 / 524288 ))
+    local skip=$(( PROBE_BYTES / 4 / 524288 ))
     local t0 t1 bytes
     t0="$(date +%s.%N)"
-    bytes="$(dd if="$MODEL" of=/dev/null bs=512k count=2048 skip="$skip" $DD_FLAGS 2>&1 |
+    bytes="$(dd if="$PROBE_FILE" of=/dev/null bs=512k count=2048 skip="$skip" $DD_FLAGS 2>&1 |
         sed -n 's/^\([0-9][0-9]*\) bytes.*/\1/p' | head -1 || true)"
     t1="$(date +%s.%N)"
     awk -v a="$t0" -v b="$t1" -v n="${bytes:-0}" 'BEGIN {
