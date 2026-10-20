@@ -330,7 +330,7 @@ next to the `turn` column.
 step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms,majflt,cpu_ms,
 dense_resident_frac,turn,majflt_mib,cache_budget_mib,rss_mib,rss_anon_mib,rss_file_mib,swap_mib,
 mem_available_mib,mem_free_mib,swap_free_mib,loop_overhead_ms,mtp_batch,mtp_draft_ms,drain_ms,
-adopt_ms,ra_issue_ms,ra_wd_ms
+adopt_ms,ra_issue_ms,ra_wd_ms,process_footprint_mib,process_headroom_mib
 ```
 
 `stall_ms`, `mgmt_ms`, `majflt`, `cpu_ms` and `dense_resident_frac` are trailing columns appended
@@ -386,9 +386,9 @@ The trailing block is the memory picture, added so a run can be diagnosed from i
 | `rss_anon_mib` | resident anonymous memory — **the expert cache lives here** (and, under `--dense-weights anon`, the dense buffers). Falling while `cache_budget_mib` stays put means the kernel is taking it. |
 | `rss_file_mib` | resident file-backed memory — the mmap'd model. Reclaimed by being dropped, not swapped, so it never shows in `swap_mib`. |
 | `dense_resident_frac` | fraction of the DENSE (non-expert) weights still in RAM, by `mincore` (throttled). Under `--dense-weights anon` it samples our own buffers — is zram holding them? Under mmap/warm the model's mapping, at each tensor's own address — is the kernel dropping the model? Read with `majflt`. `-1` when unmeasured. |
-| `swap_mib` | anonymous memory already lost to zram (`VmSwap`). |
-| `rss_mib` | total resident (`VmRSS`). |
-| `mem_available_mib` / `mem_free_mib` / `swap_free_mib` | what the device claims about itself. `MemAvailable` counts this process's own mmap'd weights as reclaimable, so it over-states headroom — it is recorded next to what we measured ourselves because the gap between them is the story. |
+| `swap_mib` | Linux/Android `VmSwap`, including zram where used; on Apple, the task's `compressed` accounting. See the platform distinction below. |
+| `rss_mib` | total resident memory (`VmRSS` on Linux/Android, task `resident_size` on Apple). |
+| `mem_available_mib` / `mem_free_mib` / `swap_free_mib` | the system's availability, free-memory and swap estimates, not the app's remaining allowance. Linux/Android `MemAvailable` counts this process's own mmap'd weights as reclaimable, so it can overstate headroom for keeping those weights resident. |
 | `loop_overhead_ms` | wall time between the **previous** token's decode and this one's: sampling, detokenization, rendering the answer for a UI, and the sink writes. On the first token, the gap from the end of prefill to the first decode. |
 | `mtp_batch` | how many tokens the decode that produced this row confirmed. `1` without speculation. A verify decode confirms a whole group and its **entire** cost — `wall_ms`, `io_ms`, `majflt`, `cpu_ms`, `read_bytes`, `loop_overhead_ms` — is charged to the group's FIRST row; the rest carry zeros. Without this column those zeros read as free tokens. Per-token cost of a group is the first row's `wall_ms / mtp_batch`. |
 | `mtp_draft_ms` | time this group spent drafting and catching the draft context up — everything speculation adds **outside** the decode. A slice of `loop_overhead_ms`, not an addition to it. `0` without speculation, and near-zero under `--ngram`, whose drafting is a scan of the token history rather than a decode. This is the column that makes the price of speculation measurable instead of inferable: `wall_ms` never contained it, and neither does `tok/s`. |
@@ -396,8 +396,53 @@ The trailing block is the memory picture, added so a run can be diagnosed from i
 | `adopt_ms` | route-ahead only: the load waiting for its own committed speculative reads to complete before staging (adoption). Part of `mgmt_ms`. |
 | `ra_issue_ms` | route-ahead only: eval-thread time issuing the committed selection's early reads (settle, residency split, retain, prefetch — page commits included). Part of `compute_ms`. |
 | `ra_wd_ms` | route-ahead only: the sampled fresh-gate watchdog's exact float GEMV on the eval thread. Part of `compute_ms`. |
+| `process_footprint_mib` | the process's dirty-memory ledger charge, from Apple's `TASK_VM_INFO.phys_footprint`. This includes accounting for compressed memory and is distinct from RSS, virtual reservations and the system's free memory. `-1` when unavailable. |
+| `process_headroom_mib` | the current dirty-memory limit remainder reported by `os_proc_available_memory()` for a physical iOS app process. A measured `0` is preserved; `-1` means unavailable, including macOS, the simulator, Linux and Windows, where this adapter has no exact equivalent. |
 
-All are `0` where the platform cannot report them (the Windows host build reports device memory but not the per-process split).
+The two process-accounting columns are appended to the existing header. They use `-1` for unknown,
+independently of the older memory fields, which retain their existing `0` convention where the
+platform cannot report them (the Windows host build reports device memory but not the per-process
+split). They are CSV diagnostics; the `BMOE_PROGRESS` protocol is unchanged.
+
+On Apple platforms, `swap_mib` is the task's `compressed` accounting, not disk swap or a measurement
+of the physical bytes held by the compressor. On Linux and Android it remains `VmSwap`, which can
+include zram. Neither `rss_mib + swap_mib` nor a virtual compute-buffer reservation is a substitute
+for `process_footprint_mib`. The Apple adapter reads footprint only when `task_info` succeeds and
+its returned count covers `TASK_VM_INFO_REV1_COUNT`; a shorter response leaves the field unknown.
+
+Process headroom is sampled directly, without falling back to system availability when the result
+is zero. Apple's API also returns zero for a process that is not an app, so zero alone does not
+establish that an arbitrary iOS process has a memory limit. Its interpretation here applies to the
+physical iOS app harness. The allowance can change during the app's lifetime, and a positive
+remainder does not promise that the system can sustain that allocation without memory pressure.
+Footprint and headroom are sampled separately; their sum is only an approximate view of the
+current limit, not a fixed capacity or an allocation guarantee.
+
+Memory is sampled after decode, outside its timing bracket. These rows miss temporary peaks
+inside a decode and all allocations before the first token. Additional sampling may add loop
+overhead even though it is excluded from `wall_ms` and the reported decode `tok/s`. The readings
+are observational: they do not resize the cache or change the planner's budget or policy.
+
+### Memory phase diagnostics
+
+The engine also sends Info-level memory snapshots through its existing log sink, so an app or
+server receives them wherever it already receives engine diagnostics. They are diagnostic lines,
+not additions to the `BMOE_*` protocol. The phase names identify the sampling points:
+
+- `auto-probe-begin`, before backend registration and probing;
+- `auto-hardware`, `auto-device-support`, `auto-bandwidth`, `auto-device-costs`, `auto-storage`
+  and `auto-headroom`, after the corresponding probe stages;
+- `auto-probe-end`, after placement probing, before the pure planning rules run;
+- `model-loaded`, after the model load;
+- `session-ready`, after context creation, streaming binding and prefill setup.
+
+Each snapshot reports `process_footprint_mib`, `process_headroom_mib`, `rss_mib`,
+`compressed_or_swap_mib` and `system_available_mib`. Every unavailable value in these diagnostic
+lines is `-1`; a measured zero remains zero. `compressed_or_swap_mib` carries the same
+platform-specific accounting as the CSV's `swap_mib`, and `system_available_mib` is the system
+estimate rather than the app's remaining allowance. Comparing `model-loaded` with `session-ready`
+helps separate model loading from later context, dense-buffer and cache allocations. These are
+snapshots, not peak measurements, and the extra observations do not feed planning decisions.
 
 ### What `tok/s` does not include
 

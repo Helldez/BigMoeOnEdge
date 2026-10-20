@@ -134,6 +134,18 @@ add_executable(bmoe_csv_summary_test csv_summary_test.cpp)
 target_link_libraries(bmoe_csv_summary_test PRIVATE bmoe_core)
 add_test(NAME csv_summary COMMAND bmoe_csv_summary_test)
 
+add_executable(bmoe_csv_memory_test csv_memory_test.cpp)
+target_link_libraries(bmoe_csv_memory_test PRIVATE bmoe_core)
+target_include_directories(bmoe_csv_memory_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/metrics)
+add_test(NAME csv_memory COMMAND bmoe_csv_memory_test)
+
+if(APPLE AND NOT IOS)
+    add_executable(bmoe_process_memory_test process_memory_test.cpp ../core/src/io/platform_io.cpp)
+    target_include_directories(bmoe_process_memory_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
+    target_compile_definitions(bmoe_process_memory_test PRIVATE task_info=bmoe_test_task_info)
+    add_test(NAME process_memory COMMAND bmoe_process_memory_test)
+endif()
+
 # decide()'s policy (the prompt split, choice checks and scoring, when the prefix state is
 # restored, stored or left alone) over a scripted fake backend. No model, no llama.cpp, so it runs
 # unconditionally; the same path on a real model is gate G18.

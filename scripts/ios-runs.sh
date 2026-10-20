@@ -31,6 +31,7 @@ RUNS="${RUNS:-plan auto mmap}"
 PROMPT="${PROMPT:-The capital of France is}"
 N_PREDICT="${N_PREDICT:-48}"
 OUT="${OUT:-ios-runs-$(date +%Y%m%d-%H%M%S)}"
+batch_status=0
 if [ "$TARGET" = device ] && [ -z "${BMOE_IOS_DEVICE:-}" ]; then
     echo "BMOE_IOS_DEVICE is required for a device: one of \`xcrun devicectl list devices\`" >&2
     exit 2
@@ -70,6 +71,9 @@ run() { # name, then the bmoe-cli arguments
     echo "== $name: $*"
     local status=0
     launch "$@" >"$OUT/$name.txt" 2>&1 || status=$?
+    # Keep collecting the other runs and any partial CSV, but do not report a failed batch as success.
+    # This assignment must stay outside the summary pipeline, whose left side runs in a subshell.
+    if [ "$status" -ne 0 ]; then batch_status=1; fi
     echo "exit $status" >>"$OUT/$name.txt"
     {
         echo "== $name (exit $status)"
@@ -95,3 +99,4 @@ for r in $RUNS; do
     esac
 done
 echo "outputs: $OUT (summary.txt first)"
+exit "$batch_status"
