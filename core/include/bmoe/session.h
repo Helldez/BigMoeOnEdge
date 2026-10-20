@@ -51,6 +51,7 @@ struct SessionConfig {
     // The first stage's placement, applied at load. See RunConfig::n_gpu_layers.
     int n_gpu_layers = 0;
     std::vector<std::string> buft_overrides;
+    std::vector<std::pair<std::string, int>> device_split; // See RunConfig::device_split.
     // See RunConfig::device_use.
     DeviceUse device_use = DeviceUse::Auto;
     SamplingConfig sampling; // fixed for the session; greedy by default (temp <= 0)

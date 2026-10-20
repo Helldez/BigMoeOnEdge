@@ -84,6 +84,16 @@ Two outcomes of the first stage end the plan early, and both are stated: if the 
 fits in RAM the experts stay resident and nothing streams (the classic `-ot exps=CPU` offload);
 if every layer's experts land on a device, nothing is left for the streamer.
 
+The placement is loaded as the fitter projected it, split included: `--device-split` names each
+device it put layers on, in its order, with its own count. Without it llama.cpp divides the layers
+by free memory, which is not the division the fitter sized each device's share for; on two 16 GB
+cards that handed one of them a 17 GB allocation (#321). Two other things follow from a placement.
+No prefill device is armed over it, because that device loads as the model's only one and every
+placed layer would land on it. And under `--overlap` the session turns off llama.cpp's offload of
+host-weight matmuls in wide graphs: a streamed expert is waited for inside the CPU's matmul, and an
+offloaded one is copied to the device before its read has landed (a Metal run printed blank lines).
+Serial streaming keeps the offload, since its experts are in place before the matmul starts.
+
 A layer's experts are never split between the two. The fitter's partial layer can overflow a share
 of its FFN to the host (`ffn_down` here, `ffn_gate` and `ffn_up` on the device), and the streamer
 cannot serve half a layer: it loads a layer's experts as a set. So any pattern that moves part of a
@@ -494,8 +504,9 @@ layer of experts is that size. On the phone's NPU, the same prompt and the model
 with two slots, 11.7 s with one, the same generated text, 448 MiB less. One slot also reads less in routed mode, since every read is made
 with the routing already known and none from a prediction.
 
-Anything else in the run that cannot share a session with a device prefill - row streaming,
-speculative decoding, a kept prefix state - declines it with the reason, instead of producing a
+Anything else in the run that cannot share a session with a device prefill - layers the fitter
+placed on devices, row streaming, speculative decoding, a kept prefix state - declines it with the
+reason, instead of producing a
 configuration that does not start. A device the caller named, or turned off, is left alone.
 
 Every refusal says which of these it was and quotes the figures, and `--plan` prints one line per

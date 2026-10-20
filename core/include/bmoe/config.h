@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace bmoe {
@@ -559,6 +560,9 @@ struct RunConfig {
     // buffer type, since the streamer can only serve experts that live in host memory.
     int n_gpu_layers = 0;
     std::vector<std::string> buft_overrides;
+    // How many of those layers each device takes, by name, in the fitter's device order (see
+    // Placement::device_split). Empty leaves the split to llama.cpp, which divides by free memory.
+    std::vector<std::pair<std::string, int>> device_split;
 
     // Put the DENSE weights on an accelerator that shares this host's memory, leaving the routed
     // experts on the host for the streamer. On such a machine the move frees no memory - it is the
