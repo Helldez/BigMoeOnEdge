@@ -289,6 +289,14 @@ struct ProcessMemory {
     uint64_t rss_anon_bytes = 0; // RssAnon: our cache lives here
     uint64_t rss_file_bytes = 0; // RssFile: the mmap'd model
     uint64_t swap_bytes = 0;     // VmSwap: anon we have already lost to zram
+
+    // The process's own accounting, when published: its charged footprint and the bytes left
+    // before its current limit. Neither can be reconstructed from RSS + swap. Known flags keep
+    // an exhausted allowance (a valid zero) distinct from a platform that does not publish one.
+    bool process_footprint_known = false;
+    uint64_t process_footprint_bytes = 0;
+    bool process_headroom_known = false;
+    uint64_t process_headroom_bytes = 0;
 };
 // False when the platform cannot report (Windows host), leaving `out` untouched.
 bool process_memory(ProcessMemory * out);

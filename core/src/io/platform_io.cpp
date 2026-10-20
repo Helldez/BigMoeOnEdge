@@ -508,13 +508,28 @@ bool scan_kb_file(const char * path, const char * const * keys, uint64_t * out, 
 // anonymous ones, external the file-backed ones, and what the compressor holds is the anonymous
 // memory already taken back — the role zram plays in VmSwap.
 bool process_memory(ProcessMemory * out) {
-    task_vm_info_data_t ti;
+    task_vm_info_data_t ti{};
     mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
-    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &ti, &n) != KERN_SUCCESS) return false;
-    out->rss_bytes = ti.resident_size;
-    out->rss_anon_bytes = ti.internal;
-    out->rss_file_bytes = ti.external;
-    out->swap_bytes = ti.compressed;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t) &ti, &n) != KERN_SUCCESS || n < TASK_VM_INFO_REV0_COUNT)
+        return false;
+    ProcessMemory sample;
+    sample.rss_bytes = ti.resident_size;
+    sample.rss_anon_bytes = ti.internal;
+    sample.rss_file_bytes = ti.external;
+    sample.swap_bytes = ti.compressed;
+    // Older kernels can successfully return an earlier revision of this variable-length reply.
+    if (n >= TASK_VM_INFO_REV1_COUNT) {
+        sample.process_footprint_known = true;
+        sample.process_footprint_bytes = ti.phys_footprint;
+    }
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR && !TARGET_OS_MACCATALYST
+    // This build runs in an app on the device. Zero is a real exhausted allowance there; the
+    // simulator has no app limit and must stay unknown. The API also returns zero for non-app
+    // processes, which are not a supported execution context for the device engine.
+    sample.process_headroom_known = true;
+    sample.process_headroom_bytes = (uint64_t) os_proc_available_memory();
+#endif
+    *out = sample;
     return true;
 }
 
@@ -558,10 +573,12 @@ bool process_memory(ProcessMemory * out) {
     static const char * const keys[] = {"VmRSS", "RssAnon", "RssFile", "VmSwap"};
     uint64_t v[4] = {0, 0, 0, 0};
     if (!scan_kb_file("/proc/self/status", keys, v, 4)) return false;
-    out->rss_bytes = v[0];
-    out->rss_anon_bytes = v[1];
-    out->rss_file_bytes = v[2];
-    out->swap_bytes = v[3];
+    ProcessMemory sample;
+    sample.rss_bytes = v[0];
+    sample.rss_anon_bytes = v[1];
+    sample.rss_file_bytes = v[2];
+    sample.swap_bytes = v[3];
+    *out = sample;
     return true;
 }
 

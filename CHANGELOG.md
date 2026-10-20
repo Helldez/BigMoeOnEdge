@@ -6,6 +6,14 @@ Semantic Versioning.
 
 ## [0.32.1] - 2026-10-20
 
+### Added
+- **Process memory accounting beside system availability.** Per-token CSVs append
+  `process_footprint_mib` (Apple's dirty-memory ledger charge) and `process_headroom_mib` (the
+  current allowance remaining for a physical iOS app), with `-1` for unknown and measured zeros
+  preserved. Info-level snapshots through the existing log sink expose memory across automatic
+  probe stages, model loading and session setup. Apple compressed-memory accounting is documented
+  separately from disk swap and RSS; these observations do not change budgets or planning policy.
+
 ### Changed
 - **`scripts/bench-report.sh` measures the machine as well as the streamer (#321).** It used to run
   one configuration only, streaming forced on with CPU-only settings fixed for the reference phone,

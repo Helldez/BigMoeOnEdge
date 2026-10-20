@@ -6,6 +6,7 @@
 
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
+#include "../metrics/memory_snapshot.h"
 
 #include "../engine/llama_log.h"
 
@@ -24,11 +25,13 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
         ++step;
     };
 
+    detail::log_memory_snapshot("auto-probe-begin");
     starting(); // devices
     register_backends();
     // The probes load the model too; asked for, their DEBUG lines are wanted as much as the run's.
     detail::set_llama_log_debug(cfg.llama_debug_log);
     r.hw = probe_hardware(path);
+    detail::log_memory_snapshot("auto-hardware");
     // Every device beyond the host is asked in a process of its own first. A device is only as sound
     // as its driver, and a driver that ends the process it is used from would otherwise end this plan
     // - seen on a phone whose graphics driver lacks a function a backend calls without checking. What
@@ -40,22 +43,28 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     starting(); // model
     r.model = probe_model(path);
     probe_device_support(r.hw, r.model);
+    detail::log_memory_snapshot("auto-device-support");
     llama_backend_init();
     starting(); // compute
     probe_bandwidth(r.hw, r.model);
+    detail::log_memory_snapshot("auto-bandwidth");
     probe_device_costs(r.hw, r.model);
+    detail::log_memory_snapshot("auto-device-costs");
     starting(); // storage
     // Where the expert reads land, which on a split model is not the file the caller named.
     if (opt.probe_io)
         probe_storage(r.hw, r.model.expert_file.empty() ? path : r.model.expert_file.c_str(),
                       r.model.expert_slice_bytes);
+    detail::log_memory_snapshot("auto-storage");
     // What the run must at least hold: the dense set and the cache FLOOR the engine will enforce,
     // which is the larger of one token cycle and the generic guard - not one token cycle alone.
     starting(); // memory
     const uint64_t guard = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
     probe_headroom(r.hw, opt.probe_mem, r.model.dense_bytes + (std::max)(r.model.token_cycle_bytes, guard));
+    detail::log_memory_snapshot("auto-headroom");
     starting(); // placement
     const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch);
+    detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
     r.plan = plan_run(cfg, r.hw, r.model, placement, req);
     return r;
