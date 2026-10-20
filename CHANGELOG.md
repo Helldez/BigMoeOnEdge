@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.33.1] - 2026-10-20
+
+### Changed
+- **The benchmark protocol is `--auto` alone.** `scripts/bench-report.sh` runs the model once with
+  `--auto --plan-explain` and reports that row with the plan it chose; the fixed streaming run
+  (`stream`, forced `--moe-stream`, CPU only, hand-picked threads, lanes, cache and ubatch) is
+  gone, with the `MODES`, `THREADS`, `IO_THREADS`, `CACHE_MB` and `UBATCH` overrides that shaped
+  it. A fixed configuration measured the streamer rather than the machine, and on a desktop with
+  GPUs it reported a CPU-only number next to one almost thirty times faster (#321). The adb command for
+  phones, the app instructions (Auto-plan on), the issue form and `docs/community-benchmarks.md`
+  follow; the maintainer rows say they predate the change.
+
 ## [0.33.0] - 2026-10-20
 
 ### Added

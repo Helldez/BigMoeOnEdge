@@ -7,15 +7,16 @@ question: **what does expert streaming do on hardware we do not own?**
 Ten minutes and a machine is all it takes. Run the protocol, open a
 [benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml),
 and the row lands in the [table below](#results) with your GitHub handle. You do not need to know
-the code, and you do not pick any settings: the protocol fixes them so rows compare.
+the code, and you do not pick any settings: the protocol is `--auto`, so the engine picks them for
+your machine and rows compare.
 
 ## Start here
 
 **Which model?** Any MoE llama.cpp loads ([which-models-stream.md](which-models-stream.md)), any quantization. No model
 yet? The [catalog table](#models-that-line-up-with-the-readme) lists what the app ships. Larger
-than your RAM is the interesting case; one that fits is still a valid row, and there the `auto`
-row runs it resident (and on your GPU, with a build that carries one) while the `stream` row
-measures what streaming costs. The report asks which of the two you are in.
+than your RAM is the interesting case; one that fits is still a valid row, and there `--auto` runs
+it resident (and on your GPU, with a build that carries one). The report asks which of the two you
+are in.
 
 ### PC or laptop, Linux and macOS
 
@@ -26,12 +27,12 @@ scripts/bench-report.sh /path/to/model.gguf
 ```
 
 It builds the CLI, records your CPU / RAM / drive, measures the drive at the request size the
-engine actually issues, runs the model twice (`auto`, then `stream`, see [the protocol](#the-protocol)),
-prints two markdown tables and the plan `auto` chose. Paste all of it. Done.
+engine actually issues, runs the model once with `--auto` (see [the protocol](#the-protocol)),
+prints two markdown tables and the plan it chose. Paste all of it. Done.
 
 - **No toolchain?** Every release attaches a prebuilt `bmoe-cli` (Linux x86_64 / aarch64, macOS
   arm64, Windows x86_64). Point the script at it: `BMOE_CLI=/path/to/bmoe-cli scripts/bench-report.sh model.gguf`.
-- **A GPU in the box?** The `auto` row uses it only if the binary carries its backend. The release
+- **A GPU in the box?** `--auto` uses it only if the binary carries its backend. The release
   archives carry Vulkan on Linux and Windows and Metal on macOS. For CUDA, build it in:
   `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON && cmake --build build -j`; the
   CUDA module lands beside `bmoe-cli` and loads like the shipped ones. The plan in the report says
@@ -46,9 +47,9 @@ prints two markdown tables and the plan `auto` chose. Paste all of it. Done.
 ### Android phone
 
 - **Easy path:** install the release APK, load a model from its catalog, generate at least 256
-  tokens, screenshot the telemetry panel. Change three settings first, or the row is measuring
-  something else: **cold-expert dropping Off** (it defaults to 75 %, which is a lossy speedup),
-  **cache Auto**, **context 2048**. Everything else already matches the protocol.
+  tokens, screenshot the telemetry panel. Check two settings first, or the row is measuring
+  something else: **Auto-plan On** (the Plan screen; on by default where the planner is built in)
+  and **cold-expert dropping Off** (it defaults to 75 %, which is a lossy speedup).
 - **Exact path** (comparable with the PC rows): push `bmoe-cli` and run it over adb, see
   [On a phone](#on-a-phone).
 
@@ -60,7 +61,7 @@ empty unless you run the storage probe yourself.
 | | Status |
 |---|---|
 | **Mac**, Apple silicon or Intel | Works. A direct request is served with `F_NOCACHE` (Apple's uncached-descriptor mode — a caching hint, not Linux `O_DIRECT`: no alignment, no DMA promise), and `o_direct` reports what the open actually achieved. Uncached reads can sit below the buffered rate on the same drive, so a Mac row's flash column may read slower than the storage probe suggests; that is the honest number, not a malfunction. Say "macOS" in your report. A 64 or 128 GB Mac is still a row we want. |
-| **iPhone, iPad** | Unvalidated. iOS does not run command-line binaries, so [`examples/ios`](../examples/ios) builds `bmoe-cli` into a harness app you sign and sideload yourself. It has not been run on a device here: a row from one is welcome, with the plan (`--auto --plan`) it printed. |
+| **iPhone, iPad** | Unvalidated. iOS does not run command-line binaries, so [`examples/ios`](../examples/ios) builds `bmoe-cli` into a harness app you sign and sideload yourself. It has not been run on a device here: a row from one is welcome, run with `--auto --plan-explain` and with the plan it printed. |
 
 ### What happens to your row
 
@@ -71,43 +72,30 @@ empty unless you run the storage probe yourself.
 
 ## The protocol
 
-Two runs of the same model, 256 greedy tokens each, the same prompt as every README table. They
-answer different questions, so the report keeps both rows:
+One run, `--auto` and nothing else, 256 greedy tokens, the same prompt as every README table
+(`--plan-explain` only prints the plan it runs). That is what the engine does on *this* machine:
+the planner hands what fits to the GPUs the build carries, keeps a model that fits in RAM resident
+without streaming, and streams only the experts left over. It is the row to compare with other
+engines on the same hardware.
 
-- **`auto`** passes `--auto` and nothing else (`--plan-explain` only prints the plan it runs):
-  what the engine does on *this* machine. The planner
-  hands what fits to the GPUs the build carries, keeps a model that fits in RAM resident without
-  streaming, and streams only the experts left over. This is the row to compare with other
-  engines on the same hardware.
-- **`stream`** forces streaming on with settings fixed at what wins on the reference phone rather
-  than tuned per machine, CPU only: `min(8, cores)` threads, 4 read lanes, auto-sized cache,
-  `--overlap`, `--dense-weights anon`, `--ubatch 512` (the same prefill width the Android app pins,
-  so a host row and an in-app row reserve comparable memory). It measures the streamer, and it is
-  the row that lines up with the README's. Where the model fits in RAM or VRAM it is slower than
-  `auto` by design: it pays for reads a resident model does not need.
+Settings are not part of the protocol: `--auto` chooses threads, cache, read lanes and device
+placement from what it measures, and the plan in the report says what it chose. A row with
+settings forced by hand measures those settings, not the machine, and does not go in the table.
 
-`auto` runs first, so the planner sizes its plan on an idle machine. Override with an environment
-variable, and say so in the issue:
+Override with an environment variable, and say so in the issue:
 
 | Variable | Default | Change it if |
 |---|---|---|
-| `MODES` | `auto stream` | you want only one of the two rows (`MODES=stream` reproduces the old single run) |
-| `THREADS` | `min(8, cores)` | `stream` only: big.LITTLE CPU (try the big-core count), or far more cores than 8 |
-| `IO_THREADS` | 4 | NVMe with a deep queue, or a slow SD / USB drive |
-| `CACHE_MB` | `auto` | auto left the machine short, or fed the cache so much that `majflt/tok` climbed |
-| `UBATCH` | 512 | memory is tight and you will trade prefill width for it, or you want the old full-width behaviour (`UBATCH=0`) |
 | `N_PREDICT` | 256 | never below 256, the cache is still warming |
 
-The other variables (`IO_THREADS`, `CACHE_MB`, `UBATCH`) shape the `stream` row; `auto` picks its own.
-Flags after the model path reach `bmoe-cli` verbatim in both runs (`--no-think` for gpt-oss,
-`--n-expert-used 6` for a turbo top-k row). A tuned row is welcome, it just sits *next to* the
-default row rather than replacing it. To understand the knobs first, see
-[benchmark-method.md](benchmark-method.md).
+Flags after the model path reach `bmoe-cli` verbatim: only the ones that change the model, not the
+engine (`--no-think` for gpt-oss, `--n-expert-used 6` for a turbo top-k row, which is lossy and
+sits *next to* the default row). To understand what the plan chose, see
+[benchmark-method.md](benchmark-method.md) and [hardware-planning.md](hardware-planning.md).
 
-Whatever you run, check the `mode:` line before reporting a number. It says `expert streaming` when
-the run measured this engine; if it says `mmap`, `--moe-stream` was missing and the run measured
-stock llama.cpp instead. A row like that is still welcome as a baseline, it just has to be labelled
-as one.
+Check the `mode:` line before reporting a number. It says `expert streaming` when
+`--auto` streamed, and the plan says why when it did not: a model that fits runs resident, which is
+the right answer on that machine, not a missing flag.
 
 ### On a phone
 
@@ -116,14 +104,13 @@ as one.
 
 ```bash
 adb push MODEL.gguf /data/local/tmp/
-adb shell /data/local/tmp/bmoe-cli -m /data/local/tmp/MODEL.gguf --chatml -n 256 -t 4 --ubatch 512 \
-  --moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon \
-  --csv /data/local/tmp/run.csv \
+adb shell /data/local/tmp/bmoe-cli -m /data/local/tmp/MODEL.gguf --chatml -n 256 \
+  --auto --plan-explain --csv /data/local/tmp/run.csv \
   -p "Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field"
 ```
 
-This command is already the protocol: no dropping, cache auto, the default 2048 context. Three
-things to get right around it:
+This command is already the protocol; paste the `plan:` lines with the result. Things to get right
+around it:
 
 - Stage the model on `/data/local/tmp` or `/sdcard/Download`. **Not** the app's external files dir
   under `/storage/emulated`: it is FUSE-backed and `O_DIRECT` silently falls back to buffered.
@@ -178,8 +165,9 @@ On a phone, the app's telemetry panel and the CSV from `scripts/bench-run.sh` ca
 
 ## Results
 
-Ordered by hardware class. "maintainer" rows are the README's, measured with the same protocol over
-`adb` on the reference phone and on the Windows laptop. Phone rows name the device class on purpose.
+Ordered by hardware class. "maintainer" rows are the README's, measured over `adb` on the reference
+phone and on the Windows laptop with the fixed streaming settings the protocol used before
+`--auto` replaced it, so they measure the streamer rather than what `--auto` picks. Phone rows name the device class on purpose.
 
 | Hardware | Storage (512 KiB rate) | Model, quant | k | Cache | Decode tok/s | Prefill tok/s | Stall s/tok | Flash/token | Cache hit | Engine | By |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|
