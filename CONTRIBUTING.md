@@ -47,7 +47,7 @@ The web UI: `cd ui && npm ci && npm test && npm run check && npm run build`.
 ## Good first contributions
 
 - **A benchmark on hardware we do not have.** No code needed: `scripts/bench-report.sh MODEL.gguf`
-  runs the fixed protocol and prints the tables; open a
+  runs the model with `--auto` and prints the tables and the plan; open a
   [benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
   See `docs/community-benchmarks.md` for the hardware list and what a row needs.
 - A byte-identity gate for an expert layout the gates do not cover yet (`docs/which-models-stream.md`).

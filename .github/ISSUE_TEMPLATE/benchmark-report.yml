@@ -8,10 +8,10 @@ body:
       value: |
         Thanks for measuring. The protocol and the results table are in
         [docs/community-benchmarks.md](../blob/main/docs/community-benchmarks.md). On Linux/macOS,
-        `scripts/bench-report.sh MODEL.gguf` runs the model twice (`auto`: what the engine does on
-        this machine, GPUs included; `stream`: the fixed streaming protocol) and prints the tables
-        below for you; on Android use the app's telemetry panel, or `bmoe-cli` over adb with the command
-        that page lists. macOS rows are welcome with a caveat (no page-cache bypass yet); iPhone is
+        `scripts/bench-report.sh MODEL.gguf` runs the model with `--auto` (what the engine does on
+        this machine, GPUs included) and prints the tables and the plan below for you; on Android use
+        the app's telemetry panel with Auto-plan on, or `bmoe-cli --auto` over adb with the command
+        that page lists. Rows run with settings forced by hand are not comparable. macOS rows are welcome with a caveat (no page-cache bypass yet); iPhone is
         not supported. Every accepted row lands in the table with your GitHub handle.
   - type: input
     id: hardware
@@ -43,7 +43,7 @@ body:
       description: The model file's size against this machine's RAM. The script prints both side by side.
       options:
         - "Larger than RAM (streaming is the only way to run it)"
-        - "Fits in RAM (the auto row runs it resident; the stream row measures what streaming costs)"
+        - "Fits in RAM (--auto runs it resident)"
     validations:
       required: true
   - type: input
@@ -58,7 +58,7 @@ body:
     attributes:
       label: Measured result
       description: |
-        Paste the block `scripts/bench-report.sh` prints (both tables and the plan), or the `=== perf ===` lines
+        Paste the block `scripts/bench-report.sh` prints (the tables and the plan), or the `=== perf ===` lines
         plus the `# summary` trailer of the CSV. tok/s alone is not enough: stall, cache hit and
         flash/token are what make the number comparable.
       render: markdown
@@ -68,7 +68,7 @@ body:
     id: command
     attributes:
       label: Exact command
-      description: If you changed anything from the script's defaults (threads, cache, lanes, extra flags), say so here.
+      description: Only if you passed extra flags after the model path (e.g. --no-think) or set N_PREDICT.
       render: shell
   - type: textarea
     id: notes

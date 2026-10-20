@@ -27,8 +27,8 @@ bmoe-cli -m MODEL.gguf --moe-stream --cache-mb auto --io-threads 4 -t 4 -n 256 \
   (see [limitations.md](limitations.md)).
 - **Report** `s/token`, the `compute + flash I/O` split from the `moe-stream:` line, and the
   `moe-cache:` hit rate.
-- **Drivers:** `scripts/bench-report.sh` (host: an `--auto` run and the fixed streaming run, one
-  paste-ready block), `scripts/bench-run.sh`
+- **Drivers:** `scripts/bench-report.sh` (host: one `--auto` run and the plan it chose, one paste-ready
+  block), `scripts/bench-run.sh`
   (device-side over adb, prompt baked in, also samples peak RSS, the `MemAvailable` floor and CPU
   and battery temperature).
 
