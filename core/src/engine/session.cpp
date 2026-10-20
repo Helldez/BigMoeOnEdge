@@ -846,6 +846,26 @@ bool Session::Impl::load_model(Opening & o) {
             mparams.devices = const_cast<ggml_backend_dev_t *>(devs);
         }
     }
+    // The fitter's split, applied as it was projected: the devices it put layers on, in its order,
+    // each with its own count. Left to llama.cpp the layers are divided by free memory, which is not
+    // the division the fitter sized each device's share for - on two cards it handed one of them
+    // 17 GB of a placement planned across both (#321). A device the plan names that is not here is
+    // a plan for another machine, and loading it anyway would place layers nobody budgeted.
+    std::vector<ggml_backend_dev_t> split_devices;
+    std::vector<float> split_layers;
+    if (!prefill && !cpu_only && !cfg.device_split.empty()) {
+        for (const auto & d : cfg.device_split) {
+            ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.first.c_str());
+            if (!dev) return o.fail("the placement names device '" + d.first + "', which this build does not have");
+            split_devices.push_back(dev);
+        }
+        split_layers.assign(llama_max_devices(), 0.0f);
+        for (size_t i = 0; i < cfg.device_split.size() && i < split_layers.size(); ++i)
+            split_layers[i] = (float) cfg.device_split[i].second;
+        split_devices.push_back(nullptr);
+        mparams.devices = split_devices.data();
+        mparams.tensor_split = split_layers.data();
+    }
 
     // Optional active-expert override: reduce the model's top-k routing (e.g. 8 -> 6) to cut
     // per-token compute and — under streaming — flash I/O, at a quality cost. Applied purely
@@ -981,6 +1001,13 @@ bool Session::Impl::create_contexts(Opening & o) {
         cparams.op_offload = false;
         cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
     }
+    // Under overlap a streamed expert is waited for inside the CPU's expert matmul, as it is read.
+    // With layers on a device, a wide graph's host-weight matmuls are offered to that device, which
+    // copies the expert tensor before the reads land: a Metal run with 12 layers placed and a
+    // 548-token prompt printed blank lines where the serial run printed the resident text. Serial
+    // streaming has every routed expert in place before the matmul's split starts, so only overlap
+    // gives the offload up; the decode's one-token graphs are never offloaded either way.
+    if (cfg.moe.enabled && cfg.moe.overlap && cfg.n_gpu_layers != 0) cparams.op_offload = false;
     // Rejecting a draft means rewinding the KV to the last accepted position. With recurrent-state
     // snapshots the rewind is a cheap restore; without them llama.cpp has to fall back to replaying
     // the sequence, which would hand back exactly the decode the speculation just saved.

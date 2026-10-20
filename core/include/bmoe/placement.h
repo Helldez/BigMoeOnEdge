@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace bmoe {
@@ -82,6 +83,13 @@ struct Placement {
     // The override patterns the fitter wrote, kept verbatim so the session can reapply them at load
     // (they are what routes the placed experts to a device buffer type).
     std::vector<std::string> override_patterns;
+
+    // How many of `n_gpu_layers` each device takes, by device name, in the order the fitter listed
+    // the devices. The fitter decides this per device and projects its memory with it; loaded
+    // without it, llama.cpp splits the layers by free memory instead, which on two cards put the
+    // layers the fitter had spread over both onto whichever had more room (#321). Empty when nothing
+    // is placed.
+    std::vector<std::pair<std::string, uint32_t>> device_split;
 };
 
 } // namespace bmoe
