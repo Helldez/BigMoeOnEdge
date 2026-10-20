@@ -11,6 +11,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #elif defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <sys/sysctl.h>
@@ -156,6 +157,9 @@ void prepare_compute_backends(const std::string & data_dir) {
 void open_url(const std::string & url) {
 #if defined(_WIN32)
     ShellExecuteW(nullptr, L"open", widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+    // An app there has no browser to start and no shell to start it with; the app is the UI.
+    (void) url;
 #elif defined(__APPLE__)
     std::system(("open '" + url + "'").c_str());
 #else

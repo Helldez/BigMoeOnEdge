@@ -4,7 +4,127 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.32.2] - 2026-10-20
+
+### Added
+- **The iOS app, on the shared framework.** `examples/ios/app` is the five screens (chat, models,
+  plan, settings, metrics, `docs/screens.md`) in SwiftUI, in the pixel language of
+  `docs/design.md`, light and dark. An app on iOS may not start a process, so it links
+  `bmoe_server` and runs `run()` on a thread of its own, then speaks the same HTTP API on loopback
+  as the web UI and the Android app, with a random key per launch; Serve on the network restarts
+  it on all addresses with a key kept in the keychain. The app keeps the conversations, downloads
+  the catalog's files with the system's background transfers (resumed after a break or a
+  relaunch), imports a `.gguf` from Files, adds a model from Hugging Face through the server's
+  find, check and add, and writes a metrics CSV per loaded model. Its client side is
+  `examples/ios/BmoeKit`, a Swift package with no UI, tested with `swift test` on the Mac (36
+  tests: the event stream, the chat protocol, decide, the parameter table, models, the plan,
+  conversations, metrics files, downloads); CI runs them and compiles both apps for the
+  simulator. Built and run in the simulator only: a device run is still owed (#235).
+- **The iOS app's Plan screen, as the web UI and the Android app draw it.** Opening it measures
+  nothing (`GET /api/plan?cached=1`, "Not measured yet" with Measure when the server holds no
+  plan); the summary first (the sentence, the machine, decode speed expected against measured with
+  the difference, cache hits with a mark at what the plan credited, the lanes, Apply, auto-plan),
+  then one memory bar per pool, the devices with their prompt rate against the fastest, the
+  decisions grouped (set open, left as is and notes folded, each row opening to its brief, Why and
+  Open in Settings) and the command line with the full explanation folded. The `plan_progress`
+  stages show while a measurement runs, and Models shows the seconds since a load began and,
+  during an auto load, the same stages. BmoeKit reads the whole plan and the progress event.
+- **The iOS app's Settings and Models match the web UI and the Android app.** Settings renders the
+  parameter table's new `typical` and `special` fields: the name of a special value under a number
+  ("= off"), the usual range ("usually 2 to 8") instead of the type's limit, which now appears only
+  beside a refused value, the help's first sentence with the rest on demand, and an Advanced
+  settings section that no longer repeats the basic rows; with no Wi-Fi or wired network the
+  address line says no other device can reach the engine. A stopped catalog download (a failure,
+  a cancel, a relaunch) reads **Resume (X of Y GB)** from what landed and what the system's resume
+  data holds, with **Delete partial download** beside it, which throws away the resume data, the
+  bytes the system kept for it and, through `DELETE /api/models/partial/<id>`, any `.part` of the
+  entry; Cancel keeps them. Files whose header `role` says they are not models (projectors, draft
+  heads) are listed apart with what they are and no Load, a model in a folder says which, and the
+  Hugging Face listing folds the files whose names suggest a projector or a draft head after the
+  models, shows when a repository last changed and marks a header that is not a model.
+- **`server::Embedding`, for a server inside an app** (`server/server.h`). `run()` takes the
+  network a repository is read through (the iOS app hands it `URLSession`, where the desktop runs
+  `curl`) and hands back the way to stop the server, so a change of address restarts it in the
+  same process. Without one, the server does what the executable does. The server library now
+  builds for iOS: opening a browser is a no-op there.
+
+### Changed
+- **One readable face for the whole UI: Oxanium, on the desktop and in the Android app.** The pixel
+  face was set on buttons, badges, the navigation and every figure, and at those sizes it was hard
+  to read; it now marks only the wordmark beside the logo. Oxanium (SIL OFL 1.1, bundled) keeps the
+  squared look and takes every other word, the model's answers included; figures keep tabular
+  digits. Sizes are unchanged.
+- `examples/ios` holds the app and the harness side by side: the harness moved to
+  `examples/ios/harness`, the memory entitlements to `examples/ios/memory.entitlements`, shared by
+  both. `scripts/build-ios.sh` builds both (`BMOE_IOS_TARGETS` picks one; `BMOE_IOS_APP_BUNDLE_ID`
+  names the app on a device).
+
+### Fixed
+- **`--auto` no longer aborts on a 1- or 2-bit IQ quant (#321).** The bandwidth probe encodes a
+  synthetic matrix in the model's expert type, and ggml asserts when IQ2_XXS, IQ2_XS or IQ1_S are
+  encoded without importance weights: DeepSeek-V4-Flash UD-IQ2_M died before loading on Linux. The
+  probe now passes a uniform importance where ggml says one is required. Which expert type the
+  probe used was also the first expert tensor met while walking an unordered map, so on a mixed
+  quant (that file: IQ2_XXS gate and up, IQ3_XXS down) the format probed, and whether the run
+  aborted, depended on hash order rather than on the file; it is now the type carrying the most
+  expert bytes, and the device-support question is
+  asked of every expert type the file carries. `bandwidth_probe_test` covers every format ggml
+  names as needing importance weights.
+- **A layer placed on a device keeps its dense weights there.** The dense policy rebound every
+  non-expert tensor onto host memory, including those of layers the first stage had put on a GPU,
+  so a run with layers on a device and the rest streamed printed garbage (Metal: "buffer is nil",
+  repeated `!`). It now re-homes only tensors whose buffer names no device other than the CPU; the
+  same run is byte-identical to its resident counterpart. This is the placement `--auto` gives a
+  model larger than VRAM beside a GPU, and no machine the planner had run on had reached it.
+- **Decode and prefill time include the device's work.** On a GPU backend `llama_decode` returns
+  once the graph is queued, so the wait landed in `loop_overhead_ms` and tok/s overstated a GPU run:
+  a two-GPU CUDA run read 1777 tok/s for 241, and a Metal run with 12 layers on the GPU 16.4 for 13.6.
+  Both timers now close after `llama_synchronize`; a CPU run is unchanged.
+- **The bandwidth probe encodes one row and copies it.** Every row of its matrix was already the
+  same row, and encoding 16384 of them in an IQ grid took 13-16 s of a laptop core before every
+  `--auto` run. `--plan` on an IQ3_XXS model: 26.2 s to 14.5 s, the same figures measured.
+- **`bench-report.sh` measures the drive on the largest shard.** A split model's first shard can be
+  metadata alone (5-10 MB), so the 1 GiB read a quarter into it read nothing and timed the open:
+  #321's 960 MiB/s, 2113 MiB/s on a laptop whose drive reads 6400.
+- **The Android app's CPU temperature is a sensor's, not a threshold's (#311).** It took the first
+  thermal zone whose type names the CPU, in the order the directory lists them, and on a
+  Snapdragon-class phone that was a trip threshold published as a zone: the metrics line read a
+  constant 95 °C while the cores read 47-55. Zones are now taken in numeric order, one reading its
+  own `trip_point_*_temp` is skipped, and the figure is the hottest zone that moves (the median
+  until one has). JVM tests over a fake `/sys/class/thermal` cover it.
+
 ## [0.32.1] - 2026-10-20
+
+### Added
+- **Process memory accounting beside system availability.** Per-token CSVs append
+  `process_footprint_mib` (Apple's dirty-memory ledger charge) and `process_headroom_mib` (the
+  current allowance remaining for a physical iOS app), with `-1` for unknown and measured zeros
+  preserved. Info-level snapshots through the existing log sink expose memory across automatic
+  probe stages, model loading and session setup. Apple compressed-memory accounting is documented
+  separately from disk swap and RSS; these observations do not change budgets or planning policy.
+- **A device prefill where nothing can be locked.** An unavailable wire-limit query was read as a
+  lock store of 0, and the planner charged an accelerator's buffers to it anyway, so the device
+  never fit: a 12 GB phone's GPU, measured at 17.8x its cores on a wide prefill, was refused "on
+  memory" (#304). The lock ceiling exists to keep what the process locks from being outbid, and
+  where nothing can be locked there is nothing to outbid: the device is now charged there only where
+  a lock store exists, and to what the process may hold everywhere. Machines that publish one, the
+  Mac and the Android phone among them, plan exactly as before (checked side by side on the Mac).
+- **The expert cache brakes when the system takes it back mid-run** (`--cache-brake`, on by
+  default). On a 12 GB phone the default `--auto` budget ended in a Jetsam `proc-thrashing` kill
+  (#304): the system compressed 2.5 GB of the engine's own memory and a token took 52 s. No figure
+  a platform reports says how much a process can keep resident, so the run now watches for it: a
+  token whose compute stalls at twice this machine's own median, confirmed by a sample of the
+  cache's pages that are no longer in RAM, halves the cache. It never grows back within the run
+  and never goes under one token's cycle; a slow token with the pages in place moves nothing. Same
+  procedure on every platform (`mincore`, or `QueryWorkingSetEx` on Windows). On a 16 GB desktop
+  with a 6000 MiB unpinned cache it took decode from 5.99 to 7.49 tok/s in ordinary use and from
+  4.77 to 5.97 beside a process holding 9 GB; under `--auto`, whose cache is pinned there, it never
+  fired. `docs/pressure.md` has the design and why it is not the retired governor.
+- **`scripts/ios-runs.sh` sweeps the expert cache.** A `c<MiB>` run (`RUNS="c1000 c1500 c2000"`)
+  is the plan's run with only the cache fixed at that size, so one command shows where a larger
+  cache stops paying and where the device starts taking memory back (`examples/ios/README.md`).
+  Its `summary.txt` also carries the prefill line, the plan's `prefill-device` and any
+  `cache brake:` line.
 
 ### Changed
 - **`scripts/bench-report.sh` measures the machine as well as the streamer (#321).** It used to run
@@ -18,14 +138,58 @@ Semantic Versioning.
   page and the issue template describe the two rows, and how a CUDA build joins the `auto` one.
 
 ### Fixed
-- **The Android app's CPU temperature is a sensor's, not a threshold's (#311).** It took the first
-  thermal zone whose type names the CPU, in the order the directory lists them, and on a
-  Snapdragon-class phone that was a trip threshold published as a zone: the metrics line read a
-  constant 95 °C while the cores read 47-55. Zones are now taken in numeric order, one reading its
-  own `trip_point_*_temp` is skipped, and the figure is the hottest zone that moves (the median
-  until one has). JVM tests over a fake `/sys/class/thermal` cover it.
 - **The benchmark-report issue form parses again.** Its engine-version placeholder was two quoted
   strings on one line, which is not YAML, so GitHub could not render the form.
+- **iOS run batches report launch failures to automation.** `scripts/ios-runs.sh` still finishes
+  the requested cases, partial-CSV retrieval and summaries, but exits `1` if any launch command
+  failed. Each case retains its exact exit status; all-success and plan-only batches exit `0`.
+  Device-free fixtures cover both simulator and device command paths in CI.
+- **A layer's experts are never split between a device and the host** (#304). On a 12 GB phone
+  `--auto` stopped before generating with `captured MoE layer is missing expert tensor
+  'ffn_gate_exps'`: the planner had read the phone's GPU as having memory of its own, the capacity
+  fitter put 11 layers on it whole and split the next (`blk.11.ffn_down` on the host, its `gate` and
+  `up` on the device), and the streamer, which loads a layer's experts as a set, found half of it.
+  - *A pattern that moves part of a layer's FFN now brings all of that layer's experts with it.*
+    Any fitter's partial layer can take that shape, on any device. The experts are then streamed,
+    and the device holds less than the fitter projected. A split given by hand
+    (`--tensor-overrides`) is refused by name, with the pattern that keeps the layer whole, instead
+    of the missing tensor it used to trip on. Checked on a Mac with the phone's own placement
+    applied by hand: refused as given, and decoding the same text as a CPU-only run once the layer
+    is kept whole.
+  - *The GPU's memory is read from the device, not inferred from an allocation.* The Apple probe
+    adapter reads `hasUnifiedMemory` from Metal's default device and applies it to the ggml device
+    whose description matches it; a known shared pool cannot then be turned into separate memory by
+    a flat allocation delta (allocator reuse or reclaim can hide the allocation there). Contributed
+    by @gjjkbssg. Where no native fact exists, the allocation probe now counts what is charged to
+    the process (resident plus compressed or swapped), not what is resident, so a kernel making
+    room by compressing our own pages no longer reads as separate memory.
+  - *A dense weight a device owns stays on the device.* With layers placed on a device,
+    `--dense-weights anon` moved their dense weights into host memory as well, where the device
+    cannot read them: Metal reported a nil buffer and the run decoded `!`. Only weights in host
+    buffers are converted now, and the ones left on a device keep `--release-mmap` from dropping a
+    mapping the device may still read.
+- **The prefill-device confirmation no longer costs 2 GB at load.** It asked the host for all 64
+  rows of logits, and from 32 rows up ggml's BLAS backend unpacks the output head, the model's
+  largest matrix, into float32 and keeps it: 1940 MiB on a 248k vocabulary, outside every budget,
+  which a 12 GB phone's process limit ended the run on (#304, found by @gjjkbssg). The device still
+  computes all 64 positions; 31 spread across them are compared. On a 16 GB Mac the peak footprint
+  of an `--auto` load fell from 7.58 to 5.66 GiB, with the same 97% agreement. BLAS stays on: it
+  takes a CPU prefill of a 1208-token prompt from 66.7 to 92.6 tok/s there. On the phone, with BLAS
+  on, the default `--auto` now completes every case of the device runner, a 1208-token prompt
+  prefilled on its GPU included, with the startup checkpoints peaking near 5.0 GiB (validated by
+  @gjjkbssg).
+- **An unreadable lock ceiling no longer disables cache locking.** Denied platform queries retain
+  their uncertainty and every independent finite bound, including zero. An automatic plan can
+  request cache locks and fit to actual runtime grants without increasing its ordinary memory
+  budget or reducing its margin. The plan and UI label that request as unverified, rather than
+  reporting a protected cache or a measured zero allowance. Explicit caller choices remain authoritative.
+- **The lock-limit intersection compiles with Windows headers.** Its minimum operation uses an
+  explicit template argument so the Windows `min` macro cannot expand the function call.
+- **Startup pin-fit uses the model's token-cycle floor before any streamed graph runs.** The
+  effective routing width is resolved before initialization, so a partial lock refusal during the
+  full prefill-device confirmation can shrink the cache instead of silently abandoning its locks.
+  A refusal below one cycle retains the ordinary-memory fallback. Real session regressions cover
+  the model default, a routing override, and the fallback; restoring the old ordering fails them.
 
 ## [0.32.0] - 2026-10-19
 

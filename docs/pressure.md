@@ -79,6 +79,46 @@ and the churn while converging on what cache-off gives for free. So the engine n
 either holds a fixed cache (`--cache-mb N`, which pays only where the whole working set fits) or runs
 cache-off (the default), and lets the dense-weights policy handle the other half.
 
+## The brake: shrink once the system has shown it, never grow back
+
+There is one runtime move now, and it is the half of the governor that was never the problem.
+`--cache-brake` (on by default, `--no-cache-brake` to turn it off) halves the expert cache when the
+system takes it back mid-run, and that is all it does: it never grows the budget again within a run,
+and it never goes under one token's worst-case cycle.
+
+It moves only when two signals agree, both about the engine's own work and its own pages, so it reads
+the same on every platform:
+
+1. **A stall.** A decoded token whose compute took at least twice the median of this machine's
+   recent tokens. The reference is this run's, not a constant.
+2. **Pages gone.** A sample of one page from each of up to 64 cache entries, spread hot to cold, of
+   which some are no longer in RAM (`pio::vm_resident_sample`: `mincore`, or `QueryWorkingSetEx`).
+   A page the cache wrote and the kernel then compressed, swapped or trimmed is reclaim by definition.
+
+A slow token with every sampled page in place (the cores, the clock, a neighbour) moves nothing. A
+run that never stalls never pays for a sample.
+
+What it answers is what the planner cannot know at load: how much of the budget this machine will
+let the process keep, now. A 12 GB phone given a 6 GB share compressed 2.5 GB of an engine holding
+4.6 GB and ended it (Jetsam `proc-thrashing`, #304). Its own compressed memory jumped at token 26 and
+compute collapsed from 28. The policy, replayed on that trace, calls the stall at 25.
+
+Measured on a 16 GB desktop, Qwen3.6-35B-A3B, a 6000 MiB unpinned cache, 200 tokens:
+
+| condition | brake | decode | engine's own memory compressed |
+|---|---|---:|---:|
+| ordinary use | off | 5.99 tok/s | 5483 MiB |
+| ordinary use | on (6000 → 581 MiB in four steps) | 7.49 tok/s | 2046 MiB |
+| a second process holding 9 GB | off | 4.77 tok/s | |
+| a second process holding 9 GB | on | 5.97 tok/s | |
+| `--auto` (cache pinned) | off / on, alternated, 2 runs each | 18.2, 18.7 / 17.9, 18.6 tok/s | never fired |
+
+It is not the governor back. The governor grew whenever things were calm, which on a machine that
+could not concede the budget turned a reclaim into a standing war. The brake has nothing to grow
+back into: the budget a run gives up is what the machine showed it could not keep, and the next run
+is planned afresh. Sizing the cache from its own stalls in both directions is the larger design
+proposed in #238; this is its brake alone.
+
 ## The floor is measured — and it is not the obvious one
 
 The tempting floor is **one token's routed working set**. Below it, every token evicts what the next
@@ -173,15 +213,16 @@ The one runtime signal left is diagnostic: the dense-residency telemetry (`dense
 `mincore` over the dense set — the least exotic syscall available, present on every POSIX target, no
 permission, undisablable by a vendor kernel the way PSI and `mlock` are here. On a platform that
 cannot report it (the Windows host build) it reads unmeasured and nothing downstream depends on it.
-There is no control loop to port anymore — the cache budget is fixed at load — so an iOS port needs
-only the O_DIRECT reader and, if desired, the same `mincore` telemetry.
+There is no control loop to port: the budget is fixed at load and only the brake can lower it, from
+the same residency primitive every platform already implements.
 
 ## Status
 
 The default is cache-off (shared-slot streaming) plus `--dense-weights anon` — the policy that wins
 on the >RAM models the engine targets (3.2× on gpt-oss, see
 [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md)). `--cache-mb N` and `--cache-mb auto` are there for
-RAM-fitting models, where `--dense-weights warm` (or `mmap`) is the lighter choice. The retired
+RAM-fitting models, where `--dense-weights warm` (or `mmap`) is the lighter choice; under either,
+the brake gives back what the system shows it cannot keep. The retired
 governor is kept in git history (branch line through `feat/pressure-cache`) if the analysis ever
 needs revisiting.
 

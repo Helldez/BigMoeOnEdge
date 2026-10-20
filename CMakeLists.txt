@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.21)
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName:
 # scripts/check-version.sh compares the three, in CI and against the tag before a release builds.
-project(bigmoeonedge VERSION 0.32.1 LANGUAGES CXX)
+project(bigmoeonedge VERSION 0.32.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -116,21 +116,24 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     if(APPLE)
         set(GGML_METAL ON CACHE BOOL "ggml: use Metal")
     endif()
+    if(APPLE AND GGML_METAL)
+        enable_language(OBJCXX)
+    endif()
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
 endif()
 
 add_subdirectory(core)
 
-# An app is the only thing that runs on iOS, so there the CLI is built as one: the same main.cpp,
-# inside the harness's bundle, and no command-line binary.
+if(BMOE_BUILD_SERVER AND BMOE_HAVE_LLAMA)
+    add_subdirectory(server)
+endif()
+
+# An app is the only thing that runs on iOS, so there the CLI and the server are built into apps:
+# the harness carries the CLI's main.cpp, the app links the server library. No command-line binary.
 if(BMOE_HAVE_LLAMA AND IOS)
     add_subdirectory(examples/ios)
 elseif(BMOE_BUILD_CLI AND BMOE_HAVE_LLAMA)
     add_subdirectory(cli)
-endif()
-
-if(BMOE_BUILD_SERVER AND BMOE_HAVE_LLAMA)
-    add_subdirectory(server)
 endif()
 
 if(BMOE_BUILD_TESTS AND BMOE_HAVE_LLAMA)

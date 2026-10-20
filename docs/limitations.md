@@ -74,11 +74,12 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   (20.7 GiB), a 4691 MiB cache and 8 threads, same protocol, arms A B B A: 6.66 and 6.97 tok/s
   against 6.54 and 6.46 buffered, with 23 077 MiB read and an 81.4 % cache hit in all four and
   the same generated text. Two runs an arm is a direction, not a figure.
-- **iOS is a harness, unvalidated.** `examples/ios` builds `bmoe-cli` into an app, since iOS does
-  not run command-line binaries, and CI compiles it for the simulator. It has not run on an iPhone
-  or iPad: the process's memory share, whether memory can be locked there, and whether a model
-  larger than memory can be mapped are unmeasured, so there is no supported configuration and no
-  benchmark. Devices are probed in-process there, with no second process to isolate a driver in.
+- **iOS has run in the simulator only.** `examples/ios` builds the app (the five screens over the
+  same server, linked in-process since iOS does not run command-line binaries) and the measuring
+  harness, and CI compiles both for the simulator. Neither has run on an iPhone or iPad: the
+  process's memory share, whether memory can be locked there, and whether a model larger than
+  memory can be mapped are unmeasured, so there is no supported configuration and no benchmark.
+  Devices are probed in-process there, with no second process to isolate a driver in (#235).
 - **Windows throughput.** The cache's reserve-then-commit-per-slice path is heavier on
   Windows than the POSIX lazy-commit path. The gates run on Windows; the throughput
   targets are stated for Android/Linux.

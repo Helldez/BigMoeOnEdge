@@ -136,7 +136,7 @@ where the memory goes, what each device does, and every decision with its reason
 | | Android | macOS | Windows | Linux | iOS |
 |---|---|---|---|---|---|
 | Engine and CLI | ✓ arm64 | ✓ Apple silicon | ✓ x86_64 | ✓ x86_64, aarch64 | ✓ builds; runs in the simulator |
-| App and OpenAI server | ✓ native app | ✓ web app | ✓ web app | ✓ web app | app wanted ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
+| App and OpenAI server | ✓ native app | ✓ web app | ✓ web app | ✓ web app | native app, in the simulator so far ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
 | Accelerators | NPU (Hexagon), Vulkan, OpenCL | Metal | Vulkan | Vulkan | Metal, built in; not yet run on a device |
 
 Backends load as modules beside the engine, so a CUDA, HIP or SYCL module built with its own

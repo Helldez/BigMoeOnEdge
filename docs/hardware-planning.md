@@ -20,7 +20,10 @@ A machine with an accelerator uses it. The first stage is llama.cpp's own capaci
 whatever it places on a device is placed, computed there, and none of the rules below touch it: the
 plan carries its `n_gpu_layers` and its override patterns straight into the load. On a box with
 24 GB of VRAM and a 150 GB model, the attention, the dense set and the experts of every layer that
-fits are on the GPU.
+fits are on the GPU. Nothing on the host side touches them either: the streamer serves only
+experts the load left on the host, and the dense policy re-homes only tensors whose buffer names
+no device other than the CPU (a device layer's weights live in that device's buffer, and
+rebinding them onto host memory left a Metal run printing garbage).
 
 What this planner owns is the residue - the expert tensors the fitter left on the host because
 there was no room - and those are the ones it streams from flash. **Those** cannot be computed on a
@@ -60,9 +63,32 @@ plan's ledger never held. And its host
 only the context and compute reservations come from the fitter — the one thing it knows that the
 profile does not, and 605 MiB the earlier budget had overcommitted on the desktop.
 
+The memory-topology fact can come directly from a device API, rather than from an allocation's
+effect on the host's available-memory counter. The Apple adapter reads `hasUnifiedMemory` from
+`MTLCreateSystemDefaultDevice()`, but applies the answer only to a ggml `MTL` device whose public
+description exactly matches that native device's name. The pinned Metal backend uses that default
+physical device. A virtual device with a suffix, a different description, or an unavailable API
+does not establish that identity and leaves the native fact `Unknown`; the existing differential
+probe can still supply an answer. This is an identity check in the adapter, not a rule that guesses
+a memory topology from a model name.
+
+A direct shared-memory answer takes precedence over a later allocation-delta estimate: available
+memory may rise while the kernel reclaims other pages, so that difference cannot turn a known
+shared pool into separate memory. A native separate-memory answer is not changed into `Unknown`,
+and other backends retain their existing differential probe. The pure planning rules still read
+the same tri-state property: only a known separate pool adds capacity; the bandwidth measurements
+still decide whether moving compute is worthwhile. This topology correction does not establish
+that an entire automatic run fits or completes under memory pressure.
+
 Two outcomes of the first stage end the plan early, and both are stated: if the host residual
 fits in RAM the experts stay resident and nothing streams (the classic `-ot exps=CPU` offload);
 if every layer's experts land on a device, nothing is left for the streamer.
+
+A layer's experts are never split between the two. The fitter's partial layer can overflow a share
+of its FFN to the host (`ffn_down` here, `ffn_gate` and `ffn_up` on the device), and the streamer
+cannot serve half a layer: it loads a layer's experts as a set. So any pattern that moves part of a
+layer's FFN brings all of that layer's experts to the host with it, where they are streamed. A split
+given by hand is refused at load, by name.
 
 ## The unit everything is priced in
 
@@ -161,10 +187,12 @@ The profile records how many backends came linked, how many were loaded at run t
 anyone looked at all, so the plan keeps three answers apart: *this machine has no accelerator*,
 *this build carries none*, and *nobody went to look*.
 
-None of this writes a backend or forks one. Every backend comes from ggml; the planner asks devices
+None of this writes a backend or forks one. Every backend comes from ggml; the planning rules ask
 about **properties** — `host_memory`, `host_buffer`, `host_ptr_buffers`, `needs_repack`,
-`runs_expert_op`, `identity_ok` — and never matches a name. That is how an NPU with two native quant
-formats excludes itself without a line written for it.
+`runs_expert_op`, `identity_ok` — and never infer hardware from a name. An adapter may match a
+backend's public device description to a native API's device identity before recording a property,
+as the Metal memory-topology probe does above. That is how an NPU with two native quant formats
+excludes itself without a line in the rules written for it.
 
 ## The two invariants
 
@@ -369,6 +397,15 @@ ordinary memory bounded by what can be held, exactly as before. Another grants a
 up to a system-wide total, the same store either way. No rule names either machine; each adapter
 answers the two questions, and a machine that grants no lock answers zero to both.
 
+A failed or denied ceiling query is a separate fact from a ceiling of zero. It preserves every
+independently known upper bound, including zero, but does not establish a reclaim-exempt dense
+store. Where the lock-in-place ceiling is unmeasured and no known bound rules out a token cycle,
+the planner leaves cache pinning enabled and arms `--cache-pin-fit` for an automatically sized
+cache. Its size still comes from the ordinary process budget with the full memory-pressure
+margin: an unverified lock never creates more memory. The ledger marks the ceiling as unmeasured
+and the cache's lock as a runtime request, rather than counting that cache as a granted lock.
+An explicit caller choice of cache size, pinning, or fitting keeps its existing authority.
+
 That total is **net of what is already locked, by anyone it counts**. On the laptop this was
 measured on it is system-wide and counts the kernel's own wired memory: locking in 32 MiB steps
 until the kernel refused granted 10336 MiB where the limit less the system's wired count stood at
@@ -420,7 +457,9 @@ weight is multiplied by a whole batch, and what bounds it is how fast the engine
 two rank devices in opposite orders, and a decision about one read off the other's figure is made
 on the wrong axis.
 
-So the bandwidth probe runs its matmul twice, in this model's own quantized type: one token wide,
+So the bandwidth probe runs its matmul twice, in this model's own quantized type (on a mixed quant,
+the type carrying the most expert bytes; the device-support question is asked of every expert type
+the file carries, since a device runs all of them): one token wide,
 which is the figure everything about decode reads, and 128 wide, which nothing but this rule
 reads. On the laptop this was measured on the cores read 109 GiB/s on the first against the GPU's
 64 to 71, and compute 198 on the second against the GPU's 1512 to 1558: a device that loses the
@@ -489,6 +528,12 @@ its budget again. In the ledger they are a row *in turn with the cache*, not in 
 fit if the cache can yield that much, or if what is left over still fits both ceilings. What stays
 for the session is the rest of the device's row, the layer's other weights and the compute buffer.
 
+The lock ceiling is one of the two only where it exists. It is there to keep what this process locks
+from being outbid by a device that wires the same pool; on a platform that publishes no wire limit
+nothing can be locked (the store reads 0), so there is nothing to outbid, and the device is charged
+to what the process may hold alone. Charging it to a store of 0 refused a 12 GB phone's GPU, measured
+at 17.8x its cores on a wide prefill, "on memory" with the memory there.
+
 It costs the re-read of what was evicted and one setup of the slots per prompt. Same laptop, same
 model, `--auto` alone: the 1461-token prefill takes 3.52 and 3.64 s against 3.43 with the slots
 held, the generated text is the same, and decode on the short prompt is back to 21.9 tok/s with a
@@ -545,7 +590,11 @@ text's perplexity from 32.4 to 711 445 - no next token right in 1070.
 So the session confirms the device on the model before keeping it (`--prefill-verify`, on by
 default). After the load it prefills a fixed text on the host and on the device - 64 tokens, or the
 device's narrowest graph (`--prefill-min-tokens`) where that is wider - and keeps the device only
-if the top next token agrees in at least 90% of the positions; otherwise the device is handed back
+if the top next token agrees in at least 90% of 31 positions spread across it. Not all of them: each
+compared position is a row of the output head, the model's largest matrix, and from 32 rows up
+ggml's BLAS backend unpacks it into float32 and keeps that copy - 1940 MiB on a 248k vocabulary, at
+load, which ended the run on a phone. Compared this way, a 16 GB Mac's peak footprint at load fell
+from 7.58 to 5.66 GiB with the same 97% agreement. A device that falls short is handed back
 exactly as one that failed to open, and with `--prefill-best-effort`, which a plan that armed the
 device sets, the prefill stays on the CPU. A check that cannot run - a text the vocabulary does not
 tokenize, no graph as wide as the device's narrowest within what one graph may return - leaves the
@@ -932,7 +981,7 @@ Each row is a gap here paired with the public facility that closes it. None need
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
 | KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
 | device selection | `mparams.devices[]`, `split_mode`, `main_gpu` | tell the fitter which devices to use, e.g. exclude one that demands a repack |
-| ~~a unified-memory device looks discrete~~ — **no longer decides anything** | the bandwidth probe, not the `integrated` flag | what the flag would have told us cheaply is now measured directly, and measured beats reported: the rule compares the device's figure to the host's on the same graph |
+| ~~a unified-memory device looks discrete~~ — **accounted for** | native memory-topology facts, or the allocation-delta probe where no direct fact is available | a shared pool is not added to host capacity; the separate bandwidth measurement decides whether moving compute is worthwhile |
 | ~~the budget under a compressing reclaim~~ — **in** (`--probe-mem`, and a free estimate always) | nothing in llama.cpp: a kernel fact | the headroom probe stays ours, and is the one measurement no other engine takes |
 
 ### DGX Spark, as a worked case

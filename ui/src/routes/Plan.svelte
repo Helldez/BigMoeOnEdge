@@ -244,7 +244,6 @@
   }
   .sentence {
     margin: 0;
-    font-family: var(--pixel);
     font-size: 1.6rem;
     line-height: 1.2;
     max-width: 34ch;
@@ -320,7 +319,6 @@
   }
   .explain summary {
     cursor: pointer;
-    font-family: var(--pixel);
     margin: 1rem 0 0.5rem;
   }
   .explain pre {

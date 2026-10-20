@@ -12,6 +12,9 @@ constexpr std::string_view k_weight_tail = ".weight";
 // expert projection layout the loader knows.
 constexpr std::string_view k_override_head = "blk\\.";
 constexpr std::string_view k_override_tail = "\\.ffn_(up|down|gate_up|gate)_(ch|)exps";
+// What every per-layer FFN pattern of the fitter's starts with after the index: the whole FFN, a
+// share of it, or the experts alone.
+constexpr std::string_view k_ffn_tail = "\\.ffn_";
 
 // A layer index past this is a runaway digit run, not a layer.
 constexpr int k_layer_max = 1 << 20;
@@ -94,6 +97,16 @@ int expert_override_layer(const char * pattern) {
         const char * end = nullptr;
         const int il = leading_layer(at + k_override_head.size(), &end);
         if (il >= 0 && starts_with(end, k_override_tail)) return il;
+    }
+    return -1;
+}
+
+int ffn_override_layer(const char * pattern) {
+    for (const char * at = std::strstr(pattern, k_override_head.data()); at;
+         at = std::strstr(at + 1, k_override_head.data())) {
+        const char * end = nullptr;
+        const int il = leading_layer(at + k_override_head.size(), &end);
+        if (il >= 0 && starts_with(end, k_ffn_tail)) return il;
     }
     return -1;
 }

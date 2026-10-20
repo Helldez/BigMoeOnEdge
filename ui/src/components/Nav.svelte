@@ -29,7 +29,6 @@
     border: var(--edge) solid transparent;
     text-decoration: none;
     color: var(--muted);
-    font-family: var(--pixel);
     font-size: 1rem;
   }
   a:hover {

@@ -30,11 +30,13 @@ Semantic colours get a `-bg` tint (the colour at 18% over the surface) for banne
 
 ## Type
 
-- **Pixelify Sans** (SIL OFL 1.1, bundled: `ui/public/fonts`, `res/font`) for what the product
-  says in its own voice: titles, the five screen names, section headings, badges, and every figure
-  the engine reports (a rate, a count, a percentage). Weight 400 to 700; never below 13 px.
-- **The system sans** for prose: the model's answers, the person's messages, help text. Pixel
-  text at paragraph length is a strain, and the model's words are not the product's voice.
+- **Pixelify Sans** (SIL OFL 1.1, bundled: `ui/public/fonts`, `res/font`) for the wordmark beside
+  the logo, and nothing else. Pixel text is hard to read at the sizes a label or a figure needs.
+- **Oxanium** (SIL OFL 1.1, bundled: `ui/public/fonts` as the variable font, `res/font` as its 400,
+  600 and 700 instances) for every other word: titles, the screen names, buttons, badges, help
+  text, the model's answers and the person's messages. Its squared letters keep the pixel style;
+  its open shapes keep a small label readable. Figures the engine reports (a rate, a count, a
+  percentage) use tabular digits, so a live value does not jitter. Weight 400 to 700.
 - **The system mono** for anything a person may paste: a command line, a path, a key.
 
 ## Geometry
@@ -62,10 +64,13 @@ outline. The launcher icon is the chip on `bg`.
   `prefers-color-scheme: light`; the font is a `@font-face`; the geometry is the stylesheet's
   rules for `button`, `input`, `.card`, `.badge`, `meter`. No component library.
 - **Android**: a Material 3 colour scheme built from the same hex values, a `Typography` with
-  Pixelify Sans for the title and label styles, and `Shapes` with every corner at 0 dp; the top
+  Oxanium for every style, and `Shapes` with every corner at 0 dp; the top
   bar carries the mark. Material's ripple and elevation stay, because a phone's touch feedback is
   what the toolkit is for.
-- **iOS**, when it comes: the same hex values as a colour set, the same font, `cornerRadius` 0.
+- **iOS**: the same hex values as colours that follow the system's appearance, the same font
+  (registered from `docs/assets/fonts`), square boxes with the hard shadow as a SwiftUI modifier,
+  the logo drawn from `docs/assets/logo/icon.svg` itself (`examples/ios/app/Sources/Design`). The
+  system's bars and sheets stay, tinted: they are what the toolkit is for.
 
 What is not in the language: gradients, blur, rounded avatars, animated backgrounds, and any
 colour that is not in the table. A screen that needs a sixth colour has a layout problem.

@@ -78,6 +78,11 @@ struct TokenMetrics {
     double mem_free_mib = 0.0;
     double swap_free_mib = 0.0;
 
+    // Kernel accounting for this process, distinct from resident bytes and system availability.
+    // -1 means unavailable; zero is a measured value. Sampled after decode, not a peak.
+    double process_footprint_mib = -1.0;
+    double process_headroom_mib = -1.0;
+
     // The cache budget in effect for this token. Fixed for the run now (an explicit --cache-mb, or
     // what --cache-mb auto sized to once at load) — the runtime governor that moved it is gone.
     double cache_budget_mib = 0.0;

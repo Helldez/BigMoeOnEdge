@@ -88,7 +88,7 @@ jobs:
         # bump would silently start failing every PR against a version nobody was told about.
         run: |
           sudo apt-get update && sudo apt-get install -y clang-format-18
-          find core cli server tests -type f \( -name '*.cpp' -o -name '*.h' \) \
+          find core cli server tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \) \
             -print0 | xargs -0 clang-format-18 --dry-run --Werror
 
   host-linux:
@@ -99,6 +99,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+      - name: iOS run-batch status fixtures (no SDK or device)
+        run: python3 tests/ios_runs_test.py
       - name: Install deps
         run: |
           sudo apt-get update && sudo apt-get install -y cmake ninja-build
@@ -217,14 +219,17 @@ jobs:
         run: cd build && ctest --output-on-failure
 
   ios-harness:
-    # Compile-check the iOS paths: the engine and bmoe-cli inside the harness app, for the
-    # simulator, unsigned. Nothing is run; the simulator's kernel and memory are the runner's.
+    # Compile-check the iOS paths: the app (the server library and the SwiftUI screens) and the
+    # harness (bmoe-cli inside an app), for the simulator, unsigned, plus the app's client package
+    # tested on the runner. Nothing is run in a simulator; its kernel and memory are the runner's.
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: recursive
+      - name: BmoeKit tests (the app's client side, on the host)
+        run: swift test --package-path examples/ios/BmoeKit
       - name: Configure & build (examples/ios, simulator)
         run: scripts/build-ios.sh sim
 

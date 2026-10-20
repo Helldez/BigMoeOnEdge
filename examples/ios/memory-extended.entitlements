@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- harness.entitlements, plus the larger address space. A free Personal Team is refused it,
+    <!-- memory.entitlements, plus the larger address space. A free Personal Team is refused it,
          and a build that asks for an entitlement it was not granted does not sign. -->
     <key>com.apple.developer.kernel.increased-memory-limit</key>
     <true/>

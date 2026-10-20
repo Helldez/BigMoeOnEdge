@@ -40,7 +40,6 @@
 <style>
   .live {
     margin: 0;
-    font-family: var(--pixel);
     font-size: 0.85rem;
     white-space: nowrap;
     overflow: hidden;

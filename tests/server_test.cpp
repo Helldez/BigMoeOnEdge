@@ -965,6 +965,15 @@ static void plan_view_tests() {
     check(pools.size() == 1 && pools[0]["label"] == "This process" && pools[0]["rows"].size() == 3 &&
               pools[0]["rows"][1]["label"] == "Expert cache" && pools[0]["rows"][2]["in_turn"] == true,
           "plan view: one pool, the ledger rows worded, the slots in turn");
+    check(pools[0]["lockable_cap_known"] == true && pools[0]["cache_lock_unverified"] == false,
+          "plan view: a measured lock ceiling retains its known status");
+    Plan unknown_lock = plan;
+    unknown_lock.allocation.ledger.lockable_cap_known = false;
+    unknown_lock.allocation.cache_lock_unverified = true;
+    const json uncertain_memory = plan_view(hw, model, unknown_lock)["memory"]["pools"][0];
+    check(uncertain_memory["lockable_cap_known"] == false && uncertain_memory["cache_lock_unverified"] == true &&
+              uncertain_memory["cap_bytes"] == pools[0]["cap_bytes"],
+          "plan view: an unmeasured lock ceiling and pending grant stay distinct from process capacity");
 
     // The same view on a desktop whose card holds layers in memory of its own: a second pool, and
     // the card on the tokens lane beside the host.

@@ -892,6 +892,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("cache-brake", "Brake under pressure", G::Cache, L::Advanced,
+                          "Halve the expert cache when the system starts taking it back mid-run: a stalled "
+                          "token, confirmed by cache pages no longer in RAM. It only shrinks, never under "
+                          "one token's working set, and does nothing where memory is not under pressure.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--no-cache-brake", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_brake; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("cache-pin-fit", "Fit the cache to the lock", G::Cache, L::Advanced,
                           "When the platform stops pinning the cache part way, shrink the budget to what it "
                           "pinned instead of holding the rest as ordinary memory. Worth it where memory "

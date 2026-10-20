@@ -93,7 +93,6 @@
     margin: 0;
     font-size: 1.1rem;
     font-weight: 600;
-    font-family: var(--pixel);
     font-variant-numeric: tabular-nums;
   }
   small {

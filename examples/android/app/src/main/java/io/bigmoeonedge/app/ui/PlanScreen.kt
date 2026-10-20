@@ -99,7 +99,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSettings: () -> Unit = {}) {
                 !p.available -> Text(p.error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
                 p.error.isNotEmpty() -> Text(p.error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
                 p.none -> Tile {
-                    Text("Not measured yet.", fontFamily = PixelFont, fontSize = 22.sp, lineHeight = 26.sp)
+                    Text("Not measured yet.", fontSize = 22.sp, lineHeight = 26.sp)
                     Text("Measure this phone to see what the plan does with the chosen model.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     PrimaryAction("Measure", enabled = canMeasure) { fetch(measure = true) }
                     AutoPlanSwitch(cfg?.autoPlan ?: false, planner && cfg != null) { on -> scope.launch { Engine.setAutoPlan(on) } }
@@ -127,7 +127,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSettings: () -> Unit = {}) {
 @Composable
 private fun PrimaryAction(text: String, enabled: Boolean, onClick: () -> Unit) {
     Button(shape = RectangleShape, onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-        Text(text, fontFamily = PixelFont, fontSize = 16.sp)
+        Text(text, fontSize = 16.sp)
     }
 }
 
@@ -155,7 +155,7 @@ private fun PlanBody(
             p.fromLastLoad -> StatusBadge("The loaded model runs this plan", okColor())
             p.cached -> StatusBadge("The last plan measured", MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Text(p.sentence.ifEmpty { "Regime: ${p.regime}" }, fontFamily = PixelFont, fontSize = 22.sp, lineHeight = 26.sp)
+        Text(p.sentence.ifEmpty { "Regime: ${p.regime}" }, fontSize = 22.sp, lineHeight = 26.sp)
         if (p.machine.isNotEmpty()) Text(p.machine, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SpeedWell(p, Modifier.weight(1f))
@@ -167,7 +167,7 @@ private fun PlanBody(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(lane.label, fontSize = 14.sp)
-                Text(lane.on.joinToString(" + "), fontFamily = PixelFont, color = MaterialTheme.colorScheme.primary)
+                Text(lane.on.joinToString(" + "), color = MaterialTheme.colorScheme.primary)
             }
         }
         if (p.notApplicable.isNotEmpty()) {
@@ -251,7 +251,7 @@ private fun MemoryPool(pool: PlanPool) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(pool.label + if (pool.estimated) " (an even share of the devices' sum)" else "", fontSize = 14.sp)
-            if (pool.capBytes > 0) Text("of " + bytesLabel(pool.capBytes), fontFamily = PixelFont, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (pool.capBytes > 0) Text("of " + bytesLabel(pool.capBytes), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Row(Modifier.fillMaxWidth().height(28.dp).border(2.dp, MaterialTheme.colorScheme.outline).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
             held.forEachIndexed { i, r ->
@@ -265,14 +265,14 @@ private fun MemoryPool(pool: PlanPool) {
                 Box(Modifier.size(12.dp).background(colours[i % colours.size]))
                 Text(r.label, fontSize = 14.sp, modifier = Modifier.weight(1f))
                 if (r.locked) StatusBadge("locked", MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(bytesLabel(r.bytes), fontFamily = PixelFont, fontSize = 14.sp)
+                Text(bytesLabel(r.bytes), fontSize = 14.sp)
             }
         }
         if (free > 0) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Box(Modifier.size(12.dp).border(2.dp, MaterialTheme.colorScheme.outline))
                 Text("Free", fontSize = 14.sp, modifier = Modifier.weight(1f))
-                Text(bytesLabel(free), fontFamily = PixelFont, fontSize = 14.sp)
+                Text(bytesLabel(free), fontSize = 14.sp)
             }
         }
         pool.rows.filter { it.inTurn }.forEach {
@@ -287,14 +287,14 @@ private fun DeviceRow(d: PlanDevice, scale: Double) {
     Column(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Column(Modifier.weight(1f)) {
-                Text(d.name, fontFamily = PixelFont, fontSize = 16.sp)
+                Text(d.name, fontSize = 16.sp)
                 if (d.description.isNotEmpty() && d.description != d.name) Text(d.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             StatusBadge(d.badge, colour)
         }
         val used = d.status == "used"
         Meter(if (d.promptRatio > 0) maxOf(0.02f, (d.promptRatio / scale).toFloat()) else 0f, if (used) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-        if (d.rateText.isNotEmpty()) Text(d.rateText, fontFamily = PixelFont, fontSize = 12.sp)
+        if (d.rateText.isNotEmpty()) Text(d.rateText, fontSize = 12.sp)
         Text(d.why, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
@@ -303,7 +303,7 @@ private fun DeviceRow(d: PlanDevice, scale: Double) {
 @Composable
 private fun Decisions(all: List<PlanDecision>, onOpenSettings: () -> Unit) {
     val by = all.groupBy { it.group.ifEmpty { "set" } }
-    by["set"]?.let { rows -> Tile { Text("Set by the plan · ${rows.size}", fontFamily = PixelFont, fontSize = 16.sp); rows.forEach { DecisionRow(it, onOpenSettings) } } }
+    by["set"]?.let { rows -> Tile { Text("Set by the plan · ${rows.size}", fontSize = 16.sp); rows.forEach { DecisionRow(it, onOpenSettings) } } }
     by["kept"]?.let { rows ->
         Folded("Left as is · ${rows.size}", "Settings the plan looked at and left as they were.") { rows.forEach { DecisionRow(it, onOpenSettings) } }
     }
@@ -319,21 +319,21 @@ private fun DecisionRow(d: PlanDecision, onOpenSettings: () -> Unit) {
     var why by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(if (open) "v" else ">", fontFamily = PixelFont, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(if (open) "v" else ">", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(d.label.ifEmpty { d.knob }, fontSize = 14.sp, modifier = Modifier.weight(1f))
             val shown = d.valueText.ifEmpty { d.value.takeIf { it != "-" }.orEmpty() }
-            if (shown.isNotEmpty()) Text(shown, fontFamily = PixelFont, fontSize = 14.sp)
+            if (shown.isNotEmpty()) Text(shown, fontSize = 14.sp)
             SourceBadge(d.source)
         }
         if (open) {
             Column(Modifier.padding(start = 20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(d.brief.ifEmpty { d.reason }, fontSize = 13.sp)
                 if (d.brief.isNotEmpty() && d.brief != d.reason) {
-                    Text(if (why) "Why  v" else "Why  >", fontFamily = PixelFont, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { why = !why })
+                    Text(if (why) "Why  v" else "Why  >", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { why = !why })
                     if (why) Text(d.reason, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (d.label.isNotEmpty() && d.group != "notes") {
-                    Text("Open in Settings", fontFamily = PixelFont, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable(onClick = onOpenSettings))
+                    Text("Open in Settings", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable(onClick = onOpenSettings))
                 }
             }
         }
@@ -352,7 +352,7 @@ fun PlanProgressCard(p: PlanProgress?) {
         last = p.label
     }
     Tile {
-        Text("Measuring this phone", fontFamily = PixelFont, fontSize = 18.sp)
+        Text("Measuring this phone", fontSize = 18.sp)
         Meter(if (p != null && p.count > 0) p.index.toFloat() / p.count else 0f, MaterialTheme.colorScheme.primary)
         done.forEach { StepLine("done", okColor(), it) }
         if (p != null) {
@@ -402,9 +402,9 @@ private fun Folded(title: String, hint: String = "", content: @Composable Column
     var open by remember { mutableStateOf(false) }
     Tile {
         Row(Modifier.fillMaxWidth().clickable { open = !open }, verticalAlignment = Alignment.CenterVertically) {
-            Text(if (open) "v" else ">", fontFamily = PixelFont, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(if (open) "v" else ">", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.width(10.dp))
-            Text(title, fontFamily = PixelFont, fontSize = 16.sp)
+            Text(title, fontSize = 16.sp)
         }
         if (hint.isNotEmpty()) Text(hint, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (open) content()
@@ -414,8 +414,8 @@ private fun Folded(title: String, hint: String = "", content: @Composable Column
 @Composable
 private fun Figure(value: String, unit: String) {
     Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(value, fontFamily = PixelFont, fontSize = 26.sp, lineHeight = 28.sp)
-        Text(unit, fontFamily = PixelFont, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, fontSize = 26.sp, lineHeight = 28.sp)
+        Text(unit, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -436,7 +436,7 @@ private fun Meter(fraction: Float, colour: Color, mark: Float? = null) {
 @Composable
 private fun StatusBadge(text: String, colour: Color) {
     Surface(color = colour.copy(alpha = 0.18f), shape = RectangleShape, modifier = Modifier.border(2.dp, colour)) {
-        Text(text, fontFamily = PixelFont, fontSize = 12.sp, color = colour, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+        Text(text, fontSize = 12.sp, color = colour, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
     }
 }
 

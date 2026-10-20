@@ -57,6 +57,11 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/core/include/bmoe/planner.h")
     message(STATUS "bmoe-server: hardware planner present (/api/plan enabled)")
 endif()
 
+# On iOS an app links the library instead (examples/ios/app): no executable, nothing to stage.
+if(IOS)
+    return()
+endif()
+
 add_executable(bmoe-server main.cpp)
 target_link_libraries(bmoe-server PRIVATE bmoe_server)
 
