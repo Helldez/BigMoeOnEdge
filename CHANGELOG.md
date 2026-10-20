@@ -20,6 +20,10 @@ Semantic Versioning.
 ### Fixed
 - **The benchmark-report issue form parses again.** Its engine-version placeholder was two quoted
   strings on one line, which is not YAML, so GitHub could not render the form.
+- **iOS run batches report launch failures to automation.** `scripts/ios-runs.sh` still finishes
+  the requested cases, partial-CSV retrieval and summaries, but exits `1` if any launch command
+  failed. Each case retains its exact exit status; all-success and plan-only batches exit `0`.
+  Device-free fixtures cover both simulator and device command paths in CI.
 
 ## [0.32.0] - 2026-10-19
 
