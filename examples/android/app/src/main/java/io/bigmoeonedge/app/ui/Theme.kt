@@ -57,7 +57,15 @@ object Palette {
     val LightErr = Color(0xFFB42318)
 }
 
-val PixelFont = FontFamily(Font(R.font.pixelify_sans, FontWeight.Normal), Font(R.font.pixelify_sans, FontWeight.Bold))
+/** The wordmark's face; nothing else is set in it, because pixel text is hard to read small. */
+private val PixelFont = FontFamily(Font(R.font.pixelify_sans, FontWeight.Normal), Font(R.font.pixelify_sans, FontWeight.Bold))
+
+/** Every word the app shows, the person's and the model's included. */
+val UiFont = FontFamily(
+    Font(R.font.oxanium_regular, FontWeight.Normal),
+    Font(R.font.oxanium_semibold, FontWeight.SemiBold),
+    Font(R.font.oxanium_bold, FontWeight.Bold),
+)
 
 private val DarkScheme: ColorScheme = darkColorScheme(
     primary = Palette.Accent,
@@ -119,15 +127,23 @@ private val LightScheme: ColorScheme = lightColorScheme(
     onErrorContainer = Palette.LightErr,
 )
 
-private val PixelTypography = Typography().let { t ->
+private val UiTypography = Typography().let { t ->
     t.copy(
-        titleLarge = t.titleLarge.copy(fontFamily = PixelFont, fontWeight = FontWeight.Bold),
-        titleMedium = t.titleMedium.copy(fontFamily = PixelFont, fontWeight = FontWeight.Bold),
-        titleSmall = t.titleSmall.copy(fontFamily = PixelFont),
-        labelLarge = t.labelLarge.copy(fontFamily = PixelFont),
-        labelMedium = t.labelMedium.copy(fontFamily = PixelFont),
-        labelSmall = t.labelSmall.copy(fontFamily = PixelFont),
-        headlineSmall = t.headlineSmall.copy(fontFamily = PixelFont, fontWeight = FontWeight.Bold),
+        displayLarge = t.displayLarge.copy(fontFamily = UiFont),
+        displayMedium = t.displayMedium.copy(fontFamily = UiFont),
+        displaySmall = t.displaySmall.copy(fontFamily = UiFont),
+        headlineLarge = t.headlineLarge.copy(fontFamily = UiFont, fontWeight = FontWeight.Bold),
+        headlineMedium = t.headlineMedium.copy(fontFamily = UiFont, fontWeight = FontWeight.Bold),
+        headlineSmall = t.headlineSmall.copy(fontFamily = UiFont, fontWeight = FontWeight.Bold),
+        titleLarge = t.titleLarge.copy(fontFamily = UiFont, fontWeight = FontWeight.Bold),
+        titleMedium = t.titleMedium.copy(fontFamily = UiFont, fontWeight = FontWeight.Bold),
+        titleSmall = t.titleSmall.copy(fontFamily = UiFont, fontWeight = FontWeight.SemiBold),
+        bodyLarge = t.bodyLarge.copy(fontFamily = UiFont),
+        bodyMedium = t.bodyMedium.copy(fontFamily = UiFont),
+        bodySmall = t.bodySmall.copy(fontFamily = UiFont),
+        labelLarge = t.labelLarge.copy(fontFamily = UiFont, fontWeight = FontWeight.SemiBold),
+        labelMedium = t.labelMedium.copy(fontFamily = UiFont),
+        labelSmall = t.labelSmall.copy(fontFamily = UiFont),
     )
 }
 
@@ -143,14 +159,14 @@ private val SquareShapes = Shapes(
 fun BmoeTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = if (isSystemInDarkTheme()) DarkScheme else LightScheme,
-        typography = PixelTypography,
+        typography = UiTypography,
         shapes = SquareShapes,
         content = content,
     )
 }
 
-/** A figure the engine reports, in the product's own face. */
-val FigureStyle: TextStyle @Composable get() = TextStyle(fontFamily = PixelFont, fontSize = 13.sp)
+/** A figure the engine reports: digits of one width, so a live value does not jitter. */
+val FigureStyle: TextStyle @Composable get() = TextStyle(fontFamily = UiFont, fontSize = 13.sp, fontFeatureSettings = "tnum")
 
 /** The mark: the chip beside the wordmark, as the design has it in a bar. */
 @Composable

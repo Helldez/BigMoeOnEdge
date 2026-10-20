@@ -19,8 +19,10 @@
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
 #include "../moe/tensor_names.h"
+#include "cache_brake.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
+#include "../metrics/memory_snapshot.h"
 
 #include "ggml-backend.h"
 #include "llama.h"
@@ -160,12 +162,7 @@ struct GenTally {
         // reads are cheap but they are not this token's work, and billing them to wall_ms would
         // corrupt the very number the reader is here to trust.
         pio::ProcessMemory pm;
-        if (pio::process_memory(&pm)) {
-            m.rss_mib = pm.rss_bytes / (1024.0 * 1024.0);
-            m.rss_anon_mib = pm.rss_anon_bytes / (1024.0 * 1024.0);
-            m.rss_file_mib = pm.rss_file_bytes / (1024.0 * 1024.0);
-            m.swap_mib = pm.swap_bytes / (1024.0 * 1024.0);
-        }
+        if (pio::process_memory(&pm)) detail::record_process_memory(m, pm);
         pio::DeviceMemory dm;
         if (pio::device_memory(&dm)) {
             m.mem_available_mib = dm.available_bytes / (1024.0 * 1024.0);
@@ -213,6 +210,16 @@ struct GenTally {
         adopt_seconds += m.adopt_ms / 1000.0;
     }
 };
+
+// Whether the load placed `t` in a buffer that belongs to a device other than the host's. Asked as
+// "names a non-CPU device" rather than "names the CPU" because the buffer type over the file
+// mapping names no device at all in this llama.cpp (a FIXME upstream); that is the host's buffer,
+// and it stays ours whether or not the field is ever filled in.
+bool on_other_device(const ggml_tensor * t) {
+    if (!t->buffer) return false;
+    ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(t->buffer));
+    return dev && ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU;
+}
 
 // The names of the expert weight tensors the streamer rebinds. "Dense" is defined by subtraction —
 // everything the model has that is NOT one of these — so both consumers below start by asking this
@@ -276,6 +283,9 @@ struct Session::Impl {
     std::unique_ptr<llama_context, void (*)(llama_context *)> ctx{nullptr, llama_free};
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
     ExpertStreamSource source;
+    // Kept per session, not per turn: the reference it measures stalls against is this machine's,
+    // and a later turn of a chat is compared with what the earlier ones settled to.
+    CacheBrake brake;
 
     // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
     // load, whose device list it holds, and opened after it.
@@ -889,6 +899,14 @@ bool Session::Impl::read_model(Opening & o) {
     llama_model_meta_val_str(m, "general.architecture", arch_buf, sizeof(arch_buf));
     arch = arch_buf;
 
+    // Startup prefills already load experts, so their pin-fit floor needs the same effective
+    // routing width as generation before any streamed graph runs, even without a metrics sink.
+    n_expert_used = cfg.n_expert_used;
+    if (n_expert_used <= 0) {
+        const GgufModelInfo & mi = o.gguf();
+        n_expert_used = mi.ok ? mi.n_expert_used : 0;
+    }
+
     if (cfg.moe.enabled) {
         // Which tensors are the routed experts, read off the file's shapes. A dense model, or a MoE
         // laid out in a way this engine has not proved byte-identical, is refused here with the reason
@@ -1106,8 +1124,19 @@ bool Session::Impl::bind_expert_offsets(Opening & o,
                                         std::vector<LayerExperts> & layers,
                                         int & n_expert) {
     int n_bound = 0;
-    for (LayerExperts & L : layers) {
+    for (size_t il = 0; il < layers.size(); ++il) {
+        LayerExperts & L = layers[il];
         if (!L.bound) continue;
+        // Half a layer on a device. The planner never places one (a pattern that moves part of a
+        // layer's FFN brings all its experts to the host), so this is a placement given by hand, and
+        // the streamer cannot serve it: the projections it would load with the host half are on the
+        // device. Said in those terms, rather than as the missing tensor it would otherwise trip on.
+        if (L.on_device)
+            return o.fail("MoE layer " + std::to_string(il) +
+                          " has its experts split between a device and the host, which streaming cannot "
+                          "serve: place all of blk." +
+                          std::to_string(il) + "'s experts on one side (" +
+                          tensor_names::expert_override_pattern((int) il) + " keeps them on the host)");
         ++n_bound;
         for (int p = 0; p < o.layout.n_slots; ++p) {
             ggml_tensor * t = L.proj[p].tensor;
@@ -1154,8 +1183,19 @@ void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
     std::unordered_map<uint64_t, size_t> dense_at; // (shard, file offset) -> index in `dense`
     for (ggml_tensor * t : hook->captured_weight_objects()) {
         if (!t) continue;
+        // A weight a device owns is not ours to move, for the reason the capture gives for experts:
+        // the device computes from its own buffer, so a tensor pointed at host bytes it cannot see
+        // reads nothing (Metal said "buffer is nil" and the run decoded '!'). Left out, it is also
+        // unowned below, which keeps release-mmap from dropping a mapping a device may still read.
+        if (t->buffer && !ggml_backend_buffer_is_host(t->buffer)) continue;
         const std::string name = t->name;
         if (expert_names.count(name)) continue;
+        // Only a weight the load left on the host is ours to re-home. A layer the first stage put
+        // on a device keeps its dense tensors in that device's buffer - its own memory, or the file
+        // mapping wrapped for it - and rebinding `data` onto a host allocation leaves the device
+        // reading an address it never registered: garbage output on a unified-memory GPU, worse on
+        // a discrete one. Asked of the buffer's device, so no backend is named.
+        if (on_other_device(t)) continue;
         auto off = offs.off_by_name.find(name);
         auto sz = offs.size_by_name.find(name);
         if (off == offs.off_by_name.end() || sz == offs.size_by_name.end()) continue; // not a file tensor
@@ -1295,6 +1335,7 @@ bool Session::Impl::bind_streaming(Opening & o) {
     if (prefill && cfg.prefill.slots_on_demand) prefill->share_memory_with(&source);
     if (!source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
         return o.fail("expert stream source init failed");
+    source.set_pin_floor(source.worst_cycle_bytes(n_expert_used));
     hook->set_source(&source);
     // The row policy exists only once dense_.init has taken the tables over; null means nothing
     // qualified or the takeover declined, and the hook then costs exactly nothing per node.
@@ -1363,6 +1404,7 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
     // placement the device will actually see; bounded by what one graph may return.
     const int want = std::min({std::max(PrefillDeviceConfig::verify_tokens, cfg.prefill.min_tokens),
                                PrefillDeviceConfig::max_outputs, prefill_piece(this->cfg), cfg.n_ctx - 1});
+    const int rows = std::min(want, PrefillDeviceConfig::verify_rows);
     double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0;
     // A check that cannot run is not a verdict: the device stays as the plan or the caller set it,
     // and the line below says it was not confirmed.
@@ -1380,7 +1422,13 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
         probe.resize((size_t) want);
 
         llama_batch b = llama_batch_init(want, 0, 1);
-        std::vector<float> host_logits((size_t) want * (size_t) n_vocab);
+        // The device computes every position; verify_rows spread positions come back to compare,
+        // which keeps the output head's product narrow on the host (see verify_rows): all 64 rows
+        // made a phone end the process at load.
+        std::vector<int> at((size_t) rows);
+        for (int r = 0; r < rows; ++r)
+            at[(size_t) r] = (int) ((int64_t) (r + 1) * want / rows) - 1; // the last position included
+        std::vector<float> host_logits((size_t) rows * (size_t) n_vocab);
         // 0 ran, 1 the device had no room, -1 the decode failed.
         auto pass = [&](bool device, bool keep, double & secs) -> int {
             // Two wide graphs of one shape in a row would let llama.cpp reuse the first for the
@@ -1393,7 +1441,9 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
             clear_memory(c);
             const bool placed = place_prefill(device);
             if (device && !placed) return 1;
-            batch_fill(b, probe.data(), want, 0, /*all_logits*/ true);
+            batch_fill(b, probe.data(), want, 0, /*all_logits*/ false);
+            for (int j : at)
+                b.logits[j] = 1;
             hook->set_batch_phase(0);
             const auto t0 = std::chrono::steady_clock::now();
             const int rc = decode_placed(c, b);
@@ -1402,8 +1452,8 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
             place_prefill(false);
             if (rc != 0) return -1;
             if (keep)
-                for (int j = 0; j < want; ++j)
-                    std::memcpy(host_logits.data() + (size_t) j * n_vocab, llama_get_logits_ith(c, j),
+                for (int r = 0; r < rows; ++r)
+                    std::memcpy(host_logits.data() + (size_t) r * n_vocab, llama_get_logits_ith(c, at[(size_t) r]),
                                 sizeof(float) * (size_t) n_vocab);
             return 0;
         };
@@ -1420,9 +1470,9 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
         } else {
             int same = 0;
             double num = 0.0, den = 0.0;
-            for (int j = 0; j < want; ++j) {
-                const float * h = host_logits.data() + (size_t) j * n_vocab;
-                const float * d = llama_get_logits_ith(c, j);
+            for (int r = 0; r < rows; ++r) {
+                const float * h = host_logits.data() + (size_t) r * n_vocab;
+                const float * d = llama_get_logits_ith(c, at[(size_t) r]);
                 if (argmax(h, n_vocab) == argmax(d, n_vocab)) ++same;
                 for (int v = 0; v < n_vocab; ++v) {
                     const double e = (double) d[v] - (double) h[v];
@@ -1430,10 +1480,10 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
                     den += (double) h[v] * (double) h[v];
                 }
             }
-            agree = (double) same / want;
+            agree = (double) same / rows;
             nmse = den > 0.0 ? num / den : 0.0;
             if (agree < PrefillDeviceConfig::verify_min_agree)
-                why = "it picked the host's next token in " + std::to_string(same) + " of " + std::to_string(want) +
+                why = "it picked the host's next token in " + std::to_string(same) + " of " + std::to_string(rows) +
                       " positions of a " + std::to_string(want) + "-token prefill: it does not compute this model";
         }
         llama_batch_free(b);
@@ -1445,9 +1495,9 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
         return true;
     }
     log_printf(LogLevel::Info,
-               "prefill-device %s confirmation: %d tokens, top token agrees %.0f%%, logit NMSE %.2e, host %.2f s, "
-               "device %.2f s%s%s",
-               cfg.prefill.device.c_str(), want, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
+               "prefill-device %s confirmation: %d tokens, %d compared, top token agrees %.0f%%, logit NMSE %.2e, "
+               "host %.2f s, device %.2f s%s%s",
+               cfg.prefill.device.c_str(), want, rows, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
                why.c_str());
     if (!why.empty()) {
         const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
@@ -1539,28 +1589,14 @@ void Session::Impl::describe_run(Opening & o) {
         // The EFFECTIVE top-k: an override IS the applied width, otherwise the model's own. Same
         // resolution the route trace does, and worth a header read — a run whose top-k is unknown
         // cannot be compared against one whose top-k differs, which is most of the point.
-        ri.n_expert_used = cfg.n_expert_used;
-        if (ri.n_expert_used <= 0 || ri.n_expert == 0) {
-            const GgufModelInfo & mi = o.gguf();
-            if (mi.ok) {
-                ri.n_expert = mi.n_expert;
-                if (ri.n_expert_used <= 0) ri.n_expert_used = mi.n_expert_used;
-            }
-        }
+        ri.n_expert_used = n_expert_used;
+        const GgufModelInfo & mi = o.gguf();
+        if (mi.ok) ri.n_expert = mi.n_expert;
         // Last, because it needs both numbers above: the budget the streamer settled on and the
         // width that was actually applied. Rounded UP — a cycle reported as smaller than it is
         // would put a budget on the wrong side of the cliff in exactly the borderline case.
         ri.cache_cycle_mb =
             (int) ((source.worst_cycle_bytes(ri.n_expert_used) + 1024ull * 1024ull - 1) / (1024ull * 1024ull));
-        source.set_pin_floor(source.worst_cycle_bytes(ri.n_expert_used));
-    }
-
-    // The effective routing width, resolved once: an override IS the applied width, otherwise the
-    // model's own count. Exposed so a UI can interpret drop_cold_frac, and used by the warning below.
-    n_expert_used = cfg.n_expert_used;
-    if (n_expert_used <= 0) {
-        const GgufModelInfo & mi = o.gguf();
-        n_expert_used = mi.ok ? mi.n_expert_used : 0;
     }
 }
 
@@ -1626,6 +1662,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
 
     // The order is load-bearing; each step's comment says what it needs from the ones before.
     if (!im.load_model(o)) return nullptr;
+    detail::log_memory_snapshot("model-loaded");
     if (!im.read_model(o)) return nullptr;
     if (!im.build_hook(o)) return nullptr;
     if (!im.create_contexts(o)) return nullptr;
@@ -1640,6 +1677,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.warn_about_load(cfg);
 
     im.load_seconds = secs(t_load0, clock_t_::now());
+    detail::log_memory_snapshot("session-ready");
     return self;
 }
 
@@ -1725,6 +1763,7 @@ struct Session::Impl::Turn {
     std::string gen;
     int n_gen = 0;
     double gen_seconds = 0.0;
+    double last_compute_s = 0.0; // the last decode's compute, what the cache brake reads
     GenTally tally;
     long long prev_spec_bytes = 0, prev_spec_experts = 0, prev_spec_useful = 0;
     long long prev_routed = 0, prev_dropped = 0, prev_reranked = 0, prev_substituted = 0;
@@ -2030,6 +2069,7 @@ struct Session::Impl::Turn {
         // Announced only once the prompt is in both contexts: begin() checks how far the draft context
         // has actually got, so calling it before prefill would warn about a gap that is about to close.
         if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
+        llama_synchronize(ctx); // the last chunk may still be queued on a device, as in the decode bracket
         prefill_seconds = secs(t_prefill0, clock_t_::now());
         // Prefill attribution, closed here (the begin() snapshot sits above the chunk loop): deltas
         // of the cumulative counters across the prompt, the quantities the decode phase reports per
@@ -2181,6 +2221,10 @@ struct Session::Impl::Turn {
         loop_overhead_s += s.overhead;
         trace_begin(n_past, /*n_tokens*/ 1 + s.n_draft, /*phase*/ 1);
         const int dec = llama_decode(ctx, step);
+        // On a device backend llama_decode returns once the graph is queued, not computed: the wait
+        // would land in the next logits read and be billed to loop overhead, and a two-GPU run read
+        // 1777 tok/s for 241. On the CPU the graph is already done and this returns at once.
+        llama_synchronize(ctx);
         s.s1 = clock_t_::now();
         loop_mark = s.s1; // the next token's overhead is measured from here
         s.f1 = pio::major_faults();
@@ -2298,14 +2342,38 @@ struct Session::Impl::Turn {
                 m.text = std::move(sv.content);
                 m.reasoning = std::move(sv.reasoning);
             }
-            if (e == 0)
+            if (e == 0) {
                 tally.record(m, wall, s.f1 - s.f0, s.c1 - s.c0, im.turn, moe.enabled ? &st : nullptr);
-            else
+                last_compute_s = m.compute_ms / 1000.0;
+            } else
                 tally.record(m, 0.0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr);
             if (on_token) on_token(m);
             if (sink) sink->on_token(m);
         }
     }
+
+    // ── the cache brake (cache_brake.h) ──
+    // Between two decodes, which is the only time the budget may move. A stalled token is asked
+    // about first, because it is the cheap signal; the residency sample is the expensive one and runs
+    // only to confirm it, so a run that never stalls never pays for it.
+    void brake_cache() {
+        if (!moe.enabled || !moe.cache_brake || im.source.cache_budget() == 0) return;
+        const double ref = im.brake.reference();
+        if (!im.brake.stalled(last_compute_s)) return;
+        const double lost = im.source.cache_lost_frac(k_brake_sample);
+        if (lost <= 0.0) return; // slow, but not because memory went: the cores, the clock, a neighbour
+        const size_t budget = im.source.cache_budget();
+        const size_t next = CacheBrake::braked(budget, im.source.cache_floor());
+        if (next >= budget) return;
+        im.source.set_cache_budget(next);
+        log_printf(LogLevel::Info,
+                   "cache brake: a token took %.0f ms of compute against %.0f, and %.0f%% of the cache's sampled "
+                   "pages were no longer in RAM; cache %zu -> %zu MiB",
+                   last_compute_s * 1000.0, ref * 1000.0, lost * 100.0, budget >> 20, next >> 20);
+    }
+    // Entries sampled per stall: enough that a system holding back a tenth of the cache is seen,
+    // few enough to be a few dozen syscalls on a token that already took seconds.
+    static constexpr int k_brake_sample = 64;
 
     // ── greedy generation ──
     // Returns false only on a failure; a cancel ends the loop with res.cancelled set.
@@ -2329,6 +2397,7 @@ struct Session::Impl::Turn {
             ++im.mtp_decodes;
             if (!accept(s)) return false;
             emit(s, on_token, sink);
+            brake_cache();
 
             if (s.eog_hit) break;
             // The accepted group is now KV-resident, and the logits at the first unverified position

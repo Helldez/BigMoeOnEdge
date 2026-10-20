@@ -128,8 +128,9 @@ void aligned_free(void * p);
 // On Darwin it is wired memory: an anonymous mapping the process has locked, granted to any process
 // up to a system-wide total (see lockable_bytes).
 //
-// `pinned_max_bytes()` is the largest single allocation that will succeed: 0 where the platform has
-// no such allocation at all (Windows and Linux builds), and on Android the LOCK boundary rather than the
+// `pinned_max_bytes()` is the reported ceiling for one allocation: 0 where the platform has no such
+// allocation (Windows and Linux builds) or cannot report its ceiling. The latter does not establish
+// that vm_pin is unavailable. On Android it is the LOCK boundary rather than the
 // allocation one — AHardwareBuffer_lock fails with EINVAL at 2^31 bytes even though allocation
 // reaches the 4 GiB format cap, so a larger working set must be split across several buffers.
 struct PinnedAlloc {
@@ -144,9 +145,22 @@ void pinned_free(PinnedAlloc * a);
 // How much this process may still hold reclaim-exempt in total: `lockable_bytes` through
 // pinned_alloc, `lock_in_place_bytes` through vm_pin. Both are what is LEFT, net of what is already
 // held against the same limit, so they move while the process runs and are read when a plan is
-// made. 0 means the platform grants none; `lock_unbounded` means it publishes no total of its own
-// and the caller must bound it by what the process may hold at all.
+// made. 0 means the platform grants none; `lock_unbounded` means there is no reported total of its
+// own and the caller must bound it by what the process may hold at all. The query facts distinguish
+// a reported unlimited value from a query the sandbox denied: neither is evidence of a finite grant.
 constexpr uint64_t lock_unbounded = ~0ull;
+struct LockLimit {
+    uint64_t bytes = lock_unbounded;
+    // False if an applicable query failed, unless another established zero makes the answer
+    // certain. `bytes` still preserves every independently known upper bound; the caller must not
+    // report an uncertain bound as a measured grant.
+    bool known = false;
+};
+LockLimit intersect_lock_limits(LockLimit a, LockLimit b);
+LockLimit remaining_lock_limit(LockLimit limit, uint64_t held, bool held_known);
+LockLimit lockable_limit();
+LockLimit lock_in_place_limit();
+// Upper bounds only; use the facts above wherever an unknown must remain distinguishable.
 uint64_t lockable_bytes();
 uint64_t lock_in_place_bytes();
 
@@ -289,6 +303,14 @@ struct ProcessMemory {
     uint64_t rss_anon_bytes = 0; // RssAnon: our cache lives here
     uint64_t rss_file_bytes = 0; // RssFile: the mmap'd model
     uint64_t swap_bytes = 0;     // VmSwap: anon we have already lost to zram
+
+    // The process's own accounting, when published: its charged footprint and the bytes left
+    // before its current limit. Neither can be reconstructed from RSS + swap. Known flags keep
+    // an exhausted allowance (a valid zero) distinct from a platform that does not publish one.
+    bool process_footprint_known = false;
+    uint64_t process_footprint_bytes = 0;
+    bool process_headroom_known = false;
+    uint64_t process_headroom_bytes = 0;
 };
 // False when the platform cannot report (Windows host), leaving `out` untouched.
 bool process_memory(ProcessMemory * out);

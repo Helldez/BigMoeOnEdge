@@ -12,6 +12,19 @@ if(WIN32)
 endif()
 target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 
+# A real Session::open with the full device confirmation and a page-aware fake mlock allowance.
+# The test adapter object supplies the production platform_io symbols, so the static archive's
+# copy is not selected; syscall substitutions never reach the production library.
+if(UNIX AND NOT ANDROID)
+    add_executable(bmoe_startup_pin_fit_test startup_pin_fit_test.cpp startup_pin_platform_io.cpp)
+    target_link_libraries(bmoe_startup_pin_fit_test PRIVATE bmoe_core)
+endif()
+
+add_executable(bmoe_lock_limits_test lock_limits_test.cpp)
+target_link_libraries(bmoe_lock_limits_test PRIVATE bmoe_core)
+target_include_directories(bmoe_lock_limits_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
+add_test(NAME lock_limits COMMAND bmoe_lock_limits_test)
+
 # Reasoning-parser wiring regression (issue #49). Needs no model — it drives the extracted
 # bmoe::detail::build_parse_params directly — so it runs unconditionally, unlike the gates below.
 add_executable(bmoe_chat_parse_test chat_parse_test.cpp)
@@ -94,6 +107,12 @@ add_executable(bmoe_device_probe_test device_probe_test.cpp)
 target_link_libraries(bmoe_device_probe_test PRIVATE bmoe_core)
 add_test(NAME device_probe COMMAND bmoe_device_probe_test)
 
+# probe_bandwidth on the expert formats ggml cannot encode without importance weights (#321): the
+# probe quantizes into the model's own type, and those formats used to abort `--auto`. Host only.
+add_executable(bmoe_bandwidth_probe_test bandwidth_probe_test.cpp)
+target_link_libraries(bmoe_bandwidth_probe_test PRIVATE bmoe_core)
+add_test(NAME bandwidth_probe COMMAND bmoe_bandwidth_probe_test)
+
 # The n-gram draft matcher. Pure policy over token ids (no llama.cpp, no model), so the drafting
 # decision is covered exhaustively here; what it costs is a bench question, not a test.
 add_executable(bmoe_ngram_test ngram_test.cpp)
@@ -127,6 +146,18 @@ add_test(NAME expert_layout COMMAND bmoe_expert_layout_test)
 add_executable(bmoe_csv_summary_test csv_summary_test.cpp)
 target_link_libraries(bmoe_csv_summary_test PRIVATE bmoe_core)
 add_test(NAME csv_summary COMMAND bmoe_csv_summary_test)
+
+add_executable(bmoe_csv_memory_test csv_memory_test.cpp)
+target_link_libraries(bmoe_csv_memory_test PRIVATE bmoe_core)
+target_include_directories(bmoe_csv_memory_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/metrics)
+add_test(NAME csv_memory COMMAND bmoe_csv_memory_test)
+
+if(APPLE AND NOT IOS)
+    add_executable(bmoe_process_memory_test process_memory_test.cpp ../core/src/io/platform_io.cpp)
+    target_include_directories(bmoe_process_memory_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
+    target_compile_definitions(bmoe_process_memory_test PRIVATE task_info=bmoe_test_task_info)
+    add_test(NAME process_memory COMMAND bmoe_process_memory_test)
+endif()
 
 # decide()'s policy (the prompt split, choice checks and scoring, when the prefix state is
 # restored, stored or left alone) over a scripted fake backend. No model, no llama.cpp, so it runs
@@ -164,6 +195,13 @@ if(PYTHON3)
         set_tests_properties(moe_gates_${spec} PROPERTIES FIXTURES_REQUIRED ${_fixture})
     endforeach()
 
+    if(TARGET bmoe_startup_pin_fit_test)
+        add_test(NAME startup_pin_fit COMMAND bmoe_startup_pin_fit_test
+                 "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
+        set_tests_properties(startup_pin_fit PROPERTIES
+                             FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe SKIP_RETURN_CODE 77)
+    endif()
+
     # The same qwen3moe fixture, written as a 4-shard split gguf (metadata-only first shard —
     # the layout large models actually ship in, since Hugging Face rejects files above 50 GB).
     # 51 tensors at 20 per shard is deterministic: -00001-of-00004 .. -00004-of-00004. The gate
@@ -188,3 +226,16 @@ endif()
 add_executable(bmoe_planner_test planner_test.cpp)
 target_link_libraries(bmoe_planner_test PRIVATE bmoe_core)
 add_test(NAME planner COMMAND bmoe_planner_test)
+
+add_executable(bmoe_memory_topology_test memory_topology_test.cpp)
+target_link_libraries(bmoe_memory_topology_test PRIVATE bmoe_core)
+target_include_directories(bmoe_memory_topology_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/plan)
+if(APPLE AND GGML_METAL)
+    target_compile_definitions(bmoe_memory_topology_test PRIVATE BMOE_HAVE_METAL_MEMORY_PROBE=1)
+endif()
+add_test(NAME memory_topology COMMAND bmoe_memory_topology_test)
+
+# The cache brake's policy, replayed on measured per-token compute traces.
+add_executable(bmoe_cache_brake_test cache_brake_test.cpp)
+target_link_libraries(bmoe_cache_brake_test PRIVATE bmoe_core)
+add_test(NAME cache_brake COMMAND bmoe_cache_brake_test)

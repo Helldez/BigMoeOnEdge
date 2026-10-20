@@ -77,6 +77,15 @@ for the same ones:
   (`memory-extended.entitlements`), which a Personal Team is refused. Nothing measured so far has
   needed it.
 
+The iOS sandbox can deny the wire-limit queries available on macOS. An unreadable limit now stays
+unmeasured: the automatic plan keeps its ordinary memory budget and margin, requests cache locks,
+and enables fitting to the kernel's actual grants. Known finite limits, including zero, still apply.
+The plan reports the pending request separately from a protected cache. A refused lock can still
+leave ordinary memory; the plan alone does not establish that a run will stay resident.
+
+The model-derived cache floor is initialized before startup's complete prefill-device confirmation,
+so fitting can handle a partial grant there as well as during generation.
+
 ## Run in the simulator
 
 ```bash
@@ -115,10 +124,21 @@ back to the Mac with a `summary.txt` on top (tok/s, the decode split, major faul
 ```bash
 BMOE_IOS_DEVICE=<id> BMOE_IOS_BUNDLE_ID=<your.own.id> scripts/ios-runs.sh device model.gguf
 RUNS="plan auto mmap t2 t4" ...   # add the same run at 2 and 4 threads
+RUNS="c1000 c1500 c2000" N_PREDICT=128 ...   # the plan's run with the cache fixed at each size
 ```
+
+A `c<MiB>` run keeps everything the plan chose except the expert cache, which it sets to that size
+(`--cache-mb`, `--force-cache`). Run at a few sizes, it shows where a larger cache stops paying and
+where the device starts taking memory back.
 
 `scripts/ios-runs.sh sim model.gguf` does the same in the booted simulator, which checks the
 harness and nothing else.
+
+The batch continues through every requested run, including attempts to retrieve partial CSVs after
+a launch failure, then exits `1` if any launch command failed and `0` if all launches succeeded.
+Each run's exact launch exit status remains in its console log and `summary.txt`. CSV retrieval
+is best effort and does not set the batch status; a plan-only run needs no CSV. The status is the
+launcher command's result, so inspect the console log for the harness's own exit marker as well.
 
 ## Limits
 
