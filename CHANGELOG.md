@@ -18,6 +18,12 @@ Semantic Versioning.
   page and the issue template describe the two rows, and how a CUDA build joins the `auto` one.
 
 ### Fixed
+- **The Android app's CPU temperature is a sensor's, not a threshold's (#311).** It took the first
+  thermal zone whose type names the CPU, in the order the directory lists them, and on a
+  Snapdragon-class phone that was a trip threshold published as a zone: the metrics line read a
+  constant 95 °C while the cores read 47-55. Zones are now taken in numeric order, one reading its
+  own `trip_point_*_temp` is skipped, and the figure is the hottest zone that moves (the median
+  until one has). JVM tests over a fake `/sys/class/thermal` cover it.
 - **The benchmark-report issue form parses again.** Its engine-version placeholder was two quoted
   strings on one line, which is not YAML, so GitHub could not render the form.
 
