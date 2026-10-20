@@ -607,8 +607,9 @@ and is the price of a figure that cannot overcommit.
 
 What it does not do: the capacity fitter still places weights on a device with memory of its own at
 the full width, so on such a machine a narrower graph leaves device memory the fitter thought was
-spoken for. And a session without a prefill device still reserves the logit rows the projection
-leaves out - untouched, so not held, but committed on a system that counts reservations.
+spoken for. The logit rows are capped at the projection's 128 on every session, with a prefill
+device or without one, so the run reserves what the plan charged: a CPU-only run of a 35B-A3B at
+2048 tokens reserved 2028 MiB of compute buffer against 436 projected, and reserves 312 now.
 
 ## A device is probed in a process of its own
 
@@ -785,9 +786,7 @@ on a compressing machine, which is why the two were one piece of work rather tha
   its experts through a slower store and the holdable figure is a quarter of the laptop's, so the
   rule will choose a narrower graph than the one a prefill was measured at there; a machine with no
   accelerator at all, where the prefill is the cores' and its cost per piece is not the device's; a
-  discrete GPU, whose buffers are not this pool's and are left out of the share; and a system where
-  reserved memory is committed whether or not it is touched, where the logit rows this projection
-  leaves out are charged all the same.
+  discrete GPU, whose buffers are not this pool's and are left out of the share.
 
 The residency budget is `MemAvailable` on every platform that reports it, and on a machine whose
 reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set

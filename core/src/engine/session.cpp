@@ -581,9 +581,9 @@ PplResult Session::perplexity(const PplRequest & req) {
         // Same placement rule as generate()'s prefill, so --ppl scores exactly the numerics a prompt
         // gets: wide pieces on the prefill device, a narrow tail on the CPU.
         // Every row here wants its logits, so a piece is also capped by the output rows the context
-        // reserved (PrefillDeviceConfig::max_outputs).
+        // reserved (PrefillDeviceConfig::max_outputs), with or without a device.
         const int step =
-            im.prefill ? std::min(prefill_piece(im.cfg), PrefillDeviceConfig::max_outputs) : im.cfg.n_batch;
+            std::min(im.prefill ? prefill_piece(im.cfg) : im.cfg.n_batch, PrefillDeviceConfig::max_outputs);
         Impl::PlacementGuard placement_guard{im};
         for (int i = 0; i < n; i += step) {
             const int chunk = std::min(step, n - i);
@@ -959,10 +959,13 @@ bool Session::Impl::create_contexts(Opening & o) {
     }
     // Placement is decided here, by moving weights; a backend's own offload heuristic would move
     // ops of CPU-resident weights to the device on its own (GPU backends do for wide batches).
-    if (prefill) {
-        cparams.op_offload = false;
-        cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
-    }
+    if (prefill) cparams.op_offload = false;
+    // Logit rows are reserved for as many outputs as a graph may return, and left at llama.cpp's
+    // default that is the whole ubatch: on a CPU-only run of a 35B-A3B at 2048 tokens, 1.7 GiB of
+    // compute buffer for rows a prompt never reads. Untouched, so not resident (the peak footprint
+    // is the same either way), but reserved, and the planner's projection is made at this cap:
+    // leaving it to the prefill device made the run reserve 2028 MiB where the ledger had 436.
+    cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
     // Rejecting a draft means rewinding the KV to the last accepted position. With recurrent-state
     // snapshots the rewind is a cheap restore; without them llama.cpp has to fall back to replaying
     // the sequence, which would hand back exactly the decode the speculation just saved.
@@ -984,6 +987,9 @@ bool Session::Impl::create_contexts(Opening & o) {
         llama_context_params dparams = cparams;
         dparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         dparams.n_rs_seq = 0;
+        // The target's output cap is about the target's logits; the draft keeps llama.cpp's own,
+        // which its narrow ubatch below already bounds.
+        dparams.n_outputs_max = 0;
         // Compute buffers are reserved for the WIDEST ubatch, and left at the target's width the
         // draft context reserves gigabytes for a graph it never runs: the widest thing it ever
         // computes is a prefill chunk, and at decode time it is 1 + draft_max positions. On this
