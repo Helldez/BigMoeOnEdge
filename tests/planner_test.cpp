@@ -1123,6 +1123,87 @@ int main() {
         check(dk.allocation.ledger.locked == 0 && dk.allocation.ledger.lockable_cap == 0,
               "ledger: a machine with no lock locks nothing");
 
+        // A denied query is not a zero grant. Try within the same process budget, while keeping
+        // the full margin and leaving the requested lock out of the ledger's predicted grant.
+        HardwareProfile unknown = hard_capped();
+        unknown.lockable_bytes = ~0ull;
+        unknown.lock_in_place_bytes = ~0ull;
+        unknown.lockable_bytes_known = false;
+        unknown.lock_in_place_bytes_known = false;
+        unknown.reclaim_exempt_max = 8 * GiB;
+        const Plan unknown_plan = plan_run(base_cfg(), unknown, model, PlanRequest{});
+        const Plan zero_plan = plan_run(base_cfg(), hard_capped(), model, PlanRequest{});
+        check(unknown_plan.config.moe.cache_pin && unknown_plan.config.moe.cache_pin_fit &&
+                  unknown_plan.allocation.cache_lock_unverified,
+              "ledger: an unknown ceiling arms a bounded runtime pin and fit attempt");
+        check(unknown_plan.to_flags().find("--cache-pin-fit") != std::string::npos,
+              "ledger: the unknown-ceiling reproduce line carries its runtime fitting policy");
+        check(unknown_plan.cache_budget_bytes == zero_plan.cache_budget_bytes &&
+                  unknown_plan.allocation.ledger.holdable_cap == zero_plan.allocation.ledger.holdable_cap,
+              "ledger: an unknown lock grants no process capacity and removes no margin");
+        const LedgerRow * unknown_cache = ledger_row(unknown_plan, "expert cache");
+        check(unknown_cache && !unknown_cache->locked && unknown_plan.allocation.cache_locked_bytes == 0 &&
+                  !unknown_plan.allocation.ledger.lockable_cap_known,
+              "ledger: the unknown runtime grant is not reported as a locked cache");
+        check(unknown_plan.config.moe.dense_weights == DenseWeightsMode::Anonymous,
+              "ledger: an unknown total never establishes an automatic pinned dense store");
+        AllocationInputs unknown_dense;
+        unknown_dense.can_pin = true;
+        unknown_dense.budget_bytes = 4 * GiB;
+        unknown_dense.reserved_bytes = 3 * GiB;
+        unknown_dense.lockable_bytes = ~0ull;
+        unknown_dense.lockable_bytes_known = false;
+        check(!allocate(unknown, model, unknown_dense, PlannerPolicy{}).dense_pinned,
+              "ledger: the allocator itself cannot infer a dense grant from an unknown total");
+        check(unknown_plan.explain().find("lockable ceiling unmeasured") != std::string::npos &&
+                  unknown_plan.explain().find("runtime grant unverified") != std::string::npos,
+              "ledger: text distinguishes an unmeasured ceiling from zero");
+        check(!zero_plan.config.moe.cache_pin && !zero_plan.config.moe.cache_pin_fit &&
+                  !zero_plan.allocation.cache_lock_unverified && zero_plan.allocation.ledger.lockable_cap_known,
+              "ledger: a measured zero remains an authoritative refusal");
+        HardwareProfile zero_bound = unknown;
+        zero_bound.lock_in_place_bytes = 0;
+        check(!plan_run(base_cfg(), zero_bound, model, PlanRequest{}).config.moe.cache_pin,
+              "ledger: an independent zero bound remains authoritative even if another query was denied");
+
+        RunConfig no_pin = base_cfg();
+        no_pin.moe.cache_pin = false;
+        PlanRequest no_pin_request;
+        no_pin_request.pinned = {"cache-pin"};
+        const Plan no_pin_plan = plan_run(no_pin, unknown, model, no_pin_request);
+        check(!no_pin_plan.config.moe.cache_pin && !no_pin_plan.config.moe.cache_pin_fit &&
+                  !no_pin_plan.allocation.cache_lock_unverified,
+              "ledger: an explicit no-pin remains authoritative under an unknown ceiling");
+        RunConfig no_fit = base_cfg();
+        no_fit.moe.cache_pin_fit = false;
+        PlanRequest no_fit_request;
+        no_fit_request.pinned = {"cache-pin-fit"};
+        check(!plan_run(no_fit, unknown, model, no_fit_request).config.moe.cache_pin_fit,
+              "ledger: an explicit no-fit is not replaced by the unknown-ceiling policy");
+        RunConfig own_unknown = base_cfg();
+        own_unknown.moe.cache_mb = 1500;
+        const Plan caller_unknown = plan_run(own_unknown, unknown, model, orq);
+        check(caller_unknown.config.moe.cache_mb == 1500 && !caller_unknown.config.moe.cache_pin_fit,
+              "ledger: a caller's cache budget is not automatically fitted under an unknown ceiling");
+
+        // An unread part of the ceiling cannot erase a finite bound obtained independently.
+        HardwareProfile partial = unknown;
+        partial.residency_budget = 8 * GiB;
+        partial.lockable_bytes = 1 * GiB;
+        partial.lock_in_place_bytes = 1 * GiB;
+        const Plan partial_plan = plan_run(base_cfg(), partial, model, PlanRequest{});
+        check(partial_plan.cache_budget_bytes >= model.token_cycle_bytes &&
+                  partial_plan.cache_budget_bytes < partial.lock_in_place_bytes &&
+                  partial_plan.config.moe.cache_pin_fit && partial_plan.allocation.cache_lock_unverified,
+              "ledger: a partial finite ceiling still bounds an unverified runtime grant");
+        partial.lockable_bytes_known = true;
+        partial.lock_in_place_bytes_known = true;
+        const Plan finite_plan = plan_run(base_cfg(), partial, model, PlanRequest{});
+        check(finite_plan.config.moe.cache_pin_fit && !finite_plan.allocation.cache_lock_unverified &&
+                  finite_plan.allocation.cache_locked_bytes == finite_plan.cache_budget_bytes &&
+                  finite_plan.allocation.ledger.locked <= finite_plan.allocation.ledger.lockable_cap,
+              "ledger: a measured finite ceiling retains its existing bounded-lock policy");
+
         // A device armed for prefill is a line, charged to both ceilings where its buffers are
         // locked: two of the model's largest expert layer, and the cache gives up exactly that.
         ModelProfile mm = model;

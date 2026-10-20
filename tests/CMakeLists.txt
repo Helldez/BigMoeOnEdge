@@ -12,6 +12,19 @@ if(WIN32)
 endif()
 target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 
+# A real Session::open with the full device confirmation and a page-aware fake mlock allowance.
+# The test adapter object supplies the production platform_io symbols, so the static archive's
+# copy is not selected; syscall substitutions never reach the production library.
+if(UNIX AND NOT ANDROID)
+    add_executable(bmoe_startup_pin_fit_test startup_pin_fit_test.cpp startup_pin_platform_io.cpp)
+    target_link_libraries(bmoe_startup_pin_fit_test PRIVATE bmoe_core)
+endif()
+
+add_executable(bmoe_lock_limits_test lock_limits_test.cpp)
+target_link_libraries(bmoe_lock_limits_test PRIVATE bmoe_core)
+target_include_directories(bmoe_lock_limits_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
+add_test(NAME lock_limits COMMAND bmoe_lock_limits_test)
+
 # Reasoning-parser wiring regression (issue #49). Needs no model — it drives the extracted
 # bmoe::detail::build_parse_params directly — so it runs unconditionally, unlike the gates below.
 add_executable(bmoe_chat_parse_test chat_parse_test.cpp)
@@ -175,6 +188,13 @@ if(PYTHON3)
         add_test(NAME moe_gates_${spec} COMMAND bmoe_moe_gates ${_model} ${_gate_args})
         set_tests_properties(moe_gates_${spec} PROPERTIES FIXTURES_REQUIRED ${_fixture})
     endforeach()
+
+    if(TARGET bmoe_startup_pin_fit_test)
+        add_test(NAME startup_pin_fit COMMAND bmoe_startup_pin_fit_test
+                 "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
+        set_tests_properties(startup_pin_fit PROPERTIES
+                             FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe SKIP_RETURN_CODE 77)
+    endif()
 
     # The same qwen3moe fixture, written as a 4-shard split gguf (metadata-only first shard —
     # the layout large models actually ship in, since Hugging Face rejects files above 50 GB).

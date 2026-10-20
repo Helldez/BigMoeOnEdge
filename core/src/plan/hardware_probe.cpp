@@ -249,11 +249,14 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.memory_total = pio::mem_total_bytes();
     h.anon_overflow = probe_anon_overflow();
     h.reclaim_exempt_max = pio::pinned_max_bytes();
-    // Recorded as the platform states them. A store that publishes no total answers "unbounded",
-    // and the ledger bounds that by what the process may hold - a figure this function does not
-    // have yet, since the headroom is measured after it.
-    h.lockable_bytes = pio::lockable_bytes();
-    h.lock_in_place_bytes = pio::lock_in_place_bytes();
+    // A denied query is not a zero grant or a measured unlimited store. Carry its uncertainty
+    // beside any independently known finite bound so the plan can make a bounded runtime attempt.
+    const pio::LockLimit lockable = pio::lockable_limit();
+    const pio::LockLimit in_place = pio::lock_in_place_limit();
+    h.lockable_bytes = lockable.bytes;
+    h.lockable_bytes_known = lockable.known;
+    h.lock_in_place_bytes = in_place.bytes;
+    h.lock_in_place_bytes_known = in_place.known;
     h.n_cores = std::thread::hardware_concurrency();
     probe_core_classes(h);
 

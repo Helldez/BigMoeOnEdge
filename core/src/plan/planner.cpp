@@ -802,12 +802,18 @@ bool choose_dense_policy(Planning & s) {
     Plan & p = s.p;
     const HardwareProfile & hw = s.hw;
     if (s.pinned("dense-weights", dense_mode_name(p.config.moe.dense_weights))) return false;
-    if (hw.reclaim_exempt_max > 0 && hw.anon_overflow == Overflow::Compress) {
+    if (hw.reclaim_exempt_max > 0 && hw.lockable_bytes_known && hw.anon_overflow == Overflow::Compress) {
         // Anonymous memory keeps the dense set off flash but not out of a compressed swap, where
         // every touch costs a decompression that no I/O counter shows. A store the kernel may not
         // reclaim is the only thing that closes that gap.
         p.config.moe.dense_weights = DenseWeightsMode::Pinned;
         return true;
+    } else if (hw.reclaim_exempt_max > 0 && !hw.lockable_bytes_known && hw.anon_overflow == Overflow::Compress) {
+        p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
+        s.note("dense-weights", "anon", Source::Unprobed,
+               "Dense weights are copied into RAM: the reclaim-exempt total is unmeasured.",
+               "a reclaim-exempt allocation exists, but an unread ceiling cannot establish that the whole dense "
+               "set fits it; anonymous buffers keep the dense set off flash without assuming a lock grant");
     } else if (hw.anon_overflow == Overflow::Unknown) {
         p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
         s.note("dense-weights", "anon", Source::Policy,
@@ -885,6 +891,8 @@ AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     };
     ai.lockable_bytes = lock_cap(s.hw.lockable_bytes);
     ai.lock_in_place_bytes = lock_cap(s.hw.lock_in_place_bytes);
+    ai.lockable_bytes_known = s.hw.lockable_bytes_known;
+    ai.lock_in_place_bytes_known = s.hw.lock_in_place_bytes_known;
     return ai;
 }
 
@@ -931,12 +939,9 @@ void charge_prefill(const Planning & s, const ComputeDevice * dev, AllocationInp
     const uint64_t rest = 2 * s.model.largest_layer_dense_bytes + compute;
     in.device_bytes = on_demand ? rest : rest + experts;
     in.device_turn_bytes = on_demand ? experts : 0;
-    // Charged to the lock ceiling only where there is one. That ceiling exists to keep what this
-    // process locks - the dense set, the cache - from being outbid by a device that wires the same
-    // pool. Where nothing can be locked (a platform that publishes no wire limit reads 0), there is
-    // nothing to outbid, and charging the device to it read as "no room": a phone's GPU, measured at
-    // 17.8x the host on a wide prefill, was refused for 0 MiB of a store the run could not use. Its
-    // bytes are still charged where they are held, to what the process may hold.
+    // Device buffers compete with locks wherever that pool may grant them. A known zero cannot
+    // be outbid, so it must not reject a device; an unread ceiling keeps its independent bounds.
+    // Every device allocation still consumes the ordinary process memory budget.
     in.device_locked = (in.lockable_bytes > 0 || in.lock_in_place_bytes > 0) && (!dev || dev->charges_lockable());
 }
 
@@ -1030,7 +1035,8 @@ Allocation fit_prefill_device(Planning & s,
         // cache as ordinary memory where it was locked has taken from decode the very thing the
         // ledger exists to keep.
         keeps_dense = armed.dense_pinned == alloc.dense_pinned &&
-                      (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0);
+                      (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0) &&
+                      armed.cache_lock_unverified == alloc.cache_lock_unverified;
         if (!own_short && streams && keeps_dense && armed.turn_fits) {
             slots = n;
             break;
@@ -1197,8 +1203,9 @@ void settle_dense_pin(Planning & s, bool pin_candidate, const Allocation & alloc
 void settle_cache_lock(Planning & s, const Allocation & alloc) {
     RunConfig & c = s.p.config;
     const bool cache_by_caller = s.req.is_pinned("cache-mb");
-    if (!s.req.is_pinned("cache-pin-fit") && !cache_by_caller) c.moe.cache_pin_fit = alloc.cache_locked_bytes > 0;
-    if (!s.req.is_pinned("cache-pin") && c.moe.cache_pin && alloc.cache_locked_bytes == 0 && !cache_by_caller) {
+    const bool attempt = alloc.cache_locked_bytes > 0 || alloc.cache_lock_unverified;
+    if (!s.req.is_pinned("cache-pin-fit") && !cache_by_caller) c.moe.cache_pin_fit = attempt;
+    if (!s.req.is_pinned("cache-pin") && c.moe.cache_pin && !attempt && !cache_by_caller) {
         c.moe.cache_pin = false;
         s.note("cache-pin", "off", Source::Derived, "The cache is not locked: not even one token's experts could be.",
                "not even one token cycle of the cache can be locked in place here after what is ahead of it, so "
@@ -1235,11 +1242,12 @@ void note_ledger(Planning & s, const Allocation & alloc) {
     std::string lines;
     for (const LedgerRow & r : ledger.rows)
         lines += (lines.empty() ? "" : ", ") + r.name + " " + u64s(mib(r.bytes)) + (r.locked ? " locked" : "");
+    const std::string lock_cap = ledger.lockable_cap_known ? u64s(mib(ledger.lockable_cap)) + " MiB" : "unmeasured";
     s.note("memory-ledger", u64s(mib(ledger.held)) + " MiB", Source::Derived,
            "This run holds " + size_brief(ledger.held) + " of the " + size_brief(ledger.holdable_cap) + " it may use.",
            "held " + u64s(mib(ledger.held)) + " of " + u64s(mib(ledger.holdable_cap)) +
-               " MiB holdable, of which locked " + u64s(mib(ledger.locked)) + " of " + u64s(mib(ledger.lockable_cap)) +
-               " MiB lockable: " + lines);
+               " MiB holdable, of which locked " + u64s(mib(ledger.locked)) + " MiB of " + lock_cap +
+               " lockable: " + lines);
 
     // Each of the cost model's notes under its own name: a column of identical "cost" rows is a list
     // nobody can tell apart.
