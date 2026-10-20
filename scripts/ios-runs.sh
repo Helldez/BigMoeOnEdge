@@ -78,7 +78,7 @@ run() { # name, then the bmoe-cli arguments
     echo "exit $status" >>"$OUT/$name.txt"
     {
         echo "== $name (exit $status)"
-        grep -E '^(generation|compute|mode|moe-stream|moe-cache):|plan:   (dense-weights|cache-mb|threads|memory-ledger) ' \
+        grep -E '^(prefill|generation|compute|mode|moe-stream|moe-cache):|plan:   (dense-weights|cache-mb|threads|memory-ledger|prefill-device) |cache brake:' \
             "$OUT/$name.txt" || echo "(no perf lines: see $name.txt)"
         if fetch "$name.csv" 2>/dev/null; then
             echo "csv: dense_resident_frac mean $(column_mean "$OUT/$name.csv" dense_resident_frac)," \
