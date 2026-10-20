@@ -13,8 +13,9 @@ the code, and you do not pick any settings: the protocol fixes them so rows comp
 
 **Which model?** Any MoE llama.cpp loads ([which-models-stream.md](which-models-stream.md)), any quantization. No model
 yet? The [catalog table](#models-that-line-up-with-the-readme) lists what the app ships. Larger
-than your RAM is the interesting case; one that fits is still a valid row (it measures what
-streaming costs against running resident). The report asks which of the two you are in.
+than your RAM is the interesting case; one that fits is still a valid row, and there the `auto`
+row runs it resident (and on your GPU, with a build that carries one) while the `stream` row
+measures what streaming costs. The report asks which of the two you are in.
 
 ### PC or laptop, Linux and macOS
 
@@ -25,10 +26,16 @@ scripts/bench-report.sh /path/to/model.gguf
 ```
 
 It builds the CLI, records your CPU / RAM / drive, measures the drive at the request size the
-engine actually issues, runs the protocol, prints two markdown tables. Paste both. Done.
+engine actually issues, runs the model twice (`auto`, then `stream`, see [the protocol](#the-protocol)),
+prints two markdown tables and the plan `auto` chose. Paste all of it. Done.
 
 - **No toolchain?** Every release attaches a prebuilt `bmoe-cli` (Linux x86_64 / aarch64, macOS
   arm64, Windows x86_64). Point the script at it: `BMOE_CLI=/path/to/bmoe-cli scripts/bench-report.sh model.gguf`.
+- **A GPU in the box?** The `auto` row uses it only if the binary carries its backend. The release
+  archives carry Vulkan on Linux and Windows and Metal on macOS. For CUDA, build it in:
+  `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON && cmake --build build -j`; the
+  CUDA module lands beside `bmoe-cli` and loads like the shipped ones. The plan in the report says
+  which devices it used.
 - **Binary will not start?** The archives carry one CPU module per instruction-set tier and pick the
   best one this machine runs, so no particular CPU is assumed. The Linux aarch64 archive needs
   glibc 2.38 or newer (Ubuntu 24.04); the x86_64 one runs from Ubuntu 22.04. Drop `BMOE_CLI=` and
@@ -64,22 +71,35 @@ empty unless you run the storage probe yourself.
 
 ## The protocol
 
-One run, 256 greedy tokens, the same prompt as every README table, settings fixed at what wins on
-the reference phone rather than tuned per machine: `min(8, cores)` threads, 4 read lanes,
-auto-sized cache, `--overlap`, `--dense-weights anon`, `--ubatch 512` (the same prefill width the
-Android app pins, so a host row and an in-app row reserve comparable memory).
+Two runs of the same model, 256 greedy tokens each, the same prompt as every README table. They
+answer different questions, so the report keeps both rows:
 
-Override with an environment variable, and say so in the issue:
+- **`auto`** passes `--auto` and nothing else (`--plan-explain` only prints the plan it runs):
+  what the engine does on *this* machine. The planner
+  hands what fits to the GPUs the build carries, keeps a model that fits in RAM resident without
+  streaming, and streams only the experts left over. This is the row to compare with other
+  engines on the same hardware.
+- **`stream`** forces streaming on with settings fixed at what wins on the reference phone rather
+  than tuned per machine, CPU only: `min(8, cores)` threads, 4 read lanes, auto-sized cache,
+  `--overlap`, `--dense-weights anon`, `--ubatch 512` (the same prefill width the Android app pins,
+  so a host row and an in-app row reserve comparable memory). It measures the streamer, and it is
+  the row that lines up with the README's. Where the model fits in RAM or VRAM it is slower than
+  `auto` by design: it pays for reads a resident model does not need.
+
+`auto` runs first, so the planner sizes its plan on an idle machine. Override with an environment
+variable, and say so in the issue:
 
 | Variable | Default | Change it if |
 |---|---|---|
-| `THREADS` | `min(8, cores)` | big.LITTLE CPU (try the big-core count), or far more cores than 8 |
+| `MODES` | `auto stream` | you want only one of the two rows (`MODES=stream` reproduces the old single run) |
+| `THREADS` | `min(8, cores)` | `stream` only: big.LITTLE CPU (try the big-core count), or far more cores than 8 |
 | `IO_THREADS` | 4 | NVMe with a deep queue, or a slow SD / USB drive |
 | `CACHE_MB` | `auto` | auto left the machine short, or fed the cache so much that `majflt/tok` climbed |
 | `UBATCH` | 512 | memory is tight and you will trade prefill width for it, or you want the old full-width behaviour (`UBATCH=0`) |
 | `N_PREDICT` | 256 | never below 256, the cache is still warming |
 
-Flags after the model path reach `bmoe-cli` verbatim (`--no-think` for gpt-oss,
+The other variables (`IO_THREADS`, `CACHE_MB`, `UBATCH`) shape the `stream` row; `auto` picks its own.
+Flags after the model path reach `bmoe-cli` verbatim in both runs (`--no-think` for gpt-oss,
 `--n-expert-used 6` for a turbo top-k row). A tuned row is welcome, it just sits *next to* the
 default row rather than replacing it. To understand the knobs first, see
 [benchmark-method.md](benchmark-method.md).
