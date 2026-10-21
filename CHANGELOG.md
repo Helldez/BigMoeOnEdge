@@ -36,6 +36,26 @@ Semantic Versioning.
   layers plus streamed experts print the same text as the resident run, with and without
   `--overlap`.
 
+### Docs
+- **Measured planning, the design (`docs/measured-planning.md`).** Where `--auto` goes next. The
+  memory ledger and the correctness checks stay rules; speed is measured on the model itself
+  instead of predicted, in four steps:
+  1. The cache sized from a replay of the model's own routing trace, replacing the linear hit
+     credit.
+  2. The lossless knobs (threads first) settled by interleaved windows on the first real request,
+     and kept per hardware and model.
+  3. The cost of a device measured on one real layer's matmuls and crossing, the price that has
+     kept layers off devices in decode.
+  4. Device memory as a tier of the expert cache, through llama.cpp's experimental
+     `moe_cache_size`. It needs a correctness check with streamed experts before the plan arms it.
+     A device that fails its probe should be left out of the fitter rather than cancel every
+     device's placement.
+
+  Each step names what it removes, the earlier measurements that constrain it (the retired cache
+  governor, a hit-rate curve that lost on throughput, a thermally contaminated A/B) and how it is
+  judged. `docs/hardware-planning.md` points to the new route beside the closed one. Linked from
+  the roadmap and the docs index.
+
 ## [0.33.1] - 2026-10-20
 
 ### Changed

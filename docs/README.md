@@ -29,6 +29,7 @@ for the idea the project is built on.
 | [decide.md](decide.md) | `--decide`: picking one of a list of choices from a single prefill, with no decode, and keeping the state after a shared prefix between calls. |
 | [settings.md](settings.md) | Every streaming setting: the flag, its values and what it does. |
 | [hardware-planning.md](hardware-planning.md) | `--auto`: how the engine sizes a run to this machine and this model, the fact behind each choice, and what is still unmeasured. |
+| [measured-planning.md](measured-planning.md) | Where `--auto` goes next: safety stays accounted, speed is measured on the model's own routing and tensors, and what that removes. A design, not yet built. |
 | [cache-sizing.md](cache-sizing.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
 | [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output (with the lossy knobs off). |
 | [expert-dropping.md](expert-dropping.md) | `--drop-cold-experts F`: spending quality only where it buys a flash read, and why a cache-dependent setting's output is not reproducible. |
