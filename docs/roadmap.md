@@ -321,7 +321,10 @@ machine reports available; and a thread rule that reads core classes rather than
 because a barrier waits for its slowest participant.
 
 What is still owed is measurement rather than design, and every knob the plan cannot decide prints
-`[unprobed]`.
+`[unprobed]`. Where the planner goes next, in four steps that replace predictions with measurements
+on the model itself (its routing for the cache, its first request for the lossless knobs, one real
+layer for devices, and device memory as a tier of the expert cache):
+[measured-planning.md](measured-planning.md).
 
 - **Streamed experts computed on a device, rather than on the CPU cores.** Half built, and the
   missing half is a design question rather than plumbing. A device is asked whether it offers a host buffer type and whether it runs this model's
