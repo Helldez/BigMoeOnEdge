@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.33.2] - 2026-10-21
+
+### Fixed
+- **A layer on a discrete GPU whose experts stream no longer crashes the first prefill (#321,
+  likely #330).** The router hook read the selected expert ids straight from the routing node,
+  and on a layer placed on a device with memory of its own that node lives in device memory: the
+  read faulted. `--auto` reaches exactly that placement whenever a model is larger than the cards
+  (DeepSeek V4 Flash on two 16 GB cards, under CUDA), and `--gpu-layers` with `--moe-stream` did
+  on Vulkan. The ids are now copied to the host with `ggml_backend_tensor_get` where the node's
+  buffer is not host memory, which the scheduler makes valid by synchronizing the split before the
+  callback; the policies that rewrite the routing or read the router's inputs (substitution,
+  route-ahead, dropping, the predictors) act only on host-resident layers, so a device layer keeps
+  the router's own choice. Unified memory reads as host, which is why no Apple-silicon run showed
+  it. Reproduced and verified on Apple silicon with Metal's private buffers
+  (`GGML_METAL_SHARED_BUFFERS_DISABLE=1`, which makes its memory unreadable from the CPU like a
+  discrete card's): 0.33.0 segfaulted at the same point as the report; with the fix 12 placed
+  layers plus streamed experts print the same text as the resident run, with and without
+  `--overlap`.
+
 ## [0.33.1] - 2026-10-20
 
 ### Changed

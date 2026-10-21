@@ -15,6 +15,19 @@
 
 namespace bmoe {
 
+namespace {
+
+// Whether the CPU can read `t` where it lies. A node the scheduler ran on a device with memory of
+// its own lives in that memory, and `data` is the device's address: read in place, it faults. That
+// is the routing node of a layer placed on a discrete GPU whose experts still stream from the host
+// (#321). Unified memory reads as host, which is why a run with layers on an integrated GPU never
+// showed it.
+bool host_readable(const ggml_tensor * t) {
+    return t && t->data && (!t->buffer || ggml_backend_buffer_is_host(t->buffer));
+}
+
+} // namespace
+
 namespace tn = tensor_names;
 
 RouterHook::RouterHook(const ExpertLayout & layout, int n_layer) : layout_(layout), n_layer_(n_layer) {
@@ -1385,6 +1398,18 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
     close_drop_layer();
 
     const int nu = (int) t->ne[0], nt = (int) t->ne[1];
+    // The ids are read where they lie, or from a host copy when the routing ran on a device. The
+    // scheduler synchronizes a split's backend before the observing callback, so the copy holds this
+    // graph's routing. The policies below that rewrite the routing or read the router's inputs act
+    // only on a node in host memory: on a device copy they would edit bytes the graph never reads
+    // back, so those layers keep the router's own choice, which is the lossless default anyway.
+    const bool on_host = host_readable(t);
+    const char * ids = (const char *) t->data;
+    if (!on_host) {
+        staged_ids_.resize(ggml_nbytes(t));
+        ggml_backend_tensor_get(t, staged_ids_.data(), 0, staged_ids_.size());
+        ids = staged_ids_.data();
+    }
     // Route-ahead, in submission order: first the watchdog sample and the ranking job for
     // layer il+N (both need the ROUTER's ids, still untouched here), then the commit — BEFORE
     // the ids are gathered, so everything downstream — the trace, the drop policy, load_layer,
@@ -1395,9 +1420,9 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
     // everything downstream — the trace, the drop policy, load_layer, the weight chain — must
     // see the routing that will actually run, and this is the last point where the ids are
     // still ours to change.
-    if (substitute_armed()) apply_substitute(t, il, nu, nt);
+    if (on_host && substitute_armed()) apply_substitute(t, il, nu, nt);
 
-    if (route_ahead_ > 0 && batch_phase_ == 1) {
+    if (on_host && route_ahead_ > 0 && batch_phase_ == 1) {
         // Collect FIRST: the ranking racing this topk is keyed to the seq of the job the
         // PREVIOUS topk submitted, and the submit below bumps that seq — collecting after it
         // would stale-fail nearly every legitimate result (measured: half the layers fell to
@@ -1411,8 +1436,7 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
     gathered_.clear();
     for (int j = 0; j < nt; ++j)
         for (int k = 0; k < nu; ++k)
-            gathered_.push_back(
-                *(const int32_t *) ((const char *) t->data + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]));
+            gathered_.push_back(*(const int32_t *) (ids + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]));
 
     if (trace_on_) {
         flush_pending(); // the previous layer's whole weight chain has been offered by now
@@ -1439,12 +1463,12 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
     // Watchdog sample + submit the il+2 prediction job. Before the load flow on purpose: the
     // snapshot must precede load_layer, whose staging would otherwise count this layer's own
     // reads into the residency picture the job carries.
-    predict_at_topk(t, il, nu, nt);
+    if (on_host) predict_at_topk(t, il, nu, nt);
 
     // Open the layer for the drop policy. Deferring the load is only safe once this layer's
     // terminal weight node is known — otherwise there is no callback left to decide in, and the
     // expert matmul would run against slots nothing loaded. First graph of a run: load here.
-    const bool defer = drop_armed() && il >= 0 && il < (int) term_variant_.size() && term_variant_[il] >= 0;
+    const bool defer = on_host && drop_armed() && il >= 0 && il < (int) term_variant_.size() && term_variant_[il] >= 0;
     drop_.layer = il;
     drop_.nu = nu;
     drop_.nt = nt;
@@ -1484,10 +1508,9 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
     if ((prefetch_layers_ > 0 || predict_log_) && il >= 0 && il < n_layer_) {
         std::vector<int32_t> & rec = prev_ids_[il];
         rec.clear();
-        const int last = nt - 1;
-        for (int k = 0; k < nu; ++k)
-            rec.push_back(
-                *(const int32_t *) ((const char *) t->data + (size_t) last * t->nb[1] + (size_t) k * t->nb[0]));
+        // The gathered ids ARE this node's (nothing has edited them since), and unlike `t->data` they
+        // are readable whichever memory the routing ran in.
+        rec.assign(gathered_.begin() + (ptrdiff_t) (nt - 1) * nu, gathered_.begin() + (ptrdiff_t) nt * nu);
     }
 }
 
@@ -1548,9 +1571,11 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                        ? tn::node_layer(t->name, tn::k_logits_node)
                        : -1;
     const bool is_logits = gl >= 0;
-    if (ask && is_logits && gl < n_layer_) {
+    // The predictors read both on the host, barrier-less; a layer whose router runs on a device
+    // stashes neither and passes through.
+    if (ask && is_logits && gl < n_layer_ && host_readable(t->src[1])) {
         ggml_tensor * w = t->src[0];
-        if (w && w->op == GGML_OP_NONE && w->data && ggml_is_contiguous(w)) gate_w_[gl] = w;
+        if (w && w->op == GGML_OP_NONE && host_readable(w) && ggml_is_contiguous(w)) gate_w_[gl] = w;
         h_t_[gl] = t->src[1];
     }
     // The compute trace wants every node isolated — or, at layer granularity, only the first
@@ -1588,14 +1613,14 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // one offered (tensor_names.h explains why) and let the flush read it. This runs BEFORE the drop
     // policy edits the same tensor, so the trace records the routing the router produced, not the
     // one the policy left behind — `dropped` is what says which is which.
-    if (is_weights && t->data && t->type == GGML_TYPE_F32 && pending_.layer == wl && pending_.nu > 0)
+    if (is_weights && host_readable(t) && t->type == GGML_TYPE_F32 && pending_.layer == wl && pending_.nu > 0)
         gather_weights(t, pending_.nu, pending_.nt, pending_.weights);
 
     // Learn which node ends this layer's weight chain, and — once known — use it as the point where
     // the routing is decided: everything the drop policy needs is final here, and nothing has
     // consumed it yet. The learning pass and the deferral are the same walk, so a layer whose chain
     // shape the hook has not seen yet simply keeps the undropped behaviour.
-    if (is_weights && t->data && t->type == GGML_TYPE_F32 && drop_.layer == wl) {
+    if (is_weights && host_readable(t) && t->type == GGML_TYPE_F32 && drop_.layer == wl) {
         chain_last_ = (int8_t) weight_variant;
         if (drop_.deferred && wl >= 0 && wl < (int) term_variant_.size() && term_variant_[wl] == weight_variant)
             apply_drop(t);

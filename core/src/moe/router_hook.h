@@ -353,6 +353,7 @@ private:
     std::unordered_set<std::string> row_disqualified_; // non-expert weight leaves (see captured_weights)
     std::unordered_set<const ggml_tensor *> non_matrix_weights_;
     std::vector<int32_t> gathered_; // reused scratch for stream-mode id gather
+    std::vector<char> staged_ids_;  // a device-resident routing node's bytes, copied to the host
 
     // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
     // during prefill). Empty when prefetch is off or a layer has not been seen yet.
