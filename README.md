@@ -37,8 +37,9 @@ several times larger than RAM runs, and its output is identical to running it fu
   CPU, GPU and NPU) and builds the plan for that exact device: what stays in memory, what streams,
   which chip reads the prompt and which writes the answer. It shows the reason behind every choice.
   No flags, no tuning.
-- **Any hardware, any OS.** Android, macOS, Windows and Linux ship today, with iOS on the way. CPU,
-  GPU and NPU backends load as modules, and the planner uses whichever the machine has.
+- **Any hardware, any OS.** Android, macOS, Windows and Linux ship today, and the iOS app runs on an
+  iPhone, built from source. CPU, GPU and NPU backends load as modules, and the planner uses
+  whichever the machine has.
 - **Any model, any quantization.** Any MoE gguf that llama.cpp loads. Search Hugging Face from the
   app, and the engine reads the model's header before the download and tells you how it will run.
 - **A local OpenAI-compatible server.** Every device serves the models it runs, so chat clients and
@@ -55,6 +56,7 @@ on, and stronger hardware runs faster.
 | Qwen3.8-Flash-Next 125B | 80 GB | 12 GB Android phone | 6.7× | 2.2-3.5 tok/s |
 | gpt-oss-120b | 60 GB | 12 GB Android phone | 5× | 1.3 tok/s |
 | Qwen3.6-35B-A3B | 21 GB | 12 GB Android phone | 1.9× | 4.8-5.0 tok/s |
+| Qwen3.6-35B-A3B | 21 GB | 12 GB iPhone | 1.9× | 2.6-3.0 tok/s |
 | Qwen3-30B-A3B | 18.5 GB | 12 GB Android phone | 1.5× | 5.2 tok/s |
 | Gemma-4-26B-A4B | 17 GB | 12 GB Android phone | 1.4× | 4.1 tok/s |
 | Qwen3.8-Flash-Next 125B | 76 GB | 16 GB Apple-silicon laptop | 4.8× | 6.5-9 tok/s |
@@ -72,6 +74,9 @@ table into a [benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/n
 [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest), pick a model under
 **Models**, and chat. **Settings → Serve on the network** shares it with other devices, with a key.
 
+**iPhone.** Build the app from source with Xcode: [examples/ios](examples/ios/README.md). It is
+experimental, and the first run on a real iPhone is below.
+
 **Desktop (macOS, Windows, Linux).** Download the `bmoe-desktop` archive from the same release and
 run `bmoe-server --open`. The app opens at `http://127.0.0.1:8765/`.
 
@@ -82,7 +87,18 @@ bmoe-cli -m model.gguf --auto -p "Explain MoE routing."   # measure, plan, run
 bmoe-cli -m model.gguf --plan                              # show the plan and exit
 ```
 
-The phone and the desktop show the same five screens: Chat, Models, Plan, Settings and Metrics.
+The phones and the desktop show the same five screens: Chat, Models, Plan, Settings and Metrics.
+
+<table align="center"><tr>
+<td align="center"><img src="docs/assets/iphone/plan.png" width="300" alt="The Plan screen on a 12 GB iPhone after loading Qwen3.6-35B-A3B: experts stream from flash with a 2.3 GiB cache, 2.9 tok/s expected."></td>
+<td align="center"><img src="docs/assets/iphone/chat.png" width="300" alt="A chat on the iPhone: the model answers Paris, decoding at 3.0 tok/s."></td>
+</tr></table>
+
+<p align="center">
+  <a href="https://github.com/user-attachments/assets/5f8eb0fa-93cc-47f1-b12c-7be4e20b2ba1"><b>▶ Watch the first iPhone chat, in real time</b></a><br>
+  <sub>A 21 GB model on a 12 GB iPhone, the whole 56-second wait from Send to the answer with
+  thinking on. Recorded by <a href="https://github.com/gjjkbssg">@gjjkbssg</a> (#235).</sub>
+</p>
 
 ## Use it from your tools
 

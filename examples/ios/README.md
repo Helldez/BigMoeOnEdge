@@ -10,11 +10,12 @@ Two apps, one engine:
 - **The harness** (`harness/`): `bmoe-cli` compiled into an app, one field for the command line
   and the CLI's own output. A measuring instrument, not a chat app.
 
-**Status: both build and run in the simulator (CI compiles them there); the harness has run on a
-device, the app has not.** A contributor streamed a 35B-A3B on a 12 GB iPhone with the harness,
-signed by a free Personal Team with the memory limit entitlement alone (#235), and the plan it read
-there is what #304 corrected: the dense set was left mapped and refaulted from flash on every token.
-A streamed generation in the simulator says the app works and nothing about a phone.
+**Status: both build and run in the simulator (CI compiles them there), and both have run on a
+12 GB iPhone.** A contributor built the app from the v0.33.0 tag, signed by a free Personal Team with
+the memory limit entitlement alone, and on the phone it loaded Qwen3.6-35B-A3B Q4_K_M with the plan
+(about 65 s), drew the Plan screen and chatted at 2.6-3.0 tok/s against the 2.9 the plan predicted,
+with no crash (#235). Earlier harness runs on the same phone are what #304, #312, #318 and #320
+corrected. It is experimental: two turns of chat are not a pressure-stability guarantee.
 
 ## The app
 
