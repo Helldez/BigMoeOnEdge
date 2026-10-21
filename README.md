@@ -1,15 +1,8 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo/horizontal-ink.svg">
-    <img src="docs/assets/logo/horizontal.svg" width="440" alt="BigMoeOnEdge">
+    <img src="docs/assets/logo/horizontal.svg" width="320" alt="BigMoeOnEdge">
   </picture>
-</p>
-
-<p align="center"><b>Big local AI agents, on every edge device.</b></p>
-
-<p align="center">
-  An adaptive streaming optimizer for Mixture-of-Experts models.<br>
-  Any hardware, any OS, any model, any quantization, behind a local OpenAI-compatible server.
 </p>
 
 <p align="center">
@@ -18,39 +11,61 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Helldez/BigMoeOnEdge" alt="License"></a>
 </p>
 
-<p align="center"><img src="docs/assets/demo.webp" width="900" alt="A 35B model chatting in real time on a 16 GB laptop and a 12 GB phone, a 125B model streaming on the phone, the planner measuring the machine and laying out its plan, and opencode fixing a bug through the local server."></p>
+Run Mixture-of-Experts models larger than the device's memory by streaming the experts from flash.
+Built on llama.cpp's public API; Android, iOS, macOS, Windows and Linux; a local OpenAI-compatible
+server on each.
+
+<table>
+<tr>
+<td align="center" width="50%"><img src="docs/assets/screens/android.png" width="300" alt="Qwen3.6-35B-A3B answering on a 12 GB Android phone, 5.8 tok/s in the live line."></td>
+<td align="center" width="50%"><img src="docs/assets/screens/iphone.png" width="300" alt="Qwen3.6-35B-A3B answering on a 12 GB iPhone, decoding at 3.0 tok/s."></td>
+</tr>
+<tr>
+<td align="center">12 GB Android phone</td>
+<td align="center">12 GB iPhone (<a href="https://github.com/user-attachments/assets/5f8eb0fa-93cc-47f1-b12c-7be4e20b2ba1">real-time recording</a> by <a href="https://github.com/gjjkbssg">@gjjkbssg</a>)</td>
+</tr>
+<tr>
+<td align="center" colspan="2"><img src="docs/assets/screens/desktop.png" width="820" alt="Qwen3.6-35B-A3B answering in the desktop app on a 16 GB Apple-silicon laptop, decoding at 18.2 tok/s."></td>
+</tr>
+<tr>
+<td align="center" colspan="2">16 GB Apple-silicon laptop</td>
+</tr>
+</table>
+
+Qwen3.6-35B-A3B on each device, a 21 GB model or larger than each one's memory: unedited screenshots
+of the shipped apps.
+
+## Description
+
+A Mixture-of-Experts model uses a few of its experts for each token. BigMoeOnEdge keeps in memory
+the weights every token needs and a cache of recently used experts, and reads the other experts from
+flash when the router asks for them. The output is identical to running the model fully in memory;
+the tests check it.
+
+- **Planner.** `--auto` measures the machine (available memory, storage speed, each CPU, GPU and
+  NPU) and the model's header, then sets the cache size, what stays resident, and which device runs
+  the prompt and which the answer. Its rules name no platform or device. Settings given by hand are
+  kept.
+- **Models.** Any MoE gguf that llama.cpp loads, in any quantization. Expert tensors are found from
+  the file, so a new architecture needs no code here.
+- **Backends.** CPU, Metal, Vulkan, OpenCL and Hexagon NPU, loaded as modules; CUDA, HIP and SYCL
+  modules built with their own toolchains load the same way.
+- **Apps and server.** Native apps on Android and iOS, a web app on the desktop, and an
+  OpenAI-compatible server on all of them.
+
+## Performance
+
+Decode speed, measured on the devices below. The engine sizes itself to the machine, so stronger
+hardware runs faster.
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/b389bb14-baec-4970-b164-c770c185198a"><b>▶ Watch the full two-minute demo</b></a><br>
-  <sub>Real recordings on a 16 GB laptop and a 12 GB Android phone. Sped-up parts are marked.</sub>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/speed-dark.svg">
+    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Qwen3.6-35B-A3B Q4_K_M decode speed: 18-24 tok/s on a 16 GB Apple-silicon laptop, 4.8 on a 16 GB Windows laptop, 4.8-5.0 on a 12 GB Android phone, 2.6-3.0 on a 12 GB iPhone.">
+  </picture>
 </p>
 
----
-
-## What it does
-
-A Mixture-of-Experts model uses only a few of its experts for each token. BigMoeOnEdge keeps in
-memory what every token needs and streams the rest from storage, exactly when it is needed. A model
-several times larger than RAM runs, and its output is identical to running it fully in memory.
-
-- **Adaptive streaming optimizer.** The planner measures the machine (memory, storage speed, every
-  CPU, GPU and NPU) and builds the plan for that exact device: what stays in memory, what streams,
-  which chip reads the prompt and which writes the answer. It shows the reason behind every choice.
-  No flags, no tuning.
-- **Any hardware, any OS.** Android, macOS, Windows and Linux ship today, and the iOS app runs on an
-  iPhone, built from source. CPU, GPU and NPU backends load as modules, and the planner uses
-  whichever the machine has.
-- **Any model, any quantization.** Any MoE gguf that llama.cpp loads. Search Hugging Face from the
-  app, and the engine reads the model's header before the download and tells you how it will run.
-- **A local OpenAI-compatible server.** Every device serves the models it runs, so chat clients and
-  coding agents such as opencode work fully local. A phone can serve a laptop over Wi-Fi.
-
-## Examples
-
-Real runs, measured live. They are examples, not limits: the engine fits itself to whatever it runs
-on, and stronger hardware runs faster.
-
-| Model | On disk | Device | × its RAM | Decode |
+| Model | On disk | Device | Model / RAM | Decode |
 |---|---:|---|---:|---:|
 | DeepSeek V4 Flash 284B | 91 GB | 12 GB Android phone | 7.6× | 0.94 tok/s |
 | Qwen3.8-Flash-Next 125B | 80 GB | 12 GB Android phone | 6.7× | 2.2-3.5 tok/s |
@@ -64,45 +79,28 @@ on, and stronger hardware runs faster.
 | Qwen3-Coder-30B-A3B | 18.6 GB | 16 GB Apple-silicon laptop | 1.2× | 23 tok/s; 7-9 inside opencode |
 | Qwen3.6-35B-A3B | 21 GB | 16 GB Windows laptop | 1.3× | 4.8 tok/s |
 
-Every figure, the configuration behind it and the method: [docs/benchmarks.md](docs/benchmarks.md).
-Got a machine that is not here? Run `scripts/bench-report.sh /path/to/model.gguf` and paste the
-table into a [benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
+Configurations and method: [docs/benchmarks.md](docs/benchmarks.md). To add a machine, run
+`scripts/bench-report.sh /path/to/model.gguf` and paste the table into a
+[benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
 
-## Get started
+## Quick start
 
-**Phone (Android).** Install the APK from the
-[latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest), pick a model under
-**Models**, and chat. **Settings → Serve on the network** shares it with other devices, with a key.
+**Android.** Install the APK from the [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest)
+and pick a model under **Models**. **Settings → Serve on the network** shares it, with a key.
 
-**iPhone.** Build the app from source with Xcode: [examples/ios](examples/ios/README.md). It is
-experimental, and the first run on a real iPhone is below.
+**iOS.** Build the app with Xcode from [examples/ios](examples/ios/README.md). Experimental.
 
-**Desktop (macOS, Windows, Linux).** Download the `bmoe-desktop` archive from the same release and
-run `bmoe-server --open`. The app opens at `http://127.0.0.1:8765/`.
+**Desktop (macOS, Windows, Linux).** Download the `bmoe-desktop` archive from the same release and run
+`bmoe-server --open`; the app opens at `http://127.0.0.1:8765/`.
 
 **Command line.**
 
 ```bash
 bmoe-cli -m model.gguf --auto -p "Explain MoE routing."   # measure, plan, run
-bmoe-cli -m model.gguf --plan                              # show the plan and exit
+bmoe-cli -m model.gguf --plan                              # print the plan and exit
 ```
 
-The phones and the desktop show the same five screens: Chat, Models, Plan, Settings and Metrics.
-
-<table align="center"><tr>
-<td align="center"><img src="docs/assets/iphone/plan.png" width="300" alt="The Plan screen on a 12 GB iPhone after loading Qwen3.6-35B-A3B: experts stream from flash with a 2.3 GiB cache, 2.9 tok/s expected."></td>
-<td align="center"><img src="docs/assets/iphone/chat.png" width="300" alt="A chat on the iPhone: the model answers Paris, decoding at 3.0 tok/s."></td>
-</tr></table>
-
-<p align="center">
-  <a href="https://github.com/user-attachments/assets/5f8eb0fa-93cc-47f1-b12c-7be4e20b2ba1"><b>▶ Watch the first iPhone chat, in real time</b></a><br>
-  <sub>A 21 GB model on a 12 GB iPhone, the whole 56-second wait from Send to the answer with
-  thinking on. Recorded by <a href="https://github.com/gjjkbssg">@gjjkbssg</a> (#235).</sub>
-</p>
-
-## Use it from your tools
-
-Any OpenAI client works with the local address:
+## OpenAI-compatible server
 
 ```python
 from openai import OpenAI
@@ -117,47 +115,47 @@ print(reply.choices[0].message.content)
 
 Streaming, tool calls and reasoning are supported. For opencode, add the server as an
 OpenAI-compatible provider with `baseURL` set to `http://127.0.0.1:8765/v1`. To serve other machines,
-start the server with `--host` and `--api-key`. The full API: [docs/server-api.md](docs/server-api.md).
+start the server with `--host` and `--api-key`. API reference: [docs/server-api.md](docs/server-api.md).
 
 ## How it works
 
-<p align="center"><img src="docs/assets/diagrams/streaming.svg" width="900" alt="The whole model sits on storage. RAM holds the always-needed weights and a cache of hot experts. For each layer the router picks k experts: hits come from the cache, misses are read from storage, and the layer computes as usual."></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/token-dark.svg">
+    <img src="docs/assets/diagrams/token-light.svg" width="820" alt="One decode step: the whole model is on flash; RAM holds the dense weights and an expert cache. The router picks k experts per layer; cached ones cost nothing, the others are read from flash.">
+  </picture>
+</p>
 
-The engine is built on llama.cpp's public API, so every quantization, tokenizer and chat template
-llama.cpp supports works unchanged, and a new llama.cpp release is a submodule bump. Which tensors
-are the routed experts is read from the file itself, so new MoE architectures need no code here
-([docs/which-models-stream.md](docs/which-models-stream.md)).
+The engine uses llama.cpp's public API: every quantization, tokenizer and chat template llama.cpp
+supports works unchanged, and a llama.cpp upgrade is a submodule bump. The routed experts are read
+from the file's tensor layout ([docs/which-models-stream.md](docs/which-models-stream.md)).
+`ctest` checks that streamed output equals fully resident output across the cache, evictions,
+overlap, sessions and split models ([docs/architecture.md](docs/architecture.md)).
 
-Correctness is a test, not a promise: `ctest` checks that streaming gives output identical to
-running with every expert in memory, across the cache, evictions, overlap, sessions and split
-models. [docs/architecture.md](docs/architecture.md).
+## The planner
 
-## How it adapts
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/plan-dark.svg">
+    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="What --auto chose for Qwen3.6-35B-A3B on a 16 GB Apple-silicon laptop: 1.7 GiB of dense weights and a 7.2 GiB expert cache in RAM, 85% cache hits, 69.6 MiB read from flash per token, the prompt on the GPU and decoding on 8 CPU threads at 17.6 tok/s.">
+  </picture>
+</p>
 
-<p align="center"><img src="docs/assets/diagrams/planner.svg" width="900" alt="The planner measures the model and the machine, then writes a plan: what stays in memory, the cache size, which chip reads the prompt and which writes the answer. A 16 GB laptop gets the prompt on its GPU, a 12 GB phone on its NPU."></p>
-
-The planner reads the model's shape from its header and measures the machine it runs on. Its rules
-name no platform and no device, so a phone and a laptop get different plans from the same rules. A
-setting you pass by hand is never overruled. The Plan screen shows the result: a one-line summary,
-where the memory goes, what each device does, and every decision with its reason.
+The planner reads the model's shape from its header and measures the machine. The same rules give a
+phone and a laptop different plans. The Plan screen shows the result: where the memory goes, what
+each device does, and the reason for each decision.
 [docs/hardware-planning.md](docs/hardware-planning.md).
-
-<p align="center"><img src="docs/assets/phone-plan.gif" width="360" alt="Qwen3.6-35B-A3B answering on a 12 GB Android phone in real time, then the Plan screen: experts stream from flash with a 1.6 GiB cache, decode speed measured against expected, the prompt on the NPU, the answer on the CPU, and where the memory goes."><br>
-<sub>Qwen3.6-35B-A3B on a 12 GB Android phone, real time: the answer, then the plan it runs.</sub></p>
-
-<p align="center"><img src="docs/assets/diagrams/memory.svg" width="900" alt="Qwen3.6-35B-A3B on a 16 GB laptop: of the 21 GB model, 2.2 GB of always-needed weights stay in RAM and 18.6 GB of experts stay on storage; RAM holds context, GPU buffers, dense weights and a 6.1 GB cache of the hot experts."></p>
 
 ## Platforms
 
 | | Android | macOS | Windows | Linux | iOS |
 |---|---|---|---|---|---|
-| Engine and CLI | ✓ arm64 | ✓ Apple silicon | ✓ x86_64 | ✓ x86_64, aarch64 | ✓ builds; runs in the simulator |
-| App and OpenAI server | ✓ native app | ✓ web app | ✓ web app | ✓ web app | native app, in the simulator so far ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
-| Accelerators | NPU (Hexagon), Vulkan, OpenCL | Metal | Vulkan | Vulkan | Metal, built in; not yet run on a device |
+| Engine and CLI | arm64 | Apple silicon | x86_64 | x86_64, aarch64 | arm64 (in the app) |
+| App and server | native app | web app | web app | web app | native app, built from source |
+| Accelerators | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan | Vulkan | Metal |
+| Run on hardware | 12 GB phone | 16 GB laptop | 16 GB laptop | CI, community | 12 GB iPhone ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
 
-Backends load as modules beside the engine, so a CUDA, HIP or SYCL module built with its own
-toolchain loads like the shipped ones. Details, and what was measured where:
-[docs/platforms.md](docs/platforms.md).
+Details and what was measured where: [docs/platforms.md](docs/platforms.md).
 
 ## Build from source
 
@@ -175,17 +173,15 @@ Tests: `cd build && ctest --output-on-failure` (needs `python3` with the `gguf` 
 
 ## Documentation
 
-[docs/](docs/README.md), indexed by what you are trying to do. Start with
-[hardware-planning.md](docs/hardware-planning.md), [settings.md](docs/settings.md),
-[server-api.md](docs/server-api.md), [platforms.md](docs/platforms.md) and
-[limitations.md](docs/limitations.md).
+[docs/](docs/README.md), indexed by task. Start with [hardware-planning.md](docs/hardware-planning.md),
+[settings.md](docs/settings.md), [server-api.md](docs/server-api.md),
+[platforms.md](docs/platforms.md) and [limitations.md](docs/limitations.md).
 
 ## Prior art
 
-Ideas from AirLLM, Apple's *LLM in a flash*, FlexGen, PowerInfer and EdgeMoE, packaged on top of
-llama.cpp. The closest recent work is [flash-moe](https://github.com/danveloper/flash-moe), a Metal
-engine that streams a 397B MoE from SSD on Apple Silicon; BigMoeOnEdge takes llama.cpp's public API
-across architectures and platforms instead.
+AirLLM, Apple's *LLM in a flash*, FlexGen, PowerInfer and EdgeMoE. The closest recent work is
+[flash-moe](https://github.com/danveloper/flash-moe), a Metal engine that streams a 397B MoE from SSD
+on Apple silicon; BigMoeOnEdge uses llama.cpp's public API across architectures and platforms.
 
 ## License
 
