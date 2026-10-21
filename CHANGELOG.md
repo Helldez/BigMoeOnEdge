@@ -7,6 +7,9 @@ Semantic Versioning.
 ## [0.33.2] - 2026-10-21
 
 ### Changed
+- **The README in five more languages.** Chinese, Japanese, Spanish, French and Italian
+  (`README_zh.md`, `README_ja.md`, `README_es.md`, `README_fr.md`, `README_it.md`), linked from a
+  language line under the badges. Each says it is a translation: the English README is the reference.
 - **The README reads like reference documentation.** At the top, real-time GIFs of the shipped apps
   generating with the same 35B on an Android phone, an iPhone and a laptop, in place of the animated
   demo and its video. The three dark illustrated diagrams become plain figures with one

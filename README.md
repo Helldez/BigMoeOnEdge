@@ -11,6 +11,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Helldez/BigMoeOnEdge" alt="License"></a>
 </p>
 
+<p align="center"><a href="README.md">English</a> · <a href="README_zh.md">中文</a> · <a href="README_ja.md">日本語</a> · <a href="README_es.md">Español</a> · <a href="README_fr.md">Français</a> · <a href="README_it.md">Italiano</a></p>
+
 Run Mixture-of-Experts models larger than the device's memory by streaming the experts from flash.
 Built on llama.cpp's public API; Android, iOS, macOS, Windows and Linux; a local OpenAI-compatible
 server on each.
