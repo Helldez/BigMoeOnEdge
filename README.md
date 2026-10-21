@@ -17,15 +17,15 @@ server on each.
 
 <table>
 <tr>
-<td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="320" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB Android phone, in real time."></td>
-<td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="320" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB iPhone, in real time."></td>
+<td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB Android phone, in real time."></td>
+<td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB iPhone, in real time."></td>
 </tr>
 <tr>
 <td align="center">12 GB Android phone</td>
 <td align="center">12 GB iPhone</td>
 </tr>
 <tr>
-<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="860" alt="Qwen3.6-35B-A3B generating an answer in the desktop app on a 16 GB Apple-silicon laptop, in real time, at 19.9 tok/s."></td>
+<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="Qwen3.6-35B-A3B generating an answer in the desktop app on a 16 GB Apple-silicon laptop, in real time, at 19.9 tok/s."></td>
 </tr>
 <tr>
 <td align="center" colspan="2">16 GB Apple-silicon laptop</td>
