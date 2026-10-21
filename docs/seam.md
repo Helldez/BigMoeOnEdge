@@ -29,6 +29,14 @@ reading `->name`, `->ne`, `->nb` and writing `->data` is public API surface.
 non-ask callback then hands us that node with the selected expert ids materialized; we
 gather them (stride-aware) and trigger the slice reads.
 
+Materialized does not mean readable in place. On a layer placed on a device with memory of its own
+(a discrete GPU) the routing node lives in that memory and `->data` is the device's address, so
+the ids are copied out with `ggml_backend_tensor_get`, which is valid there because the scheduler
+synchronizes the split's backend before the observing callback. Whether to copy is asked of the
+node's buffer (`ggml_backend_buffer_is_host`), never of the backend's name; unified memory reads
+as host and takes the direct read. The jobs below that read the router's inputs or rewrite its
+output act only on a node in host memory, and a device layer keeps the router's own choice.
+
 Two optional jobs ask for more: the route trace and
 [cache-aware dropping](expert-dropping.md) also want each layer's `ffn_moe_weights*-<il>` chain,
 which is another barrier per node but no new kind of access — same public struct, same read of
