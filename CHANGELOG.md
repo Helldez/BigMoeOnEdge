@@ -7,6 +7,13 @@ Semantic Versioning.
 ## [0.33.2] - 2026-10-21
 
 ### Changed
+- **The README reads like reference documentation.** At the top, real-time GIFs of the shipped apps
+  generating with the same 35B on an Android phone, an iPhone and a laptop, in place of the animated
+  demo and its video. The three dark illustrated diagrams become plain figures with one
+  accent colour and measured numbers: one decode step, what `--auto` chose on one laptop, and the
+  35B's decode speed on four devices; each in a light and a dark variant, all from
+  `scripts/readme-diagrams.py`. The text loses its slogans, and the platform table says where each
+  platform has run.
 - **The README shows the first run on a real iPhone.** The Plan and Chat screens of the iOS app with
   a 35B on a 12 GB iPhone, a link to its real-time recording, and a row in the examples table
   (2.6-3.0 tok/s), all from @gjjkbssg's run (#235). `examples/ios/README.md` says the app has run on
