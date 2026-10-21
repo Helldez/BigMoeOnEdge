@@ -36,6 +36,9 @@ synchronizes the split's backend before the observing callback. Whether to copy 
 node's buffer (`ggml_backend_buffer_is_host`), never of the backend's name; unified memory reads
 as host and takes the direct read. The jobs below that read the router's inputs or rewrite its
 output act only on a node in host memory, and a device layer keeps the router's own choice.
+Gate G20 holds this path: the loopback RPC device, whose buffers are not host memory, takes every
+layer's dense part while the experts stream, serial and under `--overlap`. Before the copy existed
+the overlap half hung on every run, waiting for an expert the hook had never been asked for.
 
 Two optional jobs ask for more: the route trace and
 [cache-aware dropping](expert-dropping.md) also want each layer's `ffn_moe_weights*-<il>` chain,

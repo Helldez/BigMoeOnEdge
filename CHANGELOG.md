@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.33.3] - 2026-10-21
+
+### Tests
+- **Gate G20: routing on a device with memory of its own, experts streamed (#321, #335).** The
+  placement llama.cpp's capacity fitter writes for a MoE model larger than the device: every layer's
+  dense part on the device, the routed experts on the host. The device is the loopback RPC one every
+  host has, whose buffers are not host memory, so the router's ids take the host copy #335 added.
+  The gate checks that streamed output matches the same placement with resident experts, serial (a)
+  and under `--overlap` (b), and that experts were actually read. It tells the code apart: before
+  #335 the overlap half hung on 6 runs out of 6, and with it it passed 21 out of 21.
+
 ## [0.33.2] - 2026-10-21
 
 ### Changed

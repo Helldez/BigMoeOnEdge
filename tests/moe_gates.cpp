@@ -56,6 +56,9 @@
 //       a session without decide enabled refuses it harmlessly (f), and with a prefill device
 //       decisions (no prefix state kept) and a generate() after them == all CPU (g). G16 and G17 are
 //       the prefill-device gates.
+//   G20 the fitter's placement for a model larger than the device: dense parts on a device with
+//       memory of its own, experts streamed from the host, == the same placement resident, serial
+//       (a) and under --overlap (b). The router's ids are then read through a host copy.
 //
 // G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
 // RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but
@@ -1447,6 +1450,65 @@ int main(int argc, char ** argv) {
             ++fails;
         } else {
             fails += check("G19 refused prompt leaves the session usable", exact.generated_text, again.generated_text);
+        }
+    }
+
+    // ── G20: routing on a device with memory of its own, experts streamed from the host (#321) ──
+    // The placement llama.cpp's capacity fitter writes when a MoE model does not fit: every layer's
+    // dense part on the device, the routed experts overridden back to the host, where the streamer
+    // serves them. The router's top-k then runs on the device, in a buffer that is not host memory,
+    // and the hook must read its ids through a copy (#335). The reference has the same placement with
+    // the experts resident, so streaming is the only difference. a) serial, b) under --overlap.
+    // The loopback RPC device is one every host has; its buffers report as not host, so this is the
+    // path a discrete GPU takes.
+    {
+        const std::string dev = loopback_rpc_device();
+        if (dev.empty()) {
+            std::printf("[SKIP] G20 routing on a device: this build has no RPC backend (GGML_RPC=OFF)\n");
+        } else {
+            RunConfig placed = base(model);
+            placed.moe.enabled = false;
+            // Every block on the device, as the split states it: the two must name one placement.
+            placed.n_gpu_layers = read_gguf_model_info(model.c_str()).n_block;
+            placed.device_split = {{dev, placed.n_gpu_layers}};
+            placed.buft_overrides = {"\\.ffn_(up|down|gate|gate_up)_(ch|)exps"};
+
+            RunConfig placed_s = placed;
+            placed_s.moe = stream0.moe;
+
+            std::string s_placed;
+            if (!gen(placed, s_placed, err)) {
+                std::fprintf(stderr, "G20 reference run failed: %s\n", err.c_str());
+                return 2;
+            }
+            const RunResult r_s = run(placed_s);
+            if (!r_s) {
+                std::fprintf(stderr, "G20 run failed: %s\n", r_s.error.c_str());
+                return 2;
+            }
+            fails += check("G20a device routing, streamed experts == device routing, resident experts", s_placed,
+                           r_s.generated_text);
+            // Identity alone would pass if the overrides had left no expert to stream.
+            const double read_mib = r_s.summary.moe_read_mib + r_s.summary.prefill_read_mib;
+            if (read_mib <= 0.0) {
+                std::printf("[FAIL] G20a no expert was streamed: the placement left nothing on the host\n");
+                ++fails;
+            } else {
+                std::printf("[PASS] G20a the experts streamed from the host (%.3f MiB read)\n", read_mib);
+            }
+            if (!have_hook) {
+                std::printf("[SKIP] G20b (the CPU backend here has no expert-ready hook)\n");
+            } else {
+                RunConfig placed_ov = placed_s;
+                placed_ov.moe.overlap = true;
+                std::string s_placed_ov;
+                if (!gen(placed_ov, s_placed_ov, err)) {
+                    std::fprintf(stderr, "G20b run failed: %s\n", err.c_str());
+                    return 2;
+                }
+                fails +=
+                    check("G20b device routing, streamed experts, overlap == resident experts", s_placed, s_placed_ov);
+            }
         }
     }
 
