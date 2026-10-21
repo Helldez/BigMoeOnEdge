@@ -7,9 +7,9 @@ Semantic Versioning.
 ## [0.33.2] - 2026-10-21
 
 ### Changed
-- **The README reads like reference documentation.** At the top, the shipped apps answering with the
-  same 35B on an Android phone, an iPhone and a laptop, with their decode speed, in place of the
-  animated demo and its video. The three dark illustrated diagrams become plain figures with one
+- **The README reads like reference documentation.** At the top, real-time GIFs of the shipped apps
+  generating with the same 35B on an Android phone, an iPhone and a laptop, in place of the animated
+  demo and its video. The three dark illustrated diagrams become plain figures with one
   accent colour and measured numbers: one decode step, what `--auto` chose on one laptop, and the
   35B's decode speed on four devices; each in a light and a dark variant, all from
   `scripts/readme-diagrams.py`. The text loses its slogans, and the platform table says where each

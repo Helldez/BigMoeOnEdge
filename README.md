@@ -17,23 +17,23 @@ server on each.
 
 <table>
 <tr>
-<td align="center" width="50%"><img src="docs/assets/screens/android.png" width="300" alt="Qwen3.6-35B-A3B answering on a 12 GB Android phone, 5.8 tok/s in the live line."></td>
-<td align="center" width="50%"><img src="docs/assets/screens/iphone.png" width="300" alt="Qwen3.6-35B-A3B answering on a 12 GB iPhone, decoding at 3.0 tok/s."></td>
+<td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="320" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB Android phone, in real time."></td>
+<td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="320" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB iPhone, in real time."></td>
 </tr>
 <tr>
 <td align="center">12 GB Android phone</td>
-<td align="center">12 GB iPhone (<a href="https://github.com/user-attachments/assets/5f8eb0fa-93cc-47f1-b12c-7be4e20b2ba1">real-time recording</a> by <a href="https://github.com/gjjkbssg">@gjjkbssg</a>)</td>
+<td align="center">12 GB iPhone</td>
 </tr>
 <tr>
-<td align="center" colspan="2"><img src="docs/assets/screens/desktop.png" width="820" alt="Qwen3.6-35B-A3B answering in the desktop app on a 16 GB Apple-silicon laptop, decoding at 18.2 tok/s."></td>
+<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="860" alt="Qwen3.6-35B-A3B generating an answer in the desktop app on a 16 GB Apple-silicon laptop, in real time, at 19.9 tok/s."></td>
 </tr>
 <tr>
 <td align="center" colspan="2">16 GB Apple-silicon laptop</td>
 </tr>
 </table>
 
-Qwen3.6-35B-A3B on each device, a 21 GB model or larger than each one's memory: unedited screenshots
-of the shipped apps.
+Qwen3.6-35B-A3B generating on each device, in real time, in the shipped apps. The model is larger
+than each device's memory.
 
 ## Description
 

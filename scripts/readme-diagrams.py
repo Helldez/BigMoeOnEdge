@@ -72,10 +72,7 @@ def token(t):
     b.append(text(565, 174, f"{RUN['hits']}% of the experts a token asks for are here", t["muted"], 12))
     for i, f in enumerate([t["fill"]] * 4 + [t["accent"]]):
         b.append(rect(565 + i * 20, 192, 16, 16, t["line"], f, 0.8))
-    b.append(f'<text x="30" y="292" font-size="12" fill="{t["muted"]}" font-family="{SANS}">'
-             f'<tspan font-weight="700" fill="{t["text"]}">Figure 1.</tspan> One decode step. The router picks k '
-             f'experts per layer: cached ones (grey) cost nothing, the others (orange) are read from flash.</text>')
-    return svg(900, 310, "".join(b))
+    return svg(900, 266, "".join(b))
 
 
 def plan(t):
