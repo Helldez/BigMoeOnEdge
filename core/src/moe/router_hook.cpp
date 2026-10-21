@@ -22,8 +22,11 @@ namespace {
 // is the routing node of a layer placed on a discrete GPU whose experts still stream from the host
 // (#321). Unified memory reads as host, which is why a run with layers on an integrated GPU never
 // showed it.
+bool on_device(const ggml_tensor * t) {
+    return t && t->buffer && !ggml_backend_buffer_is_host(t->buffer);
+}
 bool host_readable(const ggml_tensor * t) {
-    return t && t->data && (!t->buffer || ggml_backend_buffer_is_host(t->buffer));
+    return t && t->data && !on_device(t);
 }
 
 } // namespace
@@ -1573,9 +1576,9 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     const bool is_logits = gl >= 0;
     // The predictors read both on the host, barrier-less; a layer whose router runs on a device
     // stashes neither and passes through.
-    if (ask && is_logits && gl < n_layer_ && host_readable(t->src[1])) {
+    if (ask && is_logits && gl < n_layer_ && !on_device(t->src[1])) {
         ggml_tensor * w = t->src[0];
-        if (w && w->op == GGML_OP_NONE && host_readable(w) && ggml_is_contiguous(w)) gate_w_[gl] = w;
+        if (w && w->op == GGML_OP_NONE && w->data && !on_device(w) && ggml_is_contiguous(w)) gate_w_[gl] = w;
         h_t_[gl] = t->src[1];
     }
     // The compute trace wants every node isolated — or, at layer granularity, only the first
