@@ -6,6 +6,12 @@ Semantic Versioning.
 
 ## [0.33.2] - 2026-10-21
 
+### Changed
+- **The README shows the first run on a real iPhone.** The Plan and Chat screens of the iOS app with
+  a 35B on a 12 GB iPhone, a link to its real-time recording, and a row in the examples table
+  (2.6-3.0 tok/s), all from @gjjkbssg's run (#235). `examples/ios/README.md` says the app has run on
+  a device, and `docs/benchmarks.md` gains the iPhone figure.
+
 ### Fixed
 - **A layer on a discrete GPU whose experts stream no longer crashes the first prefill (#321,
   likely #330).** The router hook read the selected expert ids straight from the routing node,

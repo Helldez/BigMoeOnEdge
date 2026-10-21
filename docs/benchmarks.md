@@ -471,6 +471,15 @@ gap is the protocol (short chat replies never fully warm the cache), not the app
 telemetry panel reports the same fields as the CLI, so you can see it directly. Analysis:
 [docs/warmup-analysis.md](warmup-analysis.md).
 
+### iPhone
+
+One run, by a contributor, on a 12 GB iPhone with the iOS app built from the v0.33.0 tag (#235):
+Qwen3.6-35B-A3B Q4_K_M, the default `--auto` plan, thinking on. The plan streams the experts with a
+2.3 GiB cache (iOS gives an app about 6 GiB), prefills on the GPU and decodes on 6 CPU threads, and
+predicts 2.9 tok/s. Two chat turns measured **3.0 and 2.6 tok/s** (147 and 211 tokens). It is below the
+12 GB Android phone because of the per-app memory limit: with a smaller cache, more experts are
+read from flash on each token.
+
 ### Desktop
 
 Measured on fewer machines than the phone. The Windows table below is a configuration set by hand
