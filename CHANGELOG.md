@@ -10,6 +10,11 @@ Semantic Versioning.
 - **The README in five more languages.** Chinese, Japanese, Spanish, French and Italian
   (`README_zh.md`, `README_ja.md`, `README_es.md`, `README_fr.md`, `README_it.md`), linked from a
   language line under the badges. Each says it is a translation: the English README is the reference.
+- **llama.cpp to upstream master of 2026-10-22.** The fork branch `bmoe/expert-ready-hook-2210-dl`
+  is upstream master `d88040c` plus the same single expert-ready-hook commit, rebased without a
+  conflict; 95 upstream commits past the 2026-10-18 base. No engine change was needed. All 32 host
+  tests pass, the overlap gates (G4, G20b) included, and on a real 35B model `--auto` prints the
+  same greedy text as before at the same CPU time per token.
 
 ### Fixed
 - **A tool call is held to the template's grammar, and a turn the parser cannot read is no longer
