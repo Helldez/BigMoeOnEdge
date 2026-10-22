@@ -10,7 +10,7 @@ The same facts cut by operating system, next to the rest of what each platform h
 
 ## What the pinned llama.cpp carries
 
-Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`efaae9929`, read again at that bump: same backends, same columns). A bump can
+Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`ad98071a5`, read again at that bump: same backends, same columns). A bump can
 add or remove rows; redo the reading rather than trusting this table.
 
 The last three columns come from reading the sources, not from running them: the type each backend
