@@ -22,16 +22,16 @@ The machines are described generically on purpose.
 
 ## Operating systems
 
-| | Android (arm64) | macOS (arm64) | Linux (x86_64, aarch64) | Windows (x86_64) | iOS |
+| | Android (arm64) | macOS (arm64) | Linux (x86_64, aarch64) | Windows (x86_64, arm64) | iOS |
 |---|---|---|---|---|---|
 | **Engine and `bmoe-cli`** | Shipped, in the APK | Shipped | Shipped | Shipped | Built, compiled into the harness app |
 | **`bmoe-server` and the web UI** | Shipped, in the APK as a child process of the app | Shipped, desktop archive | Shipped, desktop archive | Shipped, desktop archive | Built into the app, run on a thread of its own (no web UI: the app is the UI) |
 | **Native app** | Measured: the Compose app, a client of the server | - (web UI in the browser) | - (web UI in the browser) | - (web UI in the browser) | Built: the SwiftUI app, a client of the server in its own process; run in the simulator only |
 | **Planner (`--auto`)** | Measured, in the app's load path | Measured on one laptop | Built, not run on Linux hardware | Owed: one documented run | Run through the harness on one 12 GB phone by a contributor (#235); its dense policy corrected in #304 |
 | **Device probes in a process of their own** | Yes | Yes | Yes | Yes, built; owed a run | - (no second process) |
-| **CI** | Engine cross-compiled and the APK packaged, on PRs and tags | Compiled and smoke-tested, on PRs and tags | Built, byte-identity gates and UI tests, on every push | Compiled only, on PRs and tags | App and harness compiled for the simulator and the app's client package tested, on PRs and tags; the harness packaged by the release workflow |
-| **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends as modules | CLI and desktop archives, with Metal | CLI and desktop archives, both architectures, with Vulkan | CLI and desktop archives, with Vulkan | Harness app for the simulator, unsigned, built by CI |
-| **Run on hardware** | Measured: a 12 GB phone, Snapdragon class, UFS 4.x | Measured: a 16 GB Apple-silicon laptop | Owed: the gates only, no throughput run | Measured: an x86 laptop, 8 cores, 16 GB, NVMe | Measured by a contributor: a 12 GB phone, a 35B-A3B streamed at 1.2 tok/s before #304 |
+| **CI** | Engine cross-compiled and the APK packaged, on PRs and tags | Compiled and smoke-tested, on PRs and tags | Built, byte-identity gates and UI tests, on every push | Compiled only, on PRs and tags; arm64 on an ARM64 runner, smoke-tested there | App and harness compiled for the simulator and the app's client package tested, on PRs and tags; the harness packaged by the release workflow |
+| **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends as modules | CLI and desktop archives, with Metal | CLI and desktop archives, both architectures, with Vulkan | CLI and desktop archives, both architectures, with Vulkan; arm64 adds OpenCL for the Adreno GPU | Harness app for the simulator, unsigned, built by CI |
+| **Run on hardware** | Measured: a 12 GB phone, Snapdragon class, UFS 4.x | Measured: a 16 GB Apple-silicon laptop | Owed: the gates only, no throughput run | Measured: an x86 laptop, 8 cores, 16 GB, NVMe. arm64: owed, never run on a Snapdragon laptop | Measured by a contributor: a 12 GB phone, a 35B-A3B streamed at 1.2 tok/s before #304 |
 
 Sources: [application-framework.md](application-framework.md) for the server on each platform,
 [hardware-planning.md](hardware-planning.md) for the planner and the isolated probes,
@@ -47,17 +47,17 @@ what each use of a device asks of one. This table is the subset that has been bu
 | Backend | Android | macOS | Linux | Windows | What it does today |
 |---|---|---|---|---|---|
 | **CPU** | Measured | Measured | Measured by the gates in CI | Measured | Decode, prefill and expert streaming, everywhere |
-| **Hexagon** (Qualcomm NPU) | Measured, shipped in the release APK | - | - | - | Prefill on the NPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
+| **Hexagon** (Qualcomm NPU) | Measured, shipped in the release APK | - | - | Not built: the Windows driver loads only a DSP library signed by a trusted certificate, so a user would have to turn on test-signing | Prefill on the NPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | **Metal** | - | Measured, on in every macOS build | - | - | Prefill on the GPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
-| **OpenCL** | Measured on a Snapdragon-class phone, in the release APK: fast at prefill width and wrong, so the plan refuses it; the dense weights on a phone GPU lost 27 % in July | - | Not built | Not built | Nothing yet: refused on correctness ([npu-prefill.md](npu-prefill.md)) |
+| **OpenCL** | Measured on a Snapdragon-class phone, in the release APK: fast at prefill width and wrong, so the plan refuses it; the dense weights on a phone GPU lost 27 % in July | - | Not built | Shipped in the arm64 archive, with the Adreno kernels; never run | Nothing yet: refused on correctness on the phone; on a laptop the probe decides ([npu-prefill.md](npu-prefill.md)) |
 | **Vulkan** | Measured on a Snapdragon-class phone, in the release APK: no faster than the cores at prefill width, not armed; on one 2020 phone its driver ended the probe, which the isolated probe contains | Not built | Shipped, a module in the release archives; never run | Shipped, as Linux; never run | Nothing yet: not a win on the phone measured ([npu-prefill.md](npu-prefill.md)) |
 | **CUDA, HIP, SYCL** | - | - | Not built: a module built with the toolchain and dropped beside the binary is loaded like the shipped ones | Same as Linux | Nothing |
 | **RPC** | - | - | Test fixture for the gates | - | Nothing a front-end can select |
 
 Every release has the same shape: the engine and, beside it, one module per backend and one CPU
 module per instruction-set tier, loaded at start-up ([backends.md](backends.md)). The APK carries
-Vulkan and OpenCL beside Hexagon, the Linux and Windows archives carry Vulkan, the macOS archive
-Metal. A module whose driver library the machine lacks is not loaded, so the same archive serves
+Vulkan and OpenCL beside Hexagon, the Linux and Windows archives carry Vulkan, the Windows arm64
+archive OpenCL as well, the macOS archive Metal. A module whose driver library the machine lacks is not loaded, so the same archive serves
 a laptop with a GPU and a server without one, and the planner finds whichever devices registered.
 
 Computing the streamed experts on a GPU, rather than on the CPU cores, is half built on every
