@@ -68,8 +68,8 @@ if(BMOE_HAVE_LLAMA)
         src/metrics/decode_trace_sink.cpp
     )
     # `llama` is the stable public API the streaming seam uses. `llama-common` (llama.cpp's
-    # `common` utils) is linked only for chat-template rendering + reasoning parsing
-    # (common_chat_*); it is not a stable API. It propagates the common/ and vendor/ includes.
+    # `common` utils) supplies chat templates/parsing, speculative decoding and template-generated
+    # grammars; it is not a stable API. It propagates the common/ and vendor/ includes.
     target_link_libraries(bmoe_core PUBLIC llama llama-common)
     target_compile_definitions(bmoe_core PUBLIC BMOE_HAVE_LLAMA=1)
     find_package(Threads REQUIRED)

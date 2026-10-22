@@ -9,7 +9,8 @@
 //   * cancel() and unload() during a turn stop it: the turn answers cancelled, and unload leaves the
 //     host empty with the session gone;
 //   * the last full turn is the measured one; a cancelled turn is not, and a load clears it;
-//   * a failed decode closes the session (500, state error), a recoverable kind keeps it (400);
+//   * a failed decode closes the session (500, state error), while a refused request (400) or
+//     rolled-back invalid output (500) keeps it;
 //   * decide() follows the same rule on `fatal`;
 //   * the engine's diagnostics reach the bus as `log` events while a host lives.
 //
@@ -61,13 +62,14 @@ struct Gate {
 // What the fake sessions of one test share with it: how each turn ends, and what happened.
 struct Script {
     // How generate() ends. Blocking turns signal `started` and run until cancel().
-    enum class Turn { Ok, Block, Fail, ContextFull } turn = Turn::Ok;
+    enum class Turn { Ok, Block, Fail, ContextFull, InvalidOutput } turn = Turn::Ok;
     DecideResult decide_result;
 
     Gate started;
     std::atomic<int> opened{0};
     std::atomic<int> alive{0};
     std::atomic<int> turns{0};
+    GenerateRequest last_request;
 };
 
 class FakeSession final : public HostedSession {
@@ -75,8 +77,10 @@ public:
     explicit FakeSession(Script & s) : s_(s) { ++s_.alive; }
     ~FakeSession() override { --s_.alive; }
 
-    RunResult generate(const GenerateRequest &, const std::function<void(const TokenMetrics &)> & on_token) override {
+    RunResult generate(const GenerateRequest & req,
+                       const std::function<void(const TokenMetrics &)> & on_token) override {
         ++s_.turns;
+        s_.last_request = req;
         RunResult r;
         switch (s_.turn) {
         case Script::Turn::Ok: {
@@ -108,6 +112,10 @@ public:
         case Script::Turn::ContextFull:
             r.error = "the conversation exceeds the session n_ctx";
             r.error_kind = RunError::ContextFull;
+            return r;
+        case Script::Turn::InvalidOutput:
+            r.error = "JSON output constraint produced invalid JSON";
+            r.error_kind = RunError::InvalidOutput;
             return r;
         }
         return r;
@@ -239,6 +247,39 @@ static void loading_tests() {
     }
 }
 
+static void request_tests() {
+    EventBus bus;
+    Script script;
+    EngineHost host(bus, opener(script));
+    host.load(config(), config());
+    check(wait_state(host, "ready"), "the request-mapping session is ready");
+    ChatRequest constrained = turn();
+    constrained.think = false;
+    constrained.json_schema = R"({"type":"object"})";
+    check(host.chat(constrained, nullptr).status == 200 && script.last_request.json_schema == constrained.json_schema &&
+              !script.last_request.think && !script.last_request.clear_kv && script.last_request.render_text &&
+              script.last_request.messages.size() == 1 && script.last_request.messages.back().content == "hello" &&
+              script.last_request.n_predict == 4,
+          "a JSON object constraint reaches the session beside the existing request fields");
+    check(host.chat(turn(), nullptr).status == 200 && script.last_request.json_schema.empty(),
+          "a following ordinary request carries no constraint");
+    check(host.chat(constrained, nullptr).status == 200 && script.last_request.json_schema == constrained.json_schema &&
+              script.opened == 1,
+          "JSON object output can be requested again without reloading the session");
+    ChatRequest array = turn();
+    array.json_schema = R"({"type":"array","items":{"type":"integer"}})";
+    array.think = true;
+    array.tools = {{"lookup", "Look up a value", R"({"type":"object"})"}};
+    array.tool_choice = ToolChoice::Required;
+    check(host.chat(array, nullptr).status == 200 && script.last_request.json_schema == array.json_schema &&
+              script.last_request.think && script.last_request.tools.size() == 1 &&
+              script.last_request.tools[0].name == "lookup" && script.last_request.tool_choice == ToolChoice::Required,
+          "a non-object output schema reaches the session with thinking and tools unchanged");
+    check(host.chat(turn(), nullptr).status == 200 && script.last_request.json_schema.empty() &&
+              script.last_request.tools.empty() && script.last_request.tool_choice == ToolChoice::Auto,
+          "schema, tools and tool choice do not leak into the next ordinary request");
+}
+
 static void cancel_tests() {
     {
         EventBus bus;
@@ -318,6 +359,32 @@ static void measured_tests() {
 }
 
 static void failure_tests() {
+    check(std::string(run_error_name(RunError::InvalidOutput)) == "invalid_output" &&
+              run_error_recoverable(RunError::InvalidOutput) && !run_error_recoverable(RunError::Failed),
+          "invalid output has a stable recoverable code, distinct from a failed decode");
+    {
+        EventBus bus;
+        Script script;
+        script.turn = Script::Turn::InvalidOutput;
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        check(wait_state(host, "ready"), "the invalid-output session is ready");
+        ChatRequest constrained = turn();
+        constrained.think = false;
+        constrained.json_schema = R"({"type":"object"})";
+        const ChatOutcome out = host.chat(constrained, nullptr);
+        check(out.status == 500 && out.code == "invalid_output" && !out.result.ok,
+              "invalid generated JSON is a server error, not a successful or malformed request");
+        check(host.ready() && state(host) == "ready" && script.alive == 1 && script.opened == 1,
+              "a rolled-back invalid output keeps the loaded session ready");
+        check(host.last_turn().is_null(), "invalid output is not recorded as a completed measurement");
+        script.turn = Script::Turn::Ok;
+        check(host.chat(turn(), nullptr).status == 200 && script.last_request.json_schema.empty(),
+              "an ordinary request succeeds after invalid output");
+        check(host.chat(constrained, nullptr).status == 200 &&
+                  script.last_request.json_schema == constrained.json_schema && script.alive == 1 && script.opened == 1,
+              "a constrained request also succeeds without reloading the session");
+    }
     {
         EventBus bus;
         Script script;
@@ -389,6 +456,7 @@ static void log_tests() {
 int main() {
     load_tests();
     loading_tests();
+    request_tests();
     cancel_tests();
     measured_tests();
     failure_tests();

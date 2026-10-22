@@ -1762,7 +1762,7 @@ struct Session::Impl::Turn {
     std::vector<common_chat_msg> history_before; // what a replaced conversation goes back to
     bool prefilled_answer = false;               // closed the reasoning span in the prompt, so skip reasoning parse
     common_chat_parser_params parse_params;
-    detail::ToolGrammar grammar;        // the template's tool-call grammar, off when it has none
+    detail::ToolGrammar grammar;        // the template's grammar, off when it has none
     std::vector<llama_token_data> cand; // the full candidate list, built only when the grammar refuses
     std::vector<llama_token> tokens;
     int n_prompt = 0;
@@ -1807,6 +1807,8 @@ struct Session::Impl::Turn {
     double mtp0_draft_s = 0.0;
     uint64_t mtp0_draft_bytes = 0;
     llama_token tok = 0;
+    common_chat_msg final_msg;
+    bool final_parsed = false;
 
     // One decode of the loop: the confirmed token and whatever was drafted after it, verified in
     // one batch, and what that decode cost.
@@ -1831,6 +1833,24 @@ struct Session::Impl::Turn {
         res.error = std::move(msg);
         res.error_kind = kind;
         return false;
+    }
+
+    bool structured() const { return !req.json_schema.empty(); }
+
+    bool sample_next(int32_t row) {
+        try {
+            tok = sample(row);
+            if (tok == LLAMA_TOKEN_NULL || (structured() && !grammar.active())) {
+                rollback_turn();
+                return fail(structured() ? RunError::InvalidOutput : RunError::Failed,
+                            "the response grammar could not select a valid token");
+            }
+            return true;
+        } catch (const std::exception & e) {
+            rollback_turn();
+            return fail(structured() ? RunError::InvalidOutput : RunError::Failed,
+                        std::string("sampling failed: ") + e.what());
+        }
     }
 
     // Put the conversation back as it was before this turn touched it. Every way out that is not a
@@ -1873,20 +1893,29 @@ struct Session::Impl::Turn {
             // on, and the parser built from the same call reads the model's calls back out.
             if (replace) detail::add_tools(inputs, req.tools, req.tool_choice);
 
+            inputs.json_schema = req.json_schema;
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt.str();
             parse_params = detail::build_parse_params(cp);
-            // A prefilled turn is not parsed (its stream is the answer), so it is not held to the
-            // syntax the parser reads either.
+            // An explicit response format also constrains a prefilled answer: the template
+            // owns the grammar and its generation prefix, including any reasoning envelope.
             std::string grammar_err;
-            if (!prefilled_answer && !grammar.init(cp, im.vocab, grammar_err))
-                log_printf(LogLevel::Warn, "tool-call grammar not applied (%s)", grammar_err.c_str());
+            if (!prefilled_answer || structured()) {
+                const bool ready = grammar.init(cp, im.vocab, grammar_err);
+                if (structured() && (!ready || !grammar.active())) {
+                    undo_history();
+                    return fail(RunError::TemplateRejected,
+                                "the template cannot apply the response schema: " +
+                                    (grammar_err.empty() ? "no grammar was produced" : grammar_err));
+                }
+                if (!ready) log_printf(LogLevel::Warn, "tool-call grammar not applied (%s)", grammar_err.c_str());
+            }
         } catch (const std::exception & e) {
             // A lone prompt can still be fed raw. A message list cannot: there is no single string
             // to fall back to, and a conversation the template refuses is the caller's to fix.
             const bool was_replace = history_replaced;
             undo_history();
-            if (was_replace)
+            if (was_replace || structured())
                 return fail(RunError::TemplateRejected,
                             std::string("the chat template rejected the conversation: ") + e.what());
             log_printf(LogLevel::Warn, "chat template apply failed (%s); using raw prompt", e.what());
@@ -1941,11 +1970,12 @@ struct Session::Impl::Turn {
         // the raw stream already IS the answer. (If a model reasons anyway despite the closed span,
         // that reasoning surfaces verbatim rather than being cut out here. Hiding it would only
         // disguise a model this mechanism does not work on; the honest report is ThinkControl::None.)
-        if (prefilled_answer) return {raw, ""};
+        if (prefilled_answer && !structured()) return {raw, ""};
         try {
             common_chat_msg msg = common_chat_parse(common_chat_input(raw), partial, parse_params);
             return {msg.content, msg.reasoning_content};
         } catch (const std::exception & e) {
+            if (structured()) return {}; // never leak an unparsed reasoning/tool envelope as JSON
             detail::warn_parse_failed_once(e.what());
             return {raw, ""};
         }
@@ -1983,7 +2013,10 @@ struct Session::Impl::Turn {
     // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
     void rollback_turn() {
         if (chat_on) {
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) im.clear_memory(ctx);
+            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
+                im.clear_memory(ctx);
+                n_common = 0; // a full clear cannot leave a reusable prefix in the bookkeeping
+            }
             im.kv_tokens.resize(n_common);
             undo_history();
         } else {
@@ -1993,8 +2026,13 @@ struct Session::Impl::Turn {
         // the two at different positions would fail the NEXT turn, not this one.
         if (im.ctx_dft) {
             const llama_pos keep = chat_on ? (llama_pos) n_common : 0;
-            if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, keep, -1))
+            if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, keep, -1)) {
                 llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+                // Both contexts must resume at the same prefix after an aborted turn.
+                im.clear_memory(ctx);
+                im.kv_tokens.clear();
+                n_common = 0;
+            }
         }
     }
 
@@ -2115,7 +2153,7 @@ struct Session::Impl::Turn {
     }
 
     // The decode phase's baselines, taken where prefill left off, and the first token.
-    void begin_decode() {
+    bool begin_decode() {
         // Baseline seeded from prefill's closing sample: the summary reports the generation phase
         // only, from real per-token deltas (prefill routes near the whole bank, so folding it into a
         // per-token average would badly inflate the flash-I/O figure). Nothing runs between the two
@@ -2172,7 +2210,7 @@ struct Session::Impl::Turn {
         // to the resident reference the gates check); with a sampling chain, draw from the context's
         // last-position logits, which llama_sampler_sample reads at index -1 — the same logits argmax
         // would have read.
-        tok = sample(-1);
+        return sample_next(-1);
     }
 
     // The next token from logits row `row`: argmax, or a draw from the sampling chain, and then held
@@ -2190,8 +2228,14 @@ struct Session::Impl::Turn {
                 cand[v] = {v, lg[v], 0.0f};
             llama_token_data_array cur = {cand.data(), cand.size(), -1, false};
             grammar.constrain(&cur);
+            if (std::none_of(cur.data, cur.data + cur.size,
+                             [](const llama_token_data & c) { return std::isfinite(c.logit); }))
+                return LLAMA_TOKEN_NULL;
             if (im.smpl) {
                 llama_sampler_apply(im.smpl, &cur);
+                if (cur.selected < 0 || (size_t) cur.selected >= cur.size ||
+                    !std::isfinite(cur.data[cur.selected].logit))
+                    return LLAMA_TOKEN_NULL;
                 t = cur.data[cur.selected].id;
             } else {
                 size_t best = 0;
@@ -2200,6 +2244,7 @@ struct Session::Impl::Turn {
                 t = cur.data[best].id;
             }
         }
+        if (!grammar.allows(t)) return LLAMA_TOKEN_NULL;
         grammar.accept(t);
         return t;
     }
@@ -2311,6 +2356,10 @@ struct Session::Impl::Turn {
             if (grammar.active()) {
                 if (!grammar.allows(want)) break;
                 grammar.accept(want);
+                if (structured() && !grammar.active()) {
+                    rollback_turn();
+                    return fail(RunError::InvalidOutput, "the response grammar rejected a drafted token");
+                }
             }
             ++s.n_acc; // accepted: it is in the KV whether or not the caller gets to see it
             if (llama_vocab_is_eog(im.vocab, want)) {
@@ -2388,6 +2437,7 @@ struct Session::Impl::Turn {
             char piece[256];
             int np = llama_token_to_piece(im.vocab, out, piece, sizeof(piece), 0, true);
             std::string delta = np > 0 ? std::string(piece, np) : std::string();
+            if (np < 0 && structured()) delta = common_token_to_piece(im.vocab, out, true);
             gen += delta;
             if (chat_on) im.kv_tokens.push_back(out); // this token is now in the KV
             if (spec_on) mtp_ctx.push_back(out);
@@ -2448,7 +2498,7 @@ struct Session::Impl::Turn {
     // Returns false only on a failure; a cancel ends the loop with res.cancelled set.
     bool decode(const std::function<void(const TokenMetrics &)> & on_token, IMetricsSink * sink) {
         res.ok = true;
-        begin_decode();
+        if (!begin_decode()) return false;
         while (n_gen < n_predict) {
             if (llama_vocab_is_eog(im.vocab, tok)) break;
             Step s;
@@ -2468,14 +2518,18 @@ struct Session::Impl::Turn {
             emit(s, on_token, sink);
             brake_cache();
 
-            if (s.eog_hit) break;
+            if (structured() && im.cancel_requested.load(std::memory_order_relaxed)) {
+                res.cancelled = true;
+                break;
+            }
+            if (s.eog_hit || (structured() && n_gen >= n_predict)) break;
             // The accepted group is now KV-resident, and the logits at the first unverified position
             // hold the target's own continuation — the next token, arrived at for free. Off the
             // speculative path the row index stays -1, exactly as before: one token, one row.
             n_past += 1 + s.n_acc;
             const int32_t row = s.wide ? s.n_acc : -1;
             logits = llama_get_logits_ith(ctx, row);
-            tok = sample(row);
+            if (!sample_next(row)) return false;
         }
         return true;
     }
@@ -2601,25 +2655,34 @@ struct Session::Impl::Turn {
         if (sink) sink->on_summary(s);
     }
 
-    // The answer, and the conversation it leaves: committed, or — on cancel — rolled back.
-    void finish() {
-        // One non-partial parse of the finished generation, shared by the returned text and the
-        // history commit below. They asked the same question of the same string and each paid a full
-        // parse for it; a reasoning model's answer is the whole turn's output, so that was not a
-        // small double.
-        common_chat_msg final_msg;
-        bool final_parsed = false;
-        if (chat_on && !prefilled_answer) {
+    // Parse before committing history or publishing a successful summary. A length/cancel stop
+    // keeps the parser's partial content; only a completed answer promises valid JSON.
+    bool parse_result() {
+        const bool complete = !res.cancelled && n_gen < n_predict;
+        if (chat_on && (!prefilled_answer || structured())) {
             try {
-                final_msg = common_chat_parse(common_chat_input(gen), /*is_partial*/ false, parse_params);
+                final_msg = common_chat_parse(common_chat_input(gen), structured() && !complete, parse_params);
                 final_parsed = true;
             } catch (const std::exception & e) {
-                detail::warn_parse_failed_once(e.what());
+                if (structured() && complete) {
+                    rollback_turn();
+                    return fail(RunError::InvalidOutput,
+                                std::string("the completed response could not be parsed: ") + e.what());
+                }
+                if (!structured()) detail::warn_parse_failed_once(e.what());
             }
         }
-        // Tokens the parser read as nothing come back as they were generated (#334): an empty answer
-        // with finish_reason stop would hide them from the client.
-        if (final_parsed && !gen.empty() && detail::parsed_nothing(final_msg)) {
+        if (structured() && complete) {
+            std::string error;
+            if (!final_parsed || !detail::validate_json_response(final_msg, error)) {
+                rollback_turn();
+                return fail(RunError::InvalidOutput,
+                            error.empty() ? "the completed response could not be parsed" : error);
+            }
+        }
+        // Preserve the ordinary chat fallback (#334). An explicit response format must never
+        // silently replace a failed parse with raw text.
+        if (!structured() && final_parsed && !gen.empty() && detail::parsed_nothing(final_msg)) {
             log_printf(LogLevel::Warn,
                        "the chat parser found no answer, reasoning or call in %d generated tokens; "
                        "returning the raw output",
@@ -2630,12 +2693,14 @@ struct Session::Impl::Turn {
             res.generated_text = final_msg.content;
             res.reasoning_text = final_msg.reasoning_content;
             res.tool_calls = detail::from_common_tool_calls(final_msg.tool_calls);
-        } else {
-            // Not chat, a prefilled turn (the stream IS the answer), or a parse that threw or found
-            // nothing: the raw generation stands on its own, as shown_view would have reported it.
+        } else if (!structured()) {
             res.generated_text = gen;
         }
+        return true;
+    }
 
+    // The conversation is committed after its output has passed the requested contract.
+    void finish() {
         if (res.cancelled) {
             // Undo the whole turn (KV, fed tokens, and the pushed user message) so the conversation
             // is left exactly as it was before this prompt and stays continuable.
@@ -2662,6 +2727,20 @@ RunResult Session::generate(const GenerateRequest & req,
                             const std::function<void(const TokenMetrics &)> & on_token,
                             IMetricsSink * sink) {
     Impl & im = *impl_;
+    RunResult res;
+    Impl::Turn turn(im, req, res);
+    if (!req.json_schema.empty() && !im.chat_on) {
+        res.error_kind = RunError::NeedsChatMode;
+        res.error = "a response schema needs a session opened with the chat template on";
+        return res;
+    }
+    // The pinned specialized and differential parsers give a response schema precedence
+    // over required tool calls. Refuse this specific conflict rather than silently dropping it.
+    if (!req.json_schema.empty() && req.tool_choice == ToolChoice::Required) {
+        res.error_kind = RunError::InvalidRequest;
+        res.error = "response schemas cannot be combined with tool_choice required in the current template parser";
+        return res;
+    }
     im.begin_generate(req, sink);
     // Whichever way this call returns, a cancel's quiet window ends with it.
     struct CancelQuiet {
@@ -2669,8 +2748,6 @@ RunResult Session::generate(const GenerateRequest & req,
         ~CancelQuiet() { im.end_cancel_quiet(); }
     } cancel_quiet{im};
 
-    RunResult res;
-    Impl::Turn turn(im, req, res);
     if (!turn.render_prompt()) return res;
     if (!turn.tokenize_prompt()) return res;
     turn.reuse_kv_prefix();
@@ -2678,6 +2755,7 @@ RunResult Session::generate(const GenerateRequest & req,
     Impl::PlacementGuard placement_guard{im};
     if (!turn.prefill()) return res; // a failure, or a cancel already rolled back
     if (!turn.decode(on_token, sink)) return res;
+    if (!turn.parse_result()) return res;
     turn.trim_speculative_kv();
     ++im.turn; // this turn is written; label the next one apart
     turn.summarize(sink);

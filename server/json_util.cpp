@@ -74,6 +74,34 @@ bool is_json_content_type(const std::string & content_type) {
     return true;
 }
 
+size_t complete_utf8_prefix_size(const std::string & text) {
+    size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char lead = (unsigned char) text[i];
+        if (lead < 0x80) {
+            ++i;
+            continue;
+        }
+        const size_t width = lead >= 0xC2 && lead <= 0xDF   ? 2
+                             : lead >= 0xE0 && lead <= 0xEF ? 3
+                             : lead >= 0xF0 && lead <= 0xF4 ? 4
+                                                            : 0;
+        if (!width || text.size() - i < width) break;
+        bool continuation = true;
+        for (size_t j = 1; j < width; ++j) {
+            const unsigned char byte = (unsigned char) text[i + j];
+            if (byte < 0x80 || byte > 0xBF) continuation = false;
+        }
+        const unsigned char second = (unsigned char) text[i + 1];
+        // Exclude overlong encodings, UTF-16 surrogates and code points beyond U+10FFFF.
+        if (!continuation || (lead == 0xE0 && second < 0xA0) || (lead == 0xED && second > 0x9F) ||
+            (lead == 0xF0 && second < 0x90) || (lead == 0xF4 && second > 0x8F))
+            break;
+        i += width;
+    }
+    return i;
+}
+
 static double mib(uint64_t bytes) {
     return bytes / (1024.0 * 1024.0);
 }
