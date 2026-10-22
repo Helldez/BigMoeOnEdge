@@ -1762,6 +1762,8 @@ struct Session::Impl::Turn {
     std::vector<common_chat_msg> history_before; // what a replaced conversation goes back to
     bool prefilled_answer = false;               // closed the reasoning span in the prompt, so skip reasoning parse
     common_chat_parser_params parse_params;
+    detail::ToolGrammar grammar;        // the template's tool-call grammar, off when it has none
+    std::vector<llama_token_data> cand; // the full candidate list, built only when the grammar refuses
     std::vector<llama_token> tokens;
     int n_prompt = 0;
     int n_predict = 0;
@@ -1874,6 +1876,11 @@ struct Session::Impl::Turn {
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt.str();
             parse_params = detail::build_parse_params(cp);
+            // A prefilled turn is not parsed (its stream is the answer), so it is not held to the
+            // syntax the parser reads either.
+            std::string grammar_err;
+            if (!prefilled_answer && !grammar.init(cp, im.vocab, grammar_err))
+                log_printf(LogLevel::Warn, "tool-call grammar not applied (%s)", grammar_err.c_str());
         } catch (const std::exception & e) {
             // A lone prompt can still be fed raw. A message list cannot: there is no single string
             // to fall back to, and a conversation the template refuses is the caller's to fix.
@@ -2165,7 +2172,36 @@ struct Session::Impl::Turn {
         // to the resident reference the gates check); with a sampling chain, draw from the context's
         // last-position logits, which llama_sampler_sample reads at index -1 — the same logits argmax
         // would have read.
-        tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
+        tok = sample(-1);
+    }
+
+    // The next token from logits row `row`: argmax, or a draw from the sampling chain, and then held
+    // to the tool-call grammar when the turn has one. The first choice is checked alone and kept when
+    // the grammar takes it, so free text and well-formed calls cost one check; only a refused token
+    // pays for masking the whole vocabulary and choosing again. Greedy, that is still argmax over what
+    // the grammar allows, and with no grammar it is exactly the old path.
+    llama_token sample(int32_t row) {
+        const float * lg = llama_get_logits_ith(ctx, row);
+        llama_token t = im.smpl ? llama_sampler_sample(im.smpl, ctx, row) : argmax(lg, im.n_vocab);
+        if (!grammar.active()) return t;
+        if (!grammar.allows(t)) {
+            cand.resize((size_t) im.n_vocab);
+            for (llama_token v = 0; v < im.n_vocab; ++v)
+                cand[v] = {v, lg[v], 0.0f};
+            llama_token_data_array cur = {cand.data(), cand.size(), -1, false};
+            grammar.constrain(&cur);
+            if (im.smpl) {
+                llama_sampler_apply(im.smpl, &cur);
+                t = cur.data[cur.selected].id;
+            } else {
+                size_t best = 0;
+                for (size_t i = 1; i < cur.size; ++i)
+                    if (cur.data[i].logit > cur.data[best].logit) best = i;
+                t = cur.data[best].id;
+            }
+        }
+        grammar.accept(t);
+        return t;
     }
 
     // ── draft ──
@@ -2270,6 +2306,12 @@ struct Session::Impl::Turn {
         for (int i = 0; i < s.n_draft; ++i) {
             const llama_token want = argmax(llama_get_logits_ith(ctx, i), im.n_vocab);
             if (want != im.draft_buf[i]) break;
+            // A draft the grammar refuses ends the group here, and the next token is sampled from
+            // this same row under the grammar, exactly as it would have been without speculation.
+            if (grammar.active()) {
+                if (!grammar.allows(want)) break;
+                grammar.accept(want);
+            }
             ++s.n_acc; // accepted: it is in the KV whether or not the caller gets to see it
             if (llama_vocab_is_eog(im.vocab, want)) {
                 s.eog_hit = true; // end-of-generation is never emitted, here as on the plain path
@@ -2433,7 +2475,7 @@ struct Session::Impl::Turn {
             n_past += 1 + s.n_acc;
             const int32_t row = s.wide ? s.n_acc : -1;
             logits = llama_get_logits_ith(ctx, row);
-            tok = im.smpl ? llama_sampler_sample(im.smpl, ctx, row) : argmax(logits, im.n_vocab);
+            tok = sample(row);
         }
         return true;
     }
@@ -2575,13 +2617,22 @@ struct Session::Impl::Turn {
                 detail::warn_parse_failed_once(e.what());
             }
         }
+        // Tokens the parser read as nothing come back as they were generated (#334): an empty answer
+        // with finish_reason stop would hide them from the client.
+        if (final_parsed && !gen.empty() && detail::parsed_nothing(final_msg)) {
+            log_printf(LogLevel::Warn,
+                       "the chat parser found no answer, reasoning or call in %d generated tokens; "
+                       "returning the raw output",
+                       n_gen);
+            final_parsed = false;
+        }
         if (final_parsed) {
             res.generated_text = final_msg.content;
             res.reasoning_text = final_msg.reasoning_content;
             res.tool_calls = detail::from_common_tool_calls(final_msg.tool_calls);
         } else {
-            // Not chat, a prefilled turn (the stream IS the answer), or a parse that threw: the raw
-            // generation stands on its own, exactly as shown_view would have reported it.
+            // Not chat, a prefilled turn (the stream IS the answer), or a parse that threw or found
+            // nothing: the raw generation stands on its own, as shown_view would have reported it.
             res.generated_text = gen;
         }
 
@@ -2595,7 +2646,7 @@ struct Session::Impl::Turn {
             // messages. Reuses the parse above. A prefilled turn has no turn header in the stream to
             // parse — the generation is the answer verbatim — and is committed without the prefill,
             // so history holds a normal assistant message and the next turn re-renders cleanly
-            // whatever this turn's think setting was. A parse that threw falls back the same way.
+            // whatever this turn's think setting was. A parse that threw or found nothing falls back the same way.
             common_chat_msg assistant;
             if (final_parsed)
                 assistant = std::move(final_msg);

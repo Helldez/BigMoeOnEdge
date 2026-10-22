@@ -35,12 +35,14 @@ target_compile_definitions(bmoe_chat_parse_test PRIVATE
 add_test(NAME chat_parse COMMAND bmoe_chat_parse_test)
 
 # Tool calls through the engine's chat types (bmoe/chat.h): tools into a real vendored template, a
-# call parsed back out, and the next prompt extending the previous one. Needs no model.
+# call parsed back out, the template's grammar holding a call to its syntax, and the next prompt
+# extending the previous one. Needs no model: the grammar runs over llama.cpp's vendored vocab file.
 add_executable(bmoe_chat_messages_test chat_messages_test.cpp)
 target_link_libraries(bmoe_chat_messages_test PRIVATE bmoe_core)
 target_include_directories(bmoe_chat_messages_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
 target_compile_definitions(bmoe_chat_messages_test PRIVATE
-    BMOE_QWEN3_TEMPLATE_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/templates/Qwen3.5-4B.jinja")
+    BMOE_QWEN3_TEMPLATE_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/templates/Qwen3.5-4B.jinja"
+    BMOE_QWEN35_VOCAB_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/ggml-vocab-qwen35.gguf")
 add_test(NAME chat_messages COMMAND bmoe_chat_messages_test)
 
 # Thinking-control tests (issue #82). Drives bmoe::detail::probe_think_control and the prefill

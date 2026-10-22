@@ -41,8 +41,10 @@ prefix rule below, so resending what the session already holds costs only the ne
 fails or is cancelled puts the previous conversation back. `GenerateRequest::tools` and
 `tool_choice` describe functions the model may call: they are rendered by the model's own chat
 template and the calls come back in `RunResult::tool_calls`, parsed by llama.cpp's chat layer
-(`core/src/engine/chat_messages.h` is the one adapter between `bmoe/chat.h` and that layer). The
-calls are not grammar-constrained.
+(`core/src/engine/chat_messages.h` is the one adapter between `bmoe/chat.h` and that layer). Once
+a call opens, sampling is held to the grammar the template ships with its tools
+(`detail::ToolGrammar`, `core/src/engine/chat_parse.h`), outside any reasoning span. A finished
+turn the parser reads as nothing comes back as the raw generation.
 
 **KV prefix reuse.** Re-rendering the full history would re-tokenize the entire conversation, but
 most of it is already decoded into the KV. Each turn the engine diffs the freshly rendered tokens

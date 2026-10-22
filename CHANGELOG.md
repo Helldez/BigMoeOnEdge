@@ -4,9 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.33.3] - 2026-10-21
+## [0.33.3] - 2026-10-22
+
+### Changed
+- **The README in five more languages.** Chinese, Japanese, Spanish, French and Italian
+  (`README_zh.md`, `README_ja.md`, `README_es.md`, `README_fr.md`, `README_it.md`), linked from a
+  language line under the badges. Each says it is a translation: the English README is the reference.
+
+### Fixed
+- **A tool call is held to the template's grammar, and a turn the parser cannot read is no longer
+  empty (#334).** In long agent conversations a model sometimes wrote a call the chat parser could
+  not read back. The server then answered 200 with an empty assistant message and `finish_reason`
+  `stop`, although tokens had been generated: 12 times in 72 tasks × 3 seeds on one report, against
+  none on llama.cpp with the same model and prompts. The difference was sampling. The template
+  returns a grammar with its tools, and llama.cpp's server holds sampling to it once a call opens;
+  the engine ignored it. It now applies it through the public `llama_sampler` grammar API, lazily:
+  free text pays one check of the chosen token, and only a token the grammar refuses masks the
+  vocabulary and is chosen again. A reasoning span stays free, as llama.cpp's reasoning-budget
+  sampler keeps it, so a call's opening written while the model thinks does not start one. Under
+  speculative decoding a draft the grammar refuses ends the accepted group. Greedy output is
+  unchanged until a call opens, and a turn without tools runs exactly the old path. A finished turn
+  the parser still reads as nothing comes back as the raw generation, with a warning, instead of an
+  empty message.
 
 ### Tests
+- **The tool-call grammar, without a model.** `chat_messages` builds the grammar the vendored Qwen3.5
+  template returns over llama.cpp's vendored vocab file and walks token sequences through it: free
+  text and a well-formed call pass, a call to a tool the request did not offer is refused, and with
+  thinking on the same bad call inside the reasoning span passes while after the span it is refused.
+  The reasoning half fails with the suspension switched off.
 - **Gate G20: routing on a device with memory of its own, experts streamed (#321, #335).** The
   placement llama.cpp's capacity fitter writes for a MoE model larger than the device: every layer's
   dense part on the device, the routed experts on the host. The device is the loopback RPC one every
@@ -18,9 +44,6 @@ Semantic Versioning.
 ## [0.33.2] - 2026-10-21
 
 ### Changed
-- **The README in five more languages.** Chinese, Japanese, Spanish, French and Italian
-  (`README_zh.md`, `README_ja.md`, `README_es.md`, `README_fr.md`, `README_it.md`), linked from a
-  language line under the badges. Each says it is a translation: the English README is the reference.
 - **The README reads like reference documentation.** At the top, real-time GIFs of the shipped apps
   generating with the same 35B on an Android phone, an iPhone and a laptop, in place of the animated
   demo and its video. The three dark illustrated diagrams become plain figures with one

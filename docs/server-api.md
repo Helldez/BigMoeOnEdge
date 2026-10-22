@@ -258,8 +258,12 @@ parameters. An image or audio content part is refused with `400` rather than dro
 **Tools.** The server does not run tools and knows no tool syntax. The tools go to the model's own
 chat template, which writes them the way that model was trained to read them, and the same
 llama.cpp layer parses the model's calls back out of the generated text; the client runs them and
-sends the results back as `tool` messages. A call's text never appears in `content`. The output is
-not constrained by a grammar, so a model that writes a malformed call returns it as text.
+sends the results back as `tool` messages. A call's text never appears in `content`. Once the model
+opens a call, sampling is held to the grammar the template ships with its tools, as llama.cpp's own
+server does: the call names a tool the request offered and its arguments are JSON. Free text and a
+reasoning span are not constrained. If the parser still finds no answer, reasoning or call in what
+was generated, the raw text comes back as `content` and the server logs a warning, instead of an
+empty message that ends with `stop`.
 
 **The conversation is the client's.** Every request carries the whole history and the server keeps
 none. The engine tokenizes it, keeps the leading tokens that match what its KV cache already holds
