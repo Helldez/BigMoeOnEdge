@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.21)
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName:
 # scripts/check-version.sh compares the three, in CI and against the tag before a release builds.
-project(bigmoeonedge VERSION 0.33.3 LANGUAGES CXX)
+project(bigmoeonedge VERSION 0.34.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -83,12 +83,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
         # One CPU library per instruction-set tier, the best one picked at start-up. Not forced:
         # a target ggml has no tier list for passes OFF and gets the one baseline library. Apple
         # silicon is one family and gets that one library: its tiers differ in features the
-        # compilers Apple ships with the CI images refuse to target.
-        if(APPLE)
+        # compilers Apple ships with the CI images refuse to target. Windows on ARM has no tier
+        # list in ggml (it stops the configure), so it gets the one library its toolchain targets.
+        if(APPLE OR (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$"))
             set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "ggml: build all variants of the CPU backend")
-            set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "ggml: embed the Metal library")
         else()
             set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "ggml: build all variants of the CPU backend")
+        endif()
+        if(APPLE)
+            set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "ggml: embed the Metal library")
         endif()
         # Everything a release copies sits in one directory, and the executables find the shared
         # libraries beside themselves wherever that directory is copied to.

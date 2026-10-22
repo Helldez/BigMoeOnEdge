@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.34.0] - 2026-10-22
+
+### Added
+- **Windows on ARM.** The release carries `bmoe-cli` and `bmoe-desktop` archives for Windows ARM64,
+  built natively on an ARM64 runner and smoke-tested there, for Snapdragon laptops. The recipe is
+  llama.cpp's own for this target: clang with its toolchain file, one CPU library tuned for those
+  cores (ggml has no instruction-set tiers for Windows on ARM, so the top-level CMakeLists builds
+  the one), the Vulkan module, and the OpenCL module with the Adreno kernels. The OpenCL module uses
+  the loader the GPU driver installs; none is shipped, and without one it is simply not loaded. As
+  everywhere, the planner measures what registered: the prompt goes to the GPU only if the probe
+  finds it faster than the cores and its result identical. The Hexagon NPU is not in this archive:
+  on Windows its driver loads only a DSP library signed by a trusted certificate, which a user would
+  have to set up by hand (test-signing). Not yet run on a Snapdragon laptop.
+
 ## [0.33.3] - 2026-10-22
 
 ### Changed
