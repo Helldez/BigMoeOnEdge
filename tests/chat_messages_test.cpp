@@ -1,5 +1,6 @@
 // Tool calls through the engine's chat types, with no model: bmoe/chat.h messages and tools go
-// into a real vendored template, and a call the model would write comes back out as a ChatToolCall.
+// into a real vendored template, a call the model would write comes back out as a ChatToolCall, and
+// the template's grammar (run over llama.cpp's vendored vocab file) holds a call to that syntax.
 //
 // What is pinned here is the wiring the session relies on (core/src/engine/chat_messages.h), not
 // any model's syntax - that is llama.cpp's, and its own tests cover it. If a submodule bump changes
@@ -11,6 +12,9 @@
 #include "chat_messages.h"
 #include "chat_parse.h"
 #include "thinking_control.h"
+
+#include "common.h"
+#include "llama.h"
 
 #include <cstdio>
 #include <fstream>
@@ -36,6 +40,18 @@ static std::string read_file(const char * path) {
 
 static bool has(const std::string & hay, const char * needle) {
     return hay.find(needle) != std::string::npos;
+}
+
+// Walks `text`'s tokens through the grammar the way the decode loop does: each one checked, then
+// accepted. Returns how many it took before refusing one, or -1 when it took them all.
+static int first_refused(detail::ToolGrammar & g, const llama_vocab * vocab, const std::string & text) {
+    const std::vector<llama_token> toks = common_tokenize(vocab, text, /*add_special*/ false, /*parse_special*/ true);
+    for (size_t i = 0; i < toks.size(); ++i) {
+        if (!g.allows(toks[i])) return (int) i;
+        g.accept(toks[i]);
+        if (!g.active()) return (int) i;
+    }
+    return -1;
 }
 
 int main() {
@@ -73,6 +89,7 @@ int main() {
         "<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"calc.py\"}}\n</tool_call>";
     std::vector<ChatToolCall> calls;
     std::string content = "?";
+    std::string call_text; // the candidate this template's parser reads
     // The call syntax is the template's own; which of the two this template uses is not this
     // test's to know, so it takes the one the parser accepts.
     for (const std::string & candidate : {raw, raw_json}) {
@@ -81,6 +98,7 @@ int main() {
             if (msg.tool_calls.empty()) continue;
             calls = detail::from_common_tool_calls(msg.tool_calls);
             content = msg.content;
+            call_text = candidate;
             // Mid-call, the streaming view must not show the call's text as the answer.
             const common_chat_msg part =
                 common_chat_parse(common_chat_input(candidate.substr(0, candidate.size() / 2)), true, pp);
@@ -94,6 +112,78 @@ int main() {
     check(calls.size() == 1 && has(calls[0].arguments, "calc.py") && calls[0].arguments.front() == '{',
           "its arguments are a JSON object naming the file");
     check(content.empty(), "a turn that only calls has no answer text");
+
+    // ── the grammar the template ships with its tools (#334) ──
+    llama_model_params mp = llama_model_default_params();
+    mp.vocab_only = true;
+    llama_model * vocab_model = llama_model_load_from_file(BMOE_QWEN35_VOCAB_PATH, mp);
+    check(vocab_model != nullptr, "the vendored vocab file loads");
+    if (vocab_model) {
+        const llama_vocab * vocab = llama_model_get_vocab(vocab_model);
+        check(!cp.grammar.empty() && cp.grammar_lazy, "a turn with tools carries a lazy grammar");
+        auto fresh = [&](detail::ToolGrammar & g) {
+            std::string err;
+            const bool ok = g.init(cp, vocab, err);
+            if (!ok) std::printf("  grammar: %s\n", err.c_str());
+            return ok && g.active();
+        };
+        {
+            detail::ToolGrammar g;
+            check(fresh(g), "the grammar builds");
+            check(first_refused(g, vocab, "Sure, let me look at calc.py first.") == -1, "free text is not constrained");
+        }
+        {
+            detail::ToolGrammar g;
+            fresh(g);
+            check(!call_text.empty() && first_refused(g, vocab, call_text) == -1,
+                  "a well-formed call passes the grammar token by token");
+        }
+        {
+            // A call to a tool the request never offered is what the grammar exists to stop.
+            std::string bad = call_text;
+            const size_t at = bad.find("read_file");
+            if (at != std::string::npos) bad.replace(at, 9, "drop_table");
+            detail::ToolGrammar g;
+            fresh(g);
+            check(at != std::string::npos && first_refused(g, vocab, bad) > 0,
+                  "a call to a tool that was not offered is refused once the call has opened");
+        }
+        {
+            // With thinking on, a call's opening written while the model reasons is not a call: the
+            // span stays free, and the grammar takes over once it closes.
+            common_chat_templates_inputs think_in;
+            detail::build_turn_inputs(think_in, detail::to_common_messages(convo), /*think*/ true,
+                                      ThinkControl::Template);
+            detail::add_tools(think_in, tools, ToolChoice::Auto);
+            const common_chat_params tcp = common_chat_templates_apply(tmpls.get(), think_in);
+            std::string bad = call_text;
+            const size_t at = bad.find("read_file");
+            if (at != std::string::npos) bad.replace(at, 9, "drop_table");
+            const std::string reasoning = "I could write " + bad + " but I should not.\n";
+            const std::string close = tcp.thinking_end_tags.empty() ? "" : tcp.thinking_end_tags[0];
+            std::string err;
+            detail::ToolGrammar g;
+            const bool ok = g.init(tcp, vocab, err) && g.active() && !close.empty();
+            check(ok && first_refused(g, vocab, reasoning + close + "\n\n") == -1,
+                  "a call's syntax inside the reasoning span is not constrained");
+            check(ok && first_refused(g, vocab, bad) > 0, "after the span closes, a bad call is refused");
+        }
+        {
+            common_chat_params none = cp;
+            none.grammar.clear();
+            detail::ToolGrammar g;
+            std::string err;
+            check(g.init(none, vocab, err) && !g.active(), "a turn without a grammar runs unconstrained");
+        }
+        llama_model_free(vocab_model);
+    }
+
+    // ── the parser's empty result falls back to the raw text (#334) ──
+    common_chat_msg nothing;
+    check(detail::parsed_nothing(nothing), "a message with no answer, reasoning or call is read as nothing");
+    common_chat_msg some;
+    some.reasoning_content = "thinking";
+    check(!detail::parsed_nothing(some), "reasoning alone is something");
 
     // ── the next turn: the call and the tool's answer go back in ──
     ChatMessage assistant;
