@@ -75,11 +75,14 @@ jobs:
               -DGGML_VULKAN=ON -DGGML_OPENCL=ON -DGGML_OPENCL_USE_ADRENO_KERNELS=ON
           # The same build with the Hexagon module and one DSP library per NPU generation, signed
           # in this job (Sign the NPU's DSP libraries). Its own archives, because the NPU needs the
-          # user to turn test-signing on, which the plain ones must never depend on.
+          # user to turn test-signing on, which the plain ones must never depend on. Single-config
+          # Ninja, as llama.cpp's Snapdragon presets: the DSP libraries are ExternalProjects that
+          # inherit the generator, and the Hexagon toolchain's compiler check fails in a
+          # multi-config one, which tries a Debug link. The binaries then land in build/bin.
           - os: windows-11-arm
             target: windows-arm64-npu
             cmake_extra: >-
-              -G "Ninja Multi-Config"
+              -G Ninja
               -DCMAKE_TOOLCHAIN_FILE=third_party/llama.cpp/cmake/arm64-windows-llvm.cmake
               -DGGML_VULKAN=ON -DGGML_OPENCL=ON -DGGML_OPENCL_USE_ADRENO_KERNELS=ON
               -DGGML_HEXAGON=ON -DPREBUILT_LIB_DIR=windows_aarch64
@@ -255,12 +258,15 @@ jobs:
         run: |
           # The engine and its libraries travel together: ggml and llama, and one module per
           # backend, which ggml finds beside the executable at start-up.
+          # Where the Windows binaries are: build/bin/Release for a multi-config generator,
+          # build/bin for the single-config one the NPU build uses.
+          WB=build/bin/Release; [ -d "$WB" ] || WB=build/bin
           libs() { # <dir>: copy every shared library the build put beside the executables
             # -P keeps the soname symlinks as symlinks (libggml.so.0 -> libggml.so.0.x.y): the
             # executables name the versioned ones, and tar carries symlinks as they are.
             # On macOS the shared libraries are .dylib and the modules .so; both travel.
             if [ "${{ runner.os }}" = "Windows" ]; then
-              cp build/bin/Release/*.dll "$1/"
+              cp "$WB"/*.dll "$1/"
               # The C++ runtime the binaries were linked against, copied beside them (the
               # redistributable allows this local deployment): without it a machine that never
               # installed the redistributable cannot start the program at all. The universal CRT
@@ -303,7 +309,7 @@ jobs:
           NAME="bmoe-cli-$TAG-${{ matrix.target }}"
           mkdir -p "$NAME"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp build/bin/Release/bmoe-cli.exe "$NAME/"
+            cp "$WB/bmoe-cli.exe" "$NAME/"
           else
             cp build/bin/bmoe-cli "$NAME/"
             strip "$NAME/bmoe-cli" || true
@@ -341,7 +347,7 @@ jobs:
           # The desktop app: bmoe-server with the web UI and the model catalog staged beside it.
           DESK="bmoe-desktop-$TAG-${{ matrix.target }}"
           mkdir -p "$DESK"
-          if [ "${{ runner.os }}" = "Windows" ]; then BIN=build/bin/Release; SRV=bmoe-server.exe; else BIN=build/bin; SRV=bmoe-server; fi
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN=$WB; SRV=bmoe-server.exe; else BIN=build/bin; SRV=bmoe-server; fi
           cp "$BIN/$SRV" "$DESK/"
           [ "${{ runner.os }}" = "Windows" ] || strip "$DESK/$SRV" || true
           libs "$DESK"
@@ -402,7 +408,8 @@ jobs:
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            build/bin/Release/bmoe-cli.exe --version && build/bin/Release/bmoe-server.exe --version
+            WB=build/bin/Release; [ -d "$WB" ] || WB=build/bin
+            "$WB/bmoe-cli.exe" --version && "$WB/bmoe-server.exe" --version
           else
             build/bin/bmoe-cli --version && build/bin/bmoe-server --version
           fi
