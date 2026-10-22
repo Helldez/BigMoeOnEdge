@@ -207,7 +207,8 @@ jobs:
               # redistributable allows this local deployment): without it a machine that never
               # installed the redistributable cannot start the program at all. The universal CRT
               # ships with Windows itself.
-              # vcruntime140_1 holds the x64 exception handling and has no ARM64 counterpart.
+              # vcruntime140_1 holds the x64 exception handling: the ARM64 redistributable carries an
+              # x64 copy of it for emulated programs, which nothing here loads, so it stays out.
               case "${{ matrix.target }}" in
                 *-arm64) ARCH=arm64; WANT="msvcp140.dll vcruntime140.dll" ;;
                 *) ARCH=x64; WANT="msvcp140.dll vcruntime140.dll vcruntime140_1.dll" ;;
@@ -215,6 +216,7 @@ jobs:
               VS="$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products "*" -property installationPath)"
               CRT="$(ls -d "$(cygpath -u "$VS")"/VC/Redist/MSVC/*/$ARCH/Microsoft.VC*.CRT | sort | tail -1)"
               cp "$CRT"/msvcp140*.dll "$CRT"/vcruntime140*.dll "$1/"
+              if [ "$ARCH" = arm64 ]; then rm -f "$1/vcruntime140_1.dll"; fi
               for d in $WANT; do
                 [ -f "$1/$d" ] || { echo "the C++ runtime is missing $d in $1"; exit 1; }
               done
