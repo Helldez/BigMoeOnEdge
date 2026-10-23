@@ -593,12 +593,11 @@ void register_routes(httplib::Server & svr, App & app) {
         res.set_header("Cache-Control", "no-cache");
         res.set_header("X-Accel-Buffering", "no");
         res.set_chunked_content_provider("text/event-stream", [&app, cr, meta, dump](size_t, httplib::DataSink & sink) {
+            // A failed write marks the client gone. Stopping the work is the host's, through
+            // on_token's answer: this handler cannot tell whose turn is running when a write fails.
             bool alive = true;
             auto write = [&](const std::string & frame) {
-                if (alive && !sink.write(frame.data(), frame.size())) {
-                    alive = false;
-                    app.host.cancel(); // the client went away: stop spending the machine on it
-                }
+                if (alive && !sink.write(frame.data(), frame.size())) alive = false;
             };
             auto chunk = [&](const json & delta, const json & finish, const json & extra) {
                 json c = chunk_json(meta, delta, finish);
@@ -614,14 +613,14 @@ void register_routes(httplib::Server & svr, App & app) {
             ChatOutcome out = app.host.chat(
                 cr.turn,
                 [&](const TokenMetrics & m) {
-                    if (!alive) return;
+                    if (!alive) return false;
                     json delta = json::object();
                     json extra = nullptr;
                     if (first) delta["role"] = "assistant";
                     if (starts_with(m.text, sent_text) && starts_with(m.reasoning, sent_reasoning)) {
                         const std::string dt = m.text.substr(sent_text.size());
                         const std::string dr = m.reasoning.substr(sent_reasoning.size());
-                        if (dt.empty() && dr.empty() && !first) return;
+                        if (dt.empty() && dr.empty() && !first) return true;
                         if (!dt.empty()) delta["content"] = dt;
                         if (!dr.empty()) delta["reasoning_content"] = dr;
                     } else {
@@ -633,6 +632,7 @@ void register_routes(httplib::Server & svr, App & app) {
                     sent_text = m.text;
                     sent_reasoning = m.reasoning;
                     chunk(delta, nullptr, extra);
+                    return alive;
                 },
                 // Waiting for a turn: an SSE comment keeps the connection open through proxies
                 // that time out a silent one, and a failed write is how a client that left is seen.
