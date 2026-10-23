@@ -293,12 +293,14 @@ struct App {
     json config_object(const json * rejected = nullptr) {
         const RunConfig cfg = store.config();
         const ValidationResult v = validate(cfg);
+        const std::vector<std::string> reload = host.reload_keys(cfg);
         json o = {{"values", config_values(cfg)},
                   {"user_keys", store.operator_keys()},
                   {"args", to_args(cfg)},
                   {"valid", v.ok},
                   {"error", v.error},
-                  {"reload_required", host.reload_required(cfg)},
+                  {"reload_required", !reload.empty()},
+                  {"reload_keys", reload},
                   {"plan", store.plan_decisions()},
                   {"auto_plan", auto_plan()}};
         if (rejected) o["rejected"] = *rejected;

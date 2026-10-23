@@ -344,6 +344,15 @@ int main() {
         for (const ParamDesc & d : params())
             all &= js.find("\"key\":\"" + d.key + "\"") != std::string::npos;
         check(all, "params_json lists every key");
+        // Every group a form shows has a title and a line of help, and its place in the form is its
+        // own (`group_order`), not where its first row happens to sit in the table.
+        bool described = true;
+        for (const ParamDesc & d : params()) {
+            described &= *param_group_label(d.group) && *param_group_help(d.group);
+            described &= js.find("\"group_order\":" + std::to_string((int) d.group)) != std::string::npos;
+        }
+        check(described, "params_json gives every group a label, a help line and an order");
+        check(js.find("\"group_read_only\":true") != std::string::npos, "params_json marks a group a form only shows");
         RunConfig c;
         c.moe.cache_auto = true;
         check(params_json(c).find("\"default\":\"auto\"") != std::string::npos, "params_json takes caller defaults");

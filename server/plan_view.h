@@ -10,16 +10,15 @@
 #include "json_util.h"
 
 #include "bmoe/hardware_profile.h"
-#include "bmoe/model_profile.h"
 #include "bmoe/plan.h"
 
 #include <string>
 
 namespace bmoe::server {
 
-// summary, predicted, memory, devices, devices_none and devices_none_text, as one object to merge
-// into the /api/plan body.
-json plan_view(const HardwareProfile & hw, const ModelProfile & model, const Plan & plan);
+// summary, predicted (decode as priced, the hit rate it credited, the nothing-resident bound),
+// memory, devices, devices_none and devices_none_text, as one object to merge into /api/plan.
+json plan_view(const HardwareProfile & hw, const Plan & plan);
 
 // A decision's value as a person reads it: a choice by its settings label, a size in GiB or MiB,
 // a number with its unit, a planner word ("experts-stream") as words. `value` stays the raw one.

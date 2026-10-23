@@ -2,9 +2,8 @@
 
 Every streaming setting: the name every UI shows, the flag it maps to, and what it does. The names,
 bounds and help come from one parameter table (`core/src/params.cpp`), which the CLI parses its
-flags from and every UI renders its Settings from: each group shows its basic rows, and a folded
-Advanced section at its end holds the advanced, experimental and debug ones. Experimental settings
-are marked here. `bmoe-cli --help` prints the same parameters with their bounds, and
+flags from and every UI renders its Settings from: one card per group, its basic rows open and its
+own advanced, experimental and debug rows folded inside it. Experimental settings are marked here. `bmoe-cli --help` prints the same parameters with their bounds, and
 `--describe-params` prints them as JSON.
 
 A default is the CLI's unless the row says otherwise. `bmoe-server`, which both the desktop and the

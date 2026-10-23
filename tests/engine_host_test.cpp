@@ -32,6 +32,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace bmoe;
 using namespace bmoe::server;
@@ -206,6 +207,13 @@ static void load_tests() {
                   info["model"].value("name", "") == "fake.gguf",
               "the ready state describes the session the opener made");
         check(host.model_name() == "fake.gguf" && script.opened == 1, "one load opened one session");
+        check(host.reload_keys(config()).empty() && !host.reload_required(config()),
+              "the config the session loaded with needs no reload");
+        RunConfig changed = config();
+        check(apply_flag(changed, "--threads", "3").matched && apply_flag(changed, "--n-predict", "7").matched,
+              "the test edits one session row and one request row");
+        check(host.reload_keys(changed) == std::vector<std::string>{"threads"} && host.reload_required(changed),
+              "only a session row that differs from the loaded session needs a reload");
 
         RunConfig bad = config();
         bad.model_path.clear();

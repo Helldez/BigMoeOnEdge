@@ -198,6 +198,10 @@ struct Allocation {
     bool cache_lock_unverified = false;
 
     uint64_t cache_bytes = 0; // expert cache budget; 0 means the expert lane is not used
+    // The share of a token's expert reads the cost model credits the cache with serving, 0..1: what
+    // `seconds_per_token` was priced with, so a front-end shows the figure the plan stands on rather
+    // than a cache-to-experts ratio of its own. 0 without a cache.
+    double cache_hit_credited = 0;
 
     // What was available for the cache BEFORE the floor was applied. It is the only way to say how
     // far short a refused cache fell: `cache_bytes` is 0 once the floor rejects it, and a shortfall

@@ -201,7 +201,8 @@ template). Each element:
 
 ```json
 {"key": "cache-mb", "label": "Expert cache", "type": "int", "group": "cache",
- "group_label": "Expert cache", "level": "basic", "scope": "session", "help": "...",
+ "group_label": "Expert cache", "group_help": "The memory that keeps experts once read, ...",
+ "group_order": 5, "level": "basic", "scope": "session", "help": "...",
  "flag": "--cache-mb", "min": 0, "unit": "MiB", "typical": {"min": 1500, "max": 8192},
  "special": [{"value": 0, "label": "off"}], "accepts_auto": true, "default": "auto"}
 ```
@@ -213,7 +214,12 @@ range to show a person. `typical` is guidance, not a limit: what a person usuall
 shows as the range. `special` names the values that mean something other than their number (`0` is
 `off`, `4294967295` is `random per run`), with `value` in the row's own JSON type; a form shows the
 label in place of the number.
-`level` is `basic | advanced | experimental | debug`; `group` order in the array is form order.
+`level` is `basic | advanced | experimental | debug`. A form shows the groups in `group_order` (a
+row's place in the array is not its group's: a group's rows need not be contiguous), each under its
+short `group_label` and its one-line `group_help`. `group_read_only: true` marks a group a client
+sets with a control of its own (the model file, from the model list), which a settings form shows
+without editing; the field is absent otherwise. The prompt's device and reads are their own group,
+`prefill`.
 
 ### `GET /api/config`
 
@@ -225,13 +231,14 @@ label in place of the number.
   "valid": true,
   "error": "",
   "reload_required": false,
+  "reload_keys": [],
   "plan": null
 }
 ```
 
 `values` holds every parameter. `args` is the equivalent `bmoe-cli` command line (for "copy as
 command"). `reload_required` is true when a session-scoped value differs from the loaded
-session's. `plan` is the last applied plan's decisions (see below), or `null`. `auto_plan` is
+session's, and `reload_keys` names those parameters in table order (empty with no session). `plan` is the last applied plan's decisions (see below), or `null`. `auto_plan` is
 whether every load plans first: on by default in a build with the planner, always false without
 one; `PUT /api/config` with `{"auto_plan": false}` turns it off, and the choice is saved.
 
@@ -572,7 +579,7 @@ unusable instead of ending the server; `--no-isolated-probes` runs them in-proce
  "summary": {"sentence": "Experts stream from flash, with a 0.7 GiB cache.",
              "lanes": [{"phase": "prompt", "label": "Prompt", "on": ["CPU"]},
                        {"phase": "tokens", "label": "Tokens", "on": ["CPU"]}]},
- "predicted": {"s_per_token": 0.302, "cache_hit_pct": 38.0},
+ "predicted": {"s_per_token": 0.302, "cache_hit_pct": 38.0, "s_per_token_worst": 1.69},
  "memory": {"pools": [{"name": "host", "label": "This process", "cap_bytes": 3552575488,
                        "lockable_cap_bytes": 0, "held_bytes": 3322400768, "locked_bytes": 0,
                        "rows": [{"name": "dense", "label": "Dense", "bytes": 1932735283,
@@ -610,7 +617,10 @@ so a stage or a role the server adds reaches every UI with no UI change:
   compute the prompt and the tokens (a device holding layers in memory of its own is on the
   tokens lane beside the host).
 - `predicted` is decode as the plan priced it, the figures `bmoe-cli --auto` prints after a run:
-  `s_per_token`, and `cache_hit_pct` where there is a cache. Either is absent when not predicted.
+  `s_per_token`; `cache_hit_pct` where there is a cache, the hit rate the cost model credited the
+  cache with (`Allocation::cache_hit_credited`), not the cache's share of the experts; and
+  `s_per_token_worst`, the same token with nothing resident and every byte read again, a bound
+  beside the prediction and never divided into it. Each is absent when not predicted.
 - `memory.pools` is the ledger the plan charged: the host's pool (`name` `host`; `cap_bytes`
   what the process may hold, `lockable_cap_bytes` what it may hold locked) with one row per thing
   held for the whole run, and one pool for each device with memory of its own that holds layers.

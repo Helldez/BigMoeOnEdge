@@ -24,6 +24,34 @@ Semantic Versioning.
   unchanged, and the phone apps do not show the warning yet. Docs: `docs/server-api.md` (sizing the
   context for a client), `docs/screens.md`, the Android and iOS READMEs.
 
+### Changed
+- **The web UI's Plan screen shows the verdict and four figures, and its decisions land on their
+  setting (#357).** The planner's full explanation is no longer a fold on the screen: every line
+  of it already had a worded twin there, and it was the one place the UI showed raw parameter
+  names. It stays in the API, and Copy diagnostic puts it on the clipboard with the plan's command
+  for a bug report, beside a link to how the planner decides. Under the verdict sit the expected
+  decode speed, the cache hit rate the plan credited, the memory held against what the process
+  may hold, and the worst case with nothing held in memory; Apply and Measure again sit together
+  under them, and Apply lists the rows it changed, each linked to its setting. A decision's
+  "in Settings" link now lands on that row instead of the top of the page. `predicted` in
+  `GET /api/plan` gains `s_per_token_worst`, and its `cache_hit_pct` is now the hit rate the cost
+  model credited (a new `Allocation::cache_hit_credited`), not the cache's share of the experts,
+  which assumed uniform routing (part of #310).
+- **The web UI's Settings screen is one card per group, each with its own levels folded inside
+  it (#358).** The parameter table gives each group an explicit order (`group_order`), a short
+  `group_label` and a one-line `group_help`, marks the model file's group read-only for a form
+  (`group_read_only`: it is chosen on the Models screen), and moves the prompt's device and reads
+  out of Expert streaming into a group of their own, Prefill. The page renders that: a card per
+  group with its basic rows open and its advanced, experimental and debug rows folded inside it by
+  level, instead of one Advanced wall; a level filter (remembered per device) and a search over
+  every level; one source chip per row (default, from the plan, set by you) in place of up to six
+  badges; "per message" only on per-request rows and "needs reload" only on a row whose value
+  differs from the loaded session's (`GET /api/config` gains `reload_keys`); "Use plan value" where
+  the plan decided a different value than the person's; and "Reset all my values". `bmoe-cli
+  --help` prints each group's help line beside its title. The phone apps render the new labels and
+  the Prefill group as they are, in table order. Docs: `docs/screens.md`, `docs/server-api.md`,
+  `docs/settings.md`.
+
 ## [0.34.1] - 2026-10-23
 
 ### Fixed

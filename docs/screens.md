@@ -126,12 +126,16 @@ the same thing and a stage or role added later reaches them all unchanged.
   last one the server holds (`GET /api/plan?cached=1`), and shows it in this same layout, marked as
   the last measured; with none it says so, with Measure. Measuring is always the person's tap.
 - **Auto-plan.** A switch: plan before every load. Off, a load uses the settings as they are.
-- **Summary, first.** The plan's sentence (`summary.sentence`: "Experts stream from flash, with a
-  7.1 GiB cache"), the machine line, and three tiles: decode speed, expected from `predicted` and,
-  once the loaded model has answered, measured from `measured` with the difference (`+26%`); the
-  cache hit rate, measured with a mark at what the plan credited; and the lanes, which device
-  computes the prompt and which the tokens. Apply sits here. A plan measured with a model loaded
-  carries the server's warning: it is sized for a smaller machine.
+- **Summary, first.** The plan's verdict (`summary.sentence`: "Experts stream from flash, with a
+  7.1 GiB cache"), the machine line, the lanes (which device computes the prompt and which the
+  tokens) in one line, and four figures: decode speed, expected from `predicted` and, once the
+  loaded model has answered, measured from `measured` with the difference (`+26%`); the cache hit
+  rate the plan credited (`predicted.cache_hit_pct`, the cost model's own), measured with a mark at
+  the credited one; the memory held against what the process may hold (the host pool of
+  `memory.pools`); and the worst case, milliseconds per token with nothing held in memory
+  (`predicted.s_per_token_worst`), beside the expected. Apply and Measure again sit together under
+  them, and Apply lists what it changed, each row linked to its setting. A plan measured with a
+  model loaded carries the server's warning: it is sized for a smaller machine.
 - **Memory.** One bar per pool (`memory.pools`): every row the ledger holds, then what is free,
   against what the process may hold; each row named, sized and marked when locked. A row held in
   turn with the cache is a sentence under the bar, not a segment.
@@ -146,13 +150,16 @@ the same thing and a stage or role added later reaches them all unchanged.
   count. A row shows the knob's settings label, its value and where it came
   from (`measured`, `derived`, `policy`, `operator` for a value the person set and the planner left
   alone, `unprobed`); opening it shows the decision in one short line (`brief`), the full account
-  behind Why, and the way to the setting. The two folded groups say in a line what they hold.
+  behind Why, and a link that lands on the setting itself (`#/settings/<key>`: its card and fold
+  open, the field focused). The two folded groups say in a line what they hold.
 - **Measuring.** While the probes run (Measure, or an auto load), the stages from `plan_progress`:
   done, running, how many to go. Never a blind wait.
 - **Actions.** Measure again (the probes run again: storage reads, a matmul on every device; on a
   phone it takes a while and never starts on its own), Apply (the plan's values go to the settings
-  without becoming the person's), and the command line, copyable, for a bug report; the planner's
-  full explanation folded beneath it.
+  without becoming the person's), the command line, and Copy diagnostic: the command and the
+  planner's whole account (`explain`) on the clipboard, for a bug report. The account is not shown:
+  every line of it has a worded twin on the screen. A link leads to how the planner decides
+  ([hardware-planning.md](hardware-planning.md)).
 - **With nothing loaded**, the decisions the configuration carries from the last applied plan are
   shown, grouped the same way, so the screen is never empty after a plan has been made.
 
@@ -161,21 +168,31 @@ the same thing and a stage or role added later reaches them all unchanged.
 What it is: every engine tunable, rendered from the parameter table, and the few settings that are
 the UI's own.
 
-- **From the table** (`GET /api/params`): the groups in the table's order, each row with its
+- **From the table** (`GET /api/params`): one card per group, in the table's order
+  (`group_order`), titled with `group_label` and its one line of `group_help`. Each row has its
   label, its help text, its control by type (a switch for `bool`, a menu for `choice`, a field
-  with its unit for `int` and `float`, `auto` accepted where the row says so, the model's name for
-  the one `path` a client may set). Under a number: its unit, the name of a special value when the
-  field holds one ("= off"), and the typical range ("usually 2 to 8"), never the type's
-  limit; the limits appear only when a value is refused. The help's first sentence is always shown,
-  the rest and the special values on demand. With a plan in force, a row whose plan value differs
-  offers it. The basic rows of each group make the recommended configuration; the advanced,
-  experimental and debug rows live in one section of their own, folded by default, grouped the
-  same way and each marked with its level, with the caveat that they were measured once or on one
-  device and can slow a run down or change the reply. Each row appears once.
-- **Where a value came from.** A value the person set is marked ("set by you") and can be reset
-  to the server's default; a value a plan set is marked as the plan's. A row whose value changes
-  the reply is marked as such. A row fixed while a model is loaded says "applies on reload", and a
-  change to one raises a banner with Reload.
+  with its unit for `int` and `float`, `auto` accepted where the row says so). A group marked
+  `group_read_only` (the model file, chosen on the Models screen) shows its value with no control.
+  Under a number: its unit, the name of a special value when the field holds one ("= off"), and
+  the typical range ("usually 2 to 8"), never the type's limit; the limits appear only when a value
+  is refused. The help's first sentence is always shown, the rest and the special values on demand.
+- **Levels, inside each group.** A card shows its basic rows open (the recommended configuration)
+  and folds its own advanced, experimental and debug rows inside it, under one heading per level
+  with what the level means; a card with no basic row starts folded. A filter at the top shows
+  rows up to a level (Basic, Advanced, Experimental, Debug, each with its count; remembered on this
+  device), and a card says how many rows the filter leaves out. A row that someone or the plan set
+  is shown whatever the filter. Each row appears once.
+- **Search.** A search field filters every level at once, by label, help and flag.
+- **Deep links.** `#/settings/<key>` lands on that row: the filter widened to its level, its card
+  and fold opened, the field scrolled into view and focused. The Plan screen's decisions and the
+  context warning link this way.
+- **Where a value came from.** One chip per row: `default`, `from the plan`, or `set by you`. A
+  value the person set can be reset; where the plan decided a different value, the row offers
+  "Use plan value" instead, which removes the person's value so the plan's applies. "Reset all my
+  values" removes every one (`user_keys`) after a confirmation. A row whose value changes the reply
+  is marked as such, a per-request row says "per message", and "needs reload" marks only a row
+  whose value differs from the loaded session's (`reload_keys`); any such change raises a banner
+  with Reload.
 - **A configuration that does not validate** is kept (a form mid-edit is often briefly invalid),
   shown with the server's reason, and a load is refused until it does.
 - **The UI's own**: on the phone, Serve on the network with the address on the local network and the key shown and copyable, Metrics

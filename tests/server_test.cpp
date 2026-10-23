@@ -926,24 +926,25 @@ static void plan_view_tests() {
     dead.usable = Tri::No;
     dead.unusable_reason = "the probe ended without an answer";
     hw.devices.push_back(dead);
-    ModelProfile model;
-    model.expert_bytes = 10ull << 30;
     Plan plan;
     plan.regime = Regime::ExpertsStream;
     plan.config.prefill.device = "NPU0";
     plan.allocation.cache_bytes = 2ull << 30;
     plan.allocation.seconds_per_token = 0.3;
+    plan.allocation.seconds_worst_case = 1.2;
+    plan.allocation.cache_hit_credited = 0.2;
     plan.allocation.ledger.holdable_cap = 5ull << 30;
     plan.allocation.ledger.rows = {{"dense", 1ull << 30, true, false},
                                    {"expert cache", 2ull << 30, true, false},
                                    {"device slots", 1ull << 29, true, true}};
-    json v = plan_view(hw, model, plan);
+    json v = plan_view(hw, plan);
     check(v["summary"]["sentence"] == "Experts stream from flash, with a 2.0 GiB cache.", "plan view: the sentence");
     check(v["summary"]["lanes"][0]["on"] == json::array({"NPU0"}) && v["summary"]["lanes"][0]["label"] == "Prompt",
           "plan view: the prompt lane names the armed device");
     check(v["summary"]["lanes"][1]["on"] == json::array({"CPU"}), "plan view: tokens stay on the host");
-    check(v["predicted"]["s_per_token"] == 0.3 && v["predicted"]["cache_hit_pct"] == 20.0,
-          "plan view: the prediction the CLI prints");
+    check(v["predicted"]["s_per_token"] == 0.3 && v["predicted"]["cache_hit_pct"] == 20.0 &&
+              v["predicted"]["s_per_token_worst"] == 1.2,
+          "plan view: the prediction the CLI prints, its credited hits and its bound");
     const json * c = device_named(v, "CPU");
     check(c && (*c)["uses"] == json::array({"tokens"}) && (*c)["badge"] == "Tokens" &&
               (*c)["rate_text"] == "The reference",
@@ -970,7 +971,7 @@ static void plan_view_tests() {
     Plan unknown_lock = plan;
     unknown_lock.allocation.ledger.lockable_cap_known = false;
     unknown_lock.allocation.cache_lock_unverified = true;
-    const json uncertain_memory = plan_view(hw, model, unknown_lock)["memory"]["pools"][0];
+    const json uncertain_memory = plan_view(hw, unknown_lock)["memory"]["pools"][0];
     check(uncertain_memory["lockable_cap_known"] == false && uncertain_memory["cache_lock_unverified"] == true &&
               uncertain_memory["cap_bytes"] == pools[0]["cap_bytes"],
           "plan view: an unmeasured lock ceiling and pending grant stay distinct from process capacity");
@@ -991,7 +992,7 @@ static void plan_view_tests() {
     dp.placement.device_compute_bytes = 1ull << 30;
     dp.placement.projected_devices = {"CUDA0"};
     dp.placement.projected_compute_bytes = {1ull << 30};
-    v = plan_view(desk, model, dp);
+    v = plan_view(desk, dp);
     check(v["memory"]["pools"].size() == 2 && v["memory"]["pools"][1]["name"] == "CUDA0" &&
               v["memory"]["pools"][1]["rows"][0]["bytes"] == (8ull << 30) &&
               v["memory"]["pools"][1]["estimated"] == false,
@@ -999,20 +1000,20 @@ static void plan_view_tests() {
     check(v["summary"]["lanes"][1]["on"] == json::array({"CPU", "CUDA0"}), "plan view: layers put the card on tokens");
     check((*device_named(v, "CUDA0"))["badge"] == "Layers", "plan view: the card's badge");
     dp.placement.shared_memory_placement = true;
-    v = plan_view(desk, model, dp);
+    v = plan_view(desk, dp);
     check(v["memory"]["pools"].size() == 1, "plan view: a declined placement holds nothing on the device");
 
     // The cores alone: three answers to "no device", kept apart.
     HardwareProfile cpu;
     cpu.devices.push_back(device("CPU", true));
-    check(plan_view(cpu, model, Plan{})["devices_none"] == "not_probed", "plan view: nobody looked");
+    check(plan_view(cpu, Plan{})["devices_none"] == "not_probed", "plan view: nobody looked");
     cpu.backends_looked = true;
-    check(plan_view(cpu, model, Plan{})["devices_none"] == "build", "plan view: the build carries no backend");
+    check(plan_view(cpu, Plan{})["devices_none"] == "build", "plan view: the build carries no backend");
     cpu.backends_placeable = 1;
-    json cv = plan_view(cpu, model, Plan{});
+    json cv = plan_view(cpu, Plan{});
     check(cv["devices_none"] == "machine" && !cv["devices_none_text"].get<std::string>().empty(),
           "plan view: a backend found nothing here");
-    check(plan_view(cpu, model, Plan{})["summary"]["sentence"] == "The model could not be read.",
+    check(plan_view(cpu, Plan{})["summary"]["sentence"] == "The model could not be read.",
           "plan view: an unread model says so");
 
     // Decisions: who decided, and what.

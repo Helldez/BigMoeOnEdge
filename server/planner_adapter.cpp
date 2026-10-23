@@ -119,7 +119,7 @@ PlanOutcome make_plan(const RunConfig & cfg,
                   {"not_applicable", not_applicable},
                   {"explain", plan.explain()}};
     // What a person reads first: the outcome, the memory, the devices (plan_view.h).
-    o.body.update(plan_view(hw, planned.model, plan));
+    o.body.update(plan_view(hw, plan));
     return o;
 #endif
 }
