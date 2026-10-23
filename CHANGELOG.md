@@ -17,6 +17,17 @@ Semantic Versioning.
   A completed answer that fails validation returns `invalid_output` without unloading the
   model, so the next request can proceed. See `docs/server-api.md` for schema support and
   streaming semantics and the tested template/tool-choice limitations.
+- **The Hexagon NPU on Windows on Snapdragon, as an opt-in archive.** The release gains
+  `bmoe-cli` and `bmoe-desktop` archives for `windows-arm64-npu`: the Windows ARM64 build plus the
+  Hexagon module and one DSP library per NPU generation (v73 to v85). Windows' NPU driver runs that
+  code only from a catalog signed by a certificate the machine trusts, so the release workflow
+  makes the catalog with Inf2Cat (from Microsoft's WDK package on NuGet), signs it with a
+  certificate made in the same job, and deletes the private key before the job ends: nothing else
+  can ever be signed with it, and only the public certificate ships. Using it needs a one-time setup
+  the user does by hand (the NPU driver, test-signing on, the certificate trusted), which
+  `docs/npu-windows.md` walks through with what each step changes and how to undo it. The plain
+  Windows ARM64 archives are unchanged and need none of it. As on Android, the NPU takes the prompt
+  only where the planner measures it faster and identical. Not yet run on a Snapdragon laptop.
 
 ### Fixed
 - **A cancelled turn leaves both contexts at the same prefix.** When the draft context of
