@@ -52,12 +52,13 @@ static void check(bool ok, const std::string & what) {
     if (!ok) ++failures;
 }
 
-static OpenAiChatRequest parsed(const char * body, bool * ok = nullptr, std::string * err = nullptr) {
+static OpenAiChatRequest
+parsed(const char * body, bool * ok = nullptr, std::string * err = nullptr, bool think = true) {
     OpenAiChatRequest r;
     std::string e;
     RunConfig cfg;
     cfg.n_predict = 100;
-    cfg.think = true;
+    cfg.think = think;
     const bool good = parse_chat_request(json::parse(body), cfg, r, e);
     if (ok) *ok = good;
     if (err) *err = e;
@@ -151,6 +152,11 @@ static void protocol_tests() {
               parsed(R"j({"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none","think":true})j")
                   .turn.think,
           "thinking: the server's own field wins, and only effort none turns it off");
+    check(
+        parsed(R"j({"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"})j", nullptr, nullptr, false)
+                .turn.think &&
+            !parsed(R"j({"messages":[{"role":"user","content":"hi"}]})j", nullptr, nullptr, false).turn.think,
+        "thinking off by default: any effort but none turns it on, and no field keeps the default");
 
     // The token budget is bounded where it enters: by the parameter table, not by what an int holds.
     const auto budget = [&](const char * field) {

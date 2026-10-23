@@ -13,8 +13,8 @@ Semantic Versioning.
   `RunConfig::think` now defaults to off, so the CLI, the server, the web UI and both apps start
   with it off; a saved setting still wins. It stays one switch away: `--think` on the CLI (beside
   `--no-think`), the Thinking setting, and per request through `think`,
-  `chat_template_kwargs.enable_thinking` or `reasoning_effort`. Models with no thinking mode are
-  unaffected.
+  `chat_template_kwargs.enable_thinking` or `reasoning_effort` (any level but `"none"` now turns
+  it on; before, only `"none"` was read). Models with no thinking mode are unaffected.
 
 ## [0.34.1] - 2026-10-23
 

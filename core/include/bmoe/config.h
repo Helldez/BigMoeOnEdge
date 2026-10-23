@@ -548,8 +548,7 @@ struct RunConfig {
     // its thinking channel when true. Off suppresses reasoning at the source rather than
     // relying on the display-time parser, which cannot strip a format it does not know.
     // Only meaningful with chatml; the raw-prompt path ignores it. Off by default: on device a
-    // reasoning model spends most of a turn thinking (Qwen3.6-35B-A3B used all 1024 tokens of the
-    // default budget on a short question and never answered), a minute or more at 12-17 tok/s.
+    // reasoning model can spend a whole turn's budget thinking before it answers (#331).
     bool think = false;
 
     // Override the number of active MoE experts per token (top-k routing). 0 = use the

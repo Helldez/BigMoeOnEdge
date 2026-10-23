@@ -249,7 +249,7 @@ Request fields that are read:
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`. A named function is honoured as `"required"`: the engine can require a call, not choose which. |
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
 | `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`). Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. It is a ceiling, not a reservation: the answer gets at most what the context has left after the prompt and then stops with `finish_reason: "length"`. Only a conversation that leaves no room at all is refused, with `400`. |
-| `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, of which only `"none"` turns it off. Default: the `think` parameter, off unless set. |
+| `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, where `"none"` turns it off and any other level turns it on. Default: the `think` parameter, off unless set. |
 
 Ignored, because the session fixes them: `model`, `temperature`, `top_p`, `seed` and every
 other sampling field. Sampling is configured with the `temp`, `top-k`, `top-p` and `seed`

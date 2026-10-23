@@ -13,7 +13,7 @@ struct ChatRequest {
     std::vector<ChatTool> tools;
     ToolChoice tool_choice = ToolChoice::Auto;
     int n_predict = 0;
-    bool think = true;
+    bool think = false; // RunConfig::think's default
 };
 
 } // namespace bmoe::server
