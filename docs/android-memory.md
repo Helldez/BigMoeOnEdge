@@ -93,10 +93,9 @@ competes with and by driving the allocation churn that wakes kswapd.
 
 ## The vendor tilts the field against anonymous memory
 
-`/dev/memcg/.../memory.swappiness` reads **100**, and that number is a decoy. The module
-`oplus_bsp_zram_opt` is **verified loaded** (`/proc/modules`) and hooks `android_vh_set_swappiness`,
-overriding the sysctl *inside* the reclaim path ([zram_opt.c](
-https://github.com/OnePlusOSS/android_kernel_msm-5.4_oneplus_sm6375), GPL, © Oplus):
+`/dev/memcg/.../memory.swappiness` reads **100**, and that number is a decoy. The vendor's zram
+tuning module is **verified loaded** (`/proc/modules`) and hooks `android_vh_set_swappiness`,
+overriding the sysctl *inside* the reclaim path (from the vendor's published GPL kernel source):
 
 ```c
 static int g_direct_swappiness = 60;
@@ -119,8 +118,8 @@ page cache stays. `inactive_ratio = 1` for anon additionally forces it ~50% deac
 construction, on the list reclaim eats first. Corroborated live: Active(anon) 459 MB vs
 Inactive(anon) 3,123 MB (87% inactive).
 
-> ⚠️ **Load-bearing and unverified.** The `160` comes from OPLUS's 5.4 source; the module is verified
-> loaded on this 6.12 device, but `/sys/module/oplus_bsp_zram_opt/parameters/vm_swappiness` is
+> ⚠️ **Load-bearing and unverified.** The `160` comes from the vendor's 5.4 source; the module is
+> verified loaded on this 6.12 device, but its `/sys/module/<module>/parameters/vm_swappiness` is
 > root-only and **was not read**. High-confidence inference, not a measurement. With root, one
 > command settles it.
 

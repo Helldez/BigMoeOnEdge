@@ -178,4 +178,7 @@ Metal エンジンです。BigMoeOnEdge は、アーキテクチャやプラッ�
 
 ## ライセンス
 
-Apache-2.0。[LICENSE](LICENSE) を参照してください。
+Apache-2.0。[LICENSE](LICENSE) を参照してください。バイナリとアプリには llama.cpp と ggml、
+cpp-httplib、nlohmann/json、Web UI の JavaScript ライブラリ(MIT、Apache-2.0)と
+2 つのフォント(SIL OFL 1.1)も含まれます。
+それらのライセンスは [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) にあり、すべてのアーカイブと APK に同梱されています。

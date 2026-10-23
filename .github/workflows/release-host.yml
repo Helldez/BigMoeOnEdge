@@ -33,8 +33,10 @@ on:
         type: boolean
         default: true
 
+# Read everywhere: the build jobs run on pull requests too, and code built from a PR never holds a
+# token that can write. Only `publish`, which builds nothing and runs on no PR, may write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   cli:
@@ -147,9 +149,19 @@ jobs:
         shell: pwsh
         run: |
           $v = "1.4.357.0"
-          # LunarG publishes the ARM64 SDK, a native glslc included, under its own path.
-          $url = if ($env:RUNNER_ARCH -eq "ARM64") { "https://sdk.lunarg.com/sdk/download/$v/warm/vulkansdk-windows-ARM64-$v.exe" } else { "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe" }
-          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L $url
+          # LunarG publishes the ARM64 SDK, a native glslc included, under its own path. Each
+          # installer is checked against the SHA-256 LunarG publishes for it
+          # (https://sdk.lunarg.com/sdk/sha/<version>/<platform>/<file>.txt): bump both with $v.
+          if ($env:RUNNER_ARCH -eq "ARM64") {
+            $url = "https://sdk.lunarg.com/sdk/download/$v/warm/vulkansdk-windows-ARM64-$v.exe"
+            $sha = "c10f18a9085018f66e1f50bd60623f17b7081faca165248de54f78728120f334"
+          } else {
+            $url = "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe"
+            $sha = "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"
+          }
+          curl.exe -fsSL -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe $url
+          $got = (Get-FileHash -Algorithm SHA256 "$env:RUNNER_TEMP\VulkanSDK-Installer.exe").Hash.ToLower()
+          if ($got -ne $sha) { throw "Vulkan SDK installer SHA-256 $got, expected $sha" }
           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$v"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$v\bin"
@@ -315,7 +327,7 @@ jobs:
             strip "$NAME/bmoe-cli" || true
           fi
           libs "$NAME"
-          cp LICENSE "$NAME/"
+          cp LICENSE THIRD_PARTY_LICENSES "$NAME/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             EXE='.\bmoe-cli.exe'; SHELL_NAME='PowerShell or cmd'
           else
@@ -352,7 +364,7 @@ jobs:
           [ "${{ runner.os }}" = "Windows" ] || strip "$DESK/$SRV" || true
           libs "$DESK"
           cp -r "$BIN/ui" "$BIN/catalog" "$DESK/"
-          cp LICENSE "$DESK/"
+          cp LICENSE THIRD_PARTY_LICENSES "$DESK/"
           cat > "$DESK/README.txt" <<EOF
           BigMoeOnEdge desktop $TAG, ${{ matrix.target }}
 
@@ -396,11 +408,9 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$NAME.zip" "$NAME" > /dev/null
             7z a -tzip "$DESK.zip" "$DESK" > /dev/null
-            echo "assets=$NAME.zip $DESK.zip" >> "$GITHUB_OUTPUT"
           else
             tar czf "$NAME.tar.gz" "$NAME"
             tar czf "$DESK.tar.gz" "$DESK"
-            echo "assets=$NAME.tar.gz $DESK.tar.gz" >> "$GITHUB_OUTPUT"
           fi
 
       # The binaries must at least start on the runner they were built on.
@@ -414,22 +424,13 @@ jobs:
             build/bin/bmoe-cli --version && build/bin/bmoe-server --version
           fi
 
-      - name: Upload asset to the release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          ASSETS: ${{ steps.pkg.outputs.assets }}
-        # ASSETS is a space-separated list of archive names made from the checked tag: split on purpose.
-        run: gh release upload "$TAG" $ASSETS --clobber
-
-      - name: Keep as workflow artifact (dry run)
-        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.upload)
+      # Always a workflow artifact: the dry run's result, and what `publish` attaches to a release.
+      - name: Keep as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: host-${{ matrix.target }}
           path: bmoe-*-${{ matrix.target }}.*
+          if-no-files-found: error
 
   ios-harness:
     runs-on: macos-14
@@ -483,7 +484,7 @@ jobs:
           NAME="bmoe-ios-harness-sim-$TAG"
           mkdir -p "$NAME"
           cp -R "$APP" "$NAME/"
-          cp LICENSE "$NAME/"
+          cp LICENSE THIRD_PARTY_LICENSES "$NAME/"
           cat > "$NAME/README.txt" <<EOF
           BigMoeOnEdge iOS harness $TAG, for the iOS simulator on a Mac with Xcode (unsigned)
 
@@ -500,20 +501,56 @@ jobs:
           Everything after --bmoe goes to bmoe-cli; its --help lists the flags.
           EOF
           ditto -c -k --keepParent "$NAME" "$NAME.zip"
-          echo "assets=$NAME.zip" >> "$GITHUB_OUTPUT"
 
-      - name: Upload asset to the release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          ASSETS: ${{ steps.pkg.outputs.assets }}
-        run: gh release upload "$TAG" $ASSETS --clobber
-
-      - name: Keep as workflow artifact (dry run)
-        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.upload)
+      - name: Keep as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: ios-harness-sim
           path: bmoe-ios-harness-sim-*.zip
+          if-no-files-found: error
+
+  # Attaches what the build jobs made to the release: the one job with write access, and it runs
+  # nothing from the checkout. always(): a target that failed to build does not hold back the ones
+  # that built, as when each job attached its own (the failed job still fails the run).
+  publish:
+    needs: [cli, ios-harness]
+    if: always() && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          case "$EVENT" in
+            release) T="$RELEASE_TAG" ;;
+            *)       T="$INPUT_TAG" ;;
+          esac
+          case "$T" in
+            ''|*[!A-Za-z0-9._-]*) echo "not a plain tag name: '$T'"; exit 1 ;;
+          esac
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
+
+      # Every artifact of this run is an archive a build job made for this tag.
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Upload assets to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          shopt -s nullglob
+          files=(assets/bmoe-*)
+          [ ${#files[@]} -gt 0 ] || { echo "no archive to attach"; exit 1; }
+          ls -l "${files[@]}"
+          gh release upload "$TAG" "${files[@]}" --clobber

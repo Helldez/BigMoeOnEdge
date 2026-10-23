@@ -87,6 +87,14 @@ Semantic Versioning.
     the loaded model recognised by identity). Both were also run end to end against a scratch models
     folder: a 404 link refused, a real link added, downloaded, refused for delete while loaded, then
     deleted.
+- **`THIRD_PARTY_LICENSES` (#352).** Every archive and APK carries llama.cpp and ggml, the server
+  carries cpp-httplib and nlohmann/json, the desktop archive's web UI bundles Svelte, clsx, marked
+  and DOMPurify, and the UI and the app use two fonts under the SIL OFL; only the project's own
+  Apache-2.0 `LICENSE` travelled with them. The new file holds those licenses' text,
+  ships beside `LICENSE` in every release archive (CLI, desktop, iOS harness) and as an asset in the
+  APK, and the README's License section points at it, in all six languages.
+- **Dependabot for the workflows' actions, the web UI's npm packages and the Android Gradle build
+  (#351).** Monthly, one grouped PR per ecosystem.
 
 ### Changed
 - **Thinking is off by default (#331).** A reasoning model spends most of a turn thinking before it
@@ -139,6 +147,14 @@ Semantic Versioning.
   line beside its title. The Android and iOS apps sort their settings groups by `group_order` too
   (falling back to table order for a server that does not send it), so Prefill sits after Expert
   streaming there as well. Docs: `docs/screens.md`, `docs/server-api.md`, `docs/settings.md`.
+- **CI pins what it downloads (#351).** The gates' Python packages come from
+  `scripts/requirements-ci.txt` (`gguf==0.19.0`, `numpy==2.5.3` and gguf's own dependencies, every
+  one `==`), bumped on purpose instead of whatever was newest that day. The Windows Vulkan SDK
+  installers are checked against the SHA-256 LunarG publishes for them before they run, and the
+  Android Gradle wrapper verifies its distribution (`distributionSha256Sum`). `release-host` builds
+  with `contents: read`, pull requests included; a new `publish` job, which builds nothing and never
+  runs on a pull request, is the only one with `contents: write`: it attaches the archives the build
+  jobs left as workflow artifacts, under the same names as before.
 
 ### Fixed
 - **A cancelled turn leaves both contexts at the same prefix.** When the draft context of
@@ -171,6 +187,10 @@ Semantic Versioning.
 A non-object JSON body (`[]`, `1`) on `PUT /api/config` or `POST /api/models/download`, the second
 point of #353, is already a `400` with `code: "invalid_request"` since 0.31.0 (#262): checked,
 not changed.
+- **Repository hygiene (#352).** `docs/android-memory.md` no longer links the test phone vendor's
+  kernel tree or names its modules; stale comments that described the Android app starting the CLI
+  (it starts `bmoe-server`) are corrected, in the app, its README and the iOS harness; and the
+  Android app drops its API-level checks for versions below its `minSdk` of 29.
 
 ### Security
 - **The model catalog is held to what its fields become (#347).** A catalog file's `name` is joined

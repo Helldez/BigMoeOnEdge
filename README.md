@@ -187,4 +187,7 @@ on Apple silicon; BigMoeOnEdge uses llama.cpp's public API across architectures 
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE). The binaries and the apps also carry llama.cpp and ggml,
+cpp-httplib, nlohmann/json, the web UI's JavaScript libraries (MIT, Apache-2.0) and two fonts
+(SIL OFL 1.1): their licenses are in
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES), which ships in every archive and APK.
