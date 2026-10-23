@@ -9,7 +9,7 @@ import java.io.File
 
 /**
  * Imports a gguf the user picked with the system file picker (Storage Access Framework). The
- * picker hands back a content:// URI, but the bmoe-cli subprocess needs a real filesystem path,
+ * picker hands back a content:// URI, but the engine (bmoe-server) opens a real filesystem path,
  * so we stream the bytes into the app-internal models dir (no permission required, and on a real
  * f2fs/ext4 volume where O_DIRECT works — see ModelManager.internalModelsDir). This is the
  * Play-flavor path for a model already downloaded with the browser — public Downloads is not

@@ -175,4 +175,6 @@ BigMoeOnEdge 则跨架构、跨平台使用 llama.cpp 的公开 API。
 
 ## 许可证
 
-Apache-2.0。参见 [LICENSE](LICENSE)。
+Apache-2.0。参见 [LICENSE](LICENSE)。二进制文件和应用还包含 llama.cpp 与 ggml、cpp-httplib、
+nlohmann/json(均为 MIT)以及两种字体(SIL OFL 1.1):它们的许可证见
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES),随每个归档文件和 APK 一同发布。

@@ -33,11 +33,14 @@ on:
         type: boolean
         default: true
 
+# Read by default; the two jobs that attach assets to a release ask for write on their own.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   cli:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -132,9 +135,19 @@ jobs:
         shell: pwsh
         run: |
           $v = "1.4.357.0"
-          # LunarG publishes the ARM64 SDK, a native glslc included, under its own path.
-          $url = if ($env:RUNNER_ARCH -eq "ARM64") { "https://sdk.lunarg.com/sdk/download/$v/warm/vulkansdk-windows-ARM64-$v.exe" } else { "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe" }
-          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L $url
+          # LunarG publishes the ARM64 SDK, a native glslc included, under its own path. Each
+          # installer is checked against the SHA-256 LunarG publishes for it
+          # (https://sdk.lunarg.com/sdk/sha/<version>/<platform>/<file>.txt): bump both with $v.
+          if ($env:RUNNER_ARCH -eq "ARM64") {
+            $url = "https://sdk.lunarg.com/sdk/download/$v/warm/vulkansdk-windows-ARM64-$v.exe"
+            $sha = "c10f18a9085018f66e1f50bd60623f17b7081faca165248de54f78728120f334"
+          } else {
+            $url = "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe"
+            $sha = "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"
+          }
+          curl.exe -fsSL -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe $url
+          $got = (Get-FileHash -Algorithm SHA256 "$env:RUNNER_TEMP\VulkanSDK-Installer.exe").Hash.ToLower()
+          if ($got -ne $sha) { throw "Vulkan SDK installer SHA-256 $got, expected $sha" }
           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$v"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$v\bin"
@@ -242,7 +255,7 @@ jobs:
             strip "$NAME/bmoe-cli" || true
           fi
           libs "$NAME"
-          cp LICENSE "$NAME/"
+          cp LICENSE THIRD_PARTY_LICENSES "$NAME/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             EXE='.\bmoe-cli.exe'; SHELL_NAME='PowerShell or cmd'
           else
@@ -279,7 +292,7 @@ jobs:
           [ "${{ runner.os }}" = "Windows" ] || strip "$DESK/$SRV" || true
           libs "$DESK"
           cp -r "$BIN/ui" "$BIN/catalog" "$DESK/"
-          cp LICENSE "$DESK/"
+          cp LICENSE THIRD_PARTY_LICENSES "$DESK/"
           cat > "$DESK/README.txt" <<EOF
           BigMoeOnEdge desktop $TAG, ${{ matrix.target }}
 
@@ -346,6 +359,8 @@ jobs:
           path: bmoe-*-${{ matrix.target }}.*
 
   ios-harness:
+    permissions:
+      contents: write
     runs-on: macos-14
     steps:
       - name: Resolve tag
@@ -397,7 +412,7 @@ jobs:
           NAME="bmoe-ios-harness-sim-$TAG"
           mkdir -p "$NAME"
           cp -R "$APP" "$NAME/"
-          cp LICENSE "$NAME/"
+          cp LICENSE THIRD_PARTY_LICENSES "$NAME/"
           cat > "$NAME/README.txt" <<EOF
           BigMoeOnEdge iOS harness $TAG, for the iOS simulator on a Mac with Xcode (unsigned)
 

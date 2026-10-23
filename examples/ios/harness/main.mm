@@ -1,10 +1,10 @@
 // The iOS harness: bmoe-cli, run inside an app.
 //
-// An app here may not start a process, so the way the Android example drives the engine (exec the
-// CLI, speak to it over pipes) has no counterpart. This is the smallest thing that gets the same
-// front-end onto the device instead: cli/main.cpp is compiled into the app with its entry point
-// renamed, and called on a thread with whatever command line was typed. Every flag, the plan's
-// rationale and the CSV are therefore the CLI's own, not a second implementation to keep in step.
+// An app here may not start a process, so running bmoe-cli as one (as on any other platform) has no
+// counterpart. This is the smallest thing that gets the same front-end onto the device instead:
+// cli/main.cpp is compiled into the app with its entry point renamed, and called on a thread with
+// whatever command line was typed. Every flag, the plan's rationale and the CSV are therefore the
+// CLI's own, not a second implementation to keep in step.
 //
 // It is a measuring instrument, not the app: one text field, one button, the output. `--session`
 // reads requests from a stdin an app does not have, and a command line the CLI rejects by calling

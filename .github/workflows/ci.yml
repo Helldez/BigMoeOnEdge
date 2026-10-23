@@ -105,7 +105,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y cmake ninja-build
           python3 -m pip install --upgrade pip
-          python3 -m pip install gguf numpy
+          python3 -m pip install -r scripts/requirements-ci.txt
       # This is the job that proves --overlap byte-identical, so the overlap gates may not skip
       # themselves here: the CPU module this build loads must carry the fork's expert-ready hook.
       - name: Configure & build
@@ -134,7 +134,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y cmake ninja-build
           python3 -m pip install --upgrade pip
-          python3 -m pip install gguf numpy
+          python3 -m pip install -r scripts/requirements-ci.txt
       - name: Configure & build (ASan + UBSan)
         run: |
           SAN="-fsanitize=address,undefined -fno-omit-frame-pointer"
@@ -203,7 +203,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install deps (the gates' tiny-model generator)
-        run: python3 -m pip install gguf numpy
+        run: python3 -m pip install -r scripts/requirements-ci.txt
       # Keep this in sync with the macos-arm64 release-host configuration, which differs only in
       # leaving the tests out.
       - name: Configure & build (the Apple I/O paths, and the gates)

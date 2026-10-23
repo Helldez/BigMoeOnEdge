@@ -28,8 +28,9 @@ imported from a file.
    pwsh ../../scripts/build-android.ps1
    ```
 
-   This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-server.so`, `libbmoe-cli.so` and
-   the `libllama`/`libggml` shared libraries.
+   This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-server.so`, the engine the app
+   starts as a child process, and the `libllama`/`libggml` shared libraries it links.
+   `libbmoe-cli.so` is still staged beside them, but the app does not start it.
 
    The release build adds the Hexagon, Vulkan and OpenCL backends. It runs inside upstream's
    Snapdragon toolchain container (it carries the Hexagon SDK; `scripts/android-gpu-deps.sh`

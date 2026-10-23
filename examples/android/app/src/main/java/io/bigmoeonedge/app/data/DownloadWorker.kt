@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.net.Uri
-import android.os.Build
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
@@ -164,11 +163,9 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
     private fun foregroundInfo(name: String, done: Long, total: Long): ForegroundInfo {
         val frac = if (total > 0) done.toFloat() / total else -1f
         val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL, "Model downloads", NotificationManager.IMPORTANCE_LOW)
-            )
-        }
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL, "Model downloads", NotificationManager.IMPORTANCE_LOW)
+        )
         val notif: Notification = Notification.Builder(applicationContext, CHANNEL)
             .setContentTitle("Downloading model")
             .setContentText(if (total > 0) "$name · ${gbLabel(done)} of ${gbLabel(total)}" else name)
@@ -176,11 +173,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             .setOngoing(true)
             .setProgress(100, (frac * 100).toInt().coerceIn(0, 100), frac < 0f)
             .build()
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ForegroundInfo(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            ForegroundInfo(NOTIF_ID, notif)
-        }
+        return ForegroundInfo(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     }
 
     companion object {

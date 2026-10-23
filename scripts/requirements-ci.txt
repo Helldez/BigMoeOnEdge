@@ -1,0 +1,5 @@
+# What CI installs for the byte-identity gates' tiny-model generator (tests/), pinned so a gate
+# result never depends on the day it ran. Bumped on purpose, never floating: an old gguf once
+# broke the fixture generator. numpy 2.5 needs Python 3.12 or newer, which every CI image has.
+gguf==0.19.0
+numpy==2.5.3

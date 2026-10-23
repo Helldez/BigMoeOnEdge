@@ -32,6 +32,15 @@ def keystorePropsFile = rootProject.file('keystore.properties')
 def keystoreProps = new Properties()
 if (keystorePropsFile.exists()) keystoreProps.load(new FileInputStream(keystorePropsFile))
 
+// LICENSE and THIRD_PARTY_LICENSES from the repository root, staged into a directory of their own
+// so that only they become assets.
+def licenseAssets = layout.buildDirectory.dir('generated/licenseAssets').get().asFile
+def stageLicenses = tasks.register('stageLicenses', Copy) {
+    from("$rootDir/../../LICENSE", "$rootDir/../../THIRD_PARTY_LICENSES")
+    into licenseAssets
+}
+preBuild.dependsOn stageLicenses
+
 android {
     // The code's package. The applicationId below stays what it was, so an update installs over
     // the previous build instead of beside it.
@@ -53,8 +62,8 @@ android {
         applicationId 'io.bigmoeonedge.example'
         minSdk 29
         targetSdk 34
-        versionCode 56
-        versionName '0.34.1'
+        versionCode 58
+        versionName '0.35.0'
         buildConfigField 'String', 'GIT_SHA', "\"${gitSha}\""
         ndk {
             // The engine ships as prebuilt arm64 binaries staged by build-android.ps1.
@@ -95,10 +104,11 @@ android {
     }
 
     // The model catalog is the project's one data file (catalog/models.json), shipped as an asset
-    // and handed to the server at start: there is no second list in Kotlin.
+    // and handed to the server at start: there is no second list in Kotlin. The licenses ride
+    // along: the APK carries llama.cpp, ggml and the fonts, whose licenses ask for their text.
     sourceSets {
         main {
-            assets.srcDirs += ["$rootDir/../../catalog"]
+            assets.srcDirs += ["$rootDir/../../catalog", licenseAssets]
         }
     }
 

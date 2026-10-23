@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.35.0] - 2026-10-23
+
+### Added
+- **`THIRD_PARTY_LICENSES` (#352).** Every archive and APK carries llama.cpp and ggml, and the
+  server carries cpp-httplib and nlohmann/json, all MIT, plus two fonts under the SIL OFL; only the
+  project's own Apache-2.0 `LICENSE` travelled with them. The new file holds those licenses' text,
+  ships beside `LICENSE` in every release archive (CLI, desktop, iOS harness) and as an asset in the
+  APK, and the README's License section points at it, in all six languages.
+- **Dependabot for the workflows' actions, the web UI's npm packages and the Android Gradle build
+  (#351).** Monthly, one grouped PR per ecosystem.
+
+### Changed
+- **CI pins what it downloads (#351).** The gates' Python packages come from
+  `scripts/requirements-ci.txt` (`gguf==0.19.0`, `numpy==2.5.3`), bumped on purpose instead of
+  whatever was newest that day. The Windows Vulkan SDK installers are checked against the SHA-256
+  LunarG publishes for them before they run, and the Android Gradle wrapper verifies its
+  distribution (`distributionSha256Sum`). `release-host` runs with `contents: read` and grants
+  `contents: write` only to the two jobs that attach assets to a release.
+
+### Fixed
+- **Repository hygiene (#352).** `docs/android-memory.md` no longer links the test phone vendor's
+  kernel tree or names its modules; stale comments that described the Android app starting the CLI
+  (it starts `bmoe-server`) are corrected, in the app, its README and the iOS harness; and the
+  Android app drops its API-level checks for versions below its `minSdk` of 29.
+
 ## [0.34.1] - 2026-10-23
 
 ### Fixed
