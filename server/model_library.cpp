@@ -39,14 +39,15 @@ bool has_exact_size(const fs::path & p, uint64_t bytes) {
 
 namespace {
 
-std::string file_refusal(const CatalogFile & f) {
-    return catalog_file_refusal(f.name, f.url, f.sha256);
+std::string file_refusal(const CatalogFile & f, const std::string & endpoint) {
+    return catalog_file_refusal(f.name, f.url, f.sha256, endpoint);
 }
 
 // One catalog document's entries, as catalog/models.json spells them; the added file uses the
 // same shape, so one reader serves both. An entry with a file it cannot offer is skipped, with
 // the reason in `warnings`.
-std::vector<CatalogEntry> read_catalog(std::istream & in, std::vector<std::string> & warnings) {
+std::vector<CatalogEntry>
+read_catalog(std::istream & in, const std::string & endpoint, std::vector<std::string> & warnings) {
     std::vector<CatalogEntry> out;
     json doc;
     in >> doc;
@@ -62,7 +63,7 @@ std::vector<CatalogEntry> read_catalog(std::istream & in, std::vector<std::strin
                            f.value("bytes", (uint64_t) 0), f.value("sha256", "")};
             for (char & c : cf.sha256)
                 if (c >= 'A' && c <= 'F') c = (char) (c - 'A' + 'a');
-            if (refusal.empty()) refusal = file_refusal(cf);
+            if (refusal.empty()) refusal = file_refusal(cf, endpoint);
             e.files.push_back(std::move(cf));
         }
         if (!refusal.empty()) {
@@ -94,8 +95,9 @@ ModelLibrary::ModelLibrary(std::string models_dir,
                            std::vector<std::string> scan_dirs,
                            std::string catalog_path,
                            std::string added_path,
+                           std::string hf_endpoint,
                            EventBus & bus)
-    : dir_(std::move(models_dir)), added_path_(std::move(added_path)), bus_(bus) {
+    : dir_(std::move(models_dir)), added_path_(std::move(added_path)), hf_endpoint_(std::move(hf_endpoint)), bus_(bus) {
     // A scan directory that is the models directory, or repeats another, would list its models twice.
     std::set<fs::path> seen;
     const auto key = [](const std::string & d) {
@@ -116,7 +118,7 @@ ModelLibrary::ModelLibrary(std::string models_dir,
         return;
     }
     try {
-        catalog_ = read_catalog(in, warnings_);
+        catalog_ = read_catalog(in, hf_endpoint_, warnings_);
     } catch (const std::exception & ex) {
         warnings_.push_back("model catalog " + catalog_path + " is malformed: " + ex.what());
         catalog_.clear();
@@ -125,7 +127,7 @@ ModelLibrary::ModelLibrary(std::string models_dir,
     std::ifstream added(fs::u8path(added_path_));
     if (!added) return; // nothing added yet
     try {
-        added_ = read_catalog(added, warnings_);
+        added_ = read_catalog(added, hf_endpoint_, warnings_);
     } catch (const std::exception & ex) {
         warnings_.push_back("the added models file " + added_path_ + " is malformed and is ignored: " + ex.what());
         added_.clear();
@@ -143,7 +145,7 @@ void ModelLibrary::save_added() {
 std::string ModelLibrary::add_entry(const CatalogEntry & e) {
     if (e.id.empty() || e.files.empty()) return "an entry needs an id and at least one file";
     for (const CatalogFile & f : e.files) {
-        const std::string why = file_refusal(f);
+        const std::string why = file_refusal(f, hf_endpoint_);
         if (!why.empty()) return why;
     }
     std::lock_guard<std::mutex> lk(m_);
@@ -449,9 +451,9 @@ void ModelLibrary::run_download(const CatalogEntry & e, Job & job) {
         }
 
         const std::string part_s = part.string();
-        // Only https (or the http of an operator's mirror), redirects included, so no hop downgrades
-        // the transfer; `--` ends the options, so no URL is read as one.
-        const std::string protos = curl_protocols(f.url);
+        // Only https (or the http of the operator's --hf-endpoint mirror), redirects included, so no
+        // hop downgrades the transfer; `--` ends the options, so no URL is read as one.
+        const std::string protos = curl_protocols(f.url, hf_endpoint_);
         // A dropped line is retried here, each attempt resuming from the `.part` (-C -), so a long
         // download over flaky Wi-Fi finishes on its own instead of waiting for the user to press
         // Download again (download_policy.h says which failures and how long between them).

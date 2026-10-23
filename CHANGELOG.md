@@ -11,9 +11,10 @@ Semantic Versioning.
   onto the models directory and its `url` handed to curl, and every front-end took them as written:
   a row named `../x.gguf` would have been written outside the models directory. An entry whose file
   name is not a bare file name (no separator, no `.` or `..`, no drive colon), whose URL is not
-  http(s), or whose digest is malformed is now skipped as `bmoe-server` loads the shipped catalog and
-  the added entries (the reason goes to the start-up log) and refused when added; the Android and
-  iOS apps drop such an entry too, and the Android download worker refuses a name that is not plain.
+  https (plain http only under an http `--hf-endpoint` mirror), or whose digest is malformed is now
+  skipped as `bmoe-server` loads the shipped catalog and the added entries (the reason goes to the
+  start-up log) and refused when added; the Android and iOS apps drop such an entry too, and the
+  Android download worker refuses a name that is not plain.
 - **Downloads are checked against a SHA-256 (#347).** A catalog file may carry `sha256`; the two
   reference models now do (their Hugging Face LFS object ids), and a model added from a repository
   gets its own from the listing. The server reads a finished `.part` back and checks it before the

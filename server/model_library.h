@@ -42,11 +42,14 @@ public:
     // listed beside it and loaded in place, never written (a phone's adb-pushed and shared-storage
     // folders): the host app knows where they are, the server says what they hold.
     // `added_path` is where entries added at run time (a model picked from a repository,
-    // hf_repo.h) are kept between runs, beside the settings; "" keeps none.
+    // hf_repo.h) are kept between runs, beside the settings; "" keeps none. `hf_endpoint` is the
+    // server's repository endpoint: the one place a file may be fetched over plain http, when the
+    // operator named an http mirror (download_policy.h: curl_protocols).
     ModelLibrary(std::string models_dir,
                  std::vector<std::string> scan_dirs,
                  std::string catalog_path,
                  std::string added_path,
+                 std::string hf_endpoint,
                  EventBus & bus);
     ~ModelLibrary();
 
@@ -138,6 +141,7 @@ private:
     std::string dir_;
     std::vector<std::string> scan_dirs_;
     std::string added_path_;
+    std::string hf_endpoint_;
     std::vector<CatalogEntry> added_;
     EventBus & bus_;
     std::vector<CatalogEntry> catalog_;

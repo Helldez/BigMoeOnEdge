@@ -406,8 +406,8 @@ entry with its URL, in order, for a client that downloads for itself (a phone, w
 has no `curl`), and its `sha256` when the catalog names one (64 lowercase hex digits; absent
 otherwise), which the Android app checks its download against as the server does (the iOS app
 does not yet); `file` and `bytes` are the first file's name and the whole entry's size. A catalog row is held to what its fields
-become: `name` a bare file name (no separator, no `.` or `..`, no drive colon), `url` an http(s)
-URL, `sha256` a digest when present. An entry with a file that fails this is not listed, and the
+become: `name` a bare file name (no separator, no `.` or `..`, no drive colon), `url` an https
+URL (plain http only under an http mirror named with `--hf-endpoint`), `sha256` a digest when present. An entry with a file that fails this is not listed, and the
 reason is in the server's start-up log; the Android and iOS apps drop such an entry too.
 `received` is what of the entry is already in the models directory, complete files and `.part`
 files alike, and `partial` is true when the entry is `available` with a `.part` on disk: a download

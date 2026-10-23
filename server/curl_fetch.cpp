@@ -21,7 +21,8 @@ namespace {
 
 class CurlFetch final : public HttpFetch {
 public:
-    explicit CurlFetch(std::string scratch) : scratch_(std::move(scratch)) {}
+    CurlFetch(std::string scratch, std::string endpoint)
+        : scratch_(std::move(scratch)), endpoint_(std::move(endpoint)) {}
 
     bool get(const std::string & url,
              uint64_t from,
@@ -29,10 +30,10 @@ public:
              const std::string & token,
              std::string & body,
              std::string & error) override {
-        // Only http(s), on every redirect too: a mirror's https cannot be downgraded on the way.
-        const std::string protos = curl_protocols(url);
+        // Only https, on every redirect too, or plain http under an http mirror the operator named.
+        const std::string protos = curl_protocols(url, endpoint_);
         if (protos.empty()) {
-            error = "not an http(s) URL";
+            error = "not an https URL, nor one under the --hf-endpoint mirror";
             return false;
         }
         std::error_code ec;
@@ -102,13 +103,14 @@ public:
 
 private:
     std::string scratch_;
+    std::string endpoint_;
     std::atomic<unsigned> seq_{0};
 };
 
 } // namespace
 
-std::unique_ptr<HttpFetch> curl_fetch(const std::string & scratch_dir) {
-    return std::make_unique<CurlFetch>(scratch_dir);
+std::unique_ptr<HttpFetch> curl_fetch(const std::string & scratch_dir, const std::string & endpoint) {
+    return std::make_unique<CurlFetch>(scratch_dir, endpoint);
 }
 
 } // namespace bmoe::server

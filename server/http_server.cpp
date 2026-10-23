@@ -287,8 +287,8 @@ struct App {
         std::string scratch,
         const std::function<std::unique_ptr<HttpFetch>(const std::string &)> & fetch)
         : opt(std::move(o)), store(server_defaults(), std::move(settings_path)), host(bus),
-          lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), std::move(added), bus),
-          net(fetch ? fetch(scratch) : curl_fetch(scratch)), scratch_dir(std::move(scratch)) {}
+          lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), std::move(added), opt.hf_endpoint, bus),
+          net(fetch ? fetch(scratch) : curl_fetch(scratch, opt.hf_endpoint)), scratch_dir(std::move(scratch)) {}
 
     json config_object(const json * rejected = nullptr) {
         const RunConfig cfg = store.config();

@@ -65,15 +65,24 @@ std::string digest_refusal(const std::string & expected, const std::string & act
            "...: it is not the file the catalog lists";
 }
 
-std::string curl_protocols(const std::string & url) {
+std::string curl_protocols(const std::string & url, const std::string & endpoint) {
     if (url.compare(0, 8, "https://") == 0) return "=https";
-    if (url.compare(0, 7, "http://") == 0) return "=http,https";
+    // Under the endpoint means its host and a path: the '/' after it keeps "http://mirror.lan" from
+    // vouching for "http://mirror.lan.example.com" or "http://mirror.lan@elsewhere".
+    const bool http_endpoint = endpoint.size() > 7 && endpoint.compare(0, 7, "http://") == 0;
+    if (http_endpoint && url.size() > endpoint.size() && url.compare(0, endpoint.size(), endpoint) == 0 &&
+        url[endpoint.size()] == '/')
+        return "=http,https";
     return "";
 }
 
-std::string catalog_file_refusal(const std::string & name, const std::string & url, const std::string & sha256) {
+std::string catalog_file_refusal(const std::string & name,
+                                 const std::string & url,
+                                 const std::string & sha256,
+                                 const std::string & endpoint) {
     if (!is_plain_file_name(name)) return "'" + name + "' is not a plain file name";
-    if (curl_protocols(url).empty()) return name + ": the URL is not http(s)";
+    if (curl_protocols(url, endpoint).empty())
+        return name + ": the URL is not https (plain http only under the --hf-endpoint mirror)";
     if (!sha256.empty() && !is_sha256_hex(sha256)) return name + ": sha256 is not 64 lowercase hex digits";
     return "";
 }

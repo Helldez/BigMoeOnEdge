@@ -52,15 +52,20 @@ bool is_sha256_hex(const std::string & text);
 std::string digest_refusal(const std::string & expected, const std::string & actual);
 
 // The protocols curl may use for `url`, as its --proto and --proto-redir value: "=https" for an
-// https URL, so no redirect downgrades it; "=http,https" for an http one (only a mirror the
-// operator named with --hf-endpoint is plain http); "" for anything else, which is not fetched.
-std::string curl_protocols(const std::string & url);
+// https URL, so no redirect downgrades it. Plain http is for one place only: the mirror the
+// operator named with --hf-endpoint, passed as `endpoint` (the server's endpoint, with no trailing
+// slash). An http URL under it, when it is itself http, gets "=http,https"; any other http URL, and
+// anything that is not http(s), gets "" and is not fetched.
+std::string curl_protocols(const std::string & url, const std::string & endpoint);
 
 // Why a catalog file cannot be offered, or "" when it can: its name becomes a path in the models
-// folder (is_plain_file_name), its URL a curl argument (curl_protocols), and its digest, when it
-// names one, must be one (is_sha256_hex). Checked as the catalog and the added entries load and
-// as an entry is added, so nothing downstream sees a file that fails it.
-std::string catalog_file_refusal(const std::string & name, const std::string & url, const std::string & sha256);
+// folder (is_plain_file_name), its URL a curl argument (curl_protocols, against `endpoint`), and
+// its digest, when it names one, must be one (is_sha256_hex). Checked as the catalog and the added
+// entries load and as an entry is added, so nothing downstream sees a file that fails it.
+std::string catalog_file_refusal(const std::string & name,
+                                 const std::string & url,
+                                 const std::string & sha256,
+                                 const std::string & endpoint);
 
 // The `.part` a download of catalog file `name` writes into `models_dir`. False when the name is
 // not a plain file name (is_plain_file_name), so no catalog row, hand-edited or not, makes the

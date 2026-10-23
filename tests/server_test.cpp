@@ -1139,20 +1139,35 @@ static void download_tests() {
               !is_plain_file_name(std::string("m\0.gguf", 7)),
           "downloads: a catalog file name is a bare name or nothing");
     const std::string url = "https://huggingface.co/a/b/resolve/main/m.gguf";
-    check(catalog_file_refusal("m.gguf", url, "").empty() &&
-              catalog_file_refusal("m.gguf", url, std::string(64, 'a')).empty(),
+    const std::string hf = "https://huggingface.co";
+    check(catalog_file_refusal("m.gguf", url, "", hf).empty() &&
+              catalog_file_refusal("m.gguf", url, std::string(64, 'a'), hf).empty(),
           "downloads: a plain name with an https URL is offered, with or without a digest");
-    check(!catalog_file_refusal("../m.gguf", url, "").empty() && !catalog_file_refusal("C:m.gguf", url, "").empty(),
+    check(!catalog_file_refusal("../m.gguf", url, "", hf).empty() &&
+              !catalog_file_refusal("C:m.gguf", url, "", hf).empty(),
           "downloads: a catalog row whose name leaves the models folder is refused at load");
-    check(!catalog_file_refusal("m.gguf", "-o/etc/passwd", "").empty() &&
-              !catalog_file_refusal("m.gguf", "file:///etc/passwd", "").empty(),
+    check(!catalog_file_refusal("m.gguf", "-o/etc/passwd", "", hf).empty() &&
+              !catalog_file_refusal("m.gguf", "file:///etc/passwd", "", hf).empty(),
           "downloads: a URL that is not http(s), or reads as an option, is refused");
-    check(!catalog_file_refusal("m.gguf", url, "abc").empty() &&
-              !catalog_file_refusal("m.gguf", url, std::string(64, 'G')).empty(),
+    check(!catalog_file_refusal("m.gguf", url, "abc", hf).empty() &&
+              !catalog_file_refusal("m.gguf", url, std::string(64, 'G'), hf).empty(),
           "downloads: a digest that is not 64 hex digits is refused");
-    check(curl_protocols(url) == "=https" && curl_protocols("http://mirror.lan/x") == "=http,https" &&
-              curl_protocols("ftp://x").empty(),
-          "downloads: https stays https on every redirect; only a plain-http mirror may use http");
+    const std::string mirror = "http://mirror.lan";
+    check(curl_protocols(url, hf) == "=https" && curl_protocols(url, mirror) == "=https" &&
+              curl_protocols("ftp://x", mirror).empty(),
+          "downloads: https stays https on every redirect, whatever the endpoint");
+    check(curl_protocols("http://mirror.lan/a/b/resolve/main/m.gguf", mirror) == "=http,https",
+          "downloads: plain http is let through under the http mirror the operator named");
+    check(curl_protocols("http://huggingface.co/a/b/resolve/main/m.gguf", hf).empty() &&
+              curl_protocols("http://mirror.lan/x", hf).empty() &&
+              curl_protocols("http://mirror.lan.example.com/x", mirror).empty() &&
+              curl_protocols("http://mirror.lan@elsewhere/x", mirror).empty() &&
+              curl_protocols("http://mirror.lan", mirror).empty(),
+          "downloads: any other http URL is refused, a lookalike host or a userinfo trick included");
+    check(!catalog_file_refusal("m.gguf", "http://elsewhere/m.gguf", "", mirror).empty() &&
+              catalog_file_refusal("m.gguf", "http://mirror.lan/a/b/resolve/main/m.gguf", "", mirror).empty() &&
+              !catalog_file_refusal("m.gguf", "http://mirror.lan/a/b/resolve/main/m.gguf", "", hf).empty(),
+          "downloads: a catalog row over http is offered only under the http mirror the server was given");
 
     check(Sha256().hex_digest() == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           "sha256: the empty input");
