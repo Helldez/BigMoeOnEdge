@@ -2,9 +2,8 @@
 
 Every streaming setting: the name every UI shows, the flag it maps to, and what it does. The names,
 bounds and help come from one parameter table (`core/src/params.cpp`), which the CLI parses its
-flags from and every UI renders its Settings from: each group shows its basic rows, and a folded
-Advanced section at its end holds the advanced, experimental and debug ones. Experimental settings
-are marked here. `bmoe-cli --help` prints the same parameters with their bounds, and
+flags from and every UI renders its Settings from: one card per group, its basic rows open and its
+own advanced, experimental and debug rows folded inside it. Experimental settings are marked here. `bmoe-cli --help` prints the same parameters with their bounds, and
 `--describe-params` prints them as JSON.
 
 A default is the CLI's unless the row says otherwise. `bmoe-server`, which both the desktop and the
@@ -38,6 +37,7 @@ setting passed by hand is left alone.
 | Active experts | `--n-expert-used` &nbsp;`0` (the model's own), or any smaller count | Consults fewer experts per token than the model asks for, cutting compute and reads together. Lossy, but reproducible: the same prompt gives the same answer. |
 | Speculative drafts | `--mtp` or `--ngram`, with `--draft` &nbsp;`1` to `8` &nbsp;and, for the head, `--mtp-p-min` &nbsp;`0` to `1.0` | Drafts the next few tokens and verifies the group in one decode, keeping only what the model itself would have produced. Nothing is approximated. Wins when weights move once per group, loses when the wider verify widens each layer's read set ([mtp](mtp.md), [ngram](ngram.md)). |
 | Route experts early *(experimental)* | `--route-ahead` &nbsp;`0` (off) to `8` layers | Commits a layer's routing that many layers early, so its reads start early and can never be wasted. Lossy: some slots route differently. Excludes both prefetchers and speculative drafts ([detail](route-ahead.md)). |
+| Route-ahead int8 gates *(experimental)* | `--gate-mirror` &nbsp;`auto`, `on`, `off` &nbsp;(default `auto`) | With route-ahead: rank the prediction on an int8 copy of the router gates (a quarter of the bytes) or on their own weights. `auto` times both on this machine at load, or in the `--auto` probe, and keeps the faster ([detail](route-ahead.md)). |
 
 Everything under Streaming changes *how* weights are fetched, never the math, so the answer is the
 one the model would have given anyway. The settings in this section are different in kind: they

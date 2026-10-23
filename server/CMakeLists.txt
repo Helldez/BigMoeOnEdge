@@ -22,7 +22,10 @@ add_library(bmoe_server_core STATIC
     json_util.cpp
     model_files.cpp
     download_policy.cpp
+    sha256.cpp
     hf_repo.cpp
+    url_entry.cpp
+    model_delete.cpp
     settings_store.cpp
     plan_view.cpp
 )

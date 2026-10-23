@@ -7,6 +7,8 @@
   import Models from './routes/Models.svelte';
   import Settings from './routes/Settings.svelte';
   import Plan from './routes/Plan.svelte';
+  import { api } from './lib/api';
+  import { href } from './lib/route';
   import { chat } from './stores/chat.svelte';
   import { router } from './stores/router.svelte';
   import { server } from './stores/server.svelte';
@@ -17,6 +19,15 @@
     router.start();
     server.start();
     chat.start();
+    // With nothing on disk there is nothing to chat with: a first visit (no screen named in the
+    // address) opens where a model is got instead.
+    if (!location.hash)
+      api
+        .models()
+        .then((m) => {
+          if (!location.hash && m.local.length === 0) location.hash = href('models');
+        })
+        .catch(() => {});
   });
 
   function submitKey(e: SubmitEvent) {

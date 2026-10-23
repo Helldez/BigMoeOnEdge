@@ -5,8 +5,9 @@
 namespace bmoe::server {
 
 std::shared_ptr<EventBus::Queue> EventBus::subscribe() {
-    auto q = std::make_shared<Queue>();
     std::lock_guard<std::mutex> lk(m_);
+    if (subs_.size() >= max_subs_) return nullptr;
+    auto q = std::make_shared<Queue>();
     subs_.push_back(q);
     return q;
 }

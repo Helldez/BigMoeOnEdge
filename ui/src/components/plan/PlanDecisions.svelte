@@ -4,7 +4,7 @@
   // its reason.
   import SourceBadge from '../SourceBadge.svelte';
   import { decisionLabel, groupDecisions } from '../../lib/plan';
-  import { href } from '../../lib/route';
+  import { settingHref } from '../../lib/route';
   import type { PlanDecision } from '../../lib/types';
 
   let { decisions }: { decisions: PlanDecision[] } = $props();
@@ -39,7 +39,7 @@
             {#if d.brief && d.brief !== d.reason}
               <details class="why"><summary>Why</summary><p>{d.reason}</p></details>
             {/if}
-            {#if d.label && d.group !== 'notes'}<a href={href('settings')}>{d.label} in Settings</a>{/if}
+            {#if d.label && d.group !== 'notes'}<a href={settingHref(d.knob)}>{d.label} in Settings</a>{/if}
           </div>
         </details>
       {/each}

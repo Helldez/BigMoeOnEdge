@@ -145,7 +145,7 @@ API リファレンス：[docs/server-api.md](docs/server-api.md)。
 |---|---|---|---|---|---|
 | エンジンと CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64（アプリ内） |
 | アプリとサーバー | ネイティブアプリ | Web アプリ | Web アプリ | Web アプリ | ネイティブアプリ（ソースからビルド） |
-| アクセラレーター | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64) | Vulkan | Metal |
+| アクセラレーター | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan | Metal |
 | 実機での動作 | 12 GB スマートフォン | 16 GB ノート PC | 16 GB ノート PC | CI、コミュニティ | 12 GB iPhone（[#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)） |
 
 詳細と、どこで何を計測したか：[docs/platforms.md](docs/platforms.md)。

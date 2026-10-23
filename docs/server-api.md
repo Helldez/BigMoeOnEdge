@@ -16,8 +16,8 @@ All request and response bodies are JSON (UTF-8). Errors are `{"error": "<messag
 with a 4xx or 5xx status: `error` is for a person and may change, `code` is what a client decides
 on, and is present wherever the failure has one. A chat or decide turn carries the engine's failure
 kind (`context_full`, `empty_prompt`, `template_rejected`, `needs_chat_mode`, `invalid_request`,
-`failed`, as in [telemetry.md](telemetry.md)) or the server's own refusal (`busy`, `no_model`,
-`outside_models_dir`). A body that is not JSON, not a JSON object, or carries a field of the wrong
+`invalid_output`, `failed`, as in [telemetry.md](telemetry.md)) or the server's own refusal (`busy`, `no_model`,
+`outside_models_dir`, `streams_full`). A body that is not JSON, not a JSON object, or carries a field of the wrong
 type (a `role` that is a number, an `id` that is an object) is a `400` with `code:
 "invalid_request"`, never a `500`: the server's own faults are the only `500`s.
 Inside a stream that had already answered `200`, the same pair arrives as one
@@ -81,10 +81,18 @@ other software, or other people, on that machine or on a network it was told to 
   client can name an entry but never a file. An entry added from a Hugging Face repository (`POST /api/hf/add`) is built by
   the server from a repository id and file names it validated (letters, digits, `.`, `_`, `-`,
   `+`, folders, no `..`), on the one endpoint it was started with (`--hf-endpoint`, the site or a
-  mirror); the server never fetches a URL a client wrote. A token sent with those requests goes to
+  mirror); a repository request never makes the server fetch a URL a client wrote. A token sent with those requests goes to
   that endpoint as a bearer token through a file only this process reads, never on a command line
-  or in a log, and is kept nowhere.
-- Over the API a client may name one file, the model, and it is only read. Parameters that make
+  or in a log, and is kept nowhere. The one URL a client writes is a direct link to a gguf
+  (`POST /api/models/url`), and only a local client may send one: it must be `https`, carry no
+  user name or password, and end in a file name of letters, digits, `.`, `_`, `-`, `+`; curl is
+  held to https on every redirect, and the link becomes a catalog entry downloaded like the others.
+- Deleting a model (`DELETE /api/models/local/<name>`) is for a local client only, and takes the
+  name the listing gives (`<folder>/<file>` or `<file>`), never a path: the server deletes the files
+  its own scan of the models directory groups under that name, a split set whole. Never a file in a
+  scan directory, never the model loaded or loading (`409`), never a file a running download is
+  writing (`409`); a link is removed as the link, its target kept.
+- Over the API a client may name one file to open, the model, and it is only read (what it may delete is a model as the listing names it, above). Parameters that make
   the engine write a file are set at launch and are refused over `PUT /api/config`.
 - A client on the network (a connection whose peer address is not loopback) may name a model only
   in a folder the server lists models from: the models directory and each `--scan-dir`. The path is
@@ -98,6 +106,14 @@ other software, or other people, on that machine or on a network it was told to 
   operator's and is not confined.
 - Request bodies are capped at 8 MiB. Loads, unloads and plan measurements are serialised; a
   second measurement while one runs gets `409`.
+- No one client can take every worker. The server answers with 32 workers, and each request holds
+  one for its whole life, so what holds one for long is bounded: at most 8 event streams
+  (`GET /api/events`; the next gets `503` with `code: "streams_full"`), one running chat or decide
+  turn and 16 waiting behind it (the next gets `503` with `code: "busy"`). That leaves 7 workers for
+  everything else, the UI's own requests included. Connections that arrive while every worker is
+  busy wait in a queue of 64; past that the server closes the next one at once.
+- `--open` starts the system's opener (`open` on macOS, `xdg-open` elsewhere; the shell's own call
+  on Windows) directly, with the URL as one argument: no shell is involved.
 
 **What is not**
 
@@ -147,7 +163,8 @@ other software, or other people, on that machine or on a network it was told to 
   "error": "",
   "model": {"path": "C:/models/Qwen3-30B-A3B-Q4_K_M.gguf", "name": "Qwen3-30B-A3B-Q4_K_M.gguf",
             "arch": "qwen3moe", "n_ctx": 4096, "n_expert_used": 8, "think_ctl": "template",
-            "load_s": 12.4, "streaming": true, "compute_threads": 8, "busy_threads": 12},
+            "load_s": 12.4, "streaming": true, "compute_threads": 8, "busy_threads": 12,
+            "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size"}},
   "generating": false
 }
 ```
@@ -161,6 +178,16 @@ so a UI says nothing about it before. `compute_threads` and `busy_threads` are w
 read against: the session's compute threads, and every thread busy in a decode (the compute threads
 plus the read lanes when they run beside compute, under overlap). A UI that divides `cpu_ms` by
 threads reads these, never the parameters.
+
+`ctx_advice` compares the session's context with what a client of the server sends: `recommended`
+is the engine's `RunConfig::ctx_for_clients` (16384 tokens: a coding agent's first request, its
+system prompt and tool schemas alone, measured at 9911 tokens for opencode, plus room for the
+answer), `short` is whether `n_ctx` is below it, and `param` is the parameter that raises it. A UI
+shows the warning and links the setting from these, and names neither the number nor the key. When
+the context is short, the server also logs a `warn` line at load (on stderr and as a `log` event)
+naming the flag that raises it, and a `warn` line every time a request is refused with
+`context_full`, so the person at the server learns why even when the client hides the error.
+See [Sizing the context for a client](#sizing-the-context-for-a-client).
 
 ### `POST /api/session/load`
 
@@ -190,7 +217,8 @@ template). Each element:
 
 ```json
 {"key": "cache-mb", "label": "Expert cache", "type": "int", "group": "cache",
- "group_label": "Expert cache", "level": "basic", "scope": "session", "help": "...",
+ "group_label": "Expert cache", "group_help": "The memory that keeps experts once read, ...",
+ "group_order": 5, "level": "basic", "scope": "session", "help": "...",
  "flag": "--cache-mb", "min": 0, "unit": "MiB", "typical": {"min": 1500, "max": 8192},
  "special": [{"value": 0, "label": "off"}], "accepts_auto": true, "default": "auto"}
 ```
@@ -202,7 +230,12 @@ range to show a person. `typical` is guidance, not a limit: what a person usuall
 shows as the range. `special` names the values that mean something other than their number (`0` is
 `off`, `4294967295` is `random per run`), with `value` in the row's own JSON type; a form shows the
 label in place of the number.
-`level` is `basic | advanced | experimental | debug`; `group` order in the array is form order.
+`level` is `basic | advanced | experimental | debug`. A form shows the groups in `group_order` (a
+row's place in the array is not its group's: a group's rows need not be contiguous), each under its
+short `group_label` and its one-line `group_help`. `group_read_only: true` marks a group a client
+sets with a control of its own (the model file, from the model list), which a settings form shows
+without editing; the field is absent otherwise. The prompt's device and reads are their own group,
+`prefill`.
 
 ### `GET /api/config`
 
@@ -210,17 +243,21 @@ label in place of the number.
 {
   "values": {"model": "...", "cache-mb": "auto", "threads": 8, "moe-stream": true},
   "user_keys": ["threads"],
+  "launch_keys": [],
   "args": ["--model", "...", "--threads", "8", "--moe-stream", "--cache-mb", "auto"],
   "valid": true,
   "error": "",
   "reload_required": false,
+  "reload_keys": [],
   "plan": null
 }
 ```
 
-`values` holds every parameter. `args` is the equivalent `bmoe-cli` command line (for "copy as
+`values` holds every parameter. `user_keys` are the operator's keys (the launch flags and the
+values a client set); `launch_keys` are the ones of them the server was launched with, which a
+client's "reset all my values" leaves alone. `args` is the equivalent `bmoe-cli` command line (for "copy as
 command"). `reload_required` is true when a session-scoped value differs from the loaded
-session's. `plan` is the last applied plan's decisions (see below), or `null`. `auto_plan` is
+session's, and `reload_keys` names those parameters in table order (empty with no session). `plan` is the last applied plan's decisions (see below), or `null`. `auto_plan` is
 whether every load plans first: on by default in a build with the planner, always false without
 one; `PUT /api/config` with `{"auto_plan": false}` turns it off, and the choice is saved.
 
@@ -249,7 +286,9 @@ Request fields that are read:
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`. A named function is honoured as `"required"`: the engine can require a call, not choose which. |
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
 | `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`). Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. It is a ceiling, not a reservation: the answer gets at most what the context has left after the prompt and then stops with `finish_reason: "length"`. Only a conversation that leaves no room at all is refused, with `400`. |
-| `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, of which only `"none"` turns it off. Default: the `think` parameter. |
+| `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, where `"none"` turns it off and any other level turns it on. Default: the `think` parameter, off unless set. |
+| `response_format` | `{"type":"json_object"}` requests JSON object output; `{"type":"json_schema","json_schema":{"schema":{...}}}` supplies a schema. Omitted, `null` or `{"type":"text"}` leaves the top-level `json_schema` unchanged; without one, output is ordinary text. See the support boundary below. |
+| `json_schema` | llama.cpp-compatible top-level schema for this request. A JSON object supplies schema keywords; `null` or omission adds no constraint. An empty object defaults to `{"type":"object"}`. |
 
 Ignored, because the session fixes them: `model`, `temperature`, `top_p`, `seed` and every
 other sampling field. Sampling is configured with the `temp`, `top-k`, `top-p` and `seed`
@@ -260,10 +299,84 @@ chat template, which writes them the way that model was trained to read them, an
 llama.cpp layer parses the model's calls back out of the generated text; the client runs them and
 sends the results back as `tool` messages. A call's text never appears in `content`. Once the model
 opens a call, sampling is held to the grammar the template ships with its tools, as llama.cpp's own
-server does: the call names a tool the request offered and its arguments are JSON. Free text and a
-reasoning span are not constrained. If the parser still finds no answer, reasoning or call in what
-was generated, the raw text comes back as `content` and the server logs a warning, instead of an
-empty message that ends with `stop`.
+server does: the call names a tool the request offered and its arguments are JSON. Without an
+output schema, free text and the reasoning span are not constrained. On an
+ordinary request, if the parser still finds no answer, reasoning or call in what was generated,
+the raw text comes back as `content` and the server logs a warning, instead of an empty message
+that ends with `stop`.
+
+**Structured output.** Set `response_format` on the request, not in `/api/config`:
+
+```json
+{
+  "messages": [{"role": "user", "content": "Return a JSON object describing Paris."}],
+  "chat_template_kwargs": {"enable_thinking": false},
+  "response_format": {"type": "json_object"}
+}
+```
+
+For a schema, place it in `response_format.json_schema.schema`:
+
+```json
+{
+  "messages": [{"role": "user", "content": "What is the capital of France?"}],
+  "chat_template_kwargs": {"enable_thinking": false},
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "capital",
+      "schema": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
+```
+
+The schema is passed to llama.cpp's chat template machinery, which builds the grammar and
+parser together. `json_object` defaults to `{"type":"object"}`. For llama.cpp compatibility,
+`json_object.schema` can supply a schema; otherwise a nonempty top-level `json_schema` is
+retained. `json_schema` format takes its schema from the nested wrapper and overrides the
+top-level field. If no schema is selected, or the selected schema is `null` or empty, either
+response-format form defaults to `{"type":"object"}`. Schema values must be JSON objects;
+boolean schemas are refused, but an object-valued schema may describe an array or scalar root. The wrapper's optional `name`
+and `description` are strings, and `strict` is a boolean (`null` leaves these unset); they are
+metadata and do not enable an additional validation pass. Unknown metadata is tolerated. Malformed known field types
+and unsupported format types return `400` with `code: "invalid_request"`.
+
+The pinned llama.cpp implementation supports a subset of JSON Schema. This endpoint does not
+add a second, full JSON Schema validator after generation;
+unsupported keywords do not gain a guarantee merely because they appear in the request.
+JSON syntax and a schema cannot guarantee that the generated values are factually correct.
+
+Thinking and speculative decoding use the existing template grammar path. Tool combinations
+are template-dependent: the pinned Qwen3.5 specialized parser produces an invalid lazy grammar
+for a response schema with offered tools and `tool_choice: "auto"`; that request returns `400`
+with `code: "template_rejected"` before inference. The differential Qwen3 parser accepts this
+combination and produces a JSON answer. Both tested parsers give JSON precedence over required
+tool calls, so a response schema with `tool_choice: "required"` (including a named-function choice)
+is explicitly refused with `400` / `invalid_request`, instead of silently ignoring the requirement.
+These cases are covered by vendored-template regressions; tools are not universally disabled.
+Reasoning is returned separately in `reasoning_content`. To request thinking
+off, use `chat_template_kwargs.enable_thinking` as in the examples. The existing `think` alias
+and precedence remain available. The output constraint belongs to one turn: a following
+request without it generates normally without reloading the model.
+
+A JSON answer that completes with `finish_reason: "stop"` must parse as JSON in
+`message.content`. A malformed completed answer returns `invalid_output` and HTTP `500`, or
+an error chunk if streaming has already started. The turn is rolled back and the model stays
+loaded for the next request. This check is performed on the parsed answer, apart from reasoning
+and tool-call data; a turn containing only tool calls is not required to contain a JSON answer.
+
+A token limit (`length`), cancellation (`cancelled`) or disconnection can leave partial JSON;
+partial output is not repaired by appending delimiters or relabelled as successful completion.
+Individual SSE chunks need not be valid JSON. Reconstruct `delta.content` using the streaming
+rules below, including `bmoe.reset`, and inspect the final finish reason. Clients must handle
+an error event even after content has arrived. HTTP `200` or `[DONE]` alone is not a completeness
+guarantee.
 
 **The conversation is the client's.** Every request carries the whole history and the server keeps
 none. The engine tokenizes it, keeps the leading tokens that match what its KV cache already holds
@@ -295,8 +408,22 @@ Non-streaming response: a `chat.completion` object with `message.content` (`null
 only calls tools), `message.reasoning_content`, `message.tool_calls`, `usage` and `bmoe.summary`.
 `usage.prompt_tokens` is the whole prompt the answer was conditioned on.
 
-Not implemented: `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `response_format`, `stop`,
+Not implemented: `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `stop`,
 `n` above 1, and per-request sampling.
+
+### Sizing the context for a client
+
+The server's default context is 4096 tokens: enough for a chat in the web UI, not for a coding
+agent. An agent sends its system prompt and every tool schema with each request; opencode's first
+request alone is 9911 tokens, so at 4096 every request it makes is refused with `400`
+`context_full` before it has done anything, and some clients show that only as an unknown error.
+Load the model with at least 16384 tokens (`-c 16384` on the server's command line, or the Context
+setting) for an agent; a long agent session grows past that, and one six-step opencode run that
+fixed two bugs fit in 32768. The cost is memory: the KV cache and the compute buffers are reserved
+for the whole context, and they come out of the same RAM as the expert cache, so a larger context
+leaves a smaller cache and a slower decode on a machine that is short of memory. The plan's
+`kv-budget` note (`GET /api/plan`) says what the loaded context takes. `ctx_advice` in
+`GET /api/info` and a `warn` log line at load say when the context is below the recommendation.
 
 ### `GET /v1/models`
 
@@ -344,6 +471,20 @@ the server) is what lets a session accept these; off, every decision is refused.
 `text/event-stream`. Every event is `event: <name>` + `data: <json>`. A comment line (`: ping`)
 is sent every 15 s. On connect the server sends one `state` event with the current info.
 
+At most 8 streams are open at once, since each holds one of the server's workers for as long as it
+is open: one more gets `503` with `code: "streams_full"` and should retry later, as the UI and the
+apps do (with back-off). A client that closes its connection gives its place back within a second,
+so a reloaded page finds it free; one that keeps the connection open but stops reading is let go
+when a ping cannot be written (the server's write timeout, 5 s, once the connection's buffer is
+full). A client that vanishes without closing (a phone that drops off Wi-Fi) is bounded by TCP:
+the server enables keep-alive probes (after 15 s idle, every 5 s, 3 of them) and gives up on data
+left unacknowledged for 60 s. These are set on the listening socket, the one place the HTTP library
+offers, so they reach a connection where the system copies a listener's options to the connections
+it accepts: Linux, and so Android, clones the listener's TCP state into each one; macOS was
+measured to copy keep-alive itself, the probe interval and the count, but not the idle time or the
+retransmission bound, so there such a client keeps its place until the system's own retransmission
+limit.
+
 | event | data |
 |---|---|
 | `state` | the `GET /api/info` object, on every state change |
@@ -374,7 +515,8 @@ a UI shows "flash" from them without knowing whether the session overlaps.
              "role": "model", "streamable": true, "complete": true}],
   "catalog": [{"id": "qwen3-30b-a3b-q4_k_m", "title": "Qwen3-30B-A3B", "quant": "Q4_K_M",
                "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
-               "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://..."}],
+               "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://...",
+                          "sha256": "..."}],
                "blurb": "...", "status": "available", "received": 12884901888, "partial": true,
                "note": ""}]
 }
@@ -402,7 +544,12 @@ architecture `clip`); `draft` (a draft head for speculative decoding: it names a
 all); `""` when the header could not be read. A UI lists anything but `model` and `""` apart from
 the models, as files that are not loaded on their own. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
 entry with its URL, in order, for a client that downloads for itself (a phone, where the server
-has no `curl`); `file` and `bytes` are the first file's name and the whole entry's size.
+has no `curl`), and its `sha256` when the catalog names one (64 lowercase hex digits; absent
+otherwise), which the Android app checks its download against as the server does (the iOS app
+does not yet); `file` and `bytes` are the first file's name and the whole entry's size. A catalog row is held to what its fields
+become: `name` a bare file name (no separator, no `.` or `..`, no drive colon), `url` an https
+URL (plain http only under an http mirror named with `--hf-endpoint`), `sha256` a digest when present. An entry with a file that fails this is not listed, and the
+reason is in the server's start-up log; the Android and iOS apps drop such an entry too.
 `received` is what of the entry is already in the models directory, complete files and `.part`
 files alike, and `partial` is true when the entry is `available` with a `.part` on disk: a download
 stopped by a failure, a cancel or a restart of the server (jobs live in memory, the `.part` files do
@@ -421,7 +568,12 @@ fit. A dropped connection (curl's exit 6, 7, 16, 18, 28, 35, 52, 55, 56, 92: the
 request) is retried on its own, resuming from the `.part`, up to six attempts per file with a wait
 that starts at 2 s and doubles to at most 60 s (`server/download_policy.h`); while it waits the
 `download` event stays `running` and carries the failure in `error`. Any other failure, or the last
-attempt, ends in `error` with the `.part` kept.
+attempt, ends in `error` with the `.part` kept. curl is run with `--proto =https --proto-redir
+=https` for an https URL (a redirect cannot downgrade it; only a plain-http mirror named with
+`--hf-endpoint` may use http), and `--` before the URL, so no URL is read as an option. When the
+file has a `sha256`, a complete `.part` is read back and checked before it is renamed (the event
+stays `running`, its `error` saying so); a digest that differs ends in `error` and deletes the
+`.part`, since resuming it could only reproduce the same bytes.
 
 ### `DELETE /api/models/download/<id>`
 
@@ -433,6 +585,37 @@ Deletes the partial files a stopped download of entry `<id>` left: `{"ok": true,
 (`freed` 0 when there were none). Only the `.part` of each file the entry names, in the models
 directory; complete files stay. `404` for an unknown entry, `409` while it downloads (cancel it
 first).
+
+### `DELETE /api/models/local/<name>`
+
+Deletes a model from the models directory, named as `GET /api/models` lists it: `<folder>/<name>`
+for one in a folder directly inside the directory, `<name>` otherwise, with `name` the first file
+(shard 1 of a split set). Every file the scan groups under it goes, and the folder with them once it
+is empty: `{"ok": true, "freed": <bytes>}`. A symbolic link is removed as the link. A set goes
+whole or not at all: every file is first renamed aside, and one that cannot be (a file held open on
+Windows) puts the others back, deletes nothing and answers `500` naming it. `400` for a name
+that is not one (a separator, `..`, a drive), `404` when the models directory has no such model (a
+scan directory's models are loaded in place and never deleted here), `409` with `code: "in_use"`
+while it is loaded or loading (unload it first) or while a running download writes one of its
+files, `403` with `code: "local_only"` from a client whose connection is not loopback.
+
+### `POST /api/models/url`
+
+Body `{"url": "https://.../<name>.gguf"}`. A direct link to a gguf becomes a catalog entry, as a
+repository's model does with `POST /api/hf/add`, and is then downloaded by id with resume, cancel
+and progress like every other: id `url:<name>`, titled by the file name, listed with
+`"added": true`, kept between runs, forgotten with `DELETE /api/hf/entry/<id>`. The file name is
+the link's last path segment (percent-escapes decoded), which must be a `.gguf` name made of
+letters, digits, `.`, `_`, `-`, `+`, not starting with `.` or `-`; the query is kept, the fragment
+dropped. A link to any shard of a split set (`<stem>-00002-of-00003.gguf`) names the whole set: the
+other shards are the same link with the name changed, and a link may name at most 128 of them
+(`kMaxUrlShards` in `server/url_entry.h`: the largest sets published are under 50 shards). Each
+file's size comes from a `HEAD` request that follows redirects (on https only), asked shard by
+shard within 120 s in all (`kUrlSizeDeadline`); a host that answers no size leaves it unknown (`0`)
+and the download runs without a total. `201` with `{"id", "title", "quant", "bytes"}`; `400` with
+`code: "invalid_url"` for a link that is not one of these, `502` when the host answers a `HEAD`
+with an HTTP error, `504` when the sizes took longer than the deadline (no entry is made), `409` for an id the shipped catalog has, `403` with `code: "local_only"` from a
+client whose connection is not loopback. Adding the same file again replaces the entry.
 
 ### `POST /api/hf/search`
 
@@ -482,7 +665,8 @@ megabytes of each shard) and parsed by the planner's own model probe, set agains
            "has_mtp": false, "streamable": true, "refusal": ""},
  "machine": {"residency_budget": 5736517632, "budget_if_loaded": 5736517632, "loaded_model": "", "loaded_held": 0,
              "memory_total": 15919931392, "disk_free": 38495465472, "present_bytes": 0},
- "verdict": {"downloadable": true, "mode": "streams",
+ "verdict": {"downloadable": true, "mode": "streams", "fit": "fits",
+             "headline": "Fits here: the experts stream from flash",
              "disk": "needs 13940 MiB of disk; the models folder has 36712 MiB free",
              "memory": "the experts stream from flash and 1674 MiB stays resident, plus a cache of at least one token cycle (765 MiB); that fits in the 5470 MiB this process may hold, and the plan sizes the cache from the rest"}}
 ```
@@ -497,6 +681,15 @@ with. Otherwise `verdict.mode` is `streams`, `plain mmap` or `not readable`, and
 false only when the disk cannot take what is still to download (`present_bytes` is what is
 already there, complete).
 
+`verdict.fit` is the answer as a code a UI colours by, and `verdict.headline` the server's line for
+it, shown as the verdict's headline: `fits` (it streams and its resident floor fits what this process
+may hold), `no_streaming` (a dense model,
+or a MoE this build does not stream: it runs whole from the file), `will_not_fit` (its resident
+floor is more than this process may hold), `no_disk` (the disk cannot take it), `not_a_model`,
+`unknown` (the header did not parse, or it streams and the memory free here could not be read,
+which the headline says). A UI keeps no threshold of its own; it shows the line and
+colours by the code, and a code it does not know gets no colour.
+
 The memory verdict answers "what happens if I load this", and a load unloads the model loaded now
 first. `residency_budget` is what this process may hold as measured now, with that model still
 resident; the verdict is set against `budget_if_loaded`, which adds back `loaded_held`, what the
@@ -510,7 +703,8 @@ has no such model, `502` when a header could not be fetched.
 ### `POST /api/hf/add`
 
 Body `{"repo", "name", "token"}`. The model becomes a catalog entry, id
-`hf:<repo>/<name>`, one file per shard with its resolve URL, listed by `GET /api/models` with
+`hf:<repo>/<name>`, one file per shard with its resolve URL and, where the repository's listing
+gives it, its LFS object id as `sha256` (the SHA-256 of the file), listed by `GET /api/models` with
 `"added": true` and kept between runs (`added-models.json` beside the settings). `201` with
 `{"id", "title", "quant", "bytes"}`; the download is then `POST /api/models/download` with that
 id, or, on a host that downloads for itself, the entry's `files[].url`. Adding a model that was
@@ -520,7 +714,8 @@ has, which an addition never replaces.
 
 ### `DELETE /api/hf/entry/<id>`
 
-Forgets an added entry. Files on disk stay. `404` for an id that is not an added entry.
+Forgets an added entry, from a repository (`hf:`) or a link (`url:`). Files on disk stay. `404` for
+an id that is not an added entry.
 
 ## Plan
 
@@ -547,7 +742,7 @@ unusable instead of ending the server; `--no-isolated-probes` runs them in-proce
  "summary": {"sentence": "Experts stream from flash, with a 0.7 GiB cache.",
              "lanes": [{"phase": "prompt", "label": "Prompt", "on": ["CPU"]},
                        {"phase": "tokens", "label": "Tokens", "on": ["CPU"]}]},
- "predicted": {"s_per_token": 0.302, "cache_hit_pct": 38.0},
+ "predicted": {"s_per_token": 0.302, "cache_hit_pct": 38.0, "s_per_token_worst": 1.69},
  "memory": {"pools": [{"name": "host", "label": "This process", "cap_bytes": 3552575488,
                        "lockable_cap_bytes": 0, "held_bytes": 3322400768, "locked_bytes": 0,
                        "rows": [{"name": "dense", "label": "Dense", "bytes": 1932735283,
@@ -585,7 +780,10 @@ so a stage or a role the server adds reaches every UI with no UI change:
   compute the prompt and the tokens (a device holding layers in memory of its own is on the
   tokens lane beside the host).
 - `predicted` is decode as the plan priced it, the figures `bmoe-cli --auto` prints after a run:
-  `s_per_token`, and `cache_hit_pct` where there is a cache. Either is absent when not predicted.
+  `s_per_token`; `cache_hit_pct` where there is a cache, the hit rate the cost model credited the
+  cache with (`Allocation::cache_hit_credited`), not the cache's share of the experts; and
+  `s_per_token_worst`, the same token with nothing resident and every byte read again, a bound
+  beside the prediction and never divided into it. Each is absent when not predicted.
 - `memory.pools` is the ledger the plan charged: the host's pool (`name` `host`; `cap_bytes`
   what the process may hold, `lockable_cap_bytes` what it may hold locked) with one row per thing
   held for the whole run, and one pool for each device with memory of its own that holds layers.

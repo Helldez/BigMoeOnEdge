@@ -24,6 +24,8 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
     public let kind: Kind
     public let group: String
     public let groupLabel: String
+    /// The group's place in the form (`group_order`); nil from a server that does not send it.
+    public let groupOrder: Int?
     public let level: Level
     public let scope: Scope
     public let help: String
@@ -48,6 +50,7 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
         kind = Kind(rawValue: j["type"].string(or: "text")) ?? .text
         group = j["group"].string(or: "")
         groupLabel = j["group_label"].string(or: group)
+        groupOrder = j["group_order"].int
         level = Level(rawValue: j["level"].string(or: "basic")) ?? .basic
         scope = Scope(rawValue: j["scope"].string(or: "session")) ?? .session
         help = j["help"].string(or: "")
@@ -77,7 +80,8 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
 
     public static func parse(_ j: JSON) -> [ParamSpec] { (j.array ?? []).map(ParamSpec.init) }
 
-    /// Groups in the table's order, each with its rows in the table's order.
+    /// Groups in the table's group order (`group_order`, else where a group first appears), each
+    /// with its rows in the table's order.
     public static func grouped(_ specs: [ParamSpec]) -> [(label: String, rows: [ParamSpec])] {
         var order: [String] = []
         var by: [String: [ParamSpec]] = [:]
@@ -88,7 +92,13 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
             }
             by[s.group]!.append(s)
         }
-        return order.map { (by[$0]!.first!.groupLabel, by[$0]!) }
+        // Sorted on (order, first appearance): Swift's sort is not stable, so the position breaks ties.
+        let sorted = order.enumerated().sorted { a, b in
+            let oa = by[a.element]!.first!.groupOrder ?? Int.max
+            let ob = by[b.element]!.first!.groupOrder ?? Int.max
+            return oa != ob ? oa < ob : a.offset < b.offset
+        }.map(\.element)
+        return sorted.map { (by[$0]!.first!.groupLabel, by[$0]!) }
     }
 
     /// What a field's text becomes on the wire: the JSON type the schema says (`bool`, `int`,

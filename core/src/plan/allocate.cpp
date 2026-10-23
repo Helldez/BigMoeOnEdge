@@ -98,6 +98,7 @@ void price_unstreamed(Allocation & a) {
     }
     a.dense_pinned = false;
     a.cache_bytes = 0;
+    a.cache_hit_credited = 0.0;
     a.cache_locked_bytes = 0;
     a.cache_lock_unverified = false;
 
@@ -538,6 +539,7 @@ void bound_cache(Pricing & c) {
     // The cost and the rationale, both from the size that was actually chosen.
     const double held = (double) sized / (double) in.cacheable_bytes;
     const double hit = std::min(1.0, (double) c.pol.cache_hit_optimism * held);
+    a.cache_hit_credited = hit;
     p.seconds_per_token =
         seconds_at_mibs((uint64_t) ((1.0 - hit) * (double) model.token_cycle_bytes), c.stream_mibs) +
         finite_or_zero(seconds_at_gibs(model.group(WeightGroup::Experts).bytes_per_token, c.host_gibs));

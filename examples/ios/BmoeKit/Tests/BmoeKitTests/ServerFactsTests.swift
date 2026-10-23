@@ -29,6 +29,18 @@ final class ServerFactsTests: XCTestCase {
         XCTAssertNil(empty.model)
     }
 
+    func testParamsGroupsFollowTheGroupOrderWhenItIsSent() throws {
+        let specs = ParamSpec.parse(try JSON(parsing: #"""
+            [{"key":"a","group":"late","group_label":"Late","group_order":2},
+             {"key":"b","group":"early","group_label":"Early","group_order":0},
+             {"key":"c","group":"late","group_label":"Late","group_order":2},
+             {"key":"d","group":"unordered","group_label":"Unordered"}]
+            """#))
+        let groups = ParamSpec.grouped(specs)
+        XCTAssertEqual(groups.map(\.label), ["Early", "Late", "Unordered"])
+        XCTAssertEqual(groups[1].rows.map(\.key), ["a", "c"])
+    }
+
     func testParamsGroupInTableOrderAndTypeTheirValues() throws {
         let specs = ParamSpec.parse(try JSON(parsing: #"""
             [{"key":"cache-mb","label":"Expert cache","type":"int","group":"cache","group_label":"Expert cache","level":"basic",
@@ -133,6 +145,16 @@ final class ServerFactsTests: XCTestCase {
         XCTAssertEqual(list.status(of: m, downloading: []), .available)
         XCTAssertEqual(list.status(of: m, downloading: ["m"]), .downloading)
         XCTAssertFalse(list.local[0].complete)
+    }
+
+    func testAFileNameThatLeavesTheModelsDirDropsTheEntry() throws {
+        let list = ModelsList(try JSON(parsing: #"""
+            {"catalog":[{"id":"up","files":[{"name":"../m.gguf","bytes":1,"url":"https://x/m"}]},
+                        {"id":"sub","files":[{"name":"a/m.gguf","bytes":1,"url":"https://x/m"}]},
+                        {"id":"ok","files":[{"name":"m-00001-of-00002.gguf","bytes":1,"url":"https://x/m"}]}]}
+            """#))
+        XCTAssertEqual(list.catalog.map(\.id), ["ok"])
+        for bad in ["..", ".", "", "a\\m.gguf", "C:m.gguf"] { XCTAssertFalse(CatalogFile.isPlainName(bad), bad) }
     }
 
     func testAStoppedDownloadReadsAsResume() throws {

@@ -220,6 +220,17 @@ itself, which is worth more than a plan that invented values for them.
 make a run irreproducible. They are never turned on by a plan, at any quality budget, on any
 machine. A caller that arms one keeps it, attributed to `[operator]`.
 
+Inside a lossy lever the caller armed, the planner still settles what is only a matter of cost.
+Route-ahead's prediction ranks experts with one gate GEMV per layer per token, over the gate's own
+float weights or over an int8 mirror of them: a quarter of the bytes, plus a quantization of the
+activation per call. Which is faster is bytes against arithmetic, and the two machines it was
+measured on answered in opposite directions, so it used to be an instruction-set `#ifdef` that was
+right on one of them. Now the probe times both on the run's own kernels (`core/src/moe/gate_gemv.cpp`)
+over a gate of the model's shape, layer after layer, and `--gate-mirror` takes the faster, a tie
+to the mirror (the probe runs alone, and a decode beside it only makes bytes dearer). Both kernels
+are portable C, so every target has both and only the timing decides. Without `--auto` the session
+runs the same timing at load when the knob is `auto`.
+
 A third rule falls out of the first two: **a knob you passed by hand is never overwritten.** Flags
 and `BMOE_*` env overrides both count as the caller speaking.
 
@@ -301,6 +312,7 @@ number it turns on as its value ("6.3 GB/s", "581 MiB") or `-`.
 | read rate by request size and lane count | `--io-threads` |
 | model: expert slice size | which point of that rate curve applies |
 | model: token cycle | the cache floor, below which the cache is off and the experts stream uncached |
+| the router-gate GEMV timed over the float gate and over an int8 mirror, on the model's gate shape (only when `--route-ahead` is set) | `--gate-mirror`: which one route-ahead's prediction reads |
 
 There are no platform names in the rules — Windows, Android, iOS, CUDA and Metal appear only in
 `core/src/plan/hardware_probe.cpp`, the adapter that fills the profile, and in `core/src/io/`, where

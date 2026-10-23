@@ -1,5 +1,6 @@
 #include "hf_repo.h"
 
+#include "download_policy.h"
 #include "model_files.h"
 
 #include <algorithm>
@@ -210,6 +211,10 @@ bool parse_hf_tree(const json & tree, std::vector<HfModel> & out, std::string & 
         if (e.contains("size") && e["size"].is_number_unsigned()) f.bytes = e["size"].get<uint64_t>();
         if (f.bytes == 0 && e.contains("lfs") && e["lfs"].is_object() && e["lfs"].value("size", (uint64_t) 0))
             f.bytes = e["lfs"]["size"].get<uint64_t>();
+        // An LFS file's oid is the SHA-256 of its content: the digest a download is checked against.
+        if (e.contains("lfs") && e["lfs"].is_object() && e["lfs"].contains("oid") && e["lfs"]["oid"].is_string() &&
+            is_sha256_hex(e["lfs"]["oid"].get<std::string>()))
+            f.sha256 = e["lfs"]["oid"].get<std::string>();
         ShardName sh;
         if (parse_shard_name(base_name(path), sh)) {
             Group & g = groups[dir_name(path) + sh.stem + "#split"];
@@ -328,11 +333,13 @@ CatalogEntry hf_catalog_entry(const std::string & endpoint, const HfRef & ref, c
     e.quant = model.quant;
     e.blurb = "From Hugging Face: " + ref.repo + (ref.revision == "main" ? "" : " at " + ref.revision);
     for (const HfFile & f : model.files)
-        e.files.push_back({base_name(f.path), hf_resolve_url(endpoint, ref, f.path), f.bytes});
+        e.files.push_back({base_name(f.path), hf_resolve_url(endpoint, ref, f.path), f.bytes, f.sha256});
     return e;
 }
 
-FitVerdict fit_verdict(const FitInputs & in) {
+namespace {
+
+FitVerdict verdict_parts(const FitInputs & in) {
     FitVerdict v;
     const uint64_t needed = in.file_bytes > in.present_bytes ? in.file_bytes - in.present_bytes : 0;
     if (in.disk_free == 0) {
@@ -348,11 +355,15 @@ FitVerdict fit_verdict(const FitInputs & in) {
     }
     if (!in.readable) {
         v.mode = "not readable";
+        v.fit = "unknown";
+        v.headline = "Nothing could be read about this file";
         v.memory = "the file's header could not be read, so nothing about it is known";
         return v;
     }
     if (in.role != "model") {
         v.mode = "not a model";
+        v.fit = "not_a_model";
+        v.headline = "Not a model to chat with";
         v.downloadable = false;
         v.memory = in.role == "projector"
                        ? "a multimodal projector, by its header: it gives a model image or audio input and cannot "
@@ -383,6 +394,9 @@ FitVerdict fit_verdict(const FitInputs & in) {
 
     if (!in.is_moe) {
         v.mode = "plain mmap";
+        v.fit = "no_streaming";
+        v.headline = budget && in.file_bytes <= budget ? "Runs here without streaming, whole in memory"
+                                                       : "Runs here without streaming, read from the file";
         v.memory =
             "a dense model: this engine runs it whole from the file, nothing is streamed" +
             (budget ? std::string("; it is ") + mib(in.file_bytes) + " against " + mib(budget) +
@@ -395,11 +409,15 @@ FitVerdict fit_verdict(const FitInputs & in) {
     }
     if (!in.streamable) {
         v.mode = "plain mmap";
+        v.fit = "no_streaming";
+        v.headline = "Runs here without streaming";
         v.memory = "a MoE model whose experts this engine does not stream" +
                    (in.refusal.empty() ? std::string() : ": " + in.refusal) + "; it runs whole from the file";
         return v;
     }
     v.mode = "streams";
+    v.fit = "fits";
+    v.headline = "Fits here: the experts stream from flash";
     v.memory = "the experts stream from flash and " + mib(in.dense_bytes) +
                " stays resident, plus a cache of at least one token cycle (" + mib(in.token_cycle) + ")";
     if (budget) {
@@ -408,6 +426,27 @@ FitVerdict fit_verdict(const FitInputs & in) {
                                           ", and the plan sizes the cache from the rest"
                                     : "; that is more than the " + mib(budget) + " this process may hold" + credit +
                                           ", so the plan will decline or run it slowly";
+        if (floor > budget) {
+            v.fit = "will_not_fit";
+            v.headline = "Will not fit in the memory this process may hold";
+        }
+    } else {
+        // It streams, but whether its floor fits is not known: no colour of a fit it may not be.
+        v.fit = "unknown";
+        v.headline = "Streams from flash; the memory free here could not be read";
+    }
+    return v;
+}
+
+} // namespace
+
+FitVerdict fit_verdict(const FitInputs & in) {
+    FitVerdict v = verdict_parts(in);
+    // A file the disk cannot take is not downloaded whatever it would do in memory, and a file that
+    // is no model says that first.
+    if (!v.downloadable && v.fit != "not_a_model") {
+        v.fit = "no_disk";
+        v.headline = "Will not fit on this disk";
     }
     return v;
 }

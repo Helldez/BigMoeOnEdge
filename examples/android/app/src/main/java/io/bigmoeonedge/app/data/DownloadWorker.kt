@@ -19,6 +19,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 /**
  * Downloads a gguf over HTTP straight into the app-internal models dir (real f2fs/ext4, where
@@ -38,6 +39,8 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         val url = inputData.getString(KEY_URL) ?: return@withContext fail("missing URL")
         val name = inputData.getString(KEY_NAME) ?: return@withContext fail("missing filename")
         val expected = inputData.getLong(KEY_EXPECTED, -1L)
+        val sha256 = inputData.getString(KEY_SHA256).orEmpty()
+        if (!isPlainFileName(name)) return@withContext fail("'$name' is not a plain file name")
 
         val dir = ModelManager.internalModelsDir(applicationContext)
         val finalFile = File(dir, name)
@@ -64,6 +67,18 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             if (total >= 0 && part.length() != total) {
                 // Server closed early: keep the .part so the next run's Range request resumes it.
                 return@withContext retryOrFail("download interrupted at ${part.length() shr 20} MiB")
+            }
+            if (sha256.isNotEmpty()) {
+                setForegroundAsync(foregroundInfo(name, part.length(), expected, "Checking model"))
+                val actual = sha256Of(part)
+                if (actual != sha256) {
+                    // Resuming would only reproduce the same bytes: the part goes, and a retry starts over.
+                    part.delete()
+                    return@withContext fail(
+                        "the file's SHA-256 is ${actual.take(12)}..., the catalog names ${sha256.take(12)}...: " +
+                            "it is not the file the catalog lists; the download is deleted"
+                    )
+                }
             }
             if (!part.renameTo(finalFile)) return@withContext fail("could not finalize the download")
             Result.success()
@@ -155,19 +170,39 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         }
     }
 
+    /** The file's SHA-256 as 64 lowercase hex digits. Stops, throwing, when the work is cancelled. */
+    private fun sha256Of(file: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { src ->
+            val buf = ByteArray(1 shl 20)
+            while (true) {
+                if (isStopped) throw CancellationException("cancelled")
+                val n = src.read(buf)
+                if (n < 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
     private fun retryOrFail(message: String): Result =
         if (runAttemptCount < MAX_ATTEMPTS) Result.retry() else fail(message)
 
     private fun fail(message: String): Result = Result.failure(workDataOf(KEY_ERROR to message))
 
-    private fun foregroundInfo(name: String, done: Long, total: Long): ForegroundInfo {
+    private fun foregroundInfo(
+        name: String,
+        done: Long,
+        total: Long,
+        title: String = "Downloading model",
+    ): ForegroundInfo {
         val frac = if (total > 0) done.toFloat() / total else -1f
         val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "Model downloads", NotificationManager.IMPORTANCE_LOW)
         )
         val notif: Notification = Notification.Builder(applicationContext, CHANNEL)
-            .setContentTitle("Downloading model")
+            .setContentTitle(title)
             .setContentText(if (total > 0) "$name · ${gbLabel(done)} of ${gbLabel(total)}" else name)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
@@ -183,6 +218,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         const val KEY_URL = "url"
         const val KEY_NAME = "name"
         const val KEY_EXPECTED = "expected"
+        const val KEY_SHA256 = "sha256"
         const val KEY_DONE = "done"
         const val KEY_TOTAL = "total"
         const val KEY_ERROR = "error"

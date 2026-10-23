@@ -8,15 +8,16 @@
   import PlanMemory from '../components/plan/PlanMemory.svelte';
   import PlanProgress from '../components/plan/PlanProgress.svelte';
   import { api } from '../lib/api';
-  import { commandLine, formatNum } from '../lib/format';
-  import { speedCheck } from '../lib/plan';
+  import { commandLine, formatBytes, formatNum } from '../lib/format';
+  import { appliedChanges, diagnosticText, speedCheck, type AppliedChange } from '../lib/plan';
+  import { settingHref } from '../lib/route';
   import type { Plan } from '../lib/types';
   import { server } from '../stores/server.svelte';
 
   let plan = $state<Plan | null>(null);
   let error = $state('');
   let applying = $state(false);
-  let applied = $state(false);
+  let applied = $state<AppliedChange[] | null>(null);
 
   let measuring = $state(false);
 
@@ -34,11 +35,13 @@
 
   async function apply() {
     applying = true;
-    applied = false;
+    applied = null;
     error = '';
+    const before = { ...(server.config?.values ?? {}) };
     try {
-      server.setConfig(await api.applyPlan());
-      applied = true;
+      const cfg = await api.applyPlan();
+      server.setConfig(cfg);
+      applied = appliedChanges(before, cfg.values, server.params ?? []);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -74,17 +77,34 @@
   const avail = $derived(plan?.available && !plan.error ? plan : null);
   const check = $derived(avail ? speedCheck(avail.predicted, avail.measured) : null);
   const showProgress = $derived(measuring || server.planProgress !== null);
+  const host = $derived(avail?.memory?.pools?.[0]);
+  const worstMs = $derived((avail?.predicted?.s_per_token_worst ?? 0) * 1000);
+
+  // The planner's whole account stays in the API for a bug report; it is copied, not shown.
+  let diag = $state<'idle' | 'ok' | 'failed'>('idle');
+  async function copyDiagnostic() {
+    if (!avail) return;
+    try {
+      await navigator.clipboard.writeText(diagnosticText(avail.args ?? [], avail.explain ?? ''));
+      diag = 'ok';
+    } catch {
+      diag = 'failed';
+    }
+    setTimeout(() => (diag = diag === 'ok' ? 'idle' : diag), 2000);
+  }
+  const PLANNING_DOC = 'https://github.com/Helldez/BigMoeOnEdge/blob/main/docs/hardware-planning.md';
 </script>
 
 <div class="head">
   <h1>Plan</h1>
-  <button type="button" onclick={() => refresh(true)} disabled={measuring}>
-    {measuring ? 'Measuring...' : 'Measure again'}
-  </button>
+  <a class="muted doc" href={PLANNING_DOC} target="_blank" rel="noopener noreferrer">How the planner decides</a>
 </div>
 
 {#if error}
-  <p class="banner error" role="alert">{error}</p>
+  <div class="banner error" role="alert">
+    <span>{error}</span>
+    <button type="button" onclick={() => refresh(true)} disabled={measuring}>{measuring ? 'Measuring...' : 'Measure again'}</button>
+  </div>
 {/if}
 
 {#if showProgress}
@@ -112,6 +132,9 @@
 
   {#if plan.error}
     <p class="muted">{plan.error}</p>
+    <div class="apply">
+      <button type="button" onclick={() => refresh(true)} disabled={measuring}>{measuring ? 'Measuring...' : 'Measure again'}</button>
+    </div>
   {:else if plan.none}
     <section class="card summary">
       <p class="sentence">Not measured yet.</p>
@@ -133,6 +156,13 @@
       {/if}
       <p class="sentence">{avail.summary?.sentence ?? `Regime: ${avail.regime}`}</p>
       {#if avail.machine}<p class="muted machine">{avail.machine}</p>{/if}
+      {#if avail.summary?.lanes?.length}
+        <p class="lanes">
+          {#each avail.summary.lanes as lane (lane.phase)}
+            <span><span class="muted">{lane.label ?? lane.phase}</span> <span class="figure">{lane.on.join(' + ')}</span></span>
+          {/each}
+        </p>
+      {/if}
       {#if avail.not_applicable?.length}
         <p class="warn-text">Not applicable in this build: {avail.not_applicable.join(', ')}</p>
       {/if}
@@ -170,21 +200,46 @@
             {/if}
           </div>
         {/if}
-        {#if avail.summary?.lanes?.length}
+        {#if host && host.cap_bytes > 0}
           <div class="tile">
-            <span class="muted k">Where it runs</span>
-            {#each avail.summary.lanes as lane (lane.phase)}
-              <div class="lane"><span>{lane.label ?? lane.phase}</span><span class="figure">{lane.on.join(' + ')}</span></div>
-            {/each}
+            <span class="muted k">Memory</span>
+            <span><span class="figure big">{formatBytes(host.held_bytes)}</span> <span class="figure muted">held</span></span>
+            <div class="hits" aria-hidden="true">
+              <span style="width: {Math.min(100, (100 * host.held_bytes) / host.cap_bytes)}%"></span>
+            </div>
+            <span class="muted k">Of the {formatBytes(host.cap_bytes)} it may hold</span>
+          </div>
+        {/if}
+        {#if worstMs > 0}
+          <div class="tile">
+            <span class="muted k">Worst case</span>
+            <span><span class="figure big">{formatNum(worstMs, 0)}</span> <span class="figure muted">ms per token</span></span>
+            <span class="muted k">With nothing held in memory{#if check.predictedTokS !== null}, against {formatNum(1000 / check.predictedTokS, 0)} ms expected{/if}</span>
           </div>
         {/if}
       </div>
 
       <div class="apply">
         <button type="button" class="primary" onclick={apply} disabled={applying}>Apply plan</button>
+        <button type="button" onclick={() => refresh(true)} disabled={measuring}>
+          {measuring ? 'Measuring...' : 'Measure again'}
+        </button>
         <span class="muted">Values you set yourself are never changed.</span>
       </div>
-      {#if applied}<p class="ok-text" role="status">Plan applied. See the source badges in Settings.</p>{/if}
+      {#if applied}
+        <div class="applied" role="status">
+          {#if applied.length === 0}
+            <p class="ok-text">Plan applied: every setting already had the plan's value.</p>
+          {:else}
+            <p class="ok-text">Plan applied. {applied.length === 1 ? 'One setting changed' : `${applied.length} settings changed`}:</p>
+            <ul>
+              {#each applied as c (c.key)}
+                <li><a href={settingHref(c.key)}>{c.label}</a> <span class="muted figure">{c.from}</span> → <span class="figure">{c.to}</span></li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
       {#if server.config?.reload_required && server.ready}
         <p class="muted">Some applied values need a model reload: use the banner in <a href="#/settings">Settings</a>.</p>
       {/if}
@@ -207,12 +262,16 @@
       <h2>Command</h2>
       <pre>{commandLine(avail.args)}</pre>
     {/if}
-
-    {#if avail.explain}
-      <details class="explain">
-        <summary>The planner's full explanation</summary>
-        <pre>{avail.explain}</pre>
-      </details>
+    <div class="apply diag">
+      <button type="button" onclick={copyDiagnostic}>Copy diagnostic</button>
+      <span class="muted">The command and the planner's whole account, for a bug report.</span>
+      {#if diag === 'ok'}<span class="ok-text" role="status">Copied.</span>{/if}
+    </div>
+    {#if diag === 'failed'}
+      <div class="banner warn">
+        <span>The clipboard is not available here. Copy it by hand:</span>
+        <pre class="cmd">{diagnosticText(avail.args ?? [], avail.explain ?? '')}</pre>
+      </div>
     {/if}
   {/if}
 {/if}
@@ -291,17 +350,38 @@
     width: 2px;
     background: var(--text);
   }
-  .lane {
+  .lanes {
+    margin: 0;
     display: flex;
-    justify-content: space-between;
-    gap: 0.5rem;
-    border: var(--edge) solid var(--border);
-    padding: 0.2rem 0.5rem;
+    flex-wrap: wrap;
+    gap: 0.3rem 1.25rem;
   }
-  .lane .figure {
+  .lanes .figure {
     color: var(--accent);
-    text-align: right;
     overflow-wrap: anywhere;
+  }
+  .doc {
+    margin-left: auto;
+    font-size: 0.9rem;
+  }
+  .applied ul {
+    margin: 0.3rem 0 0;
+    padding-left: 1.2rem;
+  }
+  .applied p {
+    margin: 0;
+  }
+  .diag {
+    margin-top: 0.75rem;
+  }
+  .cmd {
+    width: 100%;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: all;
+    margin: 0;
+    max-height: 16rem;
+    overflow: auto;
   }
   .apply {
     display: flex;
@@ -316,12 +396,5 @@
   .ok-text {
     color: var(--ok);
     margin: 0;
-  }
-  .explain summary {
-    cursor: pointer;
-    margin: 1rem 0 0.5rem;
-  }
-  .explain pre {
-    white-space: pre-wrap;
   }
 </style>

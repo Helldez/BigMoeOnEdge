@@ -6,6 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <string>
 
 namespace bmoe::server {
@@ -27,6 +28,10 @@ json config_values(const RunConfig & cfg);
 // parameters (`; charset=utf-8`). The types an HTML form can send (urlencoded, multipart,
 // text/plain) and a missing header are all false, which is the point of asking.
 bool is_json_content_type(const std::string & content_type);
+
+// Size of the longest well-formed UTF-8 prefix. A token may end partway through a code point;
+// hold those bytes until later tokens complete it instead of replacing them during JSON dump.
+size_t complete_utf8_prefix_size(const std::string & text);
 
 json token_json(const TokenMetrics & m);
 json summary_json(const RunSummary & s, bool cancelled);
