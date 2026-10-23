@@ -1,5 +1,13 @@
 #include "platform.h"
 
+#if !defined(_WIN32)
+// See model_library.cpp for why the subprocess header's chdir support is off. Windows opens a URL
+// through the shell's own call instead, so the header is left out there.
+#define SUBPROCESS_HAVE_CWD 0
+#include "sheredom/subprocess.h"
+#endif
+
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <thread>
@@ -160,10 +168,34 @@ void open_url(const std::string & url) {
 #elif defined(__APPLE__) && TARGET_OS_IPHONE
     // An app there has no browser to start and no shell to start it with; the app is the UI.
     (void) url;
-#elif defined(__APPLE__)
-    std::system(("open '" + url + "'").c_str());
 #else
-    std::system(("xdg-open '" + url + "' >/dev/null 2>&1 &").c_str());
+    // The opener is started directly, the URL one argument of it: no shell reads it. Its output is
+    // read and dropped on a thread of its own, which also reaps it, so neither the opener nor a
+    // browser it starts can block on a full pipe and the server never waits for either.
+#if defined(__APPLE__)
+    const char * opener = "open";
+#else
+    const char * opener = "xdg-open";
+#endif
+    const char * cmd[] = {opener, url.c_str(), nullptr};
+    auto * proc = new subprocess_s;
+    const int opts = subprocess_option_search_user_path | subprocess_option_inherit_environment |
+                     subprocess_option_combined_stdout_stderr;
+    if (subprocess_create(cmd, opts, proc) != 0) {
+        delete proc;
+        return;
+    }
+    std::thread([proc] {
+        if (FILE * out = subprocess_stdout(proc)) {
+            char buf[256];
+            while (std::fread(buf, 1, sizeof(buf), out) > 0) {
+            }
+        }
+        int rc = 0;
+        subprocess_join(proc, &rc);
+        subprocess_destroy(proc);
+        delete proc;
+    }).detach();
 #endif
 }
 

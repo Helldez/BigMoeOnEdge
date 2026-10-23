@@ -43,6 +43,33 @@ Semantic Versioning.
 - **A cancelled turn leaves both contexts at the same prefix.** When the draft context of
   speculative decoding could not drop the cancelled tokens, only it was cleared, so the next turn
   started the target and the draft at different positions. Both are now cleared together.
+- **`bmoe-server`: no local client can take every worker (#353).** The server answers with a fixed
+  pool of 32 workers and each `GET /api/events` stream holds one for as long as it is open, with no
+  bound on how many: 32 idle streams from any local process and every other request, the UI's own
+  included, queued forever. The event streams are now capped at 8 (the next is a `503` with the new
+  code `streams_full`, which the UI and both apps already retry with back-off), and the pool is
+  sized from what can hold a worker for long (8 streams, the running turn, the 16 that may wait
+  behind it) plus 7 for short requests, still 32 in all. A stream's place is taken before it
+  answers and given back however the response ends, the client leaving before the headers
+  included. Connections that arrive while every worker is busy now wait in a queue of 64, not an
+  unbounded one; past it the next is closed at once. A stream now notices a client that closed
+  its connection within a second instead of at its next 15 s ping, so a reloaded page finds the
+  place it left free; a client that keeps the connection but stops reading is still let go by the
+  ping hitting the write timeout. A client that vanishes without closing (a phone off Wi-Fi) is now
+  bounded by TCP: keep-alive probes after 15 s idle and a 60 s limit on unacknowledged data, each
+  option set where the system's headers define it. They are set on the listening socket, the one
+  place the HTTP library offers: Linux and Android clone them into every connection; macOS was
+  measured not to copy the idle time or the retransmission bound, so there that case is still left
+  to the system's own limit.
+- **`--open` starts the browser without a shell (#353).** It went through `std::system` with the
+  URL quoted into a command line; it now starts `open` (macOS) or `xdg-open` directly with the URL as
+  one argument, through the subprocess header the downloads already use, and drops its output on a
+  thread that also reaps it. Windows already used the shell's own call.
+- **The printed URL is right for an IPv6 bind (#353).** `--host ::` printed `http://:::8765/`;
+  it now prints `http://[::1]:8765/`, and any IPv6 literal is bracketed.
+A non-object JSON body (`[]`, `1`) on `PUT /api/config` or `POST /api/models/download`, the second
+point of #353, is already a `400` with `code: "invalid_request"` since 0.31.0 (#262): checked,
+not changed.
 
 ## [0.34.1] - 2026-10-23
 

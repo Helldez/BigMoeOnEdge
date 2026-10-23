@@ -52,6 +52,63 @@ constexpr int kPortMax = 65535;
 constexpr const char * kDefaultHfEndpoint = "https://huggingface.co";
 constexpr int kHfSearchLimit = 20; // repositories a search answers with: a screen's worth
 
+// The server's workers. A request holds one for its whole life: an event stream for as long as a UI
+// is open, a chat turn while it runs and while it waits its place in line. Those are bounded
+// (k_max_event_streams, one running turn, k_max_waiting_turns waiting), and the pool is wider than
+// all of them together, so a full set of streams and a full line still leave workers for the short
+// requests (config, models, the UI's files) that keep the UI working. Seven: a browser opens six
+// connections to one host, so a page load is served in one round, with one to spare. 32 in all.
+constexpr size_t kShortRequestWorkers = 7;
+constexpr size_t kWorkerThreads = k_max_event_streams + 1 + k_max_waiting_turns + kShortRequestWorkers;
+// Connections accepted while every worker is busy. Past this the server closes the next one at once:
+// a client that floods the port gets refused rather than an unbounded queue in this process.
+constexpr size_t kMaxQueuedRequests = 64;
+// How often an idle event stream is pinged: what keeps it open through a proxy that drops a silent
+// connection, and the write that finds a client that stopped reading.
+constexpr std::chrono::seconds kEventPingInterval{15};
+// How often an idle event stream looks for its client. A stream's place is one of a few, and a UI
+// that reloads takes a new one at once: a client that closed its connection must not hold the old
+// one until the next ping. The same second a waiting chat turn looks with (TurnQueue::enter).
+constexpr std::chrono::seconds kEventLivenessPoll{1};
+// A client that vanishes without closing (a phone that drops off Wi-Fi) is invisible to the checks
+// above: nothing comes back to read, and pings that small never fill the send buffer, so without a
+// bound from TCP its stream would keep one of the few places until the stack's own retransmission
+// limit, many minutes. These bound it:
+// - unacknowledged data is given up after a minute: longer than the stall of a phone moving from
+//   Wi-Fi to cellular, short enough that the place is free before a person reloads twice;
+constexpr int kTcpUnackedTimeoutS = 60;
+// - a connection with nothing in flight is probed after the ping interval, every 5 s, 3 times.
+constexpr int kTcpKeepAliveIdleS = 15;
+constexpr int kTcpKeepAliveIntervalS = 5;
+constexpr int kTcpKeepAliveProbes = 3;
+
+// Set on the listening socket, the one place the library offers (svr.set_socket_options). A stack
+// that copies a listener's TCP options to the connections it accepts applies them to every client;
+// one that does not keeps its defaults for the options it does not copy. Each option is set where
+// the system's headers define it: what the stack can do, not which system it is.
+void set_listener_options(socket_t sock) {
+    httplib::default_socket_options(sock); // what replacing the library's default must keep
+    httplib::set_socket_opt(sock, SOL_SOCKET, SO_KEEPALIVE, 1);
+#if defined(TCP_KEEPIDLE)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_KEEPIDLE, kTcpKeepAliveIdleS);
+#elif defined(TCP_KEEPALIVE)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_KEEPALIVE, kTcpKeepAliveIdleS); // the older name, seconds
+#endif
+#if defined(TCP_KEEPINTVL)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_KEEPINTVL, kTcpKeepAliveIntervalS);
+#endif
+#if defined(TCP_KEEPCNT)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_KEEPCNT, kTcpKeepAliveProbes);
+#endif
+#if defined(TCP_USER_TIMEOUT)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_USER_TIMEOUT, kTcpUnackedTimeoutS * 1000); // milliseconds
+#elif defined(TCP_RXT_CONNDROPTIME)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_RXT_CONNDROPTIME, kTcpUnackedTimeoutS);
+#elif defined(TCP_MAXRT)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_MAXRT, kTcpUnackedTimeoutS);
+#endif
+}
+
 struct Options {
     std::string host = kDefaultHost;
     int port = kDefaultPort;
@@ -699,23 +756,44 @@ void register_routes(httplib::Server & svr, App & app) {
         send_json(res, decide_json(out.result));
     });
 
+    // A stream holds a worker for as long as it is open, so the bus caps how many there are and the
+    // place is taken here, before the 200: past the cap the answer is a 503 the client can retry.
+    // A client that closed its connection is seen within a liveness poll; one that keeps it open
+    // but stops reading is let go by the ping, whose write times out (the server's write timeout)
+    // once the socket's buffer is full.
     svr.Get("/api/events", [&](const httplib::Request &, httplib::Response & res) {
+        std::shared_ptr<EventBus::Queue> q = app.bus.subscribe();
+        if (!q)
+            return send_error(res, 503,
+                              "too many event streams are open (" + std::to_string(k_max_event_streams) +
+                                  "): close another tab or app connected to this server",
+                              error_code::streams_full);
         res.set_header("Cache-Control", "no-cache");
         res.set_header("X-Accel-Buffering", "no");
-        res.set_chunked_content_provider("text/event-stream", [&app](size_t, httplib::DataSink & sink) {
-            auto q = app.bus.subscribe();
-            std::string f = EventBus::frame("state", app.host.info()) + EventBus::frame("config", app.config_object());
-            bool ok = sink.write(f.data(), f.size());
-            while (ok) {
-                std::string frame;
-                if (!EventBus::next(*q, frame, std::chrono::seconds(15))) break;
-                if (frame.empty()) frame = ": ping\n\n";
-                ok = sink.write(frame.data(), frame.size());
-            }
-            app.bus.unsubscribe(q);
-            sink.done();
-            return true;
-        });
+        res.set_chunked_content_provider(
+            "text/event-stream",
+            [&app, q](size_t, httplib::DataSink & sink) {
+                std::string f =
+                    EventBus::frame("state", app.host.info()) + EventBus::frame("config", app.config_object());
+                bool ok = sink.write(f.data(), f.size());
+                auto last_write = std::chrono::steady_clock::now();
+                while (ok) {
+                    std::string frame;
+                    if (!EventBus::next(*q, frame, kEventLivenessPoll)) break;
+                    if (frame.empty()) {
+                        if (!sink.is_writable()) break;
+                        if (std::chrono::steady_clock::now() - last_write < kEventPingInterval) continue;
+                        frame = ": ping\n\n";
+                    }
+                    ok = sink.write(frame.data(), frame.size());
+                    last_write = std::chrono::steady_clock::now();
+                }
+                sink.done();
+                return true;
+            },
+            // Runs however the response ends, the provider never called included (a client that
+            // left before its headers were sent), so the place is always given back.
+            [&app, q](bool) { app.bus.unsubscribe(q); });
     });
 
     svr.Get("/api/models", [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.lib.list()); });
@@ -1003,9 +1081,10 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     app.host.set_planner_available(planner_available());
 
     httplib::Server svr;
-    // Every open UI holds one /api/events stream for its lifetime, and a chat holds another: the
-    // pool must be wider than the handful of tabs a person keeps open.
-    svr.new_task_queue = [] { return new httplib::ThreadPool(32); };
+    // A worker is held for a request's whole life, and a connection past the queue is closed at
+    // once instead of waiting with no bound behind workers that may not come free.
+    svr.new_task_queue = [] { return new httplib::ThreadPool(kWorkerThreads, 0, kMaxQueuedRequests); };
+    svr.set_socket_options(set_listener_options);
     // A request body here is a chat history or a handful of settings. The library's default would
     // let every worker buffer a hundred times that.
     svr.set_payload_max_length(8ull << 20);
@@ -1029,8 +1108,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         std::fprintf(stderr, "bmoe-server: cannot listen on %s:%d (in use?)\n", o.host.c_str(), o.port);
         return 1;
     }
-    const std::string url =
-        "http://" + (o.host == "0.0.0.0" ? std::string("127.0.0.1") : o.host) + ":" + std::to_string(o.port) + "/";
+    const std::string url = browse_url(o.host, o.port);
     std::printf("bmoe-server %s listening on %s\n", version(), url.c_str());
     std::printf("  data: %s\n  models: %s\n  ui: %s\n", data_dir.c_str(), models_dir.c_str(),
                 ui_dir.empty() ? "(not built)" : ui_dir.c_str());

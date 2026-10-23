@@ -17,7 +17,7 @@ with a 4xx or 5xx status: `error` is for a person and may change, `code` is what
 on, and is present wherever the failure has one. A chat or decide turn carries the engine's failure
 kind (`context_full`, `empty_prompt`, `template_rejected`, `needs_chat_mode`, `invalid_request`,
 `invalid_output`, `failed`, as in [telemetry.md](telemetry.md)) or the server's own refusal (`busy`, `no_model`,
-`outside_models_dir`). A body that is not JSON, not a JSON object, or carries a field of the wrong
+`outside_models_dir`, `streams_full`). A body that is not JSON, not a JSON object, or carries a field of the wrong
 type (a `role` that is a number, an `id` that is an object) is a `400` with `code:
 "invalid_request"`, never a `500`: the server's own faults are the only `500`s.
 Inside a stream that had already answered `200`, the same pair arrives as one
@@ -98,6 +98,14 @@ other software, or other people, on that machine or on a network it was told to 
   operator's and is not confined.
 - Request bodies are capped at 8 MiB. Loads, unloads and plan measurements are serialised; a
   second measurement while one runs gets `409`.
+- No one client can take every worker. The server answers with 32 workers, and each request holds
+  one for its whole life, so what holds one for long is bounded: at most 8 event streams
+  (`GET /api/events`; the next gets `503` with `code: "streams_full"`), one running chat or decide
+  turn and 16 waiting behind it (the next gets `503` with `code: "busy"`). That leaves 7 workers for
+  everything else, the UI's own requests included. Connections that arrive while every worker is
+  busy wait in a queue of 64; past that the server closes the next one at once.
+- `--open` starts the system's opener (`open` on macOS, `xdg-open` elsewhere; the shell's own call
+  on Windows) directly, with the URL as one argument: no shell is involved.
 
 **What is not**
 
@@ -419,6 +427,20 @@ the server) is what lets a session accept these; off, every decision is refused.
 
 `text/event-stream`. Every event is `event: <name>` + `data: <json>`. A comment line (`: ping`)
 is sent every 15 s. On connect the server sends one `state` event with the current info.
+
+At most 8 streams are open at once, since each holds one of the server's workers for as long as it
+is open: one more gets `503` with `code: "streams_full"` and should retry later, as the UI and the
+apps do (with back-off). A client that closes its connection gives its place back within a second,
+so a reloaded page finds it free; one that keeps the connection open but stops reading is let go
+when a ping cannot be written (the server's write timeout, 5 s, once the connection's buffer is
+full). A client that vanishes without closing (a phone that drops off Wi-Fi) is bounded by TCP:
+the server enables keep-alive probes (after 15 s idle, every 5 s, 3 of them) and gives up on data
+left unacknowledged for 60 s. These are set on the listening socket, the one place the HTTP library
+offers, so they reach a connection where the system copies a listener's options to the connections
+it accepts: Linux, and so Android, clones the listener's TCP state into each one; macOS was
+measured to copy keep-alive itself, the probe interval and the count, but not the idle time or the
+retransmission bound, so there such a client keeps its place until the system's own retransmission
+limit.
 
 | event | data |
 |---|---|
