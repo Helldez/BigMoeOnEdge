@@ -62,6 +62,8 @@ export interface ModelInfo {
   /** What a CPU figure is read against: compute threads, and every thread busy in a decode. */
   compute_threads: number;
   busy_threads: number;
+  /** The context against what a client of the server sends; absent from an older server. */
+  ctx_advice?: { recommended: number; short: boolean; param: string };
 }
 
 export interface Info {

@@ -155,7 +155,8 @@ other software, or other people, on that machine or on a network it was told to 
   "error": "",
   "model": {"path": "C:/models/Qwen3-30B-A3B-Q4_K_M.gguf", "name": "Qwen3-30B-A3B-Q4_K_M.gguf",
             "arch": "qwen3moe", "n_ctx": 4096, "n_expert_used": 8, "think_ctl": "template",
-            "load_s": 12.4, "streaming": true, "compute_threads": 8, "busy_threads": 12},
+            "load_s": 12.4, "streaming": true, "compute_threads": 8, "busy_threads": 12,
+            "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size"}},
   "generating": false
 }
 ```
@@ -169,6 +170,16 @@ so a UI says nothing about it before. `compute_threads` and `busy_threads` are w
 read against: the session's compute threads, and every thread busy in a decode (the compute threads
 plus the read lanes when they run beside compute, under overlap). A UI that divides `cpu_ms` by
 threads reads these, never the parameters.
+
+`ctx_advice` compares the session's context with what a client of the server sends: `recommended`
+is the engine's `RunConfig::ctx_for_clients` (16384 tokens: a coding agent's first request, its
+system prompt and tool schemas alone, measured at 9911 tokens for opencode, plus room for the
+answer), `short` is whether `n_ctx` is below it, and `param` is the parameter that raises it. A UI
+shows the warning and links the setting from these, and names neither the number nor the key. When
+the context is short, the server also logs a `warn` line at load (on stderr and as a `log` event)
+naming the flag that raises it, and a `warn` line every time a request is refused with
+`context_full`, so the person at the server learns why even when the client hides the error.
+See [Sizing the context for a client](#sizing-the-context-for-a-client).
 
 ### `POST /api/session/load`
 
@@ -381,6 +392,20 @@ only calls tools), `message.reasoning_content`, `message.tool_calls`, `usage` an
 
 Not implemented: `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `stop`,
 `n` above 1, and per-request sampling.
+
+### Sizing the context for a client
+
+The server's default context is 4096 tokens: enough for a chat in the web UI, not for a coding
+agent. An agent sends its system prompt and every tool schema with each request; opencode's first
+request alone is 9911 tokens, so at 4096 every request it makes is refused with `400`
+`context_full` before it has done anything, and some clients show that only as an unknown error.
+Load the model with at least 16384 tokens (`-c 16384` on the server's command line, or the Context
+setting) for an agent; a long agent session grows past that, and one six-step opencode run that
+fixed two bugs fit in 32768. The cost is memory: the KV cache and the compute buffers are reserved
+for the whole context, and they come out of the same RAM as the expert cache, so a larger context
+leaves a smaller cache and a slower decode on a machine that is short of memory. The plan's
+`kv-budget` note (`GET /api/plan`) says what the loaded context takes. `ctx_advice` in
+`GET /api/info` and a `warn` log line at load say when the context is below the recommendation.
 
 ### `GET /v1/models`
 

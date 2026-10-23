@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import ParamField from '../components/settings/ParamField.svelte';
   import { api } from '../lib/api';
   import { commandLine } from '../lib/format';
   import { decisionsByKnob, planDecisions } from '../lib/plan';
   import { advancedGroups as advancedOf, groupParams } from '../lib/schema';
+  import { router } from '../stores/router.svelte';
   import { server } from '../stores/server.svelte';
   import { settings } from '../stores/settings.svelte';
 
@@ -18,6 +20,23 @@
   let userKeys = $derived(new Set(config?.user_keys ?? []));
   let decisions = $derived(decisionsByKnob(planDecisions(config?.plan)));
   let command = $derived(config ? commandLine(config.args) : '');
+
+  // A link to one setting (`#/settings/<key>`, from a warning elsewhere) lands on it: its section
+  // unfolded when it is an advanced one, the field scrolled into view and focused. Once per link:
+  // the config changes on every save, and editing another field must not jump back.
+  let landedOn = '';
+  $effect(() => {
+    const key = router.target;
+    if (!key) landedOn = '';
+    if (!key || key === landedOn || !config || params.length === 0) return;
+    landedOn = key;
+    if (advancedGroups.some((g) => g.params.some((p) => p.key === key))) advancedOpen = true;
+    tick().then(() => {
+      const el = document.getElementById(`param-${key}`);
+      el?.scrollIntoView({ block: 'center' });
+      el?.focus({ preventScroll: true });
+    });
+  });
 
   let copied = $state<'idle' | 'ok' | 'failed'>('idle');
   let reloadError = $state('');

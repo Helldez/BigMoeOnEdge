@@ -26,6 +26,9 @@ struct Admission {
     std::string error;
 };
 
+// The parameter a short context is raised with: the one row of the table that sets n_ctx.
+constexpr const char * k_ctx_param = "ctx-size";
+
 const char * level_name(LogLevel l) {
     return l == LogLevel::Error ? "error" : l == LogLevel::Warn ? "warn" : "info";
 }
@@ -51,6 +54,21 @@ private:
 };
 
 } // namespace
+
+json context_advice(int n_ctx) {
+    return json{{"recommended", RunConfig::ctx_for_clients},
+                {"short", n_ctx < RunConfig::ctx_for_clients},
+                {"param", k_ctx_param}};
+}
+
+// A client that hides the server's message (an agent showing "unknown error") leaves the person at
+// the server with nothing to go on: the server's own log says what was refused and what fixes it.
+static void log_context_full(int n_ctx) {
+    log_printf(LogLevel::Warn,
+               "a request did not fit the context of %d tokens and was refused with context_full: load the model "
+               "with a larger context (%s) to serve it",
+               n_ctx, flag_spelling(k_ctx_param).c_str());
+}
 
 std::unique_ptr<HostedSession> open_real_session(const SessionConfig & cfg, std::string & error) {
     std::unique_ptr<Session> s = Session::open(cfg, error);
@@ -144,10 +162,21 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
                               {"compute_threads", effective.n_threads},
                               {"busy_threads",
                                effective.n_threads +
-                                   (effective.moe.enabled && effective.moe.overlap ? effective.moe.io_threads : 0)}};
+                                   (effective.moe.enabled && effective.moe.overlap ? effective.moe.io_threads : 0)},
+                              {"ctx_advice", context_advice(s->n_ctx())}};
             }
         }
         publish_state();
+        // Said at load, where a person starting the server reads it, and not first by a client that
+        // shows the refusal as an unknown error after its first request.
+        if (s && s->n_ctx() < RunConfig::ctx_for_clients) {
+            const std::string raise = flag_spelling(k_ctx_param, std::to_string(RunConfig::ctx_for_clients));
+            log_printf(LogLevel::Warn,
+                       "the context is %d tokens, under the %d a coding agent's first request needs (its system "
+                       "prompt and tools alone are ~10k): such a client is refused with context_full. Load with "
+                       "%s to serve one; a larger context takes RAM from the expert cache",
+                       s->n_ctx(), RunConfig::ctx_for_clients, raise.c_str());
+        }
     });
     return "";
 }
@@ -305,6 +334,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     if (!r) {
         out.error = r.error;
         out.code = run_error_name(r.error_kind);
+        if (r.error_kind == RunError::ContextFull) log_context_full(s->n_ctx());
         if (run_error_recoverable(r.error_kind)) {
             // Bad generated output is a server error, but its rolled-back turn leaves the
             // loaded model usable. A client should not have to reload it to retry a request.
@@ -378,6 +408,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
     if (!r.ok && !r.cancelled) {
         out.error = r.error;
         out.code = run_error_name(r.error_kind);
+        if (r.error_kind == RunError::ContextFull) log_context_full(s->n_ctx());
         if (!r.fatal) {
             out.status = 400;
         } else {
