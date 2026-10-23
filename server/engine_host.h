@@ -98,10 +98,13 @@ public:
     bool reload_required(const RunConfig & current) const;
 
     // Run one chat turn on the calling thread, after any turn that asked first (turn_queue.h).
-    // `on_token` (nullable) sees every token. `still_wanted` (nullable) is asked while the turn
-    // waits its place and gives it up by returning false.
+    // `on_token` (nullable) sees every token and returns false once the client that asked for this
+    // turn is gone: the host then cancels this turn, and only this one. A front-end never cancels on
+    // a failed write itself, since it cannot tell whose turn is running when the write fails (a
+    // keep-alive while queued, the last frames after the turn ended). `still_wanted` (nullable) is
+    // asked while the turn waits its place and gives it up by returning false.
     ChatOutcome chat(const ChatRequest & req,
-                     const std::function<void(const TokenMetrics &)> & on_token,
+                     const std::function<bool(const TokenMetrics &)> & on_token,
                      const std::function<bool()> & still_wanted = nullptr);
 
     // Read one decision (bmoe/decide.h) on the calling thread, in the same line as the chat turns:
