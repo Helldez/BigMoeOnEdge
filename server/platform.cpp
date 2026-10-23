@@ -161,9 +161,13 @@ void open_url(const std::string & url) {
     // An app there has no browser to start and no shell to start it with; the app is the UI.
     (void) url;
 #elif defined(__APPLE__)
-    std::system(("open '" + url + "'").c_str());
+    const int rc = std::system(("open '" + url + "'").c_str());
+    (void) rc; // best effort: the address is printed either way
 #else
-    std::system(("xdg-open '" + url + "' >/dev/null 2>&1 &").c_str());
+    // Held in a variable: glibc marks system() warn_unused_result, which a (void) cast does not
+    // satisfy under gcc.
+    const int rc = std::system(("xdg-open '" + url + "' >/dev/null 2>&1 &").c_str());
+    (void) rc; // best effort: the address is printed either way
 #endif
 }
 

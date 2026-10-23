@@ -23,8 +23,9 @@ Semantic Versioning.
   eval thread rewrote that table on every decode step. The value was the same weight leaf each
   time, so no run went wrong, but it was undefined behaviour; the first ThreadSanitizer run found
   it. The worker now uses the gate pointer the job already snapshotted, as the float path did.
-  The warnings `-Wextra` raised (an unused parameter and helper, aggregate fields without a default,
-  a discarded result in a test) are fixed without changing what any of them computes.
+  The warnings `-Wall -Wextra` raised (an unused parameter and helper, aggregate fields without a
+  default, discarded results, a range loop that copied) are fixed without changing what any of them
+  computes.
 
 ## [0.34.1] - 2026-10-23
 

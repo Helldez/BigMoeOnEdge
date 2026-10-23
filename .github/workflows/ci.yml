@@ -176,7 +176,7 @@ jobs:
       - name: Threaded tests, sanitized
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: cd build-tsan && ctest --output-on-failure -R '^(engine_host|server_logic|moe_gates_.*)$'
+        run: cd build-tsan && ctest -j 2 --output-on-failure -R '^(engine_host|server_logic|moe_gates_.*)$'
 
   ui:
     # The web UI's unit tests (ui/src/lib). release-host runs them too, but only once a release is
