@@ -7,6 +7,16 @@ Semantic Versioning.
 ## [0.35.0] - 2026-10-23
 
 ### Added
+- **Request-level structured output.** `POST /v1/chat/completions` accepts
+  `response_format` with `json_object` or `json_schema`, and llama.cpp's top-level
+  `json_schema` field. The schema travels through llama.cpp's chat template, grammar and
+  parser, using the session's existing grammar sampler. Thinking, tools and speculative
+  decoding use that same path; there is no separate JSON sampler. The constraint belongs
+  to one request. A normally completed JSON answer is checked for parseable JSON;
+  length-limited and cancelled turns retain their real finish reason and may be partial.
+  A completed answer that fails validation returns `invalid_output` without unloading the
+  model, so the next request can proceed. See `docs/server-api.md` for schema support and
+  streaming semantics and the tested template/tool-choice limitations.
 - **A warning level, a named sanitizer option and an install target (#350).** The project's own
   targets build with `-Wall -Wextra` (`/W4` on MSVC); llama.cpp and its vendored libraries keep
   upstream's flags. `-DBMOE_WARNINGS_AS_ERRORS=ON` makes a warning an error (off by default; on in
@@ -18,6 +28,9 @@ Semantic Versioning.
   still packaged by hand, since they also carry the C runtime on Windows and a README per archive.
 
 ### Fixed
+- **A cancelled turn leaves both contexts at the same prefix.** When the draft context of
+  speculative decoding could not drop the cancelled tokens, only it was cleared, so the next turn
+  started the target and the draft at different positions. Both are now cleared together.
 - **A data race in route-ahead's int8 gate mirror (#350).** On aarch64 (the phones, Apple silicon)
   the prediction worker read layer `nl`'s gate matrix from the hook's per-layer table while the
   eval thread rewrote that table on every decode step. The value was the same weight leaf each

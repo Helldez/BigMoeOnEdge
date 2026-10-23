@@ -572,7 +572,7 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!parse_body(req, res, body)) return;
         OpenAiChatRequest cr;
         std::string err;
-        if (!parse_chat_request(body, app.store.config(), cr, err)) return send_error(res, 400, err);
+        if (!parse_chat_request(body, app.store.config(), cr, err)) return send_error(res, 400, err, "invalid_request");
         if (!app.host.ready())
             return send_error(res, 503, "no model is loaded: load one from the Models page", error_code::no_model);
 
@@ -609,6 +609,11 @@ void register_routes(httplib::Server & svr, App & app) {
             // parser reclassified text already sent (a closing reasoning tag), send the full state
             // with reset so the client replaces instead of appending.
             std::string sent_text, sent_reasoning;
+            const auto stream_text = [&](const std::string & text) {
+                // A JSON string value may contain a code point split across byte-fallback tokens.
+                // Serializing an incomplete one with replacement would corrupt the final object.
+                return cr.turn.json_schema.empty() ? text : text.substr(0, complete_utf8_prefix_size(text));
+            };
             bool first = true;
             ChatOutcome out = app.host.chat(
                 cr.turn,
@@ -616,21 +621,22 @@ void register_routes(httplib::Server & svr, App & app) {
                     if (!alive) return false;
                     json delta = json::object();
                     json extra = nullptr;
+                    const std::string text = stream_text(m.text), reasoning = stream_text(m.reasoning);
                     if (first) delta["role"] = "assistant";
-                    if (starts_with(m.text, sent_text) && starts_with(m.reasoning, sent_reasoning)) {
-                        const std::string dt = m.text.substr(sent_text.size());
-                        const std::string dr = m.reasoning.substr(sent_reasoning.size());
+                    if (starts_with(text, sent_text) && starts_with(reasoning, sent_reasoning)) {
+                        const std::string dt = text.substr(sent_text.size());
+                        const std::string dr = reasoning.substr(sent_reasoning.size());
                         if (dt.empty() && dr.empty() && !first) return true;
                         if (!dt.empty()) delta["content"] = dt;
                         if (!dr.empty()) delta["reasoning_content"] = dr;
                     } else {
-                        delta["content"] = m.text;
-                        delta["reasoning_content"] = m.reasoning;
+                        delta["content"] = text;
+                        delta["reasoning_content"] = reasoning;
                         extra = json{{"reset", true}};
                     }
                     first = false;
-                    sent_text = m.text;
-                    sent_reasoning = m.reasoning;
+                    sent_text = text;
+                    sent_reasoning = reasoning;
                     chunk(delta, nullptr, extra);
                     return alive;
                 },
@@ -646,7 +652,8 @@ void register_routes(httplib::Server & svr, App & app) {
                 // The per-token text can lag the final answer (the chat parser holds back what it
                 // cannot classify yet), so close the gap before the last chunk: a client must end
                 // with exactly the answer the turn produced.
-                const std::string ft = out.result.generated_text, fr = out.result.reasoning_text;
+                const std::string ft = stream_text(out.result.generated_text),
+                                  fr = stream_text(out.result.reasoning_text);
                 if (alive && (ft != sent_text || fr != sent_reasoning)) {
                     json delta = json::object();
                     json extra = nullptr;
