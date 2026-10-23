@@ -22,20 +22,27 @@ scripts/build-host.sh
 cd build && ctest --output-on-failure
 ```
 
-CI also runs the gates under AddressSanitizer and UndefinedBehaviorSanitizer. To reproduce a
-report locally, build into a separate directory and run the same tests:
+Our own code builds with `-Wall -Wextra` (`/W4` on MSVC); llama.cpp keeps its own flags. A new
+warning is fixed, not silenced: configure with `-DBMOE_WARNINGS_AS_ERRORS=ON` to make it an error,
+as CI's macOS job does.
+
+CI also runs the gates under AddressSanitizer and UndefinedBehaviorSanitizer, and the threaded tests
+(the engine host, the server's turn queue, the gates) under ThreadSanitizer. `BMOE_SANITIZE` builds
+everything, llama.cpp included, with the sanitizers it lists (`address`, `undefined`, `thread`,
+comma-separated; `thread` alone). To reproduce a report locally, build into a separate directory and
+run the same tests:
 
 ```bash
-SAN="-fsanitize=address,undefined -fno-omit-frame-pointer"
-cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_C_FLAGS="$SAN" -DCMAKE_CXX_FLAGS="$SAN" \
-  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
-  -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBMOE_SANITIZE=address,undefined
 cmake --build build-asan
 cd build-asan && ASAN_OPTIONS=halt_on_error=1 \
   UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:suppressions=$PWD/../tests/sanitizers/ubsan.supp \
   ctest --output-on-failure
 ```
+
+ThreadSanitizer: `-DBMOE_SANITIZE=thread -DGGML_OPENMP=OFF` into its own build directory, then
+`ctest -R '^(engine_host|server_logic|moe_gates_.*)$'` with `TSAN_OPTIONS=halt_on_error=1`. On a
+Linux kernel with wide address-space randomisation, `sudo sysctl vm.mmap_rnd_bits=28` first.
 
 `tests/sanitizers/ubsan.supp` and `lsan.supp` list only findings inside `third_party/llama.cpp`,
 which this project does not patch; a report in our own code is a bug to fix, never a line to add

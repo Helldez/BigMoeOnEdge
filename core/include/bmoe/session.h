@@ -113,10 +113,10 @@ struct GenerateRequest {
     // still matching what the context holds are kept and only the rest is prefilled, so resending
     // the conversation the session already has costs the new turn alone, and a different one
     // prefills from its first differing token. Chat mode only.
-    std::vector<ChatMessage> messages;
+    std::vector<ChatMessage> messages{};
     // Functions the model may call this turn, described to it by its own chat template; the calls
     // come back in RunResult::tool_calls. Read only with `messages`: a tool's answer is a message.
-    std::vector<ChatTool> tools;
+    std::vector<ChatTool> tools{};
     ToolChoice tool_choice = ToolChoice::Auto;
 };
 

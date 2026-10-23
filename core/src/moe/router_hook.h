@@ -473,8 +473,9 @@ private:
     std::vector<std::vector<int8_t>> ra_gate_q_; // per layer: n_expert rows of n_embd int8
     std::vector<std::vector<float>> ra_gate_s_;  // per layer: one dequant scale per expert
     std::vector<int8_t> ra_qh_;                  // scratch: the activation row, quantized per call
-    bool quantize_gate(int il);                  // build the mirror for layer il; false if unsupported
-    bool gate_scores_q(int il, const std::vector<float> & h, std::vector<float> & out);
+    // Both run on the prediction worker and take layer il's gate from the job, not from gate_w_.
+    bool quantize_gate(int il, const ggml_tensor * w); // build the mirror for layer il; false if unsupported
+    bool gate_scores_q(int il, const ggml_tensor * w, const std::vector<float> & h, std::vector<float> & out);
     std::vector<int32_t> ra_ids_, ra_keep_, ra_spec_; // scratch: the committed future, split by residency
     std::vector<uint8_t> ra_res_;                     // scratch: residency of the committed ids
     void route_ahead_submit(ggml_tensor * ids, int il, int nu, int nt); // watchdog + row copy + job

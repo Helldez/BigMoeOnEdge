@@ -368,7 +368,7 @@ static void measured_tests() {
         auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
         script.started.wait();
         check(host.load(config(), config()).empty(), "a load during a turn starts");
-        pending.get();
+        (void) pending.get();
         check(wait_state(host, "ready") && host.last_turn().is_null(),
               "the new model shows no figure measured on the old one");
     }

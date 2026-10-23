@@ -42,7 +42,7 @@ struct Decision {
     // One plain sentence for a person, carrying the number that decided it: no flag names, no
     // planner vocabulary. A screen leads with this and folds the reason away; the reason alone is
     // written for whoever is checking the arithmetic.
-    std::string brief;
+    std::string brief{};
 };
 
 // What the planner was asked for, on top of the two profiles. Everything here is the caller's

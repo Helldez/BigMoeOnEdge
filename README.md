@@ -169,9 +169,11 @@ scripts/build-host.sh
 build/bin/bmoe-server --open
 ```
 
-Tests: `cd build && ctest --output-on-failure` (needs `python3` with the `gguf` package). Android:
-`scripts/build-android.ps1`, then the APK in [`examples/android`](examples/android).
-[CONTRIBUTING.md](CONTRIBUTING.md).
+Tests: `cd build && ctest --output-on-failure` (needs `python3` with the `gguf` package). Install
+the desktop layout (the binaries, their backend libraries, the web UI and the catalog, in one
+folder): `cmake --install build --component bmoe --prefix <dir>`, then `<dir>/bin/bmoe-server`.
+Android: `scripts/build-android.ps1`, then the APK in [`examples/android`](examples/android).
+Warning and sanitizer options: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 

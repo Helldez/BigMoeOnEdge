@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.35.0] - 2026-10-23
+
+### Added
+- **A warning level, a named sanitizer option and an install target (#350).** The project's own
+  targets build with `-Wall -Wextra` (`/W4` on MSVC); llama.cpp and its vendored libraries keep
+  upstream's flags. `-DBMOE_WARNINGS_AS_ERRORS=ON` makes a warning an error (off by default; on in
+  CI's macOS job, the compiler the tree was cleaned on). `-DBMOE_SANITIZE=address,undefined` (or
+  `thread`) instruments the whole build in one flag; CI's sanitizer job uses it, and a new TSan job
+  runs the threaded tests (the engine host, the server's turn queue, the byte-identity gates).
+  `cmake --install build --component bmoe` installs the release layout: `bmoe-cli`, `bmoe-server`,
+  the backend libraries beside them, the web UI and the model catalog. The release archives are
+  still packaged by hand, since they also carry the C runtime on Windows and a README per archive.
+
+### Fixed
+- **A data race in route-ahead's int8 gate mirror (#350).** On aarch64 (the phones, Apple silicon)
+  the prediction worker read layer `nl`'s gate matrix from the hook's per-layer table while the
+  eval thread rewrote that table on every decode step. The value was the same weight leaf each
+  time, so no run went wrong, but it was undefined behaviour; the first ThreadSanitizer run found
+  it. The worker now uses the gate pointer the job already snapshotted, as the float path did.
+  The warnings `-Wextra` raised (an unused parameter and helper, aggregate fields without a default,
+  a discarded result in a test) are fixed without changing what any of them computes.
+
 ## [0.34.1] - 2026-10-23
 
 ### Fixed

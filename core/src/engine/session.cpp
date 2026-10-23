@@ -738,7 +738,7 @@ struct Session::Impl::Opening {
     // its own answer. Parse it at most once, lazily: the callers are conditional (a run with no
     // override, no trace and no streaming asks nothing), so an eager read would be work the
     // common path never needs. One parse serves both the model info and the offsets.
-    GgufMeta gguf_meta;
+    GgufMeta gguf_meta{};
     bool gguf_meta_read = false;
     const GgufMeta & meta() {
         if (!gguf_meta_read) {
@@ -749,7 +749,7 @@ struct Session::Impl::Opening {
     }
     const GgufModelInfo & gguf() { return meta().info; }
 
-    ExpertLayout layout;      // set by read_model when streaming; left !ok otherwise, and then no tensor matches it
+    ExpertLayout layout{};    // set by read_model when streaming; left !ok otherwise, and then no tensor matches it
     int n_layer_streamed = 0; // set by build_hook
 
     bool fail(std::string msg) {
