@@ -602,7 +602,7 @@ std::vector<ParamDesc> build() {
 
     // ── prefill device ───────────────────────────────────────────────────────────────
     {
-        ParamDesc d = row("prefill-device", "Prefill device", G::Streaming, L::Experimental,
+        ParamDesc d = row("prefill-device", "Prefill device", G::Prefill, L::Experimental,
                           "Run wide prefill graphs on this ggml device (e.g. HTP0, MTL0) while decode stays on "
                           "the CPU. With streaming the experts reach it through a two-layer arena. Not with "
                           "speculation or row streaming. Empty is off.");
@@ -612,7 +612,7 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("prefill-best-effort", "Prefill device is optional", G::Streaming, L::Experimental,
+        ParamDesc d = row("prefill-best-effort", "Prefill device is optional", G::Prefill, L::Experimental,
                           "If the prefill device cannot be set up, run the prefill on the CPU instead of failing "
                           "the load. --auto sets it when it chose the device itself.");
         d.type = ParamType::Bool;
@@ -622,7 +622,7 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("prefill-verify", "Confirm the prefill device", G::Streaming, L::Experimental,
+        ParamDesc d = row("prefill-verify", "Confirm the prefill device", G::Prefill, L::Experimental,
                           "Before keeping a prefill device, prefill a short fixed text on the CPU and on the "
                           "device and keep the device only if it picks the same next token in nearly every "
                           "position. Costs three short prefills at load.");
@@ -633,7 +633,7 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("prefill-min-tokens", "Prefill device width", G::Streaming, L::Experimental,
+        ParamDesc d = row("prefill-min-tokens", "Prefill device width", G::Prefill, L::Experimental,
                           "Narrowest prefill piece sent to the prefill device; a shorter tail runs on the CPU.");
         d.value_hint = "N";
         at_least(d, PrefillDeviceConfig::min_tokens_floor, "tokens");
@@ -642,7 +642,7 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("prefill-slots", "Prefill expert slots", G::Streaming, L::Experimental,
+        ParamDesc d = row("prefill-slots", "Prefill expert slots", G::Prefill, L::Experimental,
                           "Layers of streamed experts the prefill device holds at once. 2 reads a layer while the "
                           "previous one computes; 1 waits for each layer and needs a layer less of memory.");
         d.value_hint = "N";
@@ -651,7 +651,7 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("prefill-slots-on-demand", "Prefill slots share the cache", G::Streaming, L::Experimental,
+        ParamDesc d = row("prefill-slots-on-demand", "Prefill slots share the cache", G::Prefill, L::Experimental,
                           "Hold the prefill device's expert slots only during a prefill and give their memory to "
                           "the expert cache the rest of the time. The cache keeps its full budget for decode; "
                           "each prefill evicts what the slots need and sets them up again.");
@@ -662,7 +662,7 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("prefill-loaders", "Prefill loaders", G::Streaming, L::Experimental,
+        ParamDesc d = row("prefill-loaders", "Prefill loaders", G::Prefill, L::Experimental,
                           "Threads that fill the prefill device's layer slots from flash, with streaming. "
                           "Decode read lanes stay on the read-lane setting.");
         d.value_hint = "N";
@@ -672,7 +672,7 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("prefill-routed", "Routed prefill reads", G::Streaming, L::Experimental,
+        ParamDesc d = row("prefill-routed", "Routed prefill reads", G::Prefill, L::Experimental,
                           "With a prefill device and streaming: read only the experts each graph routes to "
                           "(predicted from the previous graph and completed at each routing node) instead of "
                           "every expert of every layer. Output is identical either way.");
@@ -683,7 +683,7 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("prefill-routed-full", "Read a busy layer whole", G::Streaming, L::Experimental,
+        ParamDesc d = row("prefill-routed-full", "Read a busy layer whole", G::Prefill, L::Experimental,
                           "A layer routing more than this fraction of its experts gets the next layer read "
                           "whole. In (0, 1].");
         d.type = ParamType::Float;
@@ -1081,6 +1081,8 @@ const char * param_group_name(ParamGroup g) {
         return "sampling";
     case ParamGroup::Streaming:
         return "streaming";
+    case ParamGroup::Prefill:
+        return "prefill";
     case ParamGroup::Cache:
         return "cache";
     case ParamGroup::Memory:
@@ -1104,9 +1106,11 @@ const char * param_group_label(ParamGroup g) {
     case ParamGroup::Generation:
         return "Generation";
     case ParamGroup::Sampling:
-        return "Sampling (default: greedy, deterministic)";
+        return "Sampling";
     case ParamGroup::Streaming:
         return "Expert streaming";
+    case ParamGroup::Prefill:
+        return "Prefill";
     case ParamGroup::Cache:
         return "Expert cache";
     case ParamGroup::Memory:
@@ -1114,13 +1118,45 @@ const char * param_group_label(ParamGroup g) {
     case ParamGroup::Prefetch:
         return "Prefetch";
     case ParamGroup::Speculation:
-        return "Self-speculative decoding (greedy verification: token-identical output)";
+        return "Speculative decoding";
     case ParamGroup::Lossy:
-        return "Quality trades (change the output)";
+        return "Quality trades";
     case ParamGroup::Diagnostics:
-        return "Diagnostics and A/B baselines";
+        return "Diagnostics";
     }
     return "?";
+}
+
+const char * param_group_help(ParamGroup g) {
+    switch (g) {
+    case ParamGroup::Model:
+        return "The model file to run. A front-end with a model list chooses it there.";
+    case ParamGroup::Generation:
+        return "The answer and what it is computed with: its length, thinking, the context and the threads.";
+    case ParamGroup::Sampling:
+        return "Greedy and deterministic by default; a temperature above zero turns sampling on.";
+    case ParamGroup::Streaming:
+        return "How the routed experts are read from storage while a token is decoded.";
+    case ParamGroup::Prefill:
+        return "How a prompt is computed: on which device, and how its experts are read.";
+    case ParamGroup::Cache:
+        return "The memory that keeps experts once read, so the next token need not read them again.";
+    case ParamGroup::Memory:
+        return "Where the weights that are not experts live, and which devices hold layers.";
+    case ParamGroup::Prefetch:
+        return "Reading experts before a token asks for them.";
+    case ParamGroup::Speculation:
+        return "Drafting tokens and verifying them in one decode; greedy verification keeps the output identical.";
+    case ParamGroup::Lossy:
+        return "Faster at the cost of a different reply: each of these changes the output.";
+    case ParamGroup::Diagnostics:
+        return "Tests, probes and A/B baselines; never a speed setting.";
+    }
+    return "";
+}
+
+bool param_group_read_only(ParamGroup g) {
+    return g == ParamGroup::Model;
 }
 
 const char * param_level_name(ParamLevel l) {
@@ -1230,6 +1266,11 @@ std::string params_json(const RunConfig & defaults) {
         json_str(o, param_group_name(d.group));
         o += ",\"group_label\":";
         json_str(o, param_group_label(d.group));
+        o += ",\"group_help\":";
+        json_str(o, param_group_help(d.group));
+        o += ",\"group_order\":";
+        o += std::to_string((int) d.group);
+        if (param_group_read_only(d.group)) o += ",\"group_read_only\":true";
         o += ",\"level\":";
         json_str(o, param_level_name(d.level));
         o += ",\"scope\":";

@@ -1,40 +1,141 @@
 // Schema helpers: everything the settings form knows about parameters comes from here, and all
 // of it is derived from the `GET /api/params` rows. No parameter is named in this module.
-import type { ParamLevel, ParamSpec, ParamValue } from './types';
+import type { ParamLevel, ParamSpec, ParamValue, PlanDecision } from './types';
 
 /** Every level, in order of how much a person needs to know before touching a row. */
 export const ALL_LEVELS: readonly ParamLevel[] = ['basic', 'advanced', 'experimental', 'debug'];
-/** The levels beyond basic, in display order. */
-export const OPTIONAL_LEVELS: readonly ParamLevel[] = ['advanced', 'experimental', 'debug'];
 
-export interface ParamGroup {
-  group: string;
-  label: string;
+/** A level's place in ALL_LEVELS; a level this UI does not know yet sorts last. */
+export function levelRank(level: string): number {
+  const i = (ALL_LEVELS as readonly string[]).indexOf(level);
+  return i < 0 ? ALL_LEVELS.length : i;
+}
+
+/** The rows of one level that a card folds away. */
+export interface LevelRows {
+  level: string;
   params: ParamSpec[];
 }
 
-/** True when a parameter of this level is visible with the given optional levels enabled. */
-export function isLevelVisible(level: string, enabled: ReadonlySet<string>): boolean {
-  return level === 'basic' || enabled.has(level);
+/** One settings card: a group of the table, its basic rows open and the rest folded by level. */
+export interface SettingsCard {
+  group: string;
+  label: string;
+  help: string;
+  /** Shown, not edited: a front-end sets it with a control of its own. */
+  readOnly: boolean;
+  basic: ParamSpec[];
+  more: LevelRows[];
+  /** Rows of this group the level filter leaves out. */
+  hidden: number;
+}
+
+export interface CardFilter {
+  /** The deepest level shown: every row at or above it. */
+  upTo: string;
+  /** Words to look for; when set, the level filter is ignored and only matching rows are kept. */
+  query?: string;
+  /** Rows shown whatever the filter (a value someone or the plan set must never hide). */
+  pinned?: ReadonlySet<string>;
+}
+
+function matches(p: ParamSpec, words: string[]): boolean {
+  const hay = `${p.label} ${p.help} ${p.flag} ${p.key} ${p.group_label}`.toLowerCase();
+  return words.every((w) => hay.includes(w));
 }
 
 /**
- * Groups visible parameters by `group`, keeping the order in which groups first appear in the
- * schema (the form order) and the schema order of parameters inside each group. Empty groups
- * are dropped.
+ * The settings form: one card per group, in the table's group order (`group_order`, else the order
+ * groups first appear), rows in table order. Nothing here names a group or a parameter.
  */
-export function groupParams(params: readonly ParamSpec[], enabled: ReadonlySet<string>): ParamGroup[] {
-  const groups = new Map<string, ParamGroup>();
-  for (const p of params) {
-    if (!isLevelVisible(p.level, enabled)) continue;
-    let g = groups.get(p.group);
-    if (!g) {
-      g = { group: p.group, label: p.group_label || p.group, params: [] };
-      groups.set(p.group, g);
+export function settingsCards(params: readonly ParamSpec[], filter: CardFilter): SettingsCard[] {
+  const words = (filter.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  const upTo = levelRank(filter.upTo);
+  const cards = new Map<string, { card: SettingsCard; order: number; first: number }>();
+  params.forEach((p, i) => {
+    let entry = cards.get(p.group);
+    if (!entry) {
+      entry = {
+        card: {
+          group: p.group,
+          label: p.group_label || p.group,
+          help: p.group_help ?? '',
+          readOnly: p.group_read_only === true,
+          basic: [],
+          more: [],
+          hidden: 0,
+        },
+        order: p.group_order ?? Number.MAX_SAFE_INTEGER,
+        first: i,
+      };
+      cards.set(p.group, entry);
     }
-    g.params.push(p);
-  }
-  return [...groups.values()];
+    const c = entry.card;
+    const shown = words.length
+      ? matches(p, words)
+      : p.level === 'basic' || levelRank(p.level) <= upTo || (filter.pinned?.has(p.key) ?? false);
+    if (!shown) {
+      if (!words.length) c.hidden++;
+      return;
+    }
+    if (p.level === 'basic') {
+      c.basic.push(p);
+      return;
+    }
+    let lv = c.more.find((m) => m.level === p.level);
+    if (!lv) {
+      lv = { level: p.level, params: [] };
+      c.more.push(lv);
+    }
+    lv.params.push(p);
+  });
+  return [...cards.values()]
+    .filter((e) => e.card.basic.length + e.card.more.length > 0)
+    .sort((a, b) => a.order - b.order || a.first - b.first)
+    .map((e) => ({ ...e.card, more: [...e.card.more].sort((a, b) => levelRank(a.level) - levelRank(b.level)) }));
+}
+
+/** The level a row of the table sits at, or undefined for a key the table does not have. */
+export function levelOf(params: readonly ParamSpec[], key: string): string | undefined {
+  return params.find((p) => p.key === key)?.level;
+}
+
+/** How many rows each level holds, for the filter's counts. */
+export function levelCounts(params: readonly ParamSpec[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const p of params) out.set(p.level, (out.get(p.level) ?? 0) + 1);
+  return out;
+}
+
+/**
+ * What "reset all my values" removes: the person's own values, never a key the server was launched
+ * with (the operator's choice for this run) and never a row of a read-only group, which a client
+ * sets with a control of its own (the model a load chose) and the form could not set back.
+ */
+export function resettableKeys(
+  userKeys: readonly string[],
+  launchKeys: readonly string[],
+  params: readonly ParamSpec[],
+): string[] {
+  const launch = new Set(launchKeys);
+  const readOnly = new Set(params.filter((p) => p.group_read_only).map((p) => p.key));
+  return userKeys.filter((k) => !launch.has(k) && !readOnly.has(k));
+}
+
+/** Where a value came from, in the one chip a row carries. */
+export type ValueSource = 'you' | 'plan' | 'default';
+
+/** The person's value wins; else a plan that decided the row; else the server's default. */
+export function valueSource(userSet: boolean, decision: PlanDecision | undefined): ValueSource {
+  if (userSet) return 'you';
+  if (decision && (decision.group ?? 'set') === 'set') return 'plan';
+  return 'default';
+}
+
+/** True when the plan decided this row and the value in force is not the one it decided. */
+export function differsFromPlan(value: ParamValue | undefined, decision: PlanDecision | undefined): boolean {
+  if (!decision || (decision.group ?? 'set') !== 'set' || value === undefined) return false;
+  return !(sameValue(value, decision.value) || String(value) === decision.value);
 }
 
 /** Value equality across the JSON types a parameter can take ("auto" vs 4096, 8 vs "8"). */
@@ -48,17 +149,6 @@ export function sameValue(a: ParamValue | undefined, b: ParamValue | undefined):
 
 export function isDefault(spec: ParamSpec, value: ParamValue | undefined): boolean {
   return value === undefined || sameValue(spec.default, value);
-}
-
-/**
- * The rows behind the Advanced fold: everything but basic, grouped like the form above it. A basic
- * row is shown once, in its group, never again under Advanced.
- */
-export function advancedGroups(params: readonly ParamSpec[]): ParamGroup[] {
-  // Grouped over the whole table first, so the groups keep the order of the form above.
-  return groupParams(params, new Set(OPTIONAL_LEVELS))
-    .map((g) => ({ ...g, params: g.params.filter((p) => p.level !== 'basic') }))
-    .filter((g) => g.params.length > 0);
 }
 
 /** The name of a value that means something other than its number ("off" for 0), or undefined. */

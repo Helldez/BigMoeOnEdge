@@ -264,13 +264,17 @@ std::string note_label(const std::string & knob) {
 
 } // namespace
 
-json plan_view(const HardwareProfile & hw, const ModelProfile & model, const Plan & plan) {
+json plan_view(const HardwareProfile & hw, const Plan & plan) {
     // Decode as the plan priced it, the figures bmoe-cli --auto prints after a run, so a client can
     // set a load's measured figures beside them.
     json predicted = json::object();
     if (plan.allocation.seconds_per_token > 0) predicted["s_per_token"] = plan.allocation.seconds_per_token;
-    if (plan.allocation.cache_bytes > 0 && model.expert_bytes > 0)
-        predicted["cache_hit_pct"] = 100.0 * (double) plan.allocation.cache_bytes / (double) model.expert_bytes;
+    // The worst case is the same token with nothing resident: a bound beside the prediction, never
+    // divided into it (Allocation::seconds_worst_case).
+    if (plan.allocation.seconds_worst_case > 0) predicted["s_per_token_worst"] = plan.allocation.seconds_worst_case;
+    // The hit rate the cost model priced the token with, not a cache-to-experts ratio of our own.
+    if (plan.allocation.cache_bytes > 0 && plan.allocation.cache_hit_credited > 0)
+        predicted["cache_hit_pct"] = 100.0 * plan.allocation.cache_hit_credited;
     const std::string none = devices_none(hw);
     return json{{"summary", {{"sentence", summary_sentence(plan)}, {"lanes", lanes_json(hw, plan)}}},
                 {"predicted", predicted},

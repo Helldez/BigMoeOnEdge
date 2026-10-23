@@ -23,6 +23,12 @@ export interface ParamSpec {
   type: ParamType | (string & {});
   group: string;
   group_label: string;
+  /** The group in one line, under its title. */
+  group_help?: string;
+  /** The group's place in the form; groups sort by it. */
+  group_order?: number;
+  /** A form shows the group's values without a control: a front-end sets them elsewhere. */
+  group_read_only?: boolean;
   level: ParamLevel | (string & {});
   scope: ParamScope | (string & {});
   help: string;
@@ -167,10 +173,14 @@ export interface PlanProgress {
 export interface Config {
   values: Record<string, ParamValue>;
   user_keys: string[];
+  /** The keys the server was launched with (also in `user_keys`); absent from an older server. */
+  launch_keys?: string[];
   args: string[];
   valid: boolean;
   error: string;
   reload_required: boolean;
+  /** The session-scoped keys whose value differs from the loaded session's. */
+  reload_keys?: string[];
   /** The last applied plan's decisions, or null. */
   plan: PlanDecision[] | { decisions: PlanDecision[] } | null;
   /** Every load plans first (only true where the planner is built in). */
@@ -210,7 +220,8 @@ export interface PlanAvailable {
   cached?: boolean;
   from_last_load?: boolean;
   summary?: { sentence: string; lanes: PlanLane[] };
-  predicted?: { s_per_token?: number; cache_hit_pct?: number };
+  /** Decode as the plan priced it: the prediction, the hit rate it credited, the bound with nothing resident. */
+  predicted?: { s_per_token?: number; cache_hit_pct?: number; s_per_token_worst?: number };
   measured?: PlanMeasured;
   memory?: { pools: PlanMemoryPool[] };
   devices?: PlanDevice[];

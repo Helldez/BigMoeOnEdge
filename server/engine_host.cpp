@@ -231,12 +231,13 @@ std::string EngineHost::model_path() const {
     return model_.is_object() ? model_.value("path", "") : "";
 }
 
-bool EngineHost::reload_required(const RunConfig & current) const {
+std::vector<std::string> EngineHost::reload_keys(const RunConfig & current) const {
     std::lock_guard<std::mutex> lk(m_);
-    if (state_ != State::Ready) return false;
+    std::vector<std::string> keys;
+    if (state_ != State::Ready) return keys;
     for (const ParamDesc & d : params())
-        if (d.scope == ParamScope::Session && d.get(requested_) != d.get(current)) return true;
-    return false;
+        if (d.scope == ParamScope::Session && d.get(requested_) != d.get(current)) keys.push_back(d.key);
+    return keys;
 }
 
 json EngineHost::info() const {

@@ -34,12 +34,14 @@ namespace bmoe {
 // Path and Text are both free strings; the difference is only how a form presents them.
 enum class ParamType { Bool, Int, Float, Choice, Path, Text };
 
-// Groups in the order a settings form shows them.
+// Groups in the order a settings form shows them: the enum order IS the form order, sent as
+// `group_order` so a form does not depend on where a group's first row sits in the table.
 enum class ParamGroup {
     Model,
     Generation,
     Sampling,
     Streaming,
+    Prefill,
     Cache,
     Memory,
     Prefetch,
@@ -132,7 +134,11 @@ const ParamDesc * find_param(const std::string & key);
 
 const char * param_type_name(ParamType t);
 const char * param_group_name(ParamGroup g);  // stable identifier, as in params_json()
-const char * param_group_label(ParamGroup g); // section title for a form or a usage text
+const char * param_group_label(ParamGroup g); // section title for a form or a usage text: short
+const char * param_group_help(ParamGroup g);  // the group in one line, under its title
+// True for a group a front-end sets with a control of its own (the model file, from a model list):
+// a settings form shows its value and does not edit it. The CLI sets it like any other flag.
+bool param_group_read_only(ParamGroup g);
 const char * param_level_name(ParamLevel l);
 const char * param_scope_name(ParamScope s);
 

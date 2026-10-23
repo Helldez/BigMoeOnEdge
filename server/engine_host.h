@@ -100,8 +100,10 @@ public:
     // predicted are checked against these.
     json last_turn() const;
 
-    // True when a session is loaded and `current` differs from it in a session-scoped parameter.
-    bool reload_required(const RunConfig & current) const;
+    // The session-scoped parameters in which `current` differs from the loaded session, in table
+    // order; empty when no session is loaded. reload_required() is whether there is any.
+    std::vector<std::string> reload_keys(const RunConfig & current) const;
+    bool reload_required(const RunConfig & current) const { return !reload_keys(current).empty(); }
 
     // Run one chat turn on the calling thread, after any turn that asked first (turn_queue.h).
     // `on_token` (nullable) sees every token and returns false once the client that asked for this
