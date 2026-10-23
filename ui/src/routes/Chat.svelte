@@ -2,8 +2,12 @@
   import Composer from '../components/chat/Composer.svelte';
   import LiveLine from '../components/chat/LiveLine.svelte';
   import MessageView from '../components/chat/MessageView.svelte';
+  import { contextAdvice } from '../lib/context';
   import { chat } from '../stores/chat.svelte';
+  import { server } from '../stores/server.svelte';
 
+  // A full context is fixed by a new chat or a larger context; the server says which setting that is.
+  let ctx = $derived(contextAdvice(server.info?.model, server.params));
   let log: HTMLElement | undefined = $state();
 
   // Keep the newest text in view while streaming, unless the user scrolled up to read.
@@ -60,8 +64,10 @@
     </div>
     {#if chat.contextFull}
       <p class="banner error" role="alert">
-        This conversation fills the model's context. Start a new chat, or load the model with a larger Context size.
+        This conversation fills the model's context{ctx ? ` of ${ctx.nCtx} tokens` : ''}. Start a new chat, or raise
+        {ctx ? ctx.label : 'the context'} and reload the model{ctx?.short ? ` (${ctx.recommended} tokens fits a coding agent's first request; it takes memory from the expert cache)` : ''}.
         <button type="button" onclick={() => chat.newChat()}>New chat</button>
+        {#if ctx}<a href={ctx.href}>Raise {ctx.label}</a>{/if}
       </p>
     {:else if chat.error}
       <p class="banner error" role="alert">

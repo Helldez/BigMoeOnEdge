@@ -55,6 +55,11 @@ struct DecideOutcome {
 // server has a handful of clients; a line longer than this is a client retrying, not a workload.
 inline constexpr size_t k_max_waiting_turns = 16;
 
+// What /api/info says about a session's context against what a client of the server sends
+// (RunConfig::ctx_for_clients): the recommendation, whether `n_ctx` is short of it, and the parameter
+// that raises it, so a front-end names neither the number nor the key.
+json context_advice(int n_ctx);
+
 class EngineHost {
 public:
     // `open` makes the session a load installs; a test passes a scripted one (hosted_session.h).

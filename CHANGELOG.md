@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.35.0] - 2026-10-23
+
+### Added
+- **The server warns when the context is too small for its clients, before a request fails
+  (#362).** `bmoe-server` loads with a 4096-token context, and opencode's first request alone (its
+  system prompt and tool schemas) is 9911 tokens, so every request of a coding agent was refused
+  with `context_full` and opencode showed an unknown error; nothing had said so beforehand. The
+  engine now names what a server's clients need, `RunConfig::ctx_for_clients` (16384 tokens, with
+  its measured reason), and `GET /api/info` carries `model.ctx_advice` (`recommended`, `short`, and
+  the parameter that raises it). A short context logs a `warn` line at load with the flag to raise
+  it, and each `context_full` refusal logs one too, so the person at the server learns why even
+  when the client hides the error. The web UI shows the warning beside the loaded model with a link
+  that lands on the Context setting (settings links are now `#/settings/<key>`), and a full context
+  in the chat says the context's size and links the same setting. Nothing in the UI names the
+  number or the parameter. The RAM a larger context costs is said, not priced: it depends on the
+  model's attention layout and only a placement fit at that context measures it; the plan's
+  `kv-budget` note still says what the loaded context takes. The planner's own context choice is
+  unchanged, and the phone apps do not show the warning yet. Docs: `docs/server-api.md` (sizing the
+  context for a client), `docs/screens.md`, the Android and iOS READMEs.
+
 ## [0.34.1] - 2026-10-23
 
 ### Fixed

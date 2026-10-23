@@ -1,10 +1,12 @@
 <script lang="ts">
   import StreamingBadge from './StreamingBadge.svelte';
+  import { contextAdvice } from '../lib/context';
   import { server } from '../stores/server.svelte';
 
   const stateClass: Record<string, string> = { empty: '', planning: 'warn', loading: 'warn', ready: 'ok', error: 'err' };
   const stateText: Record<string, string> = { planning: 'Measuring the machine, then loading' };
   let info = $derived(server.info);
+  let ctx = $derived(contextAdvice(info?.model, server.params));
 </script>
 
 <div class="status" role="status" aria-live="polite">
@@ -20,6 +22,12 @@
       <span class="model" title={info.model.path}>{info.model.name}</span>
       <span class="muted">{info.model.arch}</span>
       <StreamingBadge streaming={info.model.streaming} />
+      {#if ctx?.short}
+        <span class="badge warn ctx" title="A coding agent's first request (system prompt and tools) needs about {ctx.recommended} tokens; a request that does not fit is refused. A larger context takes memory from the expert cache.">
+          Context {ctx.nCtx} tokens, under the {ctx.recommended} an agent needs.
+          <a href={ctx.href}>Raise {ctx.label}</a>
+        </span>
+      {/if}
     {:else if info.state === 'empty'}
       <span class="muted">No model loaded</span>
     {/if}
@@ -46,6 +54,9 @@
   .model {
     font-weight: 600;
     overflow-wrap: anywhere;
+  }
+  .ctx {
+    white-space: normal;
   }
   .error-text {
     color: var(--err);

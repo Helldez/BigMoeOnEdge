@@ -29,6 +29,12 @@ one line, from `GET /api/info` and the `state` events.
 A model that loaded with streaming off (a dense model, or a plan that declined) is marked as such
 wherever the model's name is shown: the live metrics then have no flash column, and the UI says why.
 
+A loaded model whose context is below what a client of the server sends (`model.ctx_advice.short`)
+gets a warning beside its name: the context, the recommendation (`ctx_advice.recommended`, what a
+coding agent's first request needs) and a link to the setting `ctx_advice.param` names, labelled
+from the parameter table; a larger context takes memory from the expert cache, and the warning says
+so. The web UI does this; the phone apps do not yet.
+
 ## Chat
 
 What it is: a conversation with the loaded model, kept on the device, with the model's reasoning
@@ -54,7 +60,8 @@ visible and every answer's cost visible.
   answer so far is kept), Copy an answer, Regenerate the last answer (the prompt is already in the
   KV, so only the answer is paid), New chat.
 - **Errors.** Shown in the transcript, under the turn they belong to, and decided on by the error's
-  `code`, never its wording. A full context (`context_full`) says so and offers New chat; a server
+  `code`, never its wording. A full context (`context_full`) says so, with the context's size, and
+  offers New chat and a link to the setting that raises the context (from `ctx_advice`); a server
   without a model (`no_model`) offers Models; anything else is dismissable. The person's message
   stays, saved with the conversation, and Send again sends it as it is after the fix. A decision
   that fails leaves no question behind: it is not a conversation turn.

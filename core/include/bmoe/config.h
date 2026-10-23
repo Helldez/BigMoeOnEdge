@@ -612,6 +612,15 @@ struct RunConfig {
     static constexpr int threads_max = 256;    // n_threads and n_threads_batch
     static constexpr int n_expert_used_max = 256;
     static constexpr int n_gpu_layers_max = 1024;
+
+    // The context a client of a server needs, below which a front-end warns before the first
+    // request fails rather than after. Measured: opencode's first request, its system prompt and
+    // tool schemas alone, is 9911 tokens, so a coding agent is refused with context_full at any
+    // context under ~10k before it has done anything. This is the next power of two above that,
+    // which leaves room for the first answer and a few steps; a long agent session wants more.
+    // Advice, not a limit: validate() accepts any context, and a short one is right for a plain chat
+    // on a machine whose expert cache needs the RAM.
+    static constexpr int ctx_for_clients = 16384;
 };
 
 // Validation result: ok plus a human-readable reason when not.

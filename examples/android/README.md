@@ -162,7 +162,9 @@ The app's own settings close the page:
   the page shows the phone's address on its Wi-Fi or Ethernet network, `http://<phone IP>:8765/v1`,
   ready to copy and kept current when the network changes. Any OpenAI-compatible client then uses
   it with `Authorization: Bearer <key>`: a laptop's coding agent, Open WebUI, a script. Prompts and answers
-  cross the network in clear; use it on a network you trust. Changing it restarts the engine, and a
+  cross the network in clear; use it on a network you trust. A coding agent needs a larger Context
+  than a chat: its first request alone is about 10k tokens, so set Context to 16384 or more before
+  pointing one at the phone, at the cost of expert cache ([sizing the context](../../docs/server-api.md#sizing-the-context-for-a-client)). Changing it restarts the engine, and a
   model that was loaded is loaded again once the engine is back.
 
 The engine requires a key even when it is not shared: on a phone, loopback is reachable by every
