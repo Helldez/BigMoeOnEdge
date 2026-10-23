@@ -16,8 +16,8 @@ All request and response bodies are JSON (UTF-8). Errors are `{"error": "<messag
 with a 4xx or 5xx status: `error` is for a person and may change, `code` is what a client decides
 on, and is present wherever the failure has one. A chat or decide turn carries the engine's failure
 kind (`context_full`, `empty_prompt`, `template_rejected`, `needs_chat_mode`, `invalid_request`,
-`failed`, as in [telemetry.md](telemetry.md)) or the server's own refusal (`busy`, `no_model`,
-`outside_models_dir`). A body that is not JSON, not a JSON object, or carries a field of the wrong
+`invalid_output`, `failed`, as in [telemetry.md](telemetry.md)) or the server's own refusal (`busy`, `no_model`,
+`outside_models_dir`, `streams_full`). A body that is not JSON, not a JSON object, or carries a field of the wrong
 type (a `role` that is a number, an `id` that is an object) is a `400` with `code:
 "invalid_request"`, never a `500`: the server's own faults are the only `500`s.
 Inside a stream that had already answered `200`, the same pair arrives as one
@@ -98,6 +98,14 @@ other software, or other people, on that machine or on a network it was told to 
   operator's and is not confined.
 - Request bodies are capped at 8 MiB. Loads, unloads and plan measurements are serialised; a
   second measurement while one runs gets `409`.
+- No one client can take every worker. The server answers with 32 workers, and each request holds
+  one for its whole life, so what holds one for long is bounded: at most 8 event streams
+  (`GET /api/events`; the next gets `503` with `code: "streams_full"`), one running chat or decide
+  turn and 16 waiting behind it (the next gets `503` with `code: "busy"`). That leaves 7 workers for
+  everything else, the UI's own requests included. Connections that arrive while every worker is
+  busy wait in a queue of 64; past that the server closes the next one at once.
+- `--open` starts the system's opener (`open` on macOS, `xdg-open` elsewhere; the shell's own call
+  on Windows) directly, with the URL as one argument: no shell is involved.
 
 **What is not**
 
@@ -260,7 +268,9 @@ Request fields that are read:
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`. A named function is honoured as `"required"`: the engine can require a call, not choose which. |
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
 | `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`). Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. It is a ceiling, not a reservation: the answer gets at most what the context has left after the prompt and then stops with `finish_reason: "length"`. Only a conversation that leaves no room at all is refused, with `400`. |
-| `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, of which only `"none"` turns it off. Default: the `think` parameter. |
+| `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, where `"none"` turns it off and any other level turns it on. Default: the `think` parameter, off unless set. |
+| `response_format` | `{"type":"json_object"}` requests JSON object output; `{"type":"json_schema","json_schema":{"schema":{...}}}` supplies a schema. Omitted, `null` or `{"type":"text"}` leaves the top-level `json_schema` unchanged; without one, output is ordinary text. See the support boundary below. |
+| `json_schema` | llama.cpp-compatible top-level schema for this request. A JSON object supplies schema keywords; `null` or omission adds no constraint. An empty object defaults to `{"type":"object"}`. |
 
 Ignored, because the session fixes them: `model`, `temperature`, `top_p`, `seed` and every
 other sampling field. Sampling is configured with the `temp`, `top-k`, `top-p` and `seed`
@@ -271,10 +281,84 @@ chat template, which writes them the way that model was trained to read them, an
 llama.cpp layer parses the model's calls back out of the generated text; the client runs them and
 sends the results back as `tool` messages. A call's text never appears in `content`. Once the model
 opens a call, sampling is held to the grammar the template ships with its tools, as llama.cpp's own
-server does: the call names a tool the request offered and its arguments are JSON. Free text and a
-reasoning span are not constrained. If the parser still finds no answer, reasoning or call in what
-was generated, the raw text comes back as `content` and the server logs a warning, instead of an
-empty message that ends with `stop`.
+server does: the call names a tool the request offered and its arguments are JSON. Without an
+output schema, free text and the reasoning span are not constrained. On an
+ordinary request, if the parser still finds no answer, reasoning or call in what was generated,
+the raw text comes back as `content` and the server logs a warning, instead of an empty message
+that ends with `stop`.
+
+**Structured output.** Set `response_format` on the request, not in `/api/config`:
+
+```json
+{
+  "messages": [{"role": "user", "content": "Return a JSON object describing Paris."}],
+  "chat_template_kwargs": {"enable_thinking": false},
+  "response_format": {"type": "json_object"}
+}
+```
+
+For a schema, place it in `response_format.json_schema.schema`:
+
+```json
+{
+  "messages": [{"role": "user", "content": "What is the capital of France?"}],
+  "chat_template_kwargs": {"enable_thinking": false},
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "capital",
+      "schema": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
+```
+
+The schema is passed to llama.cpp's chat template machinery, which builds the grammar and
+parser together. `json_object` defaults to `{"type":"object"}`. For llama.cpp compatibility,
+`json_object.schema` can supply a schema; otherwise a nonempty top-level `json_schema` is
+retained. `json_schema` format takes its schema from the nested wrapper and overrides the
+top-level field. If no schema is selected, or the selected schema is `null` or empty, either
+response-format form defaults to `{"type":"object"}`. Schema values must be JSON objects;
+boolean schemas are refused, but an object-valued schema may describe an array or scalar root. The wrapper's optional `name`
+and `description` are strings, and `strict` is a boolean (`null` leaves these unset); they are
+metadata and do not enable an additional validation pass. Unknown metadata is tolerated. Malformed known field types
+and unsupported format types return `400` with `code: "invalid_request"`.
+
+The pinned llama.cpp implementation supports a subset of JSON Schema. This endpoint does not
+add a second, full JSON Schema validator after generation;
+unsupported keywords do not gain a guarantee merely because they appear in the request.
+JSON syntax and a schema cannot guarantee that the generated values are factually correct.
+
+Thinking and speculative decoding use the existing template grammar path. Tool combinations
+are template-dependent: the pinned Qwen3.5 specialized parser produces an invalid lazy grammar
+for a response schema with offered tools and `tool_choice: "auto"`; that request returns `400`
+with `code: "template_rejected"` before inference. The differential Qwen3 parser accepts this
+combination and produces a JSON answer. Both tested parsers give JSON precedence over required
+tool calls, so a response schema with `tool_choice: "required"` (including a named-function choice)
+is explicitly refused with `400` / `invalid_request`, instead of silently ignoring the requirement.
+These cases are covered by vendored-template regressions; tools are not universally disabled.
+Reasoning is returned separately in `reasoning_content`. To request thinking
+off, use `chat_template_kwargs.enable_thinking` as in the examples. The existing `think` alias
+and precedence remain available. The output constraint belongs to one turn: a following
+request without it generates normally without reloading the model.
+
+A JSON answer that completes with `finish_reason: "stop"` must parse as JSON in
+`message.content`. A malformed completed answer returns `invalid_output` and HTTP `500`, or
+an error chunk if streaming has already started. The turn is rolled back and the model stays
+loaded for the next request. This check is performed on the parsed answer, apart from reasoning
+and tool-call data; a turn containing only tool calls is not required to contain a JSON answer.
+
+A token limit (`length`), cancellation (`cancelled`) or disconnection can leave partial JSON;
+partial output is not repaired by appending delimiters or relabelled as successful completion.
+Individual SSE chunks need not be valid JSON. Reconstruct `delta.content` using the streaming
+rules below, including `bmoe.reset`, and inspect the final finish reason. Clients must handle
+an error event even after content has arrived. HTTP `200` or `[DONE]` alone is not a completeness
+guarantee.
 
 **The conversation is the client's.** Every request carries the whole history and the server keeps
 none. The engine tokenizes it, keeps the leading tokens that match what its KV cache already holds
@@ -306,7 +390,7 @@ Non-streaming response: a `chat.completion` object with `message.content` (`null
 only calls tools), `message.reasoning_content`, `message.tool_calls`, `usage` and `bmoe.summary`.
 `usage.prompt_tokens` is the whole prompt the answer was conditioned on.
 
-Not implemented: `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `response_format`, `stop`,
+Not implemented: `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `stop`,
 `n` above 1, and per-request sampling.
 
 ### Sizing the context for a client
@@ -369,6 +453,20 @@ the server) is what lets a session accept these; off, every decision is refused.
 `text/event-stream`. Every event is `event: <name>` + `data: <json>`. A comment line (`: ping`)
 is sent every 15 s. On connect the server sends one `state` event with the current info.
 
+At most 8 streams are open at once, since each holds one of the server's workers for as long as it
+is open: one more gets `503` with `code: "streams_full"` and should retry later, as the UI and the
+apps do (with back-off). A client that closes its connection gives its place back within a second,
+so a reloaded page finds it free; one that keeps the connection open but stops reading is let go
+when a ping cannot be written (the server's write timeout, 5 s, once the connection's buffer is
+full). A client that vanishes without closing (a phone that drops off Wi-Fi) is bounded by TCP:
+the server enables keep-alive probes (after 15 s idle, every 5 s, 3 of them) and gives up on data
+left unacknowledged for 60 s. These are set on the listening socket, the one place the HTTP library
+offers, so they reach a connection where the system copies a listener's options to the connections
+it accepts: Linux, and so Android, clones the listener's TCP state into each one; macOS was
+measured to copy keep-alive itself, the probe interval and the count, but not the idle time or the
+retransmission bound, so there such a client keeps its place until the system's own retransmission
+limit.
+
 | event | data |
 |---|---|
 | `state` | the `GET /api/info` object, on every state change |
@@ -399,7 +497,8 @@ a UI shows "flash" from them without knowing whether the session overlaps.
              "role": "model", "streamable": true, "complete": true}],
   "catalog": [{"id": "qwen3-30b-a3b-q4_k_m", "title": "Qwen3-30B-A3B", "quant": "Q4_K_M",
                "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
-               "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://..."}],
+               "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://...",
+                          "sha256": "..."}],
                "blurb": "...", "status": "available", "received": 12884901888, "partial": true,
                "note": ""}]
 }
@@ -427,7 +526,12 @@ architecture `clip`); `draft` (a draft head for speculative decoding: it names a
 all); `""` when the header could not be read. A UI lists anything but `model` and `""` apart from
 the models, as files that are not loaded on their own. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
 entry with its URL, in order, for a client that downloads for itself (a phone, where the server
-has no `curl`); `file` and `bytes` are the first file's name and the whole entry's size.
+has no `curl`), and its `sha256` when the catalog names one (64 lowercase hex digits; absent
+otherwise), which the Android app checks its download against as the server does (the iOS app
+does not yet); `file` and `bytes` are the first file's name and the whole entry's size. A catalog row is held to what its fields
+become: `name` a bare file name (no separator, no `.` or `..`, no drive colon), `url` an https
+URL (plain http only under an http mirror named with `--hf-endpoint`), `sha256` a digest when present. An entry with a file that fails this is not listed, and the
+reason is in the server's start-up log; the Android and iOS apps drop such an entry too.
 `received` is what of the entry is already in the models directory, complete files and `.part`
 files alike, and `partial` is true when the entry is `available` with a `.part` on disk: a download
 stopped by a failure, a cancel or a restart of the server (jobs live in memory, the `.part` files do
@@ -446,7 +550,12 @@ fit. A dropped connection (curl's exit 6, 7, 16, 18, 28, 35, 52, 55, 56, 92: the
 request) is retried on its own, resuming from the `.part`, up to six attempts per file with a wait
 that starts at 2 s and doubles to at most 60 s (`server/download_policy.h`); while it waits the
 `download` event stays `running` and carries the failure in `error`. Any other failure, or the last
-attempt, ends in `error` with the `.part` kept.
+attempt, ends in `error` with the `.part` kept. curl is run with `--proto =https --proto-redir
+=https` for an https URL (a redirect cannot downgrade it; only a plain-http mirror named with
+`--hf-endpoint` may use http), and `--` before the URL, so no URL is read as an option. When the
+file has a `sha256`, a complete `.part` is read back and checked before it is renamed (the event
+stays `running`, its `error` saying so); a digest that differs ends in `error` and deletes the
+`.part`, since resuming it could only reproduce the same bytes.
 
 ### `DELETE /api/models/download/<id>`
 
@@ -535,7 +644,8 @@ has no such model, `502` when a header could not be fetched.
 ### `POST /api/hf/add`
 
 Body `{"repo", "name", "token"}`. The model becomes a catalog entry, id
-`hf:<repo>/<name>`, one file per shard with its resolve URL, listed by `GET /api/models` with
+`hf:<repo>/<name>`, one file per shard with its resolve URL and, where the repository's listing
+gives it, its LFS object id as `sha256` (the SHA-256 of the file), listed by `GET /api/models` with
 `"added": true` and kept between runs (`added-models.json` beside the settings). `201` with
 `{"id", "title", "quant", "bytes"}`; the download is then `POST /api/models/download` with that
 id, or, on a host that downloads for itself, the entry's `files[].url`. Adding a model that was

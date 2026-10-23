@@ -242,10 +242,10 @@ std::vector<ParamDesc> build() {
     {
         ParamDesc d = row("think", "Thinking", G::Generation, L::Basic,
                           "Render the chat template with reasoning enabled, so a reasoning model emits its "
-                          "thinking channel. Off suppresses reasoning at the source.");
+                          "thinking channel. Off (the default) suppresses reasoning at the source.");
         d.type = ParamType::Bool;
         d.flag.clear();
-        d.switches = {{"--no-think", "false"}};
+        d.switches = {{"--think", "true"}, {"--no-think", "false"}};
         d.scope = ParamScope::Request;
         bind_bool(d, [](RunConfig & c) -> bool & { return c.think; });
         t.push_back(d);
@@ -882,6 +882,19 @@ std::vector<ParamDesc> build() {
         typical(d, usual::route_ahead_lo, usual::route_ahead_hi);
         special(d, "0", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.route_ahead; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("gate-mirror", "Route-ahead int8 gates", G::Lossy, L::Experimental,
+                          "With route-ahead: score the prediction against an int8 copy of the router gates "
+                          "(a quarter of the bytes) instead of their own weights. auto times both on this "
+                          "machine at load and keeps the faster.");
+        d.type = ParamType::Choice;
+        d.value_hint = "auto|on|off";
+        bind_choice<GateMirror>(d, [](RunConfig & c) -> GateMirror & { return c.moe.gate_mirror; },
+                                {{GateMirror::Auto, {"auto", "auto"}},
+                                 {GateMirror::On, {"on", "int8"}},
+                                 {GateMirror::Off, {"off", "float"}}});
         t.push_back(d);
     }
 

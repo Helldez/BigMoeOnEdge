@@ -7,6 +7,27 @@ Semantic Versioning.
 ## [0.35.0] - 2026-10-23
 
 ### Added
+- **Request-level structured output.** `POST /v1/chat/completions` accepts
+  `response_format` with `json_object` or `json_schema`, and llama.cpp's top-level
+  `json_schema` field. The schema travels through llama.cpp's chat template, grammar and
+  parser, using the session's existing grammar sampler. Thinking, tools and speculative
+  decoding use that same path; there is no separate JSON sampler. The constraint belongs
+  to one request. A normally completed JSON answer is checked for parseable JSON;
+  length-limited and cancelled turns retain their real finish reason and may be partial.
+  A completed answer that fails validation returns `invalid_output` without unloading the
+  model, so the next request can proceed. See `docs/server-api.md` for schema support and
+  streaming semantics and the tested template/tool-choice limitations.
+- **The Hexagon NPU on Windows on Snapdragon, as an opt-in archive.** The release gains
+  `bmoe-cli` and `bmoe-desktop` archives for `windows-arm64-npu`: the Windows ARM64 build plus the
+  Hexagon module and one DSP library per NPU generation (v73 to v85). Windows' NPU driver runs that
+  code only from a catalog signed by a certificate the machine trusts, so the release workflow
+  makes the catalog with Inf2Cat (from Microsoft's WDK package on NuGet), signs it with a
+  certificate made in the same job, and deletes the private key before the job ends: nothing else
+  can ever be signed with it, and only the public certificate ships. Using it needs a one-time setup
+  the user does by hand (the NPU driver, test-signing on, the certificate trusted), which
+  `docs/npu-windows.md` walks through with what each step changes and how to undo it. The plain
+  Windows ARM64 archives are unchanged and need none of it. As on Android, the NPU takes the prompt
+  only where the planner measures it faster and identical. Not yet run on a Snapdragon laptop.
 - **The server warns when the context is too small for its clients, before a request fails
   (#362).** `bmoe-server` loads with a 4096-token context, and opencode's first request alone (its
   system prompt and tool schemas) is 9911 tokens, so every request of a coding agent was refused
@@ -23,6 +44,86 @@ Semantic Versioning.
   `kv-budget` note still says what the loaded context takes. The planner's own context choice is
   unchanged, and the phone apps do not show the warning yet. Docs: `docs/server-api.md` (sizing the
   context for a client), `docs/screens.md`, the Android and iOS READMEs.
+
+### Changed
+- **Thinking is off by default (#331).** A reasoning model spends most of a turn thinking before it
+  answers: on a Mac, Qwen3.6-35B-A3B used all 1024 tokens of the default budget on a short question
+  and never answered, which at 12-17 tok/s is a minute or more of waiting, and several on a phone.
+  `RunConfig::think` now defaults to off, so the CLI, the server, the web UI and both apps start
+  with it off; a saved setting still wins. It stays one switch away: `--think` on the CLI (beside
+  `--no-think`), the Thinking setting, and per request through `think`,
+  `chat_template_kwargs.enable_thinking` or `reasoning_effort` (any level but `"none"` now turns
+  it on; before, only `"none"` was read). Models with no thinking mode are unaffected.
+- **Route-ahead's int8 gates are chosen by a timing, not by the instruction set (#349).** The
+  prediction behind `--route-ahead` ranks experts with one router-gate GEMV per layer per token,
+  over the gate's float weights or over an int8 mirror of them (a quarter of the bytes, plus a
+  quantization of the activation per call). Which is faster is bytes against arithmetic: the mirror
+  won three times over on the test phone and lost on an x86 host. It was armed by an
+  `#if defined(__aarch64__)`, right on those two machines and a guess on any other. New setting
+  `--gate-mirror auto|on|off` (default `auto`): `--auto` times both kernels on the model's own gate
+  set (every gated layer, so the timing sits in the cache regime the run will, bounded at 512 MiB),
+  the run's own code walked layer by layer, and takes the faster with the timings in the
+  plan's notes; without `--auto` the session runs the same timing at load. The probe runs only when
+  route-ahead is set, so other plans do not pay for it. Measured on a development laptop: 5.7 us
+  int8 against 42.8 us float per layer on a 2048 x 128 gate. G14b now commits on both gate formats;
+  route-ahead stays lossy either way, and nothing it does not touch changes.
+
+### Fixed
+- **A cancelled turn leaves both contexts at the same prefix.** When the draft context of
+  speculative decoding could not drop the cancelled tokens, only it was cleared, so the next turn
+  started the target and the draft at different positions. Both are now cleared together.
+- **`bmoe-server`: no local client can take every worker (#353).** The server answers with a fixed
+  pool of 32 workers and each `GET /api/events` stream holds one for as long as it is open, with no
+  bound on how many: 32 idle streams from any local process and every other request, the UI's own
+  included, queued forever. The event streams are now capped at 8 (the next is a `503` with the new
+  code `streams_full`, which the UI and both apps already retry with back-off), and the pool is
+  sized from what can hold a worker for long (8 streams, the running turn, the 16 that may wait
+  behind it) plus 7 for short requests, still 32 in all. A stream's place is taken before it
+  answers and given back however the response ends, the client leaving before the headers
+  included. Connections that arrive while every worker is busy now wait in a queue of 64, not an
+  unbounded one; past it the next is closed at once. A stream now notices a client that closed
+  its connection within a second instead of at its next 15 s ping, so a reloaded page finds the
+  place it left free; a client that keeps the connection but stops reading is still let go by the
+  ping hitting the write timeout. A client that vanishes without closing (a phone off Wi-Fi) is now
+  bounded by TCP: keep-alive probes after 15 s idle and a 60 s limit on unacknowledged data, each
+  option set where the system's headers define it. They are set on the listening socket, the one
+  place the HTTP library offers: Linux and Android clone them into every connection; macOS was
+  measured not to copy the idle time or the retransmission bound, so there that case is still left
+  to the system's own limit.
+- **`--open` starts the browser without a shell (#353).** It went through `std::system` with the
+  URL quoted into a command line; it now starts `open` (macOS) or `xdg-open` directly with the URL as
+  one argument, through the subprocess header the downloads already use, and drops its output on a
+  thread that also reaps it. Windows already used the shell's own call.
+- **The printed URL is right for an IPv6 bind (#353).** `--host ::` printed `http://:::8765/`;
+  it now prints `http://[::1]:8765/`, and any IPv6 literal is bracketed.
+A non-object JSON body (`[]`, `1`) on `PUT /api/config` or `POST /api/models/download`, the second
+point of #353, is already a `400` with `code: "invalid_request"` since 0.31.0 (#262): checked,
+not changed.
+
+### Security
+- **The model catalog is held to what its fields become (#347).** A catalog file's `name` is joined
+  onto the models directory and its `url` handed to curl, and every front-end took them as written:
+  a row named `../x.gguf` would have been written outside the models directory. An entry whose file
+  name is not a bare file name (no separator, no `.` or `..`, no drive colon), whose URL is not
+  https (plain http only under an http `--hf-endpoint` mirror), or whose digest is malformed is now
+  skipped as `bmoe-server` loads the shipped catalog and the added entries (the reason goes to the
+  start-up log) and refused when added; the Android and iOS apps drop such an entry too, and the
+  Android download worker refuses a name that is not plain.
+- **Downloads are checked against a SHA-256 (#347).** A catalog file may carry `sha256`; the two
+  reference models now do (their Hugging Face LFS object ids), and a model added from a repository
+  gets its own from the listing. The server reads a finished `.part` back and checks it before the
+  rename (the row says so while it reads; a cancel stops it), and the Android worker does the same:
+  a mismatch is an error naming both digests and deletes the `.part`, since resuming it could only
+  reproduce the same bytes. Before, only the byte count was checked, so a swapped or corrupted file
+  became a load failure later. The Android app no longer renames a leftover `.part` it finds under
+  a succeeded download: only the worker, after its checks, makes a file a model.
+- **curl is pinned to https (#347).** Every curl the server runs (downloads and repository reads)
+  now passes `--proto =https --proto-redir =https` for an https URL, so no redirect downgrades it
+  (only a plain-http mirror named with `--hf-endpoint` may use http), and `--` before the URL, so
+  no URL is read as an option. New server checks: the name and URL rules, the digest of known
+  vectors and of a file longer than one read, the LFS oid on an added entry; Android unit tests for
+  the name rule and the digest field, and a BmoeKit test for the name rule. The iOS app does not
+  check the digest yet: it ignores `sha256`.
 
 ## [0.34.1] - 2026-10-23
 

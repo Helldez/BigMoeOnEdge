@@ -31,9 +31,10 @@ namespace bmoe::server {
 // The stable codes an error carries beside its message, for a client to act on (docs/server-api.md).
 // The engine's own failures use run_error_name(); these are the host's refusals before the engine.
 namespace error_code {
-inline constexpr const char * busy = "busy";               // the line of waiting requests is full
-inline constexpr const char * client_gone = "client_gone"; // never sent: the client left the line
-inline constexpr const char * no_model = "no_model";       // nothing is loaded to answer
+inline constexpr const char * busy = "busy";                 // the line of waiting requests is full
+inline constexpr const char * client_gone = "client_gone";   // never sent: the client left the line
+inline constexpr const char * no_model = "no_model";         // nothing is loaded to answer
+inline constexpr const char * streams_full = "streams_full"; // every event stream place is taken
 } // namespace error_code
 
 struct ChatOutcome {
