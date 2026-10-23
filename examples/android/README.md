@@ -93,7 +93,9 @@ needs a storage permission except the last option.
    catalog is the project's one data file, `catalog/models.json`, shipped in the APK and read by
    the server; the app does the transfers itself (a phone has no `curl` for the server to run), in
    a foreground worker that survives the app being killed and resumes an interrupted transfer.
-   Its notification shows the progress as the row does.
+   Its notification shows the progress as the row does. A file whose catalog row names a `sha256`
+   is checked against it before it becomes the model; a mismatch deletes the download and says so.
+   An entry whose file name is not a bare file name is not offered.
 2. **Any other model**: under **Other model**, paste a direct gguf URL (a Hugging Face
    `…/resolve/main/model.gguf` link), or pick a `.gguf` already on the device to import it.
 3. **adb push** (dev flavor only, needs all-files access, which the dev build requests on Refresh):

@@ -39,8 +39,31 @@ uint64_t bytes_still_needed(uint64_t expected, uint64_t on_disk);
 // rather than refused on a guess.
 std::string free_space_refusal(uint64_t needed, uint64_t available);
 
+// Whether a catalog file name is a bare file name: not empty, not "." or "..", no separator, no
+// drive colon, no NUL. The catalog, the added entries and every path built from a name hold to
+// it, so no row, hand-edited or not, names a file outside the models folder.
+bool is_plain_file_name(const std::string & name);
+
+// Whether `text` is a SHA-256 digest as the catalog spells one: 64 lowercase hex digits.
+bool is_sha256_hex(const std::string & text);
+
+// Why a finished file whose digest is `actual` is not the file the catalog names by `expected`, or
+// "" when it is (or the catalog names no digest).
+std::string digest_refusal(const std::string & expected, const std::string & actual);
+
+// The protocols curl may use for `url`, as its --proto and --proto-redir value: "=https" for an
+// https URL, so no redirect downgrades it; "=http,https" for an http one (only a mirror the
+// operator named with --hf-endpoint is plain http); "" for anything else, which is not fetched.
+std::string curl_protocols(const std::string & url);
+
+// Why a catalog file cannot be offered, or "" when it can: its name becomes a path in the models
+// folder (is_plain_file_name), its URL a curl argument (curl_protocols), and its digest, when it
+// names one, must be one (is_sha256_hex). Checked as the catalog and the added entries load and
+// as an entry is added, so nothing downstream sees a file that fails it.
+std::string catalog_file_refusal(const std::string & name, const std::string & url, const std::string & sha256);
+
 // The `.part` a download of catalog file `name` writes into `models_dir`. False when the name is
-// not a plain file name (a separator, ".", ".."), so no catalog row, hand-edited or not, makes the
+// not a plain file name (is_plain_file_name), so no catalog row, hand-edited or not, makes the
 // server write or delete anywhere but directly inside the models folder.
 bool partial_file_path(const std::string & models_dir, const std::string & name, std::string & out);
 

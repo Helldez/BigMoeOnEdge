@@ -26,6 +26,7 @@
 #include "openai_chat.h"
 #include "plan_view.h"
 #include "settings_store.h"
+#include "sha256.h"
 #include "turn_queue.h"
 
 #include "bmoe/planner.h"
@@ -752,7 +753,8 @@ static void hf_tests() {
 
     const json tree = json::parse(R"([
       {"type":"file","path":"README.md","size":467},
-      {"type":"file","path":"Qwen3.6-35B-A3B-Q4_K_M.gguf","size":20419565568},
+      {"type":"file","path":"Qwen3.6-35B-A3B-Q4_K_M.gguf","size":20419565568,
+       "lfs":{"oid":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","size":20419565568}},
       {"type":"file","path":"mmproj-Qwen3.6-35B-A3B-Q8_0.gguf","size":614194304},
       {"type":"file","path":"mtp-Qwen3.6-35B-A3B-Q8_0.gguf","size":4194304},
       {"type":"file","path":"Q2_K/big-Q2_K-00002-of-00003.gguf","size":200},
@@ -804,8 +806,10 @@ static void hf_tests() {
               e.files[0].name == "Qwen3.6-35B-A3B-Q4_K_M.gguf" &&
               e.files[0].url == "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/"
                                 "Qwen3.6-35B-A3B-Q4_K_M.gguf?download=true" &&
-              e.files[0].bytes == 20419565568ull && is_hf_catalog_id(e.id),
-          "hf: the catalog entry a model becomes");
+              e.files[0].bytes == 20419565568ull && is_hf_catalog_id(e.id) &&
+              e.files[0].sha256 == "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+          "hf: the catalog entry a model becomes, with the LFS oid as the file's digest");
+    check(models[0].files[0].sha256.empty(), "hf: a file the listing gives no oid for has no digest");
     const CatalogEntry split = hf_catalog_entry("https://mirror.example", g, models[0]);
     check(split.files.size() == 2 && split.files[1].name == "big-Q2_K-00002-of-00003.gguf" &&
               split.files[1].url == "https://mirror.example/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/Q2_K/"
@@ -1130,6 +1134,44 @@ static void download_tests() {
         check(!partial_file_path(models.u8string(), bad, out),
               std::string("downloads: '") + bad + "' names no partial");
 
+    check(is_plain_file_name("m-00001-of-00003.gguf") && !is_plain_file_name("../m.gguf") &&
+              !is_plain_file_name("sub/m.gguf") && !is_plain_file_name("..") && !is_plain_file_name("") &&
+              !is_plain_file_name(std::string("m\0.gguf", 7)),
+          "downloads: a catalog file name is a bare name or nothing");
+    const std::string url = "https://huggingface.co/a/b/resolve/main/m.gguf";
+    check(catalog_file_refusal("m.gguf", url, "").empty() &&
+              catalog_file_refusal("m.gguf", url, std::string(64, 'a')).empty(),
+          "downloads: a plain name with an https URL is offered, with or without a digest");
+    check(!catalog_file_refusal("../m.gguf", url, "").empty() && !catalog_file_refusal("C:m.gguf", url, "").empty(),
+          "downloads: a catalog row whose name leaves the models folder is refused at load");
+    check(!catalog_file_refusal("m.gguf", "-o/etc/passwd", "").empty() &&
+              !catalog_file_refusal("m.gguf", "file:///etc/passwd", "").empty(),
+          "downloads: a URL that is not http(s), or reads as an option, is refused");
+    check(!catalog_file_refusal("m.gguf", url, "abc").empty() &&
+              !catalog_file_refusal("m.gguf", url, std::string(64, 'G')).empty(),
+          "downloads: a digest that is not 64 hex digits is refused");
+    check(curl_protocols(url) == "=https" && curl_protocols("http://mirror.lan/x") == "=http,https" &&
+              curl_protocols("ftp://x").empty(),
+          "downloads: https stays https on every redirect; only a plain-http mirror may use http");
+
+    check(Sha256().hex_digest() == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "sha256: the empty input");
+    Sha256 abc;
+    abc.update("abc", 3);
+    check(abc.hex_digest() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256: \"abc\"");
+    Sha256 two_blocks;
+    const std::string nist = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    two_blocks.update(nist.data(), 10);
+    two_blocks.update(nist.data() + 10, nist.size() - 10);
+    check(two_blocks.hex_digest() == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+          "sha256: a two-block input fed in pieces");
+    Sha256 million;
+    const std::string as(1000, 'a');
+    for (int i = 0; i < 1000; ++i)
+        million.update(as.data(), as.size());
+    check(million.hex_digest() == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+          "sha256: a million 'a's");
+
     write(models / "a.gguf.part", "12345");
     write(models / "b.gguf.part", "678");
     write(models / "a.gguf", "whole");
@@ -1153,6 +1195,31 @@ static void download_tests() {
         check(delete_partial_files(models.u8string(), {"link.gguf"}, freed, err) && fs::exists(dir / "outside.part") &&
                   !fs::exists(fs::symlink_status(models / "link.gguf.part")),
               "downloads: a link named like a partial is removed as the link, its target kept");
+    write(models / "abc.gguf.part", "abc");
+    std::string hex;
+    check(sha256_file((models / "abc.gguf.part").u8string(), hex, err) &&
+              hex == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" &&
+              digest_refusal(hex, hex).empty() && digest_refusal("", hex).empty(),
+          "downloads: a finished file whose digest is the catalog's is accepted");
+    check(!digest_refusal(std::string(64, '0'), hex).empty(), "downloads: and one whose digest differs is not");
+    {
+        // Past the reader's chunk, so its seams are crossed: the file's digest is the one of its bytes.
+        std::string big(9u << 20, '\0');
+        for (size_t i = 0; i < big.size(); ++i)
+            big[i] = (char) (i * 2654435761u >> 13);
+        std::FILE * f = std::fopen((models / "big.part").u8string().c_str(), "wb");
+        if (f) {
+            std::fwrite(big.data(), 1, big.size(), f);
+            std::fclose(f);
+        }
+        Sha256 want;
+        want.update(big.data(), 7);
+        want.update(big.data() + 7, big.size() - 7);
+        check(sha256_file((models / "big.part").u8string(), hex, err) && hex == want.hex_digest(),
+              "downloads: a file longer than one read hashes as its bytes do");
+    }
+    check(!sha256_file((models / "absent").u8string(), hex, err) && !err.empty(),
+          "downloads: a file that cannot be read has no digest");
     check(gb_label(47'000'000'000ull) == "47.0 GB", "downloads: sizes are decimal GB, as the Android app writes them");
     fs::remove_all(dir, ec);
 }

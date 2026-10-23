@@ -125,6 +125,7 @@ object ModelDownloader {
                         DownloadWorker.KEY_URL to s.url,
                         DownloadWorker.KEY_NAME to s.name,
                         DownloadWorker.KEY_EXPECTED to s.bytes,
+                        DownloadWorker.KEY_SHA256 to s.sha256,
                     )
                 )
                 .addTag(DownloadWorker.TAG)
@@ -228,17 +229,14 @@ object ModelDownloader {
     }
 
     /**
-     * Finish a successful download by renaming `<name>.gguf.part` to `<name>.gguf`. The worker
-     * already does this on success, so this is an idempotent safety net: if the final file exists
-     * it is returned as-is; otherwise a leftover .part is renamed.
+     * The landed file of a successful download, or null. The worker renames `<name>.gguf.part` to
+     * `<name>.gguf` itself, after the size and digest checks, and succeeds only once it has; a
+     * `.part` found here is never renamed, since it is unchecked (or a later download's, still in
+     * flight, under a succeeded row WorkManager replays).
      */
     fun finalizeDownload(ctx: Context, name: String): File? {
-        val dir = ModelManager.internalModelsDir(ctx)
-        val finalFile = File(dir, name)
-        if (finalFile.isFile) return finalFile
-        val part = File(dir, name + DownloadWorker.PART_SUFFIX)
-        if (!part.isFile) return null
-        return if (part.renameTo(finalFile)) finalFile else null
+        val finalFile = File(ModelManager.internalModelsDir(ctx), name)
+        return if (finalFile.isFile) finalFile else null
     }
 
     /**

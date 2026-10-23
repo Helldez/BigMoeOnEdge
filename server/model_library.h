@@ -25,6 +25,10 @@ struct CatalogFile {
     std::string name;
     std::string url;
     uint64_t bytes = 0;
+    // 64 lowercase hex digits, or "" when the catalog names none. A download is checked against it
+    // before its `.part` becomes the file, so a swapped or corrupted transfer is an error there,
+    // not a load failure later.
+    std::string sha256;
 };
 
 struct CatalogEntry {
@@ -101,6 +105,10 @@ private:
     };
 
     void run_download(const CatalogEntry & e, Job & job);
+    // Check a complete `.part` against the digest its catalog file names, and make it the file.
+    // False once the failure (or a cancel) is published; a part whose digest is wrong is deleted,
+    // since resuming it can only reproduce the same bytes.
+    bool finish_file(const CatalogEntry & e, const CatalogFile & f, Job & job, uint64_t done, uint64_t total);
     void publish(const std::string & id,
                  const std::string & file,
                  uint64_t received,

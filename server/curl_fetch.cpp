@@ -1,5 +1,7 @@
 #include "http_fetch.h"
 
+#include "download_policy.h"
+
 // See model_library.cpp for why the subprocess header's chdir support is off.
 #define SUBPROCESS_HAVE_CWD 0
 #include "sheredom/subprocess.h"
@@ -27,6 +29,12 @@ public:
              const std::string & token,
              std::string & body,
              std::string & error) override {
+        // Only http(s), on every redirect too: a mirror's https cannot be downgraded on the way.
+        const std::string protos = curl_protocols(url);
+        if (protos.empty()) {
+            error = "not an http(s) URL";
+            return false;
+        }
         std::error_code ec;
         fs::create_directories(fs::u8path(scratch_), ec);
         const unsigned n = seq_.fetch_add(1);
@@ -45,7 +53,9 @@ public:
         const std::string range = std::to_string(from) + "-" + std::to_string(to);
         const std::string out_s = out.string();
         const std::string hdr_arg = "@" + hdr.string();
-        std::vector<const char *> cmd = {"curl", "-sS", "-L", "--fail", "--max-time", "180", "-o", out_s.c_str()};
+        std::vector<const char *> cmd = {"curl",          "-sS",          "-L",      "--fail",
+                                         "--max-time",    "180",          "--proto", protos.c_str(),
+                                         "--proto-redir", protos.c_str(), "-o",      out_s.c_str()};
         if (to > 0) {
             cmd.push_back("-r");
             cmd.push_back(range.c_str());
@@ -54,6 +64,7 @@ public:
             cmd.push_back("-H");
             cmd.push_back(hdr_arg.c_str());
         }
+        cmd.push_back("--"); // the URL is never read as an option
         cmd.push_back(url.c_str());
         cmd.push_back(nullptr);
         subprocess_s proc;

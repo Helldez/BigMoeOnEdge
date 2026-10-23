@@ -76,6 +76,13 @@ public struct CatalogFile: Equatable, Sendable, Codable, Hashable {
         self.bytes = bytes
         self.url = url
     }
+
+    /// A catalog file name is a bare name: it is joined onto the models directory, so a separator,
+    /// "." or ".." would name a file outside it. The server skips such a row as it loads the
+    /// catalog; the app holds to the same rule rather than trust that it did.
+    public static func isPlainName(_ name: String) -> Bool {
+        !name.isEmpty && name != "." && name != ".." && !name.contains { "/\\:\0".contains($0) }
+    }
 }
 
 /// One model the catalog offers, as `GET /api/models` lists it. The catalog is the server's data
@@ -102,7 +109,9 @@ public struct CatalogEntry: Equatable, Sendable, Identifiable {
         let files = (j["files"].array ?? []).map {
             CatalogFile(name: $0["name"].string(or: ""), bytes: $0["bytes"].int64(or: 0), url: $0["url"].string(or: ""))
         }
-        guard let id = j["id"].string, !files.isEmpty else { return nil }
+        guard let id = j["id"].string, !files.isEmpty, files.allSatisfy({ CatalogFile.isPlainName($0.name) }) else {
+            return nil
+        }
         self.id = id
         self.files = files
         title = j["title"].string(or: id)
