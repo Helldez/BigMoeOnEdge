@@ -135,6 +135,11 @@ export const api = {
   hfAdd: (repo: string, name: string, token?: string) =>
     request<HfAdded>('POST', 'api/hf/add', token ? { repo, name, token } : { repo, name }, isHfAdded),
   removeAdded: (id: string) => request<unknown>('DELETE', `api/hf/entry/${encodeURIComponent(id)}`),
+  /** A direct https link to a gguf, as a catalog entry; the download is then `download(id)`. */
+  addUrl: (url: string) => request<HfAdded>('POST', 'api/models/url', { url }, isHfAdded),
+  /** Delete a model from the models folder, named as the listing names it (`folder/name`), never a path. */
+  deleteModel: (name: string) =>
+    request<unknown>('DELETE', `api/models/local/${name.split('/').map(encodeURIComponent).join('/')}`),
   /** The plan in force, or the last one held (`cached`, never a measurement); `measure` runs the
    *  planner's probes again instead. */
   plan: (mode: 'cached' | 'measure' = 'cached') =>

@@ -135,6 +135,22 @@ button.primary:active:not(:disabled) {
 button.danger {
   color: var(--err);
 }
+/* A link that does what a button does (go to a screen), drawn as one. */
+a.button {
+  display: inline-block;
+  border: var(--edge) solid var(--border);
+  background: var(--surface-2);
+  padding: 0.35rem 0.8rem;
+  font-size: 0.95rem;
+  color: inherit;
+  text-decoration: none;
+}
+a.button.primary {
+  background: var(--accent);
+  border-color: var(--shadow);
+  color: var(--accent-text);
+  box-shadow: 4px 4px 0 var(--shadow);
+}
 button.link {
   border: none;
   background: none;
@@ -147,6 +163,7 @@ button.link {
 }
 
 input[type='text'],
+input[type='url'],
 input[type='number'],
 input[type='password'],
 select,

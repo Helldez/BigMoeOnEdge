@@ -255,7 +255,8 @@ export interface CatalogEntry {
   /** Not downloading, and a partial file is on disk: downloading resumes it. */
   partial?: boolean;
   note: string;
-  /** Added at run time from a repository (`POST /api/hf/add`); it can be removed. */
+  /** Added at run time, from a repository (`POST /api/hf/add`) or a link (`POST /api/models/url`);
+   *  it can be removed. */
   added?: boolean;
 }
 
@@ -326,6 +327,10 @@ export interface HfFacts {
   verdict: {
     downloadable: boolean;
     mode: string;
+    /** The verdict as a code to colour by ("fits", "no_streaming", "will_not_fit", "no_disk",
+     *  "not_a_model", "unknown") and the server's line for it; absent from an older server. */
+    fit?: string;
+    headline?: string;
     disk: string;
     memory: string;
   };
