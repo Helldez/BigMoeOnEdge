@@ -23,6 +23,8 @@ add_library(bmoe_server_core STATIC
     model_files.cpp
     download_policy.cpp
     hf_repo.cpp
+    url_entry.cpp
+    model_delete.cpp
     settings_store.cpp
     plan_view.cpp
 )

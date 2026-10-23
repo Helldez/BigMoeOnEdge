@@ -90,6 +90,11 @@ public:
     // stopped download's bytes back. Only names the entry lists, only in the models folder (never a
     // scan directory), and never while it downloads. status 0 when done, with the bytes freed.
     DownloadRefusal delete_partial(const std::string & id, uint64_t & freed);
+    // Delete a model from the models folder, named as the listing names it (`folder/name` or
+    // `name`; model_delete.h): every file of a split set, never a scan directory's, never the model
+    // `loaded` (the session's file, "" when none), never a file a running download is writing.
+    // status 0 when done, with the bytes freed.
+    DownloadRefusal delete_model(const std::string & rel, const std::string & loaded, uint64_t & freed);
 
 private:
     struct Job {

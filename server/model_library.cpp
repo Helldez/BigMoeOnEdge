@@ -1,6 +1,7 @@
 #include "model_library.h"
 
 #include "download_policy.h"
+#include "model_delete.h"
 #include "model_files.h"
 
 #include "bmoe/probe.h"
@@ -384,6 +385,32 @@ ModelLibrary::DownloadRefusal ModelLibrary::delete_partial(const std::string & i
         names.push_back(f.name);
     std::string err;
     if (!delete_partial_files(dir_, names, freed, err)) return {500, err};
+    return {};
+}
+
+ModelLibrary::DownloadRefusal
+ModelLibrary::delete_model(const std::string & rel, const std::string & loaded, uint64_t & freed) {
+    freed = 0;
+    ModelDeletion d;
+    bool not_found = false;
+    std::string err;
+    if (!find_model_to_delete(dir_, rel, d, not_found, err)) return {not_found ? 404 : 400, err};
+    if (deletion_touches(d, loaded)) return {409, rel + " is loaded: unload it first"};
+    std::lock_guard<std::mutex> lk(m_);
+    // A download writes its files at the top of the models folder, by the names its entry lists.
+    if (d.folder.empty())
+        for (const auto & [id, job] : jobs_) {
+            if (job->finished) continue;
+            const CatalogEntry * e = find(id);
+            if (!e) continue;
+            for (const CatalogFile & f : e->files)
+                for (const std::string & n : d.names)
+                    if (f.name == n) return {409, n + " belongs to a download that is running: cancel it first"};
+        }
+    const bool ok = delete_model_files(dir_, d, freed, err);
+    for (const std::string & p : d.paths)
+        facts_cache_.erase(p);
+    if (!ok) return {500, err};
     return {};
 }
 

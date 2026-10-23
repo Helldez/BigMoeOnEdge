@@ -81,10 +81,18 @@ other software, or other people, on that machine or on a network it was told to 
   client can name an entry but never a file. An entry added from a Hugging Face repository (`POST /api/hf/add`) is built by
   the server from a repository id and file names it validated (letters, digits, `.`, `_`, `-`,
   `+`, folders, no `..`), on the one endpoint it was started with (`--hf-endpoint`, the site or a
-  mirror); the server never fetches a URL a client wrote. A token sent with those requests goes to
+  mirror); a repository request never makes the server fetch a URL a client wrote. A token sent with those requests goes to
   that endpoint as a bearer token through a file only this process reads, never on a command line
-  or in a log, and is kept nowhere.
-- Over the API a client may name one file, the model, and it is only read. Parameters that make
+  or in a log, and is kept nowhere. The one URL a client writes is a direct link to a gguf
+  (`POST /api/models/url`), and only a local client may send one: it must be `https`, carry no
+  user name or password, and end in a file name of letters, digits, `.`, `_`, `-`, `+`; curl is
+  held to https on every redirect, and the link becomes a catalog entry downloaded like the others.
+- Deleting a model (`DELETE /api/models/local/<name>`) is for a local client only, and takes the
+  name the listing gives (`<folder>/<file>` or `<file>`), never a path: the server deletes the files
+  its own scan of the models directory groups under that name, a split set whole. Never a file in a
+  scan directory, never the model loaded or loading (`409`), never a file a running download is
+  writing (`409`); a link is removed as the link, its target kept.
+- Over the API a client may name one file to open, the model, and it is only read (what it may delete is a model as the listing names it, above). Parameters that make
   the engine write a file are set at launch and are refused over `PUT /api/config`.
 - A client on the network (a connection whose peer address is not loopback) may name a model only
   in a folder the server lists models from: the models directory and each `--scan-dir`. The path is
@@ -434,6 +442,33 @@ Deletes the partial files a stopped download of entry `<id>` left: `{"ok": true,
 directory; complete files stay. `404` for an unknown entry, `409` while it downloads (cancel it
 first).
 
+### `DELETE /api/models/local/<name>`
+
+Deletes a model from the models directory, named as `GET /api/models` lists it: `<folder>/<name>`
+for one in a folder directly inside the directory, `<name>` otherwise, with `name` the first file
+(shard 1 of a split set). Every file the scan groups under it goes, and the folder with them once it
+is empty: `{"ok": true, "freed": <bytes>}`. A symbolic link is removed as the link. `400` for a name
+that is not one (a separator, `..`, a drive), `404` when the models directory has no such model (a
+scan directory's models are loaded in place and never deleted here), `409` with `code: "in_use"`
+while it is loaded or loading (unload it first) or while a running download writes one of its
+files, `403` with `code: "local_only"` from a client whose connection is not loopback.
+
+### `POST /api/models/url`
+
+Body `{"url": "https://.../<name>.gguf"}`. A direct link to a gguf becomes a catalog entry, as a
+repository's model does with `POST /api/hf/add`, and is then downloaded by id with resume, cancel
+and progress like every other: id `url:<name>`, titled by the file name, listed with
+`"added": true`, kept between runs, forgotten with `DELETE /api/hf/entry/<id>`. The file name is
+the link's last path segment (percent-escapes decoded), which must be a `.gguf` name made of
+letters, digits, `.`, `_`, `-`, `+`, not starting with `.` or `-`; the query is kept, the fragment
+dropped. A link to any shard of a split set (`<stem>-00002-of-00003.gguf`) names the whole set: the
+other shards are the same link with the name changed. Each file's size comes from a `HEAD` request
+that follows redirects (on https only); a host that answers no size leaves it unknown (`0`) and the
+download runs without a total. `201` with `{"id", "title", "quant", "bytes"}`; `400` with
+`code: "invalid_url"` for a link that is not one of these, `502` when the host answers the `HEAD`
+with an HTTP error, `409` for an id the shipped catalog has, `403` with `code: "local_only"` from a
+client whose connection is not loopback. Adding the same file again replaces the entry.
+
 ### `POST /api/hf/search`
 
 Body `{"query": "<a model's name>", "token": "<optional>"}`. The repositories on the site with gguf
@@ -482,7 +517,8 @@ megabytes of each shard) and parsed by the planner's own model probe, set agains
            "has_mtp": false, "streamable": true, "refusal": ""},
  "machine": {"residency_budget": 5736517632, "budget_if_loaded": 5736517632, "loaded_model": "", "loaded_held": 0,
              "memory_total": 15919931392, "disk_free": 38495465472, "present_bytes": 0},
- "verdict": {"downloadable": true, "mode": "streams",
+ "verdict": {"downloadable": true, "mode": "streams", "fit": "fits",
+             "headline": "Fits here: the experts stream from flash",
              "disk": "needs 13940 MiB of disk; the models folder has 36712 MiB free",
              "memory": "the experts stream from flash and 1674 MiB stays resident, plus a cache of at least one token cycle (765 MiB); that fits in the 5470 MiB this process may hold, and the plan sizes the cache from the rest"}}
 ```
@@ -496,6 +532,14 @@ that is not a model (a projector, a draft head, or no language model at all) is 
 with. Otherwise `verdict.mode` is `streams`, `plain mmap` or `not readable`, and `downloadable` is
 false only when the disk cannot take what is still to download (`present_bytes` is what is
 already there, complete).
+
+`verdict.fit` is the answer as a code a UI colours by, and `verdict.headline` the server's line for
+it, shown as the verdict's headline: `fits` (it streams and its resident floor fits what this process
+may hold, or the memory could not be read, which the headline says), `no_streaming` (a dense model,
+or a MoE this build does not stream: it runs whole from the file), `will_not_fit` (its resident
+floor is more than this process may hold), `no_disk` (the disk cannot take it), `not_a_model`,
+`unknown` (the header did not parse). A UI keeps no threshold of its own; it shows the line and
+colours by the code, and a code it does not know gets no colour.
 
 The memory verdict answers "what happens if I load this", and a load unloads the model loaded now
 first. `residency_budget` is what this process may hold as measured now, with that model still
@@ -520,7 +564,8 @@ has, which an addition never replaces.
 
 ### `DELETE /api/hf/entry/<id>`
 
-Forgets an added entry. Files on disk stay. `404` for an id that is not an added entry.
+Forgets an added entry, from a repository (`hf:`) or a link (`url:`). Files on disk stay. `404` for
+an id that is not an added entry.
 
 ## Plan
 

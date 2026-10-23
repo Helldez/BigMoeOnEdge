@@ -1,5 +1,7 @@
 #include "http_fetch.h"
 
+#include "url_entry.h"
+
 // See model_library.cpp for why the subprocess header's chdir support is off.
 #define SUBPROCESS_HAVE_CWD 0
 #include "sheredom/subprocess.h"
@@ -87,6 +89,49 @@ public:
         fs::remove(out, ec);
         fs::remove(hdr, ec);
         return ok;
+    }
+
+    bool size(const std::string & url, uint64_t & bytes, std::string & error) override {
+        bytes = 0;
+        // Only ever asked for a link a person pasted, which is https by then (url_entry.h); the
+        // redirects stay on https too.
+        if (url.compare(0, 8, "https://") != 0) {
+            error = "not an https URL";
+            return false;
+        }
+        std::error_code ec;
+        fs::create_directories(fs::u8path(scratch_), ec);
+        const fs::path out = fs::u8path(scratch_) / ("head-" + std::to_string(seq_.fetch_add(1)) + ".txt");
+        const std::string out_s = out.string();
+        // No --fail: every response's headers are written, the error's too, and head_answer reads
+        // the status from them (curl's exit code over HTTP/2 does not say it).
+        const char * cmd[] = {"curl",   "-sS",           "-I",     "-L", "--max-time",  "60", "--proto",
+                              "=https", "--proto-redir", "=https", "-o", out_s.c_str(), "--", url.c_str(),
+                              nullptr};
+        subprocess_s proc;
+        const int opts = subprocess_option_search_user_path | subprocess_option_inherit_environment |
+                         subprocess_option_no_window | subprocess_option_combined_stdout_stderr;
+        if (subprocess_create(cmd, opts, &proc) != 0) {
+            error = "could not start curl: is it installed and on PATH?";
+            return false;
+        }
+        int rc = 0;
+        subprocess_join(&proc, &rc);
+        subprocess_destroy(&proc);
+        std::ifstream in(out, std::ios::binary);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        in.close();
+        fs::remove(out, ec);
+        const HeadAnswer a = head_answer(ss.str());
+        if (a.status >= 400) {
+            error = "the link answered HTTP " + std::to_string(a.status);
+            return false;
+        }
+        // No answer at all (a host that refuses HEAD, a network that drops it) leaves the size
+        // unknown rather than the link refused: the download then says whether the file is there.
+        if (rc == 0 && a.status >= 200 && a.status < 300) bytes = a.length;
+        return true;
     }
 
 private:

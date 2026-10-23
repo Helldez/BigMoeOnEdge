@@ -165,6 +165,9 @@ bool inspect_remote_model(HttpFetch & net,
                          {"disk_free", disk_free},
                          {"present_bytes", present}}},
         {"verdict", json{{"downloadable", v.downloadable}, {"mode", v.mode}, {"disk", v.disk}, {"memory", v.memory}}}};
+    // The verdict in one code and one line (hf_repo.h: FitVerdict), for a UI to show as they are.
+    out["verdict"]["fit"] = v.fit;
+    out["verdict"]["headline"] = v.headline;
     return true;
 }
 
