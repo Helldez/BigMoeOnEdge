@@ -313,6 +313,7 @@ static void settings_tests() {
 
     s.set_launch_values({{"threads", "8"}});
     check(s.config().n_threads == 8, "launch flags override the plan");
+    check(s.launch_keys() == std::vector<std::string>{"threads"}, "launch keys: the launch layer's");
 
     json rejected = s.apply(json{{"threads", 12}, {"top-k", "abc"}, {"nope", 1}}, {});
     check(s.config().n_threads == 12, "user values override launch flags");
@@ -320,6 +321,7 @@ static void settings_tests() {
           "unparseable values and unknown keys are rejected, the rest applied");
     const auto keys = s.operator_keys();
     check(keys.size() == 1 && keys[0] == "threads", "operator keys: launch and user");
+    check(s.launch_keys().empty(), "launch keys: a value the person sets is theirs, no longer the launch's");
 
     s.apply(json::object(), {"threads"});
     check(s.config().n_threads == 6, "reset removes the key from every operator layer: the plan shows through");

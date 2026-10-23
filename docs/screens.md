@@ -154,8 +154,9 @@ the same thing and a stage or role added later reaches them all unchanged.
   open, the field focused). The two folded groups say in a line what they hold.
 - **Measuring.** While the probes run (Measure, or an auto load), the stages from `plan_progress`:
   done, running, how many to go. Never a blind wait.
-- **Actions.** Measure again (the probes run again: storage reads, a matmul on every device; on a
-  phone it takes a while and never starts on its own), Apply (the plan's values go to the settings
+- **Actions.** Measure again, also beside an error so a failed plan can be retried (the probes
+  run again: storage reads, a matmul on every device; on a phone it takes a while and never starts
+  on its own), Apply (the plan's values go to the settings
   without becoming the person's), the command line, and Copy diagnostic: the command and the
   planner's whole account (`explain`) on the clipboard, for a bug report. The account is not shown:
   every line of it has a worded twin on the screen. A link leads to how the planner decides
@@ -189,7 +190,8 @@ the UI's own.
 - **Where a value came from.** One chip per row: `default`, `from the plan`, or `set by you`. A
   value the person set can be reset; where the plan decided a different value, the row offers
   "Use plan value" instead, which removes the person's value so the plan's applies. "Reset all my
-  values" removes every one (`user_keys`) after a confirmation. A row whose value changes the reply
+  values" removes them after a confirmation: `user_keys` less the server's launch flags
+  (`launch_keys`) and less a read-only group's rows (the model a load chose), counted as such. A row whose value changes the reply
   is marked as such, a per-request row says "per message", and "needs reload" marks only a row
   whose value differs from the loaded session's (`reload_keys`); any such change raises a banner
   with Reload.

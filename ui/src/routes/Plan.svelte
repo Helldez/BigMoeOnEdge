@@ -101,7 +101,10 @@
 </div>
 
 {#if error}
-  <p class="banner error" role="alert">{error}</p>
+  <div class="banner error" role="alert">
+    <span>{error}</span>
+    <button type="button" onclick={() => refresh(true)} disabled={measuring}>{measuring ? 'Measuring...' : 'Measure again'}</button>
+  </div>
 {/if}
 
 {#if showProgress}
@@ -129,6 +132,9 @@
 
   {#if plan.error}
     <p class="muted">{plan.error}</p>
+    <div class="apply">
+      <button type="button" onclick={() => refresh(true)} disabled={measuring}>{measuring ? 'Measuring...' : 'Measure again'}</button>
+    </div>
   {:else if plan.none}
     <section class="card summary">
       <p class="sentence">Not measured yet.</p>

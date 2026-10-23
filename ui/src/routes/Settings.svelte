@@ -4,7 +4,7 @@
   import { api } from '../lib/api';
   import { commandLine } from '../lib/format';
   import { decisionsByKnob, planDecisions } from '../lib/plan';
-  import { ALL_LEVELS, isDefault, levelCounts, levelOf, levelRank, settingsCards } from '../lib/schema';
+  import { ALL_LEVELS, isDefault, levelCounts, levelOf, levelRank, resettableKeys, settingsCards } from '../lib/schema';
   import { router } from '../stores/router.svelte';
   import { server } from '../stores/server.svelte';
   import { settings } from '../stores/settings.svelte';
@@ -31,6 +31,7 @@
   let config = $derived(server.config);
   let params = $derived(server.params ?? []);
   let userKeys = $derived(new Set(config?.user_keys ?? []));
+  let resettable = $derived(resettableKeys(config?.user_keys ?? [], config?.launch_keys ?? [], params));
   let reloadKeys = $derived(new Set(config?.reload_keys ?? []));
   let decisions = $derived(decisionsByKnob(planDecisions(config?.plan)));
   let command = $derived(config ? commandLine(config.args) : '');
@@ -113,7 +114,7 @@
   async function resetAll() {
     confirmReset = false;
     await settings.flush();
-    await settings.reset(...(config?.user_keys ?? []));
+    await settings.reset(...resettable);
   }
 
   const levelName = (l: string) => l.charAt(0).toUpperCase() + l.slice(1);
@@ -122,9 +123,9 @@
 <div class="head">
   <h1>Settings</h1>
   <span class="muted saving" aria-live="polite">{settings.saving ? 'Saving...' : ''}</span>
-  {#if userKeys.size > 0}
+  {#if resettable.length > 0}
     {#if confirmReset}
-      <span class="muted">Remove your {userKeys.size} {userKeys.size === 1 ? 'value' : 'values'}?</span>
+      <span class="muted">Remove your {resettable.length} {resettable.length === 1 ? 'value' : 'values'}?</span>
       <button type="button" class="primary" onclick={resetAll}>Reset</button>
       <button type="button" onclick={() => (confirmReset = false)}>Keep</button>
     {:else}

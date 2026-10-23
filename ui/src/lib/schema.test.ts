@@ -5,6 +5,7 @@ import {
   isDefault,
   levelCounts,
   levelOf,
+  resettableKeys,
   sameValue,
   settingsCards,
   specialLabel,
@@ -112,6 +113,19 @@ describe('levels', () => {
     expect(levelCounts(rows).get('basic')).toBe(2);
     expect(levelOf(rows, 'd')).toBe('experimental');
     expect(levelOf(rows, 'nope')).toBeUndefined();
+  });
+});
+
+describe('resettableKeys', () => {
+  it('leaves launch keys and read-only rows, and keeps the rest of what the person set', () => {
+    const table = [
+      spec('file', 'picked', 'basic', { group_read_only: true }),
+      spec('threads', 'g', 'basic'),
+      spec('temp', 'g', 'basic'),
+    ];
+    expect(resettableKeys(['file', 'threads', 'temp'], ['threads'], table)).toEqual(['temp']);
+    expect(resettableKeys(['file'], [], table)).toEqual([]);
+    expect(resettableKeys(['temp', 'unknown'], [], table)).toEqual(['temp', 'unknown']);
   });
 });
 

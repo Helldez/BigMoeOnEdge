@@ -48,6 +48,9 @@ public:
     RunConfig planning_config() const;
     const RunConfig & defaults() const { return defaults_; }
     std::vector<std::string> operator_keys() const; // launch + user: what a plan must not touch
+    // The keys the server was launched with. A client's "reset everything I set" leaves them: they
+    // are the operator's choice for this run, not a value saved from a form.
+    std::vector<std::string> launch_keys() const;
     json plan_decisions() const;
 
     // Whether every load plans first. A server setting, not an engine parameter, so it lives beside

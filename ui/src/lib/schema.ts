@@ -107,6 +107,21 @@ export function levelCounts(params: readonly ParamSpec[]): Map<string, number> {
   return out;
 }
 
+/**
+ * What "reset all my values" removes: the person's own values, never a key the server was launched
+ * with (the operator's choice for this run) and never a row of a read-only group, which a client
+ * sets with a control of its own (the model a load chose) and the form could not set back.
+ */
+export function resettableKeys(
+  userKeys: readonly string[],
+  launchKeys: readonly string[],
+  params: readonly ParamSpec[],
+): string[] {
+  const launch = new Set(launchKeys);
+  const readOnly = new Set(params.filter((p) => p.group_read_only).map((p) => p.key));
+  return userKeys.filter((k) => !launch.has(k) && !readOnly.has(k));
+}
+
 /** Where a value came from, in the one chip a row carries. */
 export type ValueSource = 'you' | 'plan' | 'default';
 

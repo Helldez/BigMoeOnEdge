@@ -34,6 +34,8 @@ data class ParamSpec(
     val typical: ClosedFloatingPointRange<Double>? = null,
     /** Values that mean something other than their number, as the value's text to its name (0 to off). */
     val special: List<Pair<String, String>> = emptyList(),
+    /** The group's place in the form (`group_order`); null from a server that does not send it. */
+    val groupOrder: Int? = null,
 ) {
     /** The name of [value] when it is a special one ("off" for 0), or null. */
     fun specialLabel(value: Any?): String? {
@@ -110,10 +112,14 @@ data class ParamSpec(
                 default = if (o.has("default") && !o.isNull("default")) o.get("default") else null,
                 typical = typical,
                 special = special,
+                groupOrder = if (o.has("group_order") && !o.isNull("group_order")) o.optInt("group_order") else null,
             )
         }
 
-        /** Groups in the table's order, each with its rows in the table's order. */
+        /**
+         * Groups in the table's group order (`group_order`, else where a group first appears), each
+         * with its rows in the table's order.
+         */
         fun grouped(specs: List<ParamSpec>): List<Pair<String, List<ParamSpec>>> {
             val order = mutableListOf<String>()
             val by = mutableMapOf<String, MutableList<ParamSpec>>()
@@ -124,7 +130,9 @@ data class ParamSpec(
                 }
                 by.getValue(s.group) += s
             }
-            return order.map { g -> (by.getValue(g).first().groupLabel) to by.getValue(g) }
+            // sortedBy is stable: groups without an order keep where they first appeared.
+            return order.sortedBy { g -> by.getValue(g).first().groupOrder ?: Int.MAX_VALUE }
+                .map { g -> (by.getValue(g).first().groupLabel) to by.getValue(g) }
         }
 
         /** The rows behind the Advanced fold: all but the basic ones, which the groups above already show. */

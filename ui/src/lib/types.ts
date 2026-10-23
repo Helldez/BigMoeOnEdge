@@ -173,6 +173,8 @@ export interface PlanProgress {
 export interface Config {
   values: Record<string, ParamValue>;
   user_keys: string[];
+  /** The keys the server was launched with (also in `user_keys`); absent from an older server. */
+  launch_keys?: string[];
   args: string[];
   valid: boolean;
   error: string;

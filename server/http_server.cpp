@@ -296,6 +296,7 @@ struct App {
         const std::vector<std::string> reload = host.reload_keys(cfg);
         json o = {{"values", config_values(cfg)},
                   {"user_keys", store.operator_keys()},
+                  {"launch_keys", store.launch_keys()},
                   {"args", to_args(cfg)},
                   {"valid", v.ok},
                   {"error", v.error},

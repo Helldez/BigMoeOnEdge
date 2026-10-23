@@ -120,6 +120,14 @@ std::vector<std::string> SettingsStore::operator_keys() const {
     return {keys.begin(), keys.end()};
 }
 
+std::vector<std::string> SettingsStore::launch_keys() const {
+    std::lock_guard<std::mutex> lk(m_);
+    std::vector<std::string> keys;
+    for (const auto & kv : launch_)
+        keys.push_back(kv.first);
+    return keys;
+}
+
 bool SettingsStore::auto_plan(bool fallback) const {
     std::lock_guard<std::mutex> lk(m_);
     return auto_plan_set_ ? auto_plan_ : fallback;
