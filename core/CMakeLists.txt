@@ -1,6 +1,6 @@
 # bmoe_core — the streaming engine.
 #
-# Pure-policy sources (config validation, the architecture registry, tensor naming, the n-gram draft
+# Pure-policy sources (config validation, the expert layout read from tensor shapes, tensor naming, the n-gram draft
 # matcher, the hardware planner, decide()'s policy) build with no native dependency. The streaming
 # adapters compile only when llama.cpp is present, because they include its public headers
 # (llama.h, ggml.h, gguf.h).

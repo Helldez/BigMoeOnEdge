@@ -140,9 +140,9 @@ Plan 界面展示结果：内存的去向、每个设备承担的工作，以及
 
 | | Android | macOS | Windows | Linux | iOS |
 |---|---|---|---|---|---|
-| 引擎与 CLI | arm64 | Apple silicon | x86_64 | x86_64, aarch64 | arm64（内置于应用中） |
+| 引擎与 CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64（内置于应用中） |
 | 应用与服务器 | 原生应用 | Web 应用 | Web 应用 | Web 应用 | 原生应用，从源码构建 |
-| 加速器 | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan | Vulkan | Metal |
+| 加速器 | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64) | Vulkan | Metal |
 | 实机运行 | 12 GB 手机 | 16 GB 笔记本 | 16 GB 笔记本 | CI、社区 | 12 GB iPhone（[#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)） |
 
 详细信息以及各项在何处测得：[docs/platforms.md](docs/platforms.md)。

@@ -61,7 +61,7 @@ struct IoTraceRow {
     int step = 0;
     int layer = -1;
     int32_t expert = -1;
-    int8_t proj = -1;        // projection slot within the layer (recipe order)
+    int8_t proj = -1;        // projection slot within the layer (expert layout order)
     int8_t lane = -1;        // which read lane served it
     uint8_t spec = 0;        // 1 if issued speculatively by prefetch
     uint64_t offset = 0;     // absolute file offset requested

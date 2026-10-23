@@ -102,6 +102,13 @@ target_link_libraries(bmoe_mapping_release_test PRIVATE bmoe_core)
 target_include_directories(bmoe_mapping_release_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
 add_test(NAME mapping_release COMMAND bmoe_mapping_release_test)
 
+# FileReader: a read delivers every byte asked for or fails; a range past the end of the file is
+# an error, buffered and direct (#348). A scratch file, no model.
+add_executable(bmoe_file_reader_test file_reader_test.cpp)
+target_link_libraries(bmoe_file_reader_test PRIVATE bmoe_core)
+target_include_directories(bmoe_file_reader_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
+add_test(NAME file_reader COMMAND bmoe_file_reader_test)
+
 # The llama.cpp log bridge: DEBUG dropped unless asked, CONT following its message, a requested
 # cancel's decode errors demoted while it is in flight. Drives the installed callback; no model.
 add_executable(bmoe_llama_log_test llama_log_test.cpp)

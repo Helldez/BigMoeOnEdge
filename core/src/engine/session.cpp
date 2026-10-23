@@ -897,7 +897,7 @@ bool Session::Impl::load_model(Opening & o) {
     return true;
 }
 
-// The loaded model's own facts, the streaming recipe for its architecture, and its chat template.
+// The loaded model's own facts, the expert layout read from its tensors, and its chat template.
 bool Session::Impl::read_model(Opening & o) {
     const SessionConfig & cfg = o.cfg;
     llama_model * m = model.get();

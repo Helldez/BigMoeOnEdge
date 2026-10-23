@@ -76,7 +76,7 @@ object PreambleFacts {
     val all: List<PreambleFact> = listOf(
         PreambleFact("engine", "Engine build", "the engine version that produced these rows. Runs from different builds are not a comparison"),
         PreambleFact(MODEL, "Model", "the gguf, by file name"),
-        PreambleFact("arch", "Architecture", "the architecture the gguf declares; it selects the streaming recipe"),
+        PreambleFact("arch", "Architecture", "the architecture the gguf declares; which tensors stream is read from their shapes, not from it"),
         PreambleFact("n_ctx", "Context", "the context window the session reserved"),
         PreambleFact("n_expert_used", "Active experts", "experts routed per token, after any override"),
         PreambleFact(STREAMING, "Streamed", "whether experts were streamed from flash; off is the mmap baseline streamed runs are measured against"),

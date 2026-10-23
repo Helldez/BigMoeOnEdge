@@ -268,14 +268,32 @@ final class Engine: ObservableObject {
         await refreshModels()
     }
 
-    /// Copies a file the person picked into the models folder, where the server lists it.
+    /// Copies a file the person picked into the models folder, where the server lists it. The copy
+    /// lands under a hidden name first and replaces a same-named model only once it is whole, so an
+    /// import that fails (no space, the picked file goes away) leaves the model that was there. A
+    /// file picked from the models folder itself is already in place.
     func importModel(from url: URL) async throws {
         let dest = paths.documents.appendingPathComponent(url.lastPathComponent)
+        guard url.standardizedFileURL.resolvingSymlinksInPath() != dest.standardizedFileURL.resolvingSymlinksInPath()
+        else { return }
         try await Task.detached(priority: .userInitiated) {
+            let fm = FileManager.default
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
-            try FileManager.default.copyItem(at: url, to: dest)
+            // Not a .gguf name, and hidden: the server never lists a copy in progress.
+            let partial = dest.deletingLastPathComponent().appendingPathComponent(".\(dest.lastPathComponent).importing")
+            if fm.fileExists(atPath: partial.path) { try fm.removeItem(at: partial) }
+            do {
+                try fm.copyItem(at: url, to: partial)
+                if fm.fileExists(atPath: dest.path) {
+                    _ = try fm.replaceItemAt(dest, withItemAt: partial)
+                } else {
+                    try fm.moveItem(at: partial, to: dest)
+                }
+            } catch {
+                try? fm.removeItem(at: partial)
+                throw error
+            }
         }.value
         await refreshModels()
     }

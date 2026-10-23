@@ -116,13 +116,23 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
     if (nbytes == 0) return 0;
     const pio::fd_t fd = fds_[lane];
 
+    // Every caller asks for bytes a gguf header says the file holds. A range that ends past the end
+    // of the file is a header pointing outside it (a truncated download, a damaged shard): an error,
+    // never a short read the caller would take for weights, nor a window padded with whatever the
+    // bounce held before. Written so off + nbytes cannot overflow.
+    if (fsize_ && (off > fsize_ || nbytes > fsize_ - off)) {
+        log_printf(LogLevel::Error, "read of %llu bytes at %llu runs past the end of %s (%llu bytes)",
+                   (unsigned long long) nbytes, (unsigned long long) off, path_.c_str(), (unsigned long long) fsize_);
+        return -1;
+    }
+
     // Plain reads: no alignment constraint, so the bounce buys nothing. Read straight into the
     // caller's memory. This is the path for any reader whose direct mode imposes no alignment — the
     // fallback after a refused open or a failed open-time verify, and Apple's F_NOCACHE, which is
     // uncached without being an I/O mode. It must not also pay an extra copy of every byte plus a
     // leading partial-block over-read just to share the mechanics O_DIRECT needs.
     if (!aligned_reads_) {
-        const uint64_t end = (fsize_ && off + nbytes > fsize_) ? fsize_ : off + nbytes;
+        const uint64_t end = off + nbytes; // inside the file: checked above
         const auto t0 = clock_t_::now();
         for (uint64_t a = off; a < end;) {
             long long got = pio::pread_at(fd, (char *) dst + (a - off), (size_t) (end - a), a);
@@ -158,6 +168,7 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
     }
     char * b = (char *) bounces_[lane];
     const pio::fd_t fd_buf = fds_buf_[lane];
+    // The aligned window may round past the end of the file; the request itself does not.
     const uint64_t read_end = (fsize_ && a1 > fsize_) ? fsize_ : a1;
     const uint64_t bulk_end = read_end & ~(uint64_t) (align_ - 1);
 

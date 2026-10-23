@@ -7,7 +7,10 @@
 # per instruction-set tier, the best picked at start-up (BMOE_BACKEND_MODULES, the top-level
 # CMakeLists). A module whose driver library the machine lacks is not loaded and the engine runs on
 # the CPU, so the same archive serves a laptop with a GPU and a server without one. Vulkan rides in
-# the Linux and Windows archives; Metal in the macOS one.
+# the Linux and Windows archives; Metal in the macOS one; OpenCL in the Windows ARM64 one, for the
+# Adreno GPU of a Snapdragon laptop. The Hexagon NPU stays out of it: on Windows its driver loads
+# only a DSP library signed by a trusted certificate, which a user would have to set up by hand
+# (test-signing, llama.cpp's docs/backend/snapdragon/windows.md).
 #
 # iOS rides along as the harness app built for the simulator, unsigned: the one build of this
 # engine for that platform anyone can run without an Apple team, on a Mac with Xcode
@@ -60,6 +63,16 @@ jobs:
             # runtime in each would not. Its DLLs travel in the archive (Package), so a machine
             # without the redistributable installed still starts the binaries.
             cmake_extra: -DGGML_VULKAN=ON
+          # Built natively on an ARM64 runner, so the smoke test runs what ships. llama.cpp's own
+          # recipe for this target: clang with its toolchain file (one CPU library, for the cores
+          # of a Snapdragon laptop; the top-level CMakeLists has ggml build no tiers here), the
+          # Vulkan module, and the OpenCL module with the Adreno kernels.
+          - os: windows-11-arm
+            target: windows-arm64
+            cmake_extra: >-
+              -G "Ninja Multi-Config"
+              -DCMAKE_TOOLCHAIN_FILE=third_party/llama.cpp/cmake/arm64-windows-llvm.cmake
+              -DGGML_VULKAN=ON -DGGML_OPENCL=ON -DGGML_OPENCL_USE_ADRENO_KERNELS=ON
     runs-on: ${{ matrix.os }}
     steps:
       # The tag is text someone typed: it reaches the shell as data (env), never spliced into the
@@ -119,10 +132,40 @@ jobs:
         shell: pwsh
         run: |
           $v = "1.4.357.0"
-          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe"
+          # LunarG publishes the ARM64 SDK, a native glslc included, under its own path.
+          $url = if ($env:RUNNER_ARCH -eq "ARM64") { "https://sdk.lunarg.com/sdk/download/$v/warm/vulkansdk-windows-ARM64-$v.exe" } else { "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe" }
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L $url
           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$v"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$v\bin"
+
+      # clang finds the MSVC libraries and the Windows SDK through the environment vcvarsall sets
+      # up, which a job step does not start with: carried into the steps after this one.
+      - name: The MSVC environment (Windows ARM64)
+        if: matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" arm64 >nul && set" | ForEach-Object {
+            if ($_ -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { Add-Content $env:GITHUB_ENV "$($matches[1])=$($matches[2])" }
+          }
+
+      # The OpenCL module links the ICD loader; the archive does not carry it, since the GPU driver
+      # installs its own beside the system, and without one the module is simply not loaded.
+      # Pinned releases of Khronos's headers and loader, built for this machine, as llama.cpp does.
+      - name: Install the OpenCL headers and ICD loader (Windows ARM64)
+        if: matrix.target == 'windows-arm64'
+        shell: pwsh
+        run: |
+          $v = "v2026.05.29"
+          $prefix = "$env:RUNNER_TEMP\opencl"
+          git clone -q --depth 1 --branch $v https://github.com/KhronosGroup/OpenCL-Headers "$env:RUNNER_TEMP\ocl-headers"
+          cmake -S "$env:RUNNER_TEMP\ocl-headers" -B "$env:RUNNER_TEMP\ocl-headers\build" -DBUILD_TESTING=OFF -DOPENCL_HEADERS_BUILD_TESTING=OFF -DOPENCL_HEADERS_BUILD_CXX_TESTS=OFF "-DCMAKE_INSTALL_PREFIX=$prefix"
+          cmake --build "$env:RUNNER_TEMP\ocl-headers\build" --target install
+          git clone -q --depth 1 --branch $v https://github.com/KhronosGroup/OpenCL-ICD-Loader "$env:RUNNER_TEMP\ocl-loader"
+          cmake -S "$env:RUNNER_TEMP\ocl-loader" -B "$env:RUNNER_TEMP\ocl-loader\build" -A arm64 -DBUILD_TESTING=OFF "-DCMAKE_PREFIX_PATH=$prefix" "-DCMAKE_INSTALL_PREFIX=$prefix"
+          cmake --build "$env:RUNNER_TEMP\ocl-loader\build" --target install --config Release
+          Add-Content $env:GITHUB_ENV "CMAKE_PREFIX_PATH=$prefix"
 
       # The desktop app's web UI, built from the same checkout; the server build stages it beside
       # the binary (server/stage_assets.cmake).
@@ -164,10 +207,17 @@ jobs:
               # redistributable allows this local deployment): without it a machine that never
               # installed the redistributable cannot start the program at all. The universal CRT
               # ships with Windows itself.
+              # vcruntime140_1 holds the x64 exception handling: the ARM64 redistributable carries an
+              # x64 copy of it for emulated programs, which nothing here loads, so it stays out.
+              case "${{ matrix.target }}" in
+                *-arm64) ARCH=arm64; WANT="msvcp140.dll vcruntime140.dll" ;;
+                *) ARCH=x64; WANT="msvcp140.dll vcruntime140.dll vcruntime140_1.dll" ;;
+              esac
               VS="$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products "*" -property installationPath)"
-              CRT="$(ls -d "$(cygpath -u "$VS")"/VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT | sort | tail -1)"
+              CRT="$(ls -d "$(cygpath -u "$VS")"/VC/Redist/MSVC/*/$ARCH/Microsoft.VC*.CRT | sort | tail -1)"
               cp "$CRT"/msvcp140*.dll "$CRT"/vcruntime140*.dll "$1/"
-              for d in msvcp140.dll vcruntime140.dll vcruntime140_1.dll; do
+              if [ "$ARCH" = arm64 ]; then rm -f "$1/vcruntime140_1.dll"; fi
+              for d in $WANT; do
                 [ -f "$1/$d" ] || { echo "the C++ runtime is missing $d in $1"; exit 1; }
               done
             elif [ "${{ runner.os }}" = "macOS" ]; then cp -P build/bin/*.dylib build/bin/*.so "$1/"; strip -x "$1"/*.dylib "$1"/*.so || true;
@@ -178,6 +228,9 @@ jobs:
             case "${{ matrix.target }}" in
               macos-*) ls "$1" | grep -q 'ggml-metal' || { echo "no Metal backend module in $1"; exit 1; } ;;
               *) ls "$1" | grep -q 'ggml-vulkan' || { echo "no Vulkan backend module in $1"; exit 1; } ;;
+            esac
+            case "${{ matrix.target }}" in
+              windows-arm64) ls "$1" | grep -q 'ggml-opencl' || { echo "no OpenCL backend module in $1"; exit 1; } ;;
             esac
           }
           NAME="bmoe-cli-$TAG-${{ matrix.target }}"

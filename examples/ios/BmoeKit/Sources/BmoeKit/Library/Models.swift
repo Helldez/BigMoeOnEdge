@@ -150,10 +150,16 @@ public struct ModelsList: Equatable, Sendable {
     }
 }
 
-/// How the app writes a size: decimal GB, one decimal, the unit the model repositories quote.
-/// Quoting a model as 17.0 GB and then refusing it for "15 GiB" reads as a bug though both are true.
+/// How the app writes a size: decimal units, the ones the model repositories quote. Quoting a model
+/// as 17.0 GB and then refusing it for "15 GiB" reads as a bug though both are true. Below a gigabyte
+/// the unit steps down, so a small file (a draft head, a test model) never reads as 0.0 GB.
 public enum ByteText {
-    public static func gb(_ bytes: Int64) -> String { String(format: "%.1f GB", Double(bytes) / 1e9) }
+    public static func gb(_ bytes: Int64) -> String {
+        let b = Double(max(0, bytes))
+        if b >= 1e9 { return String(format: "%.1f GB", b / 1e9) }
+        if b >= 1e6 { return String(format: "%.0f MB", b / 1e6) }
+        return String(format: "%.0f KB", b / 1e3)
+    }
     /// A catalog row's action when part of it is already on the device, worded as the web UI and
     /// the Android app word it, so the same stopped download reads the same everywhere.
     public static func resume(received: Int64, total: Int64) -> String {

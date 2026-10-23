@@ -23,7 +23,8 @@ public struct Telemetry: Equatable, Sendable {
     public var avgMgmtMs = -1.0
     public var avgFlashWaitMs = -1.0
     public var prefillTps = -1.0
-    /// Time to first token: model load plus prompt prefill.
+    /// This turn's time to first token, as the server measures it (`ttft_s`). Never the model's load,
+    /// which only the first turn after it waited for and which made every later turn read as slow.
     public var ttftSeconds = -1.0
     public var readMiB = -1.0
     public var cacheResidentMiB = -1.0
@@ -67,8 +68,7 @@ public struct Telemetry: Equatable, Sendable {
         avgMgmtMs = o["mgmt_s_tok"].double(or: -0.001) * 1000
         avgFlashWaitMs = o["flash_wait_s_tok"].double(or: -0.001) * 1000
         prefillTps = o["prefill_tps"].double(or: -1)
-        let load = o["load_s"].double(or: -1), prefill = o["prefill_s"].double(or: -1)
-        ttftSeconds = load >= 0 && prefill >= 0 ? load + prefill : -1
+        ttftSeconds = o["ttft_s"].double(or: o["prefill_s"].double(or: -1))
         readMiB = o["read_mib"].double(or: -1)
         cacheResidentMiB = o["cache_resident_mib"].double(or: -1)
         cacheBudgetMiB = o["cache_budget_mib"].double(or: -1)
