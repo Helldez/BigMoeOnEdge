@@ -53,7 +53,7 @@ data class Telemetry(
     var avgFlashWaitMs: Double = -1.0,
     // End-of-run figures from the done event; -1 / 0 until generation finishes.
     var prefillTps: Double = -1.0,      // prompt prefill rate (tok/s)
-    var ttftS: Double = -1.0,           // time-to-first-token = model load + prompt prefill (s)
+    var ttftS: Double = -1.0,           // this turn's time to first token (s), the server's `ttft_s`
     var readMib: Double = -1.0,         // total flash streamed this generation (MiB)
     var cacheResidentMib: Double = -1.0, // expert cache resident size (MiB)
     var cacheBudgetMib: Double = -1.0,  // expert cache budget (MiB); fixed for the run
@@ -200,9 +200,9 @@ fun Telemetry.applyDone(o: JSONObject): Telemetry = apply {
     avgMgmtMs = o.optDouble("mgmt_s_tok", -0.001) * 1000.0
     avgFlashWaitMs = o.optDouble("flash_wait_s_tok", -0.001) * 1000.0
     prefillTps = o.optDouble("prefill_tps", -1.0)
-    val loadS = o.optDouble("load_s", -1.0)
-    val prefillS = o.optDouble("prefill_s", -1.0)
-    ttftS = if (loadS >= 0 && prefillS >= 0) loadS + prefillS else -1.0
+    // This turn's, as the server measures it (`ttft_s`): never the model's load, which only the first
+    // turn after it waited for and which made every later turn read as slow to start.
+    ttftS = o.optDouble("ttft_s", o.optDouble("prefill_s", -1.0))
     readMib = o.optDouble("read_mib", -1.0)
     cacheResidentMib = o.optDouble("cache_resident_mib", -1.0)
     cacheBudgetMib = o.optDouble("cache_budget_mib", -1.0)
