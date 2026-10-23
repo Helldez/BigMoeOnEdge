@@ -16,6 +16,8 @@
 #include "common.h"
 #include "llama.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -54,7 +56,189 @@ static int first_refused(detail::ToolGrammar & g, const llama_vocab * vocab, con
     return -1;
 }
 
+static void response_format_checks(common_chat_templates * tmpls,
+                                   const llama_vocab * vocab,
+                                   const std::vector<ChatMessage> & convo,
+                                   const std::vector<ChatTool> & tools,
+                                   const std::string & call_text,
+                                   bool auto_parser) {
+    using json = nlohmann::ordered_json;
+    std::printf("\nResponse-format checks: %s\n", auto_parser ? "differential parser" : "Qwen3.5 specialized parser");
+    auto render = [&](const std::string & schema, bool think = false, ThinkControl ctl = ThinkControl::Template,
+                      ToolChoice choice = ToolChoice::Auto, bool offer_tools = false) {
+        common_chat_templates_inputs inputs;
+        detail::build_turn_inputs(inputs, detail::to_common_messages(convo), think, ctl);
+        detail::add_tools(inputs, offer_tools ? tools : std::vector<ChatTool>{}, choice);
+        inputs.json_schema = schema;
+        return common_chat_templates_apply(tmpls, inputs);
+    };
+    auto accepts = [&](const common_chat_params & cp, const std::string & text, bool complete = true) {
+        detail::ToolGrammar g;
+        std::string err;
+        if (!g.init(cp, vocab, err) || !g.active()) {
+            std::printf("  structured grammar: %s\n", err.c_str());
+            return false;
+        }
+        return first_refused(g, vocab, text) == -1 && (!complete || g.allows(llama_vocab_eos(vocab)));
+    };
+    auto parses = [&](const common_chat_params & cp, const std::string & text, const std::string & expected,
+                      bool reasoning = false) {
+        try {
+            const auto msg = common_chat_parse(common_chat_input(text), false, detail::build_parse_params(cp));
+            return msg.tool_calls.empty() && !msg.content.empty() &&
+                   json::parse(msg.content) == json::parse(expected) && (!reasoning || !msg.reasoning_content.empty());
+        } catch (const std::exception & e) {
+            std::printf("  structured parse: %s\n", e.what());
+            return false;
+        }
+    };
+
+    const std::string object_schema = R"({"type":"object"})";
+    const auto object = render(object_schema);
+    check(!object.grammar.empty() && !object.grammar_lazy, "response format uses the template's non-lazy grammar");
+    check(accepts(object, R"({"answer":"Paris"})") && parses(object, R"({"answer":"Paris"})", R"({"answer":"Paris"})"),
+          "JSON object passes both the template grammar and response parser");
+    check(!accepts(object, "[1,2]"), "object response format refuses an array");
+    check(!accepts(object, R"({"answer":})"), "object response format refuses malformed JSON");
+    check(!accepts(object, R"({"answer":"Paris"} trailing)"), "object response format refuses trailing prose");
+
+    const auto typed = render(
+        R"({"type":"object","properties":{"answer":{"const":"Paris"},"count":{"type":"integer"}},"required":["answer","count"],"additionalProperties":false})");
+    const std::string typed_answer = R"({"answer":"Paris","count":2})";
+    check(accepts(typed, typed_answer) && parses(typed, typed_answer, typed_answer),
+          "typed schema uses the same template grammar and parser");
+    check(!accepts(typed, R"({"answer":"London","count":2})"), "schema grammar enforces a constant");
+    check(!accepts(typed, R"({"answer":"Paris","count":"2"})"), "schema grammar enforces field types");
+    check(!accepts(typed, R"({"answer":"Paris"})"), "schema grammar refuses a missing required field");
+    check(!accepts(typed, R"({"answer":"Paris","count":2,"extra":true})"),
+          "schema grammar refuses an additional property");
+
+    const auto array = render(R"({"type":"array","items":{"type":"integer"},"minItems":1})");
+    check(accepts(array, "[1,2]") && parses(array, "[1,2]", "[1,2]"),
+          "a schema may request an array instead of an object");
+    check(!accepts(array, R"({"value":1})") && !accepts(array, R"(["1"])"),
+          "array schema refuses an object and a wrongly typed item");
+
+    const std::string literal =
+        R"({"text":"<think>不是思考</think> <tool_call> 🦙 café","escaped":"quote: \"; slash: \\; newline: \n"})";
+    check(accepts(object, literal) && parses(object, literal, literal),
+          "JSON string data keeps reasoning/tool markers, UTF-8, and escapes");
+    if (auto_parser) {
+        check(accepts(object, "```json\n" + typed_answer + "\n```") &&
+                  parses(object, "```json\n" + typed_answer + "\n```", typed_answer),
+              "the differential parser's fenced JSON form returns only its JSON content");
+    } else {
+        check(!accepts(object, "```json\n" + typed_answer + "\n```"),
+              "the specialized parser constrains JSON directly without a Markdown fence");
+    }
+
+    const auto thinking = render(object_schema, true);
+    const std::string open = thinking.generation_prompt.find(thinking.thinking_start_tag) == std::string::npos
+                                 ? thinking.thinking_start_tag + "\n"
+                                 : "";
+    const std::string close = thinking.thinking_end_tags.empty() ? "" : thinking.thinking_end_tags[0];
+    const std::string thought = open + "I will return a JSON object." + close + "\n" + typed_answer;
+    check(!close.empty() && accepts(thinking, thought) && parses(thinking, thought, typed_answer, true),
+          "reasoning precedes JSON without entering the returned content");
+    {
+        detail::ToolGrammar g;
+        std::string err;
+        check(g.init(thinking, vocab, err) && g.active() &&
+                  first_refused(g, vocab, open + "I am still thinking about the answer.") == -1 &&
+                  !g.allows(llama_vocab_eos(vocab)),
+              "reasoning alone cannot complete a structured response");
+    }
+    const auto prefilled = render(object_schema, false, ThinkControl::Prefill);
+    check(accepts(prefilled, typed_answer) && parses(prefilled, typed_answer, typed_answer),
+          "a no-think content continuation starts the grammar at the JSON answer");
+
+    for (const auto choice : {ToolChoice::Auto, ToolChoice::Required, ToolChoice::None}) {
+        const auto with_tools = render(object_schema, false, ThinkControl::Template, choice, true);
+        const std::string name = choice == ToolChoice::Auto       ? "auto"
+                                 : choice == ToolChoice::Required ? "required"
+                                                                  : "none";
+        if (!auto_parser && choice == ToolChoice::Auto) {
+            // This pinned specialized parser marks the response grammar lazy even though it has
+            // no tool trigger. Keep the concrete failure visible: the session must not fall back
+            // to unconstrained generation when a structured response was requested.
+            detail::ToolGrammar g;
+            std::string err;
+            check(with_tools.grammar_lazy && !g.init(with_tools, vocab, err) && !g.active() && !err.empty(),
+                  "Qwen3.5 JSON plus tools:auto reports the upstream invalid lazy grammar");
+            continue;
+        }
+        check(accepts(with_tools, typed_answer) && parses(with_tools, typed_answer, typed_answer),
+              "JSON remains constrained with offered tools and tool_choice=" + name);
+        check(!call_text.empty() && !accepts(with_tools, call_text),
+              "upstream response format takes precedence over a tool call (tool_choice=" + name + ")");
+    }
+
+    {
+        detail::ToolGrammar g;
+        std::string err;
+        check(g.init(object, vocab, err) && g.active() && first_refused(g, vocab, R"({"answer":)") == -1 &&
+                  !g.allows(llama_vocab_eos(vocab)),
+              "an unfinished object cannot end at EOS");
+    }
+    {
+        detail::ToolGrammar g;
+        std::string err;
+        check(g.init(object, vocab, err) && g.active() && first_refused(g, vocab, "{}") == -1 &&
+                  g.allows(llama_vocab_eos(vocab)),
+              "a complete object allows EOS");
+    }
+    // Each request owns a fresh grammar; a completed or abandoned request must not affect the next.
+    check(accepts(typed, typed_answer) && accepts(array, "[3]") && accepts(object, "{}"),
+          "consecutive independent schemas do not share grammar state");
+    {
+        detail::ToolGrammar g;
+        std::string err;
+        const auto unconstrained = render("");
+        const auto tokens = common_tokenize(vocab, "Plain text again.", false, true);
+        check(unconstrained.grammar.empty() && g.init(unconstrained, vocab, err) && !g.active() && !tokens.empty() &&
+                  g.allows(tokens.front()),
+              "the next unconstrained request has no leftover JSON grammar");
+    }
+    {
+        detail::ToolGrammar g;
+        std::string err;
+        common_chat_params invalid = object;
+        invalid.grammar = "root ::= missing-rule\n";
+        check(!g.init(invalid, vocab, err) && !g.active() && !err.empty(),
+              "an invalid template grammar is reported at initialization");
+    }
+}
+
+static void completed_json_checks() {
+    common_chat_msg msg;
+    std::string err;
+    check(!detail::validate_json_response(msg, err) && !err.empty(),
+          "a completed structured turn with no content is an error");
+    msg.reasoning_content = "Reasoning does not replace the requested JSON.";
+    check(!detail::validate_json_response(msg, err), "a reasoning-only completion is not a JSON answer");
+    msg.content = "[1,true,null]";
+    check(detail::validate_json_response(msg, err) && err.empty(),
+          "completed JSON validation accepts schema-selected arrays and clears a previous error");
+    msg.content = R"({"broken":)";
+    check(!detail::validate_json_response(msg, err) && !err.empty(),
+          "a malformed completed response is explicitly rejected");
+    msg.content = "{} trailing prose";
+    check(!detail::validate_json_response(msg, err), "completed JSON validation rejects trailing prose");
+    msg.content = std::string("{\"text\":\"") + char(0xff) + "\"}";
+    check(!detail::validate_json_response(msg, err), "completed JSON validation rejects invalid UTF-8");
+    msg.content.clear();
+    common_chat_tool_call call;
+    call.name = "read_file";
+    call.arguments = R"({"path":"calc.py"})";
+    msg.tool_calls.push_back(call);
+    check(detail::validate_json_response(msg, err) && err.empty(),
+          "a tool-call-only turn does not require a JSON content field");
+    msg.content = "not JSON";
+    check(!detail::validate_json_response(msg, err), "a tool call cannot excuse malformed answer content");
+}
+
 int main() {
+    completed_json_checks();
     const std::string tmpl = read_file(BMOE_QWEN3_TEMPLATE_PATH);
     check(!tmpl.empty(), "the vendored template is readable");
     auto tmpls = common_chat_templates_init(/*model=*/nullptr, tmpl);
@@ -174,6 +358,13 @@ int main() {
             detail::ToolGrammar g;
             std::string err;
             check(g.init(none, vocab, err) && !g.active(), "a turn without a grammar runs unconstrained");
+        }
+        response_format_checks(tmpls.get(), vocab, convo, tools, call_text, false);
+        const std::string auto_tmpl = read_file(BMOE_QWEN3_AUTO_TEMPLATE_PATH);
+        check(!auto_tmpl.empty(), "the vendored differential-parser template is readable");
+        if (!auto_tmpl.empty()) {
+            auto auto_tmpls = common_chat_templates_init(nullptr, auto_tmpl);
+            response_format_checks(auto_tmpls.get(), vocab, convo, tools, raw_json, true);
         }
         llama_model_free(vocab_model);
     }
