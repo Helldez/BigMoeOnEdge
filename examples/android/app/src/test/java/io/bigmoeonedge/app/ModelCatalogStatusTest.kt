@@ -4,7 +4,13 @@ import io.bigmoeonedge.app.data.CatalogEntry
 import io.bigmoeonedge.app.data.CatalogFile
 import io.bigmoeonedge.app.data.CatalogStatus
 import io.bigmoeonedge.app.data.catalogStatus
+import io.bigmoeonedge.app.data.isPlainFileName
+import io.bigmoeonedge.app.data.isSha256Hex
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -44,5 +50,29 @@ class ModelCatalogStatusTest {
     @Test
     fun aTransferInFlightOutranksTheServersView() {
         assertEquals(CatalogStatus.DOWNLOADING, catalogStatus(split.copy(serverStatus = "on_disk"), emptySet(), setOf(files[2].name)))
+    }
+
+    private fun entryJson(name: String, sha256: String? = null): JSONObject {
+        val f = JSONObject().put("name", name).put("bytes", 3).put("url", "https://example.invalid/m")
+        if (sha256 != null) f.put("sha256", sha256)
+        return JSONObject().put("id", "m").put("files", org.json.JSONArray().put(f))
+    }
+
+    @Test
+    fun aFileNameThatLeavesTheModelsDirDropsTheEntry() {
+        for (bad in listOf("../m.gguf", "a/m.gguf", "a\\m.gguf", "..", ".", "", "C:m.gguf")) {
+            assertFalse(bad, isPlainFileName(bad))
+            assertNull(bad, CatalogEntry.of(entryJson(bad)))
+        }
+        assertTrue(isPlainFileName("m-00001-of-00003.gguf"))
+    }
+
+    @Test
+    fun theDigestIsReadLowercasedAndAMalformedOneDropsTheEntry() {
+        val hex = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"
+        assertEquals(hex.lowercase(), CatalogEntry.of(entryJson("m.gguf", hex))!!.files[0].sha256)
+        assertEquals("", CatalogEntry.of(entryJson("m.gguf"))!!.files[0].sha256)
+        assertNull(CatalogEntry.of(entryJson("m.gguf", "abc")))
+        assertTrue(isSha256Hex(hex.lowercase()))
     }
 }

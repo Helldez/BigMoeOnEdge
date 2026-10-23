@@ -315,6 +315,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     gr.clear_kv = false;
     gr.n_predict = req.n_predict;
     gr.think = req.think;
+    gr.json_schema = req.json_schema;
     gr.render_text = true;
 
     generating_ = true;
@@ -336,7 +337,9 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
         out.code = run_error_name(r.error_kind);
         if (r.error_kind == RunError::ContextFull) log_context_full(s->n_ctx());
         if (run_error_recoverable(r.error_kind)) {
-            out.status = 400;
+            // Bad generated output is a server error, but its rolled-back turn leaves the
+            // loaded model usable. A client should not have to reload it to retry a request.
+            out.status = r.error_kind == RunError::InvalidOutput ? 500 : 400;
         } else {
             // A failed decode leaves the context in an unknown state: the session is not reused.
             out.status = 500;

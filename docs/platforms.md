@@ -47,7 +47,7 @@ what each use of a device asks of one. This table is the subset that has been bu
 | Backend | Android | macOS | Linux | Windows | What it does today |
 |---|---|---|---|---|---|
 | **CPU** | Measured | Measured | Measured by the gates in CI | Measured | Decode, prefill and expert streaming, everywhere |
-| **Hexagon** (Qualcomm NPU) | Measured, shipped in the release APK | - | - | Not built: the Windows driver loads only a DSP library signed by a trusted certificate, so a user would have to turn on test-signing | Prefill on the NPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
+| **Hexagon** (Qualcomm NPU) | Measured, shipped in the release APK | - | - | Built, in its own Windows ARM64 archive (`-npu`) with the DSP libraries signed in CI; Windows runs them only after a setup the user does by hand, test-signing included ([npu-windows.md](npu-windows.md)); never run on a Snapdragon laptop | Prefill on the NPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | **Metal** | - | Measured, on in every macOS build | - | - | Prefill on the GPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | **OpenCL** | Measured on a Snapdragon-class phone, in the release APK: fast at prefill width and wrong, so the plan refuses it; the dense weights on a phone GPU lost 27 % in July | - | Not built | Shipped in the arm64 archive, with the Adreno kernels; never run | Nothing yet: refused on correctness on the phone; on a laptop the probe decides ([npu-prefill.md](npu-prefill.md)) |
 | **Vulkan** | Measured on a Snapdragon-class phone, in the release APK: no faster than the cores at prefill width, not armed; on one 2020 phone its driver ended the probe, which the isolated probe contains | Not built | Shipped, a module in the release archives; never run | Shipped, as Linux; never run | Nothing yet: not a win on the phone measured ([npu-prefill.md](npu-prefill.md)) |
@@ -57,7 +57,7 @@ what each use of a device asks of one. This table is the subset that has been bu
 Every release has the same shape: the engine and, beside it, one module per backend and one CPU
 module per instruction-set tier, loaded at start-up ([backends.md](backends.md)). The APK carries
 Vulkan and OpenCL beside Hexagon, the Linux and Windows archives carry Vulkan, the Windows arm64
-archive OpenCL as well, the macOS archive Metal. A module whose driver library the machine lacks is not loaded, so the same archive serves
+archive OpenCL as well (its `-npu` twin Hexagon too), the macOS archive Metal. A module whose driver library the machine lacks is not loaded, so the same archive serves
 a laptop with a GPU and a server without one, and the planner finds whichever devices registered.
 
 Computing the streamed experts on a GPU, rather than on the CPU cores, is half built on every

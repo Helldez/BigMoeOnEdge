@@ -23,7 +23,8 @@ struct OpenAiChatRequest {
 };
 
 // Parse a /v1/chat/completions body. `cfg` supplies the defaults a request may leave out
-// (n-predict, think). False with `err` set for a body the engine cannot answer.
+// (n-predict, think). Output constraints belong only to this request. False with `err` set for a
+// body the engine cannot answer; the session validates model/configuration compatibility.
 bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequest & out, std::string & err);
 
 // What stays the same across every object of one response.

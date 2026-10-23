@@ -25,6 +25,10 @@ struct CatalogFile {
     std::string name;
     std::string url;
     uint64_t bytes = 0;
+    // 64 lowercase hex digits, or "" when the catalog names none. A download is checked against it
+    // before its `.part` becomes the file, so a swapped or corrupted transfer is an error there,
+    // not a load failure later.
+    std::string sha256;
 };
 
 struct CatalogEntry {
@@ -38,11 +42,14 @@ public:
     // listed beside it and loaded in place, never written (a phone's adb-pushed and shared-storage
     // folders): the host app knows where they are, the server says what they hold.
     // `added_path` is where entries added at run time (a model picked from a repository,
-    // hf_repo.h) are kept between runs, beside the settings; "" keeps none.
+    // hf_repo.h) are kept between runs, beside the settings; "" keeps none. `hf_endpoint` is the
+    // server's repository endpoint: the one place a file may be fetched over plain http, when the
+    // operator named an http mirror (download_policy.h: curl_protocols).
     ModelLibrary(std::string models_dir,
                  std::vector<std::string> scan_dirs,
                  std::string catalog_path,
                  std::string added_path,
+                 std::string hf_endpoint,
                  EventBus & bus);
     ~ModelLibrary();
 
@@ -101,6 +108,10 @@ private:
     };
 
     void run_download(const CatalogEntry & e, Job & job);
+    // Check a complete `.part` against the digest its catalog file names, and make it the file.
+    // False once the failure (or a cancel) is published; a part whose digest is wrong is deleted,
+    // since resuming it can only reproduce the same bytes.
+    bool finish_file(const CatalogEntry & e, const CatalogFile & f, Job & job, uint64_t done, uint64_t total);
     void publish(const std::string & id,
                  const std::string & file,
                  uint64_t received,
@@ -130,6 +141,7 @@ private:
     std::string dir_;
     std::vector<std::string> scan_dirs_;
     std::string added_path_;
+    std::string hf_endpoint_;
     std::vector<CatalogEntry> added_;
     EventBus & bus_;
     std::vector<CatalogEntry> catalog_;

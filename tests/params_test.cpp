@@ -192,6 +192,7 @@ int main() {
     expect_flag({"--ngram-max-match", "16"}, [](const RunConfig & c) { return c.spec.ngram_max_match == 16; });
     expect_flag({"--chatml"}, [](const RunConfig & c) { return c.chatml; });
     expect_flag({"--no-think"}, [](const RunConfig & c) { return !c.think; });
+    expect_flag({"--think"}, [](const RunConfig & c) { return c.think; });
     expect_flag({"--moe-stream"}, [](const RunConfig & c) { return c.moe.enabled; });
     expect_flag({"--cache-mb", "auto"}, [](const RunConfig & c) { return c.moe.cache_auto && c.moe.cache_mb == 0; });
     expect_flag({"--cache-mb", "2000"},

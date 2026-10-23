@@ -139,6 +139,64 @@ bool parse_tool_choice(const json & body, ChatRequest & turn, std::string & err)
     return true;
 }
 
+bool parse_response_format(const json & body, ChatRequest & turn, std::string & err) {
+    turn.json_schema.clear();
+    json schema;
+    const auto read_schema = [&](const json & source, const char * key, const char * name, const json & fallback) {
+        if (!source.contains(key) || source[key].is_null()) {
+            schema = fallback;
+            return true;
+        }
+        if (!source[key].is_object()) {
+            err = std::string(name) + " must be a JSON schema object";
+            return false;
+        }
+        schema = source[key];
+        return true;
+    };
+    if (!read_schema(body, "json_schema", "json_schema", json())) return false;
+    if (body.contains("response_format") && !body["response_format"].is_null()) {
+        const json & format = body["response_format"];
+        std::string type;
+        if (!format.is_object() || !string_field(format, "type", "", type)) {
+            err = "response_format must be an object with a string type";
+            return false;
+        }
+        // Match llama.cpp's precedence: a schema on response_format wins, while json_object
+        // without one keeps a top-level schema. An empty object requests arbitrary JSON objects.
+        if (type == "json_object") {
+            if ((format.contains("schema") || schema.empty()) &&
+                !read_schema(format, "schema", "response_format.schema", json::object()))
+                return false;
+        } else if (type == "json_schema") {
+            const json wrapper = format.value("json_schema", json::object());
+            if (!wrapper.is_null() && !wrapper.is_object()) {
+                err = "response_format.json_schema must be an object";
+                return false;
+            }
+            for (const char * key : {"name", "description"}) {
+                if (wrapper.contains(key) && !wrapper[key].is_null() && !wrapper[key].is_string()) {
+                    err = std::string("response_format.json_schema.") + key + " must be a string";
+                    return false;
+                }
+            }
+            if (wrapper.contains("strict") && !wrapper["strict"].is_null() && !wrapper["strict"].is_boolean()) {
+                err = "response_format.json_schema.strict must be a boolean";
+                return false;
+            }
+            if (!read_schema(wrapper, "schema", "response_format.json_schema.schema", json::object())) return false;
+        } else if (!type.empty() && type != "text") {
+            err = "unsupported response_format type '" + type + "' (text, json_object and json_schema are supported)";
+            return false;
+        }
+    }
+    if (schema.is_object()) {
+        if (schema.empty()) schema["type"] = "object";
+        turn.json_schema = schema.dump();
+    }
+    return true;
+}
+
 } // namespace
 
 bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequest & out, std::string & err) {
@@ -164,7 +222,8 @@ bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequ
         err = "the last message must be from the user or a tool: there is nothing to answer otherwise";
         return false;
     }
-    if (!parse_tools(body, turn, err) || !parse_tool_choice(body, turn, err)) return false;
+    if (!parse_tools(body, turn, err) || !parse_tool_choice(body, turn, err) || !parse_response_format(body, turn, err))
+        return false;
 
     // A request may ask for less than the configured budget or more, but never for more than the
     // parameter table lets a person set: the session adds this number to the prompt's length, and
@@ -186,7 +245,7 @@ bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequ
         break;
     }
     // Thinking, most specific first: this server's own field, the template argument llama.cpp
-    // clients send, then the protocol's effort level, of which only "none" is a clear off.
+    // clients send, then the protocol's effort level: "none" is off, any other level asks for reasoning.
     turn.think = cfg.think;
     if (body.contains("think") && body["think"].is_boolean()) {
         turn.think = body["think"].get<bool>();
@@ -194,9 +253,8 @@ bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequ
                body["chat_template_kwargs"].contains("enable_thinking") &&
                body["chat_template_kwargs"]["enable_thinking"].is_boolean()) {
         turn.think = body["chat_template_kwargs"]["enable_thinking"].get<bool>();
-    } else if (body.contains("reasoning_effort") && body["reasoning_effort"].is_string() &&
-               body["reasoning_effort"].get<std::string>() == "none") {
-        turn.think = false;
+    } else if (body.contains("reasoning_effort") && body["reasoning_effort"].is_string()) {
+        turn.think = body["reasoning_effort"].get<std::string>() != "none";
     }
 
     out.stream = body.contains("stream") && body["stream"].is_boolean() && body["stream"].get<bool>();
@@ -212,10 +270,10 @@ void ensure_tool_call_ids(std::vector<ChatToolCall> & calls, const std::string &
 
 std::string finish_reason(const RunResult & r, int n_predict) {
     if (r.cancelled) return "cancelled";
-    if (!r.tool_calls.empty()) return "tool_calls";
     // The session may have cut the budget to the room the context had left; that is a length stop too.
     const int budget = r.summary.n_predict > 0 ? std::min(n_predict, r.summary.n_predict) : n_predict;
-    return r.summary.n_generated >= budget ? "length" : "stop";
+    if (r.summary.n_generated >= budget) return "length";
+    return r.tool_calls.empty() ? "stop" : "tool_calls";
 }
 
 json usage_json(const RunSummary & s) {

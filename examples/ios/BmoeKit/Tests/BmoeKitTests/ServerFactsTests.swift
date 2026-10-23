@@ -147,6 +147,16 @@ final class ServerFactsTests: XCTestCase {
         XCTAssertFalse(list.local[0].complete)
     }
 
+    func testAFileNameThatLeavesTheModelsDirDropsTheEntry() throws {
+        let list = ModelsList(try JSON(parsing: #"""
+            {"catalog":[{"id":"up","files":[{"name":"../m.gguf","bytes":1,"url":"https://x/m"}]},
+                        {"id":"sub","files":[{"name":"a/m.gguf","bytes":1,"url":"https://x/m"}]},
+                        {"id":"ok","files":[{"name":"m-00001-of-00002.gguf","bytes":1,"url":"https://x/m"}]}]}
+            """#))
+        XCTAssertEqual(list.catalog.map(\.id), ["ok"])
+        for bad in ["..", ".", "", "a\\m.gguf", "C:m.gguf"] { XCTAssertFalse(CatalogFile.isPlainName(bad), bad) }
+    }
+
     func testAStoppedDownloadReadsAsResume() throws {
         let list = ModelsList(try JSON(parsing: #"""
             {"catalog":[{"id":"m","bytes":47000000000,"received":14230000000,"partial":true,
