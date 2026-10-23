@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.35.0] - 2026-10-23
+
+### Changed
+- **Route-ahead's int8 gates are chosen by a timing, not by the instruction set (#349).** The
+  prediction behind `--route-ahead` ranks experts with one router-gate GEMV per layer per token,
+  over the gate's float weights or over an int8 mirror of them (a quarter of the bytes, plus a
+  quantization of the activation per call). Which is faster is bytes against arithmetic: the mirror
+  won three times over on the test phone and lost on an x86 host. It was armed by an
+  `#if defined(__aarch64__)`, right on those two machines and a guess on any other. New setting
+  `--gate-mirror auto|on|off` (default `auto`): `--auto` times both kernels on the model's own gate
+  shape, the run's own code walked layer by layer, and takes the faster with the timings in the
+  plan's notes; without `--auto` the session runs the same timing at load. The probe runs only when
+  route-ahead is set, so other plans do not pay for it. Measured on a development laptop: 5.7 us
+  int8 against 42.8 us float per layer on a 2048 x 128 gate. G14b now commits on both gate formats;
+  route-ahead stays lossy either way, and nothing it does not touch changes.
+
 ## [0.34.1] - 2026-10-23
 
 ### Fixed

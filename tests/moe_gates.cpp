@@ -46,7 +46,8 @@
 //   G13 the speculative decode loop, via the n-gram source on a prompt with nothing to match: it
 //       abstains, so every step takes the plain path and the output must be identical
 //   G14 --route-ahead, in two halves: a horizon past every layer overrides nothing and must be
-//       identical, and a horizon of one must commit real routings and still generate
+//       identical, and a horizon of one must commit real routings and still generate, on the int8
+//       gate mirror and on the float gates alike
 ////   G15 --row-stream, the dense tables the graph only gathers rows from: a) served from flash
 //       inside the default window and b) inside a window of one slab, so nearly every gather
 //       evicts what the last one fetched. Both must be byte-identical to the resident reference.
@@ -942,28 +943,38 @@ int main(int argc, char ** argv) {
     // speculative read path and adopted by the demand load, so a mistake there reads an expert slot
     // the cache never filled. Asserting the override COUNT is what stops an inert policy passing
     // this vacuously, the same trap G10b guards for the prefetch.
-    RunConfig ra_live = base(model);
-    ra_live.moe.enabled = true;
-    ra_live.moe.cache_mb = 2;
-    ra_live.moe.force_cache = true;
-    ra_live.moe.io_threads = 4;
-    ra_live.moe.route_ahead = 1;
-    std::string s_ra_live;
-    if (!gen(ra_live, s_ra_live, err)) {
-        std::fprintf(stderr, "route-ahead(1) run failed: %s\n", err.c_str());
-        return 2;
-    }
-    {
+    //
+    // Run once per gate format (--gate-mirror on and off), because which one a machine takes is
+    // timed at load: a host that never picks one would otherwise never exercise it. Both rank the
+    // same gate, so both must commit; their outputs are not compared, since a near-tie between two
+    // experts may resolve differently at an int8 step and route-ahead is lossy either way.
+    for (const GateMirror gm : {GateMirror::On, GateMirror::Off}) {
+        const char * gm_name = gm == GateMirror::On ? "int8 gates" : "float gates";
+        RunConfig ra_live = base(model);
+        ra_live.moe.enabled = true;
+        ra_live.moe.cache_mb = 2;
+        ra_live.moe.force_cache = true;
+        ra_live.moe.io_threads = 4;
+        ra_live.moe.route_ahead = 1;
+        ra_live.moe.gate_mirror = gm;
+        std::string s_ra_live;
+        if (!gen(ra_live, s_ra_live, err)) {
+            std::fprintf(stderr, "route-ahead(1) run on %s failed: %s\n", gm_name, err.c_str());
+            return 2;
+        }
         RunResult r = run(ra_live);
         if (r && !s_ra_live.empty() && !adjacent_moe) {
-            std::printf("[N/A ] G14b route-ahead(1): no two adjacent MoE blocks, nothing to commit ahead\n");
+            std::printf("[N/A ] G14b route-ahead(1), %s: no two adjacent MoE blocks, nothing to commit ahead\n",
+                        gm_name);
         } else if (!r || s_ra_live.empty() || r.summary.route_ahead_overridden <= 0) {
-            std::printf("[FAIL] G14b route-ahead(1) must commit routings and generate (committed=%lld, empty=%d)\n",
-                        r ? r.summary.route_ahead_overridden : -1, (int) s_ra_live.empty());
+            std::printf("[FAIL] G14b route-ahead(1), %s, must commit routings and generate (committed=%lld, "
+                        "empty=%d)\n",
+                        gm_name, r ? r.summary.route_ahead_overridden : -1, (int) s_ra_live.empty());
             ++fails;
         } else {
-            std::printf("[PASS] G14b route-ahead(1) committed %lld routings (%lld passed through) and generated\n",
-                        r.summary.route_ahead_overridden, r.summary.route_ahead_passthrough);
+            std::printf("[PASS] G14b route-ahead(1), %s, committed %lld routings (%lld passed through) and "
+                        "generated\n",
+                        gm_name, r.summary.route_ahead_overridden, r.summary.route_ahead_passthrough);
         }
     }
 
