@@ -2,6 +2,7 @@
 
 #include "download_policy.h"
 #include "model_files.h"
+#include "sha256.h"
 
 #include "bmoe/probe.h"
 
@@ -38,9 +39,15 @@ bool has_exact_size(const fs::path & p, uint64_t bytes) {
 
 namespace {
 
+std::string file_refusal(const CatalogFile & f, const std::string & endpoint) {
+    return catalog_file_refusal(f.name, f.url, f.sha256, endpoint);
+}
+
 // One catalog document's entries, as catalog/models.json spells them; the added file uses the
-// same shape, so one reader serves both.
-std::vector<CatalogEntry> read_catalog(std::istream & in) {
+// same shape, so one reader serves both. An entry with a file it cannot offer is skipped, with
+// the reason in `warnings`.
+std::vector<CatalogEntry>
+read_catalog(std::istream & in, const std::string & endpoint, std::vector<std::string> & warnings) {
     std::vector<CatalogEntry> out;
     json doc;
     in >> doc;
@@ -50,9 +57,19 @@ std::vector<CatalogEntry> read_catalog(std::istream & in) {
         e.title = m.value("title", e.id);
         e.quant = m.value("quant", "");
         e.blurb = m.value("blurb", "");
-        for (const json & f : m.at("files"))
-            e.files.push_back(
-                {f.at("name").get<std::string>(), f.at("url").get<std::string>(), f.value("bytes", (uint64_t) 0)});
+        std::string refusal;
+        for (const json & f : m.at("files")) {
+            CatalogFile cf{f.at("name").get<std::string>(), f.at("url").get<std::string>(),
+                           f.value("bytes", (uint64_t) 0), f.value("sha256", "")};
+            for (char & c : cf.sha256)
+                if (c >= 'A' && c <= 'F') c = (char) (c - 'A' + 'a');
+            if (refusal.empty()) refusal = file_refusal(cf, endpoint);
+            e.files.push_back(std::move(cf));
+        }
+        if (!refusal.empty()) {
+            warnings.push_back("catalog entry " + e.id + " is skipped: " + refusal);
+            continue;
+        }
         if (!e.files.empty()) out.push_back(std::move(e));
     }
     return out;
@@ -62,8 +79,11 @@ json catalog_json(const std::vector<CatalogEntry> & entries) {
     json models = json::array();
     for (const CatalogEntry & e : entries) {
         json files = json::array();
-        for (const CatalogFile & f : e.files)
-            files.push_back({{"name", f.name}, {"url", f.url}, {"bytes", f.bytes}});
+        for (const CatalogFile & f : e.files) {
+            json jf{{"name", f.name}, {"url", f.url}, {"bytes", f.bytes}};
+            if (!f.sha256.empty()) jf["sha256"] = f.sha256;
+            files.push_back(std::move(jf));
+        }
         models.push_back({{"id", e.id}, {"title", e.title}, {"quant", e.quant}, {"blurb", e.blurb}, {"files", files}});
     }
     return json{{"version", 1}, {"models", models}};
@@ -75,8 +95,9 @@ ModelLibrary::ModelLibrary(std::string models_dir,
                            std::vector<std::string> scan_dirs,
                            std::string catalog_path,
                            std::string added_path,
+                           std::string hf_endpoint,
                            EventBus & bus)
-    : dir_(std::move(models_dir)), added_path_(std::move(added_path)), bus_(bus) {
+    : dir_(std::move(models_dir)), added_path_(std::move(added_path)), hf_endpoint_(std::move(hf_endpoint)), bus_(bus) {
     // A scan directory that is the models directory, or repeats another, would list its models twice.
     std::set<fs::path> seen;
     const auto key = [](const std::string & d) {
@@ -97,7 +118,7 @@ ModelLibrary::ModelLibrary(std::string models_dir,
         return;
     }
     try {
-        catalog_ = read_catalog(in);
+        catalog_ = read_catalog(in, hf_endpoint_, warnings_);
     } catch (const std::exception & ex) {
         warnings_.push_back("model catalog " + catalog_path + " is malformed: " + ex.what());
         catalog_.clear();
@@ -106,7 +127,7 @@ ModelLibrary::ModelLibrary(std::string models_dir,
     std::ifstream added(fs::u8path(added_path_));
     if (!added) return; // nothing added yet
     try {
-        added_ = read_catalog(added);
+        added_ = read_catalog(added, hf_endpoint_, warnings_);
     } catch (const std::exception & ex) {
         warnings_.push_back("the added models file " + added_path_ + " is malformed and is ignored: " + ex.what());
         added_.clear();
@@ -123,9 +144,10 @@ void ModelLibrary::save_added() {
 
 std::string ModelLibrary::add_entry(const CatalogEntry & e) {
     if (e.id.empty() || e.files.empty()) return "an entry needs an id and at least one file";
-    for (const CatalogFile & f : e.files)
-        if (f.name.empty() || f.name.find_first_of("/\\") != std::string::npos || f.name == "." || f.name == "..")
-            return "a file name must be a plain name";
+    for (const CatalogFile & f : e.files) {
+        const std::string why = file_refusal(f, hf_endpoint_);
+        if (!why.empty()) return why;
+    }
     std::lock_guard<std::mutex> lk(m_);
     for (const CatalogEntry & c : catalog_)
         if (c.id == e.id) return "the catalog already has " + e.id;
@@ -307,10 +329,14 @@ json ModelLibrary::list() {
         // server (jobs live in memory; the `.part` files do not) still shows as one to resume.
         const OnDisk have = on_disk(e);
         // Every file with its URL: a host that has no curl (a phone) downloads for itself, and the
-        // catalog is still the one place the URLs are written.
+        // catalog is still the one place the URLs are written. The digest goes with them, so that downloader checks
+        // what it fetched as the server does.
         json files = json::array();
-        for (const CatalogFile & f : e.files)
-            files.push_back({{"name", f.name}, {"bytes", f.bytes}, {"url", f.url}});
+        for (const CatalogFile & f : e.files) {
+            json jf{{"name", f.name}, {"bytes", f.bytes}, {"url", f.url}};
+            if (!f.sha256.empty()) jf["sha256"] = f.sha256;
+            files.push_back(std::move(jf));
+        }
         catalog.push_back({{"id", e.id},
                            {"title", e.title},
                            {"quant", e.quant},
@@ -412,7 +438,6 @@ void ModelLibrary::run_download(const CatalogEntry & e, Job & job) {
         }
         const fs::path final_path = fs::u8path(dir_) / fs::u8path(f.name);
         const fs::path part = fs::u8path(part_u8);
-        std::error_code ec;
         if (has_exact_size(final_path, f.bytes)) {
             done += f.bytes;
             continue;
@@ -420,18 +445,23 @@ void ModelLibrary::run_download(const CatalogEntry & e, Job & job) {
         // A part that already holds every byte only lacks its rename; curl would answer a resume
         // past the end with an error.
         if (f.bytes > 0 && file_size_or_zero(part) == f.bytes) {
-            fs::rename(part, final_path, ec);
+            if (!finish_file(e, f, job, done, total)) return;
             done += f.bytes;
             continue;
         }
 
         const std::string part_s = part.string();
+        // Only https (or the http of the operator's --hf-endpoint mirror), redirects included, so no
+        // hop downgrades the transfer; `--` ends the options, so no URL is read as one.
+        const std::string protos = curl_protocols(f.url, hf_endpoint_);
         // A dropped line is retried here, each attempt resuming from the `.part` (-C -), so a long
         // download over flaky Wi-Fi finishes on its own instead of waiting for the user to press
         // Download again (download_policy.h says which failures and how long between them).
         for (int attempt = 1;; ++attempt) {
-            const char * cmd[] = {"curl", "-L", "--fail", "--retry",      "3",           "-sS",
-                                  "-C",   "-",  "-o",     part_s.c_str(), f.url.c_str(), nullptr};
+            const char * cmd[] = {"curl",        "-L",      "--fail",       "--retry",       "3",
+                                  "-sS",         "--proto", protos.c_str(), "--proto-redir", protos.c_str(),
+                                  "-C",          "-",       "-o",           part_s.c_str(),  "--",
+                                  f.url.c_str(), nullptr};
             subprocess_s proc;
             const int opts = subprocess_option_search_user_path | subprocess_option_inherit_environment |
                              subprocess_option_no_window | subprocess_option_combined_stdout_stderr;
@@ -490,14 +520,52 @@ void ModelLibrary::run_download(const CatalogEntry & e, Job & job) {
                     "downloaded size does not match the catalog; the partial file is kept");
             return;
         }
-        fs::rename(part, final_path, ec);
-        if (ec) {
-            publish(e.id, f.name, done, total, "error", "could not rename the finished file: " + ec.message());
-            return;
-        }
+        if (!finish_file(e, f, job, done, total)) return;
         done += f.bytes;
     }
     publish(e.id, e.files.back().name, total, total, "done", "");
+}
+
+bool ModelLibrary::finish_file(
+    const CatalogEntry & e, const CatalogFile & f, Job & job, uint64_t done, uint64_t total) {
+    std::string part_u8;
+    if (!partial_file_path(dir_, f.name, part_u8)) return false; // run_download checked it already
+    const fs::path part = fs::u8path(part_u8);
+    const fs::path final_path = fs::u8path(dir_) / fs::u8path(f.name);
+    const uint64_t size = file_size_or_zero(part);
+    if (!f.sha256.empty()) {
+        // Reading tens of gigabytes back takes a while: the row says what it waits for, and a cancel
+        // stops it (the part stays, complete, and the next start checks it again).
+        publish(e.id, f.name, done + size, total, "running", "checking the file's SHA-256");
+        std::string actual, err;
+        const bool read = sha256_file(part_u8, actual, err, [&](uint64_t hashed) {
+            publish(e.id, f.name, done + size, total, "running",
+                    "checking the file's SHA-256 (" + gb_label(hashed) + " of " + gb_label(size) + ")");
+            return !job.cancel.load();
+        });
+        if (job.cancel) {
+            publish(e.id, f.name, done + size, total, "cancelled", "");
+            return false;
+        }
+        if (!read) {
+            publish(e.id, f.name, done + size, total, "error", err + "; the partial file is kept");
+            return false;
+        }
+        const std::string refusal = digest_refusal(f.sha256, actual);
+        if (!refusal.empty()) {
+            std::error_code rm_ec;
+            fs::remove(part, rm_ec);
+            publish(e.id, f.name, done, total, "error", refusal + "; the download is deleted");
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::rename(part, final_path, ec);
+    if (ec) {
+        publish(e.id, f.name, done, total, "error", "could not rename the finished file: " + ec.message());
+        return false;
+    }
+    return true;
 }
 
 } // namespace bmoe::server

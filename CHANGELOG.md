@@ -84,6 +84,31 @@ A non-object JSON body (`[]`, `1`) on `PUT /api/config` or `POST /api/models/dow
 point of #353, is already a `400` with `code: "invalid_request"` since 0.31.0 (#262): checked,
 not changed.
 
+### Security
+- **The model catalog is held to what its fields become (#347).** A catalog file's `name` is joined
+  onto the models directory and its `url` handed to curl, and every front-end took them as written:
+  a row named `../x.gguf` would have been written outside the models directory. An entry whose file
+  name is not a bare file name (no separator, no `.` or `..`, no drive colon), whose URL is not
+  https (plain http only under an http `--hf-endpoint` mirror), or whose digest is malformed is now
+  skipped as `bmoe-server` loads the shipped catalog and the added entries (the reason goes to the
+  start-up log) and refused when added; the Android and iOS apps drop such an entry too, and the
+  Android download worker refuses a name that is not plain.
+- **Downloads are checked against a SHA-256 (#347).** A catalog file may carry `sha256`; the two
+  reference models now do (their Hugging Face LFS object ids), and a model added from a repository
+  gets its own from the listing. The server reads a finished `.part` back and checks it before the
+  rename (the row says so while it reads; a cancel stops it), and the Android worker does the same:
+  a mismatch is an error naming both digests and deletes the `.part`, since resuming it could only
+  reproduce the same bytes. Before, only the byte count was checked, so a swapped or corrupted file
+  became a load failure later. The Android app no longer renames a leftover `.part` it finds under
+  a succeeded download: only the worker, after its checks, makes a file a model.
+- **curl is pinned to https (#347).** Every curl the server runs (downloads and repository reads)
+  now passes `--proto =https --proto-redir =https` for an https URL, so no redirect downgrades it
+  (only a plain-http mirror named with `--hf-endpoint` may use http), and `--` before the URL, so
+  no URL is read as an option. New server checks: the name and URL rules, the digest of known
+  vectors and of a file longer than one read, the LFS oid on an added entry; Android unit tests for
+  the name rule and the digest field, and a BmoeKit test for the name rule. The iOS app does not
+  check the digest yet: it ignores `sha256`.
+
 ## [0.34.1] - 2026-10-23
 
 ### Fixed

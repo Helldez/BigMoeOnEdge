@@ -472,7 +472,8 @@ a UI shows "flash" from them without knowing whether the session overlaps.
              "role": "model", "streamable": true, "complete": true}],
   "catalog": [{"id": "qwen3-30b-a3b-q4_k_m", "title": "Qwen3-30B-A3B", "quant": "Q4_K_M",
                "file": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912,
-               "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://..."}],
+               "files": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "bytes": 18556686912, "url": "https://...",
+                          "sha256": "..."}],
                "blurb": "...", "status": "available", "received": 12884901888, "partial": true,
                "note": ""}]
 }
@@ -500,7 +501,12 @@ architecture `clip`); `draft` (a draft head for speculative decoding: it names a
 all); `""` when the header could not be read. A UI lists anything but `model` and `""` apart from
 the models, as files that are not loaded on their own. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
 entry with its URL, in order, for a client that downloads for itself (a phone, where the server
-has no `curl`); `file` and `bytes` are the first file's name and the whole entry's size.
+has no `curl`), and its `sha256` when the catalog names one (64 lowercase hex digits; absent
+otherwise), which the Android app checks its download against as the server does (the iOS app
+does not yet); `file` and `bytes` are the first file's name and the whole entry's size. A catalog row is held to what its fields
+become: `name` a bare file name (no separator, no `.` or `..`, no drive colon), `url` an https
+URL (plain http only under an http mirror named with `--hf-endpoint`), `sha256` a digest when present. An entry with a file that fails this is not listed, and the
+reason is in the server's start-up log; the Android and iOS apps drop such an entry too.
 `received` is what of the entry is already in the models directory, complete files and `.part`
 files alike, and `partial` is true when the entry is `available` with a `.part` on disk: a download
 stopped by a failure, a cancel or a restart of the server (jobs live in memory, the `.part` files do
@@ -519,7 +525,12 @@ fit. A dropped connection (curl's exit 6, 7, 16, 18, 28, 35, 52, 55, 56, 92: the
 request) is retried on its own, resuming from the `.part`, up to six attempts per file with a wait
 that starts at 2 s and doubles to at most 60 s (`server/download_policy.h`); while it waits the
 `download` event stays `running` and carries the failure in `error`. Any other failure, or the last
-attempt, ends in `error` with the `.part` kept.
+attempt, ends in `error` with the `.part` kept. curl is run with `--proto =https --proto-redir
+=https` for an https URL (a redirect cannot downgrade it; only a plain-http mirror named with
+`--hf-endpoint` may use http), and `--` before the URL, so no URL is read as an option. When the
+file has a `sha256`, a complete `.part` is read back and checked before it is renamed (the event
+stays `running`, its `error` saying so); a digest that differs ends in `error` and deletes the
+`.part`, since resuming it could only reproduce the same bytes.
 
 ### `DELETE /api/models/download/<id>`
 
@@ -608,7 +619,8 @@ has no such model, `502` when a header could not be fetched.
 ### `POST /api/hf/add`
 
 Body `{"repo", "name", "token"}`. The model becomes a catalog entry, id
-`hf:<repo>/<name>`, one file per shard with its resolve URL, listed by `GET /api/models` with
+`hf:<repo>/<name>`, one file per shard with its resolve URL and, where the repository's listing
+gives it, its LFS object id as `sha256` (the SHA-256 of the file), listed by `GET /api/models` with
 `"added": true` and kept between runs (`added-models.json` beside the settings). `201` with
 `{"id", "title", "quant", "bytes"}`; the download is then `POST /api/models/download` with that
 id, or, on a host that downloads for itself, the entry's `files[].url`. Adding a model that was

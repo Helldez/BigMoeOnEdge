@@ -3,8 +3,23 @@ package io.bigmoeonedge.app.data
 import org.json.JSONObject
 import java.util.Locale
 
-/** One file of a catalog entry, with the URL it is fetched from. Sizes are exact, from the repository. */
-data class CatalogFile(val name: String, val bytes: Long, val url: String)
+/**
+ * One file of a catalog entry, with the URL it is fetched from. Sizes are exact, from the repository.
+ * [sha256] is the digest a finished download must have (64 lowercase hex digits), or "" when the
+ * catalog names none.
+ */
+data class CatalogFile(val name: String, val bytes: Long, val url: String, val sha256: String = "")
+
+/**
+ * A catalog file name is a bare name: it is joined onto the models directory, so a separator, "."
+ * or ".." would name a file outside it. The server refuses such a row as it loads the catalog; the
+ * app holds to the same rule rather than trust that it did.
+ */
+fun isPlainFileName(name: String): Boolean =
+    name.isNotEmpty() && name != "." && name != ".." && name.none { it == '/' || it == '\\' || it == ':' || it == '\u0000' }
+
+/** 64 lowercase hex digits: a SHA-256 as the catalog spells it. */
+fun isSha256Hex(text: String): Boolean = text.length == 64 && text.all { it in '0'..'9' || it in 'a'..'f' }
 
 /**
  * One model the catalog offers, as `GET /api/models` lists it. The catalog is the server's data
@@ -35,14 +50,19 @@ data class CatalogEntry(
     fun fileNames(): Set<String> = files.map { it.name }.toSet()
 
     companion object {
+        /** The entry, or null when it has no files or a file this app may not write (see [isPlainFileName]). */
         fun of(o: JSONObject): CatalogEntry? {
             val files = o.optJSONArray("files")?.let { arr ->
                 (0 until arr.length()).map { i ->
                     val f = arr.getJSONObject(i)
-                    CatalogFile(f.getString("name"), f.optLong("bytes", 0), f.optString("url"))
+                    CatalogFile(
+                        f.getString("name"), f.optLong("bytes", 0), f.optString("url"),
+                        f.optString("sha256", "").lowercase(Locale.ROOT),
+                    )
                 }
             }.orEmpty()
             if (files.isEmpty()) return null
+            if (files.any { !isPlainFileName(it.name) || (it.sha256.isNotEmpty() && !isSha256Hex(it.sha256)) }) return null
             return CatalogEntry(
                 id = o.getString("id"),
                 title = o.optString("title", o.getString("id")),

@@ -17,7 +17,9 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 model_files (which gguf names make one model, the one-level folder scan, and what a
                 file is for by its header: model, projector, draft), plan_view (the plan as the Plan
                 screen draws it, every word included), download_policy (which download failures
-                are retried and when, what a resume needs on disk, where a .part may be deleted):
+                are retried and when, what a resume needs on disk, where a .part may be deleted,
+                what a catalog file's name, URL and digest may be, the protocols curl may use),
+                sha256 (the digest a finished download is checked against):
                 pure policy (bmoe_server_core)
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
                 (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,
