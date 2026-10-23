@@ -242,10 +242,10 @@ std::vector<ParamDesc> build() {
     {
         ParamDesc d = row("think", "Thinking", G::Generation, L::Basic,
                           "Render the chat template with reasoning enabled, so a reasoning model emits its "
-                          "thinking channel. Off suppresses reasoning at the source.");
+                          "thinking channel. Off (the default) suppresses reasoning at the source.");
         d.type = ParamType::Bool;
         d.flag.clear();
-        d.switches = {{"--no-think", "false"}};
+        d.switches = {{"--think", "true"}, {"--no-think", "false"}};
         d.scope = ParamScope::Request;
         bind_bool(d, [](RunConfig & c) -> bool & { return c.think; });
         t.push_back(d);

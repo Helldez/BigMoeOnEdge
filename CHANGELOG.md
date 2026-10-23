@@ -6,7 +6,38 @@ Semantic Versioning.
 
 ## [0.35.0] - 2026-10-23
 
+### Added
+- **Request-level structured output.** `POST /v1/chat/completions` accepts
+  `response_format` with `json_object` or `json_schema`, and llama.cpp's top-level
+  `json_schema` field. The schema travels through llama.cpp's chat template, grammar and
+  parser, using the session's existing grammar sampler. Thinking, tools and speculative
+  decoding use that same path; there is no separate JSON sampler. The constraint belongs
+  to one request. A normally completed JSON answer is checked for parseable JSON;
+  length-limited and cancelled turns retain their real finish reason and may be partial.
+  A completed answer that fails validation returns `invalid_output` without unloading the
+  model, so the next request can proceed. See `docs/server-api.md` for schema support and
+  streaming semantics and the tested template/tool-choice limitations.
+- **The Hexagon NPU on Windows on Snapdragon, as an opt-in archive.** The release gains
+  `bmoe-cli` and `bmoe-desktop` archives for `windows-arm64-npu`: the Windows ARM64 build plus the
+  Hexagon module and one DSP library per NPU generation (v73 to v85). Windows' NPU driver runs that
+  code only from a catalog signed by a certificate the machine trusts, so the release workflow
+  makes the catalog with Inf2Cat (from Microsoft's WDK package on NuGet), signs it with a
+  certificate made in the same job, and deletes the private key before the job ends: nothing else
+  can ever be signed with it, and only the public certificate ships. Using it needs a one-time setup
+  the user does by hand (the NPU driver, test-signing on, the certificate trusted), which
+  `docs/npu-windows.md` walks through with what each step changes and how to undo it. The plain
+  Windows ARM64 archives are unchanged and need none of it. As on Android, the NPU takes the prompt
+  only where the planner measures it faster and identical. Not yet run on a Snapdragon laptop.
+
 ### Changed
+- **Thinking is off by default (#331).** A reasoning model spends most of a turn thinking before it
+  answers: on a Mac, Qwen3.6-35B-A3B used all 1024 tokens of the default budget on a short question
+  and never answered, which at 12-17 tok/s is a minute or more of waiting, and several on a phone.
+  `RunConfig::think` now defaults to off, so the CLI, the server, the web UI and both apps start
+  with it off; a saved setting still wins. It stays one switch away: `--think` on the CLI (beside
+  `--no-think`), the Thinking setting, and per request through `think`,
+  `chat_template_kwargs.enable_thinking` or `reasoning_effort` (any level but `"none"` now turns
+  it on; before, only `"none"` was read). Models with no thinking mode are unaffected.
 - **Route-ahead's int8 gates are chosen by a timing, not by the instruction set (#349).** The
   prediction behind `--route-ahead` ranks experts with one router-gate GEMV per layer per token,
   over the gate's float weights or over an int8 mirror of them (a quarter of the bytes, plus a
@@ -20,6 +51,38 @@ Semantic Versioning.
   route-ahead is set, so other plans do not pay for it. Measured on a development laptop: 5.7 us
   int8 against 42.8 us float per layer on a 2048 x 128 gate. G14b now commits on both gate formats;
   route-ahead stays lossy either way, and nothing it does not touch changes.
+
+### Fixed
+- **A cancelled turn leaves both contexts at the same prefix.** When the draft context of
+  speculative decoding could not drop the cancelled tokens, only it was cleared, so the next turn
+  started the target and the draft at different positions. Both are now cleared together.
+- **`bmoe-server`: no local client can take every worker (#353).** The server answers with a fixed
+  pool of 32 workers and each `GET /api/events` stream holds one for as long as it is open, with no
+  bound on how many: 32 idle streams from any local process and every other request, the UI's own
+  included, queued forever. The event streams are now capped at 8 (the next is a `503` with the new
+  code `streams_full`, which the UI and both apps already retry with back-off), and the pool is
+  sized from what can hold a worker for long (8 streams, the running turn, the 16 that may wait
+  behind it) plus 7 for short requests, still 32 in all. A stream's place is taken before it
+  answers and given back however the response ends, the client leaving before the headers
+  included. Connections that arrive while every worker is busy now wait in a queue of 64, not an
+  unbounded one; past it the next is closed at once. A stream now notices a client that closed
+  its connection within a second instead of at its next 15 s ping, so a reloaded page finds the
+  place it left free; a client that keeps the connection but stops reading is still let go by the
+  ping hitting the write timeout. A client that vanishes without closing (a phone off Wi-Fi) is now
+  bounded by TCP: keep-alive probes after 15 s idle and a 60 s limit on unacknowledged data, each
+  option set where the system's headers define it. They are set on the listening socket, the one
+  place the HTTP library offers: Linux and Android clone them into every connection; macOS was
+  measured not to copy the idle time or the retransmission bound, so there that case is still left
+  to the system's own limit.
+- **`--open` starts the browser without a shell (#353).** It went through `std::system` with the
+  URL quoted into a command line; it now starts `open` (macOS) or `xdg-open` directly with the URL as
+  one argument, through the subprocess header the downloads already use, and drops its output on a
+  thread that also reaps it. Windows already used the shell's own call.
+- **The printed URL is right for an IPv6 bind (#353).** `--host ::` printed `http://:::8765/`;
+  it now prints `http://[::1]:8765/`, and any IPv6 literal is bracketed.
+A non-object JSON body (`[]`, `1`) on `PUT /api/config` or `POST /api/models/download`, the second
+point of #353, is already a `400` with `code: "invalid_request"` since 0.31.0 (#262): checked,
+not changed.
 
 ## [0.34.1] - 2026-10-23
 

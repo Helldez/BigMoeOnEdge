@@ -156,7 +156,7 @@ cada dispositivo y el motivo de cada decisión.
 |---|---|---|---|---|---|
 | Motor y CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64 (dentro de la app) |
 | App y servidor | app nativa | app web | app web | app web | app nativa, compilada desde el código fuente |
-| Aceleradores | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64) | Vulkan | Metal |
+| Aceleradores | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan | Metal |
 | Ejecutado en hardware | teléfono de 12 GB | portátil de 16 GB | portátil de 16 GB | CI, comunidad | iPhone de 12 GB ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
 
 Detalles y qué se midió dónde: [docs/platforms.md](docs/platforms.md).

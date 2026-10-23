@@ -2,6 +2,7 @@
 #include "bmoe/log.h"
 
 #include "common.h"
+#include <nlohmann/json.hpp>
 
 #include <cctype>
 #include <cmath>
@@ -28,6 +29,14 @@ void warn_parse_failed_once(const char * what) {
 
 bool parsed_nothing(const common_chat_msg & msg) {
     return msg.content.empty() && msg.reasoning_content.empty() && msg.tool_calls.empty();
+}
+
+bool validate_json_response(const common_chat_msg & msg, std::string & err) {
+    err.clear();
+    if (msg.content.empty() && !msg.tool_calls.empty()) return true;
+    if (nlohmann::ordered_json::accept(msg.content)) return true;
+    err = "the completed assistant content is not valid JSON";
+    return false;
 }
 
 ToolGrammar::~ToolGrammar() {

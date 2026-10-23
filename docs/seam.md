@@ -121,8 +121,9 @@ point is public, not a divergence we intend to maintain.
 ## The chat glue: llama.cpp `common` (not the streaming seam)
 
 Separate from the two streaming hooks above, `session.cpp` links llama.cpp's `common`
-library for two things: rendering the model's own chat template and parsing reasoning output, and
-(with `--mtp`) driving speculative decoding.
+library for rendering the model's own chat template and parsing reasoning output, driving
+speculative decoding (with `--mtp`), and applying request-level JSON schemas through the
+chat template.
 `common_chat_templates_init` / `common_chat_templates_apply` run the real Jinja template the
 gguf ships (so Gemma's channel format, Qwen ChatML, etc. all format correctly, driven by the
 model rather than hardcoded), and `common_chat_parse` extracts a reasoning model's thinking so
@@ -145,6 +146,25 @@ Whether the continuation is *binding* is read off `common_chat_params::thinking_
 suggestion it can decline (LFM2.5 does), while a model that declares none separates reasoning
 structurally and cannot. Both facts come from the loaded model, never from its name.
 `tests/think_control_test.cpp` pins all of it against the vendored templates, again with no model.
+
+### Request-local output constraints
+
+The server maps `response_format` and the top-level `json_schema` field to a serialized schema
+on the generation request. `session.cpp` passes it to
+`common_chat_templates_inputs::json_schema`. `common_chat_templates_apply` builds the grammar
+and parser rule together, including the template's reasoning structure. The returned
+`common_chat_params::grammar` is applied by the existing `detail::ToolGrammar` in
+`chat_parse.cpp`; non-lazy grammars receive the generation prompt before the first generated
+token. Speculative acceptance also checks that grammar before accepting a drafted token.
+
+This shares the template and sampling path used for tools. No code calls the JSON-to-grammar
+converter directly, no second grammar sampler competes with the template's grammar, and the
+request does not change the session's sampling configuration. Each turn creates its own
+constraint state, so a following ordinary request is unaffected. The completed answer is
+validated after chat parsing, with reasoning kept separate; schema compilation and supported
+keywords belong to the pinned upstream implementation. Final validation checks JSON syntax,
+not the full schema. Length limits and cancellation preserve partial output and their finish
+reason. The integration changes neither upstream code nor the streamed-weight layout.
 
 ### Speculative decoding
 
@@ -186,7 +206,7 @@ unaffected by this dependency.
 
 ### The capacity fitter: `common/fit.h`
 
-The third and newest consumer of `common` is the hardware planner's first stage. `--auto` calls
+Another consumer of `common` is the hardware planner's first stage. `--auto` calls
 `common_fit_params` — llama.cpp's own capacity fitter, the one behind its `--fit` flag — to place
 weights across the registered devices by projected memory, and reads back which layers kept their
 routed experts on the host and what the placed model reserves there for context and compute. That
