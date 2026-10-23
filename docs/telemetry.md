@@ -598,8 +598,11 @@ BMOE_ERROR {"id":<int>,"fatal":<bool>,"code":"<string>","msg":"<string>"}
 are the engine's failure kinds (`core/include/bmoe/run_error.h`): `context_full` (the conversation
 leaves no room in `n_ctx`), `empty_prompt`, `template_rejected` (the chat template refused the
 message list), `needs_chat_mode` (a message list to a session opened without the chat template),
-`invalid_request` (a malformed decide request, or decide off) and `failed` (a load, decode or
-expert-stream failure). Every code but `failed` comes with `fatal:false`.
+`invalid_request` (a malformed request, or decide off), `invalid_output` (a structured answer
+could not satisfy its grammar or failed final JSON validation, and the turn was rolled back)
+and `failed` (a load, decode or expert-stream failure).
+Every code but `failed` comes with `fatal:false`; invalid output can be retried without reloading
+the model.
 
 A `decide` request is answered by `BMOE_BEGIN` and then one `BMOE_DECIDE` line, with no per-token
 lines in between: nothing is decoded ([decide.md](decide.md)). `choice_logp[i]` is the log-probability

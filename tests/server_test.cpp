@@ -40,6 +40,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace bmoe;
@@ -74,7 +75,8 @@ static void protocol_tests() {
         check(ok && r.turn.messages.size() == 2 && r.turn.messages[0].role == "system" &&
                   r.turn.messages[1].content == "ab",
               "developer is system, and text parts join");
-        check(r.turn.n_predict == 100 && r.turn.think && !r.stream && !r.include_usage && r.turn.tools.empty(),
+        check(r.turn.n_predict == 100 && r.turn.think && !r.stream && !r.include_usage && r.turn.tools.empty() &&
+                  r.turn.json_schema.empty(),
               "what a request leaves out comes from the config");
     }
     {
@@ -152,6 +154,101 @@ static void protocol_tests() {
                   .turn.think,
           "thinking: the server's own field wins, and only effort none turns it off");
 
+    const std::pair<const char *, const char *> formats[] = {
+        {"null", ""},
+        {"{}", ""},
+        {R"j({"type":null})j", ""},
+        {R"j({"type":""})j", ""},
+        {R"j({"type":"text"})j", ""},
+        {R"j({"type":"json_object"})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_object","schema":{}})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_object","schema":null})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_schema"})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_schema","json_schema":null})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_schema","json_schema":{"schema":{}}})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_schema","json_schema":{"name":"answer","description":"An answer","strict":true,
+              "schema":{"type":"array","items":{"type":"string"}}}})j",
+         R"j({"type":"array","items":{"type":"string"}})j"},
+        {R"j({"type":"json_object","schema":{"type":"object","properties":{"city":{"type":"string"}},
+              "required":["city"],"additionalProperties":false}})j",
+         R"j({"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false})j"},
+    };
+    for (const auto & format : formats) {
+        const std::string body =
+            std::string(R"j({"messages":[{"role":"user","content":"hi"}],"response_format":)j") + format.first + "}";
+        const OpenAiChatRequest r = parsed(body.c_str(), &ok, &err);
+        check(ok && r.turn.json_schema == format.second,
+              "response_format maps to the template schema: " + std::string(format.first));
+    }
+    const std::pair<const char *, const char *> schema_fields[] = {
+        {R"j("json_schema":null)j", ""},
+        {R"j("json_schema":{})j", R"j({"type":"object"})j"},
+        {R"j("json_schema":{"type":"array","items":{"type":"integer"}})j",
+         R"j({"type":"array","items":{"type":"integer"}})j"},
+        {R"j("json_schema":{"type":"string"},"response_format":{"type":"text"})j", R"j({"type":"string"})j"},
+        {R"j("json_schema":{"type":"string"},"response_format":{"type":"json_object"})j", R"j({"type":"string"})j"},
+        {R"j("json_schema":{"type":"string"},"response_format":{"type":"json_object","schema":{}})j",
+         R"j({"type":"object"})j"},
+        {R"j("json_schema":{"type":"string"},"response_format":{"type":"json_schema"})j", R"j({"type":"object"})j"},
+        {R"j("json_schema":{"type":"string"},"response_format":{"type":"json_schema",
+              "json_schema":{"schema":{"type":"integer"}}})j",
+         R"j({"type":"integer"})j"},
+    };
+    for (const auto & fields : schema_fields) {
+        const std::string body = std::string(R"j({"messages":[{"role":"user","content":"hi"}],)j") + fields.first + "}";
+        const OpenAiChatRequest r = parsed(body.c_str(), &ok, &err);
+        check(ok && r.turn.json_schema == fields.second,
+              "top-level schema and response_format keep upstream precedence: " + std::string(fields.first));
+    }
+    for (const bool thinking : {false, true}) {
+        json body = {{"messages", {{{"role", "user"}, {"content", "hi"}}}},
+                     {"chat_template_kwargs", {{"enable_thinking", thinking}}},
+                     {"stream", true},
+                     {"response_format", {{"type", "json_object"}}},
+                     {"tools", {{{"type", "function"}, {"function", {{"name", "lookup"}}}}}},
+                     {"tool_choice", "auto"}};
+        const OpenAiChatRequest r = parsed(body.dump().c_str(), &ok);
+        check(ok && r.stream && r.turn.think == thinking && r.turn.json_schema == R"({"type":"object"})" &&
+                  r.turn.tools.size() == 1 && r.turn.tools[0].name == "lookup",
+              std::string("JSON output keeps tools and chat_template_kwargs.enable_thinking=") +
+                  (thinking ? "true" : "false"));
+    }
+    int format_shape = 0;
+    for (const char * format :
+         {"false", "7", "[]", R"j("json_object")j", R"j({"type":7})j", R"j({"type":{}})j", R"j({"type":"xml"})j",
+          R"j({"type":"json_object","schema":false})j", R"j({"type":"json_object","schema":[]})j",
+          R"j({"type":"json_object","schema":"{}"})j", R"j({"type":"json_schema","json_schema":7})j",
+          R"j({"type":"json_schema","json_schema":[]})j", R"j({"type":"json_schema","json_schema":{"schema":true}})j",
+          R"j({"type":"json_schema","json_schema":{"schema":[]}})j",
+          R"j({"type":"json_schema","json_schema":{"schema":"{}"}})j",
+          R"j({"type":"json_schema","json_schema":{"name":7}})j",
+          R"j({"type":"json_schema","json_schema":{"description":false}})j",
+          R"j({"type":"json_schema","json_schema":{"strict":"yes"}})j"}) {
+        const std::string body =
+            std::string(R"j({"messages":[{"role":"user","content":"hi"}],"response_format":)j") + format + "}";
+        bool threw = false;
+        try {
+            parsed(body.c_str(), &ok, &err);
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        check(!threw && !ok && err.find("response_format") != std::string::npos,
+              "an unsupported response_format is refused, not ignored or thrown (#" + std::to_string(++format_shape) +
+                  ")");
+    }
+    for (const char * schema : {"true", "false", "7", "[]", R"j("{}")j"}) {
+        const std::string body =
+            std::string(R"j({"messages":[{"role":"user","content":"hi"}],"json_schema":)j") + schema + "}";
+        bool threw = false;
+        try {
+            parsed(body.c_str(), &ok, &err);
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        check(!threw && !ok && err.find("json_schema") != std::string::npos,
+              "a top-level schema of the wrong shape is refused: " + std::string(schema));
+    }
+
     // The token budget is bounded where it enters: by the parameter table, not by what an int holds.
     const auto budget = [&](const char * field) {
         const std::string body = std::string(R"j({"messages":[{"role":"user","content":"hi"}],)j") + field + "}";
@@ -183,6 +280,8 @@ static void protocol_tests() {
     check(r.tool_calls[0].id == "call_chatcmpl-9_0" && r.tool_calls[1].id == "given",
           "a call without an id gets one, and a given id is kept");
     check(finish_reason(r, 100) == "tool_calls", "a turn that calls finishes with tool_calls");
+    check(finish_reason(r, r.summary.n_generated) == "length",
+          "parsed tool calls cannot hide an exhausted token budget");
     const ChatResponseMeta meta{"chatcmpl-9", 5, "m.gguf"};
     const json c = completion_json(meta, r, finish_reason(r, 100));
     const json & msg = c["choices"][0]["message"];
@@ -206,7 +305,7 @@ static void protocol_tests() {
     {
         const RunError kinds[] = {
             RunError::None,          RunError::ContextFull,    RunError::EmptyPrompt, RunError::TemplateRejected,
-            RunError::NeedsChatMode, RunError::InvalidRequest, RunError::Failed};
+            RunError::NeedsChatMode, RunError::InvalidRequest, RunError::Failed,      RunError::InvalidOutput};
         std::set<std::string> names;
         for (RunError k : kinds)
             names.insert(run_error_name(k));
@@ -226,6 +325,23 @@ static void protocol_tests() {
     check(completion_json(meta, plain, "stop")["choices"][0]["message"]["content"] == "hi" &&
               !completion_json(meta, plain, "stop")["choices"][0]["message"].contains("tool_calls"),
           "an ordinary answer has text and no calls");
+    RunResult partial;
+    partial.ok = true;
+    partial.generated_text = R"({"city":")";
+    partial.reasoning_text = "The city is known.";
+    partial.summary.n_predict = 3;
+    partial.summary.n_generated = 3;
+    const json limited = completion_json(meta, partial, finish_reason(partial, 10));
+    check(limited["choices"][0]["finish_reason"] == "length" &&
+              limited["choices"][0]["message"]["content"] == partial.generated_text &&
+              limited["choices"][0]["message"]["reasoning_content"] == partial.reasoning_text,
+          "a truncated JSON answer keeps its partial content, separate reasoning and length reason");
+    partial.cancelled = true;
+    const json cancelled = chunk_json(meta, json::object(), finish_reason(partial, 10));
+    check(cancelled["choices"][0]["finish_reason"] == "cancelled" &&
+              completion_json(meta, partial, finish_reason(partial, 10))["choices"][0]["message"]["content"] ==
+                  partial.generated_text,
+          "cancellation keeps its real reason and does not repair incomplete JSON");
 }
 
 static void queue_tests() {
@@ -393,6 +509,44 @@ static void json_tests() {
     check(!is_json_content_type("application/jsonp") && !is_json_content_type("text/plain; application/json") &&
               !is_json_content_type("application/json, text/plain"),
           "a type that only contains the word is not JSON");
+
+    const std::string object = u8"{\"city\":\"北京\",\"emoji\":\"🙂𐍈\",\"accent\":\"é\"}";
+    const std::string reasoning = u8"城市是北京，réponse 🙂。";
+    const ChatResponseMeta meta{"chatcmpl-utf8", 5, "m.gguf"};
+    for (const auto & field : {std::pair<const char *, std::string>{"content", object},
+                               std::pair<const char *, std::string>{"reasoning_content", reasoning}}) {
+        std::string sent, reconstructed;
+        bool exact = true;
+        for (size_t count = 1; count <= field.second.size(); ++count) {
+            const std::string raw = field.second.substr(0, count);
+            const std::string visible = raw.substr(0, complete_utf8_prefix_size(raw));
+            const std::string delta = visible.substr(sent.size());
+            try {
+                const json chunk = chunk_json(meta, json{{field.first, delta}}, nullptr);
+                // Strict serialization must also work: replacement must never be needed for a
+                // completed code point, even when every byte arrived from a different token.
+                const std::string strict = chunk.dump();
+                const std::string replacing = chunk.dump(-1, ' ', false, json::error_handler_t::replace);
+                exact = exact && strict == replacing;
+                reconstructed += json::parse(replacing)["choices"][0]["delta"][field.first].get<std::string>();
+            } catch (const std::exception &) {
+                exact = false;
+            }
+            sent = visible;
+        }
+        check(exact && reconstructed == field.second,
+              std::string("SSE ") + field.first + " reconstructs Chinese, emoji and accented text across byte tokens");
+    }
+    check(complete_utf8_prefix_size("") == 0 && complete_utf8_prefix_size("ASCII") == 5 &&
+              complete_utf8_prefix_size(std::string("a\xE4\xB8", 3)) == 1 &&
+              complete_utf8_prefix_size(std::string("a\xF0\x9F\x99", 4)) == 1,
+          "incomplete final code points wait without hiding complete ASCII");
+    check(complete_utf8_prefix_size(std::string("a\xC0\x80", 3)) == 1 &&
+              complete_utf8_prefix_size(std::string("a\xED\xA0\x80", 4)) == 1 &&
+              complete_utf8_prefix_size(std::string("a\xF4\x90\x80\x80", 5)) == 1 &&
+              complete_utf8_prefix_size(std::string("a\xE4x", 3)) == 1 &&
+              complete_utf8_prefix_size(std::string("a\xF4\x8F\xBF\xBF", 5)) == 5,
+          "UTF-8 boundaries reject invalid, overlong, surrogate and out-of-range encodings");
 }
 
 static void access_tests() {
