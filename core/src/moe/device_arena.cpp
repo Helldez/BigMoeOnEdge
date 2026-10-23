@@ -121,7 +121,7 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
         int np = 0;
         for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             ggml_tensor * t = L.proj[p].tensor;
-            if (!t) break; // recipes fill their slots from the front
+            if (!t) break; // the layout fills its slots from the front
             if (n_expert_ == 0) n_expert_ = (int) t->ne[2];
             if (t->ne[2] != n_expert_) {
                 err = std::string("expert tensor ") + t->name + " has a different expert count";

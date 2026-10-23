@@ -1,9 +1,10 @@
 // The model half of the planner's input: everything read from the gguf's own metadata and tensor
 // shapes, with no tensor data touched and the model never loaded.
 //
-// Which tensors are experts comes from the architecture recipe — the one table in the engine that
-// carries architecture knowledge — so a family the registry does not know produces a profile with
-// no experts, and the planner declines rather than guessing at a layout. Every other name this
+// Which tensors are experts is read from the file itself (bmoe/expert_layout.h: a block's 3-D
+// weights indexed by the declared expert count), the same discovery the streamer runs at load, so
+// there is no table of architectures to fall out of date. A MoE whose layout cannot be read that way
+// gets an error, and the planner declines rather than guessing at a layout. Every other name this
 // file matches (`token_embd`, `output`, `blk.N.attn_*`, `blk.N.ffn_*`) is the gguf naming
 // convention itself, shared by every architecture llama.cpp converts: a property of the FORMAT,
 // not of any model. A name matching nothing lands in Other and is priced as read-whole, which is

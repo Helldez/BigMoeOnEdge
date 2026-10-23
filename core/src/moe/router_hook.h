@@ -5,7 +5,7 @@
 //
 //   Capture — during a one-token warm-up decode (experts still mmap-resident), every
 //   graph node is offered to the callback in its "ask" pass. We scan each node's sources
-//   for the recipe's expert weight tensors (named blk.<il>.<suffix>.weight) and record
+//   for the expert layout's weight tensors (named blk.<il>.<suffix>.weight) and record
 //   the live ggml_tensor pointers per (layer, projection). No node is isolated. The
 //   runtime then hands these to ExpertStreamSource::init, which rebinds them.
 //

@@ -1649,7 +1649,7 @@ void dense_on_shared_device(Planning & s) {
            "Refused: this path crashes once streaming starts, and it measured slower.",
            "refused, and twice over. This path faults once the expert streamer starts, reproducibly - the "
            "expert override here is a literal pattern where the retired GPU-offload flag built one from the "
-           "architecture recipe, which is a bug and a small one. The larger reason is that the same "
+           "model's expert tensors, which is a bug and a small one. The larger reason is that the same "
            "placement was measured three times on a device of this class and LOST: full offload -27% on a "
            "Q4_0 run, because the dense and expert halves interleave, so a two-device split crosses the "
            "boundary twice per layer - 96 splits against 1 - and the boundary tax eats the CPU time the "
