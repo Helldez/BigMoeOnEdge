@@ -36,7 +36,9 @@ public:
 };
 
 // The system's curl. `scratch_dir` is a writable folder for the bytes in flight (created on
-// first use). Whether curl starts at all is only known when it is asked.
-std::unique_ptr<HttpFetch> curl_fetch(const std::string & scratch_dir);
+// first use). `endpoint` is the repository endpoint: https is fetched anywhere, plain http only
+// under it (download_policy.h: curl_protocols). Whether curl starts at all is only known when it
+// is asked.
+std::unique_ptr<HttpFetch> curl_fetch(const std::string & scratch_dir, const std::string & endpoint);
 
 } // namespace bmoe::server

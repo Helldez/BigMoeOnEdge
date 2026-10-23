@@ -1,5 +1,6 @@
 #include "model_delete.h"
 
+#include "download_policy.h"
 #include "model_files.h"
 
 #include <filesystem>
@@ -13,12 +14,6 @@ namespace {
 // What a file of a set being deleted is renamed to first: not a gguf name, so no scan lists it.
 constexpr const char * k_tombstone_suffix = ".deleting";
 
-// One part of a listed name: no separator, no drive colon, nothing that names a folder.
-bool plain_part(const std::string & s) {
-    return !s.empty() && s != "." && s != ".." && s.find_first_of("/\\:") == std::string::npos &&
-           s.find('\0') == std::string::npos;
-}
-
 } // namespace
 
 bool find_model_to_delete(
@@ -28,7 +23,8 @@ bool find_model_to_delete(
     const size_t slash = rel.find('/');
     const std::string folder = slash == std::string::npos ? "" : rel.substr(0, slash);
     const std::string name = slash == std::string::npos ? rel : rel.substr(slash + 1);
-    if (models_dir.empty() || !plain_part(name) || (slash != std::string::npos && !plain_part(folder))) {
+    if (models_dir.empty() || !is_plain_file_name(name) ||
+        (slash != std::string::npos && !is_plain_file_name(folder))) {
         err = "a model is named as the listing names it: its file, or its folder and file";
         return false;
     }

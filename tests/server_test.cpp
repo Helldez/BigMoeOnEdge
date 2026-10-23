@@ -14,6 +14,7 @@
 //     the device roles and their words, the memory pools, the decision groups.
 //   * downloads: which curl failures are retried and after how long, what a resume still needs on
 //     disk, and that deleting a partial download stays inside the models folder;
+//   * events: how many streams may be open, and that a stream that ends gives its place back;
 //   * a model from a link: which links are taken, the entry they become, the size a HEAD gives;
 //   * deleting a model: named as the listing names it, a split set whole, nothing outside the
 //     models folder, the loaded model recognised by identity.
@@ -23,6 +24,7 @@
 #include "access.h"
 #include "decide_protocol.h"
 #include "download_policy.h"
+#include "event_bus.h"
 #include "hf_repo.h"
 #include "json_util.h"
 #include "model_delete.h"
@@ -30,6 +32,7 @@
 #include "openai_chat.h"
 #include "plan_view.h"
 #include "settings_store.h"
+#include "sha256.h"
 #include "turn_queue.h"
 #include "url_entry.h"
 
@@ -45,6 +48,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace bmoe;
@@ -57,12 +61,13 @@ static void check(bool ok, const std::string & what) {
     if (!ok) ++failures;
 }
 
-static OpenAiChatRequest parsed(const char * body, bool * ok = nullptr, std::string * err = nullptr) {
+static OpenAiChatRequest
+parsed(const char * body, bool * ok = nullptr, std::string * err = nullptr, bool think = true) {
     OpenAiChatRequest r;
     std::string e;
     RunConfig cfg;
     cfg.n_predict = 100;
-    cfg.think = true;
+    cfg.think = think;
     const bool good = parse_chat_request(json::parse(body), cfg, r, e);
     if (ok) *ok = good;
     if (err) *err = e;
@@ -79,7 +84,8 @@ static void protocol_tests() {
         check(ok && r.turn.messages.size() == 2 && r.turn.messages[0].role == "system" &&
                   r.turn.messages[1].content == "ab",
               "developer is system, and text parts join");
-        check(r.turn.n_predict == 100 && r.turn.think && !r.stream && !r.include_usage && r.turn.tools.empty(),
+        check(r.turn.n_predict == 100 && r.turn.think && !r.stream && !r.include_usage && r.turn.tools.empty() &&
+                  r.turn.json_schema.empty(),
               "what a request leaves out comes from the config");
     }
     {
@@ -156,6 +162,106 @@ static void protocol_tests() {
               parsed(R"j({"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"none","think":true})j")
                   .turn.think,
           "thinking: the server's own field wins, and only effort none turns it off");
+    check(
+        parsed(R"j({"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"})j", nullptr, nullptr, false)
+                .turn.think &&
+            !parsed(R"j({"messages":[{"role":"user","content":"hi"}]})j", nullptr, nullptr, false).turn.think,
+        "thinking off by default: any effort but none turns it on, and no field keeps the default");
+
+    const std::pair<const char *, const char *> formats[] = {
+        {"null", ""},
+        {"{}", ""},
+        {R"j({"type":null})j", ""},
+        {R"j({"type":""})j", ""},
+        {R"j({"type":"text"})j", ""},
+        {R"j({"type":"json_object"})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_object","schema":{}})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_object","schema":null})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_schema"})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_schema","json_schema":null})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_schema","json_schema":{"schema":{}}})j", R"j({"type":"object"})j"},
+        {R"j({"type":"json_schema","json_schema":{"name":"answer","description":"An answer","strict":true,
+              "schema":{"type":"array","items":{"type":"string"}}}})j",
+         R"j({"type":"array","items":{"type":"string"}})j"},
+        {R"j({"type":"json_object","schema":{"type":"object","properties":{"city":{"type":"string"}},
+              "required":["city"],"additionalProperties":false}})j",
+         R"j({"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false})j"},
+    };
+    for (const auto & format : formats) {
+        const std::string body =
+            std::string(R"j({"messages":[{"role":"user","content":"hi"}],"response_format":)j") + format.first + "}";
+        const OpenAiChatRequest r = parsed(body.c_str(), &ok, &err);
+        check(ok && r.turn.json_schema == format.second,
+              "response_format maps to the template schema: " + std::string(format.first));
+    }
+    const std::pair<const char *, const char *> schema_fields[] = {
+        {R"j("json_schema":null)j", ""},
+        {R"j("json_schema":{})j", R"j({"type":"object"})j"},
+        {R"j("json_schema":{"type":"array","items":{"type":"integer"}})j",
+         R"j({"type":"array","items":{"type":"integer"}})j"},
+        {R"j("json_schema":{"type":"string"},"response_format":{"type":"text"})j", R"j({"type":"string"})j"},
+        {R"j("json_schema":{"type":"string"},"response_format":{"type":"json_object"})j", R"j({"type":"string"})j"},
+        {R"j("json_schema":{"type":"string"},"response_format":{"type":"json_object","schema":{}})j",
+         R"j({"type":"object"})j"},
+        {R"j("json_schema":{"type":"string"},"response_format":{"type":"json_schema"})j", R"j({"type":"object"})j"},
+        {R"j("json_schema":{"type":"string"},"response_format":{"type":"json_schema",
+              "json_schema":{"schema":{"type":"integer"}}})j",
+         R"j({"type":"integer"})j"},
+    };
+    for (const auto & fields : schema_fields) {
+        const std::string body = std::string(R"j({"messages":[{"role":"user","content":"hi"}],)j") + fields.first + "}";
+        const OpenAiChatRequest r = parsed(body.c_str(), &ok, &err);
+        check(ok && r.turn.json_schema == fields.second,
+              "top-level schema and response_format keep upstream precedence: " + std::string(fields.first));
+    }
+    for (const bool thinking : {false, true}) {
+        json body = {{"messages", {{{"role", "user"}, {"content", "hi"}}}},
+                     {"chat_template_kwargs", {{"enable_thinking", thinking}}},
+                     {"stream", true},
+                     {"response_format", {{"type", "json_object"}}},
+                     {"tools", {{{"type", "function"}, {"function", {{"name", "lookup"}}}}}},
+                     {"tool_choice", "auto"}};
+        const OpenAiChatRequest r = parsed(body.dump().c_str(), &ok);
+        check(ok && r.stream && r.turn.think == thinking && r.turn.json_schema == R"({"type":"object"})" &&
+                  r.turn.tools.size() == 1 && r.turn.tools[0].name == "lookup",
+              std::string("JSON output keeps tools and chat_template_kwargs.enable_thinking=") +
+                  (thinking ? "true" : "false"));
+    }
+    int format_shape = 0;
+    for (const char * format :
+         {"false", "7", "[]", R"j("json_object")j", R"j({"type":7})j", R"j({"type":{}})j", R"j({"type":"xml"})j",
+          R"j({"type":"json_object","schema":false})j", R"j({"type":"json_object","schema":[]})j",
+          R"j({"type":"json_object","schema":"{}"})j", R"j({"type":"json_schema","json_schema":7})j",
+          R"j({"type":"json_schema","json_schema":[]})j", R"j({"type":"json_schema","json_schema":{"schema":true}})j",
+          R"j({"type":"json_schema","json_schema":{"schema":[]}})j",
+          R"j({"type":"json_schema","json_schema":{"schema":"{}"}})j",
+          R"j({"type":"json_schema","json_schema":{"name":7}})j",
+          R"j({"type":"json_schema","json_schema":{"description":false}})j",
+          R"j({"type":"json_schema","json_schema":{"strict":"yes"}})j"}) {
+        const std::string body =
+            std::string(R"j({"messages":[{"role":"user","content":"hi"}],"response_format":)j") + format + "}";
+        bool threw = false;
+        try {
+            parsed(body.c_str(), &ok, &err);
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        check(!threw && !ok && err.find("response_format") != std::string::npos,
+              "an unsupported response_format is refused, not ignored or thrown (#" + std::to_string(++format_shape) +
+                  ")");
+    }
+    for (const char * schema : {"true", "false", "7", "[]", R"j("{}")j"}) {
+        const std::string body =
+            std::string(R"j({"messages":[{"role":"user","content":"hi"}],"json_schema":)j") + schema + "}";
+        bool threw = false;
+        try {
+            parsed(body.c_str(), &ok, &err);
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        check(!threw && !ok && err.find("json_schema") != std::string::npos,
+              "a top-level schema of the wrong shape is refused: " + std::string(schema));
+    }
 
     // The token budget is bounded where it enters: by the parameter table, not by what an int holds.
     const auto budget = [&](const char * field) {
@@ -188,6 +294,8 @@ static void protocol_tests() {
     check(r.tool_calls[0].id == "call_chatcmpl-9_0" && r.tool_calls[1].id == "given",
           "a call without an id gets one, and a given id is kept");
     check(finish_reason(r, 100) == "tool_calls", "a turn that calls finishes with tool_calls");
+    check(finish_reason(r, r.summary.n_generated) == "length",
+          "parsed tool calls cannot hide an exhausted token budget");
     const ChatResponseMeta meta{"chatcmpl-9", 5, "m.gguf"};
     const json c = completion_json(meta, r, finish_reason(r, 100));
     const json & msg = c["choices"][0]["message"];
@@ -211,7 +319,7 @@ static void protocol_tests() {
     {
         const RunError kinds[] = {
             RunError::None,          RunError::ContextFull,    RunError::EmptyPrompt, RunError::TemplateRejected,
-            RunError::NeedsChatMode, RunError::InvalidRequest, RunError::Failed};
+            RunError::NeedsChatMode, RunError::InvalidRequest, RunError::Failed,      RunError::InvalidOutput};
         std::set<std::string> names;
         for (RunError k : kinds)
             names.insert(run_error_name(k));
@@ -231,6 +339,23 @@ static void protocol_tests() {
     check(completion_json(meta, plain, "stop")["choices"][0]["message"]["content"] == "hi" &&
               !completion_json(meta, plain, "stop")["choices"][0]["message"].contains("tool_calls"),
           "an ordinary answer has text and no calls");
+    RunResult partial;
+    partial.ok = true;
+    partial.generated_text = R"({"city":")";
+    partial.reasoning_text = "The city is known.";
+    partial.summary.n_predict = 3;
+    partial.summary.n_generated = 3;
+    const json limited = completion_json(meta, partial, finish_reason(partial, 10));
+    check(limited["choices"][0]["finish_reason"] == "length" &&
+              limited["choices"][0]["message"]["content"] == partial.generated_text &&
+              limited["choices"][0]["message"]["reasoning_content"] == partial.reasoning_text,
+          "a truncated JSON answer keeps its partial content, separate reasoning and length reason");
+    partial.cancelled = true;
+    const json cancelled = chunk_json(meta, json::object(), finish_reason(partial, 10));
+    check(cancelled["choices"][0]["finish_reason"] == "cancelled" &&
+              completion_json(meta, partial, finish_reason(partial, 10))["choices"][0]["message"]["content"] ==
+                  partial.generated_text,
+          "cancellation keeps its real reason and does not repair incomplete JSON");
 }
 
 static void queue_tests() {
@@ -318,6 +443,7 @@ static void settings_tests() {
 
     s.set_launch_values({{"threads", "8"}});
     check(s.config().n_threads == 8, "launch flags override the plan");
+    check(s.launch_keys() == std::vector<std::string>{"threads"}, "launch keys: the launch layer's");
 
     json rejected = s.apply(json{{"threads", 12}, {"top-k", "abc"}, {"nope", 1}}, {});
     check(s.config().n_threads == 12, "user values override launch flags");
@@ -325,6 +451,7 @@ static void settings_tests() {
           "unparseable values and unknown keys are rejected, the rest applied");
     const auto keys = s.operator_keys();
     check(keys.size() == 1 && keys[0] == "threads", "operator keys: launch and user");
+    check(s.launch_keys().empty(), "launch keys: a value the person sets is theirs, no longer the launch's");
 
     s.apply(json::object(), {"threads"});
     check(s.config().n_threads == 6, "reset removes the key from every operator layer: the plan shows through");
@@ -398,6 +525,44 @@ static void json_tests() {
     check(!is_json_content_type("application/jsonp") && !is_json_content_type("text/plain; application/json") &&
               !is_json_content_type("application/json, text/plain"),
           "a type that only contains the word is not JSON");
+
+    const std::string object = u8"{\"city\":\"北京\",\"emoji\":\"🙂𐍈\",\"accent\":\"é\"}";
+    const std::string reasoning = u8"城市是北京，réponse 🙂。";
+    const ChatResponseMeta meta{"chatcmpl-utf8", 5, "m.gguf"};
+    for (const auto & field : {std::pair<const char *, std::string>{"content", object},
+                               std::pair<const char *, std::string>{"reasoning_content", reasoning}}) {
+        std::string sent, reconstructed;
+        bool exact = true;
+        for (size_t count = 1; count <= field.second.size(); ++count) {
+            const std::string raw = field.second.substr(0, count);
+            const std::string visible = raw.substr(0, complete_utf8_prefix_size(raw));
+            const std::string delta = visible.substr(sent.size());
+            try {
+                const json chunk = chunk_json(meta, json{{field.first, delta}}, nullptr);
+                // Strict serialization must also work: replacement must never be needed for a
+                // completed code point, even when every byte arrived from a different token.
+                const std::string strict = chunk.dump();
+                const std::string replacing = chunk.dump(-1, ' ', false, json::error_handler_t::replace);
+                exact = exact && strict == replacing;
+                reconstructed += json::parse(replacing)["choices"][0]["delta"][field.first].get<std::string>();
+            } catch (const std::exception &) {
+                exact = false;
+            }
+            sent = visible;
+        }
+        check(exact && reconstructed == field.second,
+              std::string("SSE ") + field.first + " reconstructs Chinese, emoji and accented text across byte tokens");
+    }
+    check(complete_utf8_prefix_size("") == 0 && complete_utf8_prefix_size("ASCII") == 5 &&
+              complete_utf8_prefix_size(std::string("a\xE4\xB8", 3)) == 1 &&
+              complete_utf8_prefix_size(std::string("a\xF0\x9F\x99", 4)) == 1,
+          "incomplete final code points wait without hiding complete ASCII");
+    check(complete_utf8_prefix_size(std::string("a\xC0\x80", 3)) == 1 &&
+              complete_utf8_prefix_size(std::string("a\xED\xA0\x80", 4)) == 1 &&
+              complete_utf8_prefix_size(std::string("a\xF4\x90\x80\x80", 5)) == 1 &&
+              complete_utf8_prefix_size(std::string("a\xE4x", 3)) == 1 &&
+              complete_utf8_prefix_size(std::string("a\xF4\x8F\xBF\xBF", 5)) == 5,
+          "UTF-8 boundaries reject invalid, overlong, surrogate and out-of-range encodings");
 }
 
 static void access_tests() {
@@ -408,6 +573,12 @@ static void access_tests() {
               is_loopback_host("::1") && !is_loopback_host("0.0.0.0") && !is_loopback_host("example.com:8765") &&
               !is_loopback_host("192.168.1.10"),
           "loopback host names, with or without a port");
+    check(browse_url("127.0.0.1", 8765) == "http://127.0.0.1:8765/" &&
+              browse_url("0.0.0.0", 8765) == "http://127.0.0.1:8765/" &&
+              browse_url("::", 8765) == "http://[::1]:8765/" && browse_url("::1", 1) == "http://[::1]:1/" &&
+              browse_url("[::1]", 1) == "http://[::1]:1/" && browse_url("fe80::2", 80) == "http://[fe80::2]:80/" &&
+              browse_url("localhost", 80) == "http://localhost:80/",
+          "the URL a person opens: a wildcard bind through loopback, an IPv6 literal in brackets");
 
     check(bearer_matches("Bearer s3cret", "s3cret") && bearer_matches("bearer s3cret", "s3cret"),
           "a bearer token matches the key, the scheme in either case");
@@ -757,7 +928,8 @@ static void hf_tests() {
 
     const json tree = json::parse(R"([
       {"type":"file","path":"README.md","size":467},
-      {"type":"file","path":"Qwen3.6-35B-A3B-Q4_K_M.gguf","size":20419565568},
+      {"type":"file","path":"Qwen3.6-35B-A3B-Q4_K_M.gguf","size":20419565568,
+       "lfs":{"oid":"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08","size":20419565568}},
       {"type":"file","path":"mmproj-Qwen3.6-35B-A3B-Q8_0.gguf","size":614194304},
       {"type":"file","path":"mtp-Qwen3.6-35B-A3B-Q8_0.gguf","size":4194304},
       {"type":"file","path":"Q2_K/big-Q2_K-00002-of-00003.gguf","size":200},
@@ -809,8 +981,10 @@ static void hf_tests() {
               e.files[0].name == "Qwen3.6-35B-A3B-Q4_K_M.gguf" &&
               e.files[0].url == "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/"
                                 "Qwen3.6-35B-A3B-Q4_K_M.gguf?download=true" &&
-              e.files[0].bytes == 20419565568ull && is_hf_catalog_id(e.id),
-          "hf: the catalog entry a model becomes");
+              e.files[0].bytes == 20419565568ull && is_hf_catalog_id(e.id) &&
+              e.files[0].sha256 == "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+          "hf: the catalog entry a model becomes, with the LFS oid as the file's digest");
+    check(models[0].files[0].sha256.empty(), "hf: a file the listing gives no oid for has no digest");
     const CatalogEntry split = hf_catalog_entry("https://mirror.example", g, models[0]);
     check(split.files.size() == 2 && split.files[1].name == "big-Q2_K-00002-of-00003.gguf" &&
               split.files[1].url == "https://mirror.example/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/Q2_K/"
@@ -958,24 +1132,25 @@ static void plan_view_tests() {
     dead.usable = Tri::No;
     dead.unusable_reason = "the probe ended without an answer";
     hw.devices.push_back(dead);
-    ModelProfile model;
-    model.expert_bytes = 10ull << 30;
     Plan plan;
     plan.regime = Regime::ExpertsStream;
     plan.config.prefill.device = "NPU0";
     plan.allocation.cache_bytes = 2ull << 30;
     plan.allocation.seconds_per_token = 0.3;
+    plan.allocation.seconds_worst_case = 1.2;
+    plan.allocation.cache_hit_credited = 0.2;
     plan.allocation.ledger.holdable_cap = 5ull << 30;
     plan.allocation.ledger.rows = {{"dense", 1ull << 30, true, false},
                                    {"expert cache", 2ull << 30, true, false},
                                    {"device slots", 1ull << 29, true, true}};
-    json v = plan_view(hw, model, plan);
+    json v = plan_view(hw, plan);
     check(v["summary"]["sentence"] == "Experts stream from flash, with a 2.0 GiB cache.", "plan view: the sentence");
     check(v["summary"]["lanes"][0]["on"] == json::array({"NPU0"}) && v["summary"]["lanes"][0]["label"] == "Prompt",
           "plan view: the prompt lane names the armed device");
     check(v["summary"]["lanes"][1]["on"] == json::array({"CPU"}), "plan view: tokens stay on the host");
-    check(v["predicted"]["s_per_token"] == 0.3 && v["predicted"]["cache_hit_pct"] == 20.0,
-          "plan view: the prediction the CLI prints");
+    check(v["predicted"]["s_per_token"] == 0.3 && v["predicted"]["cache_hit_pct"] == 20.0 &&
+              v["predicted"]["s_per_token_worst"] == 1.2,
+          "plan view: the prediction the CLI prints, its credited hits and its bound");
     const json * c = device_named(v, "CPU");
     check(c && (*c)["uses"] == json::array({"tokens"}) && (*c)["badge"] == "Tokens" &&
               (*c)["rate_text"] == "The reference",
@@ -1002,7 +1177,7 @@ static void plan_view_tests() {
     Plan unknown_lock = plan;
     unknown_lock.allocation.ledger.lockable_cap_known = false;
     unknown_lock.allocation.cache_lock_unverified = true;
-    const json uncertain_memory = plan_view(hw, model, unknown_lock)["memory"]["pools"][0];
+    const json uncertain_memory = plan_view(hw, unknown_lock)["memory"]["pools"][0];
     check(uncertain_memory["lockable_cap_known"] == false && uncertain_memory["cache_lock_unverified"] == true &&
               uncertain_memory["cap_bytes"] == pools[0]["cap_bytes"],
           "plan view: an unmeasured lock ceiling and pending grant stay distinct from process capacity");
@@ -1023,7 +1198,7 @@ static void plan_view_tests() {
     dp.placement.device_compute_bytes = 1ull << 30;
     dp.placement.projected_devices = {"CUDA0"};
     dp.placement.projected_compute_bytes = {1ull << 30};
-    v = plan_view(desk, model, dp);
+    v = plan_view(desk, dp);
     check(v["memory"]["pools"].size() == 2 && v["memory"]["pools"][1]["name"] == "CUDA0" &&
               v["memory"]["pools"][1]["rows"][0]["bytes"] == (8ull << 30) &&
               v["memory"]["pools"][1]["estimated"] == false,
@@ -1031,20 +1206,20 @@ static void plan_view_tests() {
     check(v["summary"]["lanes"][1]["on"] == json::array({"CPU", "CUDA0"}), "plan view: layers put the card on tokens");
     check((*device_named(v, "CUDA0"))["badge"] == "Layers", "plan view: the card's badge");
     dp.placement.shared_memory_placement = true;
-    v = plan_view(desk, model, dp);
+    v = plan_view(desk, dp);
     check(v["memory"]["pools"].size() == 1, "plan view: a declined placement holds nothing on the device");
 
     // The cores alone: three answers to "no device", kept apart.
     HardwareProfile cpu;
     cpu.devices.push_back(device("CPU", true));
-    check(plan_view(cpu, model, Plan{})["devices_none"] == "not_probed", "plan view: nobody looked");
+    check(plan_view(cpu, Plan{})["devices_none"] == "not_probed", "plan view: nobody looked");
     cpu.backends_looked = true;
-    check(plan_view(cpu, model, Plan{})["devices_none"] == "build", "plan view: the build carries no backend");
+    check(plan_view(cpu, Plan{})["devices_none"] == "build", "plan view: the build carries no backend");
     cpu.backends_placeable = 1;
-    json cv = plan_view(cpu, model, Plan{});
+    json cv = plan_view(cpu, Plan{});
     check(cv["devices_none"] == "machine" && !cv["devices_none_text"].get<std::string>().empty(),
           "plan view: a backend found nothing here");
-    check(plan_view(cpu, model, Plan{})["summary"]["sentence"] == "The model could not be read.",
+    check(plan_view(cpu, Plan{})["summary"]["sentence"] == "The model could not be read.",
           "plan view: an unread model says so");
 
     // Decisions: who decided, and what.
@@ -1162,6 +1337,59 @@ static void download_tests() {
         check(!partial_file_path(models.u8string(), bad, out),
               std::string("downloads: '") + bad + "' names no partial");
 
+    check(is_plain_file_name("m-00001-of-00003.gguf") && !is_plain_file_name("../m.gguf") &&
+              !is_plain_file_name("sub/m.gguf") && !is_plain_file_name("..") && !is_plain_file_name("") &&
+              !is_plain_file_name(std::string("m\0.gguf", 7)),
+          "downloads: a catalog file name is a bare name or nothing");
+    const std::string url = "https://huggingface.co/a/b/resolve/main/m.gguf";
+    const std::string hf = "https://huggingface.co";
+    check(catalog_file_refusal("m.gguf", url, "", hf).empty() &&
+              catalog_file_refusal("m.gguf", url, std::string(64, 'a'), hf).empty(),
+          "downloads: a plain name with an https URL is offered, with or without a digest");
+    check(!catalog_file_refusal("../m.gguf", url, "", hf).empty() &&
+              !catalog_file_refusal("C:m.gguf", url, "", hf).empty(),
+          "downloads: a catalog row whose name leaves the models folder is refused at load");
+    check(!catalog_file_refusal("m.gguf", "-o/etc/passwd", "", hf).empty() &&
+              !catalog_file_refusal("m.gguf", "file:///etc/passwd", "", hf).empty(),
+          "downloads: a URL that is not http(s), or reads as an option, is refused");
+    check(!catalog_file_refusal("m.gguf", url, "abc", hf).empty() &&
+              !catalog_file_refusal("m.gguf", url, std::string(64, 'G'), hf).empty(),
+          "downloads: a digest that is not 64 hex digits is refused");
+    const std::string mirror = "http://mirror.lan";
+    check(curl_protocols(url, hf) == "=https" && curl_protocols(url, mirror) == "=https" &&
+              curl_protocols("ftp://x", mirror).empty(),
+          "downloads: https stays https on every redirect, whatever the endpoint");
+    check(curl_protocols("http://mirror.lan/a/b/resolve/main/m.gguf", mirror) == "=http,https",
+          "downloads: plain http is let through under the http mirror the operator named");
+    check(curl_protocols("http://huggingface.co/a/b/resolve/main/m.gguf", hf).empty() &&
+              curl_protocols("http://mirror.lan/x", hf).empty() &&
+              curl_protocols("http://mirror.lan.example.com/x", mirror).empty() &&
+              curl_protocols("http://mirror.lan@elsewhere/x", mirror).empty() &&
+              curl_protocols("http://mirror.lan", mirror).empty(),
+          "downloads: any other http URL is refused, a lookalike host or a userinfo trick included");
+    check(!catalog_file_refusal("m.gguf", "http://elsewhere/m.gguf", "", mirror).empty() &&
+              catalog_file_refusal("m.gguf", "http://mirror.lan/a/b/resolve/main/m.gguf", "", mirror).empty() &&
+              !catalog_file_refusal("m.gguf", "http://mirror.lan/a/b/resolve/main/m.gguf", "", hf).empty(),
+          "downloads: a catalog row over http is offered only under the http mirror the server was given");
+
+    check(Sha256().hex_digest() == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "sha256: the empty input");
+    Sha256 abc;
+    abc.update("abc", 3);
+    check(abc.hex_digest() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256: \"abc\"");
+    Sha256 two_blocks;
+    const std::string nist = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    two_blocks.update(nist.data(), 10);
+    two_blocks.update(nist.data() + 10, nist.size() - 10);
+    check(two_blocks.hex_digest() == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+          "sha256: a two-block input fed in pieces");
+    Sha256 million;
+    const std::string as(1000, 'a');
+    for (int i = 0; i < 1000; ++i)
+        million.update(as.data(), as.size());
+    check(million.hex_digest() == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+          "sha256: a million 'a's");
+
     write(models / "a.gguf.part", "12345");
     write(models / "b.gguf.part", "678");
     write(models / "a.gguf", "whole");
@@ -1185,8 +1413,53 @@ static void download_tests() {
         check(delete_partial_files(models.u8string(), {"link.gguf"}, freed, err) && fs::exists(dir / "outside.part") &&
                   !fs::exists(fs::symlink_status(models / "link.gguf.part")),
               "downloads: a link named like a partial is removed as the link, its target kept");
+    write(models / "abc.gguf.part", "abc");
+    std::string hex;
+    check(sha256_file((models / "abc.gguf.part").u8string(), hex, err) &&
+              hex == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" &&
+              digest_refusal(hex, hex).empty() && digest_refusal("", hex).empty(),
+          "downloads: a finished file whose digest is the catalog's is accepted");
+    check(!digest_refusal(std::string(64, '0'), hex).empty(), "downloads: and one whose digest differs is not");
+    {
+        // Past the reader's chunk, so its seams are crossed: the file's digest is the one of its bytes.
+        std::string big(9u << 20, '\0');
+        for (size_t i = 0; i < big.size(); ++i)
+            big[i] = (char) (i * 2654435761u >> 13);
+        std::FILE * f = std::fopen((models / "big.part").u8string().c_str(), "wb");
+        if (f) {
+            std::fwrite(big.data(), 1, big.size(), f);
+            std::fclose(f);
+        }
+        Sha256 want;
+        want.update(big.data(), 7);
+        want.update(big.data() + 7, big.size() - 7);
+        check(sha256_file((models / "big.part").u8string(), hex, err) && hex == want.hex_digest(),
+              "downloads: a file longer than one read hashes as its bytes do");
+    }
+    check(!sha256_file((models / "absent").u8string(), hex, err) && !err.empty(),
+          "downloads: a file that cannot be read has no digest");
     check(gb_label(47'000'000'000ull) == "47.0 GB", "downloads: sizes are decimal GB, as the Android app writes them");
     fs::remove_all(dir, ec);
+}
+
+// The event fan-out: a bounded number of streams, each a worker held for its lifetime.
+static void event_bus_tests() {
+    EventBus bus(2);
+    auto a = bus.subscribe();
+    auto b = bus.subscribe();
+    check(a && b && !bus.subscribe(), "events: past the cap a stream is refused, not held");
+    bus.unsubscribe(a);
+    auto c = bus.subscribe();
+    check(c != nullptr, "events: a stream that ends gives its place back");
+    bus.publish("state", json{{"x", 1}});
+    std::string f;
+    check(EventBus::next(*b, f, std::chrono::milliseconds(0)) && f.find("event: state") == 0 &&
+              EventBus::next(*c, f, std::chrono::milliseconds(0)) && f.find("event: state") == 0,
+          "events: every subscriber gets the frame");
+    check(EventBus::next(*b, f, std::chrono::milliseconds(0)) && f.empty(), "events: nothing new is an empty frame");
+    bus.close_all();
+    check(!EventBus::next(*c, f, std::chrono::milliseconds(0)), "events: a closed bus ends every stream");
+    check(k_max_event_streams > 0 && EventBus().subscribe() != nullptr, "events: the default bus takes a stream");
 }
 
 static void url_entry_tests() {
@@ -1357,6 +1630,7 @@ int main() {
     hf_tests();
     plan_view_tests();
     download_tests();
+    event_bus_tests();
     url_entry_tests();
     model_delete_tests();
     if (failures) {

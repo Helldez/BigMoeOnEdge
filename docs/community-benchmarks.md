@@ -89,7 +89,7 @@ Override with an environment variable, and say so in the issue:
 | `N_PREDICT` | 256 | never below 256, the cache is still warming |
 
 Flags after the model path reach `bmoe-cli` verbatim: only the ones that change the model, not the
-engine (`--no-think` for gpt-oss, `--n-expert-used 6` for a turbo top-k row, which is lossy and
+engine (`--think` to measure a reasoning run, `--n-expert-used 6` for a turbo top-k row, which is lossy and
 sits *next to* the default row). To understand what the plan chose, see
 [benchmark-method.md](benchmark-method.md) and [hardware-planning.md](hardware-planning.md).
 
@@ -130,7 +130,7 @@ the table is for. What the app catalog ships:
 | Qwen3.6-35B-A3B | Q4_K_M | 22.3 GB | [bartowski/Qwen_Qwen3.6-35B-A3B-GGUF](https://huggingface.co/bartowski/Qwen_Qwen3.6-35B-A3B-GGUF) | the README's reference row |
 | Qwen3-30B-A3B | Q4_K_M | 18.5 GB | [unsloth/Qwen3-30B-A3B-GGUF](https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF) | |
 | Gemma-4-26B-A4B-it | Q4_K_M | 17.0 GB | [bartowski/google_gemma-4-26B-A4B-it-GGUF](https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF) | |
-| gpt-oss-120b | Q4_K_M | 62.8 GB | [unsloth/gpt-oss-120b-GGUF](https://huggingface.co/unsloth/gpt-oss-120b-GGUF) | add `--no-think`; pass the first shard |
+| gpt-oss-120b | Q4_K_M | 62.8 GB | [unsloth/gpt-oss-120b-GGUF](https://huggingface.co/unsloth/gpt-oss-120b-GGUF) | thinking stays off (the default); pass the first shard |
 | DeepSeek V4 Flash 0731 | UD-IQ2_M | 90.9 GB | [unsloth/DeepSeek-V4-Flash-0731-GGUF](https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF) | pass the first shard |
 | Qwen3.8-Flash-Next | UD-IQ3_XXS | 82.0 GB | [unsloth/Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) | needs engine 0.22.0+; pass the first shard |
 | Qwen3.8-Flash-Next | Q2_K | 80.4 GB | [DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF](https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF) | dense side at 2-4 bit (2.4 GB pinned); no imatrix; pass the first shard |

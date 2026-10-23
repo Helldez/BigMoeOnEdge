@@ -58,7 +58,7 @@ context length after it.
 then clears the KV and re-prefills the whole prompt for that turn (correct, just slower). With
 thinking **on**, the template strips the previous turn's reasoning on re-render, so the rendered
 prefix diverges at the last answer and up to one answer's worth of tokens is re-prefilled per turn;
-with thinking **off** (the app default) the re-fed suffix is just the new user turn plus a few
+with thinking **off** (the default) the re-fed suffix is just the new user turn plus a few
 wrapper tokens.
 
 **Reasoning is returned, not discarded.** On a thinking model the Session parses the reasoning span

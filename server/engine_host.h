@@ -31,9 +31,10 @@ namespace bmoe::server {
 // The stable codes an error carries beside its message, for a client to act on (docs/server-api.md).
 // The engine's own failures use run_error_name(); these are the host's refusals before the engine.
 namespace error_code {
-inline constexpr const char * busy = "busy";               // the line of waiting requests is full
-inline constexpr const char * client_gone = "client_gone"; // never sent: the client left the line
-inline constexpr const char * no_model = "no_model";       // nothing is loaded to answer
+inline constexpr const char * busy = "busy";                 // the line of waiting requests is full
+inline constexpr const char * client_gone = "client_gone";   // never sent: the client left the line
+inline constexpr const char * no_model = "no_model";         // nothing is loaded to answer
+inline constexpr const char * streams_full = "streams_full"; // every event stream place is taken
 } // namespace error_code
 
 struct ChatOutcome {
@@ -54,6 +55,11 @@ struct DecideOutcome {
 // How many chat turns may wait behind the running one before the next is turned away. A local
 // server has a handful of clients; a line longer than this is a client retrying, not a workload.
 inline constexpr size_t k_max_waiting_turns = 16;
+
+// What /api/info says about a session's context against what a client of the server sends
+// (RunConfig::ctx_for_clients): the recommendation, whether `n_ctx` is short of it, and the parameter
+// that raises it, so a front-end names neither the number nor the key.
+json context_advice(int n_ctx);
 
 class EngineHost {
 public:
@@ -94,8 +100,10 @@ public:
     // predicted are checked against these.
     json last_turn() const;
 
-    // True when a session is loaded and `current` differs from it in a session-scoped parameter.
-    bool reload_required(const RunConfig & current) const;
+    // The session-scoped parameters in which `current` differs from the loaded session, in table
+    // order; empty when no session is loaded. reload_required() is whether there is any.
+    std::vector<std::string> reload_keys(const RunConfig & current) const;
+    bool reload_required(const RunConfig & current) const { return !reload_keys(current).empty(); }
 
     // Run one chat turn on the calling thread, after any turn that asked first (turn_queue.h).
     // `on_token` (nullable) sees every token and returns false once the client that asked for this

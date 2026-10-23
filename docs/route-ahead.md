@@ -137,9 +137,11 @@ Two of those numbers were bugs, found by instrumenting rather than by argument:
   int8 mirror of each gate (one scale per expert row) with the activation quantized per call
   makes the inner loop int8×int8 in int32 — the shape ARM's dotprod instructions exist for — and
   cuts it to **6 ms/token** on device from 19, with the committed selection agreeing with the
-  router on 74.5% of slots against 74.7% for the exact weights. It is aarch64-only and measured
-  both ways: on x86 the float path is already vectorized and bandwidth is ample, so the int8
-  detour costs more than it saves.
+  router on 74.5% of slots against 74.7% for the exact weights. It does not win everywhere: on an
+  x86 host with bandwidth to spare the float path was faster (0.26 against 0.38 ms per GEMV), so
+  which one a run uses is `--gate-mirror`, whose `auto` times both kernels on the model's gate
+  shape (in the `--auto` probe, or at load) and keeps the faster. On a development laptop the
+  timing gave the mirror 5.7 against 42.8 us per layer on a 2048 x 128 gate.
 
 ## Status
 

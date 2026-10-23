@@ -9,15 +9,19 @@
 //   * cancel() and unload() during a turn stop it: the turn answers cancelled, and unload leaves the
 //     host empty with the session gone;
 //   * the last full turn is the measured one; a cancelled turn is not, and a load clears it;
-//   * a failed decode closes the session (500, state error), a recoverable kind keeps it (400);
+//   * a failed decode closes the session (500, state error), while a refused request (400) or
+//     rolled-back invalid output (500) keeps it;
 //   * decide() follows the same rule on `fatal`;
-//   * the engine's diagnostics reach the bus as `log` events while a host lives.
+//   * the engine's diagnostics reach the bus as `log` events while a host lives;
+//   * a context short of what a server's clients send is flagged in the ready state and warned of
+//     in the log at load, and a context_full refusal is logged with the way to raise it.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "engine_host.h"
 
 #include "bmoe/log.h"
+#include "bmoe/params.h"
 
 #include <atomic>
 #include <chrono>
@@ -29,6 +33,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace bmoe;
 using namespace bmoe::server;
@@ -62,13 +67,15 @@ struct Gate {
 struct Script {
     // How generate() ends. Blocking turns signal `started` and run until cancel(); streaming ones
     // do the same while sending a token every millisecond, counted in `tokens`.
-    enum class Turn { Ok, Block, Stream, Fail, ContextFull } turn = Turn::Ok;
+    enum class Turn { Ok, Block, Stream, Fail, ContextFull, InvalidOutput } turn = Turn::Ok;
     DecideResult decide_result;
+    int n_ctx = 4096; // the session's context: short of what a server's clients send, as the default is
 
     Gate started;
     std::atomic<int> opened{0};
     std::atomic<int> alive{0};
     std::atomic<int> turns{0};
+    GenerateRequest last_request;
     std::atomic<int> tokens{0};
 };
 
@@ -77,9 +84,11 @@ public:
     explicit FakeSession(Script & s) : s_(s) { ++s_.alive; }
     ~FakeSession() override { --s_.alive; }
 
-    RunResult generate(const GenerateRequest &, const std::function<void(const TokenMetrics &)> & on_token) override {
+    RunResult generate(const GenerateRequest & req,
+                       const std::function<void(const TokenMetrics &)> & on_token) override {
         ++s_.turns;
         cancelled_ = false; // as the session does: a cancel latches for the generation it lands in
+        s_.last_request = req;
         RunResult r;
         switch (s_.turn) {
         case Script::Turn::Ok: {
@@ -124,6 +133,10 @@ public:
             r.error = "the conversation exceeds the session n_ctx";
             r.error_kind = RunError::ContextFull;
             return r;
+        case Script::Turn::InvalidOutput:
+            r.error = "JSON output constraint produced invalid JSON";
+            r.error_kind = RunError::InvalidOutput;
+            return r;
         }
         return r;
     }
@@ -131,7 +144,7 @@ public:
     void cancel() override { cancelled_ = true; }
 
     const std::string & arch() const override { return arch_; }
-    int n_ctx() const override { return 4096; }
+    int n_ctx() const override { return s_.n_ctx; }
     int n_expert_used() const override { return 8; }
     ThinkControl think_control() const override { return ThinkControl::Template; }
     double load_seconds() const override { return 0.25; }
@@ -202,6 +215,13 @@ static void load_tests() {
                   info["model"].value("name", "") == "fake.gguf",
               "the ready state describes the session the opener made");
         check(host.model_name() == "fake.gguf" && script.opened == 1, "one load opened one session");
+        check(host.reload_keys(config()).empty() && !host.reload_required(config()),
+              "the config the session loaded with needs no reload");
+        RunConfig changed = config();
+        check(apply_flag(changed, "--threads", "3").matched && apply_flag(changed, "--n-predict", "7").matched,
+              "the test edits one session row and one request row");
+        check(host.reload_keys(changed) == std::vector<std::string>{"threads"} && host.reload_required(changed),
+              "only a session row that differs from the loaded session needs a reload");
 
         RunConfig bad = config();
         bad.model_path.clear();
@@ -252,6 +272,39 @@ static void loading_tests() {
         const ChatOutcome out = pending.get();
         check(out.status == 503 && out.code == error_code::no_model, "and gets the 503 once it has");
     }
+}
+
+static void request_tests() {
+    EventBus bus;
+    Script script;
+    EngineHost host(bus, opener(script));
+    host.load(config(), config());
+    check(wait_state(host, "ready"), "the request-mapping session is ready");
+    ChatRequest constrained = turn();
+    constrained.think = false;
+    constrained.json_schema = R"({"type":"object"})";
+    check(host.chat(constrained, nullptr).status == 200 && script.last_request.json_schema == constrained.json_schema &&
+              !script.last_request.think && !script.last_request.clear_kv && script.last_request.render_text &&
+              script.last_request.messages.size() == 1 && script.last_request.messages.back().content == "hello" &&
+              script.last_request.n_predict == 4,
+          "a JSON object constraint reaches the session beside the existing request fields");
+    check(host.chat(turn(), nullptr).status == 200 && script.last_request.json_schema.empty(),
+          "a following ordinary request carries no constraint");
+    check(host.chat(constrained, nullptr).status == 200 && script.last_request.json_schema == constrained.json_schema &&
+              script.opened == 1,
+          "JSON object output can be requested again without reloading the session");
+    ChatRequest array = turn();
+    array.json_schema = R"({"type":"array","items":{"type":"integer"}})";
+    array.think = true;
+    array.tools = {{"lookup", "Look up a value", R"({"type":"object"})"}};
+    array.tool_choice = ToolChoice::Required;
+    check(host.chat(array, nullptr).status == 200 && script.last_request.json_schema == array.json_schema &&
+              script.last_request.think && script.last_request.tools.size() == 1 &&
+              script.last_request.tools[0].name == "lookup" && script.last_request.tool_choice == ToolChoice::Required,
+          "a non-object output schema reaches the session with thinking and tools unchanged");
+    check(host.chat(turn(), nullptr).status == 200 && script.last_request.json_schema.empty() &&
+              script.last_request.tools.empty() && script.last_request.tool_choice == ToolChoice::Auto,
+          "schema, tools and tool choice do not leak into the next ordinary request");
 }
 
 static void cancel_tests() {
@@ -375,6 +428,32 @@ static void measured_tests() {
 }
 
 static void failure_tests() {
+    check(std::string(run_error_name(RunError::InvalidOutput)) == "invalid_output" &&
+              run_error_recoverable(RunError::InvalidOutput) && !run_error_recoverable(RunError::Failed),
+          "invalid output has a stable recoverable code, distinct from a failed decode");
+    {
+        EventBus bus;
+        Script script;
+        script.turn = Script::Turn::InvalidOutput;
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        check(wait_state(host, "ready"), "the invalid-output session is ready");
+        ChatRequest constrained = turn();
+        constrained.think = false;
+        constrained.json_schema = R"({"type":"object"})";
+        const ChatOutcome out = host.chat(constrained, nullptr);
+        check(out.status == 500 && out.code == "invalid_output" && !out.result.ok,
+              "invalid generated JSON is a server error, not a successful or malformed request");
+        check(host.ready() && state(host) == "ready" && script.alive == 1 && script.opened == 1,
+              "a rolled-back invalid output keeps the loaded session ready");
+        check(host.last_turn().is_null(), "invalid output is not recorded as a completed measurement");
+        script.turn = Script::Turn::Ok;
+        check(host.chat(turn(), nullptr).status == 200 && script.last_request.json_schema.empty(),
+              "an ordinary request succeeds after invalid output");
+        check(host.chat(constrained, nullptr).status == 200 &&
+                  script.last_request.json_schema == constrained.json_schema && script.alive == 1 && script.opened == 1,
+              "a constrained request also succeeds without reloading the session");
+    }
     {
         EventBus bus;
         Script script;
@@ -443,13 +522,65 @@ static void log_tests() {
     bus.unsubscribe(q);
 }
 
+// The next `log` event on `q` whose message contains `needle`, or "".
+static std::string log_with(EventBus::Queue & q, const std::string & needle) {
+    std::string frame;
+    while (EventBus::next(q, frame, 100ms) && !frame.empty())
+        if (frame.find("event: log\n") == 0 && frame.find(needle) != std::string::npos) return frame;
+    return "";
+}
+
+static void context_tests() {
+    const std::string recommended = std::to_string(RunConfig::ctx_for_clients);
+    {
+        EventBus bus;
+        auto q = bus.subscribe();
+        Script script; // a 4096-token session, as the server's default makes
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        wait_state(host, "ready");
+        const json advice = host.info()["model"].value("ctx_advice", json::object());
+        check(advice.value("recommended", 0) == RunConfig::ctx_for_clients && advice.value("short", false) &&
+                  find_param(advice.value("param", "")) != nullptr,
+              "a short context is flagged in the ready state, with the recommendation and the parameter");
+        const std::string warn = log_with(*q, "under the " + recommended);
+        check(warn.find("\"level\":\"warn\"") != std::string::npos &&
+                  warn.find(flag_spelling(advice.value("param", ""), recommended)) != std::string::npos,
+              "and warned of at load, with the flag that raises it");
+
+        script.turn = Script::Turn::ContextFull;
+        check(host.chat(turn(), nullptr).code == "context_full", "a turn past the context is refused");
+        const std::string refused = log_with(*q, "refused with context_full");
+        check(refused.find("\"level\":\"warn\"") != std::string::npos &&
+                  refused.find(flag_spelling(advice.value("param", ""))) != std::string::npos,
+              "and the refusal is logged with the way to raise the context");
+        bus.unsubscribe(q);
+    }
+    {
+        EventBus bus;
+        auto q = bus.subscribe();
+        Script script;
+        script.n_ctx = RunConfig::ctx_for_clients;
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        wait_state(host, "ready");
+        const json advice = host.info()["model"].value("ctx_advice", json::object());
+        check(advice.value("recommended", 0) == RunConfig::ctx_for_clients && !advice.value("short", true),
+              "a context at the recommendation is not short");
+        check(log_with(*q, "under the ").empty(), "and draws no warning");
+        bus.unsubscribe(q);
+    }
+}
+
 int main() {
     load_tests();
     loading_tests();
+    request_tests();
     cancel_tests();
     measured_tests();
     failure_tests();
     log_tests();
+    context_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

@@ -33,6 +33,7 @@ bool parse_hf_ref(const std::string & text, HfRef & out, std::string & error);
 struct HfFile {
     std::string path; // inside the repository, with its folders
     uint64_t bytes = 0;
+    std::string sha256; // the LFS object id, which is the file's SHA-256; "" when the listing has none
 };
 
 // One model a repository offers: a gguf, or a split set listed by its first shard.
@@ -63,7 +64,7 @@ std::string hf_tree_url(const std::string & endpoint, const HfRef & ref);
 std::string hf_resolve_url(const std::string & endpoint, const HfRef & ref, const std::string & path);
 
 // The catalog entry a model of a repository becomes: id "hf:<repo>/<first file>", one file per
-// shard named by its base name, each with its resolve URL and size.
+// shard named by its base name, each with its resolve URL, size and (where the listing gave it) digest.
 CatalogEntry hf_catalog_entry(const std::string & endpoint, const HfRef & ref, const HfModel & model);
 
 // Whether a catalog id names an entry made here.

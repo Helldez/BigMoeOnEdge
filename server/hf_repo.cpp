@@ -1,5 +1,6 @@
 #include "hf_repo.h"
 
+#include "download_policy.h"
 #include "model_files.h"
 
 #include <algorithm>
@@ -210,6 +211,10 @@ bool parse_hf_tree(const json & tree, std::vector<HfModel> & out, std::string & 
         if (e.contains("size") && e["size"].is_number_unsigned()) f.bytes = e["size"].get<uint64_t>();
         if (f.bytes == 0 && e.contains("lfs") && e["lfs"].is_object() && e["lfs"].value("size", (uint64_t) 0))
             f.bytes = e["lfs"]["size"].get<uint64_t>();
+        // An LFS file's oid is the SHA-256 of its content: the digest a download is checked against.
+        if (e.contains("lfs") && e["lfs"].is_object() && e["lfs"].contains("oid") && e["lfs"]["oid"].is_string() &&
+            is_sha256_hex(e["lfs"]["oid"].get<std::string>()))
+            f.sha256 = e["lfs"]["oid"].get<std::string>();
         ShardName sh;
         if (parse_shard_name(base_name(path), sh)) {
             Group & g = groups[dir_name(path) + sh.stem + "#split"];
@@ -328,7 +333,7 @@ CatalogEntry hf_catalog_entry(const std::string & endpoint, const HfRef & ref, c
     e.quant = model.quant;
     e.blurb = "From Hugging Face: " + ref.repo + (ref.revision == "main" ? "" : " at " + ref.revision);
     for (const HfFile & f : model.files)
-        e.files.push_back({base_name(f.path), hf_resolve_url(endpoint, ref, f.path), f.bytes});
+        e.files.push_back({base_name(f.path), hf_resolve_url(endpoint, ref, f.path), f.bytes, f.sha256});
     return e;
 }
 

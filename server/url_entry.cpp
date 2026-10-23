@@ -113,7 +113,7 @@ bool parse_model_url(const std::string & text, UrlModel & out, std::string & err
     out.host = authority;
     ShardName sh;
     if (!parse_shard_name(name, sh) || sh.count == 1) {
-        out.files.push_back({name, prefix + segment + query, 0});
+        out.files.push_back({name, prefix + segment + query, 0, {}});
         return true;
     }
     // A split set is fetched whole: its other shards sit beside the one linked, named as
@@ -129,7 +129,7 @@ bool parse_model_url(const std::string & text, UrlModel & out, std::string & err
     }
     for (int i = 1; i <= sh.count; ++i) {
         const std::string n = shard_file_name(sh.stem, i, sh.count);
-        out.files.push_back({n, prefix + n + query, 0});
+        out.files.push_back({n, prefix + n + query, 0, {}});
     }
     return true;
 }

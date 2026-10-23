@@ -40,6 +40,23 @@ class ParamsAndConversationsTest {
     }
 
     @Test
+    fun groupsFollowTheTablesGroupOrderWhenItIsSent() {
+        val specs = ParamSpec.parse(
+            JSONArray(
+                """[
+                  {"key":"a","group":"late","group_label":"Late","group_order":2},
+                  {"key":"b","group":"early","group_label":"Early","group_order":0},
+                  {"key":"c","group":"late","group_label":"Late","group_order":2},
+                  {"key":"d","group":"unordered","group_label":"Unordered"}
+                ]""",
+            ),
+        )
+        val groups = ParamSpec.grouped(specs)
+        assertEquals(listOf("Early", "Late", "Unordered"), groups.map { it.first })
+        assertEquals(listOf("a", "c"), groups[1].second.map { it.key })
+    }
+
+    @Test
     fun specialValuesTypicalRangeAndAdvancedRows() {
         val row = ParamSpec.of(
             org.json.JSONObject(

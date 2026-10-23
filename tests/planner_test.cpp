@@ -682,6 +682,62 @@ int main() {
         check(d && d->source == Source::Operator, "an armed lossy lever is attributed to the operator");
     }
 
+    // ── route-ahead's gate format: the timing decides, never the machine's kind ──────
+    // The int8 mirror trades bytes for arithmetic, and the two machines it was measured on answered
+    // in opposite directions. So the SAME machine fixture is handed both answers below and must
+    // follow each: a rule that read the platform could get at most one of them right.
+    {
+        RunConfig c = base_cfg();
+        c.moe.route_ahead = 1;
+        PlanRequest req;
+        req.pinned.push_back("route-ahead");
+
+        HardwareProfile bytes_scarce = phone();
+        bytes_scarce.gate_gemv_f32_us = 475.0;
+        bytes_scarce.gate_gemv_int8_us = 150.0;
+        Plan p = plan_run(c, bytes_scarce, model, req);
+        const Decision * d = find(p, "gate-mirror");
+        check(p.config.moe.gate_mirror == GateMirror::On && d && d->source == Source::Measured,
+              "gate mirror: int8 faster -> on, measured");
+        check(d && d->reason.find("150 us int8 against 475 us float") != std::string::npos,
+              "gate mirror: the plan quotes both timings", d ? d->reason : "none");
+
+        HardwareProfile bytes_cheap = phone();
+        bytes_cheap.gate_gemv_f32_us = 260.0;
+        bytes_cheap.gate_gemv_int8_us = 380.0;
+        p = plan_run(c, bytes_cheap, model, req);
+        d = find(p, "gate-mirror");
+        check(p.config.moe.gate_mirror == GateMirror::Off && d && d->source == Source::Measured,
+              "gate mirror: float faster -> off on the same machine fixture");
+
+        // A tie goes to the mirror: the probe ran alone, and a decode beside it only makes bytes dearer.
+        HardwareProfile tie = phone();
+        tie.gate_gemv_f32_us = tie.gate_gemv_int8_us = 200.0;
+        p = plan_run(c, tie, model, req);
+        check(p.config.moe.gate_mirror == GateMirror::On, "gate mirror: a tie goes to the mirror");
+
+        // Unmeasured, the knob stays auto and the session times it at load; the plan says so.
+        p = plan_run(c, phone(), model, req);
+        d = find(p, "gate-mirror");
+        check(p.config.moe.gate_mirror == GateMirror::Auto && d && d->source == Source::Unprobed,
+              "gate mirror: unmeasured -> left auto, recorded as unprobed");
+
+        // Pinned, it is the caller's even against the timing.
+        RunConfig pinned = c;
+        pinned.moe.gate_mirror = GateMirror::Off;
+        PlanRequest preq = req;
+        preq.pinned.push_back("gate-mirror");
+        p = plan_run(pinned, bytes_scarce, model, preq);
+        d = find(p, "gate-mirror");
+        check(p.config.moe.gate_mirror == GateMirror::Off && d && d->source == Source::Operator,
+              "gate mirror: a pinned value survives a timing that disagrees");
+
+        // Without route-ahead nothing reads it: no decision, and the knob is untouched.
+        p = plan_run(base_cfg(), bytes_scarce, model, PlanRequest{});
+        check(p.config.moe.gate_mirror == GateMirror::Auto && !find(p, "gate-mirror"),
+              "gate mirror: without route-ahead the plan neither decides nor explains it");
+    }
+
     // ── invariant: a pinned knob is never overwritten ──────────────────────────────
     {
         RunConfig c = base_cfg();

@@ -513,7 +513,7 @@ static void print_param_usage() {
         for (const ParamDesc & d : params()) {
             if ((int) d.group != g) continue;
             if (!header) {
-                std::printf("\n  %s:\n", param_group_label((ParamGroup) g));
+                std::printf("\n  %s: %s\n", param_group_label((ParamGroup) g), param_group_help((ParamGroup) g));
                 header = true;
             }
             std::string spell;

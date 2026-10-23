@@ -1,5 +1,6 @@
 #include "http_fetch.h"
 
+#include "download_policy.h"
 #include "url_entry.h"
 
 // See model_library.cpp for why the subprocess header's chdir support is off.
@@ -21,7 +22,8 @@ namespace {
 
 class CurlFetch final : public HttpFetch {
 public:
-    explicit CurlFetch(std::string scratch) : scratch_(std::move(scratch)) {}
+    CurlFetch(std::string scratch, std::string endpoint)
+        : scratch_(std::move(scratch)), endpoint_(std::move(endpoint)) {}
 
     bool get(const std::string & url,
              uint64_t from,
@@ -29,6 +31,12 @@ public:
              const std::string & token,
              std::string & body,
              std::string & error) override {
+        // Only https, on every redirect too, or plain http under an http mirror the operator named.
+        const std::string protos = curl_protocols(url, endpoint_);
+        if (protos.empty()) {
+            error = "not an https URL, nor one under the --hf-endpoint mirror";
+            return false;
+        }
         std::error_code ec;
         fs::create_directories(fs::u8path(scratch_), ec);
         const unsigned n = seq_.fetch_add(1);
@@ -47,7 +55,9 @@ public:
         const std::string range = std::to_string(from) + "-" + std::to_string(to);
         const std::string out_s = out.string();
         const std::string hdr_arg = "@" + hdr.string();
-        std::vector<const char *> cmd = {"curl", "-sS", "-L", "--fail", "--max-time", "180", "-o", out_s.c_str()};
+        std::vector<const char *> cmd = {"curl",          "-sS",          "-L",      "--fail",
+                                         "--max-time",    "180",          "--proto", protos.c_str(),
+                                         "--proto-redir", protos.c_str(), "-o",      out_s.c_str()};
         if (to > 0) {
             cmd.push_back("-r");
             cmd.push_back(range.c_str());
@@ -56,6 +66,7 @@ public:
             cmd.push_back("-H");
             cmd.push_back(hdr_arg.c_str());
         }
+        cmd.push_back("--"); // the URL is never read as an option
         cmd.push_back(url.c_str());
         cmd.push_back(nullptr);
         subprocess_s proc;
@@ -93,9 +104,10 @@ public:
 
     bool size(const std::string & url, uint64_t & bytes, std::string & error) override {
         bytes = 0;
-        // Only ever asked for a link a person pasted, which is https by then (url_entry.h); the
-        // redirects stay on https too.
-        if (url.compare(0, 8, "https://") != 0) {
+        // The same protocol rule as every other fetch (download_policy.h): a pasted link is https by
+        // then (url_entry.h), and the redirects stay on it.
+        const std::string protos = curl_protocols(url, endpoint_);
+        if (protos.empty()) {
             error = "not an https URL";
             return false;
         }
@@ -105,8 +117,8 @@ public:
         const std::string out_s = out.string();
         // No --fail: every response's headers are written, the error's too, and head_answer reads
         // the status from them (curl's exit code over HTTP/2 does not say it).
-        const char * cmd[] = {"curl",   "-sS",           "-I",     "-L", "--max-time",  "60", "--proto",
-                              "=https", "--proto-redir", "=https", "-o", out_s.c_str(), "--", url.c_str(),
+        const char * cmd[] = {"curl",         "-sS",           "-I",           "-L", "--max-time",  "60", "--proto",
+                              protos.c_str(), "--proto-redir", protos.c_str(), "-o", out_s.c_str(), "--", url.c_str(),
                               nullptr};
         subprocess_s proc;
         const int opts = subprocess_option_search_user_path | subprocess_option_inherit_environment |
@@ -136,13 +148,14 @@ public:
 
 private:
     std::string scratch_;
+    std::string endpoint_;
     std::atomic<unsigned> seq_{0};
 };
 
 } // namespace
 
-std::unique_ptr<HttpFetch> curl_fetch(const std::string & scratch_dir) {
-    return std::make_unique<CurlFetch>(scratch_dir);
+std::unique_ptr<HttpFetch> curl_fetch(const std::string & scratch_dir, const std::string & endpoint) {
+    return std::make_unique<CurlFetch>(scratch_dir, endpoint);
 }
 
 } // namespace bmoe::server

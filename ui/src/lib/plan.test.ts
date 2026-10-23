@@ -1,6 +1,45 @@
 import { describe, expect, it } from 'vitest';
-import { deviceTone, groupDecisions, memorySegments, rateScale, speedCheck } from './plan';
-import type { PlanDecision, PlanDevice, PlanMemoryPool } from './types';
+import { appliedChanges, deviceTone, diagnosticText, groupDecisions, memorySegments, rateScale, speedCheck } from './plan';
+import type { ParamSpec, PlanDecision, PlanDevice, PlanMemoryPool } from './types';
+
+describe('appliedChanges', () => {
+  const row = (key: string, extra: Partial<ParamSpec> = {}): ParamSpec => ({
+    key,
+    label: `Label ${key}`,
+    type: 'int',
+    group: 'g',
+    group_label: 'G',
+    level: 'basic',
+    scope: 'session',
+    help: '',
+    flag: `--${key}`,
+    default: 0,
+    ...extra,
+  });
+  const table = [
+    row('size', { unit: 'MiB', special: [{ value: 0, label: 'off' }] }),
+    row('mode', { type: 'choice', choices: [{ value: 'a', label: 'first' }, { value: 'b', label: 'second' }] }),
+    row('same'),
+  ];
+
+  it('lists the rows whose value changed, in table order, worded from the table', () => {
+    const out = appliedChanges({ size: 0, mode: 'a', same: 3 }, { size: 703, mode: 'b', same: '3' }, table);
+    expect(out).toEqual([
+      { key: 'size', label: 'Label size', from: 'off', to: '703 MiB' },
+      { key: 'mode', label: 'Label mode', from: 'first', to: 'second' },
+    ]);
+  });
+
+  it('keeps a key the table does not have under its own name', () => {
+    expect(appliedChanges({}, { other: 2 }, table)).toEqual([{ key: 'other', label: 'other', from: '', to: '2' }]);
+  });
+});
+
+describe('diagnosticText', () => {
+  it('is the command, then the account', () => {
+    expect(diagnosticText(['--threads', '8'], ' plan: x \n')).toBe('bmoe-cli --threads 8\n\nplan: x\n');
+  });
+});
 
 const dec = (knob: string, source: string, group?: string): PlanDecision => ({ knob, value: '1', source, reason: 'r', group });
 
