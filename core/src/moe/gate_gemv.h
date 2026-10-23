@@ -33,7 +33,8 @@ void scores_q8(
 
 // The two paths, timed on a synthetic gate of the model's shape: `n_layer` matrices of `n_expert`
 // rows by `n_embd`, walked in turn the way a decode walks its layers, so the bytes come from where
-// the run's own would (a working set this size outruns the caches it would outrun in the run).
+// the run's own would: the working set is the model's whole gate set, so it sits in a cache exactly
+// when the run's gates would (bounded for the largest models at a size no cache reaches).
 // The int8 figure includes quantizing the activation, which the run pays per call. Microseconds
 // per one layer's GEMV, single-threaded as the prediction worker is; both 0 when the shape is empty
 // or the buffers cannot be had.

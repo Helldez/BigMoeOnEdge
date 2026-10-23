@@ -961,8 +961,10 @@ bool Session::Impl::read_model(Opening & o) {
 // the mirror, because the timing runs alone and a decode beside it only makes bytes dearer.
 bool Session::Impl::resolve_gate_mirror(GateMirror m, Opening & o) {
     if (m != GateMirror::Auto) return m == GateMirror::On;
-    const gate_gemv::Timing t = gate_gemv::measure((uint32_t) llama_model_n_embd(model.get()),
-                                                   (uint32_t) o.gguf().n_expert, (uint32_t) n_layer);
+    // Every layer that carries a gate, so the working set is the run's own gate set (see measure()).
+    const uint32_t gated = o.layout.layers.empty() ? (uint32_t) n_layer : (uint32_t) o.layout.layers.size();
+    const gate_gemv::Timing t =
+        gate_gemv::measure((uint32_t) llama_model_n_embd(model.get()), (uint32_t) o.gguf().n_expert, gated);
     if (!t.measured()) {
         log_printf(LogLevel::Info, "gate-mirror: auto -> off (the gate shape is unknown, nothing was timed)");
         return false;

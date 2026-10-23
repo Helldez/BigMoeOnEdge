@@ -60,10 +60,13 @@ void scores_q8(
 
 namespace {
 
-// The float working set's ceiling. It has to outrun the last-level cache, as the run's own gates do
-// once a decode streams through them, and it should not cost a phone more than a moment's memory:
-// a few times any system-level cache shipping today, and the gates of a typical MoE fit inside it.
-constexpr size_t k_max_bytes = (size_t) 64 << 20;
+// The float working set is the model's REAL gate set, every layer, so the timing sees the cache
+// regime the run will: gates that fit a large cache are timed from it, and gates that do not are
+// timed from memory. A fixed smaller set would be cache-resident on a machine with a large last
+// cache while the run's own gates stream from DRAM, and would hand the float path a win it does not
+// have. This ceiling only bounds the transient memory for the largest models, and a gate set that
+// reaches it is already larger than any cache, so capping it does not change the regime.
+constexpr size_t k_max_bytes = (size_t) 512 << 20;
 
 // How long the timing runs, across both paths. Long enough that one sample is not scheduling
 // noise, short enough to be invisible next to a model load.

@@ -14,7 +14,8 @@ Semantic Versioning.
   won three times over on the test phone and lost on an x86 host. It was armed by an
   `#if defined(__aarch64__)`, right on those two machines and a guess on any other. New setting
   `--gate-mirror auto|on|off` (default `auto`): `--auto` times both kernels on the model's own gate
-  shape, the run's own code walked layer by layer, and takes the faster with the timings in the
+  set (every gated layer, so the timing sits in the cache regime the run will, bounded at 512 MiB),
+  the run's own code walked layer by layer, and takes the faster with the timings in the
   plan's notes; without `--auto` the session runs the same timing at load. The probe runs only when
   route-ahead is set, so other plans do not pay for it. Measured on a development laptop: 5.7 us
   int8 against 42.8 us float per layer on a 2048 x 128 gate. G14b now commits on both gate formats;
