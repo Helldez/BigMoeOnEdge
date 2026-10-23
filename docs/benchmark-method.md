@@ -134,8 +134,9 @@ against `--n-expert-used` is not overhead-matched.
 ## gpt-oss and other harmony models
 
 The harmony template **always** opens an `analysis` channel before the answer, so a plain run
-spends its whole `-n` budget reasoning. Pass **`--no-think`**: the engine primes the `final`
-channel directly. Without it, a throughput run is timing chain-of-thought.
+spends its whole `-n` budget reasoning. Keep thinking **off** (the default since 0.35; `--no-think`
+states it explicitly): the engine primes the `final` channel directly. With `--think`, a
+throughput run is timing chain-of-thought.
 
 - **`--no-think` is a speed mode, not a free lunch.** It removes the model's scratch space, so
   reasoning-dependent tasks degrade: on `17 x 23` the default top-4 answers *wrong* while k=2/3

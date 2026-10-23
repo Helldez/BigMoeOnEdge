@@ -245,7 +245,7 @@ bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequ
         break;
     }
     // Thinking, most specific first: this server's own field, the template argument llama.cpp
-    // clients send, then the protocol's effort level, of which only "none" is a clear off.
+    // clients send, then the protocol's effort level: "none" is off, any other level asks for reasoning.
     turn.think = cfg.think;
     if (body.contains("think") && body["think"].is_boolean()) {
         turn.think = body["think"].get<bool>();
@@ -253,9 +253,8 @@ bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequ
                body["chat_template_kwargs"].contains("enable_thinking") &&
                body["chat_template_kwargs"]["enable_thinking"].is_boolean()) {
         turn.think = body["chat_template_kwargs"]["enable_thinking"].get<bool>();
-    } else if (body.contains("reasoning_effort") && body["reasoning_effort"].is_string() &&
-               body["reasoning_effort"].get<std::string>() == "none") {
-        turn.think = false;
+    } else if (body.contains("reasoning_effort") && body["reasoning_effort"].is_string()) {
+        turn.think = body["reasoning_effort"].get<std::string>() != "none";
     }
 
     out.stream = body.contains("stream") && body["stream"].is_boolean() && body["stream"].get<bool>();

@@ -29,6 +29,16 @@ Semantic Versioning.
   Windows ARM64 archives are unchanged and need none of it. As on Android, the NPU takes the prompt
   only where the planner measures it faster and identical. Not yet run on a Snapdragon laptop.
 
+### Changed
+- **Thinking is off by default (#331).** A reasoning model spends most of a turn thinking before it
+  answers: on a Mac, Qwen3.6-35B-A3B used all 1024 tokens of the default budget on a short question
+  and never answered, which at 12-17 tok/s is a minute or more of waiting, and several on a phone.
+  `RunConfig::think` now defaults to off, so the CLI, the server, the web UI and both apps start
+  with it off; a saved setting still wins. It stays one switch away: `--think` on the CLI (beside
+  `--no-think`), the Thinking setting, and per request through `think`,
+  `chat_template_kwargs.enable_thinking` or `reasoning_effort` (any level but `"none"` now turns
+  it on; before, only `"none"` was read). Models with no thinking mode are unaffected.
+
 ### Fixed
 - **A cancelled turn leaves both contexts at the same prefix.** When the draft context of
   speculative decoding could not drop the cancelled tokens, only it was cleared, so the next turn
