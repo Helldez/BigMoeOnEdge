@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.21)
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName:
 # scripts/check-version.sh compares the three, in CI and against the tag before a release builds.
-project(bigmoeonedge VERSION 0.34.2 LANGUAGES CXX)
+project(bigmoeonedge VERSION 0.35.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -57,9 +57,9 @@ endif()
 
 # --- Optional native dependency: llama.cpp ----------------------------------------
 # The streaming seam uses only the public C API (llama.h). We additionally link llama.cpp's
-# `common` layer for one thing: chat-template rendering + reasoning parsing (common_chat_*),
-# so prompt formatting and thinking-extraction are template-driven per model instead of
-# hardcoded. Unlike the streaming seam, `common` is NOT a stable API — it can change between
+# `common` layer for chat-template rendering + reasoning parsing (common_chat_*),
+# speculative decoding, and template-generated grammars. Prompt formatting and reasoning
+# extraction are template-driven per model instead of hardcoded. Unlike the streaming seam, `common` is NOT a stable API — it can change between
 # upstream versions, so a submodule bump may need the chat glue in runtime.cpp updated (the
 # gates catch it at build time). That trade-off is deliberate; see docs/seam.md.
 set(BMOE_HAVE_LLAMA OFF)

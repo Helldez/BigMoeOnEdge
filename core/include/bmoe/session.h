@@ -105,6 +105,9 @@ struct GenerateRequest {
     // default output, and every benchmark run) does not, and should turn it off. Default on so an
     // embedder that does not know about this flag keeps the old behaviour.
     bool render_text = true;
+    // Serialized JSON Schema for this turn; empty leaves the template unconstrained.
+    // The template builds both the sampling grammar and the response parser from it.
+    std::string json_schema;
 
     // The whole conversation, for a front-end that keeps its own record of it (a chat protocol
     // whose client resends the history on every request, an edited or regenerated turn). When

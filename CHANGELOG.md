@@ -4,9 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.34.2] - 2026-10-23
+## [0.35.0] - 2026-10-23
 
 ### Added
+- **Request-level structured output.** `POST /v1/chat/completions` accepts
+  `response_format` with `json_object` or `json_schema`, and llama.cpp's top-level
+  `json_schema` field. The schema travels through llama.cpp's chat template, grammar and
+  parser, using the session's existing grammar sampler. Thinking, tools and speculative
+  decoding use that same path; there is no separate JSON sampler. The constraint belongs
+  to one request. A normally completed JSON answer is checked for parseable JSON;
+  length-limited and cancelled turns retain their real finish reason and may be partial.
+  A completed answer that fails validation returns `invalid_output` without unloading the
+  model, so the next request can proceed. See `docs/server-api.md` for schema support and
+  streaming semantics and the tested template/tool-choice limitations.
 - **The Hexagon NPU on Windows on Snapdragon, as an opt-in archive.** The release gains
   `bmoe-cli` and `bmoe-desktop` archives for `windows-arm64-npu`: the Windows ARM64 build plus the
   Hexagon module and one DSP library per NPU generation (v73 to v85). Windows' NPU driver runs that
@@ -18,6 +28,11 @@ Semantic Versioning.
   `docs/npu-windows.md` walks through with what each step changes and how to undo it. The plain
   Windows ARM64 archives are unchanged and need none of it. As on Android, the NPU takes the prompt
   only where the planner measures it faster and identical. Not yet run on a Snapdragon laptop.
+
+### Fixed
+- **A cancelled turn leaves both contexts at the same prefix.** When the draft context of
+  speculative decoding could not drop the cancelled tokens, only it was cleared, so the next turn
+  started the target and the draft at different positions. Both are now cleared together.
 
 ## [0.34.1] - 2026-10-23
 
