@@ -41,9 +41,15 @@ add_executable(bmoe_chat_messages_test chat_messages_test.cpp)
 target_link_libraries(bmoe_chat_messages_test PRIVATE bmoe_core)
 target_include_directories(bmoe_chat_messages_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
 target_compile_definitions(bmoe_chat_messages_test PRIVATE
+    BMOE_QWEN3_AUTO_TEMPLATE_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/templates/Qwen-Qwen3-0.6B.jinja"
     BMOE_QWEN3_TEMPLATE_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/templates/Qwen3.5-4B.jinja"
     BMOE_QWEN35_VOCAB_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/ggml-vocab-qwen35.gguf")
 add_test(NAME chat_messages COMMAND bmoe_chat_messages_test)
+
+# The real Session path must apply request-local grammar to both token selection sites.
+add_executable(bmoe_output_constraint_session_test output_constraint_session_test.cpp)
+target_link_libraries(bmoe_output_constraint_session_test PRIVATE bmoe_core)
+target_include_directories(bmoe_output_constraint_session_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
 
 # Thinking-control tests (issue #82). Drives bmoe::detail::probe_think_control and the prefill
 # against real vendored templates, so it needs no model and runs unconditionally.
@@ -203,6 +209,10 @@ if(PYTHON3)
         add_test(NAME moe_gates_${spec} COMMAND bmoe_moe_gates ${_model} ${_gate_args})
         set_tests_properties(moe_gates_${spec} PROPERTIES FIXTURES_REQUIRED ${_fixture})
     endforeach()
+
+    add_test(NAME output_constraint_session COMMAND bmoe_output_constraint_session_test
+             "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
+    set_tests_properties(output_constraint_session PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
 
     if(TARGET bmoe_startup_pin_fit_test)
         add_test(NAME startup_pin_fit COMMAND bmoe_startup_pin_fit_test

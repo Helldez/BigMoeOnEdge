@@ -68,6 +68,8 @@ core/
                 mapping_release - releases the model file's mapping after load (--release-mmap)
     moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), expert_layout,
                 expert_stream_source (one reader per shard), router_hook
+                gate_gemv - the router-gate GEMV over float gates and over an int8 mirror, and the
+                  timing of both that --gate-mirror auto reads
                 stall_union - the wall time at least one thread was stalled, not the sum of stalls
                 tensor_names - how llama.cpp's tensor and graph-node names, and the capacity
                   fitter's override patterns, are read: the one place, no regex, unit-tested
@@ -94,7 +96,7 @@ core/
                   port (prompt split, choice scoring, IPrefixCache), plus one llama.cpp adapter
     plan/       the hardware planner (hardware-planning.md). Two halves that must not mix:
                 planner, allocate, plan - pure rules over the profiles; no I/O, no platform names
-                hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,
+                hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe, gate_probe,
                   device_probe, placement_probe, isolated_probe (a device asked in a second
                   process, so a driver that ends it ends only that) - the adapters that measure a
                   machine and read a gguf; the only place in the planner where a platform or

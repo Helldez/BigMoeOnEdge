@@ -19,6 +19,8 @@ const char * run_error_name(RunError e) {
         return "needs_chat_mode";
     case RunError::InvalidRequest:
         return "invalid_request";
+    case RunError::InvalidOutput:
+        return "invalid_output";
     case RunError::Failed:
         return "failed";
     }

@@ -32,7 +32,11 @@ void warn_parse_failed_once(const char * what);
 // model that chose to say nothing (#334), so the caller falls back to the raw generation instead.
 bool parsed_nothing(const common_chat_msg & msg);
 
-// The grammar a template ships with its tools, held over sampling the way llama.cpp's own server
+// The completed assistant content must be JSON. A tool-only turn has no final answer to
+// validate; schema semantics remain the template grammar's responsibility.
+bool validate_json_response(const common_chat_msg & msg, std::string & err);
+
+// The grammar a template builds for tools or a response schema, held over sampling the way llama.cpp's own server
 // holds it. Without it the model is free to write a call the parser cannot read back, and the turn
 // comes out empty or the next request is refused for arguments that are not JSON (#334).
 //
@@ -48,7 +52,7 @@ public:
     ~ToolGrammar();
 
     // Arms the grammar `cp` carries, or leaves it off when there is none. False with `err` set when
-    // the template's grammar does not build; the turn then runs unconstrained, as before.
+    // the template's grammar does not build; the caller decides whether fallback is allowed.
     bool init(const common_chat_params & cp, const llama_vocab * vocab, std::string & err);
     bool active() const { return smpl_ != nullptr; }
 
@@ -57,7 +61,7 @@ public:
     // Masks every candidate the grammar refuses to -inf, in place.
     void constrain(llama_token_data_array * cur) const;
     // Advances the grammar past `tok`. A token it cannot take switches the grammar off for the rest
-    // of the turn, with a warning, rather than ending the turn: the parser fallback still holds.
+    // of the turn, with a warning. Explicit response-format requests must treat that as an error.
     void accept(llama_token tok);
 
 private:

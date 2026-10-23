@@ -4,6 +4,7 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "decide_probe.h"
+#include "gate_gemv.h"
 #include "device_arena.h"
 #include "tensor_names.h"
 #include "../io/platform_io.h"
@@ -347,13 +348,13 @@ void RouterHook::predict_worker_main() {
         // because its whole purpose is to be a control. The mirror is built here, on this worker,
         // the first time a layer is predicted for.
         //
-        // aarch64 only, and measured both ways: on x86 the float path is fully vectorized and DRAM
-        // bandwidth is ample, so the int8 detour costs more than it saves (0.38 vs 0.26 ms per
-        // GEMV on the host, same config). The bytes only matter where they are scarce.
+        // Only where the bytes are scarce, and that is measured rather than assumed: on an x86 host
+        // with bandwidth to spare the float path won (0.38 vs 0.26 ms per GEMV, same config), so
+        // whether the mirror is used is the session's resolved gate_mirror, read off a timing of
+        // both kernels on this machine (gate_gemv::measure), never off the compiler's target.
         bool scored = false;
-#if defined(__aarch64__)
-        if (job.commit && job.nl >= 0 && quantize_gate(job.nl)) scored = gate_scores_q(job.nl, job.row, scores);
-#endif
+        if (gate_mirror_ && job.commit && job.nl >= 0 && quantize_gate(job.nl))
+            scored = gate_scores_q(job.nl, job.row, scores);
         if (!scored) scored = job.gate && gate_scores(job.gate, job.row, scores);
         if (job.commit) {
             ra_gemv_ns_.fetch_add(
@@ -454,46 +455,39 @@ static bool gate_scores(const ggml_tensor * w, const std::vector<float> & h, std
     if (w->type != GGML_TYPE_F32 && w->type != GGML_TYPE_F16) return false;
     out.assign((size_t) ne, 0.0f);
     const float * hp = h.data();
+    if (w->type == GGML_TYPE_F32) {
+        // The same kernel measure_gate_gemv() times against the int8 mirror (gate_gemv.h).
+        gate_gemv::scores_f32((const float *) w->data, w->nb[1], nd, ne, hp, out.data());
+        return true;
+    }
     const int64_t nd4 = nd & ~(int64_t) 3;
     for (int64_t e = 0; e < ne; ++e) {
         const char * row = (const char *) w->data + (size_t) e * w->nb[1];
         float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
-        if (w->type == GGML_TYPE_F32) {
-            const float * p = (const float *) row;
-            for (int64_t d = 0; d < nd4; d += 4) {
-                a0 += p[d + 0] * hp[d + 0];
-                a1 += p[d + 1] * hp[d + 1];
-                a2 += p[d + 2] * hp[d + 2];
-                a3 += p[d + 3] * hp[d + 3];
-            }
-            for (int64_t d = nd4; d < nd; ++d)
-                a0 += p[d] * hp[d];
-        } else {
 #if defined(__aarch64__)
-            const __fp16 * p = (const __fp16 *) row;
+        const __fp16 * p = (const __fp16 *) row;
 #else
-            const ggml_fp16_t * q = (const ggml_fp16_t *) row;
+        const ggml_fp16_t * q = (const ggml_fp16_t *) row;
 #endif
-            for (int64_t d = 0; d < nd4; d += 4) {
+        for (int64_t d = 0; d < nd4; d += 4) {
 #if defined(__aarch64__)
-                a0 += (float) p[d + 0] * hp[d + 0];
-                a1 += (float) p[d + 1] * hp[d + 1];
-                a2 += (float) p[d + 2] * hp[d + 2];
-                a3 += (float) p[d + 3] * hp[d + 3];
+            a0 += (float) p[d + 0] * hp[d + 0];
+            a1 += (float) p[d + 1] * hp[d + 1];
+            a2 += (float) p[d + 2] * hp[d + 2];
+            a3 += (float) p[d + 3] * hp[d + 3];
 #else
-                a0 += ggml_fp16_to_fp32(q[d + 0]) * hp[d + 0];
-                a1 += ggml_fp16_to_fp32(q[d + 1]) * hp[d + 1];
-                a2 += ggml_fp16_to_fp32(q[d + 2]) * hp[d + 2];
-                a3 += ggml_fp16_to_fp32(q[d + 3]) * hp[d + 3];
-#endif
-            }
-            for (int64_t d = nd4; d < nd; ++d)
-#if defined(__aarch64__)
-                a0 += (float) p[d] * hp[d];
-#else
-                a0 += ggml_fp16_to_fp32(q[d]) * hp[d];
+            a0 += ggml_fp16_to_fp32(q[d + 0]) * hp[d + 0];
+            a1 += ggml_fp16_to_fp32(q[d + 1]) * hp[d + 1];
+            a2 += ggml_fp16_to_fp32(q[d + 2]) * hp[d + 2];
+            a3 += ggml_fp16_to_fp32(q[d + 3]) * hp[d + 3];
 #endif
         }
+        for (int64_t d = nd4; d < nd; ++d)
+#if defined(__aarch64__)
+            a0 += (float) p[d] * hp[d];
+#else
+            a0 += ggml_fp16_to_fp32(q[d]) * hp[d];
+#endif
         out[(size_t) e] = (a0 + a1) + (a2 + a3);
     }
     return true;
@@ -547,7 +541,6 @@ bool RouterHook::quantize_gate(int il) {
     std::vector<float> row((size_t) nd);
     for (int64_t e = 0; e < ne; ++e) {
         const char * src = (const char *) w->data + (size_t) e * w->nb[1];
-        float amax = 0.0f;
         for (int64_t d = 0; d < nd; ++d) {
             float v;
             if (w->type == GGML_TYPE_F32) {
@@ -560,18 +553,8 @@ bool RouterHook::quantize_gate(int il) {
 #endif
             }
             row[(size_t) d] = v;
-            const float a = v < 0.0f ? -v : v;
-            if (a > amax) amax = a;
         }
-        const float scale = amax > 0.0f ? amax / 127.0f : 0.0f;
-        s[(size_t) e] = scale;
-        const float inv = scale > 0.0f ? 1.0f / scale : 0.0f;
-        int8_t * dst = q.data() + (size_t) e * (size_t) nd;
-        for (int64_t d = 0; d < nd; ++d) {
-            const float t = row[(size_t) d] * inv;
-            const int v = (int) (t < 0.0f ? t - 0.5f : t + 0.5f);
-            dst[d] = (int8_t) (v < -127 ? -127 : (v > 127 ? 127 : v));
-        }
+        s[(size_t) e] = gate_gemv::quantize_row(row.data(), nd, q.data() + (size_t) e * (size_t) nd);
     }
     ra_gate_q_[il] = std::move(q);
     ra_gate_s_[il] = std::move(s);
@@ -695,42 +678,12 @@ bool RouterHook::gate_scores_q(int il, const std::vector<float> & h, std::vector
     if (nd != (int64_t) h.size() || (size_t) nd * (size_t) ne != ra_gate_q_[il].size()) return false;
 
     // Quantize the activation row: one pass over n_embd, amortised across all n_expert rows.
-    float amax = 0.0f;
-    for (int64_t d = 0; d < nd; ++d) {
-        const float a = h[(size_t) d] < 0.0f ? -h[(size_t) d] : h[(size_t) d];
-        if (a > amax) amax = a;
-    }
-    if (!(amax > 0.0f)) return false; // a zero row says nothing; let the caller fall back
-    const float hs = amax / 127.0f;
     std::vector<int8_t> & qh = ra_qh_;
     qh.resize((size_t) nd);
-    {
-        const float inv = 1.0f / hs;
-        for (int64_t d = 0; d < nd; ++d) {
-            const float t = h[(size_t) d] * inv;
-            const int v = (int) (t < 0.0f ? t - 0.5f : t + 0.5f);
-            qh[(size_t) d] = (int8_t) (v < -127 ? -127 : (v > 127 ? 127 : v));
-        }
-    }
-
-    const int8_t * q = ra_gate_q_[il].data();
-    const float * sc = ra_gate_s_[il].data();
-    const int8_t * hp = qh.data();
-    const int64_t nd4 = nd & ~(int64_t) 3;
+    const float hs = gate_gemv::quantize_row(h.data(), nd, qh.data());
+    if (!(hs > 0.0f)) return false; // a zero row says nothing; let the caller fall back
     out.assign((size_t) ne, 0.0f);
-    for (int64_t e = 0; e < ne; ++e) {
-        const int8_t * p = q + (size_t) e * (size_t) nd;
-        int32_t a0 = 0, a1 = 0, a2 = 0, a3 = 0;
-        for (int64_t d = 0; d < nd4; d += 4) {
-            a0 += (int32_t) p[d + 0] * (int32_t) hp[d + 0];
-            a1 += (int32_t) p[d + 1] * (int32_t) hp[d + 1];
-            a2 += (int32_t) p[d + 2] * (int32_t) hp[d + 2];
-            a3 += (int32_t) p[d + 3] * (int32_t) hp[d + 3];
-        }
-        for (int64_t d = nd4; d < nd; ++d)
-            a0 += (int32_t) p[d] * (int32_t) hp[d];
-        out[(size_t) e] = (float) ((a0 + a1) + (a2 + a3)) * sc[e] * hs;
-    }
+    gate_gemv::scores_q8(ra_gate_q_[il].data(), ra_gate_s_[il].data(), nd, ne, qh.data(), hs, out.data());
     return true;
 }
 

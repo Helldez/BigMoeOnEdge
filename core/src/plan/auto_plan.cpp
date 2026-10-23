@@ -48,6 +48,9 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     starting(); // compute
     probe_bandwidth(r.hw, r.model);
     detail::log_memory_snapshot("auto-bandwidth");
+    // Only route-ahead reads this fact, and route-ahead arms only when the caller sets it, so a plan
+    // without it does not pay the timing or the working set.
+    if (cfg.moe.route_ahead > 0) probe_gate_gemv(r.hw, r.model);
     probe_device_costs(r.hw, r.model);
     detail::log_memory_snapshot("auto-device-costs");
     starting(); // storage
