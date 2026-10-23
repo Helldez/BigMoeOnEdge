@@ -547,8 +547,10 @@ struct RunConfig {
     // `enable_thinking` kwarg, so a reasoning model (Qwen3, thinking Gemma, …) only emits
     // its thinking channel when true. Off suppresses reasoning at the source rather than
     // relying on the display-time parser, which cannot strip a format it does not know.
-    // Only meaningful with chatml; the raw-prompt path ignores it.
-    bool think = true;
+    // Only meaningful with chatml; the raw-prompt path ignores it. Off by default: on device a
+    // reasoning model spends most of a turn thinking (Qwen3.6-35B-A3B used all 1024 tokens of the
+    // default budget on a short question and never answered), a minute or more at 12-17 tok/s.
+    bool think = false;
 
     // Override the number of active MoE experts per token (top-k routing). 0 = use the
     // model's own <arch>.expert_used_count from the gguf. A lower value cuts per-token
