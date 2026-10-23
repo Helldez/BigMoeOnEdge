@@ -18,6 +18,11 @@ Semantic Versioning.
   model, so the next request can proceed. See `docs/server-api.md` for schema support and
   streaming semantics and the tested template/tool-choice limitations.
 
+### Fixed
+- **A cancelled turn leaves both contexts at the same prefix.** When the draft context of
+  speculative decoding could not drop the cancelled tokens, only it was cleared, so the next turn
+  started the target and the draft at different positions. Both are now cleared together.
+
 ## [0.34.1] - 2026-10-23
 
 ### Fixed

@@ -2228,23 +2228,24 @@ struct Session::Impl::Turn {
                 cand[v] = {v, lg[v], 0.0f};
             llama_token_data_array cur = {cand.data(), cand.size(), -1, false};
             grammar.constrain(&cur);
-            if (std::none_of(cur.data, cur.data + cur.size,
-                             [](const llama_token_data & c) { return std::isfinite(c.logit); }))
-                return LLAMA_TOKEN_NULL;
-            if (im.smpl) {
+            const bool dead_end = std::none_of(cur.data, cur.data + cur.size,
+                                               [](const llama_token_data & c) { return std::isfinite(c.logit); });
+            if (!dead_end && im.smpl) {
                 llama_sampler_apply(im.smpl, &cur);
-                if (cur.selected < 0 || (size_t) cur.selected >= cur.size ||
-                    !std::isfinite(cur.data[cur.selected].logit))
-                    return LLAMA_TOKEN_NULL;
-                t = cur.data[cur.selected].id;
-            } else {
+                if (cur.selected >= 0 && (size_t) cur.selected < cur.size &&
+                    std::isfinite(cur.data[cur.selected].logit))
+                    t = cur.data[cur.selected].id;
+            } else if (!dead_end) {
                 size_t best = 0;
                 for (size_t i = 1; i < cur.size; ++i)
                     if (cur.data[i].logit > cur.data[best].logit) best = i;
                 t = cur.data[best].id;
             }
         }
-        if (!grammar.allows(t)) return LLAMA_TOKEN_NULL;
+        // A grammar that takes no token is a broken contract for a response schema: the caller fails
+        // the turn. A tool grammar is a guide, not a contract (#334): the unconstrained pick stands,
+        // and accept() switches the grammar off with a warning while the parser fallback still holds.
+        if (structured() && !grammar.allows(t)) return LLAMA_TOKEN_NULL;
         grammar.accept(t);
         return t;
     }
