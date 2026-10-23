@@ -241,7 +241,7 @@ std::unique_lock<std::mutex> EngineHost::take_turn() {
 }
 
 ChatOutcome EngineHost::chat(const ChatRequest & req,
-                             const std::function<void(const TokenMetrics &)> & on_token,
+                             const std::function<bool(const TokenMetrics &)> & on_token,
                              const std::function<bool()> & still_wanted) {
     ChatOutcome out;
     switch (turns_.enter(still_wanted)) {
@@ -289,9 +289,15 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
 
     generating_ = true;
     publish_state();
+    // The session is this turn's for as long as generate() runs, so a cancel from inside the
+    // callback stops this turn and cannot reach another client's.
+    bool client_gone = false;
     RunResult r = s->generate(gr, [&](const TokenMetrics & tm) {
         bus_.publish("token", token_json(tm));
-        if (on_token) on_token(tm);
+        if (on_token && !client_gone && !on_token(tm)) {
+            client_gone = true;
+            s->cancel();
+        }
     });
     generating_ = false;
 

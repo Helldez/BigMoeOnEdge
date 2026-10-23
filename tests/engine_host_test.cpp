@@ -60,14 +60,16 @@ struct Gate {
 
 // What the fake sessions of one test share with it: how each turn ends, and what happened.
 struct Script {
-    // How generate() ends. Blocking turns signal `started` and run until cancel().
-    enum class Turn { Ok, Block, Fail, ContextFull } turn = Turn::Ok;
+    // How generate() ends. Blocking turns signal `started` and run until cancel(); streaming ones
+    // do the same while sending a token every millisecond, counted in `tokens`.
+    enum class Turn { Ok, Block, Stream, Fail, ContextFull } turn = Turn::Ok;
     DecideResult decide_result;
 
     Gate started;
     std::atomic<int> opened{0};
     std::atomic<int> alive{0};
     std::atomic<int> turns{0};
+    std::atomic<int> tokens{0};
 };
 
 class FakeSession final : public HostedSession {
@@ -77,6 +79,7 @@ public:
 
     RunResult generate(const GenerateRequest &, const std::function<void(const TokenMetrics &)> & on_token) override {
         ++s_.turns;
+        cancelled_ = false; // as the session does: a cancel latches for the generation it lands in
         RunResult r;
         switch (s_.turn) {
         case Script::Turn::Ok: {
@@ -100,6 +103,18 @@ public:
             // A turn stopped mid-answer has tokens and a rate too: they must not count as measured.
             r.summary.n_generated = 3;
             r.summary.s_per_token = 0.5;
+            return r;
+        case Script::Turn::Stream:
+            for (int i = 0; i < 5000 && !cancelled_.load(); ++i) {
+                TokenMetrics m;
+                m.step = i + 1;
+                ++s_.tokens;
+                if (on_token) on_token(m);
+                if (i == 0) s_.started.release();
+                std::this_thread::sleep_for(1ms);
+            }
+            r.ok = true;
+            r.cancelled = cancelled_.load();
             return r;
         case Script::Turn::Fail:
             r.error = "decode failed during generation";
@@ -228,7 +243,7 @@ static void loading_tests() {
         EventBus bus;
         Script script;
         Gate hold;
-        EngineHost host(bus, opener(script, &hold, "no MoE recipe"));
+        EngineHost host(bus, opener(script, &hold, "not a MoE this engine streams"));
         host.load(config(), config());
         wait_state(host, "loading");
         auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
@@ -271,6 +286,48 @@ static void cancel_tests() {
               "and leaves the host empty, the session closed");
         const ChatOutcome after = host.chat(turn(), nullptr);
         check(after.status == 503, "the next turn finds no model");
+    }
+    {
+        // A client that goes away mid-answer: its on_token says so, and the host stops its turn.
+        EventBus bus;
+        Script script;
+        script.turn = Script::Turn::Stream;
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        wait_state(host, "ready");
+        int seen = 0;
+        const ChatOutcome out = host.chat(turn(), [&](const TokenMetrics &) { return ++seen < 3; });
+        check(out.status == 200 && out.result.cancelled && seen == 3,
+              "a turn whose client is gone (on_token false) is cancelled");
+        check(host.ready() && !host.generating(), "and the session stays for the next client");
+    }
+    {
+        // Two clients: one answering, one waiting behind it. The waiting one leaves; the answering
+        // one must not notice (#346: a failed keep-alive write used to cancel whatever ran).
+        EventBus bus;
+        Script script;
+        script.turn = Script::Turn::Stream;
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        wait_state(host, "ready");
+        auto running = std::async(std::launch::async,
+                                  [&] { return host.chat(turn(), [](const TokenMetrics &) { return true; }); });
+        script.started.wait();
+        std::atomic<bool> asked{false};
+        const ChatOutcome left = host.chat(
+            turn(), [](const TokenMetrics &) { return true; },
+            [&] {
+                asked = true;
+                return false;
+            });
+        check(left.status == 499 && asked, "the waiting client that leaves gives up its place");
+        const int before = script.tokens.load();
+        std::this_thread::sleep_for(30ms);
+        check(running.wait_for(0ms) == std::future_status::timeout && script.tokens.load() > before,
+              "and the turn that was answering keeps answering");
+        host.cancel();
+        const ChatOutcome out = running.get();
+        check(out.status == 200 && out.result.cancelled, "until its own cancel");
     }
 }
 

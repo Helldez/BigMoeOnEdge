@@ -275,8 +275,9 @@ other.
 
 **One generation at a time, in order.** A request that arrives while another runs waits its turn;
 while it waits, a streaming response receives SSE comment lines (`: waiting for a turn`) so the
-connection stays open. A client that disconnects gives its place up. With 16 requests already
-waiting the next gets `429`.
+connection stays open. A client that disconnects while it waits gives its place up and stops
+nothing else; a streaming client that disconnects during its own answer stops that answer. A
+disconnect never ends another client's turn. With 16 requests already waiting the next gets `429`.
 
 Streaming response: `text/event-stream`, one `data: <chunk>` per token, then `data: [DONE]`.
 Chunks are OpenAI `chat.completion.chunk` objects; the delta carries `content` and, for

@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.34.1] - 2026-10-22
+## [0.34.2] - 2026-10-23
 
 ### Added
 - **The Hexagon NPU on Windows on Snapdragon, as an opt-in archive.** The release gains
@@ -18,6 +18,44 @@ Semantic Versioning.
   `docs/npu-windows.md` walks through with what each step changes and how to undo it. The plain
   Windows ARM64 archives are unchanged and need none of it. As on Android, the NPU takes the prompt
   only where the planner measures it faster and identical. Not yet run on a Snapdragon laptop.
+
+## [0.34.1] - 2026-10-23
+
+### Fixed
+- **A client that leaves no longer cancels another client's answer (#346).** On `bmoe-server` a
+  streaming request that failed to write cancelled whatever the engine was running, and the same
+  write was the keep-alive sent while a request waits its turn and the last frames after its turn
+  ended. So with two clients on one server, an agent and the web UI, closing a tab that was waiting
+  ended the other client's answer with `finish_reason: cancelled`; reproduced on 0.34.0 with a real
+  35B model (the answering client stopped after 173 of 700 tokens). The host now stops a turn only
+  from inside that turn's own token callback, when its client is gone; a client that leaves while
+  waiting just gives its place up. Same repro on the fix: the answering client gets all 700 tokens,
+  and a client that leaves mid-answer still stops its own turn at once. Two new engine-host checks.
+- **A read past the end of a model file is an error, not weights (#348).** The streamer's file
+  reader clamped a range that ran past the end of the file and returned success: the aligned path
+  copied the whole request out of a bounce whose tail was never read, the plain path came back
+  short, and every caller checked only for failure. A truncated download or a damaged shard would
+  have streamed garbage experts instead of failing the load. llama.cpp validates tensor bounds on
+  the same files first, so no model was known to hit it; the reader no longer depends on that. New
+  `file_reader` test (buffered and direct, at the end of the file and past it); the byte-identity
+  gates pass unchanged.
+- **The phone apps' "first token" is this turn's (#359).** Both apps added the model's load time to
+  every turn's prefill, so a second turn after a 56 s load read as 62.7 s to its first token. They
+  now show the server's `ttft_s`, as the web UI does.
+- **iOS: an import that fails keeps the model it would have replaced (#359).** Importing a file
+  with the name of a model already on the phone deleted that model before copying, so a copy that
+  failed (no space, the picked file gone) left neither. The copy now lands under a hidden name and
+  replaces the old file only once whole; picking a file from the models folder itself copies nothing.
+- **iOS: a small file no longer reads as 0.0 GB (#359).** Sizes under a gigabyte are written in MB
+  or KB.
+
+### Docs
+- **No architecture table left in the words either.** The engine reads which tensors are the routed
+  experts from the file's shapes (`expert_layout`) and has had no architecture registry since 0.31,
+  but a few places still described one: the model probe's header said a table decides which tensors
+  are experts, `docs/limitations.md` spoke of "registry rows", the Android metrics glossary said the
+  architecture "selects the streaming recipe", and a planner explanation, a CMake comment and three
+  code comments said "recipe". They now say what the code does.
 
 ## [0.34.0] - 2026-10-22
 

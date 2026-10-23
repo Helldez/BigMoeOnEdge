@@ -149,6 +149,23 @@ final class ServerFactsTests: XCTestCase {
         XCTAssertEqual(ByteText.resume(received: 0, total: 1_500_000_000), "Resume (0.0 of 1.5 GB)")
     }
 
+    func testSizesBelowAGigabyteKeepTheirDigits() {
+        XCTAssertEqual(ByteText.gb(22_285_080_192), "22.3 GB")
+        XCTAssertEqual(ByteText.gb(7_340_032), "7 MB") // a test model read as "0.0 GB" (#359)
+        XCTAssertEqual(ByteText.gb(512_000), "512 KB")
+        XCTAssertEqual(ByteText.gb(0), "0 KB")
+    }
+
+    func testTheFirstTokenIsThisTurnsNotTheLoads() throws {
+        var t = Telemetry()
+        // A second turn: the session loaded 55.9 s before the first one; this turn prefilled in 6.8 s.
+        t.apply(done: try JSON(parsing: #"{"tok_s":2.6,"load_s":55.9,"prefill_s":6.8,"ttft_s":6.8}"#))
+        XCTAssertEqual(t.ttftSeconds, 6.8, accuracy: 1e-9)
+        var older = Telemetry() // a server that predates ttft_s: its prefill, still without the load
+        older.apply(done: try JSON(parsing: #"{"tok_s":2.6,"load_s":55.9,"prefill_s":6.8}"#))
+        XCTAssertEqual(older.ttftSeconds, 6.8, accuracy: 1e-9)
+    }
+
     func testFilesThatAreNotModelsAreListedApart() throws {
         let list = ModelsList(try JSON(parsing: #"""
             {"local":[{"name":"mmproj-a.gguf","path":"/d/mmproj-a.gguf","role":"projector"},
