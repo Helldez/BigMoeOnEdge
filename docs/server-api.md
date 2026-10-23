@@ -447,7 +447,9 @@ first).
 Deletes a model from the models directory, named as `GET /api/models` lists it: `<folder>/<name>`
 for one in a folder directly inside the directory, `<name>` otherwise, with `name` the first file
 (shard 1 of a split set). Every file the scan groups under it goes, and the folder with them once it
-is empty: `{"ok": true, "freed": <bytes>}`. A symbolic link is removed as the link. `400` for a name
+is empty: `{"ok": true, "freed": <bytes>}`. A symbolic link is removed as the link. A set goes
+whole or not at all: every file is first renamed aside, and one that cannot be (a file held open on
+Windows) puts the others back, deletes nothing and answers `500` naming it. `400` for a name
 that is not one (a separator, `..`, a drive), `404` when the models directory has no such model (a
 scan directory's models are loaded in place and never deleted here), `409` with `code: "in_use"`
 while it is loaded or loading (unload it first) or while a running download writes one of its
@@ -462,11 +464,13 @@ and progress like every other: id `url:<name>`, titled by the file name, listed 
 the link's last path segment (percent-escapes decoded), which must be a `.gguf` name made of
 letters, digits, `.`, `_`, `-`, `+`, not starting with `.` or `-`; the query is kept, the fragment
 dropped. A link to any shard of a split set (`<stem>-00002-of-00003.gguf`) names the whole set: the
-other shards are the same link with the name changed. Each file's size comes from a `HEAD` request
-that follows redirects (on https only); a host that answers no size leaves it unknown (`0`) and the
-download runs without a total. `201` with `{"id", "title", "quant", "bytes"}`; `400` with
-`code: "invalid_url"` for a link that is not one of these, `502` when the host answers the `HEAD`
-with an HTTP error, `409` for an id the shipped catalog has, `403` with `code: "local_only"` from a
+other shards are the same link with the name changed, and a link may name at most 128 of them
+(`kMaxUrlShards` in `server/url_entry.h`: the largest sets published are under 50 shards). Each
+file's size comes from a `HEAD` request that follows redirects (on https only), asked shard by
+shard within 120 s in all (`kUrlSizeDeadline`); a host that answers no size leaves it unknown (`0`)
+and the download runs without a total. `201` with `{"id", "title", "quant", "bytes"}`; `400` with
+`code: "invalid_url"` for a link that is not one of these, `502` when the host answers a `HEAD`
+with an HTTP error, `504` when the sizes took longer than the deadline (no entry is made), `409` for an id the shipped catalog has, `403` with `code: "local_only"` from a
 client whose connection is not loopback. Adding the same file again replaces the entry.
 
 ### `POST /api/hf/search`
@@ -535,10 +539,11 @@ already there, complete).
 
 `verdict.fit` is the answer as a code a UI colours by, and `verdict.headline` the server's line for
 it, shown as the verdict's headline: `fits` (it streams and its resident floor fits what this process
-may hold, or the memory could not be read, which the headline says), `no_streaming` (a dense model,
+may hold), `no_streaming` (a dense model,
 or a MoE this build does not stream: it runs whole from the file), `will_not_fit` (its resident
 floor is more than this process may hold), `no_disk` (the disk cannot take it), `not_a_model`,
-`unknown` (the header did not parse). A UI keeps no threshold of its own; it shows the line and
+`unknown` (the header did not parse, or it streams and the memory free here could not be read,
+which the headline says). A UI keeps no threshold of its own; it shows the line and
 colours by the code, and a code it does not know gets no colour.
 
 The memory verdict answers "what happens if I load this", and a load unloads the model loaded now

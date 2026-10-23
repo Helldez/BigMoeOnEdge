@@ -85,14 +85,18 @@
   }
 
   // A model added from a repository or a link is a catalog entry like the others, downloaded in
-  // the same breath, and its row is where the person follows it.
+  // the same breath, and its row is where the person follows it. A download that does not start
+  // throws back to the card that asked, which shows why where the person is looking.
   async function added(id: string) {
     focusId = id;
     await refresh();
-    await act(`dl:${id}`, async () => {
+    pending = { ...pending, [`dl:${id}`]: true };
+    try {
       await api.download(id);
+    } finally {
+      pending = { ...pending, [`dl:${id}`]: false };
       await refresh();
-    });
+    }
   }
 
   function deletePartial(entry: CatalogEntry) {
@@ -285,6 +289,14 @@
             {/if}
           {/each}
         </div>
+        <!-- A suggestion whose download failed before a byte landed is still a suggestion: its
+             failure is said here, beside the button that started it. -->
+        {#each suggested as r (r.key)}
+          {@const dl = r.entry ? server.downloads[r.entry.id] : undefined}
+          {#if dl?.state === 'error'}
+            <p class="err" role="alert">{r.title}: download failed: {dl.error}</p>
+          {/if}
+        {/each}
       {/if}
       <details class="more">
         <summary>Or paste a direct link to a gguf</summary>

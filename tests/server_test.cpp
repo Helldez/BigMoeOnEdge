@@ -903,8 +903,8 @@ static void hf_tests() {
     f.budget = 1ull << 30;
     check(fit_verdict(f).fit == "will_not_fit", "hf: a floor past the budget will not fit");
     f.budget = 0;
-    check(fit_verdict(f).fit == "fits" && fit_verdict(f).headline.find("could not be read") != std::string::npos,
-          "hf: an unknown budget streams, and the headline says the memory was not read");
+    check(fit_verdict(f).fit == "unknown" && fit_verdict(f).headline.find("could not be read") != std::string::npos,
+          "hf: an unknown budget is no fit claimed: the code is unknown, the headline says why");
     f.streamable = false;
     check(fit_verdict(f).fit == "no_streaming", "hf: a MoE this build does not stream runs without streaming");
     f.is_moe = false;
@@ -1215,6 +1215,49 @@ static void url_entry_tests() {
           "url: a link to any shard names the whole split set, every shard beside it");
     check(!parse_model_url("https://example.org/r/Big%2D00001-of-00002.gguf", m, err),
           "url: a shard link spelled with escapes is refused rather than guessed");
+    check(parse_model_url("https://example.org/r/Big-00001-of-00" + std::to_string(kMaxUrlShards) + ".gguf", m, err) &&
+              (int) m.files.size() == kMaxUrlShards,
+          "url: a set of the most shards a link may name is taken");
+    check(!parse_model_url("https://example.org/r/x-00001-of-99999.gguf", m, err) &&
+              err.find(std::to_string(kMaxUrlShards)) != std::string::npos,
+          "url: a link naming more shards than that is refused before anything is fetched: " + err);
+
+    // The sizes, against a fake host and a fake clock: each answer takes 50 s.
+    struct FakeHost : HttpFetch {
+        std::chrono::steady_clock::time_point t{};
+        int asked = 0;
+        int missing = -1; // the index of a file the host says is not there
+        bool get(const std::string &, uint64_t, uint64_t, const std::string &, std::string &, std::string &) override {
+            return false;
+        }
+        bool size(const std::string &, uint64_t & bytes, std::string & error) override {
+            t += std::chrono::seconds(50);
+            if (asked++ == missing) {
+                error = "the link answered HTTP 404";
+                return false;
+            }
+            bytes = 1000;
+            return true;
+        }
+    };
+    FakeHost host;
+    const auto clock = [&host] { return host.t; };
+    std::vector<uint64_t> sizes;
+    bool timed_out = false;
+    parse_model_url("https://example.org/r/Big-00001-of-00002.gguf", m, err);
+    check(fetch_url_sizes(host, m, kUrlSizeDeadline, sizes, timed_out, err, clock) && sizes.size() == 2 &&
+              sizes[1] == 1000 && !timed_out,
+          "url: every shard is asked for its size, in order");
+    parse_model_url("https://example.org/r/Big-00001-of-00010.gguf", m, err);
+    host = FakeHost{};
+    check(!fetch_url_sizes(host, m, kUrlSizeDeadline, sizes, timed_out, err, clock) && timed_out && host.asked < 10 &&
+              host.asked * 50 <= kUrlSizeDeadline.count() + 50,
+          "url: asking stops at the deadline, and the entry is not made from half its sizes: " + err);
+    host = FakeHost{};
+    host.missing = 1;
+    check(!fetch_url_sizes(host, m, kUrlSizeDeadline, sizes, timed_out, err, clock) && !timed_out && host.asked == 2 &&
+              err.find("404") != std::string::npos,
+          "url: a shard the host says is not there refuses the link");
 
     check(parse_model_url("https://example.org/r/Big-00001-of-00002.gguf", m, err), "url: a split set parses");
     const CatalogEntry e = url_catalog_entry(m, {10, 20});
@@ -1286,6 +1329,18 @@ static void model_delete_tests() {
                   delete_model_files(models.u8string(), d, freed, err) && fs::exists(dir / "outside.gguf") &&
                   !fs::exists(fs::symlink_status(models / "link.gguf")),
               "delete: a link in the models folder is removed as the link, its target kept");
+
+    // All or nothing: a file that cannot be moved aside (here a directory where a shard should be,
+    // as a file held open is on Windows) puts back the ones moved before it and deletes nothing.
+    write(models / "A-00001-of-00002.gguf", "abc");
+    fs::create_directories(models / "A-00002-of-00002.gguf");
+    ModelDeletion half;
+    half.names = {"A-00001-of-00002.gguf", "A-00002-of-00002.gguf"};
+    half.paths = {(models / half.names[0]).u8string(), (models / half.names[1]).u8string()};
+    check(!delete_model_files(models.u8string(), half, freed, err) && freed == 0 &&
+              fs::exists(models / "A-00001-of-00002.gguf") && !fs::exists(models / "A-00001-of-00002.gguf.deleting") &&
+              err.find("nothing was deleted") != std::string::npos,
+          "delete: a set that cannot go whole is left whole, and the reason says so: " + err);
     fs::remove_all(dir, ec);
 }
 

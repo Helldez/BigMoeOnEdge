@@ -78,8 +78,10 @@
   function add() {
     run('add', async () => {
       const r = await api.hfAdd(listed, selected, token || undefined);
-      added = r.id;
+      // "Downloading" only once the download has started: a refusal (a full disk) throws out of
+      // onAdded and shows here instead.
       await onAdded(r.id);
+      added = r.id;
     });
   }
 

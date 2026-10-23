@@ -426,6 +426,8 @@ FitVerdict verdict_parts(const FitInputs & in) {
             v.headline = "Will not fit in the memory this process may hold";
         }
     } else {
+        // It streams, but whether its floor fits is not known: no colour of a fit it may not be.
+        v.fit = "unknown";
         v.headline = "Streams from flash; the memory free here could not be read";
     }
     return v;

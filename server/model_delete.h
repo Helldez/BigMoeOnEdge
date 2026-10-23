@@ -30,8 +30,10 @@ bool find_model_to_delete(
 bool deletion_touches(const ModelDeletion & d, const std::string & loaded);
 
 // Remove the files, and the model's own folder once it is empty. A link is removed as the link,
-// its target kept. `freed` is the bytes of the regular files removed. False, with the reason, at
-// the first file that could not be removed (those before it are gone).
+// its target kept. `freed` is the bytes of the regular files removed. All or nothing as far as a
+// filesystem allows: each file is first renamed aside, and one that cannot be (held open, a
+// directory) puts the others back and deletes nothing. False, with the reason, then; and also when
+// a renamed file could not be removed after all, naming each one left behind.
 bool delete_model_files(const std::string & models_dir, const ModelDeletion & d, uint64_t & freed, std::string & err);
 
 } // namespace bmoe::server

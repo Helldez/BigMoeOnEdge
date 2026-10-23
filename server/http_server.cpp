@@ -766,12 +766,9 @@ void register_routes(httplib::Server & svr, App & app) {
         std::string err;
         if (!parse_model_url(body["url"].get<std::string>(), m, err)) return send_error(res, 400, err, "invalid_url");
         std::vector<uint64_t> sizes;
-        for (const CatalogFile & f : m.files) {
-            uint64_t n = 0;
-            if (!app.net->size(f.url, n, err))
-                return send_error(res, 502, "could not reach " + f.name + ": " + err, "upstream");
-            sizes.push_back(n);
-        }
+        bool timed_out = false;
+        if (!fetch_url_sizes(*app.net, m, kUrlSizeDeadline, sizes, timed_out, err))
+            return send_error(res, timed_out ? 504 : 502, err, "upstream");
         const CatalogEntry e = url_catalog_entry(m, sizes);
         err = app.lib.add_entry(e);
         if (!err.empty()) return send_error(res, 409, err);

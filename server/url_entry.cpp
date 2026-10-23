@@ -118,6 +118,11 @@ bool parse_model_url(const std::string & text, UrlModel & out, std::string & err
     }
     // A split set is fetched whole: its other shards sit beside the one linked, named as
     // gguf-split names them, so their links are the same link with the name changed.
+    if (sh.count > kMaxUrlShards) {
+        error = "the link names a split set of " + std::to_string(sh.count) + " shards; at most " +
+                std::to_string(kMaxUrlShards) + " are fetched from a link";
+        return false;
+    }
     if (segment != name) {
         error = "a link to a shard of a split set must spell its name without escapes";
         return false;
@@ -125,6 +130,35 @@ bool parse_model_url(const std::string & text, UrlModel & out, std::string & err
     for (int i = 1; i <= sh.count; ++i) {
         const std::string n = shard_file_name(sh.stem, i, sh.count);
         out.files.push_back({n, prefix + n + query, 0});
+    }
+    return true;
+}
+
+bool fetch_url_sizes(HttpFetch & net,
+                     const UrlModel & model,
+                     std::chrono::steady_clock::duration deadline,
+                     std::vector<uint64_t> & sizes,
+                     bool & timed_out,
+                     std::string & error,
+                     const std::function<std::chrono::steady_clock::time_point()> & now) {
+    sizes.clear();
+    timed_out = false;
+    const auto until = now() + deadline;
+    for (const CatalogFile & f : model.files) {
+        if (now() >= until) {
+            timed_out = true;
+            error = "the host took longer than " +
+                    std::to_string(std::chrono::duration_cast<std::chrono::seconds>(deadline).count()) +
+                    " s to give the sizes of " + std::to_string(model.files.size()) + " files";
+            return false;
+        }
+        uint64_t n = 0;
+        std::string why;
+        if (!net.size(f.url, n, why)) {
+            error = "could not reach " + f.name + ": " + why;
+            return false;
+        }
+        sizes.push_back(n);
     }
     return true;
 }

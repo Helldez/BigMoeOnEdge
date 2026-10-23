@@ -23,21 +23,28 @@ Semantic Versioning.
 - **The fit verdict as a code and a line from the server.** `POST /api/hf/inspect` now also returns
   `verdict.fit` (`fits`, `no_streaming`, `will_not_fit`, `no_disk`, `not_a_model`, `unknown`) and
   `verdict.headline`, both decided by `fit_verdict` from the facts it already had. The UI shows the
-  line and colours it by the code, with no threshold of its own.
+  line and colours it by the code, with no threshold of its own. A model that streams on a machine
+  whose free memory could not be read is `unknown`, not `fits`.
 - **Delete a model and import from a link, on the desktop (#356).** These two were in
   `docs/screens.md` and on the phone, but the desktop UI and the server had neither.
   - `DELETE /api/models/local/<name>` deletes a model named the way the listing names it, never by
     path. It removes the files the server's own scan of the models folder groups under that name, so
     a split set goes as a unit, and its emptied folder with it. It never touches a scan directory or
     the model that is loaded or loading (`409 in_use`), nor a file that a running download is writing.
-    A link is removed as the link. Only a loopback client may call it.
+    A link is removed as the link. A set goes whole or not at all: each file is renamed aside first,
+    and one that cannot be (held open on Windows) puts the others back and deletes nothing. Only a
+    loopback client may call it.
   - `POST /api/models/url` turns a direct https gguf link into a catalog entry (`url:<file>`, size
     from a `HEAD` request), so its download is the catalog's, with resume, cancel and progress. A
     link to any shard names the whole split set. The link must be https with no credentials, and the
     file name must use the same narrow alphabet as a repository's. The status is read from the
-    headers, because curl's exit code over HTTP/2 does not report a refused `HEAD`. Loopback clients
-    only.
+    headers, because curl's exit code over HTTP/2 does not report a refused `HEAD`. A link may name
+    at most 128 shards (`kMaxUrlShards`; published sets are under 50), and the size requests stop
+    after 120 s in all (`504`, no entry made), so a typed `-of-99999` cannot hold a worker for hours.
+    Loopback clients only.
   - The Models screen gains Delete (asked twice), Forget for an added entry, and a direct-link field.
+    A download that does not start after Download on the Hugging Face card or a link says why there,
+    instead of the card reading "Downloading"; a suggestion's failed download shows beside it.
   - New pure policy files with server checks: `url_entry` (which links are taken, the entry they
     become, the HEAD answer) and `model_delete` (which files a delete removes, path escapes refused,
     the loaded model recognised by identity). Both were also run end to end against a scratch models
