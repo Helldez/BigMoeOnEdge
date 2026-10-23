@@ -24,10 +24,10 @@ struct ChatToolCall {
 struct ChatMessage {
     std::string role;
     std::string content;
-    std::string reasoning;                // assistant: the thinking span, when the front-end kept it
-    std::vector<ChatToolCall> tool_calls; // assistant: the calls this turn made
-    std::string tool_call_id;             // tool: the call this message answers
-    std::string name;                     // tool: the function that produced it
+    std::string reasoning{};                // assistant: the thinking span, when the front-end kept it
+    std::vector<ChatToolCall> tool_calls{}; // assistant: the calls this turn made
+    std::string tool_call_id{};             // tool: the call this message answers
+    std::string name{};                     // tool: the function that produced it
 };
 
 // A function the model may call. `parameters` is its JSON schema, as text.

@@ -353,8 +353,8 @@ void RouterHook::predict_worker_main() {
         // whether the mirror is used is the session's resolved gate_mirror, read off a timing of
         // both kernels on this machine (gate_gemv::measure), never off the compiler's target.
         bool scored = false;
-        if (gate_mirror_ && job.commit && job.nl >= 0 && quantize_gate(job.nl))
-            scored = gate_scores_q(job.nl, job.row, scores);
+        if (gate_mirror_ && job.commit && job.nl >= 0 && quantize_gate(job.nl, job.gate))
+            scored = gate_scores_q(job.nl, job.gate, job.row, scores);
         if (!scored) scored = job.gate && gate_scores(job.gate, job.row, scores);
         if (job.commit) {
             ra_gemv_ns_.fetch_add(
@@ -526,11 +526,11 @@ void RouterHook::rank_top_k(const std::vector<float> & scores, int k, std::vecto
 // Build the int8 mirror of layer il's gate matrix (see the header for why). One symmetric scale
 // per expert ROW keeps each row's dynamic range: the rows are what get compared against one
 // another, and a single matrix-wide scale would flatten a quiet row into noise. Runs once per
-// layer, on the prediction worker, reading a weight leaf nothing mutates.
-bool RouterHook::quantize_gate(int il) {
+// layer, on the prediction worker, reading a weight leaf nothing mutates. The leaf is the job's
+// snapshot, never gate_w_: the eval thread writes that table on every decode step.
+bool RouterHook::quantize_gate(int il, const ggml_tensor * w) {
     if (il < 0 || il >= (int) ra_gate_q_.size()) return false;
     if (!ra_gate_q_[il].empty()) return true; // already mirrored
-    const ggml_tensor * w = gate_w_[il];
     if (!w || !w->data) return false;
     if (w->type != GGML_TYPE_F32 && w->type != GGML_TYPE_F16) return false;
     const int64_t nd = w->ne[0], ne = w->ne[1];
@@ -670,9 +670,8 @@ void RouterHook::apply_substitute(ggml_tensor * ids, int il, int nu, int nt) {
     }
 }
 
-bool RouterHook::gate_scores_q(int il, const std::vector<float> & h, std::vector<float> & out) {
+bool RouterHook::gate_scores_q(int il, const ggml_tensor * w, const std::vector<float> & h, std::vector<float> & out) {
     if (il < 0 || il >= (int) ra_gate_q_.size() || ra_gate_q_[il].empty()) return false;
-    const ggml_tensor * w = gate_w_[il];
     if (!w) return false;
     const int64_t nd = w->ne[0], ne = w->ne[1];
     if (nd != (int64_t) h.size() || (size_t) nd * (size_t) ne != ra_gate_q_[il].size()) return false;
@@ -977,7 +976,7 @@ void RouterHook::build_spec_lists(const std::vector<float> & scores,
 
 // At the topk of layer il, with the routing ids in hand: sample the watchdog, then submit the
 // prediction job for layer il+2 built from THIS layer's gate input.
-void RouterHook::predict_at_topk(ggml_tensor * t, int il, int nu, int nt) {
+void RouterHook::predict_at_topk(ggml_tensor * /*t*/, int il, int nu, int nt) {
     if (!predict_prefetch_ || wd_tripped_ || batch_phase_ != 1 || !source_) return;
     if (il < 0 || il >= n_layer_ || nu <= 0 || nu > predict_max_k || nt <= 0) return;
     ggml_tensor * h = h_t_[il];

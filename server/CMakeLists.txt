@@ -30,9 +30,10 @@ add_library(bmoe_server_core STATIC
     plan_view.cpp
 )
 target_link_libraries(bmoe_server_core PUBLIC bmoe_core)
-target_include_directories(bmoe_server_core PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/vendor)
+target_include_directories(bmoe_server_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# The vendored libraries (cpp-httplib, nlohmann/json) as system headers: upstream's code, upstream's
+# warnings.
+target_include_directories(bmoe_server_core SYSTEM PUBLIC ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/vendor)
 
 # The whole server as a library (server.h): the engine host, the model library, the planner
 # adapter, the platform and the HTTP API. The executable is main() over it; an app that may not

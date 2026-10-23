@@ -55,6 +55,52 @@ if(IOS)
     set(BMOE_BACKEND_MODULES OFF CACHE BOOL "" FORCE)
 endif()
 
+# --- Warnings and sanitizers ---------------------------------------------------------
+# The warning level is this project's, applied to its own targets only (bmoe_apply_warnings, at
+# the end of this file): llama.cpp keeps the flags upstream builds it with. Off by default so a
+# newer compiler's new warning never stops a user's build; CI turns it on where the compiler is one
+# the tree has been made clean on.
+option(BMOE_WARNINGS_AS_ERRORS "Treat warnings in this project's own code as errors" OFF)
+if(MSVC)
+    set(BMOE_WARNING_FLAGS /W4)
+    if(BMOE_WARNINGS_AS_ERRORS)
+        list(APPEND BMOE_WARNING_FLAGS /WX)
+    endif()
+else()
+    set(BMOE_WARNING_FLAGS -Wall -Wextra)
+    if(BMOE_WARNINGS_AS_ERRORS)
+        list(APPEND BMOE_WARNING_FLAGS -Werror)
+    endif()
+endif()
+
+# A sanitizer is the opposite: the whole build, llama.cpp included, so ggml's reads of the buffers
+# the streamer fills are checked too (and, under thread, so its threadpool's synchronisation is
+# seen rather than reported as races). A comma-separated list; thread does not combine with address.
+set(BMOE_SANITIZE "" CACHE STRING "Sanitizers for the whole build: address, undefined, thread (comma-separated)")
+set_property(CACHE BMOE_SANITIZE PROPERTY STRINGS "" "address" "undefined" "address,undefined" "thread")
+if(BMOE_SANITIZE)
+    string(REPLACE "," ";" _bmoe_san_list "${BMOE_SANITIZE}")
+    foreach(_san IN LISTS _bmoe_san_list)
+        if(NOT _san MATCHES "^(address|undefined|thread)$")
+            message(FATAL_ERROR "BMOE_SANITIZE: unknown sanitizer '${_san}' (address, undefined, thread)")
+        endif()
+    endforeach()
+    if("thread" IN_LIST _bmoe_san_list AND "address" IN_LIST _bmoe_san_list)
+        message(FATAL_ERROR "BMOE_SANITIZE: thread cannot be combined with address")
+    endif()
+    if(MSVC)
+        if(NOT _bmoe_san_list STREQUAL "address")
+            message(FATAL_ERROR "BMOE_SANITIZE: MSVC supports address only")
+        endif()
+        add_compile_options(/fsanitize=address)
+    else()
+        string(REPLACE ";" "," _bmoe_san "${_bmoe_san_list}")
+        add_compile_options(-fsanitize=${_bmoe_san} -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=${_bmoe_san})
+    endif()
+    message(STATUS "BigMoeOnEdge: sanitizers = ${BMOE_SANITIZE}")
+endif()
+
 # --- Optional native dependency: llama.cpp ----------------------------------------
 # The streaming seam uses only the public C API (llama.h). We additionally link llama.cpp's
 # `common` layer for chat-template rendering + reasoning parsing (common_chat_*),
@@ -123,6 +169,16 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
         enable_language(OBJCXX)
     endif()
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
+    # Upstream's headers are upstream's code: included as system headers, so a warning inside one
+    # (common/'s jinja headers have unused static functions) is not reported against our sources.
+    foreach(_t llama llama-common ggml ggml-base)
+        if(TARGET ${_t})
+            get_target_property(_inc ${_t} INTERFACE_INCLUDE_DIRECTORIES)
+            if(_inc)
+                set_property(TARGET ${_t} APPEND PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_inc}")
+            endif()
+        endif()
+    endforeach()
 endif()
 
 add_subdirectory(core)
@@ -146,6 +202,59 @@ endif()
 
 if(BMOE_BUILD_TOOLS)
     add_subdirectory(tools)
+endif()
+
+# Every compiled target a directory of ours declares gets the warning level. A directory whose
+# source is in the submodule (llama.cpp, and the cpp-httplib server/ builds from its vendor tree) is
+# skipped with everything under it, so those targets keep upstream's flags.
+function(bmoe_apply_warnings dir)
+    get_property(_src DIRECTORY ${dir} PROPERTY SOURCE_DIR)
+    string(FIND "${_src}/" "${CMAKE_SOURCE_DIR}/third_party/" _pos)
+    if(_pos EQUAL 0)
+        return()
+    endif()
+    get_property(_targets DIRECTORY ${dir} PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_t IN LISTS _targets)
+        get_target_property(_type ${_t} TYPE)
+        if(_type MATCHES "^(EXECUTABLE|STATIC_LIBRARY|SHARED_LIBRARY|MODULE_LIBRARY|OBJECT_LIBRARY)$")
+            # The C-family sources only: the iOS app's Swift package takes no C compiler flag.
+            target_compile_options(${_t} PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:${BMOE_WARNING_FLAGS}>")
+        endif()
+    endforeach()
+    get_property(_subdirs DIRECTORY ${dir} PROPERTY SUBDIRECTORIES)
+    foreach(_sub IN LISTS _subdirs)
+        bmoe_apply_warnings(${_sub})
+    endforeach()
+endfunction()
+bmoe_apply_warnings(${CMAKE_CURRENT_SOURCE_DIR})
+
+# --- Install ----------------------------------------------------------------------------
+# The layout a release archive has: the executables, the shared libraries and backend modules they
+# load from beside themselves, and the web UI and model catalog bmoe-server finds next to it, all in
+# one directory (bin/ under the prefix). Component `bmoe`, because llama.cpp's own install rules
+# (headers, its libraries under lib/) are not this layout: `cmake --install build --component bmoe`.
+if(BMOE_HAVE_LLAMA AND NOT IOS AND (TARGET bmoe-cli OR TARGET bmoe-server))
+    include(GNUInstallDirs)
+    foreach(_exe bmoe-cli bmoe-server)
+        if(TARGET ${_exe})
+            install(TARGETS ${_exe} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT bmoe)
+            set(_bmoe_bin_dir "$<TARGET_FILE_DIR:${_exe}>")
+        endif()
+    endforeach()
+    # The libraries are whatever the build put beside the executables (the CPU module comes in one
+    # file per instruction-set tier, the GPU modules per configuration), so the directory is the
+    # list. Symlinks stay symlinks (libggml.so.0 -> libggml.so.0.x.y).
+    if(BMOE_BACKEND_MODULES)
+        install(DIRECTORY "${_bmoe_bin_dir}/" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT bmoe
+                USE_SOURCE_PERMISSIONS
+                FILES_MATCHING PATTERN "*.so" PATTERN "*.so.*" PATTERN "*.dylib" PATTERN "*.dll"
+                PATTERN "ui" EXCLUDE PATTERN "catalog" EXCLUDE)
+    endif()
+    if(TARGET bmoe-server)
+        install(FILES catalog/models.json DESTINATION ${CMAKE_INSTALL_BINDIR}/catalog COMPONENT bmoe)
+        # The web UI is built outside CMake (cd ui && npm ci && npm run build); installed when built.
+        install(DIRECTORY ui/dist/ DESTINATION ${CMAKE_INSTALL_BINDIR}/ui COMPONENT bmoe OPTIONAL)
+    endif()
 endif()
 
 message(STATUS "BigMoeOnEdge: llama.cpp present = ${BMOE_HAVE_LLAMA}")

@@ -479,8 +479,9 @@ size_t fault_bytes() {
 }
 
 // Scan a "Key: <n> kB" file for the keys we want in one pass, rather than one open per field.
+// Unused on Apple, which asks the kernel for the same figures (task_info, sysctl).
 namespace {
-bool scan_kb_file(const char * path, const char * const * keys, uint64_t * out, int n) {
+[[maybe_unused]] bool scan_kb_file(const char * path, const char * const * keys, uint64_t * out, int n) {
     FILE * f = std::fopen(path, "re");
     if (!f) return false;
     char line[256];

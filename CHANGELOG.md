@@ -95,6 +95,15 @@ Semantic Versioning.
   APK, and the README's License section points at it, in all six languages.
 - **Dependabot for the workflows' actions, the web UI's npm packages and the Android Gradle build
   (#351).** Monthly, one grouped PR per ecosystem.
+- **A warning level, a named sanitizer option and an install target (#350).** The project's own
+  targets build with `-Wall -Wextra` (`/W4` on MSVC); llama.cpp and its vendored libraries keep
+  upstream's flags. `-DBMOE_WARNINGS_AS_ERRORS=ON` makes a warning an error (off by default; on in
+  CI's macOS job, the compiler the tree was cleaned on). `-DBMOE_SANITIZE=address,undefined` (or
+  `thread`) instruments the whole build in one flag; CI's sanitizer job uses it, and a new TSan job
+  runs the threaded tests (the engine host, the server's turn queue, the byte-identity gates).
+  `cmake --install build --component bmoe` installs the release layout: `bmoe-cli`, `bmoe-server`,
+  the backend libraries beside them, the web UI and the model catalog. The release archives are
+  still packaged by hand, since they also carry the C runtime on Windows and a README per archive.
 
 ### Changed
 - **Thinking is off by default (#331).** A reasoning model spends most of a turn thinking before it
@@ -191,6 +200,14 @@ not changed.
   kernel tree or names its modules; stale comments that described the Android app starting the CLI
   (it starts `bmoe-server`) are corrected, in the app, its README and the iOS harness; and the
   Android app drops its API-level checks for versions below its `minSdk` of 29.
+- **A data race in route-ahead's int8 gate mirror (#350).** On aarch64 (the phones, Apple silicon)
+  the prediction worker read layer `nl`'s gate matrix from the hook's per-layer table while the
+  eval thread rewrote that table on every decode step. The value was the same weight leaf each
+  time, so no run went wrong, but it was undefined behaviour; the first ThreadSanitizer run found
+  it. The worker now uses the gate pointer the job already snapshotted, as the float path did.
+  The warnings `-Wall -Wextra` raised (an unused parameter and helper, aggregate fields without a
+  default, discarded results, a range loop that copied) are fixed without changing what any of them
+  computes.
 
 ### Security
 - **The model catalog is held to what its fields become (#347).** A catalog file's `name` is joined

@@ -180,7 +180,7 @@ int main(int argc, char ** argv) {
     }
 
     int failures = 0;
-    for (const auto spec : {std::pair<int, bool>{0, true}, {3, true}, {0, false}}) {
+    for (const auto & spec : {std::pair<int, bool>{0, true}, {3, true}, {0, false}}) {
         const int top_k = spec.first ? spec.first : (int) profile.n_expert_used;
         const size_t cycle = profile.token_cycle_bytes / profile.n_expert_used * (size_t) top_k;
         const size_t limit = spec.second ? cycle * 2 : cycle / 2;

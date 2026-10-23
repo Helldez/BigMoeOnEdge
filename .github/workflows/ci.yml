@@ -137,11 +137,7 @@ jobs:
           python3 -m pip install -r scripts/requirements-ci.txt
       - name: Configure & build (ASan + UBSan)
         run: |
-          SAN="-fsanitize=address,undefined -fno-omit-frame-pointer"
-          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_C_FLAGS="$SAN" -DCMAKE_CXX_FLAGS="$SAN" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
-            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBMOE_SANITIZE=address,undefined
           cmake --build build-asan -j
       - name: Byte-identity gates, sanitized
         env:
@@ -149,6 +145,38 @@ jobs:
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/sanitizers/lsan.supp
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1:suppressions=${{ github.workspace }}/tests/sanitizers/ubsan.supp
         run: cd build-asan && ctest --output-on-failure
+
+  tsan:
+    # ThreadSanitizer over the tests that run threads: the engine host (loads, turns, cancel and
+    # unload across threads), the server's turn queue and event fan-out, and the byte-identity gates,
+    # which drive the streamer's I/O lanes and --overlap's expert-ready hook. llama.cpp is
+    # instrumented too (BMOE_SANITIZE is the whole build) and runs on its own threadpool rather than
+    # OpenMP, whose runtime TSan cannot see into.
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Install deps
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake ninja-build
+          python3 -m pip install --upgrade pip
+          python3 -m pip install gguf numpy
+      # The runner kernel's address-space randomisation is wider than TSan's shadow layout allows,
+      # and every instrumented binary then dies at start-up with "unexpected memory mapping".
+      - name: Narrow ASLR for TSan
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Configure & build (TSan)
+        run: |
+          cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBMOE_SANITIZE=thread \
+            -DGGML_OPENMP=OFF
+          cmake --build build-tsan -j
+      - name: Threaded tests, sanitized
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: cd build-tsan && ctest -j 2 --output-on-failure -R '^(engine_host|server_logic|moe_gates_.*)$'
 
   ui:
     # The web UI's unit tests (ui/src/lib). release-host runs them too, but only once a release is
@@ -205,11 +233,13 @@ jobs:
       - name: Install deps (the gates' tiny-model generator)
         run: python3 -m pip install -r scripts/requirements-ci.txt
       # Keep this in sync with the macos-arm64 release-host configuration, which differs only in
-      # leaving the tests out.
+      # leaving the tests out, and in not failing on a warning: a warning in our own code is an
+      # error here, where the compiler is the one the tree is kept clean on.
       - name: Configure & build (the Apple I/O paths, and the gates)
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DBMOE_WARNINGS_AS_ERRORS=ON \
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF
           cmake --build build --config Release -j
