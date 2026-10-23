@@ -19,7 +19,12 @@ Semantic Versioning.
   unbounded one; past it the next is closed at once. A stream now notices a client that closed
   its connection within a second instead of at its next 15 s ping, so a reloaded page finds the
   place it left free; a client that keeps the connection but stops reading is still let go by the
-  ping hitting the write timeout.
+  ping hitting the write timeout. A client that vanishes without closing (a phone off Wi-Fi) is now
+  bounded by TCP: keep-alive probes after 15 s idle and a 60 s limit on unacknowledged data, each
+  option set where the system's headers define it. They are set on the listening socket, the one
+  place the HTTP library offers: Linux and Android clone them into every connection; macOS was
+  measured not to copy the idle time or the retransmission bound, so there that case is still left
+  to the system's own limit.
 - **`--open` starts the browser without a shell (#353).** It went through `std::system` with the
   URL quoted into a command line; it now starts `open` (macOS) or `xdg-open` directly with the URL as
   one argument, through the subprocess header the downloads already use, and drops its output on a

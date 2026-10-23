@@ -357,7 +357,14 @@ is open: one more gets `503` with `code: "streams_full"` and should retry later,
 apps do (with back-off). A client that closes its connection gives its place back within a second,
 so a reloaded page finds it free; one that keeps the connection open but stops reading is let go
 when a ping cannot be written (the server's write timeout, 5 s, once the connection's buffer is
-full).
+full). A client that vanishes without closing (a phone that drops off Wi-Fi) is bounded by TCP:
+the server enables keep-alive probes (after 15 s idle, every 5 s, 3 of them) and gives up on data
+left unacknowledged for 60 s. These are set on the listening socket, the one place the HTTP library
+offers, so they reach a connection where the system copies a listener's options to the connections
+it accepts: Linux, and so Android, clones the listener's TCP state into each one; macOS was
+measured to copy keep-alive itself, the probe interval and the count, but not the idle time or the
+retransmission bound, so there such a client keeps its place until the system's own retransmission
+limit.
 
 | event | data |
 |---|---|

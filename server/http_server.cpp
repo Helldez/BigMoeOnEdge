@@ -70,6 +70,44 @@ constexpr std::chrono::seconds kEventPingInterval{15};
 // that reloads takes a new one at once: a client that closed its connection must not hold the old
 // one until the next ping. The same second a waiting chat turn looks with (TurnQueue::enter).
 constexpr std::chrono::seconds kEventLivenessPoll{1};
+// A client that vanishes without closing (a phone that drops off Wi-Fi) is invisible to the checks
+// above: nothing comes back to read, and pings that small never fill the send buffer, so without a
+// bound from TCP its stream would keep one of the few places until the stack's own retransmission
+// limit, many minutes. These bound it:
+// - unacknowledged data is given up after a minute: longer than the stall of a phone moving from
+//   Wi-Fi to cellular, short enough that the place is free before a person reloads twice;
+constexpr int kTcpUnackedTimeoutS = 60;
+// - a connection with nothing in flight is probed after the ping interval, every 5 s, 3 times.
+constexpr int kTcpKeepAliveIdleS = 15;
+constexpr int kTcpKeepAliveIntervalS = 5;
+constexpr int kTcpKeepAliveProbes = 3;
+
+// Set on the listening socket, the one place the library offers (svr.set_socket_options). A stack
+// that copies a listener's TCP options to the connections it accepts applies them to every client;
+// one that does not keeps its defaults for the options it does not copy. Each option is set where
+// the system's headers define it: what the stack can do, not which system it is.
+void set_listener_options(socket_t sock) {
+    httplib::default_socket_options(sock); // what replacing the library's default must keep
+    httplib::set_socket_opt(sock, SOL_SOCKET, SO_KEEPALIVE, 1);
+#if defined(TCP_KEEPIDLE)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_KEEPIDLE, kTcpKeepAliveIdleS);
+#elif defined(TCP_KEEPALIVE)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_KEEPALIVE, kTcpKeepAliveIdleS); // the older name, seconds
+#endif
+#if defined(TCP_KEEPINTVL)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_KEEPINTVL, kTcpKeepAliveIntervalS);
+#endif
+#if defined(TCP_KEEPCNT)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_KEEPCNT, kTcpKeepAliveProbes);
+#endif
+#if defined(TCP_USER_TIMEOUT)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_USER_TIMEOUT, kTcpUnackedTimeoutS * 1000); // milliseconds
+#elif defined(TCP_RXT_CONNDROPTIME)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_RXT_CONNDROPTIME, kTcpUnackedTimeoutS);
+#elif defined(TCP_MAXRT)
+    httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_MAXRT, kTcpUnackedTimeoutS);
+#endif
+}
 
 struct Options {
     std::string host = kDefaultHost;
@@ -1039,6 +1077,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     // A worker is held for a request's whole life, and a connection past the queue is closed at
     // once instead of waiting with no bound behind workers that may not come free.
     svr.new_task_queue = [] { return new httplib::ThreadPool(kWorkerThreads, 0, kMaxQueuedRequests); };
+    svr.set_socket_options(set_listener_options);
     // A request body here is a chat history or a handful of settings. The library's default would
     // let every worker buffer a hundred times that.
     svr.set_payload_max_length(8ull << 20);
