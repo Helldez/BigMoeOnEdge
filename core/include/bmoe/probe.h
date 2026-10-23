@@ -120,6 +120,12 @@ void probe_device_costs(HardwareProfile & hw, const ModelProfile & model);
 // faster at 4. The instrument has to be made of the same material as the workload.
 void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model);
 
+// The router-gate GEMV route-ahead's prediction runs, timed over the gate's float weights and over
+// an int8 mirror of them, on a synthetic gate of this model's shape (gate_gemv::measure, the same
+// kernels the run uses). Fills HardwareProfile::gate_gemv_f32_us / gate_gemv_int8_us; a model whose
+// shape is unknown leaves them 0. See core/src/plan/gate_probe.cpp.
+void probe_gate_gemv(HardwareProfile & hw, const ModelProfile & model);
+
 // ── probing a device where it cannot take the plan down with it ──────────────────────────────
 //
 // Every probe above that touches a device does so by using it, and a device is only as sound as

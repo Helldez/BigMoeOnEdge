@@ -38,6 +38,19 @@ Semantic Versioning.
   `--no-think`), the Thinking setting, and per request through `think`,
   `chat_template_kwargs.enable_thinking` or `reasoning_effort` (any level but `"none"` now turns
   it on; before, only `"none"` was read). Models with no thinking mode are unaffected.
+- **Route-ahead's int8 gates are chosen by a timing, not by the instruction set (#349).** The
+  prediction behind `--route-ahead` ranks experts with one router-gate GEMV per layer per token,
+  over the gate's float weights or over an int8 mirror of them (a quarter of the bytes, plus a
+  quantization of the activation per call). Which is faster is bytes against arithmetic: the mirror
+  won three times over on the test phone and lost on an x86 host. It was armed by an
+  `#if defined(__aarch64__)`, right on those two machines and a guess on any other. New setting
+  `--gate-mirror auto|on|off` (default `auto`): `--auto` times both kernels on the model's own gate
+  set (every gated layer, so the timing sits in the cache regime the run will, bounded at 512 MiB),
+  the run's own code walked layer by layer, and takes the faster with the timings in the
+  plan's notes; without `--auto` the session runs the same timing at load. The probe runs only when
+  route-ahead is set, so other plans do not pay for it. Measured on a development laptop: 5.7 us
+  int8 against 42.8 us float per layer on a 2048 x 128 gate. G14b now commits on both gate formats;
+  route-ahead stays lossy either way, and nothing it does not touch changes.
 
 ### Fixed
 - **A cancelled turn leaves both contexts at the same prefix.** When the draft context of

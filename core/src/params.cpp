@@ -884,6 +884,19 @@ std::vector<ParamDesc> build() {
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.route_ahead; });
         t.push_back(d);
     }
+    {
+        ParamDesc d = row("gate-mirror", "Route-ahead int8 gates", G::Lossy, L::Experimental,
+                          "With route-ahead: score the prediction against an int8 copy of the router gates "
+                          "(a quarter of the bytes) instead of their own weights. auto times both on this "
+                          "machine at load and keeps the faster.");
+        d.type = ParamType::Choice;
+        d.value_hint = "auto|on|off";
+        bind_choice<GateMirror>(d, [](RunConfig & c) -> GateMirror & { return c.moe.gate_mirror; },
+                                {{GateMirror::Auto, {"auto", "auto"}},
+                                 {GateMirror::On, {"on", "int8"}},
+                                 {GateMirror::Off, {"off", "float"}}});
+        t.push_back(d);
+    }
 
     // ── diagnostics ──────────────────────────────────────────────────────────────────
     {

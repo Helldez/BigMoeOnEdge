@@ -17,7 +17,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   `file_reader` (pooled positioned reader, per-consumer O_DIRECT — used by both the expert stream
   and the dense loader); `mapping_release` (hands the model file's mapping back after load).
 - `core/src/moe/` — `gguf_offsets`, `expert_layout` (which tensors are the routed experts, from the
-  file's shapes), `expert_stream_source`, `router_hook`;
+  file's shapes), `expert_stream_source`, `router_hook`, `gate_gemv` (route-ahead's gate GEMV, float
+  and int8, and the timing that picks one);
   `dense_weights` (the non-expert weight policy: mmap / warm / anon, plus the residency sensor);
   `tensor_names` (the one place llama.cpp's tensor and node names are parsed: no ad-hoc sscanf or regex).
 - `core/src/engine/` — `session.cpp`, the composition root: one `Session` loads the model, binds

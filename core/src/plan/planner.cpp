@@ -1532,6 +1532,47 @@ void disarm_lossy(Planning & s) {
                "exists yet, so spending it would be a guess");
 }
 
+// ── route-ahead's gate GEMV: the int8 mirror or the float weights ───────────────
+// The mirror reads a quarter of the bytes and pays a quantization of the activation per call, so it
+// wins where bytes are scarce and loses where they are not - measured both ways, on a phone and on
+// an x86 host. That is a bandwidth-against-arithmetic fact of the machine, timed by the probe on the
+// run's own kernels and the model's own gate shape; the faster path is taken, a tie to the mirror,
+// because the probe ran alone and a decode beside it only makes bytes dearer. Unmeasured, the knob
+// stays auto and the session times it at load the same way.
+std::string gate_mirror_name(GateMirror m) {
+    return m == GateMirror::On ? "on" : m == GateMirror::Off ? "off" : "auto";
+}
+
+std::string us_text(double us) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), us < 10.0 ? "%.1f" : "%.0f", us);
+    return buf;
+}
+
+void choose_gate_mirror(Planning & s) {
+    MoeStreamConfig & moe = s.p.config.moe;
+    if (moe.route_ahead <= 0) return; // nothing reads it: no decision to explain
+    if (s.pinned("gate-mirror", gate_mirror_name(moe.gate_mirror))) return;
+    const double f = s.hw.gate_gemv_f32_us, q = s.hw.gate_gemv_int8_us;
+    if (f > 0.0 && q > 0.0) {
+        const bool mirror = q <= f;
+        moe.gate_mirror = mirror ? GateMirror::On : GateMirror::Off;
+        const std::string times = us_text(q) + " us int8 against " + us_text(f) + " us float per layer";
+        s.note("gate-mirror", gate_mirror_name(moe.gate_mirror), Source::Measured,
+               mirror ? "Route-ahead ranks experts on int8 gates: faster on this machine."
+                      : "Route-ahead ranks experts on the gates' own weights: faster on this machine.",
+               "the prediction's gate GEMV, timed both ways on this model's gate shape: " + times +
+                   (mirror ? "; a quarter of the bytes buys more here than quantizing the activation costs"
+                           : "; bytes are cheap enough here that quantizing the activation costs more than "
+                             "the mirror saves"));
+    } else {
+        s.note("gate-mirror", gate_mirror_name(moe.gate_mirror), Source::Unprobed,
+               "Route-ahead's gate format is chosen when the model loads.",
+               "the gate GEMV was not timed by this plan, so the session times both forms at load and keeps "
+               "the faster");
+    }
+}
+
 // ── which devices the run lists ─────────────────────────────────────────────────
 // A device that did not survive its probe stays out of the run, whatever else is decided. This is
 // not a preference: what ended the probe - a driver without a function the backend calls, a device
@@ -1761,6 +1802,7 @@ Plan plan_run(const RunConfig & base,
     choose_direct_io(s);
     choose_release_mmap(s);
     disarm_lossy(s);
+    choose_gate_mirror(s);
     choose_devices(s);
     note_shared_pool(s);
     dense_on_shared_device(s);
