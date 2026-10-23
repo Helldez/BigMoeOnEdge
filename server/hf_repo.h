@@ -120,6 +120,11 @@ struct FitVerdict {
     std::string disk;         // the disk sentence
     std::string memory;       // the memory sentence
     uint64_t budget = 0;      // the budget the memory sentence was set against
+    // The answer in one code and one line, the line a UI shows as the verdict's headline and the
+    // code what it colours by: "fits", "no_streaming", "will_not_fit", "no_disk", "not_a_model",
+    // "unknown". Decided here from the facts above, so no client keeps a threshold of its own.
+    std::string fit;
+    std::string headline;
 };
 FitVerdict fit_verdict(const FitInputs & in);
 

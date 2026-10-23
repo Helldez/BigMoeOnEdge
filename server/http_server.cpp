@@ -20,6 +20,7 @@
 #include "planner_adapter.h"
 #include "platform.h"
 #include "settings_store.h"
+#include "url_entry.h"
 
 #include "bmoe/config.h"
 #include "bmoe/params.h"
@@ -825,6 +826,46 @@ void register_routes(httplib::Server & svr, App & app) {
         send_json(res, json{{"ok", true}, {"freed", freed}});
     });
 
+    // A model of the models folder, named as the listing names it (`folder/name`), never a path:
+    // the library deletes the files the folder's own scan groups under that name (model_delete.h).
+    // Only the person at this machine deletes files: a client on the network, key or not, may not.
+    svr.Delete(R"(/api/models/local/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
+        if (!is_loopback_peer(req.remote_addr))
+            return send_error(res, 403, "only a client on this machine may delete a model", "local_only");
+        // Under the load lock: a load cannot start on the file between the check and the delete.
+        std::lock_guard<std::mutex> load(app.load_m);
+        const std::string loaded = app.host.loaded_or_loading() ? app.host.model_path() : "";
+        uint64_t freed = 0;
+        const ModelLibrary::DownloadRefusal r = app.lib.delete_model(req.matches[1].str(), loaded, freed);
+        if (r.status) return send_error(res, r.status, r.error, r.status == 409 ? "in_use" : "");
+        send_json(res, json{{"ok", true}, {"freed", freed}});
+    });
+
+    // A direct link to a gguf becomes a catalog entry (url_entry.h), and its download is then the
+    // catalog's, by id. The server fetches what a client named here, so only a local client may.
+    svr.Post("/api/models/url", [&](const httplib::Request & req, httplib::Response & res) {
+        if (!is_loopback_peer(req.remote_addr))
+            return send_error(res, 403, "only a client on this machine may add a model from a link", "local_only");
+        json body;
+        if (!parse_body(req, res, body)) return;
+        if (!body.contains("url") || !body["url"].is_string())
+            return send_error(res, 400, "url must be a link to a gguf file", "invalid_request");
+        UrlModel m;
+        std::string err;
+        if (!parse_model_url(body["url"].get<std::string>(), m, err)) return send_error(res, 400, err, "invalid_url");
+        std::vector<uint64_t> sizes;
+        bool timed_out = false;
+        if (!fetch_url_sizes(*app.net, m, kUrlSizeDeadline, sizes, timed_out, err))
+            return send_error(res, timed_out ? 504 : 502, err, "upstream");
+        const CatalogEntry e = url_catalog_entry(m, sizes);
+        err = app.lib.add_entry(e);
+        if (!err.empty()) return send_error(res, 409, err);
+        uint64_t total = 0;
+        for (uint64_t n : sizes)
+            total += n;
+        send_json(res, json{{"id", e.id}, {"title", e.title}, {"quant", e.quant}, {"bytes", total}}, 201);
+    });
+
     // ── a model from a Hugging Face repository (hf_repo.h, the helpers above register_routes) ──
     svr.Post("/api/hf/search", [&](const httplib::Request & req, httplib::Response & res) {
         json body;
@@ -903,7 +944,8 @@ void register_routes(httplib::Server & svr, App & app) {
 
     svr.Delete(R"(/api/hf/entry/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
         const std::string id = req.matches[1].str();
-        if (!is_hf_catalog_id(id)) return send_error(res, 404, "not an added entry", "not_found");
+        if (!is_hf_catalog_id(id) && !is_url_catalog_id(id))
+            return send_error(res, 404, "not an added entry", "not_found");
         const bool removed = app.lib.remove_entry(id);
         send_json(res, json{{"ok", removed}}, removed ? 200 : 404);
     });

@@ -23,6 +23,16 @@ public:
                      const std::string & token,
                      std::string & body,
                      std::string & error) = 0;
+    // The size of the file at `url`, from a HEAD request that follows redirects. True with
+    // `bytes` 0 when the size is unknown: an adapter that cannot ask (this default) still lets a
+    // model be added, and its download then runs without a total. False, with the reason, when the
+    // server answered that there is no such file.
+    virtual bool size(const std::string & url, uint64_t & bytes, std::string & error) {
+        (void) url;
+        (void) error;
+        bytes = 0;
+        return true;
+    }
 };
 
 // The system's curl. `scratch_dir` is a writable folder for the bytes in flight (created on

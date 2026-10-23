@@ -1,12 +1,15 @@
 <script lang="ts">
   import StreamingBadge from './StreamingBadge.svelte';
   import { contextAdvice } from '../lib/context';
+  import { downloadSummary } from '../lib/library';
+  import { href } from '../lib/route';
   import { server } from '../stores/server.svelte';
 
   const stateClass: Record<string, string> = { empty: '', planning: 'warn', loading: 'warn', ready: 'ok', error: 'err' };
   const stateText: Record<string, string> = { planning: 'Measuring the machine, then loading' };
   let info = $derived(server.info);
   let ctx = $derived(contextAdvice(info?.model, server.params));
+  let downloads = $derived(downloadSummary(server.downloads));
 </script>
 
 <div class="status" role="status" aria-live="polite">
@@ -33,6 +36,11 @@
     {/if}
     {#if info.generating}
       <span class="badge info">Generating</span>
+    {/if}
+    {#if downloads}
+      <a class="badge info downloads" href={href('models')} title="Downloads run on the server; follow them in Models">
+        {downloads.count === 1 ? 'Downloading' : `${downloads.count} downloads`}{downloads.fraction !== null ? ` ${(downloads.fraction * 100).toFixed(0)}%` : ''}
+      </a>
     {/if}
     <span class="version muted">v{info.version}</span>
   {:else}
@@ -61,6 +69,9 @@
   .error-text {
     color: var(--err);
     overflow-wrap: anywhere;
+  }
+  .downloads {
+    text-decoration: none;
   }
   .version {
     margin-left: auto;

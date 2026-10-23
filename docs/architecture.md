@@ -19,7 +19,9 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 screen draws it, every word included), download_policy (which download failures
                 are retried and when, what a resume needs on disk, where a .part may be deleted,
                 what a catalog file's name, URL and digest may be, the protocols curl may use),
-                sha256 (the digest a finished download is checked against):
+                sha256 (the digest a finished download is checked against),
+                url_entry (which direct gguf links are taken and the catalog entry they become),
+                model_delete (which files deleting a listed model removes, inside the models folder):
                 pure policy (bmoe_server_core)
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
                 (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,

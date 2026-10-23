@@ -13,8 +13,11 @@
 //   * the plan view: one shape for every machine (an NPU phone, a discrete card, the cores alone),
 //     the device roles and their words, the memory pools, the decision groups.
 //   * downloads: which curl failures are retried and after how long, what a resume still needs on
-//     disk, and that deleting a partial download stays inside the models folder.
-//   * events: how many streams may be open, and that a stream that ends gives its place back.
+//     disk, and that deleting a partial download stays inside the models folder;
+//   * events: how many streams may be open, and that a stream that ends gives its place back;
+//   * a model from a link: which links are taken, the entry they become, the size a HEAD gives;
+//   * deleting a model: named as the listing names it, a split set whole, nothing outside the
+//     models folder, the loaded model recognised by identity.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
@@ -24,12 +27,14 @@
 #include "event_bus.h"
 #include "hf_repo.h"
 #include "json_util.h"
+#include "model_delete.h"
 #include "model_files.h"
 #include "openai_chat.h"
 #include "plan_view.h"
 #include "settings_store.h"
 #include "sha256.h"
 #include "turn_queue.h"
+#include "url_entry.h"
 
 #include "bmoe/planner.h"
 
@@ -1059,6 +1064,33 @@ static void hf_tests() {
     in.streamable = false;
     check(fit_verdict(in).memory.find("held now by") != std::string::npos,
           "hf: a dense model's verdict is given the same budget");
+
+    // The verdict's code and headline, which a UI shows and colours by without a threshold of its own.
+    FitInputs f;
+    f.file_bytes = 10ull << 30;
+    f.disk_free = 40ull << 30;
+    f.readable = f.is_moe = f.streamable = true;
+    f.dense_bytes = 1ull << 30;
+    f.token_cycle = 512ull << 20;
+    f.budget = 6ull << 30;
+    check(fit_verdict(f).fit == "fits" && !fit_verdict(f).headline.empty(), "hf: a floor under the budget fits");
+    f.budget = 1ull << 30;
+    check(fit_verdict(f).fit == "will_not_fit", "hf: a floor past the budget will not fit");
+    f.budget = 0;
+    check(fit_verdict(f).fit == "unknown" && fit_verdict(f).headline.find("could not be read") != std::string::npos,
+          "hf: an unknown budget is no fit claimed: the code is unknown, the headline says why");
+    f.streamable = false;
+    check(fit_verdict(f).fit == "no_streaming", "hf: a MoE this build does not stream runs without streaming");
+    f.is_moe = false;
+    check(fit_verdict(f).fit == "no_streaming", "hf: so does a dense model");
+    f.disk_free = 1ull << 30;
+    check(fit_verdict(f).fit == "no_disk" && !fit_verdict(f).downloadable, "hf: a disk too small comes first");
+    f.role = "projector";
+    check(fit_verdict(f).fit == "not_a_model", "hf: but a file that is no model says that first");
+    f.readable = false;
+    check(fit_verdict(f).fit == "no_disk", "hf: an unreadable file on a full disk is still refused for the disk");
+    f.disk_free = 40ull << 30;
+    check(fit_verdict(f).fit == "unknown", "hf: and with room, it is unknown");
 }
 
 // A synthetic machine and plan: the view is pure, so it is driven with the facts alone.
@@ -1430,6 +1462,161 @@ static void event_bus_tests() {
     check(k_max_event_streams > 0 && EventBus().subscribe() != nullptr, "events: the default bus takes a stream");
 }
 
+static void url_entry_tests() {
+    UrlModel m;
+    std::string err;
+    check(parse_model_url("  https://example.org/models/Some-Model-Q4_K_M.gguf?download=true#x ", m, err) &&
+              m.files.size() == 1 && m.files[0].name == "Some-Model-Q4_K_M.gguf" &&
+              m.files[0].url == "https://example.org/models/Some-Model-Q4_K_M.gguf?download=true" &&
+              m.host == "example.org",
+          "url: a direct link names one file, its query kept, its fragment and blanks dropped: " + err);
+    check(parse_model_url("HTTPS://example.org/a%2Bb.gguf", m, err) && m.files[0].name == "a+b.gguf" &&
+              m.files[0].url == "https://example.org/a%2Bb.gguf",
+          "url: the scheme in any case, an escape in the name decoded for the file and kept in the link");
+    for (const char * bad :
+         {"http://example.org/m.gguf", "ftp://example.org/m.gguf", "example.org/m.gguf",
+          "https://user:pw@example.org/m.gguf", "https:///m.gguf", "https://example.org", "https://example.org/",
+          "https://example.org/m.bin", "https://example.org/m%2F..%2Fx.gguf", "https://example.org/..%2Fm.gguf",
+          "https://example.org/.hidden.gguf", "https://example.org/-o.gguf", "https://example.org/a b.gguf",
+          "https://example.org/m.gguf\"", "https://example.org/a%2.gguf", "https://example.org/caf%C3%A9.gguf",
+          "https://example.org/m.gguf?\x01"})
+        check(!parse_model_url(bad, m, err) && !err.empty(), std::string("url: refused: ") + bad);
+
+    check(parse_model_url("https://example.org/r/Big-00002-of-00003.gguf", m, err) && m.files.size() == 3 &&
+              m.files[0].name == "Big-00001-of-00003.gguf" && m.files[2].name == "Big-00003-of-00003.gguf" &&
+              m.files[1].url == "https://example.org/r/Big-00002-of-00003.gguf",
+          "url: a link to any shard names the whole split set, every shard beside it");
+    check(!parse_model_url("https://example.org/r/Big%2D00001-of-00002.gguf", m, err),
+          "url: a shard link spelled with escapes is refused rather than guessed");
+    check(parse_model_url("https://example.org/r/Big-00001-of-00" + std::to_string(kMaxUrlShards) + ".gguf", m, err) &&
+              (int) m.files.size() == kMaxUrlShards,
+          "url: a set of the most shards a link may name is taken");
+    check(!parse_model_url("https://example.org/r/x-00001-of-99999.gguf", m, err) &&
+              err.find(std::to_string(kMaxUrlShards)) != std::string::npos,
+          "url: a link naming more shards than that is refused before anything is fetched: " + err);
+
+    // The sizes, against a fake host and a fake clock: each answer takes 50 s.
+    struct FakeHost : HttpFetch {
+        std::chrono::steady_clock::time_point t{};
+        int asked = 0;
+        int missing = -1; // the index of a file the host says is not there
+        bool get(const std::string &, uint64_t, uint64_t, const std::string &, std::string &, std::string &) override {
+            return false;
+        }
+        bool size(const std::string &, uint64_t & bytes, std::string & error) override {
+            t += std::chrono::seconds(50);
+            if (asked++ == missing) {
+                error = "the link answered HTTP 404";
+                return false;
+            }
+            bytes = 1000;
+            return true;
+        }
+    };
+    FakeHost host;
+    const auto clock = [&host] { return host.t; };
+    std::vector<uint64_t> sizes;
+    bool timed_out = false;
+    parse_model_url("https://example.org/r/Big-00001-of-00002.gguf", m, err);
+    check(fetch_url_sizes(host, m, kUrlSizeDeadline, sizes, timed_out, err, clock) && sizes.size() == 2 &&
+              sizes[1] == 1000 && !timed_out,
+          "url: every shard is asked for its size, in order");
+    parse_model_url("https://example.org/r/Big-00001-of-00010.gguf", m, err);
+    host = FakeHost{};
+    check(!fetch_url_sizes(host, m, kUrlSizeDeadline, sizes, timed_out, err, clock) && timed_out && host.asked < 10 &&
+              host.asked * 50 <= kUrlSizeDeadline.count() + 50,
+          "url: asking stops at the deadline, and the entry is not made from half its sizes: " + err);
+    host = FakeHost{};
+    host.missing = 1;
+    check(!fetch_url_sizes(host, m, kUrlSizeDeadline, sizes, timed_out, err, clock) && !timed_out && host.asked == 2 &&
+              err.find("404") != std::string::npos,
+          "url: a shard the host says is not there refuses the link");
+
+    check(parse_model_url("https://example.org/r/Big-00001-of-00002.gguf", m, err), "url: a split set parses");
+    const CatalogEntry e = url_catalog_entry(m, {10, 20});
+    check(e.id == "url:Big-00001-of-00002.gguf" && e.title == "Big" && e.files.size() == 2 && e.files[0].bytes == 10 &&
+              e.files[1].bytes == 20 && is_url_catalog_id(e.id) && !is_url_catalog_id("hf:a/b"),
+          "url: the entry is keyed by its first file, titled by the set, sized per file");
+    parse_model_url("https://example.org/x-Q8_0.gguf", m, err);
+    const CatalogEntry one = url_catalog_entry(m, {});
+    check(one.title == "x-Q8_0" && one.quant == "Q8_0" && one.files[0].bytes == 0,
+          "url: one file is titled without its extension; a size not given is unknown");
+
+    HeadAnswer a = head_answer("HTTP/1.1 302 Found\r\ncontent-length: 5\r\nlocation: x\r\n\r\n"
+                               "HTTP/2 200\r\nContent-Length:  47000000000\r\n\r\n");
+    check(a.status == 200 && a.length == 47000000000ull, "url: the size is the last response's, after a redirect");
+    a = head_answer("HTTP/1.1 302 Found\r\nContent-Length: 5\r\n\r\nHTTP/2 200\r\n\r\n");
+    check(a.status == 200 && a.length == 0, "url: and unknown when the last response has none");
+    a = head_answer("HTTP/2 307 \r\ncontent-length: 93\r\n\r\nHTTP/2 404 \r\ncontent-length: 15\r\n\r\n");
+    check(a.status == 404, "url: a missing file is the last response's status, whatever curl exits with");
+    check(head_answer("HTTP/2 200\r\ncontent-length: 12x\r\n").length == 0, "url: a malformed length is none");
+    check(head_answer("").status == 0, "url: no answer at all is no status");
+}
+
+static void model_delete_tests() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("bmoe-del-test-" + std::to_string(std::rand()));
+    const fs::path models = dir / "models";
+    fs::create_directories(models / "set");
+    const auto write = [](const fs::path & p, const char * s) {
+        std::FILE * f = std::fopen(p.u8string().c_str(), "wb");
+        if (!f) return;
+        std::fputs(s, f);
+        std::fclose(f);
+    };
+    write(models / "one.gguf", "12345");
+    write(models / "two.gguf", "12");
+    write(models / "set" / "S-00001-of-00002.gguf", "abc");
+    write(models / "set" / "S-00002-of-00002.gguf", "defg");
+    write(dir / "outside.gguf", "keep");
+
+    ModelDeletion d;
+    bool not_found = false;
+    std::string err;
+    for (const char * bad : {"../outside.gguf", "set/../one.gguf", "a/b/c.gguf", "", "/one.gguf", "..", "C:one.gguf",
+                             "set\\S-00001-of-00002.gguf"})
+        check(!find_model_to_delete(models.u8string(), bad, d, not_found, err) && !not_found,
+              std::string("delete: '") + bad + "' names no model");
+    check(!find_model_to_delete(models.u8string(), "absent.gguf", d, not_found, err) && not_found,
+          "delete: a plain name that is not there is not found");
+    check(!find_model_to_delete(models.u8string(), "set/S-00002-of-00002.gguf", d, not_found, err) && not_found,
+          "delete: a split set is named by its first shard, as the listing names it");
+    check(find_model_to_delete(models.u8string(), "set/S-00001-of-00002.gguf", d, not_found, err) &&
+              d.paths.size() == 2 && d.folder == "set",
+          "delete: a split set is every shard the scan grouped: " + err);
+    check(deletion_touches(d, (models / "set" / "S-00001-of-00002.gguf").u8string()) &&
+              deletion_touches(d, (models / "set" / ".." / "set" / "S-00002-of-00002.gguf").u8string()) &&
+              !deletion_touches(d, (models / "one.gguf").u8string()) && !deletion_touches(d, ""),
+          "delete: the loaded model is recognised whatever its spelling, and only it");
+    uint64_t freed = 0;
+    check(delete_model_files(models.u8string(), d, freed, err) && freed == 7 && !fs::exists(models / "set"),
+          "delete: every shard goes, and the emptied folder with them");
+    check(find_model_to_delete(models.u8string(), "one.gguf", d, not_found, err) && d.paths.size() == 1 &&
+              delete_model_files(models.u8string(), d, freed, err) && freed == 5 && !fs::exists(models / "one.gguf") &&
+              fs::exists(models / "two.gguf") && fs::exists(dir / "outside.gguf"),
+          "delete: one file goes, its neighbours and anything outside stay");
+    std::error_code ec;
+    fs::create_symlink(dir / "outside.gguf", models / "link.gguf", ec);
+    if (!ec)
+        check(find_model_to_delete(models.u8string(), "link.gguf", d, not_found, err) &&
+                  delete_model_files(models.u8string(), d, freed, err) && fs::exists(dir / "outside.gguf") &&
+                  !fs::exists(fs::symlink_status(models / "link.gguf")),
+              "delete: a link in the models folder is removed as the link, its target kept");
+
+    // All or nothing: a file that cannot be moved aside (here a directory where a shard should be,
+    // as a file held open is on Windows) puts back the ones moved before it and deletes nothing.
+    write(models / "A-00001-of-00002.gguf", "abc");
+    fs::create_directories(models / "A-00002-of-00002.gguf");
+    ModelDeletion half;
+    half.names = {"A-00001-of-00002.gguf", "A-00002-of-00002.gguf"};
+    half.paths = {(models / half.names[0]).u8string(), (models / half.names[1]).u8string()};
+    check(!delete_model_files(models.u8string(), half, freed, err) && freed == 0 &&
+              fs::exists(models / "A-00001-of-00002.gguf") && !fs::exists(models / "A-00001-of-00002.gguf.deleting") &&
+              err.find("nothing was deleted") != std::string::npos,
+          "delete: a set that cannot go whole is left whole, and the reason says so: " + err);
+    fs::remove_all(dir, ec);
+}
+
 int main() {
     protocol_tests();
     queue_tests();
@@ -1444,6 +1631,8 @@ int main() {
     plan_view_tests();
     download_tests();
     event_bus_tests();
+    url_entry_tests();
+    model_delete_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

@@ -21,6 +21,7 @@ one line, from `GET /api/info` and the `state` events.
 |---|---|---|
 | server unreachable | "Engine not running" (phone: with the first line of why) | start it (phone), wait (desktop reconnects) |
 | `empty` | "No model loaded" | the way to Models |
+| any, a download running | "Downloading 42%" (or "2 downloads 42%"), beside the state | the way to Models |
 | `loading` | "Loading model…" (with auto-plan: "Planning, then loading…" where the UI can tell) | nothing; a load is not cancelled |
 | `ready` | the model's name, "ready" | everything |
 | `ready`, `generating` | the model's name, "generating" | Stop |
@@ -74,37 +75,58 @@ visible and every answer's cost visible.
 
 ## Models
 
-What it is: what is on this device, how to get a model onto it, and which one is loaded.
+What it is: what is on this device, how to get a model onto it, and which one is loaded. One
+list, a guided way to add to it, and nothing else.
 
-- **On this device.** What the server lists (`GET /api/models`, `local`): each model with its
-  size, architecture, whether this build streams it, whether a split set is complete, and the
-  directory when it is not the server's own. Load, Unload, Delete (never while loaded; a split set
-  deletes as a unit, every file the server listed for it). The other places a model can sit on the
-  phone (adb-pushed, shared storage) are directories the app hands the server at launch
-  (`--scan-dir`), so they are listed the same way and loaded in place, with the folders directly
-  inside each (a split set in a folder of its own). Files the server says are not models
-  (`role`: a projector, a draft head) are listed apart, after the models, with what they are and
-  no Load.
-- **From Hugging Face.** A model's name, or a repository id or its URL, in one field, and the
-  steps the server does (`docs/server-api.md`, "Models"): Find (a name searches the site and the
-  repositories found are offered, the most downloaded first, a gated one marked, with the date it
-  last changed; a repository is listed: every gguf it holds, split sets as one
-  model, with quantisation, size and whether every shard is there, and the files whose names
-  suggest a projector or a draft head folded apart after the models), Check (the model's header
-  read through a range request before any download: architecture, experts and top-k, layers,
-  what stays resident and what streams, and the verdict on this machine: streams, plain mmap,
-  not a model (a projector or a draft head, by its header, which cannot be added) or not
-  readable, needs so much disk against what is free, the resident floor against what this
-  process may hold with the loaded model given back), Add (the model becomes a catalog entry and its download starts). A token
-  field for a gated or private repository, used for the requests and kept nowhere. The UI shows
-  what the server answered and reads no gguf.
-- **The catalog.** The two reference models of `catalog/models.json` and the entries added from
-  a repository, as the server lists them: title, quantisation, size, one line on why you would
-  pick it, and one action for its state: Download, Cancel (with one progress bar over the whole
-  entry, shards included), On device (with Delete). An added entry can be removed; its files stay.
-  The desktop server downloads for itself; the phone's app does the transfers, resumable,
-  surviving the app being killed.
-- **Any other model.** A direct gguf URL, or a file picked from the device and imported.
+- **Your models: one list.** What the server lists (`GET /api/models`): the models on the device
+  (`local`) and the catalog's entries, merged by file, so a model the catalog downloaded is one row,
+  not a file row and a catalog card. A row has one state and one primary action for it:
+
+  | State | Shown with | Primary action |
+  |---|---|---|
+  | Available | size, quantisation, why you would pick it | Download |
+  | Downloading | one progress bar over the whole entry, shards included | Cancel |
+  | Partly downloaded | what is already here, of the whole | Resume (X of Y GB), Delete partial |
+  | On this device | size, architecture, whether this build streams it | Load |
+  | Loaded | the same | Reload, Unload, Go to Chat |
+  | Shards missing | which set, how many shards it should have | Download, where an entry has the rest |
+
+  Beside it, Delete for a model in the server's models directory (never while loaded or
+  downloading; a split set deletes as a unit, every file the server listed for it; asked twice), and
+  Forget for an entry added from a repository or a link (its files stay). The other places a model
+  can sit on the phone (adb-pushed, shared storage) are directories the app hands the server at
+  launch (`--scan-dir`), listed the same way and loaded in place, with the folders directly inside
+  each (a split set in a folder of its own); the server deletes nothing there, and the phone's app
+  deletes what it may write. Catalog entries with nothing on the device and nothing started are
+  suggestions, at the bottom of the same list, not a second grid. Files the server says are not
+  models (`role`: a projector, a draft head) are listed apart, after the models, with what they are
+  and no Load. Where the models directory is, and which scan directories are listed, sits behind a
+  "where models live" disclosure.
+- **Nothing here yet.** With no model on the device and none coming, the screen is three steps:
+  1 Find a model, 2 Check it fits here, 3 Download, then Load; with the Hugging Face field inline,
+  the catalog's suggestions as one-click Downloads and the direct link below. A first visit with
+  nothing on the device opens on Models rather than on an empty Chat.
+- **From Hugging Face: Find, Pick, Check, Download.** A model's name, or a repository id or its
+  URL, in one field, and the steps shown as such, the current one marked (`docs/server-api.md`,
+  "Models"). Find: a name searches the site and the repositories found are offered, the most
+  downloaded first, a gated one marked, with the date it last changed; a repository is listed.
+  Pick: every gguf it holds, split sets as one model, with quantisation, size and whether every
+  shard is there, and the files whose names suggest a projector or a draft head folded apart after
+  the models. Check: the model's header read through a range request before any download, and the
+  verdict as a headline, the server's own line coloured by its code (`verdict.headline`,
+  `verdict.fit`: fits here, runs without streaming, will not fit, not a model), then the facts:
+  architecture, experts and top-k, layers, what stays resident and what streams, the disk needed
+  against what is free, the resident floor against what this process may hold with the loaded model
+  given back. Download: one button, the model becomes a catalog entry and its download starts; its
+  row in Your models is scrolled into view, carries the progress, and turns to Load when it lands.
+  A token field for a gated or private repository, used for the requests and kept nowhere. The UI
+  shows what the server answered, reads no gguf and keeps no threshold of its own.
+- **Any other model.** A direct https link to a gguf (or to any shard of a split set), which the
+  server makes a catalog entry downloaded like the others (`POST /api/models/url`); on the phone,
+  also a file picked from the device and imported.
+- **Downloads everywhere.** A running download shows in the status line on every screen (how many,
+  and the share done), and leads back here. The desktop server downloads for itself; the phone's
+  app does the transfers, resumable, surviving the app being killed.
 - **Loading.** With auto-plan on (the default where the planner is built in), Load unloads the
   previous model, measures the machine, applies the plan, then loads; the status line follows.
   A model this build does not stream loads with streaming off, and says so.

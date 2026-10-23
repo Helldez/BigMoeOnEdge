@@ -44,6 +44,49 @@ Semantic Versioning.
   `kv-budget` note still says what the loaded context takes. The planner's own context choice is
   unchanged, and the phone apps do not show the warning yet. Docs: `docs/server-api.md` (sizing the
   context for a client), `docs/screens.md`, the Android and iOS READMEs.
+- **Desktop Models screen: one list, a guided flow, downloads in the status line (#355).** The web
+  UI's Models screen had five blocks, a model in the catalog and on disk shown twice, and five
+  generic buttons spread over three of them. It is now one list, "Your models", where local files and
+  catalog entries are merged by file. Each row has one state and one primary action: Available →
+  Download, Downloading → progress and Cancel, Partly downloaded → Resume or Delete partial, On this
+  machine → Load, Loaded → Reload, Unload and Go to Chat. Catalog entries with nothing here sit at
+  the bottom as suggestions. With nothing on disk the screen is a three-step card (find, check,
+  download then load) with the Hugging Face field inline and the catalog's entries as one-click
+  downloads, and a first visit opens on Models instead of an empty Chat. The Hugging Face card is an
+  explicit Find → Pick → Check → Download stepper. Check leads with the verdict as a headline, and
+  Add plus Download are one button. The new row scrolls into view, carries the progress and turns to
+  Load when the download lands. A running download shows in the status line on every screen (count
+  and share done). The models folder path moved behind a "where models live" disclosure.
+- **The fit verdict as a code and a line from the server.** `POST /api/hf/inspect` now also returns
+  `verdict.fit` (`fits`, `no_streaming`, `will_not_fit`, `no_disk`, `not_a_model`, `unknown`) and
+  `verdict.headline`, both decided by `fit_verdict` from the facts it already had. The UI shows the
+  line and colours it by the code, with no threshold of its own. A model that streams on a machine
+  whose free memory could not be read is `unknown`, not `fits`.
+- **Delete a model and import from a link, on the desktop (#356).** These two were in
+  `docs/screens.md` and on the phone, but the desktop UI and the server had neither.
+  - `DELETE /api/models/local/<name>` deletes a model named the way the listing names it, never by
+    path. It removes the files the server's own scan of the models folder groups under that name, so
+    a split set goes as a unit, and its emptied folder with it. It never touches a scan directory or
+    the model that is loaded or loading (`409 in_use`), nor a file that a running download is writing.
+    A link is removed as the link. A set goes whole or not at all: each file is renamed aside first,
+    and one that cannot be (held open on Windows) puts the others back and deletes nothing. Only a
+    loopback client may call it.
+  - `POST /api/models/url` turns a direct https gguf link into a catalog entry (`url:<file>`, size
+    from a `HEAD` request), so its download is the catalog's, with resume, cancel and progress. A
+    link to any shard names the whole split set. The link must be https with no credentials, and the
+    file name must use the same narrow alphabet as a repository's. The status is read from the
+    headers, because curl's exit code over HTTP/2 does not report a refused `HEAD`. A link may name
+    at most 128 shards (`kMaxUrlShards`; published sets are under 50), and the size requests stop
+    after 120 s in all (`504`, no entry made), so a typed `-of-99999` cannot hold a worker for hours.
+    Loopback clients only.
+  - The Models screen gains Delete (asked twice), Forget for an added entry, and a direct-link field.
+    A download that does not start after Download on the Hugging Face card or a link says why there,
+    instead of the card reading "Downloading"; a suggestion's failed download shows beside it.
+  - New pure policy files with server checks: `url_entry` (which links are taken, the entry they
+    become, the HEAD answer) and `model_delete` (which files a delete removes, path escapes refused,
+    the loaded model recognised by identity). Both were also run end to end against a scratch models
+    folder: a 404 link refused, a real link added, downloaded, refused for delete while loaded, then
+    deleted.
 
 ### Changed
 - **Thinking is off by default (#331).** A reasoning model spends most of a turn thinking before it
