@@ -69,8 +69,9 @@ public:
     // across distinct lanes — each has its own fd and bounce. Returns what was actually pulled from
     // the drive — the aligned window (>= nbytes) where the platform's direct mode requires one,
     // exactly the requested bytes otherwise — which is what the bandwidth must be judged against;
-    // or -1 on I/O error. A zero-length read is a no-op returning 0. The lane's bounce grows if a
-    // windowed read needs more.
+    // or -1 on I/O error or on a range that runs past the end of the file (all of `nbytes` is
+    // written, or the read fails). A zero-length read is a no-op returning 0. The lane's bounce grows
+    // if a windowed read needs more.
     long long read(int lane, void * dst, uint64_t off, uint64_t nbytes);
 
     // Aggregate accounting since open, summed across lanes.
