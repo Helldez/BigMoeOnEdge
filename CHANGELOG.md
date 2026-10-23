@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.35.0] - 2026-10-23
+
+### Fixed
+- **`bmoe-server`: no local client can take every worker (#353).** The server answers with a fixed
+  pool of 32 workers and each `GET /api/events` stream holds one for as long as it is open, with no
+  bound on how many: 32 idle streams from any local process and every other request, the UI's own
+  included, queued forever. The event streams are now capped at 8 (the next is a `503` with the new
+  code `streams_full`, which the UI and both apps already retry with back-off), and the pool is
+  sized from what can hold a worker for long (8 streams, the running turn, the 16 that may wait
+  behind it) plus 7 for short requests, still 32 in all. A stream's place is taken before it
+  answers and given back however the response ends, the client leaving before the headers
+  included. Connections that arrive while every worker is busy now wait in a queue of 64, not an
+  unbounded one; past it the next is closed at once. A stream now notices a client that closed
+  its connection within a second instead of at its next 15 s ping, so a reloaded page finds the
+  place it left free; a client that keeps the connection but stops reading is still let go by the
+  ping hitting the write timeout.
+- **`--open` starts the browser without a shell (#353).** It went through `std::system` with the
+  URL quoted into a command line; it now starts `open` (macOS) or `xdg-open` directly with the URL as
+  one argument, through the subprocess header the downloads already use, and drops its output on a
+  thread that also reaps it. Windows already used the shell's own call.
+- **The printed URL is right for an IPv6 bind (#353).** `--host ::` printed `http://:::8765/`;
+  it now prints `http://[::1]:8765/`, and any IPv6 literal is bracketed.
+
+A non-object JSON body (`[]`, `1`) on `PUT /api/config` or `POST /api/models/download`, the second
+point of #353, is already a `400` with `code: "invalid_request"` since 0.31.0 (#262): checked,
+not changed.
+
 ## [0.34.1] - 2026-10-23
 
 ### Fixed

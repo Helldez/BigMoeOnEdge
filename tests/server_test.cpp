@@ -14,12 +14,14 @@
 //     the device roles and their words, the memory pools, the decision groups.
 //   * downloads: which curl failures are retried and after how long, what a resume still needs on
 //     disk, and that deleting a partial download stays inside the models folder.
+//   * events: how many streams may be open, and that a stream that ends gives its place back.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "access.h"
 #include "decide_protocol.h"
 #include "download_policy.h"
+#include "event_bus.h"
 #include "hf_repo.h"
 #include "json_util.h"
 #include "model_files.h"
@@ -403,6 +405,12 @@ static void access_tests() {
               is_loopback_host("::1") && !is_loopback_host("0.0.0.0") && !is_loopback_host("example.com:8765") &&
               !is_loopback_host("192.168.1.10"),
           "loopback host names, with or without a port");
+    check(browse_url("127.0.0.1", 8765) == "http://127.0.0.1:8765/" &&
+              browse_url("0.0.0.0", 8765) == "http://127.0.0.1:8765/" &&
+              browse_url("::", 8765) == "http://[::1]:8765/" && browse_url("::1", 1) == "http://[::1]:1/" &&
+              browse_url("[::1]", 1) == "http://[::1]:1/" && browse_url("fe80::2", 80) == "http://[fe80::2]:80/" &&
+              browse_url("localhost", 80) == "http://localhost:80/",
+          "the URL a person opens: a wildcard bind through loopback, an IPv6 literal in brackets");
 
     check(bearer_matches("Bearer s3cret", "s3cret") && bearer_matches("bearer s3cret", "s3cret"),
           "a bearer token matches the key, the scheme in either case");
@@ -1157,6 +1165,26 @@ static void download_tests() {
     fs::remove_all(dir, ec);
 }
 
+// The event fan-out: a bounded number of streams, each a worker held for its lifetime.
+static void event_bus_tests() {
+    EventBus bus(2);
+    auto a = bus.subscribe();
+    auto b = bus.subscribe();
+    check(a && b && !bus.subscribe(), "events: past the cap a stream is refused, not held");
+    bus.unsubscribe(a);
+    auto c = bus.subscribe();
+    check(c != nullptr, "events: a stream that ends gives its place back");
+    bus.publish("state", json{{"x", 1}});
+    std::string f;
+    check(EventBus::next(*b, f, std::chrono::milliseconds(0)) && f.find("event: state") == 0 &&
+              EventBus::next(*c, f, std::chrono::milliseconds(0)) && f.find("event: state") == 0,
+          "events: every subscriber gets the frame");
+    check(EventBus::next(*b, f, std::chrono::milliseconds(0)) && f.empty(), "events: nothing new is an empty frame");
+    bus.close_all();
+    check(!EventBus::next(*c, f, std::chrono::milliseconds(0)), "events: a closed bus ends every stream");
+    check(k_max_event_streams > 0 && EventBus().subscribe() != nullptr, "events: the default bus takes a stream");
+}
+
 int main() {
     protocol_tests();
     queue_tests();
@@ -1170,6 +1198,7 @@ int main() {
     hf_tests();
     plan_view_tests();
     download_tests();
+    event_bus_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

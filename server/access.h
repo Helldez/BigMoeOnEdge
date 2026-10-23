@@ -47,6 +47,10 @@ bool is_api_path(const std::string & path);
 // "127.0.0.1", "localhost", "::1" and "[::1]", with or without a port.
 bool is_loopback_host(const std::string & host);
 
+// The address a person opens for a server bound to `bind_host`: a wildcard bind ("0.0.0.0", "::")
+// is reached through loopback, and an IPv6 literal is bracketed, as a URL needs it to be.
+std::string browse_url(const std::string & bind_host, int port);
+
 // `authorization` is "Bearer <key>" (the scheme case-insensitive, as RFC 6750 has it), compared to
 // `key` in constant time. An empty key matches nothing.
 bool bearer_matches(const std::string & authorization, const std::string & key);
