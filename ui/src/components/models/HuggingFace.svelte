@@ -1,12 +1,14 @@
 <!--
-  A model from a Hugging Face repository, in three steps the server does: list what the
-  repository holds, read one model's header against this machine, add it to the catalog. The
-  download is then the catalog's (docs/server-api.md, "Models"). Nothing here reads a gguf or
-  names an engine parameter: the facts card shows what the server answered.
+  A model from a Hugging Face repository, as four steps a person follows: Find (a name searched,
+  or a repository listed), Pick (one of its models), Check (the server reads its header against
+  this machine), Download (it becomes a catalog entry and its download starts; docs/server-api.md,
+  "Models"). Nothing here reads a gguf, names an engine parameter or keeps a threshold: the
+  verdict's headline and its colour are the server's (`verdict.headline`, `verdict.fit`).
 -->
 <script lang="ts">
   import { api, ApiError, CODE_NOT_A_REPO } from '../../lib/api';
   import { formatBytes, formatNum } from '../../lib/format';
+  import { fitTone } from '../../lib/library';
   import { isoDate, roleLabel, splitByRole } from '../../lib/roles';
   import type { HfFacts, HfModel, HfRepoHit } from '../../lib/types';
 
@@ -28,6 +30,10 @@
   // Files whose names suggest a projector or a draft head go after the models, set apart: the
   // name is only a hint, so they can still be checked, and the header then says what they are.
   let groups = $derived(splitByRole(models ?? []));
+
+  const STEPS = ['Find', 'Pick', 'Check', 'Download'] as const;
+  // Where the person is: what they have, not what they last pressed.
+  let step = $derived(added || (facts && chosen) ? 3 : chosen ? 2 : models || hits ? 1 : 0);
 
   async function run(what: string, fn: () => Promise<void>) {
     busy = what;
@@ -72,8 +78,10 @@
   function add() {
     run('add', async () => {
       const r = await api.hfAdd(listed, selected, token || undefined);
-      added = r.id;
+      // "Downloading" only once the download has started: a refusal (a full disk) throws out of
+      // onAdded and shows here instead.
       await onAdded(r.id);
+      added = r.id;
     });
   }
 
@@ -88,17 +96,22 @@
     added = '';
   }
 
-  const modeLabel: Record<string, string> = {
-    streams: 'streams',
-    'plain mmap': 'plain mmap',
-    'not a model': 'not a model',
-    'not readable': 'not readable',
-  };
+  // An older server sends no code: its mode is the next best thing to colour by.
+  function tone(f: HfFacts): string {
+    if (f.verdict.fit) return fitTone(f.verdict.fit);
+    if (f.verdict.mode === 'streams') return 'ok';
+    return f.verdict.mode === 'not readable' || f.verdict.mode === 'not a model' ? 'err' : 'warn';
+  }
 </script>
 
 <section class="card hf">
   <h3>From Hugging Face</h3>
-  <p class="muted">A model's name to search for, or a repository id or URL. The server lists the repository's gguf files, reads a model's header before any download, and says what it is and whether it fits here.</p>
+  <ol class="steps" aria-label="Steps">
+    {#each STEPS as label, i (label)}
+      <li class:done={i < step} class:current={i === step} aria-current={i === step ? 'step' : undefined}>{i + 1} {label}</li>
+    {/each}
+  </ol>
+  <p class="muted">A model's name to search for, or a repository id or URL. The server lists the repository's gguf files, reads the header of the one you pick before any download, and says whether it fits here.</p>
   <form
     class="row"
     onsubmit={(e) => {
@@ -163,8 +176,9 @@
       {/if}
       <div class="actions">
         <button type="button" class="primary" disabled={!chosen || busy !== ''} onclick={inspect}>
-          {busy === 'inspect' ? 'Reading the header...' : 'Check'}<span class="visually-hidden"> {selected}</span>
+          {busy === 'inspect' ? 'Reading the header...' : 'Check it fits here'}<span class="visually-hidden"> {selected}</span>
         </button>
+        {#if !chosen}<span class="muted">Pick a model above first.</span>{/if}
       </div>
     {/if}
   {/if}
@@ -172,11 +186,10 @@
   {#if facts && chosen}
     {@const f = facts}
     <div class="facts">
+      <p class="headline {tone(f)}">{f.verdict.headline || f.verdict.mode}</p>
       <header>
         <strong>{f.name}</strong>
-        <span class="badge {f.verdict.mode === 'streams' ? 'ok' : f.verdict.mode === 'not readable' || f.verdict.mode === 'not a model' ? 'err' : 'warn'}">
-          {modeLabel[f.verdict.mode] ?? f.verdict.mode}
-        </span>
+        <span class="badge {tone(f)}">{f.verdict.mode}</span>
         {#if f.model.role && f.model.role !== 'model'}<span class="badge">{roleLabel(f.model.role)}</span>{/if}
       </header>
       {#if f.model.readable}
@@ -201,11 +214,13 @@
       <p class={f.verdict.downloadable ? 'muted' : 'err'}>{f.verdict.disk}</p>
       <div class="actions">
         {#if added}
-          <span class="badge ok">added to the catalog</span>
+          <span class="badge ok">Downloading</span>
+          <span class="muted">Follow it in Your models; Load appears on its row when it is done.</span>
         {:else}
           <button type="button" class="primary" disabled={!f.verdict.downloadable || !chosen.complete || busy !== ''} onclick={add}>
-            {busy === 'add' ? 'Adding...' : 'Add to the catalog'}<span class="visually-hidden"> {f.name}</span>
+            {busy === 'add' ? 'Starting...' : 'Download'}<span class="visually-hidden"> {f.name}</span>
           </button>
+          {#if !chosen.complete}<span class="muted">Shards are missing from the repository: it cannot be downloaded whole.</span>{/if}
         {/if}
       </div>
     </div>
@@ -216,6 +231,41 @@
   .hf h3 {
     margin: 0 0 0.3rem;
     font-size: 1rem;
+  }
+  .steps {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    padding: 0;
+    margin: 0 0 0.5rem;
+    font-size: 0.85rem;
+  }
+  .steps li {
+    padding: 0.1rem 0.5rem;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .steps li.done {
+    color: var(--text);
+  }
+  .steps li.current {
+    color: var(--text);
+    font-weight: 600;
+    border-color: var(--accent);
+  }
+  .headline {
+    font-weight: 600;
+    margin: 0 0 0.4rem;
+  }
+  .headline.ok {
+    color: var(--ok);
+  }
+  .headline.warn {
+    color: var(--warn);
+  }
+  .headline.err {
+    color: var(--err);
   }
   .row {
     display: flex;

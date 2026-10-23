@@ -43,6 +43,7 @@ if(BMOE_HAVE_LLAMA)
         src/plan/hardware_probe.cpp
         src/plan/headroom_probe.cpp
         src/plan/bandwidth_probe.cpp
+        src/plan/gate_probe.cpp
         src/plan/device_probe.cpp
         src/plan/isolated_probe.cpp
         src/plan/storage_probe.cpp
@@ -50,6 +51,7 @@ if(BMOE_HAVE_LLAMA)
         src/plan/model_probe.cpp
         src/plan/auto_plan.cpp
         src/moe/expert_stream_source.cpp
+        src/moe/gate_gemv.cpp
         src/moe/router_hook.cpp
         src/moe/decide_probe.cpp
         src/moe/device_arena.cpp

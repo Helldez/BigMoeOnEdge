@@ -142,7 +142,7 @@ Plan 界面展示结果：内存的去向、每个设备承担的工作，以及
 |---|---|---|---|---|---|
 | 引擎与 CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64（内置于应用中） |
 | 应用与服务器 | 原生应用 | Web 应用 | Web 应用 | Web 应用 | 原生应用，从源码构建 |
-| 加速器 | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64) | Vulkan | Metal |
+| 加速器 | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan | Metal |
 | 实机运行 | 12 GB 手机 | 16 GB 笔记本 | 16 GB 笔记本 | CI、社区 | 12 GB iPhone（[#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)） |
 
 详细信息以及各项在何处测得：[docs/platforms.md](docs/platforms.md)。
@@ -175,4 +175,6 @@ BigMoeOnEdge 则跨架构、跨平台使用 llama.cpp 的公开 API。
 
 ## 许可证
 
-Apache-2.0。参见 [LICENSE](LICENSE)。
+Apache-2.0。参见 [LICENSE](LICENSE)。二进制文件和应用还包含 llama.cpp 与 ggml、cpp-httplib、
+nlohmann/json、Web UI 的 JavaScript 库(MIT、Apache-2.0)以及两种字体(SIL OFL 1.1):它们的许可证见
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES),随每个归档文件和 APK 一同发布。

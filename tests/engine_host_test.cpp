@@ -12,13 +12,16 @@
 //   * a failed decode closes the session (500, state error), while a refused request (400) or
 //     rolled-back invalid output (500) keeps it;
 //   * decide() follows the same rule on `fatal`;
-//   * the engine's diagnostics reach the bus as `log` events while a host lives.
+//   * the engine's diagnostics reach the bus as `log` events while a host lives;
+//   * a context short of what a server's clients send is flagged in the ready state and warned of
+//     in the log at load, and a context_full refusal is logged with the way to raise it.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "engine_host.h"
 
 #include "bmoe/log.h"
+#include "bmoe/params.h"
 
 #include <atomic>
 #include <chrono>
@@ -30,6 +33,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace bmoe;
 using namespace bmoe::server;
@@ -65,6 +69,7 @@ struct Script {
     // do the same while sending a token every millisecond, counted in `tokens`.
     enum class Turn { Ok, Block, Stream, Fail, ContextFull, InvalidOutput } turn = Turn::Ok;
     DecideResult decide_result;
+    int n_ctx = 4096; // the session's context: short of what a server's clients send, as the default is
 
     Gate started;
     std::atomic<int> opened{0};
@@ -139,7 +144,7 @@ public:
     void cancel() override { cancelled_ = true; }
 
     const std::string & arch() const override { return arch_; }
-    int n_ctx() const override { return 4096; }
+    int n_ctx() const override { return s_.n_ctx; }
     int n_expert_used() const override { return 8; }
     ThinkControl think_control() const override { return ThinkControl::Template; }
     double load_seconds() const override { return 0.25; }
@@ -210,6 +215,13 @@ static void load_tests() {
                   info["model"].value("name", "") == "fake.gguf",
               "the ready state describes the session the opener made");
         check(host.model_name() == "fake.gguf" && script.opened == 1, "one load opened one session");
+        check(host.reload_keys(config()).empty() && !host.reload_required(config()),
+              "the config the session loaded with needs no reload");
+        RunConfig changed = config();
+        check(apply_flag(changed, "--threads", "3").matched && apply_flag(changed, "--n-predict", "7").matched,
+              "the test edits one session row and one request row");
+        check(host.reload_keys(changed) == std::vector<std::string>{"threads"} && host.reload_required(changed),
+              "only a session row that differs from the loaded session needs a reload");
 
         RunConfig bad = config();
         bad.model_path.clear();
@@ -510,6 +522,56 @@ static void log_tests() {
     bus.unsubscribe(q);
 }
 
+// The next `log` event on `q` whose message contains `needle`, or "".
+static std::string log_with(EventBus::Queue & q, const std::string & needle) {
+    std::string frame;
+    while (EventBus::next(q, frame, 100ms) && !frame.empty())
+        if (frame.find("event: log\n") == 0 && frame.find(needle) != std::string::npos) return frame;
+    return "";
+}
+
+static void context_tests() {
+    const std::string recommended = std::to_string(RunConfig::ctx_for_clients);
+    {
+        EventBus bus;
+        auto q = bus.subscribe();
+        Script script; // a 4096-token session, as the server's default makes
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        wait_state(host, "ready");
+        const json advice = host.info()["model"].value("ctx_advice", json::object());
+        check(advice.value("recommended", 0) == RunConfig::ctx_for_clients && advice.value("short", false) &&
+                  find_param(advice.value("param", "")) != nullptr,
+              "a short context is flagged in the ready state, with the recommendation and the parameter");
+        const std::string warn = log_with(*q, "under the " + recommended);
+        check(warn.find("\"level\":\"warn\"") != std::string::npos &&
+                  warn.find(flag_spelling(advice.value("param", ""), recommended)) != std::string::npos,
+              "and warned of at load, with the flag that raises it");
+
+        script.turn = Script::Turn::ContextFull;
+        check(host.chat(turn(), nullptr).code == "context_full", "a turn past the context is refused");
+        const std::string refused = log_with(*q, "refused with context_full");
+        check(refused.find("\"level\":\"warn\"") != std::string::npos &&
+                  refused.find(flag_spelling(advice.value("param", ""))) != std::string::npos,
+              "and the refusal is logged with the way to raise the context");
+        bus.unsubscribe(q);
+    }
+    {
+        EventBus bus;
+        auto q = bus.subscribe();
+        Script script;
+        script.n_ctx = RunConfig::ctx_for_clients;
+        EngineHost host(bus, opener(script));
+        host.load(config(), config());
+        wait_state(host, "ready");
+        const json advice = host.info()["model"].value("ctx_advice", json::object());
+        check(advice.value("recommended", 0) == RunConfig::ctx_for_clients && !advice.value("short", true),
+              "a context at the recommendation is not short");
+        check(log_with(*q, "under the ").empty(), "and draws no warning");
+        bus.unsubscribe(q);
+    }
+}
+
 int main() {
     load_tests();
     loading_tests();
@@ -518,6 +580,7 @@ int main() {
     measured_tests();
     failure_tests();
     log_tests();
+    context_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

@@ -21,9 +21,11 @@ class SettingsStore {
     this.timer = setTimeout(() => this.flush(), DEBOUNCE_MS);
   }
 
-  async reset(key: string): Promise<void> {
-    delete this.pending[key];
-    await this.send({ reset: [key] }, [key]);
+  /** Removes the person's value for each key: the row falls back to the plan's value, else the default. */
+  async reset(...keys: string[]): Promise<void> {
+    if (keys.length === 0) return;
+    for (const k of keys) delete this.pending[k];
+    await this.send({ reset: keys }, keys);
   }
 
   async flush(): Promise<void> {

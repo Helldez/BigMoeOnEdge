@@ -28,6 +28,14 @@ bool is_loopback_host(const std::string & host) {
     return h == "127.0.0.1" || h == "localhost" || h == "::1" || h == "[::1]";
 }
 
+std::string browse_url(const std::string & bind_host, int port) {
+    std::string h = bind_host;
+    if (h.empty() || h == "0.0.0.0") h = "127.0.0.1";
+    if (h == "::" || h == "[::]") h = "::1";
+    if (h.find(':') != std::string::npos && h.front() != '[') h = "[" + h + "]";
+    return "http://" + h + ":" + std::to_string(port) + "/";
+}
+
 bool bearer_matches(const std::string & authorization, const std::string & key) {
     static const std::string scheme = "Bearer ";
     if (key.empty() || authorization.size() < scheme.size()) return false;

@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.system.Os
@@ -187,7 +186,7 @@ class EngineService : Service() {
                 Engine.serverStopping()
                 lifecycle { stopServer() }
                 releaseWake()
-                stopForegroundCompat()
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -264,11 +263,6 @@ class EngineService : Service() {
         wake = null
     }
 
-    private fun stopForegroundCompat() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE)
-        else @Suppress("DEPRECATION") stopForeground(true)
-    }
-
     override fun onDestroy() {
         watcher?.cancel()
         // The process outlives this object for the seconds a stop takes: stopped on the lifecycle
@@ -281,9 +275,7 @@ class EngineService : Service() {
 
     private fun notification(text: String): Notification {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Engine", NotificationManager.IMPORTANCE_LOW))
-        }
+        nm.createNotificationChannel(NotificationChannel(CHANNEL, "Engine", NotificationManager.IMPORTANCE_LOW))
         return Notification.Builder(this, CHANNEL)
             .setContentTitle("BigMoeOnEdge")
             .setContentText(text)

@@ -1,0 +1,26 @@
+# Keeps the pinned inputs moving on purpose, one reviewed PR per ecosystem a month, instead of a
+# sweep. The CI Python packages (scripts/requirements-ci.txt), the Vulkan SDK and the llama.cpp
+# submodule are bumped by hand: each needs its gates, its checksum or its seam check (AGENTS.md).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: monthly
+    groups:
+      ui:
+        patterns: ["*"]
+  - package-ecosystem: gradle
+    directory: /examples/android
+    schedule:
+      interval: monthly
+    groups:
+      android:
+        patterns: ["*"]

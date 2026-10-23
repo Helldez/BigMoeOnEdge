@@ -1,10 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import HuggingFace from '../components/models/HuggingFace.svelte';
+  import UrlImport from '../components/models/UrlImport.svelte';
   import PlanProgress from '../components/plan/PlanProgress.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
   import { api } from '../lib/api';
   import { formatBytes, resumeLabel } from '../lib/format';
+  import { libraryRows, type LibraryRow, type RowState } from '../lib/library';
+  import { href } from '../lib/route';
   import { roleLabel, splitByRole } from '../lib/roles';
   import type { CatalogEntry, ModelsResponse } from '../lib/types';
   import { server } from '../stores/server.svelte';
@@ -13,10 +16,19 @@
   let error = $state('');
   let actionError = $state('');
   let pending = $state<Record<string, boolean>>({});
+  // The row a delete waits on a second press for, by key.
+  let confirming = $state('');
+  // The entry the person just started: its row is scrolled to, now and again when it lands on disk.
+  let focusId = $state('');
 
   let loadedPath = $derived(server.info?.model?.path ?? null);
   // Projectors and draft heads (by their headers) are no model to load: listed apart, after the models.
   let localGroups = $derived(splitByRole(data?.local ?? []));
+  let rows = $derived(data ? libraryRows(data, localGroups.models, server.downloads, loadedPath) : []);
+  let yours = $derived(rows.filter((r) => !r.suggested));
+  let suggested = $derived(rows.filter((r) => r.suggested));
+  // Nothing here and nothing coming: the screen is the three steps to a first model.
+  let empty = $derived(!!data && yours.length === 0 && localGroups.companions.length === 0);
   let planning = $derived(server.info?.state === 'planning');
   let loading = $derived(server.info?.state === 'loading' || planning);
 
@@ -65,20 +77,26 @@
   }
 
   function download(entry: CatalogEntry) {
+    focusId = entry.id;
     act(`dl:${entry.id}`, async () => {
       await api.download(entry.id);
       await refresh();
     });
   }
 
-  // A model added from a repository is a catalog entry like the others; it can be forgotten
-  // (its files stay) and, right after it is added, downloaded in the same breath.
+  // A model added from a repository or a link is a catalog entry like the others, downloaded in
+  // the same breath, and its row is where the person follows it. A download that does not start
+  // throws back to the card that asked, which shows why where the person is looking.
   async function added(id: string) {
+    focusId = id;
     await refresh();
-    await act(`dl:${id}`, async () => {
+    pending = { ...pending, [`dl:${id}`]: true };
+    try {
       await api.download(id);
+    } finally {
+      pending = { ...pending, [`dl:${id}`]: false };
       await refresh();
-    });
+    }
   }
 
   function deletePartial(entry: CatalogEntry) {
@@ -89,19 +107,58 @@
     });
   }
 
-  function remove(entry: CatalogEntry) {
+  function forget(entry: CatalogEntry) {
     act(`rm:${entry.id}`, async () => {
       await api.removeAdded(entry.id);
       await refresh();
     });
   }
 
-  function isDownloading(entry: CatalogEntry): boolean {
-    const d = server.downloads[entry.id];
-    return d ? d.state === 'running' : entry.status === 'downloading';
+  function deleteModel(row: LibraryRow) {
+    const name = row.deleteName;
+    if (!name) return;
+    if (confirming !== row.key) {
+      confirming = row.key;
+      return;
+    }
+    confirming = '';
+    act(`del:${row.key}`, async () => {
+      await api.deleteModel(name);
+      if (row.entry) server.forgetDownload(row.entry.id);
+      await refresh();
+    });
   }
 
-  const statusLabel: Record<string, string> = { on_disk: 'On disk', downloading: 'Downloading', available: 'Available' };
+  function load(path: string) {
+    act(`load:${path}`, () => api.load(path));
+  }
+
+  // Scrolls a row into view when it is the one being followed (an action, so it runs again when the
+  // row is replaced: a finished download moves from the catalog's row to the file's).
+  function follow(node: HTMLElement, on: boolean) {
+    const go = (v: boolean) => {
+      if (v) node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    };
+    go(on);
+    return { update: go };
+  }
+
+  const stateLabel: Record<RowState, string> = {
+    available: 'Available',
+    downloading: 'Downloading',
+    partial: 'Partly downloaded',
+    on_disk: 'On this machine',
+    loaded: 'Loaded',
+    incomplete: 'Shards missing',
+  };
+  const stateClass: Record<RowState, string> = {
+    available: '',
+    downloading: 'info',
+    partial: 'warn',
+    on_disk: 'ok',
+    loaded: 'ok',
+    incomplete: 'err',
+  };
 </script>
 
 <h1>Models</h1>
@@ -119,131 +176,181 @@
 {#if server.info?.model}
   <div class="banner info">
     <span>Loaded: <strong>{server.info.model.name}</strong> ({server.info.model.arch}, {server.info.model.load_s.toFixed(1)} s load)</span>
-    <button type="button" onclick={() => act('unload', api.unload)} disabled={pending.unload}>Unload</button>
+    {#if !rows.some((r) => r.state === 'loaded')}
+      <!-- A model opened from outside the listed folders has no row to carry these. -->
+      <button type="button" onclick={() => act('unload', api.unload)} disabled={pending.unload}>Unload</button>
+      <a class="button primary" href={href('chat')}>Go to Chat</a>
+    {/if}
   </div>
 {:else if loading}
   <p class="banner warn" role="status">{planning ? 'Measuring this machine, then loading' : 'Loading the model'} · {elapsed} s</p>
   {#if planning}<PlanProgress progress={server.planProgress} />{/if}
 {/if}
 
-{#if data}
-  <p class="muted">
-    Models directory: <code>{data.models_dir}</code>
-    {#if data.scan_dirs?.length}· also listed: {#each data.scan_dirs as d, i (d)}{i ? ', ' : ''}<code>{d}</code>{/each}{/if}
-  </p>
-
-  <h2>On this machine</h2>
-  {#if data.local.length === 0}
-    <p class="muted">No gguf files in the models directory yet. Get one below: from a Hugging Face repository, or from the catalog.</p>
-  {:else}
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>Model</th><th>Size</th><th>Arch</th><th>Status</th><th><span class="visually-hidden">Actions</span></th></tr>
-        </thead>
-        <tbody>
-          {#each localGroups.models as m (m.path)}
-            <tr class:loaded={m.path === loadedPath}>
-              <td class="name">
-                {m.name}
-                {#if m.path === loadedPath}<span class="badge ok">loaded</span>{/if}
-                {#if m.shards > 1}<span class="muted"> ({m.shards} shards)</span>{/if}
-                {#if m.dir && m.dir !== data.models_dir}<span class="muted"> in <code>{m.dir}</code></span>{/if}
-                {#if m.folder}<span class="muted"> / <code>{m.folder}</code></span>{/if}
-              </td>
-              <td>{formatBytes(m.bytes)}</td>
-              <td>{m.arch || '?'}</td>
-              <td class="tags">
-                {#if m.streamable}
-                  <span class="badge ok">streamable</span>
-                {:else}
-                  <span class="badge warn" title="This build does not stream this architecture: it runs as plain mmap">not streamable</span>
-                {/if}
-                {#if !m.complete}<span class="badge err">incomplete</span>{/if}
-              </td>
-              <td>
-                <button
-                  type="button"
-                  class:primary={m.path !== loadedPath}
-                  disabled={!m.complete || loading || pending[`load:${m.path}`]}
-                  onclick={() => act(`load:${m.path}`, () => api.load(m.path))}
-                >
-                  {m.path === loadedPath ? 'Reload' : 'Load'}<span class="visually-hidden"> {m.name}</span>
-                </button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+{#snippet row(r: LibraryRow)}
+  {@const e = r.entry}
+  {@const m = r.local}
+  {@const dl = e ? server.downloads[e.id] : undefined}
+  {@const size = m ? m.bytes : (e?.bytes ?? 0)}
+  <li class="row" class:loaded={r.state === 'loaded'} class:followed={!!e && e.id === focusId} use:follow={!!e && e.id === focusId}>
+    <div class="what">
+      <div class="title">
+        <strong class="name">{r.title}</strong>
+        {#if e?.quant}<span class="badge">{e.quant}</span>{/if}
+        <span class="badge {stateClass[r.state]}">{stateLabel[r.state]}</span>
+        {#if m}
+          {#if m.streamable}
+            <span class="badge ok">streamable</span>
+          {:else}
+            <span class="badge warn" title="This build does not stream this architecture: it runs as plain mmap">not streamable</span>
+          {/if}
+        {/if}
+        {#if e?.added}<span class="badge" title="Added from a repository or a link">added</span>{/if}
+      </div>
+      <p class="muted meta">
+        {formatBytes(size)}{#if m?.arch}, {m.arch}{/if}{#if m && m.shards > 1}, {m.shards} shards{:else if e?.note}, {e.note}{/if}
+        {#if m && m.name !== r.title}· <code>{m.name}</code>{:else if !m && e}· <code>{e.file}</code>{/if}
+        {#if m?.folder}· in <code>{m.folder}</code>{/if}
+        {#if m && data && m.dir !== data.models_dir}· in <code>{m.dir}</code>{/if}
+      </p>
+      {#if e?.blurb && !m}<p class="blurb">{e.blurb}</p>{/if}
+      {#if r.state === 'downloading'}
+        <ProgressBar received={dl?.received ?? e?.received ?? 0} total={dl?.total || e?.bytes || 0} label="Download progress for {r.title}" />
+        {#if dl?.state === 'running' && dl.error}<p class="muted note">{dl.error}</p>{/if}
+      {:else if r.state === 'partial' && e}
+        <ProgressBar received={e.received ?? 0} total={e.bytes} label="Downloaded so far of {r.title}" />
+      {/if}
+      {#if dl?.state === 'error'}
+        <p class="err">Download failed: {dl.error}</p>
+      {:else if dl?.state === 'cancelled' && r.state !== 'available'}
+        <p class="muted note">Download cancelled. The partial file is kept: Resume continues it.</p>
+      {/if}
+      {#if confirming === r.key && m}
+        <p class="err" role="alert">
+          Delete {m.files.length === 1 ? 'this file' : `all ${m.files.length} files`} ({formatBytes(m.bytes)}) from the disk? Press Delete again to confirm.
+        </p>
+      {/if}
     </div>
+    <div class="actions">
+      {#if r.state === 'loaded' && m}
+        <button type="button" disabled={loading || pending[`load:${m.path}`]} onclick={() => load(m.path)}>Reload<span class="visually-hidden"> {r.title}</span></button>
+        <button type="button" disabled={pending.unload} onclick={() => act('unload', api.unload)}>Unload</button>
+        <a class="button primary" href={href('chat')}>Go to Chat</a>
+      {:else if r.state === 'on_disk' && m}
+        <button type="button" class="primary" disabled={loading || pending[`load:${m.path}`]} onclick={() => load(m.path)}>Load<span class="visually-hidden"> {r.title}</span></button>
+      {:else if r.state === 'downloading' && e}
+        <button type="button" class="danger" disabled={pending[`cancel:${e.id}`]} onclick={() => act(`cancel:${e.id}`, () => api.cancelDownload(e.id))}>
+          Cancel<span class="visually-hidden"> download of {r.title}</span>
+        </button>
+      {:else if (r.state === 'partial' || r.state === 'available' || r.state === 'incomplete') && e}
+        <button type="button" class="primary" disabled={pending[`dl:${e.id}`]} onclick={() => download(e)}>
+          {e.partial ? resumeLabel(e.received ?? 0, e.bytes) : 'Download'}<span class="visually-hidden"> {r.title}</span>
+        </button>
+        {#if e.partial}
+          <button type="button" class="danger" disabled={pending[`part:${e.id}`]} onclick={() => deletePartial(e)} title="Delete the partially downloaded file and free its space">
+            Delete partial<span class="visually-hidden"> download of {r.title}</span>
+          </button>
+        {/if}
+      {/if}
+      {#if r.deleteName && r.state !== 'loaded' && r.state !== 'downloading'}
+        <button type="button" class="danger" disabled={pending[`del:${r.key}`]} onclick={() => deleteModel(r)}>
+          {confirming === r.key ? 'Delete' : 'Delete...'}<span class="visually-hidden"> {r.title} from the disk</span>
+        </button>
+        {#if confirming === r.key}<button type="button" onclick={() => (confirming = '')}>Keep</button>{/if}
+      {/if}
+      {#if e?.added && r.state !== 'downloading'}
+        <button type="button" disabled={pending[`rm:${e.id}`]} onclick={() => forget(e)} title="Take it off this list; files on disk stay">
+          Forget<span class="visually-hidden"> {r.title}</span>
+        </button>
+      {/if}
+    </div>
+  </li>
+{/snippet}
+
+{#if data}
+  {#if empty}
+    <section class="card first">
+      <h2>Get your first model</h2>
+      <ol class="three">
+        <li><strong>Find a model</strong>: search by name, or paste a repository.</li>
+        <li><strong>Check it fits here</strong>: the server reads its header and measures it against this machine, before any download.</li>
+        <li><strong>Download, then Load</strong>: Load appears on its row in Your models.</li>
+      </ol>
+      <HuggingFace onAdded={added} />
+      {#if suggested.length}
+        <h3>Or start from a suggestion</h3>
+        <div class="suggestions">
+          {#each suggested as r (r.key)}
+            {#if r.entry}
+              {@const e = r.entry}
+              <button type="button" disabled={pending[`dl:${e.id}`]} onclick={() => download(e)} title={e.blurb}>
+                Download {e.title}{e.quant ? ` (${e.quant})` : ''}, {formatBytes(e.bytes)}
+              </button>
+            {/if}
+          {/each}
+        </div>
+        <!-- A suggestion whose download failed before a byte landed is still a suggestion: its
+             failure is said here, beside the button that started it. -->
+        {#each suggested as r (r.key)}
+          {@const dl = r.entry ? server.downloads[r.entry.id] : undefined}
+          {#if dl?.state === 'error'}
+            <p class="err" role="alert">{r.title}: download failed: {dl.error}</p>
+          {/if}
+        {/each}
+      {/if}
+      <details class="more">
+        <summary>Or paste a direct link to a gguf</summary>
+        <UrlImport onAdded={added} />
+      </details>
+    </section>
+  {:else}
+    <h2>Your models</h2>
+    <ul class="rows" aria-label="Your models">
+      {#each yours as r (r.key)}{@render row(r)}{/each}
+    </ul>
     {#if localGroups.companions.length}
       <details class="companions">
         <summary class="muted">{localGroups.companions.length} companion {localGroups.companions.length === 1 ? 'file' : 'files'}: not models to load, by their headers</summary>
         <ul>
           {#each localGroups.companions as m (m.path)}
+            {@const name = m.dir === data.models_dir ? (m.folder ? `${m.folder}/${m.name}` : m.name) : ''}
             <li>
               <span class="name">{m.name}</span>
               <span class="badge">{roleLabel(m.role ?? '')}</span>
               <span class="muted">{formatBytes(m.bytes)}{m.arch ? `, ${m.arch}` : ''}{m.folder ? `, in ${m.folder}` : ''}</span>
+              {#if name}
+                <button type="button" class="danger small" disabled={pending[`del:${m.path}`]} onclick={() => deleteModel({ key: m.path, title: m.name, local: m, entry: null, state: 'on_disk', suggested: false, deleteName: name })}>
+                  {confirming === m.path ? 'Delete' : 'Delete...'}<span class="visually-hidden"> {m.name}</span>
+                </button>
+                {#if confirming === m.path}<button type="button" class="small" onclick={() => (confirming = '')}>Keep</button>{/if}
+              {/if}
             </li>
           {/each}
         </ul>
       </details>
     {/if}
+    {#if suggested.length}
+      <h3 class="suggested-title">Suggested</h3>
+      <ul class="rows" aria-label="Suggested models">
+        {#each suggested as r (r.key)}{@render row(r)}{/each}
+      </ul>
+    {/if}
+
+    <h2>Get another model</h2>
+    <HuggingFace onAdded={added} />
+    <details class="card more">
+      <summary>Any other model: a direct link to a gguf</summary>
+      <UrlImport onAdded={added} />
+    </details>
   {/if}
 
-  <h2>Get a model</h2>
-  <HuggingFace onAdded={added} />
-
-  <h2>Catalog</h2>
-  <div class="catalog">
-    {#each data.catalog as entry (entry.id)}
-      {@const dl = server.downloads[entry.id]}
-      <article class="card entry">
-        <header>
-          <h3>{entry.title}</h3>
-          {#if entry.quant}<span class="badge">{entry.quant}</span>{/if}
-          {#if entry.added}<span class="badge" title="Added from a repository">added</span>{/if}
-          <span class="badge {entry.status === 'on_disk' ? 'ok' : ''}">{statusLabel[entry.status] ?? entry.status}</span>
-        </header>
-        <p class="muted size">{formatBytes(entry.bytes)}, <code>{entry.file}</code></p>
-        {#if entry.blurb}<p>{entry.blurb}</p>{/if}
-        {#if entry.note}<p class="muted note">{entry.note}</p>{/if}
-        {#if dl && (dl.state === 'running' || isDownloading(entry))}
-          <ProgressBar received={dl.received} total={dl.total} label="Download progress for {entry.title}" />
-          {#if dl.state === 'running' && dl.error}<p class="muted note">{dl.error}</p>{/if}
-        {:else if entry.partial}
-          <ProgressBar received={entry.received ?? 0} total={entry.bytes} label="Downloaded so far of {entry.title}" />
-        {/if}
-        {#if dl?.state === 'error'}
-          <p class="err">Download failed: {dl.error}</p>
-        {:else if dl?.state === 'cancelled'}
-          <p class="muted">Download cancelled. The partial file is kept: Resume continues it.</p>
-        {/if}
-        <div class="actions">
-          {#if isDownloading(entry)}
-            <button type="button" class="danger" disabled={pending[`cancel:${entry.id}`]} onclick={() => act(`cancel:${entry.id}`, () => api.cancelDownload(entry.id))}>
-              Cancel<span class="visually-hidden"> download of {entry.title}</span>
-            </button>
-          {:else if entry.status !== 'on_disk'}
-            <button type="button" class="primary" disabled={pending[`dl:${entry.id}`]} onclick={() => download(entry)}>
-              {entry.partial ? resumeLabel(entry.received ?? 0, entry.bytes) : 'Download'}<span class="visually-hidden"> {entry.title}</span>
-            </button>
-            {#if entry.partial}
-              <button type="button" class="danger" disabled={pending[`part:${entry.id}`]} onclick={() => deletePartial(entry)} title="Delete the partially downloaded file and free its space">
-                Delete partial download<span class="visually-hidden"> of {entry.title}</span>
-              </button>
-            {/if}
-          {/if}
-          {#if entry.added && !isDownloading(entry)}
-            <button type="button" disabled={pending[`rm:${entry.id}`]} onclick={() => remove(entry)} title="Forget this entry; its files stay">
-              Remove<span class="visually-hidden"> {entry.title} from the catalog</span>
-            </button>
-          {/if}
-        </div>
-      </article>
-    {/each}
-  </div>
+  <details class="where">
+    <summary class="muted">Where models live</summary>
+    <p class="muted">
+      Downloads land in <code>{data.models_dir}</code>; a gguf you copy there (or into a folder directly inside it) is listed too.
+      {#if data.scan_dirs?.length}Also listed, and loaded in place: {#each data.scan_dirs as d, i (d)}{i ? ', ' : ''}<code>{d}</code>{/each}.{/if}
+    </p>
+  </details>
 {:else if !error}
   <p class="muted">Loading...</p>
 {/if}
@@ -252,24 +359,62 @@
   .name {
     overflow-wrap: anywhere;
   }
-  /* Every cell stays a table cell and centred, whatever its content lays out as. */
-  td,
-  td.tags {
-    display: table-cell;
-    vertical-align: middle;
+  .rows {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
   }
-  tr.loaded {
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    align-items: center;
+    padding: 0.6rem 0.75rem;
+    border: var(--edge) solid var(--border);
+    background: var(--surface);
+  }
+  .row.loaded {
     background: var(--ok-bg);
   }
-  .tags {
+  .row.followed {
+    border-color: var(--accent);
+  }
+  .what {
+    flex: 1 1 20rem;
+    min-width: 0;
+  }
+  .title {
     display: flex;
-    gap: 0.3rem;
+    align-items: center;
+    gap: 0.4rem;
     flex-wrap: wrap;
+  }
+  .meta,
+  .blurb,
+  .note,
+  .err {
+    margin: 0.3rem 0 0;
+    font-size: 0.85rem;
+    overflow-wrap: anywhere;
+  }
+  .err {
+    color: var(--err);
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
   }
   .companions {
     margin-top: 0.5rem;
   }
-  .companions summary {
+  .companions summary,
+  .where summary,
+  .more summary {
     cursor: pointer;
   }
   .companions ul {
@@ -280,40 +425,46 @@
     flex-direction: column;
     gap: 0.25rem;
   }
-  .catalog {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
-    gap: 0.75rem;
-  }
-  .entry header {
+  .companions li {
     display: flex;
-    align-items: center;
-    gap: 0.4rem;
     flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
   }
-  .entry h3 {
-    margin: 0;
-    font-size: 1rem;
-    margin-right: auto;
+  .small {
+    font-size: 0.8rem;
+    padding: 0.1rem 0.5rem;
   }
-  .entry p {
-    margin: 0.4rem 0;
+  .suggested-title {
+    font-size: 0.95rem;
+    margin: 1rem 0 0.5rem;
   }
-  .size {
-    font-size: 0.85rem;
-    overflow-wrap: anywhere;
+  .first h2 {
+    margin-top: 0;
   }
-  .note {
-    font-size: 0.85rem;
+  .first h3 {
+    font-size: 0.95rem;
+    margin: 1rem 0 0.5rem;
   }
-  .err {
-    color: var(--err);
-    font-size: 0.85rem;
+  .three {
+    margin: 0 0 0.75rem;
+    padding-left: 1.25rem;
   }
-  .actions {
-    margin-top: 0.5rem;
+  .three li {
+    margin: 0.2rem 0;
+  }
+  .suggestions {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
+  }
+  .more {
+    margin-top: 0.75rem;
+  }
+  .more :global(form) {
+    margin-top: 0.5rem;
+  }
+  .where {
+    margin-top: 1.5rem;
   }
 </style>

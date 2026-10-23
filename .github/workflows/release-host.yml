@@ -8,9 +8,9 @@
 # CMakeLists). A module whose driver library the machine lacks is not loaded and the engine runs on
 # the CPU, so the same archive serves a laptop with a GPU and a server without one. Vulkan rides in
 # the Linux and Windows archives; Metal in the macOS one; OpenCL in the Windows ARM64 one, for the
-# Adreno GPU of a Snapdragon laptop. The Hexagon NPU stays out of it: on Windows its driver loads
-# only a DSP library signed by a trusted certificate, which a user would have to set up by hand
-# (test-signing, llama.cpp's docs/backend/snapdragon/windows.md).
+# Adreno GPU of a Snapdragon laptop. The Hexagon NPU has archives of its own (windows-arm64-npu):
+# on Windows its driver runs DSP code only from a catalog signed by a certificate the machine
+# trusts, which the user sets up by hand, test-signing included (docs/npu-windows.md).
 #
 # iOS rides along as the harness app built for the simulator, unsigned: the one build of this
 # engine for that platform anyone can run without an Apple team, on a Mac with Xcode
@@ -33,8 +33,10 @@ on:
         type: boolean
         default: true
 
+# Read everywhere: the build jobs run on pull requests too, and code built from a PR never holds a
+# token that can write. Only `publish`, which builds nothing and runs on no PR, may write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   cli:
@@ -73,6 +75,21 @@ jobs:
               -G "Ninja Multi-Config"
               -DCMAKE_TOOLCHAIN_FILE=third_party/llama.cpp/cmake/arm64-windows-llvm.cmake
               -DGGML_VULKAN=ON -DGGML_OPENCL=ON -DGGML_OPENCL_USE_ADRENO_KERNELS=ON
+          # The same build with the Hexagon module and one DSP library per NPU generation, signed
+          # in this job (Sign the NPU's DSP libraries). Its own archives, because the NPU needs the
+          # user to turn test-signing on, which the plain ones must never depend on. Single-config
+          # Ninja, as llama.cpp's Snapdragon presets: the DSP libraries are ExternalProjects that
+          # inherit the generator, and the Hexagon toolchain's compiler check fails in a
+          # multi-config one, which tries a Debug link. The binaries then land in build/bin.
+          - os: windows-11-arm
+            target: windows-arm64-npu
+            cmake_extra: >-
+              -G Ninja
+              -DCMAKE_TOOLCHAIN_FILE=third_party/llama.cpp/cmake/arm64-windows-llvm.cmake
+              -DGGML_VULKAN=ON -DGGML_OPENCL=ON -DGGML_OPENCL_USE_ADRENO_KERNELS=ON
+              -DGGML_HEXAGON=ON -DPREBUILT_LIB_DIR=windows_aarch64
+              "-DHEXAGON_SDK_ROOT=$HEXAGON_SDK_ROOT" "-DHEXAGON_TOOLS_ROOT=$HEXAGON_TOOLS_ROOT"
+            extra_targets: htp-v73 htp-v75 htp-v79 htp-v81 htp-v85
     runs-on: ${{ matrix.os }}
     steps:
       # The tag is text someone typed: it reaches the shell as data (env), never spliced into the
@@ -132,9 +149,19 @@ jobs:
         shell: pwsh
         run: |
           $v = "1.4.357.0"
-          # LunarG publishes the ARM64 SDK, a native glslc included, under its own path.
-          $url = if ($env:RUNNER_ARCH -eq "ARM64") { "https://sdk.lunarg.com/sdk/download/$v/warm/vulkansdk-windows-ARM64-$v.exe" } else { "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe" }
-          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L $url
+          # LunarG publishes the ARM64 SDK, a native glslc included, under its own path. Each
+          # installer is checked against the SHA-256 LunarG publishes for it
+          # (https://sdk.lunarg.com/sdk/sha/<version>/<platform>/<file>.txt): bump both with $v.
+          if ($env:RUNNER_ARCH -eq "ARM64") {
+            $url = "https://sdk.lunarg.com/sdk/download/$v/warm/vulkansdk-windows-ARM64-$v.exe"
+            $sha = "c10f18a9085018f66e1f50bd60623f17b7081faca165248de54f78728120f334"
+          } else {
+            $url = "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe"
+            $sha = "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"
+          }
+          curl.exe -fsSL -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe $url
+          $got = (Get-FileHash -Algorithm SHA256 "$env:RUNNER_TEMP\VulkanSDK-Installer.exe").Hash.ToLower()
+          if ($got -ne $sha) { throw "Vulkan SDK installer SHA-256 $got, expected $sha" }
           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$v"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$v\bin"
@@ -142,7 +169,7 @@ jobs:
       # clang finds the MSVC libraries and the Windows SDK through the environment vcvarsall sets
       # up, which a job step does not start with: carried into the steps after this one.
       - name: The MSVC environment (Windows ARM64)
-        if: matrix.target == 'windows-arm64'
+        if: startsWith(matrix.target, 'windows-arm64')
         shell: pwsh
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
@@ -154,7 +181,7 @@ jobs:
       # installs its own beside the system, and without one the module is simply not loaded.
       # Pinned releases of Khronos's headers and loader, built for this machine, as llama.cpp does.
       - name: Install the OpenCL headers and ICD loader (Windows ARM64)
-        if: matrix.target == 'windows-arm64'
+        if: startsWith(matrix.target, 'windows-arm64')
         shell: pwsh
         run: |
           $v = "v2026.05.29"
@@ -166,6 +193,19 @@ jobs:
           cmake -S "$env:RUNNER_TEMP\ocl-loader" -B "$env:RUNNER_TEMP\ocl-loader\build" -A arm64 -DBUILD_TESTING=OFF "-DCMAKE_PREFIX_PATH=$prefix" "-DCMAKE_INSTALL_PREFIX=$prefix"
           cmake --build "$env:RUNNER_TEMP\ocl-loader\build" --target install --config Release
           Add-Content $env:GITHUB_ENV "CMAKE_PREFIX_PATH=$prefix"
+
+      # llama.cpp's own installer for the Windows on Snapdragon build of the Hexagon SDK: it checks
+      # the archive's SHA-256 and unpacks it under C:\Qualcomm. The version is its default.
+      - name: Install the Hexagon SDK (Windows ARM64 NPU)
+        if: matrix.target == 'windows-arm64-npu'
+        shell: pwsh
+        run: |
+          python third_party/llama.cpp/scripts/snapdragon/setup-sdk.py --hexagon
+          $sdk = Get-ChildItem C:\Qualcomm\Hexagon_SDK -Directory | Select-Object -First 1
+          $tools = Get-ChildItem "$($sdk.FullName)\tools\HEXAGON_Tools" -Directory | Select-Object -First 1
+          # Forward slashes: these reach CMake as -D values, where a backslash would be read as an escape.
+          Add-Content $env:GITHUB_ENV "HEXAGON_SDK_ROOT=$($sdk.FullName -replace '\\', '/')"
+          Add-Content $env:GITHUB_ENV "HEXAGON_TOOLS_ROOT=$($tools.FullName -replace '\\', '/')"
 
       # The desktop app's web UI, built from the same checkout; the server build stages it beside
       # the binary (server/stage_assets.cmake).
@@ -187,7 +227,40 @@ jobs:
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF \
             ${{ matrix.cmake_extra }}
-          cmake --build build --config Release -j --target bmoe-cli bmoe-server bmoe-server-assets
+          cmake --build build --config Release -j --target bmoe-cli bmoe-server bmoe-server-assets ${{ matrix.extra_targets }}
+
+      # The catalog the NPU driver checks, libggml-htp.cat, made by Inf2Cat from upstream's
+      # libggml-htp.inf and signed with a certificate made here. Its private key never leaves this
+      # job: it is deleted from the store once the catalog is signed, so nothing else can ever be
+      # signed with it, and only the public certificate ships for the user to trust. Inf2Cat comes
+      # from Microsoft's WDK package on NuGet (the runner has no WDK); signtool from the SDK.
+      - name: Sign the NPU's DSP libraries (Windows ARM64 NPU)
+        if: matrix.target == 'windows-arm64-npu'
+        shell: pwsh
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          $wdk = "10.0.28000.2526"
+          curl.exe -sSL -o "$env:RUNNER_TEMP\wdk.zip" "https://api.nuget.org/v3-flatcontainer/microsoft.windows.wdk.arm64/$wdk/microsoft.windows.wdk.arm64.$wdk.nupkg"
+          Expand-Archive "$env:RUNNER_TEMP\wdk.zip" "$env:RUNNER_TEMP\wdk"
+          $inf2cat = (Get-ChildItem "$env:RUNNER_TEMP\wdk\c\bin\*\x86\Inf2Cat.exe" | Select-Object -First 1).FullName
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\arm64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          $stage = "$env:RUNNER_TEMP\htp"
+          New-Item -ItemType Directory $stage | Out-Null
+          Copy-Item build\third_party\llama.cpp\ggml\src\ggml-hexagon\libggml-htp-v*.so $stage
+          Copy-Item third_party\llama.cpp\ggml\src\ggml-hexagon\libggml-htp.inf $stage
+          & $inf2cat /driver:$stage /os:10_25H2_ARM64
+          if ($LASTEXITCODE) { throw "Inf2Cat failed ($LASTEXITCODE)" }
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=BigMoeOnEdge NPU $env:TAG" `
+            -CertStoreLocation Cert:\CurrentUser\My -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 `
+            -NotAfter (Get-Date).AddYears(10)
+          & $signtool sign /fd sha256 /sha1 $cert.Thumbprint /s My "$stage\libggml-htp.cat"
+          if ($LASTEXITCODE) { throw "signtool failed ($LASTEXITCODE)" }
+          Export-Certificate -Cert $cert -FilePath "$stage\bigmoeonedge-npu.cer" | Out-Null
+          Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -DeleteKey
+          Remove-Item "$stage\libggml-htp.inf"
+          Get-ChildItem $stage | Format-Table Name, Length
+          Add-Content $env:GITHUB_ENV "HTP_STAGE=$stage"
 
       - name: Package
         id: pkg
@@ -197,12 +270,15 @@ jobs:
         run: |
           # The engine and its libraries travel together: ggml and llama, and one module per
           # backend, which ggml finds beside the executable at start-up.
+          # Where the Windows binaries are: build/bin/Release for a multi-config generator,
+          # build/bin for the single-config one the NPU build uses.
+          WB=build/bin/Release; [ -d "$WB" ] || WB=build/bin
           libs() { # <dir>: copy every shared library the build put beside the executables
             # -P keeps the soname symlinks as symlinks (libggml.so.0 -> libggml.so.0.x.y): the
             # executables name the versioned ones, and tar carries symlinks as they are.
             # On macOS the shared libraries are .dylib and the modules .so; both travel.
             if [ "${{ runner.os }}" = "Windows" ]; then
-              cp build/bin/Release/*.dll "$1/"
+              cp "$WB"/*.dll "$1/"
               # The C++ runtime the binaries were linked against, copied beside them (the
               # redistributable allows this local deployment): without it a machine that never
               # installed the redistributable cannot start the program at all. The universal CRT
@@ -210,7 +286,7 @@ jobs:
               # vcruntime140_1 holds the x64 exception handling: the ARM64 redistributable carries an
               # x64 copy of it for emulated programs, which nothing here loads, so it stays out.
               case "${{ matrix.target }}" in
-                *-arm64) ARCH=arm64; WANT="msvcp140.dll vcruntime140.dll" ;;
+                windows-arm64*) ARCH=arm64; WANT="msvcp140.dll vcruntime140.dll" ;;
                 *) ARCH=x64; WANT="msvcp140.dll vcruntime140.dll vcruntime140_1.dll" ;;
               esac
               VS="$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products "*" -property installationPath)"
@@ -230,19 +306,28 @@ jobs:
               *) ls "$1" | grep -q 'ggml-vulkan' || { echo "no Vulkan backend module in $1"; exit 1; } ;;
             esac
             case "${{ matrix.target }}" in
-              windows-arm64) ls "$1" | grep -q 'ggml-opencl' || { echo "no OpenCL backend module in $1"; exit 1; } ;;
+              windows-arm64*) ls "$1" | grep -q 'ggml-opencl' || { echo "no OpenCL backend module in $1"; exit 1; } ;;
             esac
+            # The NPU archives carry the Hexagon module, its DSP libraries, the signed catalog and
+            # the certificate that signed it; the guide says what to do with them.
+            if [ "${{ matrix.target }}" = windows-arm64-npu ]; then
+              ls "$1" | grep -q 'ggml-hexagon' || { echo "no Hexagon backend module in $1"; exit 1; }
+              cp "$(cygpath -u "$HTP_STAGE")"/* "$1/"
+              for f in libggml-htp.cat bigmoeonedge-npu.cer libggml-htp-v73.so; do
+                [ -f "$1/$f" ] || { echo "the NPU archive is missing $f in $1"; exit 1; }
+              done
+            fi
           }
           NAME="bmoe-cli-$TAG-${{ matrix.target }}"
           mkdir -p "$NAME"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp build/bin/Release/bmoe-cli.exe "$NAME/"
+            cp "$WB/bmoe-cli.exe" "$NAME/"
           else
             cp build/bin/bmoe-cli "$NAME/"
             strip "$NAME/bmoe-cli" || true
           fi
           libs "$NAME"
-          cp LICENSE "$NAME/"
+          cp LICENSE THIRD_PARTY_LICENSES "$NAME/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             EXE='.\bmoe-cli.exe'; SHELL_NAME='PowerShell or cmd'
           else
@@ -274,12 +359,12 @@ jobs:
           # The desktop app: bmoe-server with the web UI and the model catalog staged beside it.
           DESK="bmoe-desktop-$TAG-${{ matrix.target }}"
           mkdir -p "$DESK"
-          if [ "${{ runner.os }}" = "Windows" ]; then BIN=build/bin/Release; SRV=bmoe-server.exe; else BIN=build/bin; SRV=bmoe-server; fi
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN=$WB; SRV=bmoe-server.exe; else BIN=build/bin; SRV=bmoe-server; fi
           cp "$BIN/$SRV" "$DESK/"
           [ "${{ runner.os }}" = "Windows" ] || strip "$DESK/$SRV" || true
           libs "$DESK"
           cp -r "$BIN/ui" "$BIN/catalog" "$DESK/"
-          cp LICENSE "$DESK/"
+          cp LICENSE THIRD_PARTY_LICENSES "$DESK/"
           cat > "$DESK/README.txt" <<EOF
           BigMoeOnEdge desktop $TAG, ${{ matrix.target }}
 
@@ -293,6 +378,18 @@ jobs:
           compute backends, loaded at start-up; a GPU backend loads only where its driver is
           installed, and the Plan page says which devices were found.
           EOF
+          if [ "${{ matrix.target }}" = windows-arm64-npu ]; then
+            for f in "$NAME/README.txt" "$DESK/README.txt"; do
+              cat >> "$f" <<'EOF'
+
+          Hexagon NPU: this archive adds the NPU module and its DSP libraries. Windows runs them
+          only after three things you do by hand once: the Qualcomm NPU driver, test-signing on, and
+          the certificate beside this file (bigmoeonedge-npu.cer) trusted. Read what each step means
+          and how to undo it first: https://github.com/Helldez/BigMoeOnEdge/blob/main/docs/npu-windows.md
+          Without them the program still runs, on the CPU and GPU, as the plain archive does.
+          EOF
+            done
+          fi
           # The binaries are ad-hoc signed, not notarised: a browser download is quarantined and
           # Gatekeeper refuses the first start. Say how to open them until a signed installer ships.
           if [ "${{ runner.os }}" = "macOS" ]; then
@@ -311,11 +408,9 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$NAME.zip" "$NAME" > /dev/null
             7z a -tzip "$DESK.zip" "$DESK" > /dev/null
-            echo "assets=$NAME.zip $DESK.zip" >> "$GITHUB_OUTPUT"
           else
             tar czf "$NAME.tar.gz" "$NAME"
             tar czf "$DESK.tar.gz" "$DESK"
-            echo "assets=$NAME.tar.gz $DESK.tar.gz" >> "$GITHUB_OUTPUT"
           fi
 
       # The binaries must at least start on the runner they were built on.
@@ -323,27 +418,19 @@ jobs:
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            build/bin/Release/bmoe-cli.exe --version && build/bin/Release/bmoe-server.exe --version
+            WB=build/bin/Release; [ -d "$WB" ] || WB=build/bin
+            "$WB/bmoe-cli.exe" --version && "$WB/bmoe-server.exe" --version
           else
             build/bin/bmoe-cli --version && build/bin/bmoe-server --version
           fi
 
-      - name: Upload asset to the release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          ASSETS: ${{ steps.pkg.outputs.assets }}
-        # ASSETS is a space-separated list of archive names made from the checked tag: split on purpose.
-        run: gh release upload "$TAG" $ASSETS --clobber
-
-      - name: Keep as workflow artifact (dry run)
-        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.upload)
+      # Always a workflow artifact: the dry run's result, and what `publish` attaches to a release.
+      - name: Keep as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: host-${{ matrix.target }}
           path: bmoe-*-${{ matrix.target }}.*
+          if-no-files-found: error
 
   ios-harness:
     runs-on: macos-14
@@ -397,7 +484,7 @@ jobs:
           NAME="bmoe-ios-harness-sim-$TAG"
           mkdir -p "$NAME"
           cp -R "$APP" "$NAME/"
-          cp LICENSE "$NAME/"
+          cp LICENSE THIRD_PARTY_LICENSES "$NAME/"
           cat > "$NAME/README.txt" <<EOF
           BigMoeOnEdge iOS harness $TAG, for the iOS simulator on a Mac with Xcode (unsigned)
 
@@ -414,20 +501,56 @@ jobs:
           Everything after --bmoe goes to bmoe-cli; its --help lists the flags.
           EOF
           ditto -c -k --keepParent "$NAME" "$NAME.zip"
-          echo "assets=$NAME.zip" >> "$GITHUB_OUTPUT"
 
-      - name: Upload asset to the release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          ASSETS: ${{ steps.pkg.outputs.assets }}
-        run: gh release upload "$TAG" $ASSETS --clobber
-
-      - name: Keep as workflow artifact (dry run)
-        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.upload)
+      - name: Keep as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: ios-harness-sim
           path: bmoe-ios-harness-sim-*.zip
+          if-no-files-found: error
+
+  # Attaches what the build jobs made to the release: the one job with write access, and it runs
+  # nothing from the checkout. always(): a target that failed to build does not hold back the ones
+  # that built, as when each job attached its own (the failed job still fails the run).
+  publish:
+    needs: [cli, ios-harness]
+    if: always() && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          case "$EVENT" in
+            release) T="$RELEASE_TAG" ;;
+            *)       T="$INPUT_TAG" ;;
+          esac
+          case "$T" in
+            ''|*[!A-Za-z0-9._-]*) echo "not a plain tag name: '$T'"; exit 1 ;;
+          esac
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
+
+      # Every artifact of this run is an archive a build job made for this tag.
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Upload assets to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          shopt -s nullglob
+          files=(assets/bmoe-*)
+          [ ${#files[@]} -gt 0 ] || { echo "no archive to attach"; exit 1; }
+          ls -l "${files[@]}"
+          gh release upload "$TAG" "${files[@]}" --clobber

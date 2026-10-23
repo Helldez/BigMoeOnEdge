@@ -45,6 +45,15 @@ enum class DenseWeightsMode {
                // and says how much, loudly.
 };
 
+// Whether route-ahead's prediction scores against an int8 mirror of the router gates or their own
+// float weights (MoeStreamConfig::gate_mirror). Both rank the same experts to within an int8 step;
+// they differ in cost, and which is cheaper is a property of the machine, so neither is a default.
+enum class GateMirror {
+    Auto, // timed at load (or by --auto's probe) on the model's own gate shape; the faster path wins
+    On,   // the int8 mirror: a quarter of the bytes, plus quantizing the activation per call
+    Off,  // the gate's own weights
+};
+
 // MoE expert-selective streaming knobs.
 struct MoeStreamConfig {
     bool enabled = false; // turn streaming on; init fails fast if the model is not MoE
@@ -282,6 +291,15 @@ struct MoeStreamConfig {
     // one: a verify decode is several positions wide and this policy declines to commit on every
     // one of them, so the pair pays the prediction and the early reads and commits nothing.
     int route_ahead = 0;
+
+    // What route-ahead's prediction GEMV reads (see GateMirror). Inert unless route_ahead > 0. The
+    // committed selection is a ranking, and the int8 mirror changes a score by far less than the
+    // margins between experts, so the choice is about cost: measured on device the mirror took the
+    // prediction from 19 to 6 ms/token at 74.5% agreement with the router against 74.7% for the
+    // exact weights, while on an x86 host with bandwidth to spare the float path was faster. Like
+    // route-ahead itself the choice can change which expert a near-tie commits to; it is lossy only
+    // where route-ahead already is.
+    GateMirror gate_mirror = GateMirror::Auto;
 
     // Test/debug only: complete each prefetch's speculative reads synchronously, on the eval
     // thread, before returning. This defeats the latency-hiding purpose (the reads no longer
@@ -547,8 +565,9 @@ struct RunConfig {
     // `enable_thinking` kwarg, so a reasoning model (Qwen3, thinking Gemma, …) only emits
     // its thinking channel when true. Off suppresses reasoning at the source rather than
     // relying on the display-time parser, which cannot strip a format it does not know.
-    // Only meaningful with chatml; the raw-prompt path ignores it.
-    bool think = true;
+    // Only meaningful with chatml; the raw-prompt path ignores it. Off by default: on device a
+    // reasoning model can spend a whole turn's budget thinking before it answers (#331).
+    bool think = false;
 
     // Override the number of active MoE experts per token (top-k routing). 0 = use the
     // model's own <arch>.expert_used_count from the gguf. A lower value cuts per-token
@@ -612,6 +631,15 @@ struct RunConfig {
     static constexpr int threads_max = 256;    // n_threads and n_threads_batch
     static constexpr int n_expert_used_max = 256;
     static constexpr int n_gpu_layers_max = 1024;
+
+    // The context a client of a server needs, below which a front-end warns before the first
+    // request fails rather than after. Measured: opencode's first request, its system prompt and
+    // tool schemas alone, is 9911 tokens, so a coding agent is refused with context_full at any
+    // context under ~10k before it has done anything. This is the next power of two above that,
+    // which leaves room for the first answer and a few steps; a long agent session wants more.
+    // Advice, not a limit: validate() accepts any context, and a short one is right for a plain chat
+    // on a machine whose expert cache needs the RAM.
+    static constexpr int ctx_for_clients = 16384;
 };
 
 // Validation result: ok plus a human-readable reason when not.

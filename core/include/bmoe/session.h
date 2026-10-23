@@ -96,7 +96,7 @@ const char * think_control_name(ThinkControl c);
 struct GenerateRequest {
     std::string prompt;
     int n_predict = 32;
-    bool think = true;
+    bool think = false; // RunConfig::think's default
     bool clear_kv = true;
     // Populate TokenMetrics::text / ::reasoning on every token. Building them means parsing the
     // WHOLE generation so far — the chat parser cannot resume — so it is O(n) per token and O(n²)

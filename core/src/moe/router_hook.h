@@ -182,6 +182,10 @@ public:
     // prefetch of them is never late and never wrong — the 100%-hit regime no honest predictor
     // reaches, bought with a quality perturbation this flag exists to measure.
     void set_route_ahead(int n);
+    // Whether route-ahead's prediction scores against the int8 mirror of the gates (true) or their
+    // own float weights (false). Resolved by the session from MoeStreamConfig::gate_mirror; call
+    // before set_route_ahead arms the worker.
+    void set_gate_mirror(bool on) { gate_mirror_ = on; }
 
     // How hard route-ahead actually bit, and how far the committed choice sat from the router's
     // own: `overridden` routings had their ids rewritten, `passthrough` were eligible (decode,
@@ -470,6 +474,9 @@ private:
     // fresh-gate watchdog is already the alarm if a model ever proves otherwise). Built lazily,
     // once per layer, from the same weight leaf the graph uses; ~1 MB per layer of extra RAM.
     // The graph's own routing never touches this — only the prediction does.
+    // Whether commit jobs read the mirror at all: the session's resolved gate_mirror. Set before
+    // route-ahead is armed and never while the worker runs.
+    bool gate_mirror_ = false;
     std::vector<std::vector<int8_t>> ra_gate_q_; // per layer: n_expert rows of n_embd int8
     std::vector<std::vector<float>> ra_gate_s_;  // per layer: one dequant scale per expert
     std::vector<int8_t> ra_qh_;                  // scratch: the activation row, quantized per call

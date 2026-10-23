@@ -51,7 +51,10 @@ server's settings and the conversations in the app's private Application Support
 The server listens on `127.0.0.1:8765` with a random key per launch, since every app on the
 device can reach loopback. **Serve on the network** in Settings restarts it on all addresses
 with a key kept in the keychain and shown there, for an OpenAI client on another machine; it
-serves while the app is open, since iOS suspends an app in the background.
+serves while the app is open, since iOS suspends an app in the background. A coding agent needs a
+larger Context than a chat (its first request alone is about 10k tokens): set Context to 16384 or
+more before pointing one at the phone, at the cost of expert cache
+([sizing the context](../../docs/server-api.md#sizing-the-context-for-a-client)).
 
 ## Build
 

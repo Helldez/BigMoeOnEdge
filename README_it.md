@@ -156,7 +156,7 @@ ciascun dispositivo, e il motivo di ogni decisione.
 |---|---|---|---|---|---|
 | Motore e CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64 (nell'app) |
 | App e server | app nativa | web app | web app | web app | app nativa, compilata dai sorgenti |
-| Acceleratori | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64) | Vulkan | Metal |
+| Acceleratori | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan | Metal |
 | Eseguito su hardware | telefono da 12 GB | portatile da 16 GB | portatile da 16 GB | CI, community | iPhone da 12 GB ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
 
 Dettagli e cosa è stato misurato dove: [docs/platforms.md](docs/platforms.md).
@@ -189,4 +189,7 @@ su Apple silicon; BigMoeOnEdge usa l'API pubblica di llama.cpp su più architett
 
 ## Licenza
 
-Apache-2.0. Vedi [LICENSE](LICENSE).
+Apache-2.0. Vedi [LICENSE](LICENSE). I binari e le app includono anche llama.cpp e ggml,
+cpp-httplib, nlohmann/json, le librerie JavaScript della UI web (MIT, Apache-2.0) e due font
+(SIL OFL 1.1): le loro licenze sono in
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES), presente in ogni archivio e APK.

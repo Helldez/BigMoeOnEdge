@@ -338,6 +338,15 @@ struct HardwareProfile {
     double host_wide_matmul_gibs = 0.0;
     uint32_t wide_batch = 0;
 
+    // The router-gate GEMV route-ahead's prediction runs once per layer per token, timed on this
+    // model's gate shape over the gate's float weights and over an int8 mirror of them, in
+    // microseconds per layer; 0 when unmeasured. The mirror reads a quarter of the bytes and pays a
+    // quantization of the activation per call, so which is faster is bandwidth against arithmetic -
+    // a property of this machine, measured on one host as the float path winning and on a phone as
+    // the mirror winning three times over. The instruction set predicts neither.
+    double gate_gemv_f32_us = 0.0;
+    double gate_gemv_int8_us = 0.0;
+
     std::vector<ComputeDevice> devices;
 
     // What this BUILD could see, which bounds what the machine appears to have. A backend that was

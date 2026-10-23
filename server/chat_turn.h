@@ -14,7 +14,7 @@ struct ChatRequest {
     std::vector<ChatTool> tools;
     ToolChoice tool_choice = ToolChoice::Auto;
     int n_predict = 0;
-    bool think = true;
+    bool think = false;      // RunConfig::think's default
     std::string json_schema; // serialized schema for this request; empty means unconstrained
 };
 

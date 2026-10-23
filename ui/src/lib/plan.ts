@@ -2,7 +2,10 @@
 // into what the Plan page draws. Nothing here names a device, a system or a knob, and nothing here
 // words a code: every word comes from the server (server/plan_view.h), and a code (`status`,
 // `uses`, `step`) only picks a colour. A server that sends no word gets the code shown as it is.
-import type { Config, PlanDecision, PlanDevice, PlanMeasured, PlanMemoryPool } from './types';
+import { displayValue } from './coerce';
+import { commandLine } from './format';
+import { sameValue, specialLabel } from './schema';
+import type { Config, ParamSpec, ParamValue, PlanDecision, PlanDevice, PlanMeasured, PlanMemoryPool } from './types';
 
 /**
  * `config.plan` is documented as "the last applied plan's decisions". Accept either a bare array
@@ -98,4 +101,43 @@ export function speedCheck(predicted: { s_per_token?: number; cache_hit_pct?: nu
     predictedHitPct: predicted?.cache_hit_pct ?? null,
     measuredHitPct: measured && measured.cache_hit_pct >= 0 ? measured.cache_hit_pct : null,
   };
+}
+
+export interface AppliedChange {
+  key: string;
+  /** The row's settings label; the key where the table has no row for it. */
+  label: string;
+  from: string;
+  to: string;
+}
+
+function shown(spec: ParamSpec | undefined, v: ParamValue | undefined): string {
+  if (v === undefined) return '';
+  const named = spec ? specialLabel(spec, v) : undefined;
+  const choice = spec?.choices?.find((c) => c.value === String(v))?.label;
+  const text = named ?? choice ?? displayValue(v);
+  return spec?.unit && typeof v === 'number' && !named ? `${text} ${spec.unit}` : text;
+}
+
+/** What applying a plan changed, row by row in table order, worded from the table. */
+export function appliedChanges(
+  before: Record<string, ParamValue>,
+  after: Record<string, ParamValue>,
+  params: readonly ParamSpec[],
+): AppliedChange[] {
+  const out: AppliedChange[] = [];
+  const known = new Set(params.map((p) => p.key));
+  const keys = [...params.map((p) => p.key), ...Object.keys(after).filter((k) => !known.has(k))];
+  for (const key of keys) {
+    if (!(key in after) || sameValue(before[key], after[key])) continue;
+    const spec = params.find((p) => p.key === key);
+    out.push({ key, label: spec?.label || key, from: shown(spec, before[key]), to: shown(spec, after[key]) });
+  }
+  return out;
+}
+
+/** What "Copy diagnostic" puts on the clipboard: the plan's command and the planner's whole account. */
+export function diagnosticText(args: readonly string[], explain: string): string {
+  const cmd = args.length ? commandLine(args) : '(no arguments: the plan declines streaming)';
+  return explain.trim() ? `${cmd}\n\n${explain.trim()}\n` : `${cmd}\n`;
 }

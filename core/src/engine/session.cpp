@@ -16,6 +16,7 @@
 #include "llama_log.h"
 #include "../moe/router_hook.h"
 #include "../moe/decide_probe.h"
+#include "../moe/gate_gemv.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
 #include "../moe/tensor_names.h"
@@ -418,6 +419,7 @@ struct Session::Impl {
     bool load_model(Opening & o);
     bool read_model(Opening & o);
     bool build_hook(Opening & o);
+    bool resolve_gate_mirror(GateMirror m, Opening & o);
     bool create_contexts(Opening & o);
     void build_sampler(const SessionConfig & c);
     void install_abort_callback();
@@ -953,6 +955,26 @@ bool Session::Impl::read_model(Opening & o) {
     return true;
 }
 
+// Route-ahead's gate format. A plan that timed it has already said on or off; left at auto, the same
+// timing runs here, on the same kernels and this model's gate shape (gate_gemv::measure), so a run
+// without --auto gets the faster path rather than one read off the compiler's target. A tie goes to
+// the mirror, because the timing runs alone and a decode beside it only makes bytes dearer.
+bool Session::Impl::resolve_gate_mirror(GateMirror m, Opening & o) {
+    if (m != GateMirror::Auto) return m == GateMirror::On;
+    // Every layer that carries a gate, so the working set is the run's own gate set (see measure()).
+    const uint32_t gated = o.layout.layers.empty() ? (uint32_t) n_layer : (uint32_t) o.layout.layers.size();
+    const gate_gemv::Timing t =
+        gate_gemv::measure((uint32_t) llama_model_n_embd(model.get()), (uint32_t) o.gguf().n_expert, gated);
+    if (!t.measured()) {
+        log_printf(LogLevel::Info, "gate-mirror: auto -> off (the gate shape is unknown, nothing was timed)");
+        return false;
+    }
+    const bool mirror = t.int8_us <= t.f32_us;
+    log_printf(LogLevel::Info, "gate-mirror: auto -> %s (int8 %.1f us vs float %.1f us per layer, %u layers timed)",
+               mirror ? "on" : "off", t.int8_us, t.f32_us, t.layers);
+    return mirror;
+}
+
 // The router hook, configured for every job this session asked of it, and the decide probe.
 bool Session::Impl::build_hook(Opening & o) {
     const SessionConfig & cfg = o.cfg;
@@ -967,6 +989,7 @@ bool Session::Impl::build_hook(Opening & o) {
     hook->set_expert_substitute(cfg.moe.substitute_lambda);
     hook->set_predict_log(cfg.moe.predict_log);
     hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
+    if (cfg.moe.route_ahead > 0) hook->set_gate_mirror(resolve_gate_mirror(cfg.moe.gate_mirror, o));
     hook->set_route_ahead(cfg.moe.route_ahead);
     if (cfg.decide.enabled && !cfg.decide.probe_path.empty()) {
         decide_probe = std::make_unique<DecideProbe>(cfg.model_path, n_layer, o.gguf().n_expert,
