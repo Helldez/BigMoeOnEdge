@@ -18,13 +18,14 @@ enum class RunError {
     NeedsChatMode,    // a message list sent to a session opened without the chat template
     InvalidRequest,   // the request itself is malformed (decide: no choices, colliding choices, off)
     Failed,           // the model did not load, or a decode or the expert stream failed mid-run
+    InvalidOutput,    // the requested response contract failed; the turn was rolled back
 };
 
 // The stable name of a kind: "context_full", "empty_prompt", ...
 const char * run_error_name(RunError e);
 
-// True when the session that returned this kind can take the next request: every kind but Failed
-// was a bad request, refused before the context was touched.
+// True when the session can take the next request: a refused request left the context alone,
+// or an invalid completed output was rolled back. A decode or I/O failure is not safe to reuse.
 inline bool run_error_recoverable(RunError e) {
     return e != RunError::None && e != RunError::Failed;
 }

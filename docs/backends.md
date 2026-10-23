@@ -58,7 +58,7 @@ Three things in that table decide what this engine can do with a backend.
 | backend | where | state | what it does today |
 |---|---|---|---|
 | CPU | Android, Windows, macOS, Linux | measured on phones and desktops; gates run in CI on Linux | decode, prefill, expert streaming |
-| Hexagon | Android, Snapdragon with Hexagon v73 or later | measured on a phone; in the release APK (`scripts/build-hexagon-android.sh`). Not in the Windows ARM64 archive: the Windows NPU driver loads only a DSP library signed by a trusted certificate, which a user would have to set up by hand (test-signing) | prefill on the NPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
+| Hexagon | Android, Snapdragon with Hexagon v73 or later | measured on a phone; in the release APK (`scripts/build-hexagon-android.sh`). On Windows on Snapdragon, built into its own ARM64 archive (`-npu`), its DSP libraries in a catalog signed in CI: the driver runs them only after the user turns test-signing on and trusts that certificate, by hand ([npu-windows.md](npu-windows.md)); never run on a laptop | prefill on the NPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | Metal | macOS | measured on one 16 GB Apple-silicon laptop; on in every macOS build | prefill on the GPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | RPC | host test builds | a test fixture only: a loopback server fronting the CPU, so the prefill-device gates have a second device | nothing a front-end can select |
 | BLAS | macOS, where llama.cpp turns it on by default | linked, never given a weight; the planner does not list it as a device, since it registers as an accelerator, part of the host | nothing placed on it |

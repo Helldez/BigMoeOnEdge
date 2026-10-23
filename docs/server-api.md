@@ -16,7 +16,7 @@ All request and response bodies are JSON (UTF-8). Errors are `{"error": "<messag
 with a 4xx or 5xx status: `error` is for a person and may change, `code` is what a client decides
 on, and is present wherever the failure has one. A chat or decide turn carries the engine's failure
 kind (`context_full`, `empty_prompt`, `template_rejected`, `needs_chat_mode`, `invalid_request`,
-`failed`, as in [telemetry.md](telemetry.md)) or the server's own refusal (`busy`, `no_model`,
+`invalid_output`, `failed`, as in [telemetry.md](telemetry.md)) or the server's own refusal (`busy`, `no_model`,
 `outside_models_dir`, `streams_full`). A body that is not JSON, not a JSON object, or carries a field of the wrong
 type (a `role` that is a number, an `id` that is an object) is a `400` with `code:
 "invalid_request"`, never a `500`: the server's own faults are the only `500`s.
@@ -257,7 +257,9 @@ Request fields that are read:
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`. A named function is honoured as `"required"`: the engine can require a call, not choose which. |
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
 | `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`). Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. It is a ceiling, not a reservation: the answer gets at most what the context has left after the prompt and then stops with `finish_reason: "length"`. Only a conversation that leaves no room at all is refused, with `400`. |
-| `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, of which only `"none"` turns it off. Default: the `think` parameter. |
+| `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, where `"none"` turns it off and any other level turns it on. Default: the `think` parameter, off unless set. |
+| `response_format` | `{"type":"json_object"}` requests JSON object output; `{"type":"json_schema","json_schema":{"schema":{...}}}` supplies a schema. Omitted, `null` or `{"type":"text"}` leaves the top-level `json_schema` unchanged; without one, output is ordinary text. See the support boundary below. |
+| `json_schema` | llama.cpp-compatible top-level schema for this request. A JSON object supplies schema keywords; `null` or omission adds no constraint. An empty object defaults to `{"type":"object"}`. |
 
 Ignored, because the session fixes them: `model`, `temperature`, `top_p`, `seed` and every
 other sampling field. Sampling is configured with the `temp`, `top-k`, `top-p` and `seed`
@@ -268,10 +270,84 @@ chat template, which writes them the way that model was trained to read them, an
 llama.cpp layer parses the model's calls back out of the generated text; the client runs them and
 sends the results back as `tool` messages. A call's text never appears in `content`. Once the model
 opens a call, sampling is held to the grammar the template ships with its tools, as llama.cpp's own
-server does: the call names a tool the request offered and its arguments are JSON. Free text and a
-reasoning span are not constrained. If the parser still finds no answer, reasoning or call in what
-was generated, the raw text comes back as `content` and the server logs a warning, instead of an
-empty message that ends with `stop`.
+server does: the call names a tool the request offered and its arguments are JSON. Without an
+output schema, free text and the reasoning span are not constrained. On an
+ordinary request, if the parser still finds no answer, reasoning or call in what was generated,
+the raw text comes back as `content` and the server logs a warning, instead of an empty message
+that ends with `stop`.
+
+**Structured output.** Set `response_format` on the request, not in `/api/config`:
+
+```json
+{
+  "messages": [{"role": "user", "content": "Return a JSON object describing Paris."}],
+  "chat_template_kwargs": {"enable_thinking": false},
+  "response_format": {"type": "json_object"}
+}
+```
+
+For a schema, place it in `response_format.json_schema.schema`:
+
+```json
+{
+  "messages": [{"role": "user", "content": "What is the capital of France?"}],
+  "chat_template_kwargs": {"enable_thinking": false},
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "capital",
+      "schema": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
+```
+
+The schema is passed to llama.cpp's chat template machinery, which builds the grammar and
+parser together. `json_object` defaults to `{"type":"object"}`. For llama.cpp compatibility,
+`json_object.schema` can supply a schema; otherwise a nonempty top-level `json_schema` is
+retained. `json_schema` format takes its schema from the nested wrapper and overrides the
+top-level field. If no schema is selected, or the selected schema is `null` or empty, either
+response-format form defaults to `{"type":"object"}`. Schema values must be JSON objects;
+boolean schemas are refused, but an object-valued schema may describe an array or scalar root. The wrapper's optional `name`
+and `description` are strings, and `strict` is a boolean (`null` leaves these unset); they are
+metadata and do not enable an additional validation pass. Unknown metadata is tolerated. Malformed known field types
+and unsupported format types return `400` with `code: "invalid_request"`.
+
+The pinned llama.cpp implementation supports a subset of JSON Schema. This endpoint does not
+add a second, full JSON Schema validator after generation;
+unsupported keywords do not gain a guarantee merely because they appear in the request.
+JSON syntax and a schema cannot guarantee that the generated values are factually correct.
+
+Thinking and speculative decoding use the existing template grammar path. Tool combinations
+are template-dependent: the pinned Qwen3.5 specialized parser produces an invalid lazy grammar
+for a response schema with offered tools and `tool_choice: "auto"`; that request returns `400`
+with `code: "template_rejected"` before inference. The differential Qwen3 parser accepts this
+combination and produces a JSON answer. Both tested parsers give JSON precedence over required
+tool calls, so a response schema with `tool_choice: "required"` (including a named-function choice)
+is explicitly refused with `400` / `invalid_request`, instead of silently ignoring the requirement.
+These cases are covered by vendored-template regressions; tools are not universally disabled.
+Reasoning is returned separately in `reasoning_content`. To request thinking
+off, use `chat_template_kwargs.enable_thinking` as in the examples. The existing `think` alias
+and precedence remain available. The output constraint belongs to one turn: a following
+request without it generates normally without reloading the model.
+
+A JSON answer that completes with `finish_reason: "stop"` must parse as JSON in
+`message.content`. A malformed completed answer returns `invalid_output` and HTTP `500`, or
+an error chunk if streaming has already started. The turn is rolled back and the model stays
+loaded for the next request. This check is performed on the parsed answer, apart from reasoning
+and tool-call data; a turn containing only tool calls is not required to contain a JSON answer.
+
+A token limit (`length`), cancellation (`cancelled`) or disconnection can leave partial JSON;
+partial output is not repaired by appending delimiters or relabelled as successful completion.
+Individual SSE chunks need not be valid JSON. Reconstruct `delta.content` using the streaming
+rules below, including `bmoe.reset`, and inspect the final finish reason. Clients must handle
+an error event even after content has arrived. HTTP `200` or `[DONE]` alone is not a completeness
+guarantee.
 
 **The conversation is the client's.** Every request carries the whole history and the server keeps
 none. The engine tokenizes it, keeps the leading tokens that match what its KV cache already holds
@@ -303,7 +379,7 @@ Non-streaming response: a `chat.completion` object with `message.content` (`null
 only calls tools), `message.reasoning_content`, `message.tool_calls`, `usage` and `bmoe.summary`.
 `usage.prompt_tokens` is the whole prompt the answer was conditioned on.
 
-Not implemented: `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `response_format`, `stop`,
+Not implemented: `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `stop`,
 `n` above 1, and per-request sampling.
 
 ### `GET /v1/models`
