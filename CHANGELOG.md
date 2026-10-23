@@ -7,9 +7,10 @@ Semantic Versioning.
 ## [0.35.0] - 2026-10-23
 
 ### Added
-- **`THIRD_PARTY_LICENSES` (#352).** Every archive and APK carries llama.cpp and ggml, and the
-  server carries cpp-httplib and nlohmann/json, all MIT, plus two fonts under the SIL OFL; only the
-  project's own Apache-2.0 `LICENSE` travelled with them. The new file holds those licenses' text,
+- **`THIRD_PARTY_LICENSES` (#352).** Every archive and APK carries llama.cpp and ggml, the server
+  carries cpp-httplib and nlohmann/json, the desktop archive's web UI bundles Svelte, clsx, marked
+  and DOMPurify, and the UI and the app use two fonts under the SIL OFL; only the project's own
+  Apache-2.0 `LICENSE` travelled with them. The new file holds those licenses' text,
   ships beside `LICENSE` in every release archive (CLI, desktop, iOS harness) and as an asset in the
   APK, and the README's License section points at it, in all six languages.
 - **Dependabot for the workflows' actions, the web UI's npm packages and the Android Gradle build
@@ -17,11 +18,13 @@ Semantic Versioning.
 
 ### Changed
 - **CI pins what it downloads (#351).** The gates' Python packages come from
-  `scripts/requirements-ci.txt` (`gguf==0.19.0`, `numpy==2.5.3`), bumped on purpose instead of
-  whatever was newest that day. The Windows Vulkan SDK installers are checked against the SHA-256
-  LunarG publishes for them before they run, and the Android Gradle wrapper verifies its
-  distribution (`distributionSha256Sum`). `release-host` runs with `contents: read` and grants
-  `contents: write` only to the two jobs that attach assets to a release.
+  `scripts/requirements-ci.txt` (`gguf==0.19.0`, `numpy==2.5.3` and gguf's own dependencies, every
+  one `==`), bumped on purpose instead of whatever was newest that day. The Windows Vulkan SDK
+  installers are checked against the SHA-256 LunarG publishes for them before they run, and the
+  Android Gradle wrapper verifies its distribution (`distributionSha256Sum`). `release-host` builds
+  with `contents: read`, pull requests included; a new `publish` job, which builds nothing and never
+  runs on a pull request, is the only one with `contents: write`: it attaches the archives the build
+  jobs left as workflow artifacts, under the same names as before.
 
 ### Fixed
 - **Repository hygiene (#352).** `docs/android-memory.md` no longer links the test phone vendor's

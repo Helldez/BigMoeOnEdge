@@ -33,14 +33,13 @@ on:
         type: boolean
         default: true
 
-# Read by default; the two jobs that attach assets to a release ask for write on their own.
+# Read everywhere: the build jobs run on pull requests too, and code built from a PR never holds a
+# token that can write. Only `publish`, which builds nothing and runs on no PR, may write.
 permissions:
   contents: read
 
 jobs:
   cli:
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -324,11 +323,9 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$NAME.zip" "$NAME" > /dev/null
             7z a -tzip "$DESK.zip" "$DESK" > /dev/null
-            echo "assets=$NAME.zip $DESK.zip" >> "$GITHUB_OUTPUT"
           else
             tar czf "$NAME.tar.gz" "$NAME"
             tar czf "$DESK.tar.gz" "$DESK"
-            echo "assets=$NAME.tar.gz $DESK.tar.gz" >> "$GITHUB_OUTPUT"
           fi
 
       # The binaries must at least start on the runner they were built on.
@@ -341,26 +338,15 @@ jobs:
             build/bin/bmoe-cli --version && build/bin/bmoe-server --version
           fi
 
-      - name: Upload asset to the release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          ASSETS: ${{ steps.pkg.outputs.assets }}
-        # ASSETS is a space-separated list of archive names made from the checked tag: split on purpose.
-        run: gh release upload "$TAG" $ASSETS --clobber
-
-      - name: Keep as workflow artifact (dry run)
-        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.upload)
+      # Always a workflow artifact: the dry run's result, and what `publish` attaches to a release.
+      - name: Keep as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: host-${{ matrix.target }}
           path: bmoe-*-${{ matrix.target }}.*
+          if-no-files-found: error
 
   ios-harness:
-    permissions:
-      contents: write
     runs-on: macos-14
     steps:
       - name: Resolve tag
@@ -429,20 +415,56 @@ jobs:
           Everything after --bmoe goes to bmoe-cli; its --help lists the flags.
           EOF
           ditto -c -k --keepParent "$NAME" "$NAME.zip"
-          echo "assets=$NAME.zip" >> "$GITHUB_OUTPUT"
 
-      - name: Upload asset to the release
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          ASSETS: ${{ steps.pkg.outputs.assets }}
-        run: gh release upload "$TAG" $ASSETS --clobber
-
-      - name: Keep as workflow artifact (dry run)
-        if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.upload)
+      - name: Keep as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: ios-harness-sim
           path: bmoe-ios-harness-sim-*.zip
+          if-no-files-found: error
+
+  # Attaches what the build jobs made to the release: the one job with write access, and it runs
+  # nothing from the checkout. always(): a target that failed to build does not hold back the ones
+  # that built, as when each job attached its own (the failed job still fails the run).
+  publish:
+    needs: [cli, ios-harness]
+    if: always() && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          case "$EVENT" in
+            release) T="$RELEASE_TAG" ;;
+            *)       T="$INPUT_TAG" ;;
+          esac
+          case "$T" in
+            ''|*[!A-Za-z0-9._-]*) echo "not a plain tag name: '$T'"; exit 1 ;;
+          esac
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
+
+      # Every artifact of this run is an archive a build job made for this tag.
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Upload assets to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          shopt -s nullglob
+          files=(assets/bmoe-*)
+          [ ${#files[@]} -gt 0 ] || { echo "no archive to attach"; exit 1; }
+          ls -l "${files[@]}"
+          gh release upload "$TAG" "${files[@]}" --clobber
