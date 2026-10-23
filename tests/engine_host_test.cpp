@@ -243,7 +243,7 @@ static void loading_tests() {
         EventBus bus;
         Script script;
         Gate hold;
-        EngineHost host(bus, opener(script, &hold, "no MoE recipe"));
+        EngineHost host(bus, opener(script, &hold, "not a MoE this engine streams"));
         host.load(config(), config());
         wait_state(host, "loading");
         auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });

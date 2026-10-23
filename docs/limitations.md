@@ -54,9 +54,9 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   low, and its per-token cost on that table is page faults on kilobyte reads rather than
   streamed expert bytes. That cost has not been measured on a device yet.
 - **Streaming does not help a model that fits.** The engine's reason to exist is a model
-  larger than RAM. Registering an architecture says the layout streams losslessly, not that
-  streaming is the fast way to run every model using it — a small MoE that fits in memory is
-  faster loaded resident, and the registry rows are about coverage, not a recommendation.
+  larger than RAM. A byte-identity gate for an expert layout says the layout streams losslessly,
+  not that streaming is the fast way to run every model using it — a small MoE that fits in memory
+  is faster loaded resident, and the gates are about correctness, not a recommendation.
 - **Repack must stay off.** Loading uses `use_extra_bufts=false`; you cannot combine
   streaming with weight repacking.
 - **macOS reads uncached, and `o_direct` says so — but it is not `O_DIRECT`.** A direct request on

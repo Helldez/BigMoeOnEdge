@@ -34,6 +34,14 @@ Semantic Versioning.
 - **iOS: a small file no longer reads as 0.0 GB (#359).** Sizes under a gigabyte are written in MB
   or KB.
 
+### Docs
+- **No architecture table left in the words either.** The engine reads which tensors are the routed
+  experts from the file's shapes (`expert_layout`) and has had no architecture registry since 0.31,
+  but a few places still described one: the model probe's header said a table decides which tensors
+  are experts, `docs/limitations.md` spoke of "registry rows", the Android metrics glossary said the
+  architecture "selects the streaming recipe", and a planner explanation, a CMake comment and three
+  code comments said "recipe". They now say what the code does.
+
 ## [0.34.0] - 2026-10-22
 
 ### Added
