@@ -58,7 +58,7 @@ jobs:
 
       # Before anything is built or signed: an APK whose engine reports another release's number
       # is not the one this tag names.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.tag.outputs.tag }}
           persist-credentials: false
@@ -77,7 +77,7 @@ jobs:
     needs: tag
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.tag.outputs.tag }}
           submodules: recursive
@@ -109,7 +109,7 @@ jobs:
           cp build-android/libc++_shared.so jni/
           ls -la jni
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: jnilibs
           path: jni/
@@ -121,11 +121,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.tag.outputs.tag }}
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
@@ -133,7 +133,7 @@ jobs:
       - name: Install NDK
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$NDK_VERSION" > /dev/null
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: jnilibs
           path: jni
@@ -197,7 +197,7 @@ jobs:
 
       - name: Keep as a workflow artifact (dry run)
         if: github.event_name == 'workflow_dispatch' && !inputs.upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: apk-dry-run
           path: |

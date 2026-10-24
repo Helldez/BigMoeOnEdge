@@ -116,7 +116,7 @@ jobs:
           echo "tag=$T" >> "$GITHUB_OUTPUT"
           echo "ref=$R" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.tag.outputs.ref }}
           submodules: recursive
@@ -209,7 +209,7 @@ jobs:
 
       # The desktop app's web UI, built from the same checkout; the server build stages it beside
       # the binary (server/stage_assets.cmake).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Build the web UI
@@ -426,7 +426,7 @@ jobs:
 
       # Always a workflow artifact: the dry run's result, and what `publish` attaches to a release.
       - name: Keep as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: host-${{ matrix.target }}
           path: bmoe-*-${{ matrix.target }}.*
@@ -455,7 +455,7 @@ jobs:
           echo "tag=$T" >> "$GITHUB_OUTPUT"
           echo "ref=$R" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.tag.outputs.ref }}
           submodules: recursive
@@ -503,7 +503,7 @@ jobs:
           ditto -c -k --keepParent "$NAME" "$NAME.zip"
 
       - name: Keep as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ios-harness-sim
           path: bmoe-ios-harness-sim-*.zip
@@ -537,7 +537,7 @@ jobs:
           echo "tag=$T" >> "$GITHUB_OUTPUT"
 
       # Every artifact of this run is an archive a build job made for this tag.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: assets
           merge-multiple: true
