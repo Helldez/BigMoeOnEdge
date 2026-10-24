@@ -155,7 +155,7 @@ Pinned memory is taken from everything else on the machine, so the budget matter
 Where the platform refuses - Android caps locked memory at 64 KiB - the first refusal ends the
 attempts, the cache is ordinary memory as before, and the run prints which it got. This is the
 desktop's answer to the problem [android-memory.md](android-memory.md) describes; the dense weights
-have theirs in `--dense-weights ahwb`.
+have theirs in `--dense-weights pinned`.
 
 ## Flags
 

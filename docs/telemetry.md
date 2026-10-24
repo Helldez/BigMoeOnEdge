@@ -124,7 +124,7 @@ BMOE_PROGRESS {"step":<int>,"steps":<int>,"wall_ms":<float>,"io_ms":<float>,
 === perf ===
 generation: <n> tokens, <s> s/token (<t> tok/s)
 compute: <pct>% CPU occupancy (<c> cpu-s/token over <n> threads), <f> major faults/token
-mode: expert streaming, cache <auto|<n> MiB|off>, dense <mmap|warm|anon|ahwb>[, overlap]
+mode: expert streaming, cache <auto|<n> MiB|off>, dense <mmap|warm|anon|pinned>[, overlap]
 moe-stream: read <mib> MiB (<mib/tok> MiB/token), decode <s> s/token (compute <c> + cache mgmt <m> + flash I/O <i> s/token, <bw> MiB/s)
 moe-cache: <pct>% hit, resident <mib> MiB
 ```
@@ -272,7 +272,7 @@ prints just the summary lines.
   cache_cycle_mb=<n> force_cache=<0|1> load_all=<0|1> io_threads=<n> o_direct=<0|1>
   overlap=<0|1> io_two_wave=<0|1> prefetch=<n>
   route_ahead=<n> predict_prefetch=<0|1> predict_log=<0|1> predict_spec_max=<n> prefetch_sync=<0|1>
-  dense_weights=<mmap|warm|anon|ahwb> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
+  dense_weights=<mmap|warm|anon|pinned> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
   substitute_lambda=<f>
 # temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n> spec=<off|mtp|ngram>
   spec_draft_max=<n> mtp_p_min=<f> ngram_min_match=<n>
@@ -286,7 +286,8 @@ know.
 
 Values are the **resolved** configuration, not what was typed — `cache_mb` is what the streamer
 settled on, which under `--cache-mb auto` is a number no flag mentioned, and `n_expert_used` is the
-effective top-k after any override. Fields to read carefully:
+effective top-k after any override. `dense_weights=pinned` was written `ahwb` in earlier releases; a
+parser that compares runs across that release reads both as the same mode. Fields to read carefully:
 
 - `engine` is the version that produced the rows (`bmoe-cli --version`), so a committed file still
   names its build after the checkout has moved on. `unknown` if the build did not define it. It sits

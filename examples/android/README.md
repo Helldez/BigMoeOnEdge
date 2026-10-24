@@ -167,7 +167,7 @@ shard, which is the file the engine opens. For adb-pushed models push every
 shard to the same directory. Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk,
 Qwen3.8-Flash-Next UD-IQ3_XXS ~82 GB and its Q2_K build ~80 GB.
 
-Qwen3.8-Flash-Next needs **Dense weights = ahwb** (pinned, dma-buf) in Settings. Its dense side is
+Qwen3.8-Flash-Next needs **Dense weights = pinned** (pinned, dma-buf) in Settings. Its dense side is
 4.3 GB and every token walks it: with `anon` the kernel swaps it to zram and single tokens stall
 for 10-20 s, with `mmap` it is refaulted from flash every token. Its 51B n-gram table is held back
 automatically and stays mmap'd whatever the setting. The planner chooses this where it can; the

@@ -120,8 +120,14 @@ void bind_string(ParamDesc & d, Field<std::string> f) {
     };
 }
 
-// An enum field shown as its choices' values. `values` is in the enum's declaration order.
-template <typename E> void bind_choice(ParamDesc & d, Field<E> f, std::vector<std::pair<E, ParamChoice>> values) {
+// An enum field shown as its choices' values. `values` is in the enum's declaration order. `aliases`
+// are former spellings: still parsed, so a saved setting or a script keeps working, but never listed
+// or written back.
+template <typename E>
+void bind_choice(ParamDesc & d,
+                 Field<E> f,
+                 std::vector<std::pair<E, ParamChoice>> values,
+                 std::vector<std::pair<std::string, E>> aliases = {}) {
     for (const auto & v : values)
         d.choices.push_back(v.second);
     d.get = [f, values](const RunConfig & c) {
@@ -129,10 +135,15 @@ template <typename E> void bind_choice(ParamDesc & d, Field<E> f, std::vector<st
             if (v.first == at(f, c)) return v.second.value;
         return std::string();
     };
-    d.set = [f, values](RunConfig & c, const std::string & s, std::string & err) {
+    d.set = [f, values, aliases](RunConfig & c, const std::string & s, std::string & err) {
         for (const auto & v : values)
             if (v.second.value == s) {
                 f(c) = v.first;
+                return true;
+            }
+        for (const auto & a : aliases)
+            if (a.first == s) {
+                f(c) = a.second;
                 return true;
             }
         std::string all;
@@ -395,7 +406,7 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("release-mmap", "Unmap the file after load", G::Streaming, L::Advanced,
                           "Unmap the model file after load once nothing reads through it. On Windows a live "
                           "mapping serialises the streamer's concurrent reads. Needs dense weights anon or "
-                          "ahwb.");
+                          "pinned.");
         d.type = ParamType::Bool;
         d.flag.clear();
         d.switches = {{"--release-mmap", "true"}};
@@ -461,16 +472,19 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("dense-weights", "Dense weights", G::Memory, L::Advanced,
                           "How the dense (non-expert) weights stay resident. mmap leaves them to the kernel; "
                           "warm page-caches them at load (best when the model fits); anon reads them into "
-                          "our own buffers so a reclaim hits zram, not flash; ahwb is anon in memory the "
-                          "kernel may not reclaim at all, where the platform has such a store.");
+                          "our own buffers so a reclaim hits zram, not flash; pinned is anon in memory the "
+                          "kernel may not reclaim at all, where the platform has such a store (ahwb, its "
+                          "former name, is still accepted).");
         d.type = ParamType::Choice;
-        d.value_hint = "mmap|warm|anon|ahwb";
+        d.value_hint = "mmap|warm|anon|pinned";
         d.switches = {{"--no-warm-dense", "mmap", true}, {"--dense-odirect", "anon", true}};
-        bind_choice<DenseWeightsMode>(d, [](RunConfig & c) -> DenseWeightsMode & { return c.moe.dense_weights; },
-                                      {{DenseWeightsMode::Mmap, {"mmap", "mapped from the file"}},
-                                       {DenseWeightsMode::Warmed, {"warm", "mapped and read ahead"}},
-                                       {DenseWeightsMode::Anonymous, {"anon", "copied into memory"}},
-                                       {DenseWeightsMode::Pinned, {"ahwb", "pinned in memory"}}});
+        using M = DenseWeightsMode;
+        bind_choice<M>(d, [](RunConfig & c) -> M & { return c.moe.dense_weights; },
+                       {{M::Mmap, {dense_weights_mode_name(M::Mmap), "mapped from the file"}},
+                        {M::Warmed, {dense_weights_mode_name(M::Warmed), "mapped and read ahead"}},
+                        {M::Anonymous, {dense_weights_mode_name(M::Anonymous), "copied into memory"}},
+                        {M::Pinned, {dense_weights_mode_name(M::Pinned), "pinned in memory"}}},
+                       {{"ahwb", M::Pinned}});
         t.push_back(d);
     }
     {

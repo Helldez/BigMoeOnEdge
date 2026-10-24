@@ -83,7 +83,7 @@ public:
     // embedding table has two ggml_tensor objects carrying the same name over the same file
     // bytes, and a name-keyed map keeps one of them. Rebinding only that one leaves the twin
     // reading the model's mmap for the life of the run, which is what --dense-weights anon and
-    // ahwb exist to prevent. Order is first-seen, so a run is reproducible.
+    // pinned exist to prevent. Order is first-seen, so a run is reproducible.
     const std::vector<ggml_tensor *> & captured_weight_objects() const { return captured_weight_objects_; }
 
     // After capture, the memory module's state tensors the graph read (KV cache, recurrent state):

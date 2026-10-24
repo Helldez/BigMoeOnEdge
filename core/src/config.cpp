@@ -17,7 +17,24 @@ constexpr PrefixCacheModeName kPrefixCacheModes[] = {
     {PrefixCacheMode::Off, "off"},
 };
 
+struct DenseWeightsModeName {
+    DenseWeightsMode mode;
+    const char * name;
+};
+constexpr DenseWeightsModeName kDenseWeightsModes[] = {
+    {DenseWeightsMode::Mmap, "mmap"},
+    {DenseWeightsMode::Warmed, "warm"},
+    {DenseWeightsMode::Anonymous, "anon"},
+    {DenseWeightsMode::Pinned, "pinned"},
+};
+
 } // namespace
+
+const char * dense_weights_mode_name(DenseWeightsMode m) {
+    for (const auto & e : kDenseWeightsModes)
+        if (e.mode == m) return e.name;
+    return kDenseWeightsModes[0].name;
+}
 
 const char * prefix_cache_mode_name(PrefixCacheMode m) {
     for (const auto & e : kPrefixCacheModes)

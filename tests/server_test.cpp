@@ -1233,7 +1233,7 @@ static void plan_view_tests() {
     dec.source = Source::Unprobed;
     check(decision_json(dec)["group"] == "kept", "plan view: an unmeasured value is kept");
     check(value_text(Decision{"cache-mb", "4737", Source::Derived, "r", "b"}) == "4.6 GiB" &&
-              value_text(Decision{"dense-weights", "ahwb", Source::Derived, "r", "b"}) == "pinned in memory" &&
+              value_text(Decision{"dense-weights", "pinned", Source::Derived, "r", "b"}) == "pinned in memory" &&
               value_text(Decision{"o-direct", "true", Source::Measured, "r", "b"}) == "on" &&
               value_text(Decision{"memory-ledger", "7265 MiB", Source::Derived, "r", "b"}) == "7.1 GiB" &&
               value_text(Decision{"regime", "experts-stream", Source::Derived, "r", "b"}) == "experts stream" &&

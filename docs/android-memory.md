@@ -142,7 +142,7 @@ steal file cache — we evict our own dense weights when we allocate too fast.
 | Memory Advice API | **deprecated**; only warns, never keeps anything resident |
 | `MAP_POPULATE` | prefaults, does **not** pin. Load speed only |
 | **`MADV_COLD` / `MADV_PAGEOUT`** (5.4+) | **the one real lever** — unprivileged. Can't stop reclaim, but *chooses its victims*: volunteer your own cold tail so kswapd finds cheap targets and you cut direct-reclaim stalls |
-| **dma-buf via `AHardwareBuffer`** | **the one lever that works** — those pages stay pinned because a device may DMA from them at any time, and no capability is needed. Full anonymous-memory read speed, and **+17.9% decode** with the dense weights in it ([2026-07-21](bench-data/2026-07-21-pinned-dense-ab/findings.md)). Capped at **2047 MiB per buffer**: `AHardwareBuffer_lock` fails with `EINVAL` at 2^31 bytes even though allocation reaches the 4 GiB format cap. Shipped as `--dense-weights ahwb`, default off — see below |
+| **dma-buf via `AHardwareBuffer`** | **the one lever that works** — those pages stay pinned because a device may DMA from them at any time, and no capability is needed. Full anonymous-memory read speed, and **+17.9% decode** with the dense weights in it ([2026-07-21](bench-data/2026-07-21-pinned-dense-ab/findings.md)). Capped at **2047 MiB per buffer**: `AHardwareBuffer_lock` fails with `EINVAL` at 2^31 bytes even though allocation reaches the 4 GiB format cap. Shipped as `--dense-weights pinned`, default off — see below |
 
 **lmkd never reclaims — it only kills — and here it is silent by design.** It early-returns while
 `SwapFree >= swap_free_low_percentage` (10%) of total; we sit at 70–79%. **The 12 GB swap is exactly
@@ -179,14 +179,14 @@ idea to be dead on arrival: gralloc chooses per allocation whether a buffer is C
 uncached mapping would read at or below flash bandwidth — making pinned weights slower than
 refaulting them.
 
-`--dense-weights ahwb` puts the dense weights there. It is `anon` with one substitution — the buffer
+`--dense-weights pinned` puts the dense weights there. It is `anon` with one substitution — the buffer
 comes from `pio::pinned_alloc` instead of the heap — so an A/B against `anon` moves a single
 variable, and it refuses to start where the platform has no such allocation rather than falling
 back, which would let the comparison quietly become a mode against itself.
 
 **Measured, in-app, on a long generation** ([2026-07-21](bench-data/2026-07-21-pinned-dense-ab/findings.md)):
 
-| | `anon` | `ahwb` |
+| | `anon` | `pinned` |
 |---|---|---|
 | decode tok/s | 2.588 | **3.053 (+17.9%, CIs disjoint)** |
 | `dense_resident_frac` | 0.848 | **1.000** |
@@ -204,12 +204,12 @@ fault when touched again; it is a minor fault plus a decompression. That cost ap
 counter and no fault counter, so it lands in `compute_ms` — which is a residual, not a measurement
 of arithmetic. Hence the entire delta showing up there while everything else stays flat.
 
-So: **`anon` protects the dense weights from flash; `ahwb` also protects them from zram**, and the
+So: **`anon` protects the dense weights from flash; `pinned` also protects them from zram**, and the
 premium `anon` was quietly paying is worth ~18%. The feared trade — pinned memory starving the
 expert cache — does not appear at this size: the dense set (~1.6 GiB) is small next to a 3000 MiB
 cache budget, and the hit rate is identical to the decimal.
 
-Two caveats that keep this **default off**: in the decisive pair `ahwb` ran first and an order
+Two caveats that keep this **default off**: in the decisive pair `pinned` ran first and an order
 effect cannot be excluded (the reversed pair is owed), and it is one device, one model, one config.
 
 The general lesson outlives the flag: `compute_ms` has been absorbing zram decompression all along,
@@ -220,7 +220,7 @@ so any earlier conclusion of the form *"this regime is compute-bound"* deserves 
 Every mode above assumes the dense set fits. `qwen4exp` (Qwen3.8-Flash-Next) breaks that with one
 tensor: `per_layer_token_embd`, a 51B-parameter n-gram embedding table, ~28.8 GB at IQ4_NL, that the
 graph gathers sixteen rows from per token. No mode can hold it, and each would fail differently:
-`anon` asks for an allocation the OS kills the process over, `ahwb` hits the 2047 MiB dma-buf
+`anon` asks for an allocation the OS kills the process over, `pinned` hits the 2047 MiB dma-buf
 ceiling, `warm` would sweep 28.8 GB through a page cache that evicts it as it goes, and the residency
 sensor would report a dense set that can never be resident. So the engine applies one rule before
 any mode: a dense tensor larger than the kernel's `MemAvailable` is held back. It stays mmap'd, leaves

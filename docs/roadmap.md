@@ -219,7 +219,7 @@ through `AHardwareBuffer`** is exempt from reclaim by construction and needs no 
 bandwidth gate passes cleanly (1.00× against anonymous memory; usable in 2047 MiB units, an
 `AHardwareBuffer_lock` boundary at 2^31 bytes —
 [bench-data/2026-07-21-pinned-memory/](bench-data/2026-07-21-pinned-memory/findings.md)). What is
-`--dense-weights ahwb` implements it, and the in-app A/B came back **positive: +17.9% on a long
+`--dense-weights pinned` implements it, and the in-app A/B came back **positive: +17.9% on a long
 generation, confidence intervals disjoint**, with `dense_resident_frac` pinned at exactly 1.000
 ([bench-data/2026-07-21-pinned-dense-ab/](bench-data/2026-07-21-pinned-dense-ab/findings.md)).
 
@@ -231,9 +231,9 @@ So **`compute_ms` has been absorbing swap-in all along**, and any earlier "this 
 compute-bound" conclusion deserves re-examination. Making that cost visible (minor faults, swap-in
 time) is worth more than the next few percent of throughput.
 
-Still open: the reversed-order pair (`ahwb` ran first in the decisive pair), and anything beyond one
+Still open: the reversed-order pair (`pinned` ran first in the decisive pair), and anything beyond one
 device / model / config — hence default off. **Not** worth extending to the expert cache without
-sizing the prize first: under `ahwb` only ~294 MiB of a 3000 MiB budget sits in zram, so the prize
+sizing the prize first: under `pinned` only ~294 MiB of a 3000 MiB budget sits in zram, so the prize
 is a fraction of the dense one while the cost — 3 GiB of rigid, LMK-accounted memory, and the loss
 of the reserve/commit/evict elasticity the cache is built on — is far higher.
 

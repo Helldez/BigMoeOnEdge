@@ -211,6 +211,8 @@ int main() {
                 [](const RunConfig & c) { return c.moe.dense_weights == DenseWeightsMode::Warmed; });
     expect_flag({"--dense-weights", "anon"},
                 [](const RunConfig & c) { return c.moe.dense_weights == DenseWeightsMode::Anonymous; });
+    expect_flag({"--dense-weights", "pinned"},
+                [](const RunConfig & c) { return c.moe.dense_weights == DenseWeightsMode::Pinned; });
     expect_flag({"--dense-weights", "ahwb"},
                 [](const RunConfig & c) { return c.moe.dense_weights == DenseWeightsMode::Pinned; });
     expect_flag({"--no-warm-dense"}, [](const RunConfig & c) { return c.moe.dense_weights == DenseWeightsMode::Mmap; });
@@ -312,6 +314,18 @@ int main() {
         c.moe.dense_weights = DenseWeightsMode::Mmap;
         const std::vector<std::string> args = to_args(c);
         check(join(args) == "--dense-weights mmap", "to_args prefers --dense-weights over the deprecated alias");
+    }
+    {
+        // A former spelling still parses, and is written back under the current one.
+        RunConfig c;
+        std::string err;
+        const ParamDesc * d = find_param("dense-weights");
+        check(d && d->set(c, "ahwb", err) && d->get(c) == "pinned",
+              "dense-weights: the former 'ahwb' reads as pinned and is written back as 'pinned'");
+        bool listed = false;
+        for (const ParamChoice & ch : d->choices)
+            listed = listed || ch.value == "ahwb";
+        check(!listed, "dense-weights: the former spelling is not offered as a choice");
     }
 
     // ── flag_spelling: what prose tells a person to type ─────────────────────────────

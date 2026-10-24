@@ -45,6 +45,10 @@ enum class DenseWeightsMode {
                // and says how much, loudly.
 };
 
+// Stable lowercase spelling ("mmap", "warm", "anon", "pinned"), shared by the flag, the plan and the
+// telemetry.
+const char * dense_weights_mode_name(DenseWeightsMode m);
+
 // Whether route-ahead's prediction scores against an int8 mirror of the router gates or their own
 // float weights (MoeStreamConfig::gate_mirror). Both rank the same experts to within an int8 step;
 // they differ in cost, and which is cheaper is a property of the machine, so neither is a default.
@@ -164,7 +168,7 @@ struct MoeStreamConfig {
     // llama.cpp keeps the gguf mapped for the model's lifetime, and on Windows a live section of
     // the file serialises the streamer's concurrent unbuffered reads: four lanes deliver one
     // lane's throughput (measured; see core/src/io/mapping_release.h). With this on, once nothing
-    // reads through the mapping any more (dense weights copied out under anon/ahwb, every file
+    // reads through the mapping any more (dense weights copied out under anon/pinned, every file
     // tensor either streamed, copied or row-served) the engine unmaps the file and closes its
     // section. On POSIX the mapping is munmap'd the same way; Android was measured not to serialise
     // reads, so there the gain is smaller and of a different kind (see docs/moe-streaming.md).

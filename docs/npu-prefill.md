@@ -12,7 +12,7 @@ works on a model larger than RAM: the NPU never holds the model, only two layers
 ## Measured
 
 Qwen3.6-35B-A3B, Q4_0 gguf (20.8 GB) on a 12 GB phone with a Hexagon v81 NPU and UFS 4 storage,
-streamed (`--moe-stream --overlap --dense-weights ahwb --cache-mb 1500 -t 4`), ubatch 2048 on the
+streamed (`--moe-stream --overlap --dense-weights pinned --cache-mb 1500 -t 4`), ubatch 2048 on the
 NPU, 512 on the CPU. The Q4_K_M row is the same model in the quantisation the app's catalog ships,
 on the 2026-09-26 llama.cpp base, with 8 loaders:
 
@@ -166,7 +166,7 @@ read whole, as `--no-prefill-routed` does everywhere, so a long prompt, which ro
 does not pay for a prediction it cannot use. The first graph of a session has no prediction and reads whole layers.
 
 Measured on the phone above, Qwen3.6-35B-A3B Q4_0 streamed with the settings of an on-device
-Android UI agent (`--overlap --io-threads 4 --dense-weights ahwb -t 6 -c 2048 --n-expert-used 4`, ubatch 2048), 35
+Android UI agent (`--overlap --io-threads 4 --dense-weights pinned -t 6 -c 2048 --n-expert-used 4`, ubatch 2048), 35
 decisions: 31 over Android screens (129 to 476 tokens) and 4 short questions. Same session, same
 build, whole layers and routed:
 

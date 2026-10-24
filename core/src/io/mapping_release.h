@@ -9,7 +9,7 @@
 // 2400-2660 MiB/s with no mapping, 895-930 with one, i.e. four lanes deliver exactly one lane's
 // throughput. Unmapping the view alone does not help; the section must be closed too.
 //
-// Under `--dense-weights anon`/`ahwb` with every file tensor accounted for (streamed experts,
+// Under `--dense-weights anon`/`pinned` with every file tensor accounted for (streamed experts,
 // copied dense weights, row-streamed tables), nothing dereferences the mapping after load, so it
 // can go. llama.cpp offers no public API to drop it (its Windows unmap_fragment is a no-op), so
 // this module finds the process's own views and section handles of the file and releases them.
