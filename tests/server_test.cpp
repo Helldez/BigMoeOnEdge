@@ -23,6 +23,8 @@
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "access.h"
+#include "agent_protocol.h"
+#include "anthropic_messages.h"
 #include "decide_protocol.h"
 #include "download_policy.h"
 #include "event_bus.h"
@@ -32,6 +34,7 @@
 #include "model_delete.h"
 #include "model_files.h"
 #include "openai_chat.h"
+#include "openai_responses.h"
 #include "plan_view.h"
 #include "settings_store.h"
 #include "sha256.h"
@@ -360,6 +363,349 @@ static void protocol_tests() {
           "cancellation keeps its real reason and does not repair incomplete JSON");
 }
 
+// A stream's frames, as a client reads them: each event's name and its data.
+static std::vector<std::pair<std::string, json>> sse_frames(const std::string & s) {
+    std::vector<std::pair<std::string, json>> out;
+    size_t at = 0;
+    while (at < s.size()) {
+        const size_t end = s.find("\n\n", at);
+        if (end == std::string::npos) break;
+        const std::string frame = s.substr(at, end - at);
+        at = end + 2;
+        const size_t nl = frame.find('\n');
+        if (frame.rfind("event: ", 0) != 0 || nl == std::string::npos) continue;
+        out.emplace_back(frame.substr(7, nl - 7), json::parse(frame.substr(nl + 1 + 6)));
+    }
+    return out;
+}
+
+static std::string names_of(const std::vector<std::pair<std::string, json>> & frames) {
+    std::string s;
+    for (const auto & f : frames)
+        s += (s.empty() ? "" : " ") + f.first;
+    return s;
+}
+
+static void block_stream_tests() {
+    using T = BlockEvent::Type;
+    BlockStream b;
+    std::vector<BlockEvent> e = b.update("", "Let me");
+    check(e.size() == 2 && e[0].type == T::Open && e[0].kind == BlockKind::Reasoning && e[1].text == "Let me",
+          "the first reasoning opens a thinking block");
+    e = b.update("", "Let me think");
+    check(e.size() == 1 && e[0].type == T::Delta && e[0].text == " think", "a snapshot that extends sends the rest");
+    e = b.update("Hi", "Let me think");
+    check(e.size() == 3 && e[0].type == T::Close && e[0].kind == BlockKind::Reasoning && e[1].type == T::Open &&
+              e[1].kind == BlockKind::Text && e[2].text == "Hi",
+          "the answer closes the thinking and opens a text block");
+    e = b.update("H", "Let me think");
+    check(e.empty() && !b.diverged(), "a snapshot that takes text back sends nothing, and waits");
+    e = b.update("Hi th\xC3", "Let me think");
+    check(e.size() == 1 && e[0].text == " th", "half a UTF-8 character is held back");
+    e = b.finish("Hi th\xC3\xA9re", "Let me think");
+    check(e.size() == 2 && e[0].text == "\xC3\xA9re" && e[1].type == T::Close && !b.diverged(),
+          "finish sends the rest of the final answer and closes the block");
+
+    BlockStream d;
+    d.update("<think>abc", "");
+    e = d.finish("answer", "abc");
+    check(d.diverged() && e.size() == 4 && e[0].type == T::Close && e[1].kind == BlockKind::Reasoning &&
+              e[2].text == "abc",
+          "a final answer that contradicts the stream is not sent over it, and is reported");
+    BlockStream empty;
+    check(empty.finish("", "").empty(), "a turn with no text has no blocks");
+
+    std::vector<ChatMessage> m = {{"system", "a"}, {"system", "b"}, {"user", "q"}, {"system", "env"}, {"user", "r"}};
+    place_system_messages(m);
+    check(m.size() == 4 && m[0].role == "system" && m[0].content == "a\n\nb" && m[2].role == "user" &&
+              m[2].content == "env",
+          "leading system messages join; a later one is a user message, in its place");
+    ChatRequest est;
+    est.messages = {{"user", std::string(3000, 'x')}};
+    check(estimate_prompt_tokens(est) > 900 && estimate_prompt_tokens(est) < 1100, "the estimate grows with the text");
+}
+
+static AnthropicRequest
+anthropic(const std::string & body, bool * ok = nullptr, std::string * err = nullptr, bool think = false) {
+    AnthropicRequest r;
+    std::string e;
+    RunConfig cfg;
+    cfg.n_predict = 100;
+    cfg.think = think;
+    const bool good = parse_messages_request(json::parse(body), cfg, r, e);
+    if (ok) *ok = good;
+    if (err) *err = e;
+    return r;
+}
+
+static void anthropic_tests() {
+    bool ok = false;
+    std::string err;
+    {
+        // What Claude Code sends: a metadata block first in system, text blocks, a system turn
+        // after the first user message, a deferred tool, adaptive thinking.
+        const AnthropicRequest r = anthropic(R"j({"model":"m","max_tokens":32000,"stream":true,
+            "system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.1.abc; cc_entrypoint=cli;"},
+                      {"type":"text","text":"You are an agent.","cache_control":{"type":"ephemeral"}}],
+            "messages":[{"role":"user","content":[{"type":"text","text":"<reminder/>"},{"type":"text","text":"do it"}]},
+                        {"role":"system","content":[{"type":"text","text":"env"}]}],
+            "tools":[{"name":"Write","description":"Write a file","input_schema":{"type":"object"}},
+                     {"name":"Later","description":"x","input_schema":{"type":"object"},"defer_loading":true}],
+            "thinking":{"type":"adaptive","display":"omitted"},"temperature":0.5,"stop_sequences":["x"],
+            "metadata":{"user_id":"u"},"context_management":{"edits":[]}})j",
+                                             &ok, &err);
+        check(ok && r.stream && r.turn.n_predict == 32000, "a Claude Code request parses: " + err);
+        check(r.turn.messages.size() == 3 && r.turn.messages[0].role == "system" &&
+                  r.turn.messages[0].content == "You are an agent." &&
+                  r.turn.messages[1].content == "<reminder/>\n\ndo it" && r.turn.messages[2].role == "user" &&
+                  r.turn.messages[2].content == "env",
+              "the per-request metadata block is dropped, blocks join, a later system turn is a user message");
+        check(r.turn.tools.size() == 1 && r.turn.tools[0].name == "Write" &&
+                  r.turn.tools[0].parameters == R"({"type":"object"})" && r.turn.think,
+              "client tools are described, a deferred one is not, adaptive thinking asks to think");
+    }
+    {
+        const AnthropicRequest r = anthropic(R"j({"max_tokens":50,"messages":[
+            {"role":"user","content":"read a.py"},
+            {"role":"assistant","content":[{"type":"thinking","thinking":"need it","signature":""},
+              {"type":"text","text":"Reading."},
+              {"type":"tool_use","id":"t1","name":"Read","input":{"path":"a.py"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"print(1)"}]},
+              {"type":"text","text":"and now?"}]}],
+            "tool_choice":{"type":"any"},"thinking":{"type":"disabled"}})j",
+                                             &ok, &err, true);
+        check(ok && r.turn.messages.size() == 4, "an agent's history parses: " + err);
+        const ChatMessage & a = r.turn.messages[1];
+        check(a.role == "assistant" && a.reasoning == "need it" && a.content == "Reading." &&
+                  a.tool_calls.size() == 1 && a.tool_calls[0].id == "t1" &&
+                  a.tool_calls[0].arguments == R"({"path":"a.py"})",
+              "an assistant turn keeps its thinking, text and call");
+        check(r.turn.messages[2].role == "tool" && r.turn.messages[2].tool_call_id == "t1" &&
+                  r.turn.messages[2].name == "Read" && r.turn.messages[2].content == "print(1)" &&
+                  r.turn.messages[3].role == "user" && r.turn.messages[3].content == "and now?",
+              "a tool result is a tool message, named after its call, before the user's text");
+        check(r.turn.tool_choice == ToolChoice::Required && !r.turn.think && r.turn.n_predict == 50 && !r.stream,
+              "any is required, thinking can be turned off, max_tokens is the budget");
+    }
+    {
+        const AnthropicRequest r = anthropic(R"j({"messages":[{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"t9","content":[{"type":"tool_reference","tool_name":"WebFetch"}]}]}]})j",
+                                             &ok, &err);
+        check(ok && r.turn.messages.size() == 1 && r.turn.messages[0].content == "Tool loaded: WebFetch" &&
+                  r.turn.n_predict == 100,
+              "a tool search result reads as text, and no max_tokens is the configured budget");
+    }
+    anthropic(R"j({"messages":[{"role":"user","content":[{"type":"image","source":{}}]}]})j", &ok, &err);
+    check(!ok && err.find("image") != std::string::npos, "an image is refused, not dropped");
+    anthropic(
+        R"j({"messages":[{"role":"user","content":"q"}],"tools":[{"type":"web_search_20250305","name":"web_search"}]})j",
+        &ok, &err);
+    check(!ok && err.find("server tool") != std::string::npos, "a server tool is refused");
+    anthropic(R"j({"messages":[{"role":"user","content":"q"},{"role":"assistant","content":"The answer is"}]})j", &ok,
+              &err);
+    check(!ok && err.find("prefilled") != std::string::npos, "a prefilled answer is refused");
+    anthropic(R"j({"messages":[{"role":7,"content":"q"}]})j", &ok, &err);
+    check(!ok, "a role that is not a string is refused, not thrown");
+    anthropic(R"j({"messages":[{"role":"user","content":"q"}],"max_tokens":-1})j", &ok, &err);
+    check(!ok && err.find("max_tokens") != std::string::npos, "a negative budget is refused");
+    {
+        const AnthropicRequest r = anthropic(R"j({"messages":[{"role":"user","content":"q"}],
+            "output_config":{"format":{"type":"json_schema","schema":{"type":"object"}}}})j",
+                                             &ok);
+        check(ok && r.turn.json_schema == R"({"type":"object"})", "output_config.format constrains the answer");
+    }
+
+    const json full = anthropic_error_json(400, "the prompt does not fit", "context_full");
+    check(full["type"] == "error" && full["error"]["type"] == "invalid_request_error" &&
+              full["error"]["message"].get<std::string>().rfind("prompt is too long", 0) == 0,
+          "a full context is the protocol's prompt-is-too-long, which a client compacts on");
+    check(anthropic_error_json(503, "no model", "no_model")["error"]["type"] == "overloaded_error" &&
+              anthropic_error_json(401, "key", "")["error"]["type"] == "authentication_error" &&
+              anthropic_error_json(500, "x", "failed")["error"]["type"] == "api_error",
+          "the error type follows the status");
+    check(anthropic_stop_reason("stop") == "end_turn" && anthropic_stop_reason("length") == "max_tokens" &&
+              anthropic_stop_reason("tool_calls") == "tool_use",
+          "stop reasons in the protocol's words");
+
+    RunResult r;
+    r.ok = true;
+    r.reasoning_text = "think";
+    r.generated_text = "Writing.";
+    r.tool_calls = {{"", "Write", R"({"path":"h.txt"})"}};
+    r.summary.n_generated = 12;
+    r.summary.n_prompt = 30;
+    r.summary.n_past = 512;
+    ensure_tool_call_ids(r.tool_calls, "msg_4");
+    const ChatResponseMeta meta{"msg_4", 5, "m.gguf"};
+    const json m = message_json(meta, r, "tool_calls");
+    check(m["type"] == "message" && m["content"].size() == 3 && m["content"][0]["type"] == "thinking" &&
+              m["content"][1]["text"] == "Writing." && m["content"][2]["type"] == "tool_use" &&
+              m["content"][2]["input"]["path"] == "h.txt" && m["stop_reason"] == "tool_use",
+          "a message is thinking, text, then the calls with their input as an object");
+    check(m["usage"]["input_tokens"] == 30 && m["usage"]["cache_read_input_tokens"] == 470 &&
+              m["usage"]["output_tokens"] == 12,
+          "usage splits the prompt into what was prefilled and what the KV held");
+
+    AnthropicStream s(meta);
+    std::string wire = s.start();
+    wire += s.on_token("", "thi");
+    wire += s.on_token("", "think");
+    wire += s.on_token("Writ", "think");
+    wire += AnthropicStream::ping();
+    wire += s.finish(r, "tool_calls");
+    const auto f = sse_frames(wire);
+    check(names_of(f) == "message_start content_block_start content_block_delta content_block_delta "
+                         "content_block_delta content_block_stop content_block_start content_block_delta ping "
+                         "content_block_delta content_block_stop content_block_start content_block_delta "
+                         "content_block_stop message_delta message_stop",
+          "the stream: message_start, a thinking block (signed), a text block, a tool_use block, the stop");
+    check(f[1].second["content_block"]["type"] == "thinking" && f[3].second["delta"]["thinking"] == "nk" &&
+              f[4].second["delta"]["type"] == "signature_delta" && f[6].second["index"] == 1 &&
+              f[9].second["delta"]["text"] == "ing." && f[11].second["index"] == 2 &&
+              f[11].second["content_block"]["id"] == "call_msg_4_0" &&
+              json::parse(f[12].second["delta"]["partial_json"].get<std::string>())["path"] == "h.txt",
+          "blocks are indexed in order, and the call's input arrives as JSON");
+    check(f[14].second["delta"]["stop_reason"] == "tool_use" && f[14].second["usage"]["output_tokens"] == 12,
+          "message_delta carries the stop reason and the usage");
+    const auto e = sse_frames(AnthropicStream::error(400, "too long", "context_full"));
+    check(e.size() == 1 && e[0].first == "error" && e[0].second["error"]["type"] == "invalid_request_error",
+          "a failed turn ends the stream with an error event");
+}
+
+static ResponsesRequest
+responses(const std::string & body, bool * ok = nullptr, std::string * err = nullptr, bool think = false) {
+    ResponsesRequest r;
+    std::string e;
+    RunConfig cfg;
+    cfg.n_predict = 100;
+    cfg.think = think;
+    const bool good = parse_responses_request(json::parse(body), cfg, r, e);
+    if (ok) *ok = good;
+    if (err) *err = e;
+    return r;
+}
+
+static void responses_tests() {
+    bool ok = false;
+    std::string err;
+    {
+        // What Codex sends: developer messages first, built-in tools beside the functions, store off.
+        const ResponsesRequest r = responses(R"j({"model":"m","stream":true,"store":false,"instructions":"Be precise.",
+            "input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"perms"}]},
+                     {"type":"message","role":"user","content":[{"type":"input_text","text":"env"}]},
+                     {"type":"message","role":"user","content":[{"type":"input_text","text":"make hello.txt"}]}],
+            "tools":[{"type":"function","name":"exec_command","description":"Run","strict":false,
+                      "parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}},
+                     {"type":"web_search","external_web_access":false},
+                     {"type":"namespace","name":"agents","tools":[]}],
+            "tool_choice":"auto","parallel_tool_calls":true,"reasoning":{"summary":"auto"},
+            "include":["reasoning.encrypted_content"],"prompt_cache_key":"k","max_output_tokens":64})j",
+                                             &ok, &err, true);
+        check(ok && r.stream && r.turn.n_predict == 64 && r.turn.think, "a Codex request parses: " + err);
+        check(r.turn.messages.size() == 3 && r.turn.messages[0].role == "system" &&
+                  r.turn.messages[0].content == "Be precise.\n\nperms" &&
+                  r.turn.messages[2].content == "make hello.txt",
+              "instructions and the leading developer messages are one system message");
+        check(r.turn.tools.size() == 1 && r.turn.tools[0].name == "exec_command" &&
+                  r.turn.tool_choice == ToolChoice::Auto,
+              "function tools are described, built-in ones dropped");
+    }
+    {
+        const ResponsesRequest r = responses(R"j({"input":[
+            {"role":"user","content":"make it"},
+            {"type":"reasoning","id":"rs_1","summary":[],"content":[{"type":"reasoning_text","text":"shell"}]},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"Running."}]},
+            {"type":"function_call","call_id":"c1","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
+            {"type":"function_call_output","call_id":"c1","output":"a.txt"},
+            {"type":"message","role":"developer","content":"late note"}],
+            "reasoning":{"effort":"none"},"tool_choice":{"type":"function","name":"exec_command"}})j",
+                                             &ok, &err, true);
+        check(ok && r.turn.messages.size() == 4, "a Codex history parses: " + err);
+        const ChatMessage & a = r.turn.messages[1];
+        check(a.role == "assistant" && a.reasoning == "shell" && a.content == "Running." && a.tool_calls.size() == 1 &&
+                  a.tool_calls[0].id == "c1" && a.tool_calls[0].arguments == R"({"cmd":"ls"})",
+              "a turn's reasoning, text and call are one assistant message");
+        check(r.turn.messages[2].role == "tool" && r.turn.messages[2].name == "exec_command" &&
+                  r.turn.messages[2].content == "a.txt" && r.turn.messages[3].role == "user" &&
+                  r.turn.messages[3].content == "late note",
+              "a call's output is a tool message; a later developer message a user one");
+        check(!r.turn.think && r.turn.tool_choice == ToolChoice::Required && r.turn.n_predict == 100,
+              "effort none turns thinking off; a named function is required");
+    }
+    check(responses(R"j({"input":"hi"})j", &ok).turn.messages.size() == 1 && ok, "a string input is one user message");
+    responses(R"j({"input":"hi","previous_response_id":"resp_1"})j", &ok, &err);
+    check(!ok && err.find("previous_response_id") != std::string::npos, "previous_response_id is refused clearly");
+    responses(R"j({"input":[{"type":"item_reference","id":"x"}]})j", &ok, &err);
+    check(!ok && err.find("stores none") != std::string::npos, "a stored item reference is refused");
+    responses(R"j({"input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]})j", &ok, &err);
+    check(!ok && err.find("input_image") != std::string::npos, "an image is refused, not dropped");
+    responses(R"j({"input":"hi","background":true})j", &ok, &err);
+    check(!ok, "a background response is refused");
+    responses(R"j({"input":[{"role":"user","content":"q"},{"role":"assistant","content":"a"}]})j", &ok, &err);
+    check(!ok, "an input that ends on the assistant is refused");
+    responses(R"j({"input":7})j", &ok, &err);
+    check(!ok, "an input that is neither text nor items is refused");
+    check(responses(R"j({"input":"q","text":{"format":{"type":"json_schema","name":"x","schema":{"type":"object"}}}})j",
+                    &ok)
+                      .turn.json_schema == R"({"type":"object"})" &&
+              ok,
+          "text.format constrains the answer");
+
+    const json full = responses_error_json(400, "too long", "context_full");
+    check(full["error"]["code"] == "context_length_exceeded" && full["error"]["type"] == "invalid_request_error",
+          "a full context has the code a client knows");
+
+    RunResult r;
+    r.ok = true;
+    r.reasoning_text = "plan";
+    r.generated_text = "Done.";
+    r.tool_calls = {{"", "exec_command", R"({"cmd":"ls"})"}};
+    r.summary.n_generated = 12;
+    r.summary.n_prompt = 30;
+    r.summary.n_past = 512;
+    ensure_tool_call_ids(r.tool_calls, "resp_3");
+    const ChatResponseMeta meta{"resp_3", 5, "m.gguf"};
+    const json o = response_json(meta, r, "tool_calls");
+    check(o["object"] == "response" && o["status"] == "completed" && o["output"].size() == 3 &&
+              o["output"][0]["type"] == "reasoning" && o["output"][1]["content"][0]["text"] == "Done." &&
+              o["output"][2]["call_id"] == "call_resp_3_0" && o["usage"]["input_tokens"] == 500 &&
+              o["usage"]["input_tokens_details"]["cached_tokens"] == 470,
+          "a response lists reasoning, message and call items, with the usage");
+    check(response_json(meta, r, "length")["status"] == "incomplete" &&
+              response_json(meta, r, "length")["incomplete_details"]["reason"] == "max_output_tokens",
+          "a turn that ran out of budget is incomplete");
+
+    ResponsesStream s(meta);
+    std::string wire = s.start();
+    wire += s.on_token("", "pl");
+    wire += s.on_token("Do", "plan");
+    wire += s.finish(r, "tool_calls");
+    const auto f = sse_frames(wire);
+    check(names_of(f) == "response.created response.in_progress response.output_item.added "
+                         "response.reasoning_text.delta response.reasoning_text.delta response.reasoning_text.done "
+                         "response.output_item.done response.output_item.added response.content_part.added "
+                         "response.output_text.delta response.output_text.delta response.output_text.done "
+                         "response.content_part.done response.output_item.done response.output_item.added "
+                         "response.function_call_arguments.delta response.function_call_arguments.done "
+                         "response.output_item.done response.completed",
+          "the stream: created, a reasoning item, a message item, a function_call item, completed");
+    bool ordered = true;
+    for (size_t i = 0; i < f.size(); ++i)
+        ordered = ordered && f[i].second["sequence_number"] == (int) i && f[i].second["type"] == f[i].first;
+    check(ordered, "every event names its type and is numbered in order");
+    const json & done = f.back().second["response"];
+    check(done["output"].size() == 3 && done["output"][1]["content"][0]["text"] == "Done." &&
+              done["output"][2]["arguments"] == R"({"cmd":"ls"})" && done["usage"]["output_tokens"] == 12 &&
+              f[13].second["output_index"] == 1 && f[17].second["item"]["call_id"] == "call_resp_3_0",
+          "response.completed lists the items the stream closed, and the usage");
+    ResponsesStream failed(meta);
+    failed.start();
+    const auto e = sse_frames(failed.error(400, "too long", "context_full"));
+    check(e.size() == 1 && e[0].first == "response.failed" &&
+              e[0].second["response"]["error"]["code"] == "context_length_exceeded",
+          "a failed turn ends the stream with response.failed");
+}
+
 static void queue_tests() {
     using Admit = TurnQueue::Admit;
     const auto fast = std::chrono::milliseconds(5);
@@ -658,6 +1004,12 @@ static void access_tests() {
         check(check_access(keyed, f).allowed(), "and is answered with it");
         f.authorization = "Bearer wrong";
         check(check_access(keyed, f).status == 401, "a wrong key is 401");
+        RequestFacts a = req("POST", "/v1/messages");
+        a.content_type = "application/json";
+        a.x_api_key = "s3cret";
+        check(check_access(keyed, a).allowed(), "the key is also taken as X-Api-Key, as Anthropic clients send it");
+        a.x_api_key = "s3cre";
+        check(check_access(keyed, a).status == 401, "and a wrong one there is 401");
         RequestFacts page = req("GET", "/index.html");
         check(check_access(keyed, page).allowed(), "the key gates the API, not the UI's files");
         RequestFacts w = req("PUT", "/api/config");
@@ -1643,6 +1995,9 @@ static void model_delete_tests() {
 
 int main() {
     protocol_tests();
+    block_stream_tests();
+    anthropic_tests();
+    responses_tests();
     queue_tests();
     settings_tests();
     planning_config_tests();

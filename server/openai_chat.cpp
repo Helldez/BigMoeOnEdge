@@ -199,6 +199,28 @@ bool parse_response_format(const json & body, ChatRequest & turn, std::string & 
 
 } // namespace
 
+bool read_token_budget(
+    const json & body, const char * key, const RunConfig & cfg, bool & given, int & out, std::string & err) {
+    // A request may ask for less than the configured budget or more, but never for more than the
+    // parameter table lets a person set: the session adds this number to the prompt's length, and
+    // a value read straight into an int could wrap there. Null and 0 mean "not given".
+    given = false;
+    if (!body.contains(key) || body[key].is_null()) return true;
+    const json & v = body[key];
+    if (!v.is_number_integer() || (!v.is_number_unsigned() && v.get<long long>() < 0)) {
+        err = std::string(key) + " must be a non-negative integer";
+        return false;
+    }
+    // Unsigned covers every value that got this far, including one past a signed 64-bit.
+    const unsigned long long n = v.get<unsigned long long>();
+    if (n == 0) return true;
+    const ParamDesc * budget = find_param("n-predict");
+    const unsigned long long top = (unsigned long long) (budget && budget->bounded ? budget->max : cfg.n_predict);
+    out = (int) std::min(n, top);
+    given = true;
+    return true;
+}
+
 bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequest & out, std::string & err) {
     if (!body.is_object()) {
         err = "the request body must be a JSON object";
@@ -225,24 +247,11 @@ bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequ
     if (!parse_tools(body, turn, err) || !parse_tool_choice(body, turn, err) || !parse_response_format(body, turn, err))
         return false;
 
-    // A request may ask for less than the configured budget or more, but never for more than the
-    // parameter table lets a person set: the session adds this number to the prompt's length, and
-    // a value read straight into an int could wrap there. Null and 0 mean "not given".
     turn.n_predict = cfg.n_predict;
-    const ParamDesc * budget = find_param("n-predict");
+    bool given = false;
     for (const char * k : {"max_completion_tokens", "max_tokens"}) {
-        if (!body.contains(k) || body[k].is_null()) continue;
-        const json & v = body[k];
-        if (!v.is_number_integer() || (!v.is_number_unsigned() && v.get<long long>() < 0)) {
-            err = std::string(k) + " must be a non-negative integer";
-            return false;
-        }
-        // Unsigned covers every value that got this far, including one past a signed 64-bit.
-        const unsigned long long n = v.get<unsigned long long>();
-        if (n == 0) continue;
-        const unsigned long long top = (unsigned long long) (budget && budget->bounded ? budget->max : cfg.n_predict);
-        turn.n_predict = (int) std::min(n, top);
-        break;
+        if (!read_token_budget(body, k, cfg, given, turn.n_predict, err)) return false;
+        if (given) break;
     }
     // Thinking, most specific first: this server's own field, the template argument llama.cpp
     // clients send, then the protocol's effort level: "none" is off, any other level asks for reasoning.

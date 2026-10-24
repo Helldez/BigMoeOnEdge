@@ -41,7 +41,11 @@ bool bearer_matches(const std::string & authorization, const std::string & key) 
     if (key.empty() || authorization.size() < scheme.size()) return false;
     for (size_t i = 0; i < scheme.size(); ++i)
         if (std::tolower((unsigned char) authorization[i]) != std::tolower((unsigned char) scheme[i])) return false;
-    const std::string token = authorization.substr(scheme.size());
+    return key_matches(authorization.substr(scheme.size()), key);
+}
+
+bool key_matches(const std::string & token, const std::string & key) {
+    if (key.empty()) return false;
     // Every byte of the key is compared whatever the first mismatch, and a token of the wrong
     // length fails after the loop like any other: the time taken says nothing about the key.
     unsigned diff = static_cast<unsigned>(token.size() ^ key.size());
@@ -77,8 +81,11 @@ AccessDecision check_access(const AccessPolicy & policy, const RequestFacts & r)
 
     // The key, where one is set, gates the engine and not the UI's files: a page is nothing without
     // the API behind it, and a client on the network has no page.
-    if (api && !policy.api_key.empty() && !bearer_matches(r.authorization, policy.api_key))
-        return {401, "an API key is required: send it as Authorization: Bearer <key>"};
+    // Either header carries it: Bearer is how OpenAI clients and the UI send a key, X-Api-Key how
+    // Anthropic clients do.
+    if (api && !policy.api_key.empty() && !bearer_matches(r.authorization, policy.api_key) &&
+        !key_matches(r.x_api_key, policy.api_key))
+        return {401, "an API key is required: send it as Authorization: Bearer <key> (or X-Api-Key: <key>)"};
 
     // The UI's origin is trusted only as far as its script: the page also shows model output, and
     // markup in it is same-origin. A form can post text that parses as JSON but cannot name the
