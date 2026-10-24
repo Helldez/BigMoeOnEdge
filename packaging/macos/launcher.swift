@@ -9,8 +9,11 @@
 // No engine logic here: this file only starts, watches and stops the process.
 import AppKit
 
-private let pageURL = URL(string: "http://127.0.0.1:8765/")!
-private let probeURL = URL(string: "http://127.0.0.1:8765/api/info")!
+// The server's default port (kDefaultPort in server/server.h), handed to it with --port so the
+// address this launcher opens and probes is the one the server binds, whatever its default becomes.
+private let port = 8765
+private let pageURL = URL(string: "http://127.0.0.1:\(port)/")!
+private let probeURL = URL(string: "http://127.0.0.1:\(port)/api/info")!
 
 final class Launcher: NSObject, NSApplicationDelegate {
     private var server: Process?
@@ -29,7 +32,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         term.resume()
         termSource = term
         buildMainMenu()
-        // One server per machine on the default port. If one already answers there (started from a
+        // One server per machine on this port. If one already answers there (started from a
         // terminal, or by another copy of this app), show its page instead of failing to bind.
         if serverAnswers() {
             NSWorkspace.shared.open(pageURL)
@@ -78,7 +81,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
 
         let p = Process()
         p.executableURL = exe
-        p.arguments = ["--open",
+        p.arguments = ["--open", "--port", String(port),
                        "--ui-dir", res.appendingPathComponent("ui").path,
                        "--catalog", res.appendingPathComponent("catalog/models.json").path]
         p.standardInput = FileHandle.nullDevice

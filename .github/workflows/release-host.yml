@@ -469,7 +469,7 @@ jobs:
           case "${{ matrix.target }}" in
             macos-*)
               codesign --verify --deep --strict BigMoeOnEdge.app
-              DMG="BigMoeOnEdge-$TAG-macos-arm64.dmg"
+              DMG="BigMoeOnEdge-$TAG-${{ matrix.target }}.dmg"
               MNT="$(mktemp -d)"
               hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "$DMG"
               [ -L "$MNT/Applications" ] || { echo "no Applications link in $DMG"; exit 1; }

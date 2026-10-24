@@ -5,8 +5,8 @@
 #
 #   packaging/macos/make-app.sh <staged bmoe-desktop folder> <tag> [out dir]
 #
-# Writes <out dir>/BigMoeOnEdge.app and <out dir>/BigMoeOnEdge-<tag>-macos-arm64.dmg (out dir
-# defaults to the current one). The bundle is ad-hoc signed, not notarised (issue #385).
+# Writes <out dir>/BigMoeOnEdge.app and <out dir>/BigMoeOnEdge-<tag>-macos-<arch>.dmg, <arch> being
+# bmoe-server's (out dir defaults to the current one). The bundle is ad-hoc signed, not notarised (issue #385).
 set -euo pipefail
 
 STAGE="${1:?staged bmoe-desktop folder}"
@@ -20,23 +20,25 @@ ICON_PNG="$ROOT/examples/ios/app/Resources/Assets.xcassets/AppIcon.appiconset/ic
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 APP="$OUT/BigMoeOnEdge.app"
-DMG="$OUT/BigMoeOnEdge-$TAG-macos-arm64.dmg"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# The version and the oldest macOS come from the server itself, so the bundle never claims to run
+# The version, the architecture and the oldest macOS come from the server itself, so the bundle never claims to run
 # where the engine does not.
 VERSION="$("$STAGE/bmoe-server" --version | head -n 1 | tr -d '[:space:]')"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected server version '$VERSION'" >&2; exit 1; }
 MINOS="$(otool -l "$STAGE/bmoe-server" | awk '/LC_BUILD_VERSION/{b=1} b&&/minos/{print $2; exit}')"
 [ -n "$MINOS" ] || { echo "no minimum macOS in bmoe-server's load commands" >&2; exit 1; }
+ARCH="$(lipo -archs "$STAGE/bmoe-server")"
+[[ "$ARCH" =~ ^[a-z0-9_]+$ ]] || { echo "bmoe-server is not built for exactly one architecture: '$ARCH'" >&2; exit 1; }
+DMG="$OUT/BigMoeOnEdge-$TAG-macos-$ARCH.dmg"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # Code in Contents/MacOS: the launcher, the server, and every library and module beside it, as the
 # server looks for its backends beside its own executable. -P keeps the soname symlinks.
-swiftc -O -target "arm64-apple-macos$MINOS" -o "$APP/Contents/MacOS/BigMoeOnEdge" "$HERE/launcher.swift"
+swiftc -O -target "$ARCH-apple-macos$MINOS" -o "$APP/Contents/MacOS/BigMoeOnEdge" "$HERE/launcher.swift"
 cp -P "$STAGE/bmoe-server" "$STAGE"/*.dylib "$STAGE"/*.so "$APP/Contents/MacOS/"
 # Everything else is a resource.
 cp -R "$STAGE/ui" "$STAGE/catalog" "$APP/Contents/Resources/"
@@ -88,7 +90,7 @@ mkdir -p "$DMGROOT"
 ditto "$APP" "$DMGROOT/BigMoeOnEdge.app"
 ln -s /Applications "$DMGROOT/Applications"
 cat > "$DMGROOT/README.txt" <<EOF
-BigMoeOnEdge $TAG for macOS (Apple silicon)
+BigMoeOnEdge $TAG for macOS ($ARCH)
 
 Drag BigMoeOnEdge onto Applications, then open it from there. It starts the server and opens the
 app in your browser at http://127.0.0.1:8765/. While it runs, BigMoeOnEdge sits in the Dock and in
