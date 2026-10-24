@@ -22,6 +22,9 @@ class ApiException(val status: Int, message: String, val code: String = "") : IO
 
         /** The text was not a repository id or URL: the screen searches for it instead. */
         const val CODE_NOT_A_REPO = "not_a_repo"
+
+        /** A pasted link the server does not take as a gguf link: its message says why. */
+        const val CODE_INVALID_URL = "invalid_url"
     }
 }
 
@@ -76,6 +79,13 @@ class Api(private val baseUrl: String, private val apiKey: String) {
     fun hfAdd(body: JSONObject): JSONObject = send("POST", "/api/hf/add", body, SLOW_MS)
     fun removeAdded(id: String): JSONObject = send("DELETE", "/api/hf/entry/" + java.net.URLEncoder.encode(id, "UTF-8"), null, QUICK_MS)
     fun deletePartial(id: String): JSONObject = send("DELETE", "/api/models/partial/" + java.net.URLEncoder.encode(id, "UTF-8"), null, QUICK_MS)
+
+    /** A model in the models directory, named as the listing names it (`folder/name` or `name`): every file of it. */
+    fun deleteLocal(name: String): JSONObject =
+        send("DELETE", "/api/models/local/" + name.split('/').joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20") }, null, QUICK_MS)
+
+    /** A direct link to a gguf becomes a catalog entry; the server asks the host for each file's size. */
+    fun addUrl(url: String): JSONObject = send("POST", "/api/models/url", JSONObject().put("url", url), SLOW_MS)
     fun plan(measure: Boolean): JSONObject = getJson(if (measure) "/api/plan?measure=1" else "/api/plan?cached=1", SLOW_MS)
     fun applyPlan(): JSONObject = send("POST", "/api/plan/apply", null, QUICK_MS)
 

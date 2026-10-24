@@ -62,14 +62,13 @@ object ModelManager {
     fun serverPath(ctx: Context): String =
         File(ctx.applicationInfo.nativeLibraryDir, "libbmoe-server.so").absolutePath
 
-    /** Empty-state guidance, phrased for the current flavor's model-acquisition paths. */
+    /** The other ways onto the phone, phrased for the current flavor's model-acquisition paths. */
     fun pushHint(): String =
         if (BuildConfig.SHARED_STORAGE) {
-            "No .gguf found. Download one below, or adb-push a model to shared storage:\n" +
+            "A model adb-pushed to shared storage is listed too:\n" +
                 "adb push model.gguf /sdcard/Download/\n" +
                 "adb push model.gguf /data/local/tmp/bmoe/   (no duplicate, O_DIRECT works)"
         } else {
-            "No .gguf found. Download one below, or pick a .gguf you already have on the\n" +
-                "device."
+            "A .gguf already on the phone is imported with Pick a file, into the app's own storage."
         }
 }

@@ -42,8 +42,9 @@ Semantic Versioning.
   number or the parameter. The RAM a larger context costs is said, not priced: it depends on the
   model's attention layout and only a placement fit at that context measures it; the plan's
   `kv-budget` note still says what the loaded context takes. The planner's own context choice is
-  unchanged, and the phone apps do not show the warning yet. Docs: `docs/server-api.md` (sizing the
-  context for a client), `docs/screens.md`, the Android and iOS READMEs.
+  unchanged; the Android app shows the warning too (below), the iOS app does not yet. Docs:
+  `docs/server-api.md` (sizing the context for a client), `docs/screens.md`, the Android and iOS
+  READMEs.
 - **Desktop Models screen: one list, a guided flow, downloads in the status line (#355).** The web
   UI's Models screen had five blocks, a model in the catalog and on disk shown twice, and five
   generic buttons spread over three of them. It is now one list, "Your models", where local files and
@@ -87,6 +88,37 @@ Semantic Versioning.
     the loaded model recognised by identity). Both were also run end to end against a scratch models
     folder: a 404 link refused, a real link added, downloaded, refused for delete while loaded, then
     deleted.
+- **The Android app's screens catch up with the web UI's.** The four screens `docs/screens.md`
+  describes for 0.35.0, on the phone, all of it read from the server and the parameter table:
+  - *Context warning.* A loaded model whose context is below `model.ctx_advice.recommended` gets a
+    line under the status line in Chat: the context, the recommendation, that a larger context
+    takes memory from the expert cache, and a link labelled from the parameter table that lands on
+    the setting `ctx_advice.param` names. A `context_full` error offers the same link beside New chat.
+  - *Models: one list.* Local files and catalog entries merged by file, one state and one action
+    per row (Available, Downloading, Partly downloaded, On this device, Loaded with Reload, Unload
+    and Go to Chat, Shards missing), suggestions at the bottom, companion files apart, the folders
+    behind "Where models live". Delete asks first and goes through the server's
+    `DELETE /api/models/local/<name>` in its models directory (the app deletes what it may write
+    elsewhere); Forget takes an added entry off the list. With nothing on the phone the screen is
+    the three steps, and the app opens on it. The Hugging Face card is the Find, Pick, Check,
+    Download stepper with the server's verdict headline coloured by `verdict.fit`, one Download
+    button that adds and starts the download, its refusal shown on the card, and the new row
+    scrolled into view. A direct link goes through `POST /api/models/url` and the app downloads the
+    entry's files, so it gets Resume and one progress bar over a split set; where the server cannot
+    ask the host (a `5xx`), the app downloads the one file on its own as before. The file picker stays.
+  - *Plan.* The summary with the lanes in one line and the four figures (decode expected and
+    measured with the difference, cache hits credited and measured, memory held against the host
+    pool, the worst case against the expected), Apply and Measure again together, Apply listing the
+    settings it changed as links, Measure again beside an error, decisions linking to their row, and
+    Copy diagnostic in place of the planner's account on screen.
+  - *Settings.* One card per group (`group_order`, `group_label`, `group_help`, `group_read_only`)
+    with its levels folded inside, a level filter with counts remembered on the phone, a search over
+    every level, one source chip per row with Use plan value, Reset all my values (less
+    `launch_keys` and the read-only group, after asking), "needs reload" only from `reload_keys`,
+    and deep links that open the card and fold and bring the row into view.
+  The rules are pure Kotlin with JVM tests (`data/Library.kt`, `engine/SettingsForm.kt`,
+  `engine/PlanView.kt`, `engine/ContextAdvice.kt`); no screen names an engine parameter. Not yet run
+  on a phone. The SHA-256 check of a catalog download was already the worker's (#347).
 - **`THIRD_PARTY_LICENSES` (#352).** Every archive and APK carries llama.cpp and ggml, the server
   carries cpp-httplib and nlohmann/json, the desktop archive's web UI bundles Svelte, clsx, marked
   and DOMPurify, and the UI and the app use two fonts under the SIL OFL; only the project's own

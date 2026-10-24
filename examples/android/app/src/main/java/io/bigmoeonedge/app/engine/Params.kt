@@ -36,6 +36,10 @@ data class ParamSpec(
     val special: List<Pair<String, String>> = emptyList(),
     /** The group's place in the form (`group_order`); null from a server that does not send it. */
     val groupOrder: Int? = null,
+    /** The group's one line of help (`group_help`). */
+    val groupHelp: String = "",
+    /** The group is set with a control of its own (the model, from Models): shown, not edited. */
+    val groupReadOnly: Boolean = false,
 ) {
     /** The name of [value] when it is a special one ("off" for 0), or null. */
     fun specialLabel(value: Any?): String? {
@@ -113,6 +117,8 @@ data class ParamSpec(
                 typical = typical,
                 special = special,
                 groupOrder = if (o.has("group_order") && !o.isNull("group_order")) o.optInt("group_order") else null,
+                groupHelp = o.optString("group_help", ""),
+                groupReadOnly = o.optBoolean("group_read_only", false),
             )
         }
 
@@ -135,13 +141,8 @@ data class ParamSpec(
                 .map { g -> (by.getValue(g).first().groupLabel) to by.getValue(g) }
         }
 
-        /** The rows behind the Advanced fold: all but the basic ones, which the groups above already show. */
-        fun advanced(specs: List<ParamSpec>): List<Pair<String, List<ParamSpec>>> =
-            grouped(specs).map { (label, rows) -> label to rows.filter { it.level != "basic" } }.filter { it.second.isNotEmpty() }
-
-        /** Whether a row at [level] is shown when the filter admits up to [shown]. */
-        fun visible(level: String, shown: String): Boolean =
-            LEVELS.indexOf(level).coerceAtLeast(0) <= LEVELS.indexOf(shown).coerceAtLeast(0)
+        /** A level's place in [LEVELS]; a level this app does not know yet sorts last. */
+        fun levelRank(level: String): Int = LEVELS.indexOf(level).let { if (it < 0) LEVELS.size else it }
     }
 }
 

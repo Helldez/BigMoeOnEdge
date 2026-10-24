@@ -34,7 +34,10 @@ import io.bigmoeonedge.app.engine.Chat
 import io.bigmoeonedge.app.engine.ChatMessage
 import io.bigmoeonedge.app.engine.Decide
 import io.bigmoeonedge.app.engine.Engine
+import io.bigmoeonedge.app.engine.contextWarning
 import io.bigmoeonedge.app.engine.openAppSettings
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -47,7 +50,7 @@ import java.util.Locale
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(modifier: Modifier = Modifier, onOpenModels: () -> Unit) {
+fun ChatScreen(modifier: Modifier = Modifier, onOpenModels: () -> Unit, onOpenSetting: (key: String) -> Unit = {}) {
     val chat by Chat.state.collectAsStateWithLifecycle()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -116,8 +119,8 @@ fun ChatScreen(modifier: Modifier = Modifier, onOpenModels: () -> Unit) {
                     }
                 },
             )
-            EngineStatusLine(onOpenModels)
-            Transcript(Modifier.weight(1f), onOpenModels)
+            EngineStatusLine(onOpenModels, onOpenSetting)
+            Transcript(Modifier.weight(1f), onOpenModels, onOpenSetting)
             PromptBar()
         }
     }
@@ -125,10 +128,12 @@ fun ChatScreen(modifier: Modifier = Modifier, onOpenModels: () -> Unit) {
 
 /**
  * One line that says what the engine is doing, with the way out when there is one: the Models
- * screen when it has nothing, the app's settings when the system denies it the network.
+ * screen when it has nothing, the app's settings when the system denies it the network. A loaded
+ * model whose context is below what a client of the server sends gets a second line saying so,
+ * with the setting that raises it (all of it the server's: `model.ctx_advice`).
  */
 @Composable
-private fun EngineStatusLine(onOpenModels: () -> Unit) {
+private fun EngineStatusLine(onOpenModels: () -> Unit, onOpenSetting: (String) -> Unit) {
     val engine by Engine.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val info = engine.info
@@ -152,11 +157,28 @@ private fun EngineStatusLine(onOpenModels: () -> Unit) {
             if (action != null) TextButton(shape = RectangleShape, onClick = action.second, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(action.first, fontSize = 12.sp) }
         }
     }
+    val ctx = contextWarning(info?.model.takeIf { engine.serverUp && info?.ready == true }, engine.params)
+    if (ctx?.short == true) {
+        Surface(color = warnColor().copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Context ${ctx.nCtx} tokens, under the ${ctx.recommended} a coding agent's first request needs; " +
+                        "a larger context takes memory from the expert cache.",
+                    fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                )
+                TextButton(shape = RectangleShape, onClick = { onOpenSetting(ctx.key) }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Text("Raise ${ctx.label}", fontSize = 12.sp)
+                }
+            }
+        }
+    }
 }
 
 @Composable
-private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit) {
+private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit, onOpenSetting: (String) -> Unit) {
     val chat by Chat.state.collectAsStateWithLifecycle()
+    // Only the context advice, not every token event: the transcript is the heaviest thing on screen.
+    val ctxAdvice by remember { Engine.state.map { contextWarning(it.info?.model, it.params) }.distinctUntilChanged() }.collectAsStateWithLifecycle(null)
     val listState = rememberLazyListState()
     val messages = chat.current.messages
     val liveShown = chat.streaming
@@ -219,13 +241,18 @@ private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit) {
                     ElevatedCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text(err, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                            // The fix for a full context: a new chat, or the setting that raises it.
+                            val ctx = if (chat.contextFull) ctxAdvice else null
+                            if (chat.contextFull) {
+                                Text(
+                                    "The conversation has filled the model's context" + (ctx?.let { " of ${it.nCtx} tokens" } ?: "") + ".",
+                                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (chat.contextFull) {
-                                    Text(
-                                        "The conversation has filled the model's context.",
-                                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.weight(1f),
-                                    )
+                                    Spacer(Modifier.weight(1f))
+                                    if (ctx != null) TextButton(shape = RectangleShape, onClick = { onOpenSetting(ctx.key) }) { Text("Raise ${ctx.label}") }
                                     TextButton(shape = RectangleShape, onClick = { Chat.newConversation() }) { Text("New chat") }
                                 } else if (chat.noModel) {
                                     Spacer(Modifier.weight(1f))

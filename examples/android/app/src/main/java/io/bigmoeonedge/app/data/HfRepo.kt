@@ -76,6 +76,10 @@ data class HfFacts(
     val mode: String,
     val disk: String,
     val memory: String,
+    /** The answer as a code to colour by (`fits`, `no_streaming`, `will_not_fit`, ...); "" from an older server. */
+    val fit: String = "",
+    /** The server's line for it, shown as the verdict's headline. */
+    val headline: String = "",
 ) {
     companion object {
         fun of(o: JSONObject): HfFacts {
@@ -104,6 +108,8 @@ data class HfFacts(
                 mode = v.optString("mode", ""),
                 disk = v.optString("disk", ""),
                 memory = v.optString("memory", ""),
+                fit = v.optString("fit", ""),
+                headline = v.optString("headline", ""),
             )
         }
     }

@@ -34,7 +34,7 @@ A loaded model whose context is below what a client of the server sends (`model.
 gets a warning beside its name: the context, the recommendation (`ctx_advice.recommended`, what a
 coding agent's first request needs) and a link to the setting `ctx_advice.param` names, labelled
 from the parameter table; a larger context takes memory from the expert cache, and the warning says
-so. The web UI does this; the phone apps do not yet.
+so. The web UI and the Android app do this; the iOS app does not yet.
 
 ## Chat
 

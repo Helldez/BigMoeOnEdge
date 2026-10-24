@@ -615,7 +615,10 @@ shard within 120 s in all (`kUrlSizeDeadline`); a host that answers no size leav
 and the download runs without a total. `201` with `{"id", "title", "quant", "bytes"}`; `400` with
 `code: "invalid_url"` for a link that is not one of these, `502` when the host answers a `HEAD`
 with an HTTP error, `504` when the sizes took longer than the deadline (no entry is made), `409` for an id the shipped catalog has, `403` with `code: "local_only"` from a
-client whose connection is not loopback. Adding the same file again replaces the entry.
+client whose connection is not loopback. Adding the same file again replaces the entry. A client
+that downloads for itself does what it does for `POST /api/hf/add`: it fetches the entry's
+`files[].url` from `GET /api/models` (the Android app; where the server cannot ask the host, a `5xx`
+here, the app downloads the one file the link names on its own, with no entry).
 
 ### `POST /api/hf/search`
 

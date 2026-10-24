@@ -22,7 +22,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.remember
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -75,6 +80,19 @@ private enum class Screen(val label: String, val icon: ImageVector) {
 @Composable
 private fun Root() {
     var screen by rememberSaveable { mutableStateOf(Screen.CHAT) }
+    // The setting a link points at (the Plan screen, the context warning): Settings lands on it.
+    var settingTarget by rememberSaveable { mutableStateOf("") }
+    val openSetting = { key: String -> settingTarget = key; screen = Screen.SETTINGS }
+    // With nothing on the phone there is nothing to chat with: the first listing of a launch, if it is
+    // empty, opens Models instead. Once: a person who then goes to Chat stays there.
+    var firstListingSeen by rememberSaveable { mutableStateOf(false) }
+    val models by remember { Engine.state.map { it.models }.distinctUntilChanged() }.collectAsStateWithLifecycle(null)
+    LaunchedEffect(models) {
+        val m = models ?: return@LaunchedEffect
+        if (firstListingSeen) return@LaunchedEffect
+        firstListingSeen = true
+        if (m.local.isEmpty() && screen == Screen.CHAT) screen = Screen.MODELS
+    }
     Scaffold(
         bottomBar = {
             NavigationBar {
@@ -91,10 +109,10 @@ private fun Root() {
     ) { padding ->
         val m = Modifier.padding(padding)
         when (screen) {
-            Screen.CHAT -> ChatScreen(m, onOpenModels = { screen = Screen.MODELS })
-            Screen.MODELS -> ModelsScreen(m)
-            Screen.PLAN -> PlanScreen(m, onOpenSettings = { screen = Screen.SETTINGS })
-            Screen.SETTINGS -> SettingsScreen(m)
+            Screen.CHAT -> ChatScreen(m, onOpenModels = { screen = Screen.MODELS }, onOpenSetting = openSetting)
+            Screen.MODELS -> ModelsScreen(m, onOpenChat = { screen = Screen.CHAT })
+            Screen.PLAN -> PlanScreen(m, onOpenSetting = openSetting)
+            Screen.SETTINGS -> SettingsScreen(m, target = settingTarget, onLanded = { settingTarget = "" })
             Screen.METRICS -> MetricsScreen(m)
         }
     }

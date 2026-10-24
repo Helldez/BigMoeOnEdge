@@ -1,5 +1,6 @@
 package io.bigmoeonedge.app.ui
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.*
@@ -14,7 +15,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.bigmoeonedge.app.data.FileRole
+import io.bigmoeonedge.app.data.HF_STEPS
 import io.bigmoeonedge.app.data.HfFacts
+import io.bigmoeonedge.app.data.fitTone
+import io.bigmoeonedge.app.data.hfStep
 import io.bigmoeonedge.app.data.HfModel
 import io.bigmoeonedge.app.data.HfRepoHit
 import io.bigmoeonedge.app.engine.ApiException
@@ -23,10 +27,12 @@ import io.bigmoeonedge.app.engine.Engine
 import kotlinx.coroutines.launch
 
 /**
- * A model from a Hugging Face repository, in the three steps the server does (docs/server-api.md,
- * "Models"): list what the repository holds, read one model's header against this phone, add it to
- * the catalog. [onAdded] then starts the download the way every catalog entry is downloaded here.
- * The facts card shows what the server answered; the app reads no gguf.
+ * A model from a Hugging Face repository, as four steps a person follows (docs/screens.md, "Models"):
+ * Find (a name searched, or a repository listed), Pick (one of its models), Check (the server reads
+ * its header against this phone), Download (it becomes a catalog entry and [onAdded] starts its
+ * download the way every entry is downloaded here; a refusal it throws shows on the card). The
+ * verdict's headline and its colour are the server's (`verdict.headline`, `verdict.fit`); the app
+ * reads no gguf and keeps no threshold.
  */
 @Composable
 fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
@@ -85,13 +91,31 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
 
     fun add() = run("add") {
         val id = Engine.hfAdd(listed, selected, token).getOrThrow()
-        added = id
+        // "Downloading" only once the download has started: a refusal (a full disk) throws out of
+        // onAdded and shows here instead.
         onAdded(id)
+        added = id
     }
 
+    val step = hfStep(listed = models != null || hits != null, chosen = chosen != null, checked = facts != null, added = added.isNotEmpty())
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("From Hugging Face", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            HF_STEPS.forEachIndexed { i, label ->
+                val colour = when {
+                    i == step -> MaterialTheme.colorScheme.primary
+                    i < step -> MaterialTheme.colorScheme.onSurface
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Text(
+                    "${i + 1} $label", fontSize = 12.sp, color = colour,
+                    fontWeight = if (i == step) FontWeight.Bold else FontWeight.Normal,
+                    modifier = Modifier.border(if (i == step) 2.dp else 1.dp, colour).padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
         Text(
-            "Any gguf on Hugging Face: a name to search for, or a repository. The server lists the repository, reads a model's header before any download, and says what it is and whether it fits here.",
+            "A model's name to search for, or a repository. The server lists the repository's gguf files, reads the header of the one you pick before any download, and says whether it fits here.",
             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         OutlinedTextField(
@@ -187,23 +211,20 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
                 Button(
                     shape = RectangleShape, onClick = { inspect() },
                     enabled = chosen != null && busy.isEmpty(), modifier = Modifier.fillMaxWidth(),
-                ) { Text(if (busy == "inspect") "Reading the header…" else "Check") }
+                ) { Text(if (busy == "inspect") "Reading the header…" else "Check it fits here") }
+                if (chosen == null) Hint("Pick a model above first.")
             }
         }
 
         facts?.let { f ->
             if (chosen == null) return@let
             HorizontalDivider()
+            // The verdict as a headline: the server's line, coloured by its code; no threshold here.
+            val tone = toneColor(fitTone(f.fit, f.mode))
+            Text(f.headline.ifEmpty { f.mode }, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = tone)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(f.name, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                Text(
-                    f.mode, fontSize = 12.sp,
-                    color = when (f.mode) {
-                        "streams" -> MaterialTheme.colorScheme.primary
-                        "not readable", "not a model" -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
+                Chip(f.mode, tone)
             }
             if (f.readable) {
                 val lines = buildList {
@@ -222,12 +243,13 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
             Text(f.memory, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(f.disk, fontSize = 12.sp, color = if (f.downloadable) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
             if (added.isNotEmpty()) {
-                Text("Added to the catalog below.", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                Text("Downloading: follow it in Your models; Load appears on its row when it is done.", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
             } else {
                 Button(
                     shape = RectangleShape, onClick = { add() },
                     enabled = f.downloadable && chosen.complete && busy.isEmpty(), modifier = Modifier.fillMaxWidth(),
-                ) { Text(if (busy == "add") "Adding…" else "Add to the catalog and download") }
+                ) { Text(if (busy == "add") "Starting…" else "Download") }
+                if (!chosen.complete) Hint("Shards are missing from the repository: it cannot be downloaded whole.")
             }
         }
     }
