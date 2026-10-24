@@ -20,6 +20,21 @@ toggle and firewall apps can. The app then says so in the status line, with a bu
 settings, and a download fails with the same reason instead of retrying; a model can still be
 imported from a file.
 
+## Install
+
+Each [release](https://github.com/Helldez/BigMoeOnEdge/releases/latest) carries
+`app-dev-release.apk`, signed with the project's stable key, so each version installs over the
+previous one. Two ways to get it:
+
+- **[Obtainium][obtainium]**: the link adds this repository to Obtainium, which then offers every
+  new release as an update. The entry picks `app-dev-release.apk` (its APK
+  filter is `-release\.apk$`) and leaves out `app-dev-debug.apk`, a debug build signed with another
+  key that cannot update the release one.
+- **By hand**: download `app-dev-release.apk` from the release page and open it; Android asks once to
+  allow installs from the browser.
+
+[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
+
 ## Build
 
 1. Cross-compile and stage the engine binaries (needs the Android NDK):

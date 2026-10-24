@@ -89,13 +89,29 @@ Configurations et méthode : [docs/benchmarks.md](docs/benchmarks.md). Pour ajou
 
 ## Démarrage rapide
 
-**Android.** Installez l'APK depuis la [dernière version](https://github.com/Helldez/BigMoeOnEdge/releases/latest)
-et choisissez un modèle sous **Models**. **Settings → Serve on the network** le partage, avec une clé.
+Tout ce qui suit vient de la [dernière version](https://github.com/Helldez/BigMoeOnEdge/releases/latest).
+Chaque paquet démarre le moteur et ouvre l'application dans le navigateur sur `http://127.0.0.1:8765/` ;
+choisissez un modèle sous **Models**.
+
+- **macOS** (Apple silicon) : ouvrez `BigMoeOnEdge-<version>-macos-arm64.dmg` et glissez l'application
+  dans Applications. Elle reste dans le Dock et la barre des menus tant qu'elle tourne ; **Stop and Quit**
+  l'arrête. Pas encore notarisée : le premier lancement demande l'étape du README.txt du dmg.
+- **Windows** : lancez `BigMoeOnEdge-<version>-windows-x86_64-setup.exe` (ou `-windows-arm64-setup.exe`).
+  Sans droits d'administrateur ; démarrez BigMoeOnEdge depuis le menu Démarrer, fermez sa fenêtre pour
+  l'arrêter.
+- **Linux** : `chmod +x BigMoeOnEdge-<version>-linux-x86_64.AppImage` (ou `-linux-aarch64`) puis lancez-le.
+  Depuis un gestionnaire de fichiers, il s'ouvre dans une fenêtre de terminal ; fermez-la pour l'arrêter.
+- **Android** : ajoutez l'application à [Obtainium][obtainium], qui installe chaque version comme mise à
+  jour, ou installez `app-dev-release.apk` à la main. **Settings → Serve on the network** partage le
+  moteur du téléphone, avec une clé.
 
 **iOS.** Compilez l'application avec Xcode depuis [examples/ios](examples/ios/README.md). Expérimental.
 
-**Bureau (macOS, Windows, Linux).** Téléchargez l'archive `bmoe-desktop` de la même version et lancez
-`bmoe-server --open` ; l'application s'ouvre sur `http://127.0.0.1:8765/`.
+**Archives.** L'archive `bmoe-desktop` contient la même application sous forme de dossier, pour les
+installations scriptées : extrayez-la et lancez `bmoe-server --open`. L'archive `bmoe-cli` contient le
+moteur en ligne de commande.
+
+[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **Ligne de commande.**
 
