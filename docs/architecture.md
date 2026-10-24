@@ -13,7 +13,9 @@ a single ~25-line hook on a fork branch with an explicit sunset (see below and
 cli/            bmoe-cli — parses flags, the only place env vars are read
 server/         bmoe-server: the application framework every UI speaks to (docs/application-framework.md),
                 and the engine behind the desktop web UI (docs/server-api.md)
-                openai_chat (the chat protocol), turn_queue, settings_store, event_bus, json_util,
+                openai_chat (the chat protocol), anthropic_messages and openai_responses (the
+                agent protocols, over agent_protocol's append-only stream), turn_queue,
+                settings_store, event_bus, json_util,
                 model_files (which gguf names make one model, the one-level folder scan, and what a
                 file is for by its header: model, projector, draft), plan_view (the plan as the Plan
                 screen draws it, every word included), download_policy (which download failures

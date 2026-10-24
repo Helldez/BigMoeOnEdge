@@ -119,6 +119,36 @@ Streaming, tool calls and reasoning are supported. For opencode, add the server 
 OpenAI-compatible provider with `baseURL` set to `http://127.0.0.1:8765/v1`. To serve other machines,
 start the server with `--host` and `--api-key`. API reference: [docs/server-api.md](docs/server-api.md).
 
+Coding agents send a large system prompt and tool list on every request: load the model with a
+context of at least 32768 tokens (`-c 32768`).
+
+**Claude Code** speaks the Anthropic Messages API, which the server also serves (`/v1/messages`).
+Use the model id `GET /v1/models` lists, and tell Claude Code the context you loaded so it compacts
+in time:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8765
+export ANTHROPIC_API_KEY=local            # or the server's --api-key
+export ANTHROPIC_MODEL=<model id from /v1/models>
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=$ANTHROPIC_MODEL
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=32768
+claude
+```
+
+**Codex CLI** speaks the OpenAI Responses API (`/v1/responses`). Add a provider to
+`~/.codex/config.toml`:
+
+```toml
+model = "<model id from /v1/models>"
+model_provider = "bmoe"
+
+[model_providers.bmoe]
+name = "bmoe"
+base_url = "http://127.0.0.1:8765/v1"
+wire_api = "responses"
+env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local, or the server's --api-key
+```
+
 ## How it works
 
 <p align="center">
