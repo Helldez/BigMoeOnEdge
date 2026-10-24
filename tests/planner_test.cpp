@@ -1742,6 +1742,22 @@ int main() {
               "no device: no decode measurement asked");
     }
 
+    // ── a device expert cache keeps the prefill device off ─────────────────────────
+    {
+        HardwareProfile fast = phone();
+        fast.host_wide_matmul_gibs = 200.0;
+        fast.wide_batch = 128;
+        fast.devices[0].wide_matmul_gibs = 1500.0;
+        fast.devices[0].wide_identity_ok = Tri::Yes;
+        fast.devices[0].identity_ok = Tri::Yes;
+        RunConfig c = base_cfg();
+        c.moe.device_cache_mb = 2000;
+        const Plan p = plan_run(c, fast, model, PlanRequest{});
+        const Decision * d = find(p, "prefill-device");
+        check(!p.config.prefill.enabled() && d && d->value == "off",
+              "device expert cache set: no prefill device beside it");
+    }
+
     // Informational: the rationale as a user would read it. Printed rather than asserted, because
     // its wording is meant to change as the rules learn; what is asserted is that it exists, names
     // the regime, and tags every decision with where its authority came from.

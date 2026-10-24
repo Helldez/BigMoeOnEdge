@@ -86,7 +86,51 @@ The engine uses a device in one of four ways, and each asks for something differ
 | decode on the host | be the CPU backend, with the expert-ready hook for the overlap | every platform |
 | prefill device (`--prefill-device`) | run wide graphs, accept weights through `ggml_backend_tensor_set`, and take the model's weight types or a type the engine can convert to | Hexagon and Metal measured; the mechanism names no backend, so the others are untested, not excluded |
 | layers on a device (`--gpu-layers`, from llama.cpp's capacity fitter) | have memory of its own, or the placement frees nothing | applied by the planner where a device has its own memory; never run on such a machine here. On unified memory the fitter's answer is set aside, and forcing it on the 16 GB laptop ended in the GPU's out-of-memory error |
-| streamed experts computed on a device | wrap memory the streamer already reserved (`buffer_from_host_ptr`), which is what the fourth column above is about | not built. Metal offers it; Vulkan, OpenCL and SYCL implement it without advertising it; CUDA has no route through the public API |
+| streamed experts computed on a device | hold a cache of experts in its own memory and compute them there: llama.cpp's device-side expert cache, fed from the streamer's host memory | experimental, opt-in (`--device-cache-mb`, below); measured on Metal only, not armed by the planner |
+
+## Streamed experts computed on a device (experimental)
+
+`--device-cache-mb N` puts llama.cpp's device-side expert cache (`moe_cache_size`) in front of the
+streamer. The layers go to the device (`--gpu-layers`) with their experts kept on the host
+(`--tensor-overrides`), the streamer serves those host tensors as it always does, and the cache
+keeps the hot experts in `N` MiB of the device's memory, computes them there, and uploads a routed
+expert it does not hold from the host tensor the streamer has just filled. It needs no fork and
+names no backend: any device llama.cpp's cache accepts can take it. The capture warm-up runs on a
+context without the cache, because with it on the expert matmuls read its slots instead of the
+host tensors the capture looks for; the context is then made again with it. Serial streaming only,
+not with `--overlap`, speculation or a prefill device.
+
+The route that would have avoided a second cache, handing the device the streamer's own memory with
+`buffer_from_host_ptr`, does not work on Metal: the device holds the whole wrapped range in memory
+at once. Twelve 144 MiB reservations, mostly untouched, wired 1729 MiB, so the full expert set of a
+streamed model would be wired.
+
+Measured on a 16 GB unified-memory laptop, 64 greedy tokens:
+
+| | tok/s |
+|---|---|
+| a 6 GB 64-expert cut of Qwen3.6-35B-A3B, resident, every layer on the GPU | 54 |
+| the same, experts on the host behind the device cache, no streaming (77-88% hits) | 19 |
+| the same, streamed through the device cache | 18.6 |
+| the same, streamed and computed on the cores (today's path) | 27.1 |
+| Qwen3.6-35B-A3B Q4_K_M (22 GB) streamed through the device cache, 2.5 GB of it | 6.7-7.0 |
+
+The cost is the cache's, not the streamer's: without the streamer it holds at 19 tok/s from 77% to
+88% device hits, about 33 ms a token over the resident run, or 0.8 ms for each of the 40 layers.
+The cache reads every layer's selection on the host before it can upload, which synchronizes the
+device once per layer; on this machine that is the whole gap. Uploads are cheap by comparison
+(409 MB a token at 13.4 tok/s, 62 MB at 18.9). Two further costs are known. The streamer still reads
+every routed expert from flash, including ones the device already holds, because the live slot map
+is not public: the graph shows only the device's copy of it, which a later layer's evictions can
+make stale, and skipping a read on its word would upload bytes nobody wrote. And the host cache and
+the device cache hold many of the same experts. The teacher-forced perplexity of the three GPU paths
+agrees to 0.07% (13.3613 resident, 13.3520 cached, 13.3599 streamed; the cores read 13.3427 resident
+and streamed alike), the spread of a different reduction order: the GPU paths are not byte-identical
+to each other the way the host's streamed and resident runs are.
+
+So on unified memory it does not pay, and it is not planned. It is kept for a device with memory of
+its own, where a synchronization is cheaper than across one pool's command queue and the VRAM the
+expert cache fills is otherwise idle during decode (#378), and that has not been measured.
 
 ## How a backend reaches the planner
 
