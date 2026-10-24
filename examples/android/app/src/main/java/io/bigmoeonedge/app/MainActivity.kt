@@ -37,7 +37,9 @@ import androidx.core.content.ContextCompat
 import io.bigmoeonedge.app.engine.Chat
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.ui.BmoeTheme
+import androidx.compose.foundation.layout.Column
 import io.bigmoeonedge.app.ui.ChatScreen
+import io.bigmoeonedge.app.ui.EngineStatusLine
 import io.bigmoeonedge.app.ui.MetricsScreen
 import io.bigmoeonedge.app.ui.ModelsScreen
 import io.bigmoeonedge.app.ui.PlanScreen
@@ -95,14 +97,18 @@ private fun Root() {
     }
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                Screen.values().forEach { s ->
-                    NavigationBarItem(
-                        selected = screen == s,
-                        onClick = { screen = s },
-                        icon = { Icon(s.icon, contentDescription = s.label) },
-                        label = { Text(s.label) },
-                    )
+            // The status line sits on every screen, above the bar a thumb reaches: one place, one look.
+            Column {
+                EngineStatusLine(onOpenModels = { screen = Screen.MODELS }, onOpenSetting = openSetting)
+                NavigationBar {
+                    Screen.values().forEach { s ->
+                        NavigationBarItem(
+                            selected = screen == s,
+                            onClick = { screen = s },
+                            icon = { Icon(s.icon, contentDescription = s.label) },
+                            label = { Text(s.label) },
+                        )
+                    }
                 }
             }
         },

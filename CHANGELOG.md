@@ -89,8 +89,11 @@ Semantic Versioning.
     deleted.
 - **The Android app's screens catch up with the web UI's.** The four screens `docs/screens.md`
   describes for 0.35.0, on the phone, all of it read from the server and the parameter table:
+  - *Status line on every screen.* It moved out of Chat to sit above the navigation bar on all
+    five screens, and carries the running downloads ("Downloading 42%", "2 downloads 42%"; a split
+    set is one download), which lead to Models, and marks a model loaded without streaming.
   - *Context warning.* A loaded model whose context is below `model.ctx_advice.recommended` gets a
-    line under the status line in Chat: the context, the recommendation, that a larger context
+    line under the status line: the context, the recommendation, that a larger context
     takes memory from the expert cache, and a link labelled from the parameter table that lands on
     the setting `ctx_advice.param` names. A `context_full` error offers the same link beside New chat.
   - *Models: one list.* Local files and catalog entries merged by file, one state and one action
@@ -103,13 +106,17 @@ Semantic Versioning.
     Download stepper with the server's verdict headline coloured by `verdict.fit`, one Download
     button that adds and starts the download, its refusal shown on the card, and the new row
     scrolled into view. A direct link goes through `POST /api/models/url` and the app downloads the
-    entry's files, so it gets Resume and one progress bar over a split set; where the server cannot
-    ask the host (a `5xx`), the app downloads the one file on its own as before. The file picker stays.
+    entry's files, so it gets Resume and one progress bar over a split set. The server's size
+    lookup no longer refuses a link when it has no `curl` to start (the phone's case): the size is
+    left unknown, as for a host that answers no `HEAD`, and the file counts whole once present; on
+    any other `5xx` the app downloads the one file on its own as before. The file picker stays.
   - *Plan.* The summary with the lanes in one line and the four figures (decode expected and
     measured with the difference, cache hits credited and measured, memory held against the host
     pool, the worst case against the expected), Apply and Measure again together, Apply listing the
     settings it changed as links, Measure again beside an error, decisions linking to their row, and
-    Copy diagnostic in place of the planner's account on screen.
+    Copy diagnostic in place of the planner's account on screen. With nothing loaded and no plan
+    to show, the decisions the configuration carries from the last applied plan, grouped the same
+    way. Whether a model is chosen is read from the table's read-only group, not a named key.
   - *Settings.* One card per group (`group_order`, `group_label`, `group_help`, `group_read_only`)
     with its levels folded inside, a level filter with counts remembered on the phone, a search over
     every level, one source chip per row with Use plan value, Reset all my values (less

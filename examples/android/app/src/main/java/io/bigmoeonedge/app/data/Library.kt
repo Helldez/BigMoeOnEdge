@@ -86,6 +86,39 @@ fun libraryRows(models: ModelsList, local: List<LocalModel>, downloading: Set<St
     return rows + started + suggested
 }
 
+/** The running downloads at a glance, for the status line: how many, and the share done where sizes are known. */
+data class DownloadSummary(val count: Int, val fraction: Double?) {
+    /** "Downloading 42%", or "2 downloads 42%"; no share while no size is known. */
+    val text: String
+        get() = (if (count == 1) "Downloading" else "$count downloads") +
+            (fraction?.let { " ${(it * 100).toInt()}%" } ?: "")
+}
+
+/** Over [transfers], each (bytes received, bytes in all; 0 or less when unknown); null when none runs. */
+fun downloadSummary(transfers: List<Pair<Long, Long>>): DownloadSummary? {
+    if (transfers.isEmpty()) return null
+    val known = transfers.filter { it.second > 0 }
+    val total = known.sumOf { it.second }
+    val received = known.sumOf { minOf(it.first, it.second) }
+    return DownloadSummary(transfers.size, if (total > 0) received.toDouble() / total else null)
+}
+
+/**
+ * The transfers in flight as the status line counts them: one per catalog entry (a split set's
+ * shards are one download), one per file the app fetches on its own. [entryProgress] gives an
+ * entry's progress over its whole set.
+ */
+fun runningTransfers(
+    catalog: List<CatalogEntry>,
+    live: Map<String, ModelDownloader.Progress>,
+    entryProgress: (CatalogEntry) -> ModelDownloader.Progress?,
+): List<Pair<Long, Long>> {
+    val names = catalog.flatMap { it.fileNames() }.toSet()
+    val entries = catalog.mapNotNull { e -> entryProgress(e)?.let { it.downloadedBytes to it.totalBytes } }
+    val strays = live.filterKeys { it !in names }.values.map { it.downloadedBytes to it.totalBytes }
+    return entries + strays
+}
+
 /** A verdict's colour, from the code the server sent (`verdict.fit`); the words are the server's. */
 enum class Tone { OK, WARN, ERR, NONE }
 

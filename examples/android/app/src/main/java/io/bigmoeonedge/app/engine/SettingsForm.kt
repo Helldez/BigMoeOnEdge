@@ -114,6 +114,13 @@ fun sameValue(a: Any?, b: Any?): Boolean {
 
 fun ParamSpec.isDefault(value: Any?): Boolean = value == null || sameValue(default, value)
 
+/**
+ * Whether the configuration names what a load opens: a row of a read-only group (the one a client
+ * sets with a control of its own, from Models) holds a value. Read from the table, so no key is named.
+ */
+fun loadTargetChosen(params: List<ParamSpec>?, cfg: ConfigState?): Boolean =
+    cfg != null && params.orEmpty().any { it.groupReadOnly && paramValueText(cfg.value(it.key)).isNotEmpty() }
+
 /** The rows shown whatever the filter: set by the person, decided by the plan, or off their default. */
 fun pinnedKeys(params: List<ParamSpec>, cfg: ConfigState): Set<String> {
     val decided = cfg.plan.orEmpty().map { it.knob }.toSet()

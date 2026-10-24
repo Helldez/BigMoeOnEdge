@@ -1,6 +1,9 @@
 package io.bigmoeonedge.app
 
 import io.bigmoeonedge.app.data.FileRole
+import io.bigmoeonedge.app.data.ModelDownloader
+import io.bigmoeonedge.app.data.downloadSummary
+import io.bigmoeonedge.app.data.runningTransfers
 import io.bigmoeonedge.app.data.RowState
 import io.bigmoeonedge.app.data.Tone
 import io.bigmoeonedge.app.data.fitTone
@@ -70,6 +73,20 @@ class LibraryRowsTest {
         assertEquals(RowState.DOWNLOADING, libraryRows(noPart, models, setOf("s-00002-of-00002.gguf"), null)[1].state)
         val noEntry = list.copy(catalog = emptyList())
         assertEquals(RowState.INCOMPLETE, libraryRows(noEntry, models, emptySet(), null)[1].state)
+    }
+
+    @Test
+    fun theStatusLineCountsASplitSetAsOneDownloadAndAStrayLinkAsAnother() {
+        val p = { n: String, d: Long, t: Long -> ModelDownloader.Progress(n, n, d, t, ModelDownloader.State.RUNNING) }
+        val live = mapOf("s-00002-of-00002.gguf" to p("s-00002-of-00002.gguf", 1, 5), "other.gguf" to p("other.gguf", 2, -1))
+        val transfers = runningTransfers(list.catalog, live) { e -> if (e.id == "s") p(e.fileName, 6, 10) else null }
+        assertEquals(listOf(6L to 10L, 2L to -1L), transfers)
+        // The share is over the downloads whose size is known.
+        val s = downloadSummary(transfers)!!
+        assertEquals(2, s.count)
+        assertEquals("2 downloads 60%", s.text)
+        assertEquals("Downloading", downloadSummary(listOf(0L to 0L))!!.text)
+        assertNull(downloadSummary(emptyList()))
     }
 
     @Test

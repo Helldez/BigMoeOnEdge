@@ -115,9 +115,10 @@ reads no gguf itself. Nothing below needs a storage permission except the last o
    catalog entry and its row in Your models carries the download).
 3. **Any other model**: paste a direct https link to a gguf, or to any shard of a split set. The
    server makes it a catalog entry (`POST /api/models/url`), and the app downloads its files like
-   any entry's, with Resume and one progress bar over the set. Where the server cannot ask the host
-   itself, the app downloads the one file the link names on its own. Or pick a `.gguf` already on
-   the device to import it.
+   any entry's, with Resume and one progress bar over the set. The server has no `curl` on the
+   phone to ask the host for sizes, so they are left unknown and a file counts whole once it is
+   there; should the server still refuse with a `5xx`, the app downloads the one file the link
+   names on its own. Or pick a `.gguf` already on the device to import it.
 4. **adb push** (dev flavor only, needs all-files access, which the dev build requests on Refresh):
 
    ```bash
@@ -169,11 +170,14 @@ an error); Apply lists the settings it changed, each a link to its row in Settin
 memory goes, what each compute device does and why, and the decisions grouped, each with the fact
 behind it and a link to its setting. Copy diagnostic puts the command and the planner's whole
 account on the clipboard for a bug report. The screen shows which stage of the measurement is
-running; a value you set yourself in Settings is never overridden. A model is unloaded after ten
+running; a value you set yourself in Settings is never overridden. With nothing loaded and no plan
+measured, it shows the decisions the settings carry from the last applied plan. A model is unloaded after ten
 idle minutes to give the phone its memory back; the next message reloads it.
 
-A loaded model whose context is below what a coding agent's first request needs gets a warning
-under the status line in Chat: the context, the server's recommendation, that a larger context
+The status line above the navigation bar, on every screen, says what the engine is doing and shows
+the running downloads ("Downloading 42%", or "2 downloads 42%"), which lead to Models. A loaded
+model whose context is below what a coding agent's first request needs gets a warning under it: the
+context, the server's recommendation, that a larger context
 takes memory from the expert cache, and a link to the setting that raises it. A chat refused for a
 full context offers the same link beside New chat. The number and the setting come from the
 server (`model.ctx_advice`).

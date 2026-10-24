@@ -20,7 +20,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -35,7 +34,6 @@ import io.bigmoeonedge.app.engine.ChatMessage
 import io.bigmoeonedge.app.engine.Decide
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.contextWarning
-import io.bigmoeonedge.app.engine.openAppSettings
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -119,57 +117,8 @@ fun ChatScreen(modifier: Modifier = Modifier, onOpenModels: () -> Unit, onOpenSe
                     }
                 },
             )
-            EngineStatusLine(onOpenModels, onOpenSetting)
             Transcript(Modifier.weight(1f), onOpenModels, onOpenSetting)
             PromptBar()
-        }
-    }
-}
-
-/**
- * One line that says what the engine is doing, with the way out when there is one: the Models
- * screen when it has nothing, the app's settings when the system denies it the network. A loaded
- * model whose context is below what a client of the server sends gets a second line saying so,
- * with the setting that raises it (all of it the server's: `model.ctx_advice`).
- */
-@Composable
-private fun EngineStatusLine(onOpenModels: () -> Unit, onOpenSetting: (String) -> Unit) {
-    val engine by Engine.state.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    val info = engine.info
-    val toSettings = "Allow" to { openAppSettings(context) }
-    val toModels = "Choose one" to onOpenModels
-    val (text, action) = when {
-        !engine.serverUp && engine.networkDenied -> engine.serverError.orEmpty() to toSettings
-        !engine.serverUp -> (engine.serverError?.lineSequence()?.firstOrNull()?.take(120) ?: "Engine not running") to null
-        info == null -> "Connecting…" to null
-        info.state == "planning" -> "Measuring the phone, then loading…" to null
-        info.state == "loading" -> "Loading model…" to null
-        info.state == "error" -> "Engine error: ${info.error.take(120)}" to null
-        info.model == null -> "No model loaded" to toModels
-        info.generating -> "${info.model.name} · generating" to null
-        else -> "${info.model.name} · ready" to null
-    }
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            // The denial is the one status a person must read whole to act on: it may wrap.
-            Text(text, fontSize = 12.sp, maxLines = if (engine.networkDenied) 3 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            if (action != null) TextButton(shape = RectangleShape, onClick = action.second, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(action.first, fontSize = 12.sp) }
-        }
-    }
-    val ctx = contextWarning(info?.model.takeIf { engine.serverUp && info?.ready == true }, engine.params)
-    if (ctx?.short == true) {
-        Surface(color = warnColor().copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
-            Row(Modifier.padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Context ${ctx.nCtx} tokens, under the ${ctx.recommended} a coding agent's first request needs; " +
-                        "a larger context takes memory from the expert cache.",
-                    fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-                )
-                TextButton(shape = RectangleShape, onClick = { onOpenSetting(ctx.key) }, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                    Text("Raise ${ctx.label}", fontSize = 12.sp)
-                }
-            }
         }
     }
 }

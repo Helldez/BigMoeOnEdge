@@ -6,6 +6,7 @@ import io.bigmoeonedge.app.engine.PlanDecision
 import io.bigmoeonedge.app.engine.ValueSource
 import io.bigmoeonedge.app.engine.differsFromPlan
 import io.bigmoeonedge.app.engine.levelCounts
+import io.bigmoeonedge.app.engine.loadTargetChosen
 import io.bigmoeonedge.app.engine.pinnedKeys
 import io.bigmoeonedge.app.engine.resettableKeys
 import io.bigmoeonedge.app.engine.sameValue
@@ -103,5 +104,15 @@ class SettingsFormTest {
         assertEquals(setOf("model"), cfg.launchKeys)
         assertEquals(listOf("dbg"), cfg.reloadKeys)
         assertEquals(setOf("model", "dbg", "exp"), pinnedKeys(table, cfg))
+    }
+
+    @Test
+    fun whatALoadOpensIsTheReadOnlyGroupsValue() {
+        val chosen = ConfigState.of(JSONObject("""{"values":{"model":"/m.gguf","io":4}}"""))
+        val none = ConfigState.of(JSONObject("""{"values":{"model":"","io":4}}"""))
+        assertTrue(loadTargetChosen(table, chosen))
+        assertFalse(loadTargetChosen(table, none))
+        assertFalse(loadTargetChosen(null, chosen))
+        assertFalse(loadTargetChosen(table, null))
     }
 }

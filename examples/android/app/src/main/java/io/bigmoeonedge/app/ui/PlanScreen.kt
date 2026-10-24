@@ -27,6 +27,7 @@ import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.PlanFigures
 import io.bigmoeonedge.app.engine.appliedChanges
 import io.bigmoeonedge.app.engine.diagnosticText
+import io.bigmoeonedge.app.engine.loadTargetChosen
 import io.bigmoeonedge.app.engine.planFigures
 import io.bigmoeonedge.app.engine.PlanDecision
 import io.bigmoeonedge.app.engine.PlanDevice
@@ -74,8 +75,9 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
     }
     val cfg = engine.config
     val planner = engine.info?.plannerAvailable ?: true
-    val model = cfg?.text("model").orEmpty()
-    val canMeasure = planner && model.isNotEmpty() && !busy && engine.serverUp
+    // A plan is for the model a load opens: chosen on Models, which the table marks as a read-only group.
+    val chosen = engine.info?.model != null || loadTargetChosen(engine.params, cfg)
+    val canMeasure = planner && chosen && !busy && engine.serverUp
 
     Scaffold(
         modifier = modifier,
@@ -97,7 +99,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             if (!planner) Text("This build does not include the hardware planner.", color = MaterialTheme.colorScheme.error)
-            if (model.isEmpty()) {
+            if (!chosen && engine.params != null) {
                 Text("Choose a model from Models: a plan is for one model on this phone.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (busy || engine.planProgress != null) PlanProgressCard(engine.planProgress)
@@ -136,6 +138,14 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
                     onOpenSetting = onOpenSetting,
                     onCopied = { scope.launch { snackbar.showSnackbar("Copied: the command and the planner's account") } },
                 )
+            }
+            // With nothing loaded and no plan to show, the decisions the configuration carries from the
+            // last applied plan, grouped the same way: the screen is never empty once a plan was made.
+            val carried = cfg?.plan.orEmpty()
+            if (engine.info?.model == null && carried.isNotEmpty() && (p == null || p.none || p.error.isNotEmpty() || !p.available)) {
+                Text("Decisions from the last applied plan", style = MaterialTheme.typography.titleMedium)
+                Hint("What the settings carry now; Measure shows the plan in full.")
+                Decisions(carried, onOpenSetting)
             }
             Spacer(Modifier.height(24.dp))
         }
